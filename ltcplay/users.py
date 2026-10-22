@@ -151,15 +151,35 @@ WEB_ROUTES = {
 }
 
 
+def purge_fire_wanted(body):
+    """True only for a purge-fire body that asks to START or CARRY ON a fire
+    press: "on" is the JSON word true and nothing else. Every other body
+    ("on" false, missing, null, 0, 1, "true", "false", a body that is not
+    an object) is a release, which can only stop a press: a request that
+    means release must never be able to start a fire (found on PR #82: a
+    body with "on" false fired 240 on slot 411 with purge arming off). The
+    engine (remote.py, morning.py) and classify() below both decide by
+    this one test, so a press is only ever "safety" when the engine will
+    only stop with it."""
+    return isinstance(body, dict) and body.get("on") is True
+
+
 def classify(route, body=None):
     """"safety", a key of PERMS, or None, for one POST. A press that only
-    takes risk away is "safety" whatever its route: a purge selection or
-    fire turned off, a laser test off, a lock put on, the blackout look."""
+    takes risk away is "safety" whatever its route: a purge selection
+    turned off, a purge fire release, a laser test off, a lock put on, the
+    blackout look. Classified by what the engine will DO with the body,
+    never by whether a field is present."""
+    raw = body
     body = body if isinstance(body, dict) else {}
     route = str(route or "")
     if route.startswith("/api/remote/"):
         name = route[len("/api/remote/"):]
-        if name in ("purge-select", "purge-fire") and \
+        if name == "purge-fire":
+            # The engine starts or carries on a press only for
+            # purge_fire_wanted(); everything else it turns into a stop.
+            return "arm" if purge_fire_wanted(raw) else "safety"
+        if name == "purge-select" and \
                 body.get("on") is False:
             return "safety"
         if name == "laser-test" and body.get("on") is not True:

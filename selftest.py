@@ -44041,7 +44041,7 @@ def test_purge_rules_at_the_engine():
         # Fire: nothing is armed at flamesafe yet (front row disarmed), so
         # the frame is empty and the page is told why.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen()}, client=loop)
+                            {"on": True, "seen": R.seen()}, client=loop)
         check(st == 200 and out["firing"] == [] and
               "not armed" in out["waiting"][0] and link.frames == [],
               f"a fire press with the group not armed sends nothing: {out}")
@@ -44054,17 +44054,17 @@ def test_purge_rules_at_the_engine():
         R.mono[0] += 0.1
         R.wall[0] += 0.1
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+                            {"on": True, "seen": R.seen(), "fire_id": fid}, client=loop)
         check(st == 200 and out["firing"] == ["Ground 1"] and link.frames and
               link.frames[-1][410] == 240 and sum(link.frames[-1]) == 240,
               f"armed: 240 on slot 411 and nothing else: {out}")
         # A heartbeat from another device, or with a stale id, is refused.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid}, client=ipad)
+                            {"on": True, "seen": R.seen(), "fire_id": fid}, client=ipad)
         check(st == 409 and out.get("let_go"),
               f"another device cannot carry the fire on: {st} {out}")
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid,
+                            {"on": True, "seen": R.seen(), "fire_id": fid,
                              "who": "Stream Deck", "screen": "Stream Deck"},
                             client=loop)
         check(st == 409 and "only that device" in out["error"] and
@@ -44090,7 +44090,7 @@ def test_purge_rules_at_the_engine():
         check(link.cleared > before and R.m.purge.fire is None,
               "0.3 s without a heartbeat: the frame is cleared by the watcher")
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+                            {"on": True, "seen": R.seen(), "fire_id": fid}, client=loop)
         check(st == 409 and "interrupted" in out["error"],
               f"and the old press cannot carry on: {out}")
         # A Waver: head up first, fire only after head_settle_s of beats
@@ -44104,7 +44104,7 @@ def test_purge_rules_at_the_engine():
                             {"machine": "w1", "seen": R.seen()}, client=loop)
         check(st == 200 and out["selected"] == ["g1", "w1"], "the Waver joins")
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen()}, client=loop)
+                            {"on": True, "seen": R.seen()}, client=loop)
         f = link.frames[-1]
         check(st == 200 and f[431] == 0 and f[432] == 0 and f[430] == 0 and
               f[410] == 240 and "not armed" in out["waiting"][0],
@@ -44116,7 +44116,7 @@ def test_purge_rules_at_the_engine():
             R.wall[0] += 0.1
             R.feed()
             st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                                {"seen": R.seen(), "fire_id": fid},
+                                {"on": True, "seen": R.seen(), "fire_id": fid},
                                 client=loop)
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "s1", "seen": R.seen()}, client=loop)
@@ -44129,7 +44129,7 @@ def test_purge_rules_at_the_engine():
         R.mono[0] += 0.1
         R.wall[0] += 0.1
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+                            {"on": True, "seen": R.seen(), "fire_id": fid}, client=loop)
         f = link.frames[-1]
         check(st == 200 and f[431] == 100 and f[432] == 200 and f[430] == 0
               and f[410] == 240 and "head going up" in out["waiting"][0],
@@ -44140,7 +44140,7 @@ def test_purge_rules_at_the_engine():
             R.wall[0] += 0.1
             R.feed()
             st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                                {"seen": R.seen(), "fire_id": fid},
+                                {"on": True, "seen": R.seen(), "fire_id": fid},
                                 client=loop)
         check(link.frames[-1][430] == 0 and out["firing"] == ["Ground 1"],
               "0.9 s in: the head is still settling, no Waver fire")
@@ -44148,7 +44148,7 @@ def test_purge_rules_at_the_engine():
         R.wall[0] += 0.15
         R.feed()
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+                            {"on": True, "seen": R.seen(), "fire_id": fid}, client=loop)
         f = link.frames[-1]
         check(f[430] == 230 and f[431] == 100 and f[432] == 200 and
               out["firing"] == ["Ground 1", "Waver 1"],
@@ -44161,7 +44161,7 @@ def test_purge_rules_at_the_engine():
         R.mono[0] += 0.1
         R.wall[0] += 0.1
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+                            {"on": True, "seen": R.seen(), "fire_id": fid}, client=loop)
         f = link.frames[-1]
         check(st == 200 and f[430] == 0 and f[431] == 0 and f[432] == 0 and
               any("not armed" in w for w in out["waiting"]),
@@ -44172,7 +44172,7 @@ def test_purge_rules_at_the_engine():
         R.mono[0] += 0.1
         R.wall[0] += 0.1
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+                            {"on": True, "seen": R.seen(), "fire_id": fid}, client=loop)
         f = link.frames[-1]
         check(st == 200 and f[431] == 100 and f[432] == 200 and f[430] == 0
               and any("head going up" in w for w in out["waiting"]),
@@ -44233,25 +44233,25 @@ def test_purge_rules_at_the_engine():
         check(st == 200 and R.m.purge.owner == "iPad at 10.20.0.44",
               f"the iPad arms Ground 1: {st} {out}")
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "who": "Andy",
+                            {"on": True, "seen": R.seen(), "who": "Andy",
                              "screen": "Stream Deck"}, client=loop)
         check(st == 200 and out["firing"] == ["Ground 1"] and
               R.m.purge.fire["device"] == "Stream Deck",
               f"the deck's FIRE key fires the iPad's selection: {st} {out}")
         deck_fid = out["fire_id"]
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen()}, client=ipad)
+                            {"on": True, "seen": R.seen()}, client=ipad)
         check(st == 409 and "Stream Deck is already firing" in out["error"],
               f"the owner's own press waits for the deck to let go: {out}")
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen()}, client=loop)
+                            {"on": True, "seen": R.seen()}, client=loop)
         check(st == 409 and "has the purge selection" in out["error"] and
               R.m.purge.fire is not None and
               R.m.purge.fire["device"] == "Stream Deck",
               f"the Rack screen is neither the owner nor the deck: refused, "
               f"and the deck's press is not ended by it: {out}")
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen(), "fire_id": deck_fid,
+                            {"on": True, "seen": R.seen(), "fire_id": deck_fid,
                              "who": "Andy", "screen": "Stream Deck"},
                             client=loop)
         check(st == 200 and out["fire_id"] == deck_fid,
@@ -44328,7 +44328,7 @@ def test_purge_rules_at_the_engine():
         check(st == 409 and "live" in out["error"],
               f"and nothing can be armed for a purge while it is: {out}")
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen()}, client=loop)
+                            {"on": True, "seen": R.seen()}, client=loop)
         check(st == 409 and "live" in out["error"],
               "nor fired")
         st, _h, out = R.ask("POST", "/api/remote/laser-test",
@@ -44466,7 +44466,7 @@ def test_purge_rules_at_the_engine():
         _morning_page_logic_in_node()
         # Every one of these routes is refused from another site's page.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
-                            {"seen": R.seen()}, client=loop,
+                            {"on": True, "seen": R.seen()}, client=loop,
                             headers={"Origin": "http://evil.example"})
         check(st == 403, "a cross-site purge-fire is refused")
         # And the arm-route test's rule holds: no route here names "arm".
@@ -44710,6 +44710,12 @@ def test_morning_deck_remap_and_purge_arming():
         gate.wait(0.02)
     check(any(p[0] == "/api/remote/purge-stop" for p in posts),
           "stop posts purge-stop to the engine")
+    check(all(p[1].get("on") is True for p in posts
+              if p[0] == "/api/remote/purge-fire") and
+          all("on" not in p[1] for p in posts
+              if p[0] == "/api/remote/purge-stop"),
+          f"every FIRE heartbeat says on true (the engine fires on nothing "
+          f"else) and the purge-stop does not: {posts}")
     check(sd.PURGE_BEAT_S == 0.1, "the deck beats every 100 ms, like the page")
     # ScreenKeys itself: the engine's morning block is read only while the
     # engine's last answer is fresh (SCREEN_STALE_S), like the holds.
@@ -45698,7 +45704,7 @@ t(renders > 0, "the page was redrawn");
                 ("purge-select", {"machine": "g1"}, "a click on a machine"),
                 ("purge-select", {"machines": ["g1", "g2"], "on": True},
                  "a group button"),
-                ("purge-fire", {"fire_id": None}, "a fire heartbeat"),
+                ("purge-fire", {"fire_id": None, "on": True}, "a fire heartbeat"),
                 ("laser-test", {"laser": "l1", "on": True}, "a laser test ON"),
                 ("lock", {"kind": "rewrite", "confirmed": True},
                  "a rewrite of the lockout file"),
@@ -45736,7 +45742,7 @@ t(renders > 0, "the page was redrawn");
         # the rack screen's device name) does NOT fire the iPad's selection
         # while the rack screen arranges (Jeff, 2026-10-21: "If it's being
         # arranged in any capacity, firing is disabled").
-        st_, out_ = R.m.post("purge-fire", {"fire_id": None}, "Rack screen",
+        st_, out_ = R.m.post("purge-fire", {"fire_id": None, "on": True}, "Rack screen",
                              "Andy", "Stream Deck", True, True)
         check(st_ == 409 and "Firing is off" in out_.get("error", "") and
               "Rack screen is in Arrange mode" in out_["error"] and
@@ -45968,13 +45974,14 @@ def test_morning_arrange_disables_firing():
     link = R.link
 
     def deck(fid=None):
-        body = {"seen": R.seen(), "who": "Andy", "screen": "Stream Deck"}
+        body = {"on": True, "seen": R.seen(), "who": "Andy",
+                "screen": "Stream Deck"}
         if fid is not None:
             body["fire_id"] = fid
         return R.ask("POST", "/api/remote/purge-fire", body, client=loop)
 
     def page_fire(client, fid=None):
-        body = {"seen": R.seen()}
+        body = {"on": True, "seen": R.seen()}
         if fid is not None:
             body["fire_id"] = fid
         return R.ask("POST", "/api/remote/purge-fire", body, client=client)
@@ -46205,6 +46212,321 @@ def test_morning_arrange_disables_firing():
     finally:
         R.close()
     print("  ok")
+
+# Every purge-fire body that is not {"on": true}: each is a release, which
+# can only stop a press (found on PR #82: "on": false skipped the purge
+# arming switch, counted as a safety press, and still fired 240 on slot 411).
+_PURGE_RELEASES = (
+    ({"on": False}, "on false"),
+    ({}, "on missing"),
+    ({"on": 0}, "on 0"),
+    ({"on": "false"}, "on \"false\""),
+    ({"on": None}, "on null"),
+    ({"on": 1}, "on 1"),
+    ({"on": "true"}, "on \"true\""),
+    ({"on": [True]}, "on [true]"),
+    ({"on": {"on": True}}, "on an object"),
+    ({"on": False, "fire": True, "start": True, "arm": True,
+      "fire_id": None}, "on false with extra fields"),
+    ({"fire": True, "start": True, "fire_id": None},
+     "on missing with extra fields"),
+)
+
+
+def test_purge_release_can_never_start_a_fire():
+    section("Morning page, a purge fire release can never start a fire "
+            "(found on PR #82): a purge-fire body fires only when \"on\" is "
+            "the JSON word true, with purge arming on, a role that may arm, "
+            "the machine not locked out, no screen arranging and a machine "
+            "clicked; every other body (on false, missing, 0, \"false\", "
+            "null, extra fields) is a release that only stops, is a safety "
+            "press, needs no switch and no sign-in, and still stops a press "
+            "signed out from the page and from the deck")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    from ltcplay import morning as MO
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+
+    # -- the one test every layer shares, and the classification ----------
+    check(U.purge_fire_wanted({"on": True}) is True and
+          U.purge_fire_wanted({"on": True, "fire_id": 3, "x": 1}) is True,
+          "{\"on\": true} (extra fields or not) asks to fire")
+    for body, what in _PURGE_RELEASES:
+        check(U.purge_fire_wanted(body) is False,
+              f"{what} does not ask to fire")
+        check(U.classify("/api/remote/purge-fire", body) == "safety",
+              f"{what} is a release: a safety press")
+    for raw in (None, [], [{"on": True}], "on", 1, True):
+        check(U.purge_fire_wanted(raw) is False and
+              U.classify("/api/remote/purge-fire", raw) == "safety",
+              f"a body that is not an object ({raw!r}) is a release")
+    check(U.classify("/api/remote/purge-fire", {"on": True}) == "arm" and
+          U.classify("/api/remote/purge-fire",
+                     {"on": True, "fire_id": 4}) == "arm",
+          "only {\"on\": true} is an arming press, its heartbeats included")
+
+    # The page's Space bar asks to fire with on true on every heartbeat,
+    # and its let-go is purge-stop, which never asks to fire.
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote.html"),
+              encoding="utf-8") as fh:
+        page = fh.read()
+    check(page.count('post("/api/remote/purge-fire", '
+                     'moActor({fire_id:f.id, on:true}))') == 1 and
+          page.count('"/api/remote/purge-fire"') == 1 and
+          'post("/api/remote/purge-stop", moActor({}))' in page,
+          "the page's fire heartbeat says on true; its let-go is purge-stop")
+
+    # -- the fire heartbeat itself refuses a release (the engine's belt) --
+    R = _morning_rig(S, _MO_CONFIG)
+    udir = tempfile.mkdtemp()
+    try:
+        link = R.link
+        R.groups[0]["armed"] = "armed"
+        R.groups[0]["wanted"] = True
+        R.feed()
+        R.m.open_beat("Rack screen")
+        st, out = R.m.purge.select("g1", True, "Rack screen", True)
+        check(st == 200, f"setup: Ground 1 clicked: {st} {out}")
+        for body, what in _PURGE_RELEASES:
+            n, frames = R.m.purge.fires, len(link.frames)
+            st, out = R.m.purge.fire_beat(dict(body), "Rack screen", True)
+            check(st == 409 and out.get("let_go") is True and
+                  R.m.purge.fire is None and R.m.purge.fires == n and
+                  len(link.frames) == frames,
+                  f"fire_beat with {what}: refused, nothing started, nothing "
+                  f"reached the flame link: {st} {out}")
+        st, out = R.m.purge.fire_beat({"on": True}, "Rack screen", True)
+        check(st == 200 and out["firing"] == ["Ground 1"] and
+              link.frames[-1][410] == 240,
+              f"setup: fire_beat with on true fires: {st} {out}")
+        fid = out["fire_id"]
+        cleared = link.cleared
+        st, out = R.m.purge.fire_beat({"on": False, "fire_id": fid},
+                                      "Rack screen", True)
+        check(st == 409 and R.m.purge.fire is None and
+              link.cleared > cleared,
+              f"and a release that reaches it anyway stops the press: "
+              f"{st} {out}")
+        # Morning.post routes a release to the stop, never to fire_beat.
+        st, out = R.m.post("purge-fire", {"on": True}, "Rack screen", "Andy",
+                           "Rack screen", True, True)
+        check(st == 200 and R.m.purge.fire is not None,
+              f"setup: Morning.post with on true fires: {st} {out}")
+        real = R.m.purge.fire_beat
+        reached = []
+
+        def spy(*a, **k):
+            reached.append(a)
+            return real(*a, **k)
+        R.m.purge.fire_beat = spy
+        try:
+            for body, what in _PURGE_RELEASES + (([], "a list"),
+                                                  (None, "null")):
+                if R.m.purge.fire is None:
+                    R.m.purge.fire_beat = real
+                    R.m.post("purge-fire", {"on": True}, "Rack screen",
+                             "Andy", "Rack screen", True, True)
+                    R.m.purge.fire_beat = spy
+                n = R.m.purge.fires
+                st, out = R.m.post("purge-fire", body, "Rack screen", "Andy",
+                                   "Rack screen", True, True)
+                check(st == 200 and out.get("ok") is True and
+                      R.m.purge.fire is None and R.m.purge.fires == n and
+                      not reached,
+                      f"Morning.post with {what}: answered as a stop (200), "
+                      f"the press ended, the fire path never reached: "
+                      f"{st} {out} {len(reached)}")
+        finally:
+            R.m.purge.fire_beat = real
+
+        # -- the whole path, through the HTTP handler and the role gate ----
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"),
+                 ("Vic", "viewer")])
+        # Signed out may NOT arm here: a start needs a role that may; a
+        # release never asks.
+        us.set_matrix({U.SIGNED_OUT: {"arm": False}})
+        R.remote.users = us
+        toks = {}
+        for name in ("Ollie", "Vic"):
+            ok, why, tok, _n = us.sign_in(name, "", False, "ipad",
+                                          new_password=f"{name}-pw-1234")
+            check(ok and tok, f"setup: {name} signs in: {why}")
+            toks[name] = tok
+
+        def hdr(who):
+            return ({"Cookie": f"{U.COOKIE}={toks[who]}"} if who else {})
+
+        def post(route, body, who, client=loop):
+            b = dict(body) if isinstance(body, dict) else body
+            if isinstance(b, dict):
+                b.setdefault("seen", R.seen())
+            return R.ask("POST", "/api/remote/" + route, b, client=client,
+                         headers=hdr(who))
+
+        def arrange(on):
+            R.ask("POST", "/api/remote/morning-open",
+                  {"arranging": on, "inst": "I", "seq": next(seq),
+                   "seen": R.seen()}, client=ipad,
+                  headers=hdr("Ollie"))
+
+        import itertools
+        seq = itertools.count(1)
+
+        def fresh():
+            """Nothing firing, nobody arranging, Ground 1 clicked by the
+            rack screen with purge arming on, then back to the test."""
+            R.m.purge.clear("test reset")
+            arrange(False)
+            RM.save_settings(R.work, purge_arming=True)
+            R.m.open_beat("Rack screen")
+            st_, _h_, out_ = post("purge-select", {"machine": "g1"}, "Ollie")
+            check(st_ == 200 and R.m.purge.selected == ["g1"],
+                  f"setup: Ground 1 clicked: {st_} {out_}")
+
+        def scenario(arming, who, arranging):
+            fresh()
+            if not arming:
+                RM.save_settings(R.work, purge_arming=False)
+            if arranging:
+                arrange(True)
+
+        combos = [(a, w, ar) for a in (True, False)
+                  for w in ("Ollie", "Vic", None) for ar in (False, True)]
+        for arming, who, arranging in combos:
+            label = (f"purge arming {'on' if arming else 'off'}, "
+                     f"{who or 'signed out'}"
+                     f"{', a screen arranging' if arranging else ''}")
+            for body, what in _PURGE_RELEASES:
+                scenario(arming, who, arranging)
+                n, frames = R.m.purge.fires, len(link.frames)
+                st, _h, out = post("purge-fire", body, who)
+                check(R.m.purge.fire is None and R.m.purge.fires == n and
+                      len(link.frames) == frames and st in (200, 409),
+                      f"{label}, {what}: nothing starts, nothing reaches "
+                      f"the flame link: {st} {out}")
+                check(not out.get("role_refused") and
+                      "switched off" not in str(out.get("error", "")),
+                      f"{label}, {what}: a release is never behind the "
+                      f"role matrix or the purge arming switch: {st} {out}")
+            # The start: only with every condition met.
+            scenario(arming, who, arranging)
+            n = R.m.purge.fires
+            st, _h, out = post("purge-fire", {"on": True}, who)
+            should = arming and who == "Ollie" and not arranging
+            fired = R.m.purge.fires > n and link.frames and \
+                link.frames[-1][410] == 240 and R.m.purge.fire is not None
+            check(bool(fired) == should and (st == 200) == should,
+                  f"{label}, on true: {'fires' if should else 'refused'}: "
+                  f"{st} {out}")
+            if not should:
+                check(R.m.purge.fires == n and R.m.purge.fire is None,
+                      f"{label}, on true refused: no press was started")
+
+        # A release stops a press already going, signed out, whatever the
+        # purge arming switch says, in every form.
+        for arming in (True, False):
+            for body, what in _PURGE_RELEASES:
+                fresh()
+                st, _h, out = post("purge-fire", {"on": True}, "Ollie")
+                check(st == 200 and R.m.purge.fire is not None,
+                      f"setup: Ollie fires: {st} {out}")
+                fid = out.get("fire_id")
+                if not arming:
+                    RM.save_settings(R.work, purge_arming=False)
+                b = dict(body)
+                if "fire_id" in b:
+                    b["fire_id"] = fid
+                cleared = link.cleared
+                n = R.m.purge.fires
+                st, _h, out = post("purge-fire", b, None)
+                check(st == 200 and R.m.purge.fire is None and
+                      link.cleared > cleared and R.m.purge.fires == n,
+                      f"purge arming {'on' if arming else 'off'}, signed "
+                      f"out, {what}: the press stops: {st} {out}")
+        # From the Stream Deck process, signed out (nobody signed in on
+        # this machine): a release in any form ends the deck's press.
+        for body, what in _PURGE_RELEASES:
+            fresh()
+            ok, why, mtok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True,
+                                           "rack")
+            st, _h, out = post("purge-fire", {"on": True, "who": "Ollie",
+                                              "screen": "Stream Deck"}, None)
+            check(st == 200 and R.m.purge.fire["device"] == "Stream Deck",
+                  f"setup: the deck fires with Ollie signed in on the "
+                  f"machine: {st} {out}")
+            us.sign_out(mtok)
+            b = dict(body, who="", screen="Stream Deck")
+            n = R.m.purge.fires
+            st, _h, out = post("purge-fire", b, None)
+            check(st == 200 and R.m.purge.fire is None and
+                  R.m.purge.fires == n,
+                  f"the deck, signed out, {what}: the deck's press stops: "
+                  f"{st} {out}")
+            st, _h, out = post("purge-fire", {"on": True, "who": "",
+                                              "screen": "Stream Deck"}, None)
+            check(st == 403 and out.get("role_refused") and
+                  R.m.purge.fire is None and R.m.purge.fires == n,
+                  f"and a deck start signed out is refused by the role "
+                  f"matrix: {st} {out}")
+        # Locked out: Ground 1 locked (its selection goes with it), then
+        # nothing fires on slot 411 from any body, signed in or not.
+        fresh()
+        st, _h, out = post("lock", {"kind": "machine", "id": "g1",
+                                    "on": True, "reason": "leaks"}, None)
+        check(st == 200 and R.m.lockout.is_locked("machine", "g1"),
+              f"setup: Ground 1 locked out, signed out: {st} {out}")
+        R.fs_lockout = {"slots": sorted(R.m.lockout.channels(R.m.cfg)),
+                        "state": "read"}
+        R.feed()
+        st, _h, out = post("purge-select", {"machine": "g1"}, "Ollie")
+        check(st == 409 and "locked out" in out.get("error", ""),
+              f"a locked machine cannot be clicked: {st} {out}")
+        for arming in (True, False):
+            RM.save_settings(R.work, purge_arming=arming)
+            for who in ("Ollie", None):
+                for body, what in _PURGE_RELEASES + (({"on": True},
+                                                      "on true"),):
+                    n, frames = R.m.purge.fires, len(link.frames)
+                    st, _h, out = post("purge-fire", body, who)
+                    check(R.m.purge.fire is None and
+                          R.m.purge.fires == n and
+                          len(link.frames) == frames,
+                          f"Ground 1 locked out, purge arming "
+                          f"{'on' if arming else 'off'}, "
+                          f"{who or 'signed out'}, {what}: nothing fires: "
+                          f"{st} {out}")
+        # The rest of the safety rule is untouched, signed out, purge arming
+        # off: Abort, Hold, Stop, disarm, letting go, a clear, a lockout, a
+        # laser test off and Acknowledge all go.
+        RM.save_settings(R.work, purge_arming=False)
+        R.remote.alerts.raise_("deck", "Test alert for Acknowledge.")
+        for route, body in (("purge-stop", {}), ("purge-clear", {}),
+                            ("purge-select", {"machine": "g2", "on": False}),
+                            ("lock", {"kind": "machine", "id": "s1",
+                                      "on": True}),
+                            ("laser-test", {"laser": "laser-3", "on": False}),
+                            ("disarm-all", {}), ("hold", {}),
+                            ("arm-release", {"group": 0}),
+                            ("alert", {"action": "acknowledge"}),
+                            ("abort", {"confirmed": True})):
+            st, _h, out = post(route, body, None)
+            check(not out.get("role_refused") and st != 403,
+                  f"{route} signed out with purge arming off still goes: "
+                  f"{st} {out}")
+        st, _h, out = R.ask("POST", "/api/stop", {}, client=loop)
+        check(not (isinstance(out, dict) and out.get("role_refused")) and
+              st != 403, f"the old page's Stop signed out: {st} {out}")
+    finally:
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+
 
 def test_windows_rack_window_and_explorer_front():
     section("rack screen window (Jeff, 2026-10-19): the Windows app opens "
@@ -49809,6 +50131,7 @@ if __name__ == "__main__":
     test_morning_lockout_trust_link_and_close()
     test_morning_arrange_mode_arms_nothing()
     test_morning_arrange_disables_firing()
+    test_purge_release_can_never_start_a_fire()
     test_windows_rack_window_and_explorer_front()
     test_users_passwords_are_slow_salted_hashes_and_never_stored()
     test_users_lockout_is_short_and_never_permanent()

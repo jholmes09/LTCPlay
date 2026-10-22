@@ -845,7 +845,8 @@ class Handler(BaseHTTPRequestHandler):
                     (short == "arm-hold" and
                      body.get("hold_id") is not None) or
                     (short == "purge-fire" and
-                     body.get("fire_id") is not None))
+                     body.get("fire_id") is not None and
+                     body.get("on") is True))   # a release is logged
             if beat and (ok or route in ("/api/remote/signin",
                                          "/api/remote/signout",
                                          "/api/remote/morning-open",
