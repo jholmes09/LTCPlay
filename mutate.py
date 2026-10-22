@@ -949,6 +949,16 @@ MUTATIONS = [
   "        return self.fault or self.render_fault_now()",
   "        return self.fault"),
 
+ ("flame cues: a stale render is not refused while the reader is mid-pass",
+  "ltcplay/fire_ice.py",
+  "            if stale_s is s and any(",
+  "            if False and any("),
+
+ ("flame cues: the reader never hands the stale renders to the refusal",
+  "ltcplay/fire_ice.py",
+  "        self._stale = (s, frozenset(stale))",
+  "        self._stale = (s, frozenset())"),
+
  ("soak: the reading thread never checks the renders' age",
   "ltcplay/fire_ice.py",
   "            try:\n                self._check_renders_once()\n"
