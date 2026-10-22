@@ -9229,10 +9229,9 @@ def build():
 
  ("lasertest: BEYOND's BlackOut becomes an allowed address (T10)",
   "ltcplay/lasertest.py",
-  '''    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:
-        return False''',
-  '''    if address in GLOBAL_ADDRESSES:
-        return False'''),
+  '_REFUSED = frozenset(a.lower() for a in FORBIDDEN_ADDRESSES |\n'
+  '                     GLOBAL_ADDRESSES)',
+  '_REFUSED = frozenset(a.lower() for a in GLOBAL_ADDRESSES)'),
 
  ("checklist: a tick needs no name",
   "ltcplay/checklist.py",
@@ -10244,14 +10243,51 @@ def build():
   '                    self.on.pop(laser.id, None)'),
  ("lasers: a laser's own lists may send BEYOND's global controls",
   'ltcplay/lasertest.py',
-  '    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:',
-  '    if address in FORBIDDEN_ADDRESSES:'),
+  '_REFUSED = frozenset(a.lower() for a in FORBIDDEN_ADDRESSES |\n'
+  '                     GLOBAL_ADDRESSES)',
+  '_REFUSED = frozenset(a.lower() for a in FORBIDDEN_ADDRESSES)'),
  ('lasers: the restore does not read the timecode epoch before the arm check',
   'ltcplay/beyondtc.py',
   '        epoch = self.gate.epoch() if self.gate is not None else None\n'
   '        if self.arm_check is not None:',
   '        epoch = None\n'
   '        if self.arm_check is not None:'),
+
+ # -- the laser arm, second review of PR #87 --
+ ('lasers: a merged disarm forgets the lasers it covers',
+  'ltcplay/laserarm.py',
+  '                        w["ids"] = list(dict.fromkeys(list(w["ids"]) +\n'
+  '                                                      list(ids)))',
+  '                        pass'),
+ ('lasers: Arrange mode on the page holds back a disarm click',
+  'ltcplay/web/remote.html',
+  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }\n'
+  '  if(arrangeBlocked("laser-arm", {on:true})) return;',
+  '  if(arrangeBlocked("laser-arm", {on:true})) return;\n'
+  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }'),
+ ("lasers: a trailing slash gets a refused address into a laser's lists",
+  'ltcplay/lasertest.py',
+  '    return a.rstrip("/")',
+  '    return a'),
+ ("lasers: a case variant gets a refused address into a laser's lists",
+  'ltcplay/lasertest.py',
+  '    a = address.strip().lower()',
+  '    a = address.strip()'),
+ ('lasers: a laser disarmed during its placeholder arm hears the arm last',
+  'ltcplay/lasertest.py',
+  '        if which == "arm" and not self.is_armed(laser.id):',
+  '        if False:'),
+ ('lasers: the startup dark waits for the Morning page',
+  'ltcplay/web.py',
+  '        _startup_lasers_dark(wiring)\n',
+  '        pass\n'),
+ ("lasers: the laser arm's tick runs after a watcher call that can raise",
+  'ltcplay/morning.py',
+  '        try:\n'
+  '            # The laser arm FIRST',
+  '        self._check_flamesafe_lockout()\n'
+  '        try:\n'
+  '            # The laser arm FIRST'),
 ]
 
 

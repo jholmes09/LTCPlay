@@ -448,6 +448,14 @@ class LaserArm:
                 self._jobs = collections.deque(
                     j for j in self._jobs if j["kind"] == "dark")
                 if waiting:
+                    # And the lasers it covers (review of PR #87, round 2,
+                    # P3-1): None is every laser.
+                    w = waiting[-1]
+                    if w["ids"] is None or ids is None:
+                        w["ids"] = None
+                    else:
+                        w["ids"] = list(dict.fromkeys(list(w["ids"]) +
+                                                      list(ids)))
                     waiting[-1]["notes"].extend(job["notes"])
                     waiting[-1]["audits"].extend(job["audits"])
                     self._cv.notify_all()

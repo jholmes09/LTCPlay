@@ -1771,11 +1771,14 @@ function renderEngineChecks(list){
   }).join("") : `<div class="dim">No engine checks in this engine.</div>`;
 }
 async function laserArmClick(ids){
-  if(arrangeBlocked("laser-arm", {on:true})) return;   // before the confirm
   const la = (MO && MO.laser_arm) || {lasers: []};
   const ls = (la.lasers || []).filter(x => ids.includes(x.id));
   const all = ls.length && ls.every(x => x.armed);
+  // A disarm first, and never held back by Arrange mode (review of PR
+  // #87, round 2, P3-2): only an arm asks arrangeBlocked, before its
+  // confirm.
   if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }
+  if(arrangeBlocked("laser-arm", {on:true})) return;
   const names = ls.map(x => x.name).join(", ") || ids.join(", ");
   if(await confirmBox("Arm " + names + "?", "BEYOND's laser output comes on only once EVERY laser is armed and none is locked out: its only verified command is for all lasers at once. Abort, Hold, the night closing and Disarm all lasers disarm them again.", "Arm", "start"))
     moPress("laser-arm", {lasers: ids, on:true, confirmed:true}, "mo-lmsg");

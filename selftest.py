@@ -50662,8 +50662,11 @@ def test_laser_arm_disarm_never_waits_on_beyond():
             "Beyond that cannot send is a fault, never 'off'")
     from ltcplay import beyondtc as BT
     from ltcplay import laserarm as LA
-    stall = 0.6
-    link, sent, blines = _laser_beyond_link(stall_s=stall / 3)
+    # Every packet takes `per` (a stalled BEYOND or network); the disarm
+    # must return in under half of ONE packet. Kept short: the suite runs
+    # under a 300 s limit in the mutate shards.
+    per = 0.08
+    link, sent, blines = _laser_beyond_link(stall_s=per)
     bl = BT.Blanking("osc", osc=link)
     arm = LA.LaserArm([("l1", "Laser 1")], output=lambda: bl,
                       threaded=True)
@@ -50674,9 +50677,9 @@ def test_laser_arm_disarm_never_waits_on_beyond():
         arm.disarm_all("Abort pressed by Andy on the Rack screen", "Andy",
                        "Rack screen", defer=True)
         took = time.perf_counter() - t0
-        check(took < stall / 2 and arm.armed_ids() == [],
+        check(took < per / 2 and arm.armed_ids() == [],
               f"the disarm returned in {took:.3f} s with every send taking "
-              f"{stall / 3:.2f} s: it never waits on BEYOND")
+              f"{per:.2f} s: it never waits on BEYOND")
         check(arm.wait_idle(10.0), "the sender finishes on its own")
         check(any(p.startswith(b"/beyond/general/DisableLaserOutput")
                   for _a, p in sent) and
@@ -51328,6 +51331,187 @@ def test_laser_arm_through_web_serve():
     print("  ok")
 
 
+
+def test_laser_arm_review_round_two():
+    section("lasers (second review of PR #87): a merged disarm keeps every "
+            "laser it covers; a disarm click is never held back by Arrange "
+            "mode; case and spelling variants of BEYOND's refused and "
+            "global addresses are refused in a laser's lists; a laser "
+            "disarmed while its placeholder arm went out gets its disarm "
+            "last; the startup dark does not need the Morning page; a "
+            "watcher call that raises cannot skip the laser arm's tick")
+    import json as _json
+    import shutil as _sh
+    import subprocess as _sp
+    from ltcplay import lasertest as LT
+    # 1. Disarm laser A, then a Hold before the sender runs.
+    arm, out, st = _arm_parts(lasers=(("l1", "Laser 1"), ("l2", "Laser 2"),
+                                      ("l3", "Laser 3")))
+    arm.run_pending()
+    calls = []
+    arm.per_laser = types_ns(
+        on={"l2": {}},
+        set=lambda lid, on, **k: calls.append(("off", lid)),
+        send_placeholder=lambda lid, which, why: calls.append((which, lid)))
+    arm.disarm(["l1"], who="Andy")
+    arm.disarm_all("Hold pressed by Andy", "Andy", "Rack screen")
+    check(arm.pending() == ["dark"], "one dark job, merged")
+    arm.run_pending()
+    check(("off", "l2") in calls and
+          {l for w, l in calls if w == "disarm"} == {"l1", "l2", "l3"},
+          f"the merged dark covers every laser either disarm named: {calls}")
+    arm.disarm(["l1"], who="Andy")
+    arm.disarm(["l3"], who="Andy")
+    del calls[:]
+    arm.run_pending()
+    check({l for w, l in calls if w == "disarm"} == {"l1", "l3"},
+          f"two single disarms merged cover both: {calls}")
+    # 2. The page: Arrange mode never holds back a disarm click.
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.index("async function laserArmClick(ids){")
+    b = page.index("function laserGroupClick(g){")
+    node = _sh.which("node")
+    if node:
+        js = page[a:b] + r"""
+const presses = []; let confirms = 0;
+const moPress = (r, body) => presses.push(body);
+const arrangeBlocked = () => true;            // a screen in Arrange mode
+const confirmBox = async () => { confirms++; return true; };
+let MO = {laser_arm: {lasers: [{id:"l1", name:"Laser 1", armed:true},
+                               {id:"l2", name:"Laser 2", armed:false}]}};
+(async () => {
+  await laserArmClick(["l1"]);
+  await laserArmClick(["l2"]);
+  console.log(JSON.stringify({presses, confirms}));
+})();
+"""
+        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        try:
+            got = _json.loads(r.stdout.strip())
+        except ValueError:
+            got = None
+        check(got == {"presses": [{"lasers": ["l1"], "on": False}],
+                      "confirms": 0},
+              f"in Arrange mode a disarm click still goes, an arm click "
+              f"does not (and asks no confirm): {r.stdout!r} "
+              f"{r.stderr[-300:]!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    # 3. Variants of refused addresses.
+    for addr in ("/beyond/general/enablelaseroutput",
+                 "/BEYOND/general/DisableLaserOutput",
+                 "/Beyond/master/livecontrol/brightness",
+                 "/beyond/master/livecontrol/brightness/",
+                 "/beyond/general/EnableLaserOutput/",
+                 "/beyond//general/EnableLaserOutput",
+                 "/beyond/general/blackout", "/beyond/general/MASTERPAUSE/"):
+        check(not LT.allowed_address(addr), f"{addr!r} is refused")
+        try:
+            LT.parse_lasers([{"id": "l", "name": "L", "mechanism": "osc",
+                              "host": "127.0.0.2", "port": 8100,
+                              "on": [[addr, 100.0]]}], "x")
+            check(False, f"{addr!r} loaded in a laser's list")
+        except LT.LaserConfigError:
+            pass
+    check(LT.allowed_address("/beyond/general/startcue"),
+          "an ordinary address still is not")
+    # 4. Disarmed while the placeholder arm went out.
+    sent = []
+    armed = {"l1"}
+
+    class _Sock:
+        def sendto(self, pkt, addr):
+            sent.append(pkt)
+            if pkt.startswith(b"/placeholder/arm"):
+                armed.discard("l1")
+
+        def close(self):
+            pass
+    lasers = LT.parse_lasers([
+        {"id": "l1", "name": "Laser 1", "mechanism": "osc",
+         "host": "127.0.0.2", "port": 8100,
+         "on": [["/beyond/general/startcue", 3]],
+         "arm": [["/placeholder/arm", 1]],
+         "disarm": [["/placeholder/disarm", 0]]}], "x")
+    lt = LT.LaserTests(lasers, socket_factory=_Sock, sleep=lambda s: None,
+                       armed=lambda lid: lid in armed)
+    ok = lt.send_placeholder("l1", "arm", "armed by Andy")
+    check(ok is False and sent and
+          sent[-1].startswith(b"/placeholder/disarm"),
+          f"disarmed during the arm: the disarm goes last: "
+          f"{[p[:20] for p in sent]}")
+    # 6. A watcher call that raises cannot skip the laser arm's tick.
+    S = _sched()
+    if S is not None:
+        R = _morning_rig(S, config=_MO_CONFIG)
+        try:
+            _mo_arm(R, "laser-1")
+
+            def boom(*a, **k):
+                raise RuntimeError("flamesafe status broke")
+            R.m._check_flamesafe_lockout = boom
+            R.m._lock_channels_to_link = boom
+            R.m._night_state = lambda: "CLOSING"
+            try:
+                R.m.tick()
+            except RuntimeError:
+                pass
+            check(R.m.laser_arm.armed_ids() == [],
+                  "with the watcher's later calls raising every pass, the "
+                  "night closing still disarmed")
+        finally:
+            R.close()
+    print("  ok")
+
+
+def test_laser_startup_dark_without_the_morning_page():
+    section("lasers (second review of PR #87, P3-5): ltc serve blanks and "
+            "switches BEYOND's laser output off at start even when the "
+            "Morning page cannot be built")
+    import json as _json
+    import tempfile
+    from ltcplay import web as web_mod
+    from ltcplay import beyond as BY
+    from ltcplay import morning as MO
+    S = _sched()
+    if S is None:
+        return
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    fs, show, doc = _fi_flame_files(work)
+    with open(fs, "w", encoding="utf-8") as fh:
+        _json.dump(doc, fh)
+    svc = _svc(S, work, [_den(S, 17, 0)])
+    cfg = F.FireIceConfig(flamesafe_config=fs, flame_controller="Flames",
+                          beyond=BY.BeyondConfig("127.0.0.2",
+                                                 _free_udp_port()),
+                          beyond_blank="osc")
+    real = MO.Morning
+
+    def broken(*a, **k):
+        raise RuntimeError("the Morning page broke")
+    MO.Morning = broken
+    try:
+        httpd = web_mod.serve(work, port=_free_port(), schedule=svc,
+                              fire_ice=cfg, flamesafe_config=fs)
+    finally:
+        MO.Morning = real
+    try:
+        h = httpd.beyond.health()
+        check(httpd.morning is None and h["output_command"] == "disable"
+              and h["output_result"] == "ok" and
+              h["last_command"] == "blank",
+              f"no Morning page, yet the lasers were blanked and BEYOND's "
+              f"output switched off at start: {h}")
+    finally:
+        httpd.server_close()
+        svc.stop()
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -51842,6 +52026,8 @@ if __name__ == "__main__":
     test_laser_arm_review_races_closing_and_ordering()
     test_laser_arm_announcement_disarms_like_hold()
     test_laser_arm_through_web_serve()
+    test_laser_arm_review_round_two()
+    test_laser_startup_dark_without_the_morning_page()
     test_checklist_audit_chain_pdf_export_and_tally()
     test_morning_lockout_trust_link_and_close()
     test_morning_arrange_mode_arms_nothing()
