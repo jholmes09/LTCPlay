@@ -3059,4 +3059,21 @@ class Remote:
             except Exception as e:                   # noqa: BLE001
                 out["morning"] = {"error": f"{type(e).__name__}: {e}"}
             out["morning"]["purge_enabled"] = self.purge_enabled(ctx.local)
+            out["laser_arm"] = self.rack_laser_view(m, ctx)
         return out
+
+    def rack_laser_view(self, m, ctx):
+        """The show screen's LASERS strip (Jeff, 2026-10-22): every laser's
+        arm state, the groups, and whether an arm from this screen would
+        be refused before anyone confirms it, in words. Display only: the
+        laser-arm route decides every press. Never raises."""
+        try:
+            v = m.laser_arm.view()
+        except Exception as e:                   # noqa: BLE001
+            return {"error": f"{type(e).__name__}: {e}"}
+        v.pop("per_laser_osc", None)
+        v["arm_here"] = "" if self.may_act_from(ctx.local) else (
+            "arming a laser from a device on the show network needs "
+            "screen_arming (on the show machine itself: Programming, "
+            "Arming from a screen, Turn on)")
+        return v
