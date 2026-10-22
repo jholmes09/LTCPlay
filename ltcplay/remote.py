@@ -803,6 +803,19 @@ def deck_usb_ms(query):
     return min(ms, 600000)
 
 
+def deck_usb_fail(query):
+    """usb_fail from a deck-input query string: key image writes the deck
+    did not take in the last minute (review of PR #83, P2-2), as an int
+    from 0 to 100000, 0 when absent or not a number. Never raises."""
+    import urllib.parse
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("usb_fail") or []
+        n = int(vals[-1])
+    except (ValueError, TypeError, IndexError):
+        return 0
+    return max(0, min(n, 100000))
+
+
 class Remote:
     """The routes under /api/remote/. `control` is web.Control, `schedule`
     the scheduler service (or None), `flame_status` a FlameStatus (or
@@ -838,6 +851,7 @@ class Remote:
         # its last deck-input read carried it (streamdeck.UsbMeter), or
         # None: the rack screen's Deck chip. Display only.
         self._deck_usb_ms = None
+        self._deck_usb_fail = 0
         self._version = None         # version_line(), once asked
         self.audio_watch = None      # audiowatch.AudioInterfaceWatch, F&I
         # The Windows supervisor's word on the disk (housekeeping.py writes
@@ -1668,6 +1682,7 @@ class Remote:
         now = self.clock()
         self._deck_seen = now
         self._deck_usb_ms = deck_usb_ms(query)
+        self._deck_usb_fail = deck_usb_fail(query)
         enabled = self.arming_enabled()
         holds = []
         with self._arm_lock:
@@ -2121,6 +2136,18 @@ class Remote:
             age = self.clock() - seen
             if age <= self.DECK_QUIET_S:
                 usb = self._deck_usb_ms
+                fails = self._deck_usb_fail
+                if fails:
+                    return {"heard": True, "age_s": round(age, 1),
+                            "usb_worst_ms": usb, "usb_failed": fails,
+                            "text": (f"The Stream Deck did not take {fails} "
+                                     f"key image write(s) over USB in the "
+                                     f"last minute, so a key may show an "
+                                     f"older face until a resend goes "
+                                     f"through. A press acts on the face the "
+                                     f"deck last really showed. Arming, "
+                                     f"disarming and Abort do not wait on "
+                                     f"it.")}
                 return {"heard": True, "age_s": round(age, 1),
                         "usb_worst_ms": usb,
                         "text": (f"The Stream Deck's keys are slow to "
@@ -2421,6 +2448,12 @@ class Remote:
             usb = self._deck_usb_ms
             if age > self.DECK_QUIET_S:
                 add("Deck", "bad", f"quiet {age:.0f} s")
+            elif self._deck_usb_fail:
+                # Key image writes the deck did not take (review of PR
+                # #83, P2-2): its keys may show an older face until a
+                # resend goes through. Display only, like USB slow.
+                add("Deck", "warn",
+                    f"USB {self._deck_usb_fail} write(s) failed")
             elif usb is None:
                 add("Deck", "ok", "ok")
             elif usb >= DECK_USB_SLOW_MS:

@@ -9370,32 +9370,152 @@ def build():
   '                self._journal(note[0], **note[1])\n'
   '                note = None\n'),
 
- ('deck usb: a wedged key image write is never an unplug',
+ ('deck stall: a stuck key image write retires the deck again',
   'ltcplay/streamdeck.py',
-  '                    if stuck > DISPLAY_WEDGED_S:',
-  '                    if False:'),
+  '                    # never an unplug: DECK_STALL_RULING.\n'
+  '                    meter.check(clock())\n',
+  '                    # never an unplug: DECK_STALL_RULING.\n'
+  '                    meter.check(clock())\n'
+  '                    if meter.worst_s(clock()) > 1.0:\n'
+  '                        raise DeckDisconnected("a write is stuck")\n'),
 
- ('deck usb: a key the stuck deck says is held is trusted',
+ ('deck stall: a stuck key image write drops an arm hold again',
   'ltcplay/streamdeck.py',
-  '        if not self._deck_keys_trusted():\n'
-  '            self._drop_untrusted_holds()',
-  '        if False:\n'
-  '            self._drop_untrusted_holds()'),
+  '        for i in range(len(self.names)):\n'
+  '            gk = GROUP_KEYS[i]\n'
+  '            if self._prev_keys[gk]:\n'
+  '                if self._arm_holds[i].fired(now):',
+  '        for i in range(len(self.names)):\n'
+  '            gk = GROUP_KEYS[i]\n'
+  '            if self.usb is not None and self.usb.worst_s(now) > 0.25:\n'
+  '                self._arm_holds[i].release()\n'
+  '            if self._prev_keys[gk]:\n'
+  '                if self._arm_holds[i].fired(now):'),
 
- ('deck usb: a stuck deck never releases a held FIRE',
+ ('deck stall: a stuck key image write releases a held FIRE again',
   'ltcplay/streamdeck.py',
-  '        self._fire_release("the deck\'s keys have not been written for over "',
-  '        (lambda *a: None)("the deck\'s keys have not been written for over "'),
+  '        for i in range(len(self.names)):\n'
+  '            gk = GROUP_KEYS[i]\n'
+  '            if self._prev_keys[gk]:\n'
+  '                if self._arm_holds[i].fired(now):',
+  '        if self.usb is not None and self.usb.worst_s(now) > 0.25:\n'
+  '            self._fire_release("a key image write is stuck")\n'
+  '        for i in range(len(self.names)):\n'
+  '            gk = GROUP_KEYS[i]\n'
+  '            if self._prev_keys[gk]:\n'
+  '                if self._arm_holds[i].fired(now):'),
 
- ('deck usb: the threaded loop never says when the keys are not trusted',
+ ('deck stall: FIRE heartbeats ignore a frozen input loop',
   'ltcplay/streamdeck.py',
-  '            controller.keys_trusted = (',
-  '            _unused_keys_trusted = ('),
+  '            if not fresh and not self._loop_alive():',
+  '            if False:'),
 
- ('deck usb: a stuck write is trusted for a second and a half',
+ ('deck stall: a FIRE liveness check that raises counts as alive',
   'ltcplay/streamdeck.py',
-  'KEYS_TRUSTED_S = 0.25     # past this',
-  'KEYS_TRUSTED_S = 1.5      # past this'),
+  '            return bool(f())\n        except Exception:                        # noqa: BLE001\n'
+  '            return False',
+  '            return bool(f())\n        except Exception:                        # noqa: BLE001\n'
+  '            return True'),
+
+ ('deck stall: the threaded loop never gives FIRE its liveness',
+  'ltcplay/streamdeck.py',
+  '            pf.alive = (lambda p=pacer: p.live(',
+  '            _unused_alive = (lambda p=pacer: p.live('),
+
+ ('deck stall: FIRE keeps beating for 5 s of a frozen input loop',
+  'ltcplay/streamdeck.py',
+  'PURGE_INPUT_STALE_S = 1.0  # a held FIRE',
+  'PURGE_INPUT_STALE_S = 5.0  # a held FIRE'),
+
+ ('deck stall: FIRE stops on the arm link\'s 0.2 s stale rule',
+  'ltcplay/streamdeck.py',
+  '            pf.alive = (lambda p=pacer: p.live(\n'
+  '                stale_s=PURGE_INPUT_STALE_S))',
+  '            pf.alive = (lambda p=pacer: p.live(\n'
+  '                stale_s=None))'),
+
+ ('deck stall: a key read that fails is no longer an unplug',
+  'ltcplay/streamdeck.py',
+  '                for down in deck.keys_down():\n'
+  '                    controller.run_once(down)\n'
+  '                    moved = True',
+  '                try:\n'
+  '                    _snaps = deck.keys_down()\n'
+  '                except Exception:\n'
+  '                    _snaps = []\n'
+  '                for down in _snaps:\n'
+  '                    controller.run_once(down)\n'
+  '                    moved = True'),
+
+ ('deck usb: a key write the deck did not take is cached as written',
+  'ltcplay/streamdeck.py',
+  '                if isinstance(n, int) and not isinstance(n, bool) and n <= 0:\n'
+  '                    return False',
+  '                if False:\n'
+  '                    return False'),
+
+ ('deck usb: a frame with a key the deck did not take counts as shown',
+  'ltcplay/streamdeck.py',
+  '        if unwritten:\n            # Review of PR #83, P2-2',
+  '        if False:\n            # Review of PR #83, P2-2'),
+
+ ('deck usb: a frame the deck did not take is never written again',
+  'ltcplay/streamdeck.py',
+  '                if self._pending is None:\n'
+  '                    self._pending = item',
+  '                if self._pending is None:\n'
+  '                    pass'),
+
+ ('deck usb: failed key writes never ride to the engine',
+  'ltcplay/streamdeck.py',
+  '                path += f"&usb_fail={n}"',
+  '                path += ""'),
+
+ ('deck usb: the Deck chip never shows failed key writes',
+  'ltcplay/remote.py',
+  '            elif self._deck_usb_fail:',
+  '            elif False:'),
+
+ ('deck usb: failed key writes are never journaled',
+  'ltcplay/streamdeck.py',
+  '            if fails and not self._fail_said:',
+  '            if False:'),
+
+ ('deck fire: stop() waits on the heartbeat POST again',
+  'ltcplay/streamdeck.py',
+  '        if post_here:\n'
+  '            threading.Thread(target=self._post_stop',
+  '        t_ = self._thread\n'
+  '        if t_ is not None and t_ is not threading.current_thread():\n'
+  '            t_.join(timeout=1.0)\n'
+  '        if post_here:\n'
+  '            threading.Thread(target=self._post_stop'),
+
+ ('deck fire: a press still running never posts its own purge-stop',
+  'ltcplay/streamdeck.py',
+  '                    else:\n'
+  '                        press.stop_who = who\n'
+  '        if post_here:',
+  '                    else:\n'
+  '                        pass\n'
+  '        if post_here:'),
+
+ ('deck fire: purge-stop goes out before the beat in flight',
+  'ltcplay/streamdeck.py',
+  '                    if press.exited:\n'
+  '                        post_here = True',
+  '                    if True:\n'
+  '                        post_here = True'),
+
+ ('deck fire: a new press does not wait for the old press to finish',
+  'ltcplay/streamdeck.py',
+  '            prev.join(timeout=2.0)',
+  '            pass'),
+
+ ('deck fire: the press itself is not counted as a beat',
+  'ltcplay/streamdeck.py',
+  '            fresh = time.monotonic() - press.started <= PURGE_INPUT_STALE_S',
+  '            fresh = False'),
 
  ('deck hold: the Hold key acts on the composed face, not the shown one',
   'ltcplay/streamdeck.py',

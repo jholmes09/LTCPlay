@@ -172,7 +172,9 @@ FAILURE MODES, assumptions made here (flag these in the safety review):
      loop that READS the keys (holds, Abort, disarm) has run within
      INPUT_STALE_S, so a frozen deck program still goes silent and
      flamesafe's own arm_stale_ms still disarms it. Only a slow screen no
-     longer does.
+     longer does, and a slow or stuck key image write never drops an arm
+     hold or a held FIRE either (DECK_STALL_RULING, with what still ends
+     one and the residual risk).
   8. Every arm, disarm, Abort and refusal this module journals also
      reaches ltc serve's own real, persistent night journal over HTTP
      (DeckJournal, POST /api/schedule/deck-event -- safety review of PR
@@ -1284,6 +1286,10 @@ class ScreenKeys:
         # carried to the engine on every deck-input read for the rack
         # screen's Deck chip (2026-10-21). Display only.
         self.report = report
+        # () -> key image writes the deck did not take in the last minute
+        # (UsbMeter.failed_count): usb_fail, for the same chip (review of
+        # PR #83, P2-2). Display only.
+        self.report_failed = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
         self._seen_disarm = None   # highest disarm id already handed out
@@ -1319,6 +1325,13 @@ class ScreenKeys:
             ms = None
         if isinstance(ms, int) and not isinstance(ms, bool) and ms >= 0:
             path += f"?usb_ms={ms}"
+            try:
+                n = self.report_failed() \
+                    if self.report_failed is not None else 0
+            except Exception:                    # noqa: BLE001
+                n = 0
+            if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+                path += f"&usb_fail={n}"
         return path
 
     def poll_once(self):
@@ -1433,39 +1446,69 @@ class PurgeFire:
         self._wall = wall
         self._sleep = sleep
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._press = None        # the newest press (_FirePress)
         self._thread = None
         self.fire_id = None
         self.firing = False
         self.last_error = ""
         self.beats = 0
+        # () -> False once the deck's input loop has not run for
+        # PURGE_INPUT_STALE_S (run_forever's threaded mode sets it): the
+        # heartbeats stop, so a FIRE held on a deck program that froze
+        # never keeps firing. None: no input loop to ask (tests).
+        self.alive = None
 
     def start(self, who=""):
+        """Begin a press. Never waits: a press still finishing its last
+        POST (after a stop) is joined by the NEW press's own thread before
+        its first heartbeat, so the old press's purge-stop always lands
+        before the new press's first beat."""
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            if self.firing:
                 return False
-            self._stop.clear()
+            prev = self._thread
+            press = _FirePress(who)
+            self._press = press
             self.fire_id = None
             self.firing = True
             self.last_error = ""
-            self._thread = threading.Thread(target=self._run, args=(who,),
+            self._thread = threading.Thread(target=self._run,
+                                            args=(press, prev),
                                             daemon=True,
                                             name="ltcplay-deck-purge-fire")
             self._thread.start()
         return True
 
     def stop(self, who=""):
+        """End the press. Never waits on the heartbeat thread (review of
+        PR #83, P3-1): it is called from the deck's input loop, and that
+        thread may be inside a POST of up to PURGE_POST_TIMEOUT_S, longer
+        than INPUT_STALE_S. purge-stop is posted exactly once per press,
+        after its last heartbeat: by the press's own thread when it is
+        still running (it sees `stop_who` on its way out), else here, on
+        a thread of its own. The choice is made under _lock."""
         with self._lock:
-            t = self._thread
             was = self.firing
             self.firing = False
-            self._stop.set()
-        if t is not None and t is not threading.current_thread():
-            t.join(timeout=1.0)
-        if was:
+            press = self._press
+            post_here = False
+            if press is not None:
+                press.stop.set()
+                if was:
+                    if press.exited:
+                        post_here = True
+                    else:
+                        press.stop_who = who
+        if post_here:
             threading.Thread(target=self._post_stop, args=(who,), daemon=True,
                              name="ltcplay-deck-purge-stop").start()
         return was
+
+    def join(self, timeout=1.0):
+        """Tests and shutdown only: wait for the heartbeat thread."""
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=timeout)
 
     def _body(self, who):
         return {"who": who or "", "screen": "Stream Deck",
@@ -1477,11 +1520,62 @@ class PurgeFire:
         except Exception:
             pass
 
-    def _run(self, who):
-        while not self._stop.is_set():
+    def _loop_alive(self):
+        f = self.alive
+        if f is None:
+            return True
+        try:
+            return bool(f())
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def _run(self, press, prev=None):
+        if prev is not None and prev is not threading.current_thread():
+            # The press before this one finishes (its last POST and its
+            # purge-stop) before this press's first heartbeat.
+            prev.join(timeout=2.0)
+        try:
+            self._beat_loop(press)
+        finally:
+            with self._lock:
+                press.exited = True
+                who_stop, press.stop_who = press.stop_who, None
+            if who_stop is not None:
+                self._post_stop(who_stop)
+
+    def _end_press(self, press):
+        """This press ends itself (loop not alive, engine refusal): True
+        if it was still the firing one."""
+        with self._lock:
+            if self._press is press and self.firing:
+                self.firing = False
+                press.stop.set()
+                return True
+            return False
+
+    def _beat_loop(self, press):
+        who = press.who
+        while not press.stop.is_set():
+            # The press itself is the input loop's word that it ran at
+            # that moment (review of PR #83, P3-2: the pacer has no beat
+            # before the loop's first pass ends), so it counts as a beat.
+            fresh = time.monotonic() - press.started <= PURGE_INPUT_STALE_S
+            if not fresh and not self._loop_alive():
+                # The loop that reads the FIRE key has stopped: nothing
+                # can read its release, so the press is over. A fresh
+                # press is needed once the loop runs again.
+                if self._end_press(press):
+                    self._journal(
+                        f"Stream Deck FIRE released: the deck's key loop "
+                        f"has not run for {PURGE_INPUT_STALE_S:g} s, so the "
+                        f"FIRE key's release could not be read.", fault=True,
+                        action="purge", who=who, screen="Stream Deck")
+                    with self._lock:
+                        press.stop_who = who
+                return
             body = self._body(who)
-            if self.fire_id is not None:
-                body["fire_id"] = self.fire_id
+            if press.fire_id is not None:
+                body["fire_id"] = press.fire_id
             try:
                 got = self._poster("/api/remote/purge-fire", body)
                 ok, text = got[0], got[1]
@@ -1490,22 +1584,39 @@ class PurgeFire:
             except Exception as e:
                 ok, text, doc = False, f"{type(e).__name__}: {e}", {}
             if not ok:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and
                 # presses again. Said once per press.
                 self.last_error = text
                 self._journal(f"Stream Deck FIRE: the engine refused the "
                               f"purge fire: {text}", fault=True,
                               action="purge", who=who, screen="Stream Deck")
-                with self._lock:
-                    self.firing = False
+                self._end_press(press)
                 return
             self.beats += 1
-            if self.fire_id is None:
-                self.fire_id = doc.get("fire_id")
+            if press.fire_id is None:
+                press.fire_id = doc.get("fire_id")
+                with self._lock:
+                    if self._press is press:
+                        self.fire_id = press.fire_id
                 self._journal(f"Stream Deck FIRE held: purge firing "
                               f"({', '.join(doc.get('firing') or []) or 'nothing armed yet'}).",
                               action="purge", who=who, screen="Stream Deck")
-            self._stop.wait(PURGE_BEAT_S)
+            press.stop.wait(PURGE_BEAT_S)
+
+
+class _FirePress:
+    """One FIRE press's own state (PurgeFire): its stop signal, and the
+    purge-stop its thread still owes on the way out."""
+
+    def __init__(self, who):
+        self.who = who or ""
+        self.started = time.monotonic()
+        self.stop = threading.Event()
+        self.fire_id = None
+        self.exited = False
+        self.stop_who = None
 
 
 class DeckJournal:
@@ -1961,13 +2072,19 @@ class Deck:
         self.last = {}
 
     def set_key(self, Image, key, img):
+        """True once the key shows `img`, False when a write did not go
+        through (review of PR #83, P2-2: hidapi's write returns -1, it does
+        not raise, when Windows gives up on a report after 1 s). A key
+        whose write did not go through is not remembered as written, so
+        the same face is sent again; the caller does not count the frame
+        as shown. A write that raises is an unplug, as before."""
         # The raw pixels are compared first, so an unchanged key costs no
         # rotate or BMP encode at all.
         raw = img.tobytes()
         if self.last.get(key) == raw:
-            return
+            return True
         data = to_native(Image, img)
-        self.last[key] = raw
+        self.last.pop(key, None)
         step = 1024 - 16
         page = sent = 0
         try:
@@ -1976,11 +2093,15 @@ class Deck:
                 last = 1 if sent + len(chunk) >= len(data) else 0
                 pkt = (bytes([0x02, 0x01, page, 0, last, key + 1] + [0] * 10)
                       + chunk)
-                self.h.write(pkt + bytes(1024 - len(pkt)))
+                n = self.h.write(pkt + bytes(1024 - len(pkt)))
+                if isinstance(n, int) and not isinstance(n, bool) and n <= 0:
+                    return False
                 sent += len(chunk)
                 page += 1
         except Exception as e:
             raise DeckDisconnected(f"could not write a key image: {e}") from e
+        self.last[key] = raw
+        return True
 
     def keys_down(self):
         """EVERY 6-key snapshot the device has reported since the last
@@ -2097,10 +2218,6 @@ class Controller:
         # the journal; given by run_forever. Never read by arming.
         self.usb = None
         self.held_provider = held_provider or (lambda: None)
-        # () -> False while the deck's key image write is stuck (set by
-        # run_forever's threaded mode per connect): see
-        # _drop_untrusted_holds. Only ever drops a hold or a FIRE.
-        self.keys_trusted = lambda: True
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -2796,8 +2913,11 @@ class Controller:
             # fix itself, not a substitute for that guard, nor the other
             # way round.
             return
-        if not self._deck_keys_trusted():
-            self._drop_untrusted_holds()
+        # A slow or stuck key IMAGE write never drops a hold here (Jeff,
+        # 2026-10-21: "If the USB is stalling but I'm holding an arm key,
+        # it should work even if the animation isn't."). A hold ends on the
+        # key's release as read, on a read or write that raises, or on the
+        # input loop stopping; see DECK_STALL_RULING below.
         for i in range(len(self.names)):
             gk = GROUP_KEYS[i]
             if self._prev_keys[gk]:
@@ -2813,39 +2933,6 @@ class Controller:
                     self._vpressed.discard(i)
                     who, device = self._vwho.get(i, ("", "screen"))
                     self._do_arm_fire(i, now, who=who, screen=device)
-
-    def _deck_keys_trusted(self):
-        """False while a key image write to the deck has been in flight
-        longer than KEYS_TRUSTED_S (run_forever's threaded mode sets
-        `keys_trusted`). Never raises; True when nothing says otherwise."""
-        try:
-            return bool(self.keys_trusted())
-        except Exception:                        # noqa: BLE001
-            return False
-
-    def _drop_untrusted_holds(self):
-        """Review of PR #79, P2-1: a deck whose key image write is stuck
-        may have stopped sending key reports too, so a key it last said
-        was down may have been let go long ago. Every arm hold on the
-        deck's OWN keys is dropped and a purge FIRE released; each needs a
-        fresh press once the deck answers again. Abort's hold is left
-        alone and a disarm needs no hold: neither ever waits on this. A
-        screen hold is not the deck's key and is left to its own rules."""
-        dropped = []
-        for i in range(len(self.names)):
-            if self._prev_keys[GROUP_KEYS[i]] and i not in self._vpressed \
-                    and self._arm_holds[i].fraction(self._clock()) > 0:
-                self._arm_holds[i].release()
-                dropped.append(self.names[i])
-        if dropped:
-            self._log(f"Stream Deck: {', '.join(dropped)} arm hold dropped: "
-                      f"the deck's keys have not been written for over "
-                      f"{KEYS_TRUSTED_S:g} s, so a key it says is held may "
-                      f"have been let go. Nothing was armed; let go and "
-                      f"hold the key again.", action="arm-refused")
-        self._fire_release("the deck's keys have not been written for over "
-                           f"{KEYS_TRUSTED_S:g} s, so a held FIRE key is "
-                           f"not trusted")
 
     def check_links(self):
         """Called once per MAIN-LOOP pass (after status.poll()), never
@@ -3399,11 +3486,51 @@ class Controller:
 #     fault line when a write passes USB_SLOW_S. Display only: nothing it
 #     measures is ever read by arming, disarming or Abort.
 # --------------------------------------------------------------------------
+#
+# DECK_STALL_RULING (Jeff, 2026-10-21): "If the USB is stalling but I'm
+# holding an arm key, it should work even if the animation isn't." The soak
+# saw frame writes of 2.6 to 6.6 s on a busy PC while the key reads kept
+# working. So how long a key IMAGE write takes is never evidence about the
+# keys: a slow or stuck image write does not drop an arm hold, release a
+# purge FIRE, stop a hold completing, or retire the deck. It is shown (the
+# rack screen's Deck chip, UsbMeter's journal line) and nothing more.
+#
+# What still ends a hold or a held purge FIRE, as before: the key's
+# release, read; a key read or a key image write that raises (an unplug,
+# the outage path: holds dropped, FIRE released, the deck retired, the
+# "deck" alert; hidapi's write returns -1 on a Windows write timeout and
+# does not raise, so a slow write is never one); the input loop stopping (the arm link goes silent after
+# INPUT_STALE_S and flamesafe disarms in arm_stale_ms, and the FIRE
+# heartbeats stop after PURGE_INPUT_STALE_S); Abort; the engine refusing.
+#
+# No liveness probe is used, because the pinned stack gives no reliable
+# one (hidapi 0.15.0, the `hid` module; checked against its source):
+#   - a read with nothing to say returns [] whether no key changed or the
+#     deck's firmware has hung but is still enumerated. Only a device that
+#     is gone (unplugged, removed, a driver error) makes the read fail, and
+#     that already raises DeckDisconnected.
+#   - a feature report (serial 0x03, firmware 0x04) has no timeout on
+#     Windows (GetOverlappedResult waits forever) and none we can set on
+#     macOS; on the same handle it races the display thread's hid_write
+#     (both reset the handle's one error string, so a concurrent pair can
+#     free it twice); a second handle is refused on macOS (hidapi opens it
+#     exclusive); and nothing shows it answers during the very USB stalls
+#     the soak saw, so it could retire a working deck mid-hold, against
+#     the ruling.
+#   - the Mini has no documented key-state poll (an input report by
+#     GET_REPORT); Elgato's own library only reads the interrupt reports.
+# The residual risk, accepted by the ruling: a deck whose firmware hangs
+# while staying on the bus, with a key held, never reports that key's
+# release. An arm hold on it completes after ARM_HOLD_S as if still held
+# (it was held at least to the moment the deck hung), and a held purge
+# FIRE keeps firing until the operator presses Abort, disarms from a
+# screen, the cable is pulled (an unplug, above) or the deck program stops.
 INPUT_STALE_S = 0.2       # the input loop's pass is 50 ms; four missed passes
-DISPLAY_WEDGED_S = 1.0    # a key image write this long: the deck is wedged
-KEYS_TRUSTED_S = 0.25     # past this, a key the deck says is held is not
-                          # trusted to arm or fire (_drop_untrusted_holds)
+PURGE_INPUT_STALE_S = 1.0  # a held FIRE's heartbeats stop when the input
+                           # loop has not run for this long (PurgeFire.alive)
 USB_SLOW_S = 1.0          # a frame of key images slower than this is a fault
+RETRY_UNWRITTEN_S = 0.05  # a frame the deck did not take is written again
+                          # after this (DisplayWorker.step)
 USB_WINDOW_S = 60.0       # the rack screen's "worst" looks back this far
 USB_LOG_EVERY_S = 600.0   # one console line with the worst, this often
 
@@ -3435,12 +3562,12 @@ class ArmPacer:
         _hold_link_steady while the deck hardware is away)."""
         self._beat_at = self._clock()
 
-    def live(self, now=None):
+    def live(self, now=None, stale_s=None):
         at = self._beat_at
         if at is None:
             return False
         now = self._clock() if now is None else now
-        return now - at <= self.stale_s
+        return now - at <= (self.stale_s if stale_s is None else stale_s)
 
     def step(self):
         """One tick: send if the input loop is live, else say nothing (the
@@ -3508,6 +3635,9 @@ class UsbMeter:
         self._episode_worst = 0.0
         self._logged_at = None
         self.frames = 0
+        self._fails = []          # (clock, keys the deck did not take)
+        self.fail_total = 0
+        self._fail_said = False   # inside a failing spell, journaled once
 
     def started(self, at=None):
         with self._lock:
@@ -3525,6 +3655,25 @@ class UsbMeter:
         cut = now - USB_WINDOW_S
         while self._samples and self._samples[0][0] < cut:
             self._samples.pop(0)
+        while self._fails and self._fails[0][0] < cut:
+            self._fails.pop(0)
+
+    def failed(self, keys=1, at=None):
+        """A frame with `keys` key writes the deck did not take (hidapi's
+        write returned -1: review of PR #83, P2-2). Display and journal
+        only."""
+        at = self._clock() if at is None else at
+        with self._lock:
+            self._fails.append((at, int(keys)))
+            self.fail_total += int(keys)
+            self._prune(at)
+
+    def failed_count(self, now=None):
+        """Key writes the deck did not take in the last USB_WINDOW_S."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            self._prune(now)
+            return sum(n for _a, n in self._fails)
 
     def worst_s(self, now=None):
         """The worst frame write of the last USB_WINDOW_S, or the write in
@@ -3556,9 +3705,11 @@ class UsbMeter:
                         f"Stream Deck: writing the key images to the deck "
                         f"over USB took {worst:.1f} s (over "
                         f"{USB_SLOW_S:g} s), so the deck's keys are behind "
-                        f"while this lasts. Arming, disarming and Abort do "
-                        f"not wait on it: the arm link and the key reads "
-                        f"have threads of their own. This line does not "
+                        f"while this lasts. Arming, disarming, Abort and a "
+                        f"held FIRE do not wait on it and are not stopped "
+                        f"by it, and the deck is not treated as unplugged "
+                        f"for it: the arm link and the key reads have "
+                        f"threads of their own. This line does not "
                         f"repeat until the writes have stayed under "
                         f"{USB_SLOW_S:g} s for {USB_WINDOW_S:g} s.",
                         fault=True, action="deck-usb")
@@ -3570,6 +3721,23 @@ class UsbMeter:
                     f"worst in that slow spell was "
                     f"{self._episode_worst:.1f} s.", action="deck-usb")
                 self._episode_worst = 0.0
+            fails = self.failed_count(now)
+            if fails and not self._fail_said:
+                self._fail_said = True
+                self._journal(
+                    f"Stream Deck: the deck did not take {fails} key image "
+                    f"write(s) over USB (the USB driver gave up on them), "
+                    f"so its keys may show an older face until a resend "
+                    f"goes through. A key press acts on the face the deck "
+                    f"last really showed. Arming, disarming and Abort do "
+                    f"not wait on it. This line does not repeat until no "
+                    f"write has failed for {USB_WINDOW_S:g} s.",
+                    fault=True, action="deck-usb")
+            elif not fails and self._fail_said:
+                self._fail_said = False
+                self._journal(
+                    f"Stream Deck: no key image write has failed for "
+                    f"{USB_WINDOW_S:g} s.", action="deck-usb")
             if self._logged_at is None:
                 self._logged_at = now
             elif now - self._logged_at >= USB_LOG_EVERY_S:
@@ -3610,6 +3778,7 @@ class DisplayWorker:
         self._write_since = None  # clock when the write in hand began
         self.dropped = 0
         self.written = 0
+        self.unwritten = 0        # frames a key of which the deck did not take
         self._thread = None
 
     def submit(self, frame_id, img):
@@ -3640,11 +3809,14 @@ class DisplayWorker:
         frame_id, img = item
         if self.meter is not None:
             self.meter.started(t0)
+        unwritten = 0
         try:
             for k in range(6):
                 ox, oy = key_origin(k)
-                self.deck.set_key(self.Image, k,
-                                  img.crop((ox, oy, ox + K, oy + K)))
+                if self.deck.set_key(self.Image, k,
+                                     img.crop((ox, oy, ox + K, oy + K))) \
+                        is False:
+                    unwritten += 1
         except Exception as e:                   # noqa: BLE001
             with self._cv:
                 self.writing = None
@@ -3655,19 +3827,28 @@ class DisplayWorker:
         done = self._clock()
         if self.meter is not None:
             self.meter.record(done - t0, done)
+        if unwritten:
+            # Review of PR #83, P2-2: a key the deck did not take. The
+            # frame is NOT shown (frame_shown drives the Hold key's face
+            # and RESET_SHOWN_S, so a press acts on what the deck really
+            # shows), and it is written again unless a newer one waits.
+            if self.meter is not None:
+                self.meter.failed(unwritten, done)
+            with self._cv:
+                self.writing = None
+                self._write_since = None
+                self.unwritten += 1
+                if self._pending is None:
+                    self._pending = item
+                # Not a spin on a deck that refuses at once.
+                self._cv.wait(RETRY_UNWRITTEN_S)
+            return False
         with self._cv:
             self.writing = None
             self._write_since = None
             self.written += 1
             self.shown = (frame_id, done)
         return True
-
-    def busy_for(self, now=None):
-        """How long the write in hand has been running, 0.0 when none."""
-        now = self._clock() if now is None else now
-        with self._cv:
-            at = self._write_since
-        return 0.0 if at is None else max(0.0, now - at)
 
     def start(self):
         if self._thread is not None:
@@ -3778,6 +3959,12 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
         # every reconnect: it sends only while the loop below beats.
         pacer = ArmPacer(controller.arm, controller.names).start()
         controller.display_confirms = True
+        pf = getattr(controller, "purge_fire", None)
+        if pf is not None:
+            # A held FIRE's heartbeats need this loop alive too
+            # (DECK_STALL_RULING): a frozen loop cannot read the release.
+            pf.alive = (lambda p=pacer: p.live(
+                stale_s=PURGE_INPUT_STALE_S))
     try:
         return _run_forever(controller, deck_factory, journal, sleep, clock,
                             pacer)
@@ -3824,8 +4011,6 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
         if pacer is not None:
             display = DisplayWorker(deck, fonts.Image, meter=meter,
                                     clock=clock).start()
-            controller.keys_trusted = (
-                lambda d=display: d.busy_for(clock()) <= KEYS_TRUSTED_S)
         outage.connected()
         connected_at = clock()
         try:
@@ -3835,22 +4020,10 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
                     # A key image write that failed (an unplug) ends the
                     # pass here, exactly like a key read that did.
                     display.check()
-                    # A write that has not finished in DISPLAY_WEDGED_S is a
-                    # wedged deck (review of PR #79, P2-1), handled exactly
-                    # like an unplug: the holds and a purge FIRE in
-                    # progress are dropped (reset_on_reconnect), the deck
-                    # is retired, the "deck" alert goes up. A wedged deck
-                    # may have stopped sending key reports too, so a key it
-                    # last said was down (FIRE held) is never trusted past
-                    # this. While a key is down the keys are redrawn every
-                    # FRAME_S, so a write is always in flight to time.
+                    # A write that is only slow or stuck is shown (the
+                    # Deck chip, one journal line per slow spell) and is
+                    # never an unplug: DECK_STALL_RULING.
                     meter.check(clock())
-                    stuck = display.busy_for(clock())
-                    if stuck > DISPLAY_WEDGED_S:
-                        raise DeckDisconnected(
-                            f"a key image write to the deck has not "
-                            f"finished in {stuck:.1f} s, so the deck is "
-                            f"treated as unplugged until it answers again")
                 # Item 3: every key-state snapshot the device reported
                 # since the last read, in order, not just the latest one
                 # -- a quick tap-and-release between read cycles must not
@@ -4295,6 +4468,7 @@ def _main(args):
     # read, for the rack screen's Deck chip (2026-10-21). Display only.
     controller.usb = UsbMeter(journal)
     screen.report = controller.usb.worst_ms
+    screen.report_failed = controller.usb.failed_count
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.
@@ -4314,6 +4488,7 @@ def _main(args):
     finally:
         if controller.purge_fire is not None:
             controller.purge_fire.stop()
+            controller.purge_fire.join(1.0)   # its purge-stop goes out
         arm.close()
         status.close()
         sched.stop()
