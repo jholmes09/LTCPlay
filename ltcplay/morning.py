@@ -25,6 +25,7 @@ import threading
 import time
 
 from . import lasertest
+from .users import purge_fire_wanted
 
 CONFIG_FILE = "ltcplay_morning.json"
 LAYOUT_FILE = "ltcplay_morning_layout.json"
@@ -915,7 +916,15 @@ class Purge:
     def fire_beat(self, body, device, seen_ok, deck=False):
         """One fire heartbeat (every 100 ms while the key is down). The
         first call (no fire_id) starts a press; later ones carry its id.
-        Any refusal ends the press."""
+        Any refusal ends the press. Only a body purge_fire_wanted() says
+        asks to fire gets past the first line: a release can only stop."""
+        if not purge_fire_wanted(body):
+            stopped = self.stop("a release reached the fire heartbeat",
+                                device=device)
+            return 409, {"error": "That press asked to let go, not to "
+                                  "fire. Nothing was fired"
+                                  f"{' and the press was stopped' if stopped else ''}.",
+                         "let_go": True}
         why = self._refusal(device, seen_ok)
         with self._lock:
             sel = list(self.selected)
@@ -1589,7 +1598,15 @@ class Morning:
         the engine gave the press (Rack screen, iPad at ..., or "Stream
         Deck" for the deck process over loopback, which the purge fire
         trusts as the deck whatever operator name it carries)."""
+        raw = body
         body = body if isinstance(body, dict) else {}
+        if name == "purge-fire" and not purge_fire_wanted(raw):
+            # A release ("on" false, missing, null, 0, "false", anything but
+            # the JSON word true): it can only STOP a press, never start
+            # one, so it never reaches fire_beat. It is the same stop as
+            # purge-stop, with the same owner rule (found on PR #82: a body
+            # with "on" false fired 240 on slot 411 with purge arming off).
+            name = "purge-stop"
         if name == "morning-open":
             self.open_beat(device, arranging=body.get("arranging") is True,
                            inst=body.get("inst"), seq=body.get("seq"),

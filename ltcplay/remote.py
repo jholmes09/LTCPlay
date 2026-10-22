@@ -76,6 +76,7 @@ import time
 
 from . import appdata
 from . import settings as settings_mod
+from . import users as users_mod
 from . import version as version_mod
 
 FIXED_PORT = 7878
@@ -1833,8 +1834,13 @@ class Remote:
                         mark_open=False)
             return 200, {"ok": True, "open": False, "view_only": True,
                          "arranging": m.device_arranging(device)}
-        if name in ("purge-select", "purge-fire") and \
-                body.get("on") is not False:
+        # A purge fire is gated by what it DOES, never by whether "on" is
+        # there: only a body users.purge_fire_wanted() says starts or
+        # carries on a press needs the purge arming switch; every other
+        # purge-fire body is a release, which morning.py turns into a stop
+        # and which therefore goes whatever the switch says.
+        if (name == "purge-select" and body.get("on") is not False) or \
+                (name == "purge-fire" and users_mod.purge_fire_wanted(body)):
             if not self.purge_enabled(ctx.local):
                 return 403, {"error": "Arming a purge from here is switched "
                                       "off (purge_arming, and from the show "

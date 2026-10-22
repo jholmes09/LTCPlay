@@ -1919,7 +1919,7 @@ async function fireBeat(f){
     fireStop("no key repeat seen for 1 s: keep the Space bar down, and the OS key repeat must be on (or use the Stream Deck's FIRE key)"); return;
   }
   try{
-    const j = await post("/api/remote/purge-fire", moActor({fire_id:f.id}));
+    const j = await post("/api/remote/purge-fire", moActor({fire_id:f.id, on:true}));   // on:true or the engine only stops
     if(FIRE !== f) return;
     f.id = j.fire_id;
     $("mo-msg").textContent = "FIRING " + (j.firing || []).join(", ") + ((j.waiting || []).length ? ". Waiting: " + j.waiting.join("; ") : "");

@@ -111,6 +111,11 @@ machines whose group flamesafe reports ARMED get a value; locked machines
 never do; a Waver's head-up time counts from the first beat on which it is
 both selected and armed, so a group that arms late in a press waits its
 full settle time; a machine cannot be added to a press that is firing.
+A heartbeat fires only when its body carries `"on": true` (the JSON word
+true, nothing else). Every other `purge-fire` body (`"on"` false, missing,
+null, 0, `"false"`) is a release: the engine turns it into the same stop
+as `purge-stop` (same owner rule), it never reaches the fire path, it needs
+no purge arming switch and no sign-in, and it can never start a press.
 While this engine has any machine locked out, no purge goes until
 flamesafe's status reports exactly the slots asked for. A stop that lands
 while a beat's frame is being worked out wins: that beat sets nothing.

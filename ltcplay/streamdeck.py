@@ -1574,6 +1574,9 @@ class PurgeFire:
                         press.stop_who = who
                 return
             body = self._body(who)
+            # The JSON word true asks the engine to fire; any other body
+            # (purge-stop's included) can only stop a press there.
+            body["on"] = True
             if press.fire_id is not None:
                 body["fire_id"] = press.fire_id
             try:

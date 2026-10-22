@@ -8877,6 +8877,54 @@ def build():
   '''        gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \\''',
   '''        gated = (name == "lock" and off) \\'''),
 
+ # -- a purge fire release can never start a fire (found on PR #82: "on":
+ # false skipped the purge arming switch, counted as a safety press, and
+ # still fired 240 on slot 411). Each guard on its own.
+ ("users: a purge fire asks to fire for any truthy on, not only the JSON "
+  "word true (the strict bool removed)",
+  "ltcplay/users.py",
+  '''    return isinstance(body, dict) and body.get("on") is True''',
+  '''    return isinstance(body, dict) and bool(body.get("on"))'''),
+
+ ("users: a purge fire is a safety press by whether on is false again, "
+  "not by what the engine does with it",
+  "ltcplay/users.py",
+  '''            return "arm" if purge_fire_wanted(raw) else "safety"''',
+  '''            return "safety" if body.get("on") is False else "arm"'''),
+
+ ("remote: the purge arming switch is skipped by whether on is false again, "
+  "not by what the purge fire does",
+  "ltcplay/remote.py",
+  '''                (name == "purge-fire" and users_mod.purge_fire_wanted(body)):''',
+  '''                (name == "purge-fire" and body.get("on") is not False):'''),
+
+ ("remote: the purge arming switch is never asked about a purge fire",
+  "ltcplay/remote.py",
+  '''                (name == "purge-fire" and users_mod.purge_fire_wanted(body)):''',
+  '''                False:'''),
+
+ ("morning: a purge fire release reaches the fire path instead of the stop",
+  "ltcplay/morning.py",
+  '''        if name == "purge-fire" and not purge_fire_wanted(raw):''',
+  '''        if False:'''),
+
+ ("morning: the fire heartbeat starts a press whatever on says",
+  "ltcplay/morning.py",
+  '''        if not purge_fire_wanted(body):
+            stopped = self.stop(''',
+  '''        if False:
+            stopped = self.stop('''),
+
+ ("deck: the FIRE key's heartbeat stops saying on true",
+  "ltcplay/streamdeck.py",
+  '''            body["on"] = True''',
+  '''            pass'''),
+
+ ("page: the Space bar's fire heartbeat stops saying on true",
+  "ltcplay/web/remote.html",
+  '''moActor({fire_id:f.id, on:true})''',
+  '''moActor({fire_id:f.id})'''),
+
  ("morning: one window's beat numbers are counted against another window's",
   "ltcplay/morning.py",
   '''        key = (device, inst)''',
