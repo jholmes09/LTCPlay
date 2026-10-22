@@ -1369,6 +1369,21 @@ class Morning:
                 if not mine:
                     del self._arranging[device]
 
+    def group_locked_out(self, name):
+        """True when every fire slot of flamesafe's group `name` is locked
+        out (flamesafe then holds it disarmed, composer.LOCKED_OUT): a
+        screen hold on it is refused with that sentence before it fills.
+        False when the group or its slots are not known, or the lock table
+        cannot be trusted (flamesafe still holds a locked group)."""
+        if self.lockout.problem(self.cfg):
+            return False
+        for g in self.groups:
+            if g["name"] == name:
+                fire = set(g["fire"])
+                return bool(fire) and \
+                    fire <= self.lockout.channels(self.cfg)
+        return False
+
     def device_arranging(self, device):
         """True while ANY instance of THAT device said, in its last open
         beat within OPEN_STALE_S, that the page is in Arrange mode."""

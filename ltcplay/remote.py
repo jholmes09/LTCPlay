@@ -42,8 +42,22 @@ round-4 veto, the second-copy guard) exactly as for a finger on the deck.
 It needs a listed address (above), a page status and a
 flamesafe status no older than ARM_FRESH_S, heartbeats the engine actually
 received for SCREEN_HOLD_S, and screen_arming on in ltcplay_remote.json
-(default on). A gap in the heartbeats, an Abort, a disarm or a sign out
-lets the hold go; an interrupted hold never carries on.
+(OFF unless the file says true; the Programming screen on the show machine
+itself turns it on and off, route screen-arming). A gap in the heartbeats,
+an Abort, a disarm or a sign out lets the hold go; an interrupted hold
+never carries on.
+
+Every refusal is said on the page in a sentence that names the reason
+(2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
+screen"; a hold that went nowhere used to look like a working one). The
+engine refuses, and says why, what the Stream Deck would refuse anyway:
+screen arming off, an Abort standing, the Stream Deck program not reading
+this engine, this device in Arrange mode on the Morning page, every machine
+in the group locked out. What only the deck knows (its re-arm wait after a
+disarm, its own latch) it reports back on its next deck-input read
+(`refused`), and the hold's next heartbeat carries the sentence. None of
+this loosens anything: each one is a refusal of a press the deck or
+flamesafe would refuse anyway, said out loud.
 
 
 Fresh state
@@ -127,8 +141,42 @@ GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
-    "network", "alert") + MORNING_POST_ROUTES
-LOCAL_ONLY = frozenset(("network",))
+    "network", "screen-arming", "alert") + MORNING_POST_ROUTES
+# screen-arming (2026-10-22): the switch for arming from a screen, set on
+# the show machine itself, never from the network.
+LOCAL_ONLY = frozenset(("network", "screen-arming"))
+# What the Stream Deck reports back about a screen hold it would not take
+# (deck-input's `refused`, streamdeck.ScreenKeys): its code, and what the
+# page says. The deck's own rules decide; the engine only passes it on.
+DECK_REFUSALS = {
+    "refractory": ("The Stream Deck refused it: {g} was disarmed less than "
+                   "2 s ago, and it waits that long before it takes a new "
+                   "arm. Lift your finger, wait a moment, then hold again."),
+    "latched": ("The Stream Deck refused it: an Abort is standing. Press "
+                "Reset, then hold again."),
+    "operator": ("The Stream Deck refused it: no operator is chosen for it "
+                 "(Programming, Stream Deck operator, on the show machine)."),
+    "role": ("The Stream Deck refused it: the role matrix does not let the "
+             "person signed in on the show machine arm."),
+    "key": ("The Stream Deck refused it: {g}'s own key on the deck is being "
+            "pressed. Let go of one of them."),
+}
+DECK_REFUSED_MAX = 16
+# How long a hold whose group became asked for waits for the deck to say it
+# armed it from this hold (deck-input `taken`) before it ends uncredited.
+TAKEN_WAIT_S = 0.5
+# Everything the screen_arming switch lets screens do (review of PR #90,
+# P2-1). The page's card and confirm box say the same words (selftest).
+SCREEN_ARMING_ENABLES = (
+    "On, this rack screen and every device on the show network can hold "
+    "to arm a flame group (through the Stream Deck, with all of its rules "
+    "and flamesafe's) and disarm one flame group. Devices on the show "
+    "network can also select and fire a purge, unlock a machine, turn a "
+    "laser test on and arm a laser (this rack screen does those without this switch).")
+# What the page says when screen arming is switched off (the default).
+ARMING_OFF = ("Arming from a screen is switched off on this show PC. To turn "
+              "it on: on the show machine itself, Programming, Arming from "
+              "a screen, Turn on. Until then arm from the Stream Deck.")
 # Users and the audit log (users.py, Jeff, 2026-10-20). Sign in and out
 # from any page; the Users screen's changes from the show machine only.
 USER_GET_ROUTES = ("users",)
@@ -335,6 +383,17 @@ def load_settings(folder=None):
             doc = json.load(fh)
     except (OSError, ValueError) as e:
         raise ValueError(f"{path} could not be read: {e}")
+    return settings_from_doc(doc, path, out)
+
+
+def settings_from_doc(doc, path, out=None):
+    """load_settings's checks on a parsed document: the settings, or
+    ValueError naming the file and what is wrong. save_settings runs the
+    same checks on what it is about to write, before writing it."""
+    if out is None:
+        out = {"show_network_address": None, "flamesafe_config": None,
+               "screen_arming": False, "purge_arming": True,
+               "booth_alert": None, "alert_pixels": None, "path": path}
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a settings object.")
     if doc.get("show_network_address"):
@@ -388,15 +447,33 @@ def check_alert_pixels(doc, path="ltcplay_remote.json"):
 
 
 def save_settings(folder, **changes):
+    """Change some settings in ltcplay_remote.json and keep every other one
+    (review of PR #90, P2-2). A file that cannot be read or parsed is
+    never overwritten: ValueError naming it, nothing written. What would
+    be written is checked first (settings_from_doc); a change that fails
+    is ValueError and nothing is written. The old file is kept beside it
+    as ltcplay_remote.json.bak, and the new one goes in whole (a temp file,
+    then a replace)."""
     path = os.path.join(folder or settings_folder(), SETTINGS_FILE)
     doc = {}
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh) or {}
-        except (OSError, ValueError):
-            doc = {}
+                doc = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ValueError(f"{path} could not be read ({e}), so it was "
+                             f"not changed. Fix or remove that file on the "
+                             f"show machine, then try again.")
+        if not isinstance(doc, dict):
+            raise ValueError(f"{path} is not a settings object, so it was "
+                             f"not changed. Fix or remove that file on the "
+                             f"show machine, then try again.")
+    doc = dict(doc)
     doc.update(changes)
+    settings_from_doc(doc, path)            # ValueError: nothing written
+    if os.path.exists(path):
+        import shutil
+        shutil.copyfile(path, path + ".bak")
     _write_json(path, doc)
     return load_settings(folder)
 
@@ -818,6 +895,36 @@ def deck_usb_fail(query):
     return max(0, min(n, 100000))
 
 
+def deck_refused(query):
+    """[(hold id, code)] from a deck-input query's `refused`, "7.refractory"
+    entries joined by commas (streamdeck.ScreenKeys), only codes
+    DECK_REFUSALS knows, at most DECK_REFUSED_MAX. Never raises."""
+    import urllib.parse
+    out = []
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("refused") or []
+        for part in ",".join(vals).split(",")[:DECK_REFUSED_MAX]:
+            hid, _, code = part.partition(".")
+            if code in DECK_REFUSALS and hid.isdigit():
+                out.append((int(hid), code))
+    except (ValueError, TypeError):
+        return []
+    return out
+
+
+def deck_taken(query):
+    """[hold id] from a deck-input query's `taken`: screen holds the Stream
+    Deck itself armed a group from (streamdeck.ScreenKeys.note_taken), at
+    most DECK_REFUSED_MAX. Never raises."""
+    import urllib.parse
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("taken") or []
+        return [int(h) for h in ",".join(vals).split(",")[:DECK_REFUSED_MAX]
+                if h.isdigit()]
+    except (ValueError, TypeError):
+        return []
+
+
 class Remote:
     """The routes under /api/remote/. `control` is web.Control, `schedule`
     the scheduler service (or None), `flame_status` a FlameStatus (or
@@ -854,6 +961,9 @@ class Remote:
         # None: the rack screen's Deck chip. Display only.
         self._deck_usb_ms = None
         self._deck_usb_fail = 0
+        # Screen holds the Stream Deck would not take, as its deck-input
+        # reads reported them: hold id -> DECK_REFUSALS code.
+        self._deck_refused = {}
         self._version = None         # version_line(), once asked
         self.audio_watch = None      # audiowatch.AudioInterfaceWatch, F&I
         # The Windows supervisor's word on the disk (housekeeping.py writes
@@ -993,10 +1103,14 @@ class Remote:
                                       "machine itself, not from here."}, {}
             return (*self.setup_post(name, body),) + ({},)
         if name in LOCAL_ONLY and not ctx.local:
-            return 403, {"error": "The show network is set on the show "
-                                  "machine itself, not from here."}, {}
+            what = ("Arming from a screen is switched on and off"
+                    if name == "screen-arming" else "The show network is set")
+            return 403, {"error": f"{what} on the show machine itself, not "
+                                  f"from here. Nothing was changed."}, {}
         if name == "network":
             return (*self.set_network(body),) + ({},)
+        if name == "screen-arming":
+            return (*self.set_screen_arming(body, ctx),) + ({},)
         if name in USER_POST_ROUTES:
             return self.users_post(name, body, ctx)
         if name in MORNING_POST_ROUTES:
@@ -1267,6 +1381,49 @@ class Remote:
         return 200, dict(self.network_view(), ok=True,
                          note="Saved. Quit the Web ltcplay window and start "
                               "it again on the show network to use it.")
+
+    def set_screen_arming(self, body, ctx):
+        """POST screen-arming {"on": true|false}, on the show machine only
+        (LOCAL_ONLY; the role matrix's Settings to turn it on, users.py).
+        Only the JSON words true and false: anything else changes nothing
+        (the lesson of PR #84). Turning it off lets every screen hold go."""
+        on = body.get("on")
+        if on is not True and on is not False:
+            return 400, {"error": "on has to be true or false. Nothing was "
+                                  "changed."}
+        # Who: the signed-in person or "unsigned", never a name the caller
+        # wrote in the body (review of PR #90, P3-4).
+        who, screen = (ctx.user or "unsigned"), ctx.screen
+        try:
+            save_settings(self.folder, screen_arming=on)
+        except ValueError as e:
+            # Nothing was written (save_settings checks before writing).
+            return 409, {"error": f"{e} Arming from a screen was not "
+                                  f"changed."}
+        except OSError as e:
+            return 500, {"error": f"ltcplay_remote.json could not be "
+                                  f"written ({e}). Arming from a screen "
+                                  f"was not changed."}
+        if not on:
+            self.cancel_holds("arming from a screen was switched off")
+            # A purge selection made from a device on the show network
+            # needed this switch: it goes too (review of PR #90, P3-6).
+            m = self.morning
+            pg = getattr(m, "purge", None) if m is not None else None
+            try:
+                if pg is not None and pg.owner and \
+                        pg.owner != "Rack screen":
+                    pg.clear("arming from a screen was switched off")
+            except Exception:                    # noqa: BLE001
+                pass
+        text = (f"Arming from a screen is ON. {SCREEN_ARMING_ENABLES}"
+                if on else
+                "Arming from a screen is OFF. Arm from the Stream Deck.")
+        self._journal(who, screen, "screen arming",
+                      "on" if on else "off",
+                      f"{who} switched arming from a screen "
+                      f"{'ON' if on else 'OFF'} on the {screen}.")
+        return 200, {"ok": True, "enabled": on, "text": text}
 
     # -- presses -----------------------------------------------------------
     def _stale(self, body):
@@ -1546,6 +1703,54 @@ class Remote:
                 return i, n
         raise ValueError("That is not a flame group flamesafe reports.")
 
+    def _abort_standing(self):
+        """True while an Abort is latched (the scheduler's or the
+        conductor's latch, as show_live_refusal reads it). The Stream Deck
+        takes no screen hold then; the engine says so first."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        cond = getattr(svc, "conductor", None)
+        return bool(getattr(m, "abort_latched", False) or
+                    getattr(cond, "latched", False))
+
+    def arm_refusal(self, gname, device):
+        """Why a screen hold on `gname` from `device` would arm nothing
+        right now, in a sentence for the page, or "". Each is something
+        the Stream Deck or flamesafe refuses anyway; the engine says it
+        before a hold that cannot work fills its bar. Checked on the first
+        press and on every heartbeat."""
+        if self._abort_standing():
+            return ("An Abort is standing, so nothing arms until it is "
+                    "Reset. Press Reset, then hold again.")
+        seen = self._deck_seen
+        if seen is None or self.clock() - seen > self.DECK_QUIET_S:
+            return (f"The Stream Deck program has not read this engine in "
+                    f"the last {self.DECK_QUIET_S:g} s, and it is what arms "
+                    f"a group from a screen. Look at the Deck chip at the "
+                    f"top. Nothing was armed.")
+        m = self.morning
+        if m is not None:
+            try:
+                arranging = m.device_arranging(device)
+            except Exception as e:                   # noqa: BLE001
+                return (f"Whether {device} is in Arrange mode could not be "
+                        f"read ({type(e).__name__}), so nothing arms from "
+                        f"it. Nothing was armed.")
+            if arranging:
+                return (f"{device} is in Arrange mode on the Morning and "
+                        f"Shutdown page: nothing arms from it until Save "
+                        f"layout or Cancel there (a page that has closed "
+                        f"lets go by itself within 2 s).")
+            try:
+                locked = m.group_locked_out(gname)
+            except Exception:                        # noqa: BLE001
+                locked = False      # flamesafe still holds a locked group
+            if locked:
+                return (f"Every machine in {gname} is locked out on the "
+                        f"Morning and Shutdown page, so flamesafe will not "
+                        f"arm it. Unlock one there first.")
+        return ""
+
     def _drop_hold(self, i, token=None):
         with self._arm_lock:
             h = self._holds.get(i)
@@ -1573,9 +1778,8 @@ class Remote:
             # First, before anything else is looked at (review of PR #43,
             # P0-4): with screen arming switched off nothing about a hold
             # is accepted, whoever asks.
-            return 403, {"error": "Arming from a screen is switched off in "
-                                  "ltcplay_remote.json. Arm from the Stream "
-                                  "Deck.", "let_go": True}
+            return 403, {"error": ARMING_OFF, "let_go": True,
+                         "arming_off": True}
         # The hold belongs to the surface it came from: one device, one
         # hold, and another device cannot carry it on.
         who, device = ctx.device, ctx.screen
@@ -1608,9 +1812,67 @@ class Remote:
                                "does.")
         g = fl["groups"][i]
         if g["armed"] == "armed" or g["wanted"]:
+            if body.get("hold_id") is not None:
+                # This device's own hold, and the group is now asked for.
+                # Credited to the hold only when the Stream Deck said it
+                # armed the group from THIS hold (deck-input `taken`;
+                # review of PR #90, P3-1): a deck key or the Morning page
+                # may have armed it meanwhile. The deck's word follows
+                # flamesafe's status by a read or two, so it is waited
+                # for up to TAKEN_WAIT_S; then the hold ends without credit.
+                now = self.clock()
+                with self._arm_lock:
+                    h = self._holds.get(i)
+                    mine = (h is not None and h["token"] == token and
+                            h["id"] == body.get("hold_id"))
+                    took = mine and \
+                        self._deck_refused.get(h["id"]) == "taken"
+                    wait = False
+                    if mine and not took:
+                        h.setdefault("wanted_at", now)
+                        wait = now - h["wanted_at"] < TAKEN_WAIT_S
+                        if wait:
+                            h["beat"] = now
+                    if mine and not wait:
+                        del self._holds[i]
+                        self._deck_refused.pop(h["id"], None)
+                if mine and wait:
+                    return 200, {"ok": True, "hold_id": h["id"],
+                                 "held_s": round(h["beat"] - h["start"], 3),
+                                 "needs_s": SCREEN_HOLD_S}
+                if mine:
+                    if took:
+                        text = (f"{gname} is asked for: the Stream Deck took "
+                                f"the hold and set it. flamesafe's lamp shows "
+                                f"when it is armed.")
+                        what = (f"{who}'s hold to arm {gname} on the "
+                                f"{device} was taken by the Stream Deck "
+                                f"after {h['beat'] - h['start']:.1f} s.")
+                    else:
+                        text = (f"{gname} is asked for. flamesafe's lamp "
+                                f"shows when it is armed.")
+                        what = (f"{who}'s hold to arm {gname} on the "
+                                f"{device} ended: the group was asked for "
+                                f"without the Stream Deck saying this hold "
+                                f"did it.")
+                    self._journal(who, device, "arm hold",
+                                  "taken" if took else "ended", what)
+                    return 200, {"ok": True, "armed": True, "taken": took,
+                                 "hold_id": h["id"], "text": text,
+                                 "held_s": round(h["beat"] - h["start"], 3),
+                                 "needs_s": SCREEN_HOLD_S}
             return refuse(409, f"{gname} is already armed or asked for.")
+        why = self.arm_refusal(gname, ctx.device)
+        if why:
+            return refuse(409, why)
         now = self.clock()
         if body.get("hold_id") is not None:
+            with self._arm_lock:
+                code = self._deck_refused.get(body.get("hold_id"))
+            if code is not None and code != "taken":
+                # The Stream Deck would not take this hold (its own rules,
+                # streamdeck.Controller.screen_pass): said, and let go.
+                return refuse(409, DECK_REFUSALS[code].format(g=gname))
             # A heartbeat for a hold already under way. If that hold is not
             # the live one any more (a gap longer than BEAT_STALE_S, an
             # Abort, a disarm, a restart), it is over: a hold that was
@@ -1620,12 +1882,18 @@ class Remote:
                 h = self._holds.get(i)
                 live = (h is not None and h["token"] == token and
                         h["id"] == body.get("hold_id") and
-                        now - h["beat"] <= BEAT_STALE_S)
+                        now - h["beat"] <= BEAT_STALE_S and
+                        "wanted_at" not in h)
                 if live:
                     h["beat"] = now
                     return 200, {"ok": True, "hold_id": h["id"],
                                  "held_s": round(now - h["start"], 3),
                                  "needs_s": SCREEN_HOLD_S}
+            if h is not None and h["token"] == token and \
+                    h["id"] == body.get("hold_id") and "wanted_at" in h:
+                return refuse(409, f"{gname} was asked for and then let go "
+                                   f"again during this hold. Lift your "
+                                   f"finger and hold again.")
             return refuse(409, "The hold was interrupted. Lift your finger "
                                "and hold again.")
         with self._arm_lock:
@@ -1713,6 +1981,8 @@ class Remote:
         self._deck_seen = now
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)
+        refused = deck_refused(query)
+        taken = deck_taken(query)
         enabled = self.arming_enabled()
         holds = []
         with self._arm_lock:
@@ -1725,6 +1995,17 @@ class Remote:
                               "held_s": round(h["beat"] - h["start"], 3),
                               "fresh": age <= BEAT_STALE_S,
                               "who": h["who"], "device": h["device"]})
+            # What the deck would not take, kept for the hold's next
+            # heartbeat to say (only for holds still here).
+            live_ids = {h["id"] for h in self._holds.values()}
+            for hid, code in refused:
+                if hid in live_ids:
+                    self._deck_refused[hid] = code
+            for hid in taken:
+                if hid in live_ids:
+                    self._deck_refused[hid] = "taken"
+            for hid in [k for k in self._deck_refused if k not in live_ids]:
+                del self._deck_refused[hid]
             disarms = list(self._disarms)
         self._apply_pulse()
         # The open alerts too: the deck relights a key as ACK while one is

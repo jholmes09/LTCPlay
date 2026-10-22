@@ -1269,6 +1269,11 @@ class EngineConductor:
 SCREEN_POLL_HZ = 20.0
 SCREEN_STALE_S = 0.3
 SCREEN_HOLD_S = 1.0       # must equal remote.SCREEN_HOLD_S (selftest pins it)
+# A screen hold this deck would not take is reported back to the engine on
+# its deck-input reads for this long (2026-10-22: the page says why, never
+# a bar that fills and arms nothing). Reporting only: what the deck does
+# with the hold is decided exactly as before.
+SCREEN_REFUSED_KEEP_S = 1.0
 
 
 class ScreenKeys:
@@ -1292,6 +1297,9 @@ class ScreenKeys:
         self.report_failed = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
+        # Screen holds this deck would not take: hold id -> (code, clock),
+        # carried on the next deck-input reads (remote.DECK_REFUSALS).
+        self._refused = {}
         self._seen_disarm = None   # highest disarm id already handed out
         self._pending = []
         self._stop = threading.Event()
@@ -1317,6 +1325,41 @@ class ScreenKeys:
             self.poll_once()
             self._stop.wait(self._period)
 
+    def note_refused(self, hold_id, code):
+        """The controller would not take screen hold `hold_id` (`code`, one
+        of remote.DECK_REFUSALS): said to the engine on the next reads, so
+        the page names the reason. Changes nothing the deck does."""
+        code = str(code)
+        if not isinstance(hold_id, int) or isinstance(hold_id, bool) or \
+                not (code.isascii() and code.isalpha() and code.islower()
+                     and len(code) <= 16):
+            return
+        with self._lock:
+            self._refused[hold_id] = (code, self._clock())
+
+    def note_taken(self, hold_id):
+        """The controller armed a group from screen hold `hold_id`: said
+        to the engine on the next reads (`taken`), so the page credits the
+        hold only when this deck says it was the cause (review of PR #90,
+        P3-1). Changes nothing the deck does."""
+        self.note_refused(hold_id, "taken")
+
+    def _codes(self, taken):
+        now = self._clock()
+        with self._lock:
+            for k in [k for k, (_c, t) in self._refused.items()
+                      if now - t > SCREEN_REFUSED_KEEP_S]:
+                del self._refused[k]
+            items = sorted((k, c) for k, (c, _t) in self._refused.items()
+                           if (c == "taken") == taken)[-8:]
+        return items
+
+    def _refused_param(self):
+        return ",".join(f"{k}.{c}" for k, c in self._codes(False))
+
+    def _taken_param(self):
+        return ",".join(str(k) for k, _c in self._codes(True))
+
     def _path(self):
         path = "/api/remote/deck-input"
         try:
@@ -1332,6 +1375,18 @@ class ScreenKeys:
                 n = 0
             if isinstance(n, int) and not isinstance(n, bool) and n > 0:
                 path += f"&usb_fail={n}"
+        try:
+            ref = self._refused_param()
+        except Exception:                        # noqa: BLE001
+            ref = ""
+        if ref:
+            path += ("&" if "?" in path else "?") + f"refused={ref}"
+        try:
+            took = self._taken_param()
+        except Exception:                        # noqa: BLE001
+            took = ""
+        if took:
+            path += ("&" if "?" in path else "?") + f"taken={took}"
         return path
 
     def poll_once(self):
@@ -2566,7 +2621,16 @@ class Controller:
             if self.arm.wanted[i]:
                 self._do_disarm(i, who=str(ev.get("who") or ""),
                                 screen=str(ev.get("device") or "screen"))
-        holds = {} if self._latched_now() else self.screen.holds()
+        latched = self._latched_now()
+        holds = {} if latched else self.screen.holds()
+        if latched:
+            # Taken by nothing while latched, as before; the engine is told
+            # why so the page can say it (reporting only).
+            try:
+                for h in self.screen.holds().values():
+                    self._report_refused(h.get("id"), "latched")
+            except Exception:                    # noqa: BLE001
+                pass
         for i in list(self._vholds):
             h = holds.get(i)
             if h is None or h.get("id") != self._vholds[i]:
@@ -2583,6 +2647,8 @@ class Controller:
             device = str(h.get("device") or "screen")
             self._vwho[i] = (who, device)
             if self.arm.wanted[i] or self._prev_keys[GROUP_KEYS[i]]:
+                if not self.arm.wanted[i]:
+                    self._report_refused(h.get("id"), "key")
                 continue            # already wanted, or the key itself is down
             left = self._in_rearm_refractory(i, now)
             if left > 0:
@@ -2591,10 +2657,12 @@ class Controller:
                           f"{left:.1f} s left in the re-arm refractory "
                           f"window after its last disarm.",
                           action="arm-refused", who=who, screen=device)
+                self._report_refused(h.get("id"), "refractory")
                 continue
             refusal = operator_gate(who, "arm")
             if refusal:
                 self._log(f"Stream Deck: {refusal}", action="arm")
+                self._report_refused(h.get("id"), "operator")
                 continue
             self._arm_holds[i].press(now)
             self._vpressed.add(i)
@@ -2694,6 +2762,19 @@ class Controller:
             self._log(f"Stream Deck FIRE released: {why}.", action="purge",
                       screen="Stream Deck")
 
+    def _report_refused(self, hold_id, code):
+        """Tell the engine (ScreenKeys.note_refused) that a screen hold was
+        not taken, and why, so the page says it. Reporting only: never
+        raises, never changes what was decided."""
+        s = self.screen
+        fn = getattr(s, "note_refused", None) if s is not None else None
+        if fn is None or hold_id is None:
+            return
+        try:
+            fn(hold_id, code)
+        except Exception:                        # noqa: BLE001
+            pass
+
     def _screen_release(self, i):
         self._vholds.pop(i, None)
         self._vwho.pop(i, None)
@@ -2750,33 +2831,37 @@ class Controller:
         matter how the two code paths interleave -- this is the SECOND,
         independent guard, not a substitute for the ordering fix. The
         operator gate is also re-checked (defensive: the operator could in
-        principle have been cleared mid-hold)."""
+        principle have been cleared mid-hold).
+
+        Returns None when it set the group, else the refusal's code
+        ("latched", "refractory", "operator", "role"), which a screen
+        hold reports back to the engine for the page (2026-10-22)."""
         if self._latched_now():
             self._log(f"Stream Deck: {self.names[i]} arm-hold completed "
                       f"but the rig is latched (an Abort landed during the "
                       f"hold); refused. Reset, then hold the key again.",
                       action="arm-refused")
-            return
+            return "latched"
         left = self._in_rearm_refractory(i, now)
         if left > 0:
             self._log(f"Stream Deck: {self.names[i]} arm-hold completed "
                       f"but {left:.1f} s is still left in the re-arm "
                       f"refractory window (a disarm or Reset landed during "
                       f"the hold); refused.", action="arm-refused")
-            return
+            return "refractory"
         if who is None:
             who = self.operator_provider() or ""
         refusal = operator_gate(who, "arm")
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
-            return
+            return "operator"
         # The deck's own key only: a screen's hold and a purge were checked
         # against the role matrix by the engine already.
         refusal = (role_gate(self._user(), "arm") if screen == "Stream Deck"
                    else None)
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
-            return
+            return "role"
         self.arm.set_group(i, True)
         self.arm.send(self.names)
         held = (f"held {ARM_HOLD_S:g} s" if screen == "Stream Deck" else
@@ -2935,7 +3020,11 @@ class Controller:
                 if self._arm_holds[i].fired(now):
                     self._vpressed.discard(i)
                     who, device = self._vwho.get(i, ("", "screen"))
-                    self._do_arm_fire(i, now, who=who, screen=device)
+                    why = self._do_arm_fire(i, now, who=who, screen=device)
+                    if why:
+                        self._report_refused(self._vholds.get(i), why)
+                    else:
+                        self._report_refused(self._vholds.get(i), "taken")
 
     def check_links(self):
         """Called once per MAIN-LOOP pass (after status.poll()), never

@@ -657,10 +657,22 @@ every heartbeat; any failure lets the hold go and is journaled):
 - `screen_arming` on in `ltcplay_remote.json`: **off by default** since the
   review of PR #43 (2026-10-05, P0-4), until PR #41's own safety review
   decides; only the JSON word `true` turns it on, and a broken file reads as
-  off. While it is off the engine refuses every `arm-hold` before looking at
-  anything else, refuses a screen's per-group Disarm (Disarm every flame
-  group and the Stream Deck still work), and `ltc deck` does not read the
-  screen holds at all (no `ScreenKeys` is made);
+  off. It is set on the show machine itself (2026-10-22: the rack screen's
+  Programming, "Arming from a screen"; route `screen-arming`, loopback only,
+  the role matrix's Settings to turn it on, anyone to turn it off). While it
+  is off the engine refuses every `arm-hold` before looking at anything
+  else, and says how to turn it on, refuses a screen's per-group Disarm
+  (Disarm every flame group and the Stream Deck still work), and `ltc deck`
+  takes no screen hold (the engine answers `enabled` false);
+- no Abort standing, the Stream Deck program heard within 2 s, this device
+  not in Arrange mode on the Morning page, and not every machine of the
+  group locked out (2026-10-22): each is refused by the deck or flamesafe
+  anyway, and the engine says it by name before a hold fills its bar. What
+  only the deck knows (its re-arm wait, its latch, its operator gate) it
+  reports back on its next `deck-input` read (`refused=<hold id>.<code>`),
+  and the hold's next heartbeat says it. A hold is credited with arming
+  a group only when the deck reports it took THAT hold (`taken=<hold id>`).
+  Reporting only: nothing the deck or flamesafe decides changed;
 - the page's own status no older than 1 s, and flamesafe's status (the
   `status_mirror_port` copy) no older than 1 s, so the page is showing
   flamesafe's real state, not a cached one;

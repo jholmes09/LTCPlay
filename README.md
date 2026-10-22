@@ -481,7 +481,12 @@ from the engine as a press of that group's key and arms it under every
 deck and flamesafe rule (flamesafe/CONTRACT.md, "Arming from a screen").
 It needs a page status and a flamesafe status no older than 1 s, 1 s of
 heartbeats the engine actually received, and `"screen_arming": true` in
-`ltcplay_remote.json` (off unless it says true). One hold per group at a
+`ltcplay_remote.json` (off unless it says true; turned on and off on the
+show machine itself: Programming, "Arming from a screen"). The page names
+the reason whenever a hold is refused: switched off, an Abort standing, no
+Stream Deck program reading the engine, this screen in Arrange mode, every
+machine in the group locked out, or the deck's own refusal (its re-arm
+wait after a disarm, no operator); and says so when the Stream Deck took it. One hold per group at a
 time: another device, or another tab on the same one, cannot take over or
 restart a live hold. A dropped connection, a closed page, an Abort or a
 disarm lets the hold go.
