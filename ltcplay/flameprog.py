@@ -1,0 +1,1060 @@
+"""Live flame programming: xLights drives the flames through flamesafe while
+Jeff programs (LIVE_FLAME_PROGRAMMING.md).
+
+Jeff, 2026-10-22: "while programming, arm/disarm works in LTC Player but I
+send the flame commands direct from xLights." Not to be confused with the
+rack screen's Programming screen or a programming session's scrub
+transport: those play a show file; this listens to xLights.
+
+What it is
+==========
+
+A listener inside the engine (`ltc serve`, Fire & Ice only) that, ONLY
+while the mode is on, hears xLights' E1.31 (sACN) data on 127.0.0.1 and
+hands the flame controller's channels to the engine's own flame link
+(flamelink.FlameLink.program_set), exactly as the Morning page's purge
+hands it a frame (purge_set). Nothing here sends anything to the flame
+node or to flamesafe: the values leave on the flame link's one keyed,
+sender-locked socket, and flamesafe still applies every rule it has
+(arming per group, hold to arm, lockouts, the Abort latch, the stale
+cutoffs). flamesafe is not changed and never sees a second sender.
+
+The guards, each a named refusal or a named end
+===============================================
+
+  - Bound to 127.0.0.1 only. Any other listen address is refused before a
+    socket is made (check_listen_ip). A packet from anywhere but loopback
+    ends the mode.
+  - Entry is refused unless the engine says nothing blocks it (no show
+    live or held, Run not pressed, no Abort latched, flamesafe reporting,
+    no purge), the flame controller in xlights_networks.xml is E1.31
+    unicast to 127.0.0.1 only and not Active (FlameMap.from_networks), no
+    other Active controller sends E1.31 to this PC, flamesafe's own
+    destination is not this listener's address and port (its output would
+    loop back in), the port is free, and at most one flame group is armed.
+  - One sender. The first E1.31 source (its CID and priority) is the only
+    one. Another CID or priority, flamesafe's own packets (its CID or
+    source name: its output looped back) or a non-loopback source: zeros,
+    every group disarmed and the mode ENDS, with the reason.
+  - Zero on silence. A universe with no fresh packet for HOLD_S (0.25 s)
+    is zeros, and the flame link drops the whole frame on its own clock
+    0.25 s after the last program_set. A channel that is not zero when its
+    stream (re)starts stays zero until xLights has sent it at zero once.
+  - Sanity. Strict E1.31 data packet parsing (parse_e131); preview data
+    and other start codes are ignored; the sACN sequence rule drops late
+    and repeated packets; a universe sending more than RATE_MAX packets a
+    second ends the mode (a flood); only the flame controller's own
+    universes and channel counts are read (clamped to 512 slots).
+  - One group at a time (setting, default on): two flame groups armed
+    while the mode is on ends it, with every group disarmed.
+  - Auto off: no xLights data for idle_off_s (default 600) or a session
+    longer than max_session_s (default 4 hours) ends it.
+  - Leaving the mode for ANY reason disarms every flame group (the flame
+    link's disarm_all, the show's own Abort disarm) and zeroes the values.
+  - Abort from any surface ends it at the link at once (disarm_all clears
+    program_on); Hold, Start now, Run and a show going live end it on the
+    engine's next watch pass (WATCH_S), and the link never reads its frame
+    while the show is live in any case.
+"""
+import collections
+import json
+import os
+import socket
+import threading
+import time
+import uuid
+
+E131_PORT = 5568
+LISTEN_IP = "127.0.0.1"
+UNIVERSE_SIZE = 512
+HOLD_S = 0.25             # a universe with no packet this long is zeros
+WATCH_S = 0.05            # how often the listener thread checks the rules
+RATE_MAX = 200            # packets a second per universe; more is a flood
+RATE_WINDOW_S = 1.0
+SEQ_WINDOW = 20           # the E1.31 sequence rule (section 6.7.2)
+IDLE_OFF_S_DEFAULT = 600
+MAX_SESSION_S_DEFAULT = 4 * 3600
+SETTINGS_KEY = "live_flame"
+SETTINGS_KEYS = frozenset(("listen_ip", "port", "idle_off_s",
+                           "max_session_s", "one_group_at_a_time",
+                           "networks_xml"))
+NAME = "Live flame programming"
+
+# E1.31 layout (ANSI E1.31-2018, section 4 and 6).
+ACN_ID = b"ASC-E1.17\x00\x00\x00"
+HEADER_LEN = 126
+PACKET_MAX = HEADER_LEN + UNIVERSE_SIZE
+VECTOR_ROOT_DATA = 0x00000004
+VECTOR_ROOT_EXTENDED = 0x00000008
+VECTOR_FRAMING_DATA = 0x00000002
+OPT_PREVIEW = 0x80
+OPT_TERMINATED = 0x40
+# flamesafe's own sACN identity (flamesafe/sacn.py: CID and source name),
+# written here from the contract, never imported (the wall).
+FLAMESAFE_CID = uuid.uuid5(uuid.NAMESPACE_DNS,
+                           "flamesafe.jeffholmespresents").bytes
+FLAMESAFE_NAME = "flamesafe"
+
+
+class PacketError(ValueError):
+    """Not an E1.31 data packet this listener takes, in a sentence."""
+
+
+class NotData(PacketError):
+    """A well formed E1.31 packet that carries no levels (universe
+    discovery, synchronization): ignored without counting as malformed."""
+
+
+class FlameMapError(ValueError):
+    """The flame controller cannot be used for live flame programming, in
+    a sentence."""
+
+
+class SettingsError(ValueError):
+    """The live_flame block in ltcplay_remote.json is wrong, in a
+    sentence."""
+
+
+# -------------------------------------------------------------- settings --
+
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def check_listen_ip(ip):
+    """The one address the listener may bind: 127.0.0.1. Anything else
+    (another interface, 0.0.0.0, a name) raises SettingsError: a listener
+    on the network would let any device drive the flame values."""
+    if ip != LISTEN_IP:
+        raise SettingsError(
+            f"{NAME} listens on {LISTEN_IP} only, never {ip!r}: xLights runs "
+            f"on this show PC and nothing on the network may send flame "
+            f"values.")
+    return ip
+
+
+class Settings:
+    """The live_flame block: {"port": 5568, "idle_off_s": 600,
+    "max_session_s": 14400, "one_group_at_a_time": true, "networks_xml":
+    null}. Every key may be left out."""
+
+    def __init__(self, port=E131_PORT, idle_off_s=IDLE_OFF_S_DEFAULT,
+                 max_session_s=MAX_SESSION_S_DEFAULT, one_group=True,
+                 networks_xml=None, listen_ip=LISTEN_IP):
+        self.listen_ip = check_listen_ip(listen_ip)
+        self.port = port
+        self.idle_off_s = idle_off_s
+        self.max_session_s = max_session_s
+        self.one_group = one_group
+        self.networks_xml = networks_xml
+
+    @classmethod
+    def parse(cls, doc, where=SETTINGS_KEY):
+        if doc is None:
+            return cls()
+        if not isinstance(doc, dict):
+            raise SettingsError(f"{where} has to be one JSON object.")
+        unknown = sorted(str(k) for k in doc if k not in SETTINGS_KEYS)
+        if unknown:
+            raise SettingsError(
+                f"{where}: {', '.join(repr(k) for k in unknown)} is not a "
+                f"setting {NAME} has. It takes: "
+                f"{', '.join(sorted(SETTINGS_KEYS))}.")
+        ip = doc.get("listen_ip", LISTEN_IP)
+        try:
+            check_listen_ip(ip)
+        except SettingsError as e:
+            raise SettingsError(f"{where}: {e}")
+        port = doc.get("port", E131_PORT)
+        if not _is_int(port) or not 1024 <= port <= 65535:
+            raise SettingsError(f"{where}: 'port' has to be a whole number "
+                                f"1024 to 65535 (E1.31 is 5568).")
+        idle = doc.get("idle_off_s", IDLE_OFF_S_DEFAULT)
+        if not _is_int(idle) or not 10 <= idle <= 3600:
+            raise SettingsError(f"{where}: 'idle_off_s' has to be a whole "
+                                f"number of seconds, 10 to 3600.")
+        most = doc.get("max_session_s", MAX_SESSION_S_DEFAULT)
+        if not _is_int(most) or not 60 <= most <= 12 * 3600:
+            raise SettingsError(f"{where}: 'max_session_s' has to be a whole "
+                                f"number of seconds, 60 to 43200.")
+        one = doc.get("one_group_at_a_time", True)
+        if one is not True and one is not False:
+            raise SettingsError(f"{where}: 'one_group_at_a_time' has to be "
+                                f"true or false.")
+        xml = doc.get("networks_xml")
+        if xml is not None and (not isinstance(xml, str) or not xml):
+            raise SettingsError(f"{where}: 'networks_xml' has to be the full "
+                                f"path of xlights_networks.xml, or null.")
+        return cls(port, idle, most, one, xml, ip)
+
+    def view(self):
+        return {"listen": f"{self.listen_ip}:{self.port}",
+                "idle_off_s": self.idle_off_s,
+                "max_session_s": self.max_session_s,
+                "one_group_at_a_time": self.one_group,
+                "networks_xml": self.networks_xml}
+
+
+def load_settings(path):
+    """Settings from ltcplay_remote.json's live_flame block (a missing
+    file or block: the defaults). Raises SettingsError."""
+    if not path or not os.path.exists(path):
+        return Settings()
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise SettingsError(f"{path} could not be read: {e}")
+    if not isinstance(doc, dict):
+        raise SettingsError(f"{path} is not a settings object.")
+    return Settings.parse(doc.get(SETTINGS_KEY), f"{path} {SETTINGS_KEY}")
+
+
+# ---------------------------------------------------------------- E1.31 --
+
+class Packet:
+    __slots__ = ("cid", "source", "priority", "seq", "options", "universe",
+                 "values")
+
+    def __init__(self, cid, source, priority, seq, options, universe,
+                 values):
+        self.cid = cid
+        self.source = source
+        self.priority = priority
+        self.seq = seq
+        self.options = options
+        self.universe = universe
+        self.values = values
+
+    @property
+    def preview(self):
+        return bool(self.options & OPT_PREVIEW)
+
+    @property
+    def terminated(self):
+        return bool(self.options & OPT_TERMINATED)
+
+
+def _len12(b, at):
+    return ((b[at] & 0x0F) << 8) | b[at + 1]
+
+
+def parse_e131(data):
+    """One E1.31 data packet as a Packet, or PacketError naming what is
+    wrong (NotData for a well formed packet that carries no levels). Every
+    length and vector is checked; nothing is guessed. Never raises
+    anything else."""
+    try:
+        b = bytes(data)
+    except Exception:
+        raise PacketError("not bytes")
+    n = len(b)
+    if n < 22:
+        raise PacketError(f"too short ({n} bytes)")
+    if b[0:2] != b"\x00\x10" or b[2:4] != b"\x00\x00":
+        raise PacketError("not an ACN packet (preamble)")
+    if b[4:16] != ACN_ID:
+        raise PacketError("not an ACN packet (identifier)")
+    vector = int.from_bytes(b[18:22], "big")
+    if vector == VECTOR_ROOT_EXTENDED:
+        raise NotData("an E1.31 discovery or sync packet")
+    if vector != VECTOR_ROOT_DATA:
+        raise PacketError(f"root vector {vector} is not E1.31 data")
+    if n < HEADER_LEN:
+        raise PacketError(f"too short for E1.31 data ({n} bytes)")
+    if n > PACKET_MAX:
+        raise PacketError(f"too long ({n} bytes; at most {PACKET_MAX})")
+    if b[16] & 0xF0 != 0x70 or _len12(b, 16) != n - 16:
+        raise PacketError("root layer length does not match the packet")
+    if b[38] & 0xF0 != 0x70 or _len12(b, 38) != n - 38:
+        raise PacketError("framing layer length does not match the packet")
+    if int.from_bytes(b[40:44], "big") != VECTOR_FRAMING_DATA:
+        raise NotData("an E1.31 framing layer that is not data")
+    raw_name = b[44:108]
+    name = raw_name.split(b"\x00", 1)[0].decode("utf-8", "replace")
+    priority = b[108]
+    if priority > 200:
+        raise PacketError(f"priority {priority} is over 200")
+    seq = b[111]
+    options = b[112]
+    universe = (b[113] << 8) | b[114]
+    if not 1 <= universe <= 63999:
+        raise PacketError(f"universe {universe} is outside 1 to 63999")
+    if b[115] & 0xF0 != 0x70 or _len12(b, 115) != n - 115:
+        raise PacketError("DMP layer length does not match the packet")
+    if b[117] != 0x02 or b[118] != 0xA1:
+        raise PacketError("DMP layer is not set property, 0xA1")
+    if b[119:121] != b"\x00\x00" or b[121:123] != b"\x00\x01":
+        raise PacketError("DMP first address and increment are not 0 and 1")
+    count = (b[123] << 8) | b[124]
+    if count < 1 or count != n - 125:
+        raise PacketError("DMP property count does not match the packet")
+    if b[125] != 0x00:
+        raise NotData(f"start code {b[125]} is not levels")
+    return Packet(b[22:38], name, priority, seq, options, universe,
+                  b[126:])
+
+
+def build_e131(universe, values, seq=0, cid=None, source="xLights",
+               priority=100, options=0):
+    """An E1.31 data packet, for the selftest and the bench: the listener
+    never sends anything."""
+    values = bytes(values)
+    count = len(values)
+    total = HEADER_LEN + count
+    b = bytearray(total)
+    b[1] = 0x10
+    b[4:16] = ACN_ID
+    b[16] = 0x70 | (((total - 16) >> 8) & 0x0F)
+    b[17] = (total - 16) & 0xFF
+    b[18:22] = VECTOR_ROOT_DATA.to_bytes(4, "big")
+    b[22:38] = (cid or uuid.uuid5(uuid.NAMESPACE_DNS, "xlights.test").bytes)
+    b[38] = 0x70 | (((total - 38) >> 8) & 0x0F)
+    b[39] = (total - 38) & 0xFF
+    b[40:44] = VECTOR_FRAMING_DATA.to_bytes(4, "big")
+    nm = source.encode("utf-8")[:63]
+    b[44:44 + len(nm)] = nm
+    b[108] = priority
+    b[111] = seq & 0xFF
+    b[112] = options
+    b[113] = (universe >> 8) & 0xFF
+    b[114] = universe & 0xFF
+    b[115] = 0x70 | (((total - 115) >> 8) & 0x0F)
+    b[116] = (total - 115) & 0xFF
+    b[117] = 0x02
+    b[118] = 0xA1
+    b[122] = 0x01
+    b[123] = ((count + 1) >> 8) & 0xFF
+    b[124] = (count + 1) & 0xFF
+    b[126:] = values
+    return bytes(b)
+
+
+# --------------------------------------------------------- the channel map --
+
+class FlameMap:
+    """Which xLights universe and channel is which flamesafe slot: the flame
+    controller's network rows in xlights_networks.xml, in order, each from
+    channel 1 of its universe; row k's channel n is slot (the earlier
+    rows' counts) + n. The same slots FlameCues reads from a render
+    (fire_ice.py), so live and rendered agree by construction."""
+
+    def __init__(self, rows, path=None, stamp=None):
+        self.rows = tuple(rows)       # (universe, first slot, count)
+        self.path = path
+        self.stamp = stamp
+        self.by_universe = {u: (first, count) for u, first, count in rows}
+
+    @property
+    def slots(self):
+        out = set()
+        for _u, first, count in self.rows:
+            out.update(range(first, first + count))
+        return out
+
+    def key(self):
+        return self.rows
+
+    def view(self):
+        return [{"universe": u, "channels": f"1 to {c}",
+                 "slots": f"{f} to {f + c - 1}"} for u, f, c in self.rows]
+
+    @classmethod
+    def from_networks(cls, path, name):
+        """The map, or FlameMapError naming why the flame controller cannot
+        be used: missing, ambiguous or Active (fire_ice.flame_channels'
+        own refusals), any row not E1.31 unicast to exactly 127.0.0.1
+        (multicast, another address, Art-Net), a universe twice, and any
+        OTHER Active controller sending E1.31 to this PC (it would reach
+        this listener too)."""
+        from . import fire_ice, netmap
+        if not path or not os.path.isfile(path):
+            raise FlameMapError(f"xlights_networks.xml was not found "
+                                f"({path or 'no path'}).")
+        try:
+            st = os.stat(path)
+            stamp = (st.st_mtime_ns, st.st_size)
+            fire_ice.flame_channels(path, name)
+            ctrls = fire_ice._controllers(path)
+        except fire_ice.FlameControllerError as e:
+            raise FlameMapError(str(e))
+        except Exception as e:
+            raise FlameMapError(f"{path} could not be read "
+                                f"({type(e).__name__}: {e}).")
+        rows = []
+        seen = set()
+        slot = 1
+        for c, _first, _span in ctrls:
+            a = c.attrib
+            if a.get("Name", "") != name:
+                if a.get("ActiveState", "Active") == "Active":
+                    for net in c:
+                        if net.tag != "network":
+                            continue
+                        na = net.attrib
+                        dest = na.get("ComPort", "") or a.get("IP", "")
+                        proto = netmap.UDP_PROTOCOLS.get(
+                            (na.get("NetworkType") or "").lower())
+                        if proto == "e131" and (
+                                dest.startswith("127.") or
+                                dest.lower() in ("localhost",
+                                                 "multicast")):
+                            raise FlameMapError(
+                                f"Controller {a.get('Name', '?')!r} is "
+                                f"Active and sends E1.31 to {dest} in "
+                                f"{path}: its packets would reach the "
+                                f"{NAME} listener as a second sender. Give "
+                                f"it its real address in xLights.")
+                continue
+            for net in c:
+                if net.tag != "network":
+                    continue
+                na = net.attrib
+                try:
+                    count = int(na.get("MaxChannels", "0") or 0)
+                except ValueError:
+                    count = 0
+                if count <= 0:
+                    continue
+                proto = (na.get("NetworkType") or "").lower()
+                dest = na.get("ComPort", "") or a.get("IP", "")
+                if netmap.UDP_PROTOCOLS.get(proto) != "e131":
+                    raise FlameMapError(
+                        f"The flame controller {name!r} sends "
+                        f"{na.get('NetworkType') or 'nothing'} in {path}. "
+                        f"Set it to E1.31 in xLights (Art-Net on this PC "
+                        f"belongs to MadMapper and BEYOND).")
+                if dest != LISTEN_IP:
+                    what = ("multicast" if _multicast(dest)
+                            else repr(dest) if dest else "no address")
+                    raise FlameMapError(
+                        f"The flame controller {name!r} sends to {what} in "
+                        f"{path}. For {NAME} it must be E1.31 unicast to "
+                        f"{LISTEN_IP} and nothing else: any other address "
+                        f"could reach the flame node around flamesafe.")
+                try:
+                    univ = int(na.get("BaudRate", ""))
+                except ValueError:
+                    raise FlameMapError(
+                        f"The flame controller {name!r} has a universe "
+                        f"that is not a number in {path}.")
+                if not 1 <= univ <= 63999 or univ in seen:
+                    raise FlameMapError(
+                        f"The flame controller {name!r} uses universe "
+                        f"{univ} twice, or outside 1 to 63999, in {path}.")
+                seen.add(univ)
+                if slot > UNIVERSE_SIZE:
+                    break
+                count = min(count, UNIVERSE_SIZE - slot + 1)
+                rows.append((univ, slot, count))
+                slot += count
+        if not rows:
+            raise FlameMapError(f"The flame controller {name!r} has no "
+                                f"channels in {path}.")
+        return cls(rows, path, stamp)
+
+    def changed(self):
+        """True when xlights_networks.xml is not the file this map was
+        read from any more (or cannot be read)."""
+        try:
+            st = os.stat(self.path)
+            return (st.st_mtime_ns, st.st_size) != self.stamp
+        except Exception:
+            return True
+
+
+def _multicast(dest):
+    """True for xLights' MULTICAST word or a 224 to 239 address."""
+    d = str(dest or "").strip().lower()
+    if d == "multicast":
+        return True
+    head = d.split(".")[0]
+    return head.isdigit() and 224 <= int(head) <= 239
+
+
+def find_map(folder, name, show_networks=None, explicit=None):
+    """The FlameMap for live flame programming: from `explicit` (the
+    networks_xml setting) when given, else from every layout the engine
+    knows (the show folder's xlights_networks.xml and each show file's
+    own), which must all agree. FlameMapError otherwise."""
+    if explicit:
+        return FlameMap.from_networks(explicit, name)
+    paths = []
+    if folder:
+        paths.append(os.path.join(folder, "xlights_networks.xml"))
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            names = []
+        for n in names:
+            if n.lower().endswith(".json") and show_networks is not None:
+                try:
+                    p = show_networks(os.path.join(folder, n))
+                except Exception:
+                    p = None
+                if p:
+                    paths.append(p)
+    found = {}
+    errors = []
+    for p in paths:
+        p = os.path.abspath(p)
+        if p in found or not os.path.isfile(p):
+            continue
+        try:
+            found[p] = FlameMap.from_networks(p, name)
+        except FlameMapError as e:
+            errors.append(str(e))
+    if errors:
+        raise FlameMapError(errors[0])
+    if not found:
+        raise FlameMapError(
+            f"No xlights_networks.xml with the flame controller {name!r} "
+            f"was found in the show folder ({folder or 'none'}). Set "
+            f"live_flame.networks_xml in ltcplay_remote.json to the one "
+            f"xLights uses.")
+    maps = list(found.values())
+    if any(m.key() != maps[0].key() for m in maps[1:]):
+        raise FlameMapError(
+            "The show folder has more than one xlights_networks.xml and "
+            "they lay the flame controller out differently, so which one "
+            "xLights is using cannot be told. Set live_flame.networks_xml "
+            "in ltcplay_remote.json.")
+    return maps[0]
+
+
+def flamesafe_destination(path):
+    """(ip, port) flamesafe sends the flame node, from its own config, or
+    None when it cannot be read."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+        d = doc["destination"]
+        return str(d["ip"]), int(d.get("port", E131_PORT))
+    except Exception:
+        return None
+
+
+def feedback_refusal(dest, settings):
+    """A sentence when flamesafe's own output would arrive at this
+    listener (its destination is this PC's loopback, on the listener's
+    port), else "". Windows treats every 127.x address as one here."""
+    if dest is None:
+        return ("flamesafe's destination could not be read from its config, "
+                "so whether its own output would loop back into the "
+                "listener cannot be told.")
+    ip, port = dest
+    local = (ip.startswith("127.") or ip.lower() == "localhost"
+             or ip == "0.0.0.0")
+    if local and port == settings.port:
+        return (f"flamesafe sends its own output to {ip}:{port}, which is "
+                f"this listener's address and port, so its own packets "
+                f"would come back in. Point flamesafe's destination at the "
+                f"flame node (or a spare address on the bench) first.")
+    return ""
+
+
+# --------------------------------------------------------------- the mode --
+
+class LiveFlame:
+    """The mode: on/off, the listener socket and its thread, the rules.
+
+    link_get      () -> the engine's FlameLink, or None
+    blockers      () -> why the engine forbids the mode now, or ""
+    map_get       () -> FlameMap (raises FlameMapError)
+    armed_groups  () -> names of the flame groups flamesafe reports armed,
+                         or None when its status is not fresh
+    fs_dest       () -> flamesafe's (ip, port) destination, or None
+    settings_get  () -> Settings (raises SettingsError)
+    disarm        (reason) -> True when the disarm of every group went out
+    journal       (who, screen, outcome, text, fault=False)
+    audit         audit.AuditLog or None
+    threaded      False for the selftest: feed() and tick() by hand."""
+
+    def __init__(self, link_get, blockers, map_get, armed_groups,
+                 fs_dest=lambda: None, settings_get=Settings,
+                 disarm=None, journal=None, audit=None,
+                 clock=time.monotonic, wall=time.time, threaded=True,
+                 sock_factory=None):
+        self._link_get = link_get
+        self._blockers = blockers
+        self._map_get = map_get
+        self._armed = armed_groups
+        self._fs_dest = fs_dest
+        self._settings_get = settings_get
+        self._disarm = disarm
+        self._journal = journal
+        self.audit = audit
+        self._clock = clock
+        self._wall = wall
+        self._threaded = threaded
+        self._sock_factory = sock_factory or (
+            lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        self._lock = threading.RLock()
+        self.on = False
+        self._gen = 0
+        self._sock = None
+        self._thread = None
+        self._reset()
+        self.last_end = None          # {"reason", "who", "at"}
+        self.ends = 0
+
+    def _reset(self):
+        self.settings = None
+        self.map = None
+        self.began = None             # clock
+        self.began_wall = None
+        self.who = ""
+        self.screen = ""
+        self.sender = None            # (cid bytes, priority, source name)
+        self.last_data = None         # clock of the last accepted packet
+        self._univ = {}               # universe -> (values bytes, clock)
+        self._seq = {}                # universe -> last sequence
+        self._rate = collections.defaultdict(collections.deque)
+        self._blocked = set()         # slots not yet seen at zero
+        self.counts = collections.Counter()
+        self._bad_said_at = None
+
+    # -- plumbing ---------------------------------------------------------
+    def _note(self, who, screen, outcome, text, fault=False):
+        if self._journal is None:
+            return
+        try:
+            self._journal(who, screen, outcome, text, fault=fault)
+        except Exception:
+            pass
+
+    def _audit(self, who, screen, action, result, reason, system=False):
+        log = self.audit
+        if log is None:
+            return
+        try:
+            from . import audit as audit_mod
+            log.event(user=audit_mod.SYSTEM if system else
+                      (who or audit_mod.UNSIGNED), surface="engine",
+                      action=action, target="live flame programming",
+                      result=result, reason=reason, source=screen or "engine")
+        except Exception:
+            pass
+
+    def _link(self):
+        try:
+            return self._link_get()
+        except Exception:
+            return None
+
+    def link(self):
+        """The engine's flame link, or None. Never raises."""
+        return self._link()
+
+    # -- on -----------------------------------------------------------------
+    def refusal(self):
+        """Why the mode may not start now, in a sentence, or "". Every
+        check the entry makes except binding the port."""
+        try:
+            s = self._settings_get()
+        except SettingsError as e:
+            return str(e)
+        except Exception as e:
+            return f"its settings could not be read ({type(e).__name__})."
+        try:
+            why = self._blockers() or ""
+        except Exception as e:
+            why = f"the engine's state could not be read ({type(e).__name__})."
+        if why:
+            return why
+        link = self._link()
+        if link is None or not hasattr(link, "program_begin"):
+            return ("no flame link is connected in this engine, so nothing "
+                    "could reach flamesafe.")
+        try:
+            armed = self._armed()
+        except Exception:
+            armed = None
+        if armed is None:
+            return ("flamesafe has not reported in the last second, so its "
+                    "armed groups are not known.")
+        if s.one_group and len(armed) > 1:
+            return (f"{len(armed)} flame groups are armed "
+                    f"({', '.join(armed)}). {NAME} allows one at a time: "
+                    f"disarm the others first.")
+        try:
+            why = feedback_refusal(self._fs_dest(), s)
+        except Exception as e:
+            why = f"flamesafe's destination could not be read ({e})."
+        if why:
+            return why
+        try:
+            self._map_get()
+        except FlameMapError as e:
+            return str(e)
+        except Exception as e:
+            return (f"the flame controller's channels could not be read "
+                    f"({type(e).__name__}: {e}).")
+        return ""
+
+    def begin(self, who, screen):
+        """(ok, sentence). Turns the mode on after every check; the socket
+        is bound only now, on 127.0.0.1 only."""
+        with self._lock:
+            if self.on:
+                return False, f"{NAME} is already on (since {self.who})."
+            why = self.refusal()
+            if why:
+                self._note(who, screen, "refused",
+                           f"{who or 'Someone'} asked to turn {NAME} on on "
+                           f"the {screen}; refused: {why}")
+                self._audit(who, screen, "live flame on", "refused", why)
+                return False, f"{NAME} was not turned on: {why}"
+            s = self._settings_get()
+            fmap = self._map_get()
+            sock = None
+            try:
+                check_listen_ip(s.listen_ip)
+                sock = self._sock_factory()
+                if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                    sock.setsockopt(socket.SOL_SOCKET,
+                                    socket.SO_EXCLUSIVEADDRUSE, 1)
+                sock.bind((s.listen_ip, s.port))
+                sock.settimeout(WATCH_S)
+            except (OSError, SettingsError) as e:
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                why = (f"{s.listen_ip}:{s.port} could not be opened ({e}). "
+                       f"Another program on this PC is using it.")
+                self._note(who, screen, "refused",
+                           f"{who or 'Someone'} asked to turn {NAME} on on "
+                           f"the {screen}; refused: {why}")
+                self._audit(who, screen, "live flame on", "refused", why)
+                return False, f"{NAME} was not turned on: {why}"
+            self._reset()
+            self.settings, self.map = s, fmap
+            self._blocked = set(fmap.slots)
+            self.began = self.last_data = self._clock()
+            self.began_wall = self._wall()
+            self.who, self.screen = who or "unsigned", screen
+            self._sock = sock
+            self._gen += 1
+            self.on = True
+            self._link().program_begin()
+            gen = self._gen
+        rows = "; ".join(f"universe {u} channels 1 to {c} = flamesafe slots "
+                         f"{f} to {f + c - 1}" for u, f, c in fmap.rows)
+        text = (f"{self.who} turned {NAME} ON on the {screen}. Listening "
+                f"for xLights E1.31 on {s.listen_ip}:{s.port} only: {rows}. "
+                f"flamesafe fires only an armed group; "
+                f"{'one group at a time; ' if s.one_group else ''}off after "
+                f"{s.idle_off_s} s with no xLights data or {s.max_session_s} "
+                f"s in all. Leaving it disarms every flame group.")
+        self._note(self.who, screen, "on", text)
+        self._audit(self.who, screen, "live flame on", "accepted",
+                    f"{s.listen_ip}:{s.port}")
+        if self._threaded:
+            self._thread = threading.Thread(
+                target=self._run, args=(gen,), daemon=True,
+                name="ltcplay-live-flame")
+            self._thread.start()
+        return True, text
+
+    # -- off ----------------------------------------------------------------
+    def end(self, reason, who="", screen="", system=True):
+        """Off, for any reason: the listener closed, the link's frame
+        dropped, and every flame group disarmed (D2). True when it was on.
+        Never raises."""
+        with self._lock:
+            if not self.on:
+                return False
+            self.on = False
+            self._gen += 1
+            sock, self._sock = self._sock, None
+            link = self._link()
+            was = self.who
+        if link is not None:
+            try:
+                link.program_end()
+            except Exception:
+                pass
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        why = " ".join(str(reason or "turned off").split())[:200]
+        ok = False
+        try:
+            if self._disarm is not None:
+                ok = bool(self._disarm(f"{NAME} ended: {why}"))
+            elif link is not None:
+                ok = bool(link.disarm_all(f"{NAME} ended: {why}"))
+        except Exception:
+            ok = False
+        by = who or ("system" if system else "unsigned")
+        self.ends += 1
+        self.last_end = {"reason": why, "who": by,
+                         "at": int(self._wall() * 1000), "started_by": was}
+        self._note(by, screen or "engine", "off",
+                   f"{NAME} is OFF: {why}. Every flame value is zero and "
+                   f"{'a disarm of every flame group went out' if ok else 'the disarm of every flame group did NOT go out: disarm from the Stream Deck'}.",
+                   fault=not ok)
+        self._audit(by, screen or "engine", "live flame off", "accepted",
+                    why, system=system and not who)
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(1.0)
+        self._thread = None
+        return True
+
+    # -- the listener thread ----------------------------------------------
+    def _run(self, gen):
+        try:
+            while True:
+                with self._lock:
+                    if not self.on or self._gen != gen:
+                        return
+                    sock = self._sock
+                try:
+                    data, addr = sock.recvfrom(PACKET_MAX + 64)
+                except socket.timeout:
+                    data = None
+                except OSError:
+                    if not self.on or self._gen != gen:
+                        return
+                    data = None
+                    time.sleep(WATCH_S)
+                now = self._clock()
+                if data is not None:
+                    self.feed(data, addr, now)
+                self.tick(now)
+        except Exception as e:
+            self.end(f"the listener failed ({type(e).__name__}: {e})")
+
+    # -- one packet ----------------------------------------------------------
+    def feed(self, data, addr, now=None):
+        """One datagram from the socket. Returns what was done with it, a
+        word, for the selftest. Never raises."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            if not self.on:
+                return "off"
+        try:
+            host = addr[0] if addr else ""
+        except Exception:
+            host = ""
+        if not str(host).startswith("127."):
+            self.end(f"a packet came from {host or 'an unknown address'}, "
+                     f"not from this PC; the listener takes loopback only")
+            return "ended"
+        try:
+            p = parse_e131(data)
+        except NotData:
+            self.counts["not_data"] += 1
+            return "ignored"
+        except PacketError as e:
+            self.counts["malformed"] += 1
+            self._bad(now, str(e))
+            return "malformed"
+        if p.cid == FLAMESAFE_CID or p.source.strip().lower() == \
+                FLAMESAFE_NAME:
+            self.end("flamesafe's own E1.31 output came back into the "
+                     "listener (a loopback feedback); its destination must "
+                     "not be this PC's listener")
+            return "ended"
+        ident = (p.cid, p.priority)
+        with self._lock:
+            if not self.on:
+                return "off"
+            if self.sender is None:
+                self.sender = (p.cid, p.priority, p.source)
+                first = True
+            else:
+                first = False
+            other = (self.sender[0], self.sender[1]) != ident
+        if other:
+            self.end(f"a second E1.31 source appeared ({p.source!r}, "
+                     f"CID {p.cid.hex()[:8]}, priority {p.priority}, while "
+                     f"{self.sender[2]!r}, CID {self.sender[0].hex()[:8]}, "
+                     f"priority {self.sender[1]} held the listener); only "
+                     f"one sender is taken")
+            return "ended"
+        if first:
+            self._note(self.who, self.screen, "sender",
+                       f"{NAME}: the first E1.31 source is "
+                       f"{p.source!r} at priority {p.priority}. Any other "
+                       f"source ends the mode.")
+        # A flood ends the mode, whatever universe it is on.
+        if p.universe not in self._rate and len(self._rate) >= 64:
+            self._rate.clear()
+        q = self._rate[p.universe]
+        q.append(now)
+        while q and now - q[0] > RATE_WINDOW_S:
+            q.popleft()
+        if len(q) > RATE_MAX:
+            self.end(f"universe {p.universe} sent more than {RATE_MAX} "
+                     f"packets in a second (a flood)")
+            return "ended"
+        fmap = self.map
+        if fmap is None or p.universe not in fmap.by_universe:
+            self.counts["other_universe"] += 1
+            return "other universe"
+        if p.preview:
+            self.counts["preview"] += 1
+            return "preview"
+        last = self._seq.get(p.universe)
+        if last is not None:
+            d = (p.seq - last) & 0xFF
+            if d == 0 or d > 256 - SEQ_WINDOW:
+                self.counts["out_of_order"] += 1
+                return "out of order"
+        self._seq[p.universe] = p.seq
+        with self._lock:
+            if not self.on:
+                return "off"
+            if p.terminated:
+                self._univ.pop(p.universe, None)
+                self._reblock(p.universe)
+                self._seq.pop(p.universe, None)
+                self.counts["terminated"] += 1
+            else:
+                self._univ[p.universe] = (p.values, now)
+                self.last_data = now
+                self.counts["taken"] += 1
+        self._push(now)
+        return "terminated" if p.terminated else "taken"
+
+    def _bad(self, now, why):
+        if self._bad_said_at is None or now - self._bad_said_at > 10.0:
+            self._bad_said_at = now
+            self._note(self.who, self.screen, "malformed",
+                       f"{NAME}: a packet that is not an E1.31 data packet "
+                       f"was ignored ({why}). This line will not repeat for "
+                       f"10 s.", fault=True)
+
+    def _reblock(self, universe):
+        fmap = self.map
+        if fmap is None or universe not in fmap.by_universe:
+            return
+        first, count = fmap.by_universe[universe]
+        self._blocked.update(range(first, first + count))
+
+    def compose(self, now):
+        """The 512 slot frame from every fresh universe, with each slot not
+        yet seen at zero held at zero. A stale universe is dropped and its
+        slots wait for a zero again."""
+        vals = bytearray(UNIVERSE_SIZE)
+        fmap = self.map
+        if fmap is None:
+            return bytes(vals)
+        heard = []          # (first, count) of universes with fresh data
+        for u, (first, count) in fmap.by_universe.items():
+            got = self._univ.get(u)
+            if got is None:
+                continue
+            data, at = got
+            if now - at > HOLD_S or now < at:
+                del self._univ[u]
+                self._reblock(u)
+                continue
+            n = min(count, len(data))
+            vals[first - 1:first - 1 + n] = data[:n]
+            heard.append((first, n))
+        blocked = self._blocked
+        if blocked:
+            # Seen at zero means SENT at zero by xLights: a slot is freed
+            # only by a fresh packet of its own universe, never by the
+            # zeros a stale or missing universe composes to.
+            for first, count in heard:
+                for s in range(first, first + count):
+                    if s in blocked and vals[s - 1] == 0:
+                        blocked.discard(s)
+            for s in blocked:
+                vals[s - 1] = 0
+        return bytes(vals)
+
+    def _push(self, now):
+        with self._lock:
+            if not self.on:
+                return
+            frame = self.compose(now)
+            link = self._link()
+        if link is None:
+            return
+        if any(frame):
+            link.program_set(frame)
+        else:
+            link.program_clear()
+
+    # -- the rules, every WATCH_S --------------------------------------------
+    def tick(self, now=None):
+        """Ends the mode when anything says so. Returns the reason it ended
+        for, or "". Never raises."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            if not self.on:
+                return ""
+            s = self.settings
+            link = self._link()
+        why = ""
+        try:
+            if link is None or not getattr(link, "program_on", False):
+                why = ("every flame group was disarmed (an Abort or a "
+                       "disarm of every group)")
+            if not why:
+                why = self._blockers() or ""
+            if not why:
+                armed = self._armed()
+                if armed is None:
+                    why = ("flamesafe stopped reporting, so its armed groups "
+                           "are not known")
+                elif s.one_group and len(armed) > 1:
+                    why = (f"{len(armed)} flame groups were armed at once "
+                           f"({', '.join(armed)}); {NAME} allows one at a "
+                           f"time")
+            if not why and self.map is not None and self.map.changed():
+                why = "xlights_networks.xml changed while it was on"
+            if not why and now - self.last_data > s.idle_off_s:
+                why = (f"no xLights data for {s.idle_off_s} s (auto off)")
+            if not why and now - self.began > s.max_session_s:
+                why = (f"it had been on for {s.max_session_s} s, the most "
+                       f"one session may last (auto off)")
+        except Exception as e:
+            why = f"a rule could not be checked ({type(e).__name__}: {e})"
+        if why:
+            self.end(why)
+            return why
+        # Partial staleness: a universe that went quiet is zeros now.
+        with self._lock:
+            stale = [u for u, (_d, at) in self._univ.items()
+                     if now - at > HOLD_S]
+        if stale:
+            self._push(now)
+        return ""
+
+    # -- the page ----------------------------------------------------------
+    def view(self):
+        now = self._clock()
+        with self._lock:
+            on = self.on
+            out = {"on": on, "name": NAME, "last_end": self.last_end}
+            if not on:
+                return out
+            s, fmap = self.settings, self.map
+            sender = self.sender
+            out.update({
+                "who": self.who, "screen": self.screen,
+                "since": (int(self.began_wall * 1000)
+                          if self.began_wall else None),
+                "on_s": round(now - self.began, 1),
+                "listen": f"{s.listen_ip}:{s.port}",
+                "map": fmap.view() if fmap else [],
+                "sender": ({"source": sender[2], "priority": sender[1]}
+                           if sender else None),
+                "last_data_s": round(now - self.last_data, 1),
+                "receiving": any(now - at <= HOLD_S
+                                 for _d, at in self._univ.values()),
+                "idle_off_s": s.idle_off_s,
+                "max_session_s": s.max_session_s,
+                "one_group_at_a_time": s.one_group,
+                "counts": dict(self.counts)})
+        return out

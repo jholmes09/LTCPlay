@@ -56,6 +56,13 @@ LTC PLAYER'S OWN FILES
     screen, the Stream Deck and the Morning page say CUES FAULT and name
     the files. If the change moved no channel, saving the renders again
     (so they are newer) also clears it.
+[ ] Live flame programming (xLights driving the flames while you program):
+    in xLights the flame controller is E1.31, IP 127.0.0.1 only (never
+    Multicast, never the flame node's address), "xLights Only", never
+    Active, with the same universes and channel counts. flamesafe's
+    destination is never 127.0.0.1 port 5568. Never use xLights' Test
+    tools while a group is armed. First test with the gas off and Andy
+    there. LIVE_FLAME_PROGRAMMING.md has the steps.
 [ ] Put the confirmed flamesafe config in that same "Settings and logs"
     folder, named flamesafe.json. Until it is there, flamesafe and the
     Stream Deck program do not start (the engine and show page still do).

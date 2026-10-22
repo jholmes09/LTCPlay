@@ -141,7 +141,20 @@ GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
-    "network", "screen-arming", "alert") + MORNING_POST_ROUTES
+    "network", "screen-arming", "alert", "live-flame") + MORNING_POST_ROUTES
+# Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
+# on the show machine itself (and the role matrix's Settings, users.py), with
+# a confirm; OFF from any surface, signed in or not: it only takes risk away.
+LIVE_FLAME_ENABLES = (
+    "On, LTC Player listens for xLights on this PC only (E1.31 to "
+    "127.0.0.1) and passes the flame controller's channels to flamesafe "
+    "through its own flame link. flamesafe still fires only a group that "
+    "is armed (hold to arm on the Stream Deck), and still applies lockouts "
+    "and Abort. One flame group may be armed at a time. It turns itself "
+    "off, and disarms every flame group, on Off, Abort, Hold, Start now, "
+    "Run, a show starting, a second sender, no xLights data for a while, "
+    "or the session limit. Never use xLights' test tools while a group is "
+    "armed.")
 # screen-arming (2026-10-22): the switch for arming from a screen, set on
 # the show machine itself, never from the network.
 LOCAL_ONLY = frozenset(("network", "screen-arming"))
@@ -943,6 +956,7 @@ class Remote:
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
         self.morning = None          # morning.Morning, set by web.serve
+        self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
         self._log = log
@@ -1111,6 +1125,8 @@ class Remote:
             return (*self.set_network(body),) + ({},)
         if name == "screen-arming":
             return (*self.set_screen_arming(body, ctx),) + ({},)
+        if name == "live-flame":
+            return (*self.live_flame_post(body, ctx),) + ({},)
         if name in USER_POST_ROUTES:
             return self.users_post(name, body, ctx)
         if name in MORNING_POST_ROUTES:
@@ -1489,6 +1505,13 @@ class Remote:
             # risk, so an unconfirmed Abort still takes the flames off; the
             # rest of it is refused below.
             flames = self._disarm_now(who, screen, "Abort")
+        if name in ("abort", "hold", "start-now"):
+            # Live flame programming ends at the press, from every surface,
+            # before the confirm check and before the scheduler: it only
+            # takes risk away (an Abort has already ended it at the flame
+            # link; this says so and closes the listener).
+            self.live_flame_end(f"{who or 'someone'} pressed {name} on the "
+                                f"{screen}", who, screen)
         if name in ("abort", "hold"):
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
@@ -1722,6 +1745,9 @@ class Remote:
         if self._abort_standing():
             return ("An Abort is standing, so nothing arms until it is "
                     "Reset. Press Reset, then hold again.")
+        why = self.live_flame_arm_refusal(gname)
+        if why:
+            return why
         seen = self._deck_seen
         if seen is None or self.clock() - seen > self.DECK_QUIET_S:
             return (f"The Stream Deck program has not read this engine in "
@@ -2065,6 +2091,169 @@ class Remote:
                          who="", screen="", fault=False, **_kw):
         self._journal(who or "system", screen or "engine", action, outcome,
                       text, fault=fault)
+
+    # -- live flame programming (flameprog.py) ------------------------------
+    def live_flame_settings_path(self):
+        return os.path.join(self.folder, SETTINGS_FILE)
+
+    def live_flame_blockers(self):
+        """Why the engine forbids live flame programming right now (entry
+        and every watch pass), in a sentence, or "": a show live or held,
+        an Abort standing, the show clock playing, Run pressed, flamesafe
+        not reporting, the flame link not sending, a purge selected."""
+        why = self.show_live_refusal()
+        if why:
+            return why
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        state = getattr(m, "state", None)
+        if state in ("HOLD", "PAUSED"):
+            return "a Hold is standing; Resume or Reset first"
+        s = getattr(self.control, "session", None)
+        if s is not None and getattr(s, "running", False):
+            return ("Run is pressed (a show file is running), so the show "
+                    "may send flame cues; press Stop first")
+        try:
+            cs = self.control.state() or {}
+        except Exception:                        # noqa: BLE001
+            cs = {}
+        if cs.get("running") or cs.get("starting"):
+            return "Run is pressed (a show file is running); press Stop first"
+        fs = self.flame_status
+        fl = fs.view() if fs is not None else None
+        if not fl or fl.get("stale"):
+            return ("flamesafe has not reported in the last second, so its "
+                    "link and armed groups are not known")
+        lf = self.live_flame
+        link = lf.link() if lf is not None and hasattr(lf, "link") else None
+        if link is not None:
+            try:
+                sender = link.sender_state()
+            except Exception:                    # noqa: BLE001
+                sender = "unknown"
+            if sender not in ("running",):
+                return (f"the flame link to flamesafe is not sending "
+                        f"({sender})")
+            if getattr(link, "lock_alarm", ""):
+                return f"the flame link has an alarm: {link.lock_alarm}"
+            if link.purge_active():
+                return "a purge is firing on the Morning and Shutdown page"
+        mo = self.morning
+        pg = getattr(mo, "purge", None) if mo is not None else None
+        if pg is not None and pg.selected:
+            return ("machines are selected for a purge on the Morning and "
+                    "Shutdown page; clear the purge selection first")
+        return ""
+
+    def live_flame_armed_groups(self):
+        """The flame groups flamesafe reports armed (or asked for), or None
+        when its status is not fresh."""
+        fs = self.flame_status
+        fl = fs.view() if fs is not None else None
+        if not fl or fl.get("stale"):
+            return None
+        return [g["name"] for g in fl.get("groups") or []
+                if g.get("armed") == "armed"]
+
+    def live_flame_arm_refusal(self, gname):
+        """With live flame programming on and one group at a time: a hold
+        on a second group is refused, named. "" otherwise."""
+        lf = self.live_flame
+        if lf is None or not lf.on:
+            return ""
+        s = lf.settings
+        if s is None or not s.one_group:
+            return ""
+        armed = self.live_flame_armed_groups()
+        if armed is None:
+            return ("Live flame programming is on and flamesafe's armed "
+                    "groups are not known, so nothing arms from here.")
+        others = [n for n in armed if n != gname]
+        if others:
+            return (f"Live flame programming is on and {others[0]} is "
+                    f"already armed: one flame group at a time. Disarm it "
+                    f"first.")
+        return ""
+
+    def live_flame_end(self, reason, who="", screen=""):
+        """End live flame programming now, if it is on (D2: every flame
+        group disarmed). Never raises."""
+        lf = self.live_flame
+        if lf is None:
+            return False
+        try:
+            return lf.end(reason, who=who, screen=screen,
+                          system=not who)
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def live_flame_view(self):
+        lf = self.live_flame
+        if lf is None:
+            return {"available": False, "on": False,
+                    "why": "Live flame programming needs the Fire & Ice "
+                           "engine with a flame link."}
+        try:
+            v = lf.view()
+        except Exception as e:                   # noqa: BLE001
+            return {"available": True, "on": False,
+                    "error": f"{type(e).__name__}: {e}"}
+        v["available"] = True
+        return v
+
+    def live_flame_post(self, body, ctx):
+        """POST live-flame {"on": true, "confirmed": true} or {"on":
+        false}. ON: the show machine itself only, confirmed, and every
+        engine check (flameprog.LiveFlame.begin); the role matrix's
+        Settings row is checked by web.py before this (users.classify).
+        Anything but the JSON word true is OFF, from any surface, signed in
+        or not."""
+        who = ctx.user or ""
+        screen = ctx.screen if ctx.local else ctx.device
+        lf = self.live_flame
+        on = body.get("on") is True
+        if not on:
+            if lf is None or not lf.on:
+                return 200, {"ok": True, "on": False,
+                             "text": "Live flame programming is off."}
+            lf.end(f"{who or 'someone signed out'} turned it off on the "
+                   f"{screen}", who=who or "unsigned", screen=screen,
+                   system=False)
+            return 200, {"ok": True, "on": False,
+                         "text": "Live flame programming is OFF. Every "
+                                 "flame group was sent a disarm."}
+        if lf is None:
+            return 409, {"error": "Live flame programming needs the Fire & "
+                                  "Ice engine with a flame link. Nothing "
+                                  "was changed."}
+        if not ctx.local:
+            self._journal(who or ctx.device, ctx.device, "live flame",
+                          "refused",
+                          f"Live flame programming ON from {ctx.device} was "
+                          f"refused: only on the show machine itself.")
+            return 403, {"error": "Live flame programming is turned on on "
+                                  "the show machine itself, not from here. "
+                                  "Nothing was changed."}
+        if body.get("confirmed") is not True:
+            return 400, {"error": "Confirm it on the page first. Nothing "
+                                  "was changed."}
+        ok, text = lf.begin(who or "unsigned", screen)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "on": True, "text": text}
+
+    def morning_live_refusal(self):
+        """The Morning page's live_check: show_live_refusal, and while live
+        flame programming is on nothing fires from that page (one source
+        of fire values at a time)."""
+        why = self.show_live_refusal()
+        if why:
+            return why
+        lf = self.live_flame
+        if lf is not None and lf.on:
+            return ("live flame programming is on; nothing fires from this "
+                    "page until it is off")
+        return ""
 
     def show_live_refusal(self):
         """Why nothing may fire from the Morning page right now: a show
@@ -3032,6 +3221,7 @@ class Remote:
         # is a fault (the render and the layout do not fit, and the like).
         out["flames"]["cues_fault"] = self.cues_fault()
         out["laser_fault"] = self.laser_fault()
+        out["live_flame"] = self.live_flame_view()
         out["show_folder"] = {"served": self._show_folder(),
                               "problem": self.show_folder_problem()}
         out["disarm_connected"] = self._disarm_fn() is not None

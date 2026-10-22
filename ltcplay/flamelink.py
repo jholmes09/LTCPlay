@@ -172,6 +172,16 @@ TC_FPS_DEFAULT = 30.0
 # gap, a connection drop or an engine thread that stops all read as "let
 # go" here, whatever the web layer does. zero() and disarm_all() clear it.
 PURGE_HOLD_S = 0.25
+# Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): fire
+# values xLights sends on loopback while the mode is on, re-set by the
+# listener on every accepted packet. Like the purge frame they go out ONLY
+# while the show is not live, and only for PROGRAM_HOLD_S after the last
+# program_set on this link's own clock, so xLights stopping, the listener
+# dying or the engine hanging all read as zeros here. They are taken only
+# between program_begin() and program_end(); disarm_all() ends them too (an
+# Abort from any surface ends the mode at the link at once). While the mode
+# is on the show's own cues are never sent (one source at a time).
+PROGRAM_HOLD_S = 0.25
 LOCK_ALARM_S = 1.0          # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
 KEY_MIN, KEY_MAX = 16, 128
@@ -474,6 +484,12 @@ class FlameLink:
         # None. Read by values_now while the show is not live.
         self._purge = None
         self.purges_sent = 0
+        # Live flame programming (PROGRAM_HOLD_S): on between program_begin
+        # and program_end (or a disarm_all); the frame is (bytes(512),
+        # clock when set) or None.
+        self._program_on = False
+        self._program = None
+        self.programs_sent = 0
         # Lockout (2026-10-17): channels (1-based slots) zeroed in every
         # frame this link sends, cue or purge. flamesafe enforces the same
         # set from the lockout file; this is the belt to its braces.
@@ -803,9 +819,18 @@ class FlameLink:
             # No show cue playing (idle, between shows, a Hold, an Abort
             # fading out): the purge frame may go, if one is fresh. This is
             # the ONLY place the purge is read, so a live show is never
-            # fed two sources of fire values (MORNING.md, T1).
+            # fed two sources of fire values (MORNING.md, T1). With live
+            # flame programming on, its frame and never the purge's (one
+            # source at a time).
             self._cue_episode("", "")
+            if self._program_on:
+                return tc, self._program_values(now)
             return tc, self._purge_values(now)
+        if self._program_on:
+            # Live flame programming is on: the show's own cues are held
+            # off (one source at a time) and its frame is not read either.
+            # The mode ends as soon as the engine sees the show start.
+            return tc, zeros
         if self.zeroed or tc is None:
             self._cue_episode("", "")
             return tc, zeros
@@ -897,6 +922,70 @@ class FlameLink:
         p = self._purge
         try:
             return p is not None and 0 <= self._clock() - p[1] <= PURGE_HOLD_S
+        except Exception:
+            return False
+
+    # -- live flame programming (flameprog.py) -------------------------------
+    def _program_values(self, now):
+        """The live flame programming frame, while one has been set within
+        PROGRAM_HOLD_S on this link's own clock; else zeros."""
+        p = self._program
+        if p is None or not self._program_on:
+            return bytes(UNIVERSE_SIZE)
+        if now - p[1] > PROGRAM_HOLD_S or now < p[1]:
+            self._program = None
+            return bytes(UNIVERSE_SIZE)
+        self.programs_sent += 1
+        return self._unlocked(p[0])
+
+    def program_begin(self):
+        """Live flame programming is on: program_set is taken from now on.
+        Starts with no frame (zeros). Returns True."""
+        with self._lock:
+            self._program = None
+            self._program_on = True
+        return True
+
+    def program_end(self):
+        """Live flame programming is off: the frame is dropped now and
+        program_set is refused until the next program_begin."""
+        with self._lock:
+            self._program_on = False
+            self._program = None
+
+    @property
+    def program_on(self):
+        return self._program_on
+
+    def program_set(self, values):
+        """The listener's frame: `values` (512 ints 0 to 255) go out on the
+        next frames for PROGRAM_HOLD_S, then stop by themselves unless set
+        again. Only while the mode is on and the show is not live. True
+        when the frame was taken. Never raises."""
+        try:
+            vals = bytes(values)
+            if len(vals) != UNIVERSE_SIZE:
+                raise ValueError("wrong length")
+        except Exception:
+            return False
+        with self._lock:
+            if not self._program_on:
+                return False
+            self._program = (vals, self._clock())
+        return True
+
+    def program_clear(self):
+        """Zeros from the next frame on (the mode stays on)."""
+        with self._lock:
+            self._program = None
+
+    def program_active(self):
+        """True while a live flame programming frame set within
+        PROGRAM_HOLD_S is held."""
+        p = self._program
+        try:
+            return (self._program_on and p is not None
+                    and 0 <= self._clock() - p[1] <= PROGRAM_HOLD_S)
         except Exception:
             return False
 
@@ -1046,12 +1135,14 @@ class FlameLink:
         with self._read_lock:
             tc, values = self.values_now()
         with self._lock:
-            if gen != self._zero_gen or (self.zeroed and self._purge is None):
+            if gen != self._zero_gen or (self.zeroed and self._purge is None
+                                         and self._program is None):
                 # A zero() or disarm_all() that landed since the values were
                 # read wins (gen); and with the cues zeroed, only a purge
                 # frame still held may carry a value (the purge frame is the
                 # one thing that goes out while the conductor has the cues
-                # zeroed, and only while the show is not live: values_now).
+                # zeroed, and only while the show is not live: values_now;
+                # so is a live flame programming frame, by the same rule).
                 values = bytes(UNIVERSE_SIZE)
             seq, mono = self._next()
             self.last_values_nonzero = any(values)
@@ -1117,6 +1208,7 @@ class FlameLink:
         one cannot delay it (fix round 1, item 7)."""
         with self._lock:
             self._purge = None
+            self._program = None
             self.zeroed = True
             self._zero_gen += 1
             return self._send_zero_frame()
@@ -1142,6 +1234,10 @@ class FlameLink:
                 or "Abort"
             with self._lock:
                 self._purge = None
+                # An Abort ends live flame programming at the link, at
+                # once, whichever surface sent it (flameprog.py sees it).
+                self._program = None
+                self._program_on = False
                 self.zeroed = True
                 self._zero_gen += 1
                 self._send_zero_frame()
@@ -1297,6 +1393,9 @@ class FlameLink:
                 "cue_problem": self._cue_problem,
                 "purge": self.purge_active(),
                 "purges_sent": self.purges_sent,
+                "program_on": self._program_on,
+                "program": self.program_active(),
+                "programs_sent": self.programs_sent,
                 "locked_channels": sorted(self._locked),
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,

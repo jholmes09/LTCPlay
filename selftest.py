@@ -52764,6 +52764,1003 @@ process.exit(0);
     print("  ok")
 
 
+
+# ------------------------------------------- live flame programming ----
+# flameprog.py, LIVE_FLAME_PROGRAMMING.md: xLights' E1.31 on loopback, only
+# while the mode is on, relayed through the engine's own flame link.
+
+_LF_NETWORKS = '''<?xml version="1.0" encoding="UTF-8"?>
+<Networks>
+ <Controller Name="pixels" IP="10.0.0.5" ActiveState="Active">
+  <network NetworkType="E131" BaudRate="1" MaxChannels="510"/>
+ </Controller>
+ <Controller Name="Flame Node" IP="{ip}" ActiveState="{state}">
+  <network NetworkType="{proto}" BaudRate="100" MaxChannels="300"/>
+  <network NetworkType="E131" BaudRate="{u2}" MaxChannels="212"/>
+ </Controller>
+ <Controller Name="madmapper" IP="127.0.0.1" ActiveState="Active">
+  <network NetworkType="ArtNet" BaudRate="0" MaxChannels="512"/>
+ </Controller>{extra}
+</Networks>
+'''
+
+
+def _lf_xml(folder, ip="127.0.0.1", state="xLights Only", proto="E131",
+            u2=101, extra=""):
+    p = os.path.join(folder, "xlights_networks.xml")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(_LF_NETWORKS.format(ip=ip, state=state, proto=proto, u2=u2,
+                                     extra=extra))
+    return p
+
+
+class _LfSock:
+    """The listener's socket, never opened: what it was bound to."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def setsockopt(self, *a):
+        pass
+
+    def bind(self, addr):
+        self.log.append(("bind", addr))
+
+    def settimeout(self, t):
+        pass
+
+    def close(self):
+        self.log.append(("close",))
+
+
+class _LfRig:
+    """A LiveFlame on a real FlameLink whose sends are recorded, a map from a
+    synthetic xlights_networks.xml, and a clock the test moves. Nothing
+    listens: packets go in through feed(), the rules through tick()."""
+
+    def __init__(self, **kw):
+        from ltcplay import flameprog as fp, flamelink as fl
+        self.fp, self.fl = fp, fl
+        self.dir = tempfile.mkdtemp()
+        self.xml = _lf_xml(self.dir)
+        self.t = [100.0]
+        self.state = {"tc": None, "live": False}
+        self.link = fl.FlameLink(
+            fl.FlameLinkConfig("127.0.0.1", 5571, 1, _fl_key(),
+                               frame_stale_ms=500),
+            cues=lambda tc: [200] * 512,
+            show_state=lambda: (self.state["tc"], self.state["live"]),
+            clock=lambda: self.t[0], seek_guard=False)
+        self.sent = []
+        self.link._send = lambda data: self.sent.append(data) or True
+        self.blocker = [""]
+        self.armed = [[]]
+        self.dest = [("10.9.9.9", 5568)]
+        self.disarms = []
+        self.lines = []
+        self.socks = []
+        self.settings = kw.pop("settings", None) or fp.Settings()
+        real_disarm = self.link.disarm_all
+
+        def disarm(reason):
+            self.disarms.append(reason)
+            return real_disarm(reason)
+        self.lf = fp.LiveFlame(
+            link_get=lambda: self.link, blockers=lambda: self.blocker[0],
+            map_get=lambda: fp.FlameMap.from_networks(self.xml, "Flame Node"),
+            armed_groups=lambda: self.armed[0], fs_dest=lambda: self.dest[0],
+            settings_get=lambda: self.settings, disarm=disarm,
+            journal=lambda who, screen, outcome, text, fault=False:
+                self.lines.append((outcome, text, fault)),
+            clock=lambda: self.t[0], threaded=False,
+            sock_factory=lambda: _LfSock(self.socks), **kw)
+
+    def on(self):
+        ok, text = self.lf.begin("Jeff", "Rack screen")
+        check(ok, f"setup: the mode turns on: {text}")
+        return ok
+
+    def pk(self, universe=100, values=None, seq=None, **kw):
+        if seq is None:
+            self._seq = getattr(self, "_seq", 0) + 1
+            seq = self._seq
+        return self.fp.build_e131(universe, bytes(values or bytes(300)),
+                                  seq=seq, **kw)
+
+    def feed(self, data, host="127.0.0.1"):
+        return self.lf.feed(data, (host, 40000), self.t[0])
+
+    def out(self):
+        return self.link.values_now()[1]
+
+    def close(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def test_live_flame_sacn_parser_fuzz():
+    section("live flame programming: the E1.31 parser takes only a well "
+            "formed data packet and names what is wrong with anything else; "
+            "fuzzed, truncated, oversize and bit-flipped packets never raise "
+            "anything but its own refusal")
+    from ltcplay import flameprog as fp
+    from ltcplay import output as out_mod
+    good = fp.build_e131(7, bytes(range(256)) + bytes(256), seq=9,
+                         source="xLights", priority=100)
+    p = fp.parse_e131(good)
+    check((p.universe, p.seq, p.priority, p.source, len(p.values),
+           p.values[5], p.preview, p.terminated) ==
+          (7, 9, 100, "xLights", 512, 5, False, False),
+          f"a data packet round trips: {p.universe} {p.seq} {p.source}")
+    # ltcplay's own pixel sender's packet layout parses too (an independent
+    # encoder), and so does a flamesafe-shaped one (its CID).
+    hdr = out_mod._e131_header(3, 10)
+    hp = fp.parse_e131(bytes(hdr) + bytes(range(10)))
+    check(hp.universe == 3 and hp.values == bytes(range(10)) and
+          hp.source == "ltcplay",
+          "output.py's own E1.31 header parses: the two agree on layout")
+    fsp = fp.parse_e131(fp.build_e131(1, bytes(512), cid=fp.FLAMESAFE_CID,
+                                      source="flamesafe", priority=200))
+    check(fsp.cid == fp.FLAMESAFE_CID and fsp.priority == 200,
+          "a flamesafe-shaped packet is recognised by its CID")
+    check(fp.parse_e131(fp.build_e131(1, bytes(4), options=0x80)).preview
+          and fp.parse_e131(fp.build_e131(1, bytes(4),
+                                          options=0x40)).terminated,
+          "preview and stream terminated are read from the options byte")
+
+    def refused(data, kind=fp.PacketError):
+        try:
+            fp.parse_e131(data)
+        except kind as e:
+            return str(e) and "\u2014" not in str(e) and "\u2013" not in str(e)
+        except Exception as e:                      # noqa: BLE001
+            check(False, f"the parser raised {type(e).__name__}: {e}")
+            return False
+        return False
+    b = bytearray(good)
+
+    def flip(at, v):
+        x = bytearray(good)
+        x[at] = v
+        return bytes(x)
+    cases = {
+        "empty": b"", "short": good[:20], "header only": good[:125],
+        "oversize": fp.build_e131(1, bytes(512)) + b"\x00",
+        "bad preamble": flip(1, 0x11), "bad ACN id": flip(6, 0x41),
+        "art-net": b"Art-Net\x00" + bytes(530),
+        "root vector": flip(21, 0x05), "root length": flip(17, b[17] ^ 1),
+        "framing length": flip(39, b[39] ^ 1),
+        "priority 201": flip(108, 201), "universe 0": flip(114, 0),
+        "universe 64000": bytes(good[:113]) + bytes([0xFA, 0x00]) +
+        bytes(good[115:]),
+        "DMP length": flip(116, b[116] ^ 1), "DMP vector": flip(117, 3),
+        "address type": flip(118, 0xA2), "first address": flip(120, 1),
+        "increment": flip(122, 2), "count": flip(124, b[124] ^ 1),
+        "truncated payload": good[:300],
+        "not bytes": None,
+    }
+    for name, data in cases.items():
+        check(refused(data), f"{name}: refused in a sentence")
+    check(refused(flip(125, 0xDD), fp.NotData),
+          "another start code (0xDD) carries no levels: ignored, not data")
+    check(refused(flip(43, 0x03), fp.NotData),
+          "a framing vector that is not data: ignored, not data")
+    check(refused(flip(21, 0x08), fp.NotData),
+          "universe discovery or sync (root vector 8): ignored, not data")
+    rnd = random.Random(31415)
+    raised = []
+    took = 0
+    for i in range(3000):
+        if i % 3 == 0:
+            data = bytes(rnd.getrandbits(8) for _ in range(rnd.randint(0, 700)))
+        else:
+            x = bytearray(good if i % 2 else fp.build_e131(
+                rnd.randint(1, 63999), bytes(rnd.randint(1, 512)),
+                seq=rnd.randint(0, 255)))
+            for _ in range(rnd.randint(1, 6)):
+                x[rnd.randrange(len(x))] = rnd.getrandbits(8)
+            if rnd.random() < 0.3:
+                x = x[:rnd.randint(0, len(x))]
+            data = bytes(x)
+        try:
+            pk = fp.parse_e131(data)
+            took += 1
+            if not (1 <= pk.universe <= 63999 and pk.priority <= 200 and
+                    len(pk.values) <= 512):
+                raised.append(("accepted out of range", i))
+        except fp.PacketError:
+            pass
+        except Exception as e:                      # noqa: BLE001
+            raised.append((type(e).__name__, i))
+    check(not raised, f"3000 fuzzed packets: only PacketError or a sane "
+                      f"packet ({took} still parsed): {raised[:5]}")
+    print("  ok")
+
+
+def test_live_flame_map_from_a_synthetic_networks_file():
+    section("live flame programming: xLights universes and channels map to "
+            "flamesafe slots from xlights_networks.xml exactly as the "
+            "renders do; the flame controller must be E1.31 unicast to "
+            "127.0.0.1 and not Active, and nothing else may send E1.31 here")
+    from ltcplay import flameprog as fp
+    F = _fi_mod()
+    d = tempfile.mkdtemp()
+    try:
+        xml = _lf_xml(d)
+        m = fp.FlameMap.from_networks(xml, "Flame Node")
+        check(m.rows == ((100, 1, 300), (101, 301, 212)),
+              f"row k's channel n is the earlier rows' counts + n: {m.rows}")
+        first, count = F.flame_channels(xml, "Flame Node")
+        check(count == sum(c for _u, _f, c in m.rows) == 512 and
+              first == 511,
+              f"the same span the flame cues read from a render "
+              f"(fire_ice.flame_channels: first {first}, {count})")
+        check(m.slots == set(range(1, 513)), "every slot 1 to 512 is mapped")
+        bad = {
+            "Active": dict(state="Active"),
+            "no ActiveState (xLights reads Active)": dict(state="Active"),
+            "multicast word": dict(ip="MULTICAST"),
+            "a multicast address": dict(ip="239.255.0.100"),
+            "the node's address": dict(ip="10.0.0.60"),
+            "another loopback": dict(ip="127.0.0.2"),
+            "Art-Net": dict(proto="ArtNet"),
+            "a universe twice": dict(u2=100),
+            "a second E1.31 sender to this PC": dict(extra=(
+                '\n <Controller Name="mm2" IP="127.0.0.1" '
+                'ActiveState="Active"><network NetworkType="E131" '
+                'BaudRate="9" MaxChannels="3"/></Controller>')),
+        }
+        for name, kw in bad.items():
+            _lf_xml(d, **kw)
+            try:
+                fp.FlameMap.from_networks(xml, "Flame Node")
+                check(False, f"{name}: accepted")
+            except fp.FlameMapError as e:
+                check(str(e) and "\u2014" not in str(e) and "\u2013" not in str(e),
+                      f"{name}: refused, named: {e}")
+        _lf_xml(d)
+        for name in ("flame node", "Nobody"):
+            try:
+                fp.FlameMap.from_networks(xml, name)
+                check(False, f"{name}: accepted")
+            except fp.FlameMapError as e:
+                check(bool(str(e)), f"a controller called {name!r}: {e}")
+        # find_map: the show folder's file, agreeing copies, a disagreement.
+        got = fp.find_map(d, "Flame Node")
+        check(got.rows == m.rows, "find_map reads the show folder's file")
+        sub = os.path.join(d, "show2")
+        os.makedirs(sub)
+        _lf_xml(sub, u2=102)
+        open(os.path.join(d, "show.json"), "w").write("{}")
+        same = fp.find_map(d, "Flame Node", show_networks=lambda f: xml)
+        check(same.rows == m.rows, "a show file naming the same layout: fine")
+        try:
+            fp.find_map(d, "Flame Node", show_networks=lambda f: os.path.join(
+                sub, "xlights_networks.xml"))
+            check(False, "two layouts that disagree were accepted")
+        except fp.FlameMapError as e:
+            check("networks_xml" in str(e), f"named: {e}")
+        ex = fp.find_map(d, "Flame Node", show_networks=lambda f: None,
+                         explicit=os.path.join(sub, "xlights_networks.xml"))
+        check(ex.rows[1][0] == 102, "networks_xml names the one to use")
+        # The layout changing is seen.
+        m = fp.FlameMap.from_networks(xml, "Flame Node")
+        check(not m.changed(), "an unchanged file is not a change")
+        time.sleep(0.01)
+        _lf_xml(d, u2=103)
+        os.utime(xml, ns=(time.time_ns() + 10 ** 9,) * 2)
+        check(m.changed(), "a saved xlights_networks.xml is a change")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_live_flame_listener_binds_loopback_only():
+    section("live flame programming: the listener binds 127.0.0.1 and "
+            "nothing else, only while the mode is on; a port in use and any "
+            "other listen address are refused before anything is sent; a "
+            "packet from off this PC ends the mode")
+    import socket as _so
+    from ltcplay import flameprog as fp
+    for ip in ("0.0.0.0", "192.168.1.5", "localhost", "127.0.0.2", "", None,
+               "::1"):
+        try:
+            fp.check_listen_ip(ip)
+            check(False, f"{ip!r} accepted as a listen address")
+        except fp.SettingsError as e:
+            check("127.0.0.1" in str(e), f"{ip!r} refused: {e}")
+        try:
+            fp.Settings.parse({"listen_ip": ip})
+            check(False, f"{ip!r} accepted in the settings")
+        except fp.SettingsError:
+            pass
+    for bad in ({"port": 80}, {"port": "5568"}, {"idle_off_s": 5},
+                {"max_session_s": 10 ** 6}, {"one_group_at_a_time": 1},
+                {"networks_xml": 3}, {"listen": "127.0.0.1"}, []):
+        try:
+            fp.Settings.parse(bad)
+            check(False, f"accepted {bad!r}")
+        except fp.SettingsError as e:
+            check("\u2014" not in str(e) and "\u2013" not in str(e),
+                  f"{bad!r} refused: {e}")
+    dflt = fp.Settings.parse({})
+    check((dflt.listen_ip, dflt.port, dflt.idle_off_s, dflt.max_session_s,
+           dflt.one_group) == ("127.0.0.1", 5568, 600, 14400, True),
+          "the defaults: 127.0.0.1:5568, 600 s idle, 4 hours, one group")
+    # Nothing is bound until the mode is on.
+    R = _LfRig()
+    try:
+        check(R.socks == [], "built: no socket")
+        R.settings.listen_ip = "0.0.0.0"     # a settings object gone wrong
+        ok, text = R.lf.begin("Jeff", "Rack screen")
+        check(not ok and not R.lf.on and not any(
+            s[0] == "bind" for s in R.socks) and "127.0.0.1" in text,
+              f"a non-loopback listen address is refused before any bind: "
+              f"{text}")
+        R.settings.listen_ip = "127.0.0.1"
+        R.on()
+        check(R.socks[0] == ("bind", ("127.0.0.1", 5568)),
+              f"on: bound to 127.0.0.1:5568 only: {R.socks}")
+        check(R.feed(R.pk(), host="10.20.0.44") == "ended" and not R.lf.on
+              and "not from this PC" in R.lf.last_end["reason"],
+              f"a packet from off this PC ends it: {R.lf.last_end}")
+    finally:
+        R.close()
+    # A real socket: a free UDP port, then the same port twice. A port
+    # found free can be taken by another test's socket before it is bound
+    # again, so a few are tried.
+    R1 = R2 = None
+    for _try in range(10):
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        if port < 1024:
+            continue
+        R1 = _LfRig(settings=fp.Settings(port=port))
+        R1.lf._sock_factory = lambda: _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        if R1.lf.begin("Jeff", "Rack screen")[0]:
+            break
+        R1.close()
+        R1 = None
+    if not check(R1 is not None, "a free loopback port was bound"):
+        return
+    R2 = _LfRig(settings=fp.Settings(port=port))
+    R2.lf._sock_factory = lambda: _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    try:
+        check(R1.lf._sock.getsockname() == ("127.0.0.1", port),
+              f"really bound on loopback: {R1.lf._sock.getsockname()}")
+        ok, text = R2.lf.begin("Jeff", "Rack screen")
+        check(not ok and "could not be opened" in text and not R2.lf.on and
+              not R2.link.program_on,
+              f"the port in use: refused, named, nothing on: {text}")
+        R1.lf.end("test over", "Jeff", "Rack screen", system=False)
+        check(R1.lf._sock is None, "off: the socket is closed")
+    finally:
+        R1.close()
+        R2.close()
+    print("  ok")
+
+
+def test_live_flame_entry_refusals():
+    section("live flame programming: entry is refused, with the reason, "
+            "while the engine forbids it, without a flame link or flamesafe's "
+            "status, with two groups armed, when flamesafe's own output "
+            "would loop back, and on a bad map; nothing is bound then")
+    from ltcplay import flameprog as fp
+    R = _LfRig()
+    try:
+        def refused(why_in):
+            ok, text = R.lf.begin("Jeff", "Rack screen")
+            good = (not ok and not R.lf.on and why_in in text and
+                    not R.link.program_on and
+                    not any(s[0] == "bind" for s in R.socks))
+            check(good, f"refused naming {why_in!r}: {text}")
+            return text
+        R.blocker[0] = "a scheduled show is live (SHOW)"
+        refused("a scheduled show is live")
+        R.blocker[0] = "Run is pressed (a show file is running)"
+        refused("Run is pressed")
+        R.blocker[0] = ""
+        R.armed[0] = None
+        refused("flamesafe has not reported")
+        R.armed[0] = ["front row", "cat-walk"]
+        refused("one at a time")
+        R.armed[0] = ["front row"]
+        R.dest[0] = ("127.0.0.1", 5568)
+        refused("come back in")
+        R.dest[0] = ("127.5.5.5", 5568)
+        refused("come back in")
+        R.dest[0] = None
+        refused("could not be read")
+        R.dest[0] = ("127.0.0.1", 5569)
+        _lf_xml(R.dir, ip="MULTICAST")
+        refused("multicast")
+        _lf_xml(R.dir)
+        keep = R.lf._link_get
+        R.lf._link_get = lambda: None
+        refused("no flame link")
+        R.lf._link_get = keep
+        R.lf._settings_get = lambda: fp.Settings.parse({"port": 1})
+        refused("'port'")
+        R.lf._settings_get = lambda: R.settings
+        check(len([l for l in R.lines if l[0] == "refused"]) == 10,
+              "every refusal is journaled")
+        check(R.on() and R.link.program_on, "with nothing in the way it turns "
+              "on (one armed group is fine)")
+        ok, text = R.lf.begin("Andy", "Rack screen")
+        check(not ok and "already on" in text, f"twice: {text}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_live_flame_values_and_zero_on_silence():
+    section("live flame programming: xLights' values reach the flame link's "
+            "frame on the mapped slots only, clamped to the controller's "
+            "channels; zero 0.25 s after silence or a stream terminated; a "
+            "channel not seen at zero since its stream started stays zero; "
+            "preview, late and other-universe packets change nothing; the "
+            "show's cues are held off while it is on and its frame is never "
+            "read while a show is live")
+    from ltcplay import flameprog as fp, flamelink as fl
+    R = _LfRig()
+    try:
+        check(fl.PROGRAM_HOLD_S == fp.HOLD_S == 0.25,
+              "the link's hold and the listener's are both 0.25 s")
+        check(not R.link.program_set(bytes([9] * 512)),
+              "before the mode is on the link takes no program frame")
+        R.on()
+        hot = bytes([0] * 10 + [200] + [0] * 289)
+        check(R.feed(R.pk(values=hot)) == "taken" and R.out() == bytes(512),
+              "slot 11 was not zero when the stream started: held at zero")
+        R.feed(R.pk(values=bytes(300)))
+        R.feed(R.pk(values=hot))
+        v = R.out()
+        check(v[10] == 200 and sum(v) == 200,
+              f"seen at zero once, then it goes out on slot 11: {v[10]}")
+        R.link.send_frame()
+        import json as _j
+        got = _j.loads(R.sent[-1])
+        check(got["values"][10] == 200 and got["t"] == "flame",
+              "and it reaches the wire as an ordinary keyed flame frame, "
+              "the cues zeroed between shows")
+        # Universe 101 is slots 301 to 512, clamped to 212 channels.
+        R.feed(R.pk(101, values=bytes(512)))
+        R.feed(R.pk(101, values=bytes([7] * 512)))
+        v = R.out()
+        check(all(x == 7 for x in v[300:512]) and v[10] == 200,
+              "universe 101 fills slots 301 to 512 and no further")
+        R.feed(R.pk(101, values=bytes([0, 5])))
+        R.feed(R.pk(101, values=bytes([3, 4])))
+        v = R.out()
+        check(v[300:302] == bytes([3, 4]) and v[302] == 0,
+              f"a short packet: the rest of its universe is zero: {v[300:303]}")
+        # Ignored: preview, another universe, late or repeated.
+        before = R.out()
+        check(R.feed(R.pk(values=bytes([99] * 300), options=0x80)) ==
+              "preview" and R.out() == before, "preview data: ignored")
+        check(R.feed(R.pk(55, values=bytes([99] * 300))) ==
+              "other universe" and R.out() == before,
+              "a universe the flame controller does not have: ignored")
+        seq = R.lf._seq[100]
+        check(R.feed(R.pk(values=bytes([1] * 300), seq=seq)) ==
+              "out of order" and R.feed(R.pk(values=bytes([1] * 300),
+                                             seq=seq - 5)) == "out of order"
+              and R.out() == before, "a repeated or late sequence: ignored")
+        check(R.feed(b"\x00\x10garbage") == "malformed" and R.lf.on and
+              R.out() == before, "a malformed packet: counted, ignored")
+        # Locked slots: zero, as for any frame on the link.
+        R.link.set_locked_channels({11})
+        check(R.out()[10] == 0, "a locked out slot is zero")
+        R.link.set_locked_channels(set())
+        # Silence: zero within 0.25 s, on the listener's and the link's clocks.
+        R.t[0] += 0.2
+        check(R.out()[10] == 200, "0.2 s after the last packet: still on")
+        R.t[0] += 0.06
+        check(R.out() == bytes(512),
+              "0.26 s after the last packet the flame link drops the frame "
+              "on its own clock, before the listener looks")
+        R.lf.tick(R.t[0])
+        check(R.out() == bytes(512),
+              "and the listener's next pass does not bring it back")
+        R.feed(R.pk(values=hot))
+        check(R.out()[10] == 0, "a restarted stream must show zero again")
+        R.feed(R.pk(values=bytes(300)))
+        R.feed(R.pk(values=hot))
+        check(R.out()[10] == 200, "and then may fire")
+        R.feed(R.pk(values=hot, options=0x40))
+        check(R.out()[10] == 0 and R.lf.counts["terminated"] == 1,
+              "stream terminated: that universe is zero at once")
+        R.feed(R.pk(values=bytes(300)))
+        R.feed(R.pk(values=hot))
+        # One source at a time: the show's cues are held off, and the
+        # program frame is never read while a show is live.
+        R.state.update(tc="00:00:01:00", live=True)
+        R.link.release()
+        R.t[0] += 0.03
+        check(R.out() == bytes(512), "a live show: the program frame is not "
+              "read, and the show's own cues (200 everywhere) are held off")
+        R.state.update(tc=None, live=False)
+        check(R.out()[10] == 200, "not live again: the program frame")
+        R.link.purge_set(bytes([1] * 512))
+        check(R.out()[0] == 0 and R.out()[10] == 200,
+              "a purge frame is never read while the mode is on")
+        R.link.zero()
+        check(R.out() == bytes(512) and R.link.program_on,
+              "zero() drops the frame (the mode stays on)")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_live_flame_ends_disarm_and_name_the_reason():
+    section("live flame programming: a second sender, flamesafe's own "
+            "output, a flood, two groups armed, the engine's blockers "
+            "(show, Run, Hold, Abort), an Abort at the link, a layout "
+            "change, silence and the session limit each END it; ending "
+            "always disarms every flame group and zeroes the values")
+    from ltcplay import flameprog as fp
+    import uuid as _uuid
+    other = _uuid.uuid5(_uuid.NAMESPACE_DNS, "another.sender").bytes
+
+    def run(name, act, why_in, expect_disarm=True):
+        R = _LfRig()
+        try:
+            R.on()
+            R.feed(R.pk(values=bytes(300)))
+            R.feed(R.pk(values=bytes([0] * 10 + [200] + [0] * 289)))
+            check(R.out()[10] == 200, f"{name}: setup: firing")
+            act(R)
+            le = R.lf.last_end or {}
+            check(not R.lf.on and not R.link.program_on and
+                  why_in in le.get("reason", "") and R.out() == bytes(512),
+                  f"{name}: ended, zero, reason named: {le}")
+            if expect_disarm:
+                check(R.disarms and "Live flame programming ended" in
+                      R.disarms[-1] and why_in in R.disarms[-1],
+                      f"{name}: every flame group disarmed (D2): "
+                      f"{R.disarms}")
+            check(not R.link.program_set(bytes([5] * 512)),
+                  f"{name}: the link takes no program frame afterwards")
+            check(any(o == "off" for o, _t, _f in R.lines),
+                  f"{name}: journaled")
+        finally:
+            R.close()
+    run("a second CID", lambda R: R.feed(R.pk(cid=other)),
+        "a second E1.31 source")
+    run("the same CID at another priority",
+        lambda R: R.feed(R.pk(priority=150)), "a second E1.31 source")
+    run("a second sender on another universe",
+        lambda R: R.feed(R.pk(55, cid=other)), "a second E1.31 source")
+    run("flamesafe's CID",
+        lambda R: R.feed(R.pk(1, bytes(512), cid=fp.FLAMESAFE_CID,
+                              source="other", priority=200)),
+        "flamesafe's own")
+    run("flamesafe's source name",
+        lambda R: R.feed(R.pk(1, bytes(512), source="flamesafe")),
+        "flamesafe's own")
+
+    def flood(R):
+        for i in range(fp.RATE_MAX + 5):
+            if not R.lf.on:
+                break
+            R.t[0] += 0.001
+            R.feed(R.pk(values=bytes(300)))
+    run("a flood", flood, "a flood")
+
+    def two(R):
+        R.armed[0] = ["front row", "cat-walk"]
+        R.lf.tick(R.t[0])
+    run("two groups armed", two, "one at a time")
+
+    def stale(R):
+        R.armed[0] = None
+        R.lf.tick(R.t[0])
+    run("flamesafe stops reporting", stale, "flamesafe stopped reporting")
+    for why in ("a scheduled show is live (SHOW)", "Run is pressed",
+                "a Hold is standing", "the show is aborted"):
+        def blk(R, why=why):
+            R.blocker[0] = why
+            R.lf.tick(R.t[0])
+        run(f"the engine: {why}", blk, why)
+
+    def abort(R):
+        R.link.disarm_all("Abort from the Stream Deck")
+        check(R.out() == bytes(512) and not R.link.program_on,
+              "an Abort ends it at the link at once, before any tick")
+        R.lf.tick(R.t[0])
+    run("an Abort at the link", abort, "every flame group was disarmed")
+
+    def layout(R):
+        os.utime(R.xml, ns=(time.time_ns() + 10 ** 9,) * 2)
+        R.lf.tick(R.t[0])
+    run("the layout changed", layout, "xlights_networks.xml changed")
+
+    def idle(R):
+        R.t[0] += 599
+        check(R.lf.tick(R.t[0]) == "" and R.lf.on, "599 s quiet: still on")
+        R.t[0] += 2
+        R.lf.tick(R.t[0])
+    run("no xLights data", idle, "no xLights data for 600 s")
+
+    def longest(R):
+        for _ in range(int(14400 / 300) + 1):
+            R.t[0] += 300
+            R.feed(R.pk(values=bytes(300)))
+            R.lf.tick(R.t[0])
+            if not R.lf.on:
+                break
+    run("the session limit", longest, "the most one session may last")
+
+    def off(R):
+        R.lf.end("Jeff turned it off on the Rack screen", "Jeff",
+                 "Rack screen", system=False)
+    run("Off", off, "turned it off")
+    print("  ok")
+
+
+def test_live_flame_engine_routes_roles_and_presses():
+    section("live flame programming at the engine: ON only on the show "
+            "machine, confirmed, with the Settings permission; OFF from any "
+            "surface signed out; Abort, Hold and Start now end it at the "
+            "press; a second group's hold is refused; the Morning page "
+            "fires nothing while it is on; /api/remote/status says it")
+    import types
+    from ltcplay import remote as RM, users as U
+    check(U.classify("/api/remote/live-flame", {"on": True}) == "settings",
+          "ON is the Settings row")
+    for b in ({"on": False}, {}, {"on": "true"}, {"on": 1}, None, []):
+        check(U.classify("/api/remote/live-flame", b) == "safety",
+              f"OFF ({b!r}) is a safety press")
+    check(not U.allowed(U.DEFAULT_MATRIX, None, "settings") and
+          not U.allowed(U.DEFAULT_MATRIX, "operator", "settings") and
+          U.allowed(U.DEFAULT_MATRIX, "admin", "settings"),
+          "by default only an admin has Settings")
+    check("live flame programming off" in U.SAFETY_ROWS,
+          "the role matrix's safety row names it")
+
+    class FakeLF:
+        def __init__(self):
+            self.on = False
+            self.calls = []
+            self.settings = types.SimpleNamespace(one_group=True)
+
+        def begin(self, who, screen):
+            self.calls.append(("begin", who, screen))
+            self.on = True
+            return True, "on"
+
+        def end(self, reason, who="", screen="", system=True):
+            self.calls.append(("end", reason, who))
+            was, self.on = self.on, False
+            return was
+
+        def view(self):
+            return {"on": self.on, "name": "Live flame programming",
+                    "last_end": None}
+    httpd, http, cookie_of, work = _accounts_engine()
+    rem = httpd.remote
+    try:
+        lf = rem.live_flame = FakeLF()
+        st, out, _h = http("/api/remote/live-flame", {"on": True,
+                                                      "confirmed": True})
+        check(st == 403 and out.get("role_refused") and not lf.calls,
+              f"signed out may not turn it on: {st} {out}")
+        st, out, h = http("/api/remote/signin", {"name": "Vic",
+                                                 "password": "",
+                                                 "new_password": "vic-pw-123"})
+        vic = cookie_of(h)
+        st, out, _h = http("/api/remote/live-flame", {"on": True,
+                                                      "confirmed": True},
+                           cookie=vic)
+        check(st == 403 and out.get("role_refused") and not lf.calls,
+              f"a viewer may not: {st} {out}")
+        st, out, h = http("/api/remote/signin", {"name": "Jeff",
+                                                 "password": "",
+                                                 "new_password": "jeff-pw-123"})
+        jeff = cookie_of(h)
+        st, out, _h = http("/api/remote/live-flame", {"on": True},
+                           cookie=jeff)
+        check(st == 400 and not lf.calls, f"unconfirmed: refused: {out}")
+        st, out, _h = http("/api/remote/live-flame", {"on": True,
+                                                      "confirmed": True},
+                           cookie=jeff)
+        check(st == 200 and lf.calls == [("begin", "Jeff", "Rack screen")],
+              f"an admin on the rack screen, confirmed: on: {out} "
+              f"{lf.calls}")
+        st, out, _h = http("/api/remote/status")
+        check(out.get("live_flame", {}).get("on") is True and
+              out["live_flame"]["available"] is True,
+              f"the status says so: {out.get('live_flame')}")
+        st, out, _h = http("/api/remote/live-flame", {"on": False})
+        check(st == 200 and not lf.on and lf.calls[-1][0] == "end" and
+              lf.calls[-1][2] == "unsigned",
+              f"signed out may turn it OFF: {st} {out} {lf.calls[-1]}")
+        st, out, _h = http("/api/remote/live-flame", {"on": False})
+        check(st == 200, "off when it is already off: fine")
+        rem.audit.flush(5.0)
+        lines = [l for l in _audit_lines(rem.audit.folder)
+                 if "live-flame" in str(l.get("action"))]
+        check(len(lines) >= 4 and any(l["user"] == "unsigned" and
+                                       l["result"] == "accepted"
+                                       for l in lines),
+              f"every press is audit logged, the signed-out off too: "
+              f"{[(l['user'], l['result']) for l in lines]}")
+        # Off and the end at a press, through the remote's own presses.
+        for name, body in (("abort", {"confirmed": True}), ("hold", {}),
+                           ("start-now", {"seen": int(time.time() * 1000)})):
+            lf.on = True
+            http(f"/api/remote/{name}", body)
+            check(not lf.on and name in lf.calls[-1][1],
+                  f"{name} ends it at the press: {lf.calls[-1]}")
+        lf.on = True
+        http(f"/api/remote/abort", {})
+        check(not lf.on, "an UNCONFIRMED Abort still ends it (risk only "
+                         "goes down)")
+        # Run (/api/start) ends it before the session starts.
+        lf.on = True
+        http("/api/start", {"timeline": "nothing.json"}, cookie=jeff)
+        check(not lf.on and "Run was pressed" in lf.calls[-1][1],
+              f"Run ends it: {lf.calls[-1]}")
+    finally:
+        httpd.server_close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # Not from the network; one group at a time on a screen hold; the
+    # Morning page's live check.
+    r = RM.Remote(types.SimpleNamespace(session=None, state=lambda: {}),
+                  None, folder=tempfile.gettempdir())
+    lf = r.live_flame = FakeLF()
+    net = RM.Ctx(False, "10.20.0.44")
+    code, out = r.live_flame_post({"on": True, "confirmed": True}, net)
+    check(code == 403 and not lf.calls, f"ON from an iPad: refused: {out}")
+    code, out = r.live_flame_post({"on": False}, net)
+    check(code == 200, "OFF from an iPad: fine")
+
+    class FS:
+        def __init__(self, groups, stale=False):
+            self.groups, self.stale = groups, stale
+
+        def view(self):
+            return {"stale": self.stale, "age_ms": 100,
+                    "groups": [{"name": n, "armed": a, "wanted": False}
+                               for n, a in self.groups]}
+    r.flame_status = FS([("front row", "armed"), ("cat-walk", "disarmed")])
+    lf.on = True
+    r._deck_seen = r.clock()
+    why = r.arm_refusal("cat-walk", "Rack screen")
+    check("one flame group at a time" in why and "front row" in why,
+          f"a hold on a second group is refused, named: {why}")
+    check(r.arm_refusal("front row", "Rack screen") == "",
+          "the group already armed is not refused by this rule")
+    lf.settings.one_group = False
+    check(r.arm_refusal("cat-walk", "Rack screen") == "",
+          "one_group_at_a_time false: the rule is off")
+    lf.settings.one_group = True
+    r.flame_status = FS([("front row", "armed")], stale=True)
+    check("not known" in r.arm_refusal("cat-walk", "Rack screen"),
+          "flamesafe stale while on: nothing arms from a screen")
+    lf.on = False
+    check(r.arm_refusal("cat-walk", "Rack screen") == "",
+          "off: the rule does not apply")
+    lf.on = True
+    check("live flame programming is on" in r.morning_live_refusal(),
+          "the Morning page fires nothing while it is on")
+    lf.on = False
+    check(r.morning_live_refusal() == "",
+          "off: the Morning page is as before")
+    # The engine's blockers.
+    r.flame_status = FS([("front row", "disarmed")])
+    check(r.live_flame_blockers() == "", "nothing in the way: no blocker")
+    r.control = types.SimpleNamespace(
+        session=types.SimpleNamespace(running=True, clock=None),
+        state=lambda: {})
+    check("Run is pressed" in r.live_flame_blockers(),
+          "Run pressed (the session running): named")
+    r.control = types.SimpleNamespace(
+        session=None, state=lambda: {"starting": True})
+    check("Run is pressed" in r.live_flame_blockers(),
+          "Run pressed (the engine's state says starting): named")
+    r.control = types.SimpleNamespace(session=None, state=lambda: {})
+    r.schedule = types.SimpleNamespace(
+        machine=types.SimpleNamespace(state="HOLD", abort_latched=False),
+        conductor=None)
+    check("Hold" in r.live_flame_blockers(), "a Hold: named")
+    r.schedule.machine.state = "SHOW"
+    check("live" in r.live_flame_blockers(), "a show live: named")
+    r.schedule.machine.state = "IDLE"
+    r.schedule.machine.abort_latched = True
+    check("aborted" in r.live_flame_blockers(), "an Abort latch: named")
+    r.schedule.machine.abort_latched = False
+    r.flame_status = FS([("front row", "disarmed")], stale=True)
+    check("flamesafe has not reported" in r.live_flame_blockers(),
+          "flamesafe stale: named")
+    r.flame_status = None
+    check("flamesafe" in r.live_flame_blockers(), "no flamesafe status: named")
+    print("  ok")
+
+
+def test_live_flame_page_banner_and_card():
+    section("live flame programming on the page: a red LIVE FLAME "
+            "PROGRAMMING bar on every screen while it is on, with Off; the "
+            "card's confirm says what the engine says; no dashes")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    from ltcplay import remote as RM
+    check(f'const LIVE_FLAME_ENABLES = "{RM.LIVE_FLAME_ENABLES}";' in page,
+          "the confirm box says remote.LIVE_FLAME_ENABLES word for word")
+    alerts = page[page.index('<div id="alerts">'):]
+    alerts = alerts[:alerts.index("\n")]
+    check('id="lf-banner"' in alerts and "LIVE FLAME PROGRAMMING" in alerts
+          and 'id="lf-banner-off"' in alerts,
+          "the bar lives in #alerts, above every view, with its Off button")
+    check("ban.hidden = !on;" in page,
+          "the bar is shown exactly while the engine says it is on")
+    check('post("/api/remote/live-flame", {on: false})' in page and
+          'post("/api/remote/live-flame", {on: true, confirmed: true})'
+          in page, "Off sends on false; On sends on true, confirmed")
+    check("confirmBox(\"Turn on live flame programming?\"" in page,
+          "On asks first")
+    doc = open(os.path.join(here, "LIVE_FLAME_PROGRAMMING.md"),
+               encoding="utf-8").read()
+    chk = open(os.path.join(here, "packaging", "windows",
+                            "SHOW PC CHECKLIST.txt"), encoding="utf-8").read()
+    for name, text in (("the doc", doc), ("the checklist", chk),
+                       ("LIVE_FLAME_ENABLES", RM.LIVE_FLAME_ENABLES)):
+        check("\u2014" not in text and "\u2013" not in text, f"{name}: no dashes")
+    check("[verify in xLights]" in doc and "127.0.0.1" in chk and
+          "LIVE_FLAME_PROGRAMMING.md" in chk,
+          "the doc marks what was not checked in xLights; the checklist "
+          "points at it")
+    print("  ok")
+
+
+def test_live_flame_end_to_end_real_flamesafe():
+    section("live flame programming end to end: real xLights-shaped E1.31 "
+            "on loopback, the real listener and flame link, the REAL "
+            "flamesafe as its own process: with every group disarmed nothing "
+            "xLights sends ever reaches the node, not even the arm value on "
+            "a safety slot; flamesafe's own packet sent back in ends the "
+            "mode")
+    import json as _j
+    import socket as _so
+    import subprocess
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    def free_udp():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.01)
+    listen, statusp, armp, lfport = (free_udp(), free_udp(), free_udp(),
+                                     free_udp())
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    names = ["front row", "cat-walk"]
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "arm_port": armp, "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": n, "safety": 401 + i, "fire": [411 + 10 * i]}
+                   for i, n in enumerate(names)]}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    link = fl.FlameLink(fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+                        ).start()
+    d = tempfile.mkdtemp()
+    xml = os.path.join(d, "xlights_networks.xml")
+    open(xml, "w").write(
+        '<?xml version="1.0"?><Networks><Controller Name="Flame Node" '
+        'IP="127.0.0.1" ActiveState="xLights Only"><network '
+        'NetworkType="E131" BaudRate="100" MaxChannels="512"/>'
+        '</Controller></Networks>')
+    lfp = [lfport]
+    lf = fp.LiveFlame(
+        link_get=lambda: link, blockers=lambda: "",
+        map_get=lambda: fp.FlameMap.from_networks(xml, "Flame Node"),
+        armed_groups=lambda: [],
+        fs_dest=lambda: fp.flamesafe_destination(cfg_path),
+        settings_get=lambda: fp.Settings(port=lfp[0]))
+    xl = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    try:
+        # flamesafe is up: its packets reach the node.
+        first = None
+        end = time.monotonic() + 15
+        while first is None and time.monotonic() < end:
+            try:
+                first, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+        if not check(first is not None, "flamesafe started and sends to the "
+                     "node: " + "".join(said)[-500:]):
+            return
+        for _try in range(5):
+            ok, text = lf.begin("Jeff", "Rack screen")
+            if ok or "could not be opened" not in text:
+                break
+            lfp[0] = free_udp()       # taken meanwhile: another port
+        lfport = lfp[0]
+        check(ok and lf.on, f"the mode is on: {text}")
+        zero = bytes(512)
+        hot = bytearray(512)
+        hot[400] = 78          # the arm value on group 1's safety slot
+        hot[410] = 200         # group 1's fire slot
+        hot[420] = 200         # group 2's fire slot
+        seq = 0
+        worst = 0
+        frames = 0
+        t_end = time.monotonic() + 1.6
+        while time.monotonic() < t_end:
+            seq += 1
+            xl.sendto(fp.build_e131(100, zero if seq < 5 else bytes(hot),
+                                    seq=seq), ("127.0.0.1", lfport))
+            # flamesafe's own 40 Hz to the node, for 25 ms (xLights' frame).
+            until = time.monotonic() + 0.025
+            while time.monotonic() < until:
+                try:
+                    data, _a = node.recvfrom(2048)
+                except _so.timeout:
+                    continue
+                p = fp.parse_e131(data)
+                frames += 1
+                worst = max(worst, p.values[400], p.values[410],
+                            p.values[420])
+        snap = link.snapshot()
+        check(snap["programs_sent"] > 20 and lf.counts["taken"] > 20,
+              f"xLights' values went out on the flame link "
+              f"({snap['programs_sent']} frames, "
+              f"{lf.counts['taken']} packets taken, {dict(lf.counts)}, "
+              f"ended: {lf.last_end})")
+        check(frames > 30 and worst == 0,
+              f"flamesafe sent {frames} packets to the node and not one "
+              f"carried a value on a safety or fire slot (worst {worst}): "
+              f"a disarmed group never fires, and xLights cannot arm one")
+        # flamesafe's own packet, looped back in: the mode ends.
+        xl.sendto(first, ("127.0.0.1", lfport))
+        end = time.monotonic() + 3
+        while lf.on and time.monotonic() < end:
+            time.sleep(0.02)
+        check(not lf.on and "flamesafe's own" in
+              (lf.last_end or {}).get("reason", "") and not link.program_on,
+              f"flamesafe's own output sent back in ends it: "
+              f"{lf.last_end}")
+    finally:
+        lf.end("test over")
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        for s in (node, xl):
+            s.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -53306,6 +54303,15 @@ if __name__ == "__main__":
     test_soak_pc_clock_and_time_service_in_the_morning_checks()
     test_artnet_receivers_one_address_each_and_on_this_pc()
     test_soak_bench_render_universes_and_fps()
+    test_live_flame_sacn_parser_fuzz()
+    test_live_flame_map_from_a_synthetic_networks_file()
+    test_live_flame_listener_binds_loopback_only()
+    test_live_flame_entry_refusals()
+    test_live_flame_values_and_zero_on_silence()
+    test_live_flame_ends_disarm_and_name_the_reason()
+    test_live_flame_engine_routes_roles_and_presses()
+    test_live_flame_page_banner_and_card()
+    test_live_flame_end_to_end_real_flamesafe()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
