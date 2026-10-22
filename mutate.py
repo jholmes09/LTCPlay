@@ -9209,8 +9209,12 @@ def build():
  ("deck: the FIRE heartbeats carry on after the engine refuses one (T3)",
   "ltcplay/streamdeck.py",
   '''            if not ok:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and''',
   '''            if False:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and'''),
 
  ("lasertest: a locked laser's test turns on (T10)",
@@ -9706,10 +9710,10 @@ def build():
   'ltcplay/remote.py',
   '            if age > self.DECK_QUIET_S:\n'
   '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
-  '            elif usb is None:',
+  '            elif self._deck_usb_fail:',
   '            if False:\n'
   '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
-  '            elif usb is None:'),
+  '            elif self._deck_usb_fail:'),
 
  ('deck hold: a Hold the engine found already done is ENGINE FAULT',
   'ltcplay/streamdeck.py',
