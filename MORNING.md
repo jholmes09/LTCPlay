@@ -200,6 +200,9 @@ every engine start and restart is DISARMED, and BEYOND's
   morning) works again afterwards. The engine stopping disarms too, and so
   does a blocker that appears while every laser is armed (a lockout or
   settings problem, the blanking lost).
+- **Startup**: `ltc serve` blanks the lasers and sends DisableLaserOutput
+  itself at start, before the Morning page is built, so a page that fails
+  to build cannot leave BEYOND's output on.
 - **Order**: a disarm's blank and DisableLaserOutput go first, before any
   journal line, audit event, test-off or placeholder message. A laser's own
   OSC lists (`on`, `off`, `lock`, `arm`, `disarm`) can never name BEYOND's

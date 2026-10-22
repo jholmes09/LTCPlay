@@ -1454,6 +1454,22 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
         return False
 
 
+def _startup_lasers_dark(wiring):
+    """The engine starting: the lasers blanked and BEYOND's laser output
+    switched off, through the conductor and its own Blanking. Never
+    raises; a failure is the Blanking's and beyond.py's own fault line."""
+    try:
+        wiring.conductor.lasers_dark_now("the engine started")
+    except Exception:                            # noqa: BLE001
+        pass
+    try:
+        bl = getattr(getattr(wiring, "devices", None), "beyond", None)
+        if bl is not None and hasattr(bl, "output_disable"):
+            bl.output_disable()
+    except Exception:                            # noqa: BLE001
+        pass
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
@@ -1717,6 +1733,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             alert_pixels=httpd.remote.alert_pixels)
         httpd.conductor = wiring.conductor
         httpd.fire_ice = wiring
+        # Every laser starts disarmed (Jeff, 2026-10-22): the blank and
+        # BEYOND's DisableLaserOutput go out here, whatever happens to the
+        # Morning page's laser arm below (review of PR #87, round 2, P3-5:
+        # a page that fails to build must not leave the output enabled).
+        _startup_lasers_dark(wiring)
         # The rack screen shows a flame cue fault too (P1-3), and a render
         # older than the layout is an alert from show load on (soak
         # 2026-10-21): it used to be a journal line only.
