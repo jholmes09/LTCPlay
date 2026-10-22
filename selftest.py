@@ -49279,6 +49279,9 @@ def test_artnet_receivers_one_address_each_and_on_this_pc():
             rm._artnet_probe = lambda a: here["ok"]
             show(R.folder, "show.json", good)
             ck = {c["id"]: c for c in rm.engine_checks()}
+            check("artnet" in ck,
+                  f"the Morning page has the Art-Net card: {list(ck)}")
+            ck.setdefault("artnet", {"level": "", "text": ""})
             check(ck["artnet"]["level"] == "ok" and
                   "its own address" in ck["artnet"]["text"],
                   f"a valid layout on this PC passes: {ck['artnet']}")
@@ -49293,6 +49296,9 @@ def test_artnet_receivers_one_address_each_and_on_this_pc():
                                          "Lights": "localhost"})
             R.mono[0] += 60
             ck = {c["id"]: c for c in rm.engine_checks()}
+            check("artnet" in ck,
+                  f"the Morning page has the Art-Net card: {list(ck)}")
+            ck.setdefault("artnet", {"level": "", "text": ""})
             c = ck["artnet"]
             check(c["level"] == "bad" and
                   "MadMapper node 10.250.1.1 is not an address on this PC"
@@ -49323,6 +49329,9 @@ def test_artnet_receivers_one_address_each_and_on_this_pc():
             show(R.folder, "show.json", good)
             R.mono[0] += 60
             ck = {c["id"]: c for c in rm.engine_checks()}
+            check("artnet" in ck,
+                  f"the Morning page has the Art-Net card: {list(ck)}")
+            ck.setdefault("artnet", {"level": "", "text": ""})
             check(ck["artnet"]["level"] == "warn" and
                   "not known" in ck["artnet"]["text"],
                   f"unknown adapters: a warning: {ck['artnet']}")
