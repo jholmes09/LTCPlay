@@ -41049,6 +41049,9 @@ t(!armState(ast, 10000, 8900, 0).ok, "1.1 s since the engine: may not");
 t(!armState(ast, 10000, 9500, 1).ok, "already armed: may not");
 t(!armState(Object.assign({}, ast, {arming:{enabled:false}}),
   10000, 9500, 0).ok, "arming switched off: may not");
+t(armState(Object.assign({}, ast, {arming:{enabled:false}}),
+  10000, 9500, 0).why.indexOf("Programming, Arming from a screen, Turn on") > 0,
+  "and the page says how to turn it on");
 t(!armState(Object.assign({}, ast, {flames:Object.assign({}, ast.flames,
   {age_ms:1200})}), 10000, 9500, 0).ok, "flamesafe 1.2 s old: may not");
 t(!armState(Object.assign({}, ast, {flames:Object.assign({}, ast.flames,
@@ -41194,8 +41197,14 @@ def test_remote_has_no_arm_route():
     here = os.path.dirname(os.path.abspath(__file__))
     every = list(RM.GET_ROUTES) + list(RM.POST_ROUTES)
     armish = sorted(r for r in every if _re.search(r"(?<!dis)arm", r))
-    check(armish == ["arm-hold", "arm-release"],
-          f"the only arm routes are the hold and its release: {armish}")
+    # screen-arming (2026-10-22) is the switch for arming from a screen,
+    # set on the show machine itself only; it arms nothing (turning it off
+    # lets every hold go). test_screen_arming_switch_and_refusals proves it.
+    check(armish == ["arm-hold", "arm-release", "screen-arming"],
+          f"the only arm routes are the hold, its release and the switch: "
+          f"{armish}")
+    check("screen-arming" in RM.LOCAL_ONLY,
+          "the switch is the show machine's own, never the network's")
     check(RM.ARM_ROUTES == ("arm-hold", "arm-release", "group-disarm"),
           f"the arm routes: {RM.ARM_ROUTES}")
     for name in ("remote.py", "web.py"):
@@ -41213,7 +41222,7 @@ def test_remote_has_no_arm_route():
     posted = set(_re.findall(r'/api/remote/([a-z-]+)', page)) | set(
         _re.findall(r'press\("([a-z-]+)"', page))
     check({p for p in posted if _re.search(r"(?<!dis)arm", p)} <=
-          {"arm-hold", "arm-release"},
+          {"arm-hold", "arm-release", "screen-arming"},
           f"the page posts to no other arm route: {sorted(posted)}")
     S = _sched()
     if S is None:
@@ -41953,10 +41962,17 @@ def _arm_rig(S):
     # Off by default (review of PR #43, P0-4): the rules below are of
     # screen arming switched on.
     RM.save_settings(R.work, screen_arming=True)
+    # The Stream Deck program is reading the engine (2026-10-22: a screen
+    # hold with no deck to take it is refused, and says so). _hold keeps
+    # it reading at the rig's clock unless a test sets keep_deck False.
+    R.keep_deck = True
+    R.remote._deck_seen = R.mono[0]
     return R
 
 
 def _hold(R, group, hold_id=None, client=("10.20.0.44", 50000), **kw):
+    if getattr(R, "keep_deck", False):
+        R.remote._deck_seen = R.mono[0]      # the deck reads at 20 Hz
     body = {"group": group, "seen": R.seen()}
     if hold_id is not None:
         body["hold_id"] = hold_id
@@ -42220,6 +42236,20 @@ def test_screen_arm_engine_rules():
         check(any(r.get("action") == "arm hold" and
                   r.get("outcome") == "cancelled" for r in R.svc.journal),
               "journaled as cancelled")
+        # While the Abort stands a new hold is refused, and says why (the
+        # Stream Deck takes none while latched; 2026-10-22). Reset clears it.
+        R.feed()
+        st, _h, out = _hold(R, "front row")
+        check(st == 409 and "An Abort is standing" in out["error"] and
+              "Reset" in out["error"] and out.get("let_go") and
+              R.remote.deck_input()["holds"] == [],
+              f"a hold while the Abort stands is refused by name: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()},
+                            client=other)
+        R.settle()
+        check(st == 200 and not R.svc.machine.abort_latched,
+              f"setup: Reset clears the Abort: {st} {out}")
+        R.feed()
         # Disarm every flame group too.
         st, _h, out = _hold(R, "front row")
         R.ask("POST", "/api/remote/disarm-all", {})
@@ -42655,6 +42685,7 @@ def test_screen_arm_end_to_end_probes():
         return http("/api/remote/status", cookie=andy)[1]
 
     whys = {}
+    said = []          # every answer the engine gave a heartbeat
 
     def hold(group, cookie, seconds, drop_at=None, seen_lag=0.0,
              during=None, on_beat=None):
@@ -42701,6 +42732,7 @@ def test_screen_arm_end_to_end_probes():
                 body["hold_id"] = hid
             code, out, _h = http("/api/remote/arm-hold", body, cookie)
             answers.append(code)
+            said.append(out)
             if on_beat is not None:
                 on_beat(answers)
             if code != 200:
@@ -42760,12 +42792,32 @@ def test_screen_arm_end_to_end_probes():
         check(any("arm pressed (held 1 s on the Rack screen) by Rack "
                   "screen" in e for e in events),
               "and the deck journaled the surface the hold came from")
+        # The deck taking the hold is said on the page as a success
+        # (2026-10-22), never as "already armed".
+        check(any(o.get("armed") is True and "the Stream Deck took the hold"
+                  in o.get("text", "") for o in said),
+              f"P1: the page was told the Stream Deck took the hold: "
+              f"{[o for o in said if not o.get('ok') or o.get('armed')][-3:]}")
         # Disarm it from the page: a tap through the deck.
+        sent = time.perf_counter()
         http("/api/remote/group-disarm", {"group": "front row"}, andy)
         end = time.perf_counter() + 2
         while time.perf_counter() < end and armed(0):
             time.sleep(0.02)
         check(not armed(0), "a per-group disarm from the page disarmed it")
+        # P1b: held again at once, inside the deck's re-arm wait: the
+        # real deck refuses it, reports it, and the page is told why
+        # (2026-10-22: never a bar that fills and arms nothing). Only
+        # proved when the hold starts well inside the wait (a slow runner
+        # that took longer to see the disarm proves nothing here).
+        if time.perf_counter() - sent < sd.REARM_REFRACTORY_S - 0.8:
+            k = len(whys.get("front row", []))
+            hold("front row", andy, 1.5)
+            ended = [w for _t, w in whys.get("front row", [])[k:]]
+            check(any("disarmed less than 2 s ago" in str(w)
+                      for w in ended) and not armed(0),
+                  f"P1b: the deck's re-arm wait is said on the page: "
+                  f"{ended}")
         time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         # P2: the connection drops at 0.7 s of a 1 s hold.
         hold("cat-walk", andy, 2.0, drop_at=0.7)
@@ -42856,6 +42908,437 @@ def test_screen_arm_end_to_end_probes():
         import shutil
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(folder, ignore_errors=True)
+    print("  ok")
+
+
+def test_screen_arming_switch_and_refusals():
+    section("arming from the rack screen (Jeff, 2026-10-22: \"I'm supposed "
+            "to be able to enable flames via the screen\"): off by default "
+            "and said so on the page with how to turn it on; a switch on the "
+            "show machine itself; every refusal named (Abort, no Stream "
+            "Deck, this screen arranging, a locked out group, the deck's own "
+            "refusals); the deck taking the hold said as a success; the role "
+            "matrix and a stale or another screen's Arrange mode as before")
+    S = _sched()
+    if S is None:
+        return
+    import itertools
+    import json as _j
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
+    seq = itertools.count(1)
+
+    def rig(arming):
+        R = _morning_rig(S, config=_MO_CONFIG)
+        R.keep_deck = True
+        if arming is None:
+            os.remove(os.path.join(R.work, RM.SETTINGS_FILE))
+        else:
+            RM.save_settings(R.work, screen_arming=arming)
+        udir = os.path.join(R.work, "users")
+        os.makedirs(udir)
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"), ("Vic", "viewer")])
+        R.remote.users = us
+        R.toks = {}
+        for name in ("Jeff", "Ollie", "Vic"):
+            ok, why, tok, _n = us.sign_in(name, "", True, "rack",
+                                          new_password=f"{name}-pw-1234")
+            check(ok and tok, f"setup: {name} signs in: {why}")
+            R.toks[name] = tok
+        return R
+
+    def hdr(R, who):
+        return {"Cookie": f"{U.COOKIE}={R.toks[who]}"} if who else {}
+
+    def hold(R, group="front row", who=None, client=loop, **kw):
+        R.remote._deck_seen = R.mono[0] if R.keep_deck else \
+            R.remote._deck_seen
+        body = {"group": group, "seen": R.seen()}
+        body.update(kw)
+        return R.ask("POST", "/api/remote/arm-hold", body, client=client,
+                     headers=hdr(R, who))
+
+    def arrange(R, on, client=loop, inst="I"):
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": on, "inst": inst, "seq": next(seq),
+               "seen": R.seen()}, client=client)
+
+    # -- the report, reproduced: every role, default config and switched
+    # on, with and without a screen arranging ---------------------------
+    for arming in (None, True):
+        for who in (None, "Jeff", "Ollie", "Vic"):
+            for arr in ("nobody", "this screen", "another screen",
+                        "this screen, gone quiet"):
+                R = rig(arming)
+                try:
+                    label = (f"screen_arming {'default' if arming is None else 'on'}"
+                             f", {who or 'signed out'}, {arr} arranging")
+                    if arr == "this screen":
+                        arrange(R, True)
+                    elif arr == "another screen":
+                        arrange(R, True, client=ipad)
+                    elif arr == "this screen, gone quiet":
+                        arrange(R, True)
+                        R.mono[0] += 2.1          # no beat for 2.1 s
+                        R.wall[0] += 2.1
+                        R.feed()
+                    st, _h, out = hold(R, who=who)
+                    err = str(out.get("error", ""))
+                    if who == "Vic":
+                        check(st == 403 and out.get("role_refused") and
+                              "Vic (viewer) may not" in err,
+                              f"{label}: refused by the role matrix, by "
+                              f"name: {st} {out}")
+                    elif arming is None:
+                        check(st == 403 and err == RM.ARMING_OFF and
+                              "Programming, Arming from a screen, Turn on"
+                              in err and out.get("arming_off") and
+                              out.get("let_go"),
+                              f"{label}: refused as switched off, saying "
+                              f"how to turn it on: {st} {out}")
+                    elif arr == "this screen":
+                        check(st == 409 and "Rack screen is in Arrange "
+                              "mode" in err and "Save layout or Cancel" in
+                              err and R.remote.deck_input()["holds"] == [],
+                              f"{label}: refused by name: {st} {out}")
+                    else:
+                        check(st == 200 and out.get("hold_id"),
+                              f"{label}: the hold starts (another screen's "
+                              f"Arrange mode, or this screen's long gone, "
+                              f"does not block arming): {st} {out}")
+                    st, _h, s_ = R.ask("GET", "/api/remote/status",
+                                       client=loop)
+                    check(s_["arming"]["enabled"] is (arming is True),
+                          f"{label}: the page is told on or off")
+                finally:
+                    R.close()
+
+    # -- the switch: the show machine itself, the JSON words only --------
+    R = rig(None)
+    try:
+        st, _h, out = R.ask("POST", "/api/remote/screen-arming",
+                            {"on": True}, client=ipad)
+        check(st == 403 and RM.load_settings(R.work)["screen_arming"] is
+              False, f"the switch is refused from the network: {st} {out}")
+        ok, why, tok, _n = R.remote.users.sign_in("Jeff", "Jeff-pw-1234",
+                                                  False, "ipad")
+        st, _h, out = R.ask("POST", "/api/remote/screen-arming",
+                            {"on": True}, client=ipad,
+                            headers={"Cookie": f"{U.COOKIE}={tok}"})
+        check(ok and st == 403 and not out.get("role_refused") and
+              "on the show machine itself" in out.get("error", "") and
+              RM.load_settings(R.work)["screen_arming"] is False,
+              f"even for an admin signed in on an iPad: the show machine "
+              f"itself only: {st} {out}")
+        for bad in ("true", 1, None, "yes"):
+            st, _h, out = R.ask("POST", "/api/remote/screen-arming",
+                                {"on": bad}, client=loop,
+                                headers=hdr(R, "Jeff"))
+            check(st == 400 and "true or false" in out.get("error", "") and
+                  RM.load_settings(R.work)["screen_arming"] is False,
+                  f"on={bad!r} changes nothing: {st} {out}")
+        for who in (None, "Ollie", "Vic"):
+            st, _h, out = R.ask("POST", "/api/remote/screen-arming",
+                                {"on": True}, client=loop,
+                                headers=hdr(R, who))
+            check(st == 403 and out.get("role_refused") and
+                  RM.load_settings(R.work)["screen_arming"] is False,
+                  f"{who or 'signed out'} may not turn it on (Settings): "
+                  f"{st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/screen-arming",
+                            {"on": True}, client=loop, headers=hdr(R, "Jeff"))
+        check(st == 200 and out.get("enabled") is True and
+              RM.load_settings(R.work)["screen_arming"] is True and
+              any(r.get("action") == "screen arming" and
+                  r.get("outcome") == "on" for r in R.svc.journal),
+              f"Jeff turns it on, journaled: {st} {out}")
+        st, _h, out = hold(R)
+        check(st == 200, f"and a hold starts: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/screen-arming",
+                            {"on": False}, client=loop, headers=hdr(R, "Vic"))
+        check(st == 200 and RM.load_settings(R.work)["screen_arming"] is
+              False and R.remote._holds == {} and
+              any(r.get("action") == "arm hold" and
+                  r.get("outcome") == "cancelled" for r in R.svc.journal) and
+              R.remote.deck_input()["enabled"] is False,
+              f"anyone at the machine may turn it OFF (it only takes risk "
+              f"away), and every hold is let go: {st} {out}")
+    finally:
+        R.close()
+
+    # -- every other refusal, by name, and the success ------------------
+    R = rig(True)
+    try:
+        # No Stream Deck program reading the engine.
+        R.keep_deck = False
+        R.remote._deck_seen = None
+        st, _h, out = hold(R)
+        check(st == 409 and "Stream Deck program has not read this engine"
+              in out.get("error", ""),
+              f"no deck heard yet: refused by name: {st} {out}")
+        R.remote._deck_seen = R.mono[0] - 2.5
+        st, _h, out = hold(R)
+        check(st == 409 and "in the last 2 s" in out.get("error", ""),
+              f"a deck quiet 2.5 s: refused by name: {st} {out}")
+        R.remote._deck_seen = R.mono[0] - 1.5
+        st, _h, out = hold(R)
+        check(st == 200, f"a deck heard 1.5 s ago: the hold starts: {st}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
+              client=loop)
+        R.keep_deck = True
+        # A hold under way is let go the moment the deck goes quiet.
+        st, _h, out = hold(R)
+        hid = out["hold_id"]
+        R.keep_deck = False
+        R.remote._deck_seen = R.mono[0] - 2.5
+        st, _h, out = hold(R, hold_id=hid)
+        check(st == 409 and "Stream Deck program" in out["error"] and
+              R.remote.deck_input()["holds"] == [],
+              f"and on a heartbeat too: {st} {out}")
+        R.keep_deck = True
+        # Every machine in the group locked out on the Morning page.
+        R.groups[2].update(armed="disarmed", wanted=False)
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "w1", "on": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200, f"setup: Waver 1 locked out: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "g1", "on": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200, f"setup: Ground 1 locked out: {st} {out}")
+        check(R.m.group_locked_out("wave flamer") and
+              not R.m.group_locked_out("front row") and
+              not R.m.group_locked_out("no such"),
+              "only a group every slot of which is locked reads locked")
+        st, _h, out = hold(R, "front row")
+        check(st == 200, f"one machine of a group locked: the hold starts "
+                         f"(flamesafe zeroes that machine's slot): {st} "
+                         f"{out}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
+              client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "g1", "on": False,
+                             "confirmed": True, "seen": R.seen()},
+                            client=loop)
+        check(st == 200, f"setup: Ground 1 unlocked: {st} {out}")
+        st, _h, out = hold(R, "wave flamer")
+        check(st == 409 and "Every machine in wave flamer is locked out" in
+              out.get("error", ""), f"a locked out group: refused by name: "
+                                    f"{st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "w1", "on": False,
+                             "confirmed": True, "seen": R.seen()},
+                            client=loop)
+        check(st == 200, f"setup: Waver 1 unlocked: {st} {out}")
+        st, _h, out = hold(R, "wave flamer")
+        check(st == 200, f"unlocked: the hold starts: {st} {out}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "wave flamer"},
+              client=loop)
+        # What the Stream Deck reported back, said on the next heartbeat.
+        for code, words in (("refractory", "disarmed less than 2 s ago"),
+                            ("latched", "an Abort is standing"),
+                            ("operator", "no operator is chosen"),
+                            ("key", "own key on the deck"),
+                            ("role", "role matrix")):
+            st, _h, out = hold(R)
+            hid = out["hold_id"]
+            R.remote.deck_input(f"usb_ms=5&refused={hid}.{code}")
+            st, _h, out = hold(R, hold_id=hid)
+            check(st == 409 and out.get("error", "").startswith(
+                "The Stream Deck refused it") and words in out["error"] and
+                  out.get("let_go") and R.remote.deck_input()["holds"] == [],
+                  f"the deck's {code}: said by name, and let go: {st} {out}")
+        # Anything else in `refused` is not a reason, and a report for a
+        # hold that has gone is not kept.
+        st, _h, out = hold(R)
+        hid = out["hold_id"]
+        R.remote.deck_input(f"refused={hid}.bogus,{hid + 50}.latched,x.y")
+        st, _h, out = hold(R, hold_id=hid)
+        check(st == 200 and not R.remote._deck_refused,
+              f"an unknown code or another hold's report changes nothing: "
+              f"{st} {out} {R.remote._deck_refused}")
+        check(RM.deck_refused("refused=3.latched,4.role&usb_ms=1") ==
+              [(3, "latched"), (4, "role")] and
+              RM.deck_refused("refused=a.latched") == [] and
+              RM.deck_refused(None) == [] and
+              len(RM.deck_refused("refused=" + ",".join(
+                  f"{n}.key" for n in range(40)))) == RM.DECK_REFUSED_MAX,
+              "deck_refused reads only ids and known codes, at most 16")
+        # The success: the deck took it (the group is now asked for).
+        R.groups[0]["wanted"] = True
+        R.feed()
+        st, _h, out = hold(R, hold_id=hid)
+        check(st == 200 and out.get("armed") is True and
+              "the Stream Deck took the hold" in out.get("text", "") and
+              R.remote.deck_input()["holds"] == [] and
+              any(r.get("action") == "arm hold" and
+                  r.get("outcome") == "taken" for r in R.svc.journal),
+              f"the deck taking the hold is said as a success, journaled, "
+              f"and the hold is over: {st} {out}")
+        st, _h, out = hold(R, hold_id=hid)
+        check(st == 409 and "already armed" in out["error"],
+              f"a later heartbeat is told it is armed: {st} {out}")
+        st, _h, out = hold(R, client=ipad)
+        check(st == 409 and "already armed" in out["error"],
+              f"a fresh press on an armed group is refused: {st} {out}")
+        # Another device's hold id on an armed group is not its success.
+        R.groups[0]["wanted"] = False
+        R.feed()
+        st, _h, out = hold(R, client=ipad)
+        hid = out["hold_id"]
+        R.groups[0]["wanted"] = True
+        R.feed()
+        st, _h, out = hold(R, hold_id=hid)
+        check(st == 409 and not out.get("armed") and
+              len(R.remote.deck_input()["holds"]) == 1,
+              f"another device's hold id is not this one's success: {st} "
+              f"{out}")
+        R.groups[0]["wanted"] = False
+        R.feed()
+        # An Abort standing (the scheduler's latch, as the deck reads it).
+        R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
+              client=ipad)
+        _live_show(R)
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
+                            client=loop)
+        R.settle()
+        R.feed()
+        st, _h, out = hold(R)
+        check(st == 409 and "An Abort is standing" in out.get("error", ""),
+              f"an Abort standing: refused by name: {st} {out}")
+    finally:
+        R.close()
+
+    # -- the page: off is said and in sight, a refusal is never silent ---
+    import re as _re
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    m = _re.search(r'const ARMING_OFF = "([^"]*)";', page)
+    check(m and m.group(1) == RM.ARMING_OFF,
+          "the page and the engine say the same about arming off")
+    for need in ("if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};",
+                 "    ab.hidden = false;\n",
+                 'ab.querySelector("span").textContent = on ? "Hold to arm" '
+                 ': "Arming off";',
+                 "if(!on && !HOLD && $(\"arm-note\").textContent !== "
+                 "ARMING_OFF) armSay(ARMING_OFF, 1);",
+                 "  #arm-note.said{display:block}",
+                 '  if(level >= 2){ $("ctl-msg").textContent = text;',
+                 '  if(!as.ok){ armSay("Not armed: " + as.why, 2); return; }',
+                 '  if(why) armSay("Hold stopped: " + why, why === "let go" '
+                 '? 0 : 2);',
+                 "    if(j.armed){",
+                 'post("/api/remote/screen-arming", {on: true})',
+                 'post("/api/remote/screen-arming", {on: false})',
+                 '$("arming-card").hidden = !ME.local;'):
+        check(need in page, f"the page wires {need!r}")
+
+    # -- the Stream Deck's half: it reports what it would not take ------
+    from ltcplay import streamdeck as sd
+    t = [50.0]
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=lambda p: None,
+                         clock=lambda: t[0])
+    check(keys._path() == "/api/remote/deck-input",
+          "nothing to report: the plain path")
+    keys.note_refused(7, "refractory")
+    keys.note_refused(8, "Bad Code")
+    keys.note_refused(True, "latched")
+    keys.note_refused("9", "latched")
+    check(keys._path() == "/api/remote/deck-input?refused=7.refractory",
+          f"a refusal rides on the next reads: {keys._path()}")
+    keys.report = lambda: 12
+    check(keys._path() == "/api/remote/deck-input?usb_ms=12&refused="
+          "7.refractory", f"beside usb_ms: {keys._path()}")
+    t[0] += sd.SCREEN_REFUSED_KEEP_S + 0.01
+    check(keys._path() == "/api/remote/deck-input?usb_ms=12",
+          "and is dropped after SCREEN_REFUSED_KEEP_S")
+
+    class Scr(_FakeScreen):
+        def __init__(self):
+            super().__init__()
+            self.said = []
+
+        def note_refused(self, hid, code):
+            self.said.append((hid, code))
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    names = ["front row", "cat-walk", "wave flamer"]
+    clk = [100.0]
+    scr = Scr()
+    op = [""]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: op[0],
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: None,
+                      clock=lambda: clk[0], screen=scr)
+
+    def step(dt, group=0, hid=1, held=0.0, who="Rack screen"):
+        clk[0] += dt
+        if held is None:
+            scr.h.pop(group, None)
+        else:
+            scr.h[group] = {"group": group, "id": hid, "held_s": held,
+                            "fresh": True, "who": who, "device": "Rack screen"}
+        c.screen_pass()
+        c.tick()
+    # No operator (a screen hold that names nobody): reported.
+    step(0.0, hid=1, who="")
+    check(scr.said == [(1, "operator")] and not arm.wanted[0],
+          f"no operator: reported, nothing armed: {scr.said}")
+    step(0.1, held=None)
+    # A full hold arms and reports nothing.
+    scr.said.clear()
+    step(0.0, hid=2)
+    for _ in range(12):
+        step(0.1, hid=2, held=min(1.2, clk[0] - 100.1))
+    check(arm.wanted[0] and scr.said == [],
+          f"a full hold arms, nothing reported: {arm.wanted} {scr.said}")
+    # The refractory window after a disarm: reported.
+    c._do_disarm(0)
+    step(0.1, held=None)
+    step(0.1, hid=3)
+    check(scr.said == [(3, "refractory")] and not arm.wanted[0],
+          f"the re-arm wait: reported: {scr.said}")
+    step(0.1, held=None)
+    # The deck's own key down: reported.
+    scr.said.clear()
+    clk[0] += sd.REARM_REFRACTORY_S
+    c._prev_keys[sd.GROUP_KEYS[1]] = True
+    step(0.0, group=1, hid=4)
+    check(scr.said == [(4, "key")], f"the key itself down: {scr.said}")
+    c._prev_keys[sd.GROUP_KEYS[1]] = False
+    step(0.1, group=1, held=None)
+    # A latch landing during the hold: reported at completion.
+    scr.said.clear()
+    step(0.0, group=2, hid=5)
+    c._latched_now = lambda: False
+    real_fire = c._do_arm_fire
+
+    def latched_fire(i, now, **kw):
+        c._latched_now = lambda: True
+        try:
+            return real_fire(i, now, **kw)
+        finally:
+            c._latched_now = lambda: False
+    c._do_arm_fire = latched_fire
+    for _ in range(12):
+        step(0.1, group=2, hid=5, held=min(1.2, clk[0] - 100))
+    check((5, "latched") in scr.said and not arm.wanted[2],
+          f"a latch at completion: reported: {scr.said}")
+    c._do_arm_fire = real_fire
+    step(0.1, group=2, held=None)
+    # While latched, every screen hold is reported as such.
+    scr.said.clear()
+    c._latched_now = lambda: True
+    step(0.0, group=1, hid=6)
+    check(scr.said == [(6, "latched")] and not arm.wanted[1],
+          f"latched: reported: {scr.said}")
+    # _do_arm_fire's answers, for every caller.
+    del c._latched_now
     print("  ok")
 
 
@@ -50350,6 +50833,7 @@ if __name__ == "__main__":
     test_screen_arm_engine_rules()
     test_screen_arm_deck_rules()
     test_screen_arm_end_to_end_probes()
+    test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()
     test_tracemalloc_diagnostic_is_opt_in()
     test_lasers_blanking_not_set_up_is_loud()

@@ -293,9 +293,12 @@ If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
 The show carries on by itself and a Hold stays held. Start now, Resume, Reset
 and the programming buttons go grey until it is back.
 
-Arming from the iPad or the rack screen (when screen arming is switched on):
-press and HOLD a group's "Hold to arm" button until the bar fills and the
-lamp goes green. Lift early and nothing happens. One hold at a time per
+Arming from the iPad or the rack screen (when screen arming is switched on;
+it is off until someone turns it on at the show machine: Programming,
+"Arming from a screen", Turn on; while it is off the button reads "Arming
+off"): press and HOLD a group's "Hold to arm" button until the bar fills and
+the lamp goes green. If it is refused, the line beside "Disarm every flame
+group" and the controls' message line say why. Lift early and nothing happens. One hold at a time per
 group. The Stream Deck does the arming for you, with all of its own rules,
 so it has to be plugged in and running, and an operator has to be chosen
 for it (Programming, Stream Deck operator). If the page loses the engine,

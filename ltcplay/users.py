@@ -81,8 +81,8 @@ PERMS = (
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
                    "reload, the machine layout"),
-    ("settings", "Settings: the show network, the timecode input, the "
-                 "audit upload, idle sign out"),
+    ("settings", "Settings: the show network, arming from a screen, the "
+                 "timecode input, the audit upload, idle sign out"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -127,7 +127,8 @@ REMOTE_ROUTES = {
     "continue": "show", "mark-a": "show", "mark-b": "show",
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
-    "network": "settings", "audit-settings": "settings",
+    "network": "settings", "screen-arming": "settings",
+    "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",
     "users": "users", "role-matrix": "users", "clear-lockouts": "users",
     "schedule-file": "show_files", "show-folder": "show_files",
@@ -183,6 +184,9 @@ def classify(route, body=None):
                 body.get("on") is False:
             return "safety"
         if name == "laser-test" and body.get("on") is not True:
+            return "safety"
+        if name == "screen-arming" and body.get("on") is False:
+            # Switching arming from a screen OFF only takes risk away.
             return "safety"
         if name == "lock" and body.get("on") is not False:
             return "safety" if body.get("kind") != "rewrite" else "settings"

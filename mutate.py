@@ -9748,6 +9748,158 @@ def build():
   'ltcplay/streamdeck.py',
   '                            held_provider=sched.held)',
   '                            held_provider=None)'),
+
+ # -- arming from the rack screen (Jeff, 2026-10-22): off said and switchable
+ # on the show machine, every refusal named, the deck taking it a success --
+ ('screen arm: the switch takes a word that is not true or false',
+  'ltcplay/remote.py',
+  '        on = body.get("on")\n        if on is not True and on is not False:',
+  '        on = body.get("on")\n        if on is None:'),
+
+ ('screen arm: the switch answers from the network',
+  'ltcplay/remote.py',
+  'LOCAL_ONLY = frozenset(("network", "screen-arming"))',
+  'LOCAL_ONLY = frozenset(("network",))'),
+
+ ('screen arm: switching it off keeps the holds',
+  'ltcplay/remote.py',
+  '            self.cancel_holds("arming from a screen was switched off")',
+  '            pass'),
+
+ ('screen arm: turning it on needs no role',
+  'ltcplay/users.py',
+  '    "network": "settings", "screen-arming": "settings",',
+  '    "network": "settings", "screen-arming": None,'),
+
+ ('screen arm: turning it off waits on the role matrix',
+  'ltcplay/users.py',
+  '        if name == "screen-arming" and body.get("on") is False:\n'
+  '            # Switching arming from a screen OFF only takes risk away.\n'
+  '            return "safety"',
+  '        if False:\n            return "safety"'),
+
+ ('screen arm: an Abort standing is not said',
+  'ltcplay/remote.py',
+  '        if self._abort_standing():\n            return ("An Abort is standing',
+  '        if False:\n            return ("An Abort is standing'),
+
+ ('screen arm: no Stream Deck reading the engine is not said',
+  'ltcplay/remote.py',
+  '        if seen is None or self.clock() - seen > self.DECK_QUIET_S:\n'
+  '            return (f"The Stream Deck program has not read',
+  '        if seen is None:\n            return (f"The Stream Deck program has not read'),
+
+ ('screen arm: this screen arranging still arms',
+  'ltcplay/remote.py',
+  '            if arranging:\n                return (f"{device} is in Arrange mode',
+  '            if False:\n                return (f"{device} is in Arrange mode'),
+
+ ('screen arm: any screen arranging blocks arming',
+  'ltcplay/remote.py',
+  '                arranging = m.device_arranging(device)',
+  '                arranging = bool(m.arranging_devices())'),
+
+ ('screen arm: a locked out group is not said',
+  'ltcplay/remote.py',
+  '            if locked:\n                return (f"Every machine in {gname}',
+  '            if False:\n                return (f"Every machine in {gname}'),
+
+ ('screen arm: one locked machine reads as the whole group locked',
+  'ltcplay/morning.py',
+  '                return bool(fire) and \\\n'
+  '                    fire <= self.lockout.channels(self.cfg)',
+  '                return bool(fire & self.lockout.channels(self.cfg))'),
+
+ ('screen arm: the deck\'s refusal is never said',
+  'ltcplay/remote.py',
+  '            if code is not None:\n                # The Stream Deck would not take this hold',
+  '            if False:\n                # The Stream Deck would not take this hold'),
+
+ ('screen arm: deck_refused takes any code',
+  'ltcplay/remote.py',
+  '            if code in DECK_REFUSALS and hid.isdigit():',
+  '            if hid.isdigit():'),
+
+ ('screen arm: the deck taking the hold reads as already armed',
+  'ltcplay/remote.py',
+  '            if body.get("hold_id") is not None:\n'
+  '                # This device\'s own hold, and the group is now asked for:',
+  '            if False:\n'
+  '                # This device\'s own hold, and the group is now asked for:'),
+
+ ('screen arm: another device\'s hold counts as this one\'s success',
+  'ltcplay/remote.py',
+  '                    mine = (h is not None and h["token"] == token and\n'
+  '                            h["id"] == body.get("hold_id"))',
+  '                    mine = (h is not None and\n'
+  '                            h["id"] == body.get("hold_id"))'),
+
+ ('screen arm: the deck never reports its re-arm wait',
+  'ltcplay/streamdeck.py',
+  '                self._report_refused(h.get("id"), "refractory")',
+  '                pass'),
+
+ ('screen arm: the deck never reports no operator',
+  'ltcplay/streamdeck.py',
+  '                self._report_refused(h.get("id"), "operator")',
+  '                pass'),
+
+ ('screen arm: the deck never reports its own key down',
+  'ltcplay/streamdeck.py',
+  '                    self._report_refused(h.get("id"), "key")',
+  '                    pass'),
+
+ ('screen arm: the deck never reports its latch',
+  'ltcplay/streamdeck.py',
+  '                    self._report_refused(h.get("id"), "latched")',
+  '                    pass'),
+
+ ('screen arm: the deck never reports a refusal at completion',
+  'ltcplay/streamdeck.py',
+  '                    if why:\n                        self._report_refused(self._vholds.get(i), why)',
+  '                    if False:\n                        self._report_refused(self._vholds.get(i), why)'),
+
+ ('screen arm: a completed hold the deck refused reports no reason',
+  'ltcplay/streamdeck.py',
+  '                      f"hold); refused. Reset, then hold the key again.",\n'
+  '                      action="arm-refused")\n            return "latched"',
+  '                      f"hold); refused. Reset, then hold the key again.",\n'
+  '                      action="arm-refused")\n            return None'),
+
+ ('screen arm: the deck\'s report never reaches the engine',
+  'ltcplay/streamdeck.py',
+  '        if ref:\n            path += ("&" if "?" in path else "?") + f"refused={ref}"',
+  '        if False:\n            path += ("&" if "?" in path else "?") + f"refused={ref}"'),
+
+ ('screen arm: the deck reports a refusal forever',
+  'ltcplay/streamdeck.py',
+  '                      if now - t > SCREEN_REFUSED_KEEP_S]',
+  '                      if False]'),
+
+ ('screen arm: the page hides the button while arming is off',
+  'ltcplay/web/remote.html',
+  '    ab.hidden = false;\n',
+  '    ab.hidden = !on;\n'),
+
+ ('screen arm: the page says arming off nowhere',
+  'ltcplay/web/remote.html',
+  '  if(!on && !HOLD && $("arm-note").textContent !== ARMING_OFF) armSay(ARMING_OFF, 1);',
+  '  if(false) armSay(ARMING_OFF, 1);'),
+
+ ('screen arm: a refusal is said only where a short window hides it',
+  'ltcplay/web/remote.html',
+  '  if(level >= 2){ $("ctl-msg").textContent = text;',
+  '  if(false){ $("ctl-msg").textContent = text;'),
+
+ ('screen arm: the page reads the deck taking the hold as nothing',
+  'ltcplay/web/remote.html',
+  '    if(j.armed){',
+  '    if(false){'),
+
+ ('screen arm: the page says nothing when arming is off',
+  'ltcplay/web/remote.html',
+  '  if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};',
+  '  if(!a.enabled) return {ok:false, off:true, why:""};'),
 ]
 
 
