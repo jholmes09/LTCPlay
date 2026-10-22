@@ -1508,9 +1508,11 @@ class Remote:
         if name in ("abort", "hold", "start-now"):
             # Live flame programming ends at the press, from every surface,
             # before the confirm check and before the scheduler: it only
-            # takes risk away (an Abort has already ended it at the flame
-            # link; this says so and closes the listener).
-            self.live_flame_end(f"{who or 'someone'} pressed {name} on the "
+            # takes risk away. Only the flame link's program slot is shut
+            # here (cheap, no disk, no wait: review of PR #96, P3-3); the
+            # journal line, the audit line and the disarm of every group go
+            # on a thread of their own, after the lasers below.
+            self.live_flame_cut(f"{who or 'someone'} pressed {name} on the "
                                 f"{screen}", who, screen)
         if name in ("abort", "hold"):
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
@@ -2152,8 +2154,11 @@ class Remote:
         fl = fs.view() if fs is not None else None
         if not fl or fl.get("stale"):
             return None
+        # Armed, or being armed (wanted: the Stream Deck is asking for it,
+        # flamesafe's "held" while it waits): review of PR #96, P3-1. A
+        # second group is seen before flamesafe can arm it.
         return [g["name"] for g in fl.get("groups") or []
-                if g.get("armed") == "armed"]
+                if g.get("armed") == "armed" or g.get("wanted")]
 
     def live_flame_arm_refusal(self, gname):
         """With live flame programming on and one group at a time: a hold
@@ -2174,6 +2179,26 @@ class Remote:
                     f"already armed: one flame group at a time. Disarm it "
                     f"first.")
         return ""
+
+    def live_flame_cut(self, reason, who="", screen=""):
+        """At an Abort, Hold or Start now press: the program slot shut now
+        (LiveFlame.cut), and the rest of ending it (journal, audit, the
+        disarm of every group) on a thread of its own. Never raises, never
+        waits."""
+        lf = self.live_flame
+        if lf is None:
+            return False
+        try:
+            if not lf.cut(reason):
+                return False
+            threading.Thread(target=lf.end, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who},
+                             daemon=True,
+                             name="ltcplay-live-flame-end").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
 
     def live_flame_end(self, reason, who="", screen=""):
         """End live flame programming now, if it is on (D2: every flame

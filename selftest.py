@@ -53209,7 +53209,7 @@ def test_live_flame_values_and_zero_on_silence():
     try:
         check(fl.PROGRAM_HOLD_S == fp.HOLD_S == 0.25,
               "the link's hold and the listener's are both 0.25 s")
-        check(not R.link.program_set(bytes([9] * 512)),
+        check(not R.link.program_set(bytes([9] * 512), 1),
               "before the mode is on the link takes no program frame")
         R.on()
         hot = bytes([0] * 10 + [200] + [0] * 289)
@@ -53288,8 +53288,14 @@ def test_live_flame_values_and_zero_on_silence():
         check(R.out()[0] == 0 and R.out()[10] == 200,
               "a purge frame is never read while the mode is on")
         R.link.zero()
-        check(R.out() == bytes(512) and R.link.program_on,
-              "zero() drops the frame (the mode stays on)")
+        check(R.out() == bytes(512) and not R.link.program_on,
+              "any zero() (a Hold, a show's end) ends it at the link at "
+              "once: zeros, and nothing more is taken")
+        R.feed(R.pk(values=hot))
+        check(R.out() == bytes(512), "a packet after it sets nothing")
+        why = R.lf.tick(R.t[0])
+        check(not R.lf.on and "zeroed or disarmed" in why,
+              f"and the next pass ends the mode, named: {why}")
     finally:
         R.close()
     print("  ok")
@@ -53322,7 +53328,7 @@ def test_live_flame_ends_disarm_and_name_the_reason():
                       R.disarms[-1] and why_in in R.disarms[-1],
                       f"{name}: every flame group disarmed (D2): "
                       f"{R.disarms}")
-            check(not R.link.program_set(bytes([5] * 512)),
+            check(not R.link.program_set(bytes([5] * 512), R.lf._session),
                   f"{name}: the link takes no program frame afterwards")
             check(any(o == "off" for o, _t, _f in R.lines),
                   f"{name}: journaled")
@@ -53371,7 +53377,7 @@ def test_live_flame_ends_disarm_and_name_the_reason():
         check(R.out() == bytes(512) and not R.link.program_on,
               "an Abort ends it at the link at once, before any tick")
         R.lf.tick(R.t[0])
-    run("an Abort at the link", abort, "every flame group was disarmed")
+    run("an Abort at the link", abort, "zeroed or disarmed")
 
     def layout(R):
         os.utime(R.xml, ns=(time.time_ns() + 10 ** 9,) * 2)
@@ -53432,7 +53438,15 @@ def test_live_flame_engine_routes_roles_and_presses():
             self.on = True
             return True, "on"
 
+        gate = None
+
+        def cut(self, reason):
+            self.calls.append(("cut", reason))
+            return self.on
+
         def end(self, reason, who="", screen="", system=True):
+            if self.gate is not None:
+                self.gate.wait(5)
             self.calls.append(("end", reason, who))
             was, self.on = self.on, False
             return was
@@ -53493,10 +53507,34 @@ def test_live_flame_engine_routes_roles_and_presses():
                            ("start-now", {"seen": int(time.time() * 1000)})):
             lf.on = True
             http(f"/api/remote/{name}", body)
+            cut = [c for c in lf.calls if c[0] == "cut"]
+            check(cut and name in cut[-1][1],
+                  f"{name} shuts the program slot at the press: {cut[-1:]}")
+            end_by = time.monotonic() + 3
+            while lf.on and time.monotonic() < end_by:
+                time.sleep(0.01)
             check(not lf.on and name in lf.calls[-1][1],
-                  f"{name} ends it at the press: {lf.calls[-1]}")
+                  f"{name} ends it, off the press's thread: {lf.calls[-1]}")
+        # The rest of ending (journal, audit, disarm) never holds up the
+        # Abort (review of PR #96, P3-3): with it stuck, the press answers.
+        lf.on = True
+        lf.gate = threading.Event()
+        t0 = time.monotonic()
+        http("/api/remote/abort", {"confirmed": True})
+        took = time.monotonic() - t0
+        check(lf.on and lf.calls[-1][0] == "cut" and took < 3,
+              f"an Abort answers while ending is still under way "
+              f"({took:.2f} s): {lf.calls[-1]}")
+        lf.gate.set()
+        end_by = time.monotonic() + 3
+        while lf.on and time.monotonic() < end_by:
+            time.sleep(0.01)
+        lf.gate = None
         lf.on = True
         http(f"/api/remote/abort", {})
+        end_by = time.monotonic() + 3
+        while lf.on and time.monotonic() < end_by:
+            time.sleep(0.01)
         check(not lf.on, "an UNCONFIRMED Abort still ends it (risk only "
                          "goes down)")
         # Run (/api/start) ends it before the session starts.
@@ -53755,6 +53793,483 @@ def test_live_flame_end_to_end_real_flamesafe():
             proc.kill()
         for s in (node, xl):
             s.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+
+def test_live_flame_review_round_one():
+    section("live flame programming, review of PR #96: another controller "
+            "that xLights sends (xLights Only too) to this PC or on a flame "
+            "universe is refused; a group being armed counts; a cut is at "
+            "once; an old listener cannot set a new session's frame; begin "
+            "is all or nothing; a watchdog ends it when the listener dies; "
+            "a junk flood ends it; every blocker is named")
+    import types
+    from ltcplay import flameprog as fp, remote as RM
+    d = tempfile.mkdtemp()
+    try:
+        xml = os.path.join(d, "xlights_networks.xml")
+        # The reviewer's probe: two xLights Only controllers on 127.0.0.1,
+        # both universe 100.
+        open(xml, "w").write(
+            '<?xml version="1.0"?><Networks>'
+            '<Controller Name="Pixels" IP="127.0.0.1" ActiveState="xLights '
+            'Only"><network NetworkType="E131" ComPort="127.0.0.1" '
+            'BaudRate="100" MaxChannels="510"/></Controller>'
+            '<Controller Name="Flames" IP="127.0.0.1" ActiveState="xLights '
+            'Only"><network NetworkType="E131" ComPort="127.0.0.1" '
+            'BaudRate="100" MaxChannels="64"/></Controller></Networks>')
+        try:
+            fp.FlameMap.from_networks(xml, "Flames")
+            check(False, "the reviewer's probe was accepted")
+        except fp.FlameMapError as e:
+            check("Pixels" in str(e), f"the reviewer's probe: refused: {e}")
+        cases = {
+            "xLights Only to 127.0.0.1 on another universe": (
+                "xLights Only", "127.0.0.1", 7, False),
+            "Active to 127.0.0.1 on another universe": (
+                "Active", "127.0.0.1", 7, False),
+            "xLights Only multicast": ("xLights Only", "MULTICAST", 7, False),
+            "Active on the network on a flame universe": (
+                "Active", "10.0.0.9", 101, False),
+            "Inactive on a flame universe": ("Inactive", "10.0.0.9", 100,
+                                             False),
+            "Inactive to 127.0.0.1 on another universe": (
+                "Inactive", "127.0.0.1", 7, True),
+            "Active on the network on another universe": (
+                "Active", "10.0.0.9", 7, True),
+        }
+        for name, (state, ip, univ, ok) in cases.items():
+            _lf_xml(d, extra=(
+                f'\n <Controller Name="Other" IP="{ip}" '
+                f'ActiveState="{state}"><network NetworkType="E131" '
+                f'BaudRate="{univ}" MaxChannels="3"/></Controller>'))
+            try:
+                fp.FlameMap.from_networks(xml, "Flame Node")
+                check(ok, f"{name}: accepted")
+            except fp.FlameMapError as e:
+                check(not ok and "Other" in str(e), f"{name}: refused: {e}")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+    # flamesafe's destination unreadable: refused, by the function itself.
+    why = fp.feedback_refusal(None, fp.Settings())
+    check("could not be read from its config" in why,
+          f"an unreadable flamesafe destination is a refusal: {why}")
+    check(fp.feedback_refusal(("127.0.0.1", 5569), fp.Settings()) == "" and
+          fp.feedback_refusal(("10.0.0.60", 5568), fp.Settings()) == "",
+          "another port, or the node: fine")
+    hot = bytes([0] * 10 + [200] + [0] * 289)
+    # The link's program slot honours program_on by itself.
+    R = _LfRig()
+    try:
+        sess = R.link.program_begin()
+        R.link.program_set(bytes([9] * 512), sess)
+        R.link._program_on = False
+        check(R.out() == bytes(512) and
+              R.link._program_values(R.t[0]) == bytes(512),
+              "a frame with program_on false is zero, and the slot's own "
+              "reader says so too")
+        R.link.program_end()
+        # end() shuts the slot even when the disarm does nothing to it.
+        R.lf._disarm = lambda reason: True
+        R.on()
+        R.feed(R.pk())
+        R.feed(R.pk(values=hot))
+        R.lf.end("test", "Jeff", "Rack screen", system=False)
+        check(not R.link.program_on and R.out() == bytes(512),
+              "end() shuts the link's slot itself")
+        # An old session's frame never lands in the next one.
+        R.on()
+        old = R.lf._session
+        R.lf.end("again")
+        R.on()
+        check(not R.link.program_set(bytes([9] * 512), old) and
+              R.out() == bytes(512),
+              "a frame from the session before is refused")
+        check(R.link.program_set(bytes([9] * 512), R.lf._session),
+              "this session's frame is taken")
+        R.link.program_clear()
+        # A cut: zeros now, the reason kept for the end.
+        R.feed(R.pk())
+        R.feed(R.pk(values=hot))
+        check(R.out()[10] == 200, "setup: firing")
+        check(R.lf.cut("Jeff pressed hold on the Rack screen") and
+              R.out() == bytes(512) and not R.link.program_on and R.lf.on,
+              "a cut zeroes at once, with no journal line yet")
+        check(not [l for l in R.lines if l[0] == "off"][-1:] or
+              "pressed hold" not in [l for l in R.lines
+                                     if l[0] == "off"][-1][1],
+              "and writes nothing")
+        why = R.lf.tick(R.t[0])
+        check(not R.lf.on and "pressed hold" in why,
+              f"the next pass ends it with the cut's reason: {why}")
+        # A group being armed counts, and is seen on the packet itself.
+        R.on()
+        R.feed(R.pk())
+        R.feed(R.pk(values=hot))
+        R.armed[0] = ["front row", "cat-walk"]
+        check(R.feed(R.pk(values=hot)) == "taken" and not R.lf.on and
+              R.out() == bytes(512) and "being armed" in
+              R.lf.last_end["reason"],
+              f"two groups seen on a packet: zero and end before any value "
+              f"is set: {R.lf.last_end}")
+        R.armed[0] = []
+        # The partial stale push: universe 101 goes quiet while 100 talks.
+        R.on()
+        R.feed(R.pk())
+        R.feed(R.pk(101, values=bytes(212)))
+        R.feed(R.pk(101, values=bytes([7] * 212)))
+        R.t[0] += 0.2
+        R.feed(R.pk())
+        check(R.out()[300] == 7, "setup: universe 101 still fresh at 0.2 s")
+        R.t[0] += 0.06
+        check(R.out()[300] == 7, "the link's frame, set 0.06 s ago, still "
+                                 "carries universe 101's values...")
+        R.lf.tick(R.t[0])
+        check(R.out()[300] == 0 and R.lf.on,
+              "...until the pass sees it stale and zeroes it")
+        # A junk flood ends it before anything is parsed.
+        for i in range(fp.TOTAL_MAX + 2):
+            if R.feed(b"junk") == "ended":
+                break
+        check(not R.lf.on and "flood" in R.lf.last_end["reason"],
+              f"a junk flood ends it: {R.lf.last_end}")
+        # begin is all or nothing.
+        keep = R.link.program_begin
+
+        def boom():
+            raise RuntimeError("link refused")
+        R.link.program_begin = boom
+        ok, text = R.lf.begin("Jeff", "Rack screen")
+        check(not ok and not R.lf.on and R.lf._sock is None and
+              ("close",) == R.socks[-1] and "could not be started" in text,
+              f"a link that raises at begin: off, socket closed: {text}")
+        R.link.program_begin = keep
+
+        class NoThread:
+            def __init__(self, **kw):
+                pass
+
+            def start(self):
+                raise RuntimeError("no threads left")
+        R.lf._threaded = True
+        R.lf._thread_factory = NoThread
+        ok, text = R.lf.begin("Jeff", "Rack screen")
+        check(not ok and not R.lf.on and R.lf._sock is None and
+              not R.link.program_on and ("close",) == R.socks[-1],
+              f"a listener that cannot start: off, the link's slot shut, "
+              f"the socket closed: {text}")
+        R.lf._threaded = False
+        R.lf._thread_factory = threading.Thread
+        calls = [0]
+        real_map = R.lf._map_get
+
+        def flaky():
+            calls[0] += 1
+            if calls[0] > 1:
+                raise ValueError("gone")
+            return real_map()
+        R.lf._map_get = flaky
+        ok, text = R.lf.begin("Jeff", "Rack screen")
+        check(not ok and not R.lf.on and not R.link.program_on,
+              f"a map that fails the second read: off: {text}")
+        R.lf._map_get = real_map
+        # The watchdog.
+        R.on()
+        R.lf._beat = R.t[0] - 2.0
+        why = R.lf.watchdog_check(R.t[0])
+        check(not R.lf.on and "no pass" in why,
+              f"a listener that stopped passing: ended: {why}")
+        R.on()
+        R.lf._threaded = True
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        R.lf._thread = dead
+        why = R.lf.watchdog_check(R.t[0])
+        check(not R.lf.on and "listener thread stopped" in why,
+              f"a dead listener thread: ended: {why}")
+        R.lf._threaded = False
+    finally:
+        R.close()
+    # The engine: wanted groups count; the link's and the purge's blockers.
+    r = RM.Remote(types.SimpleNamespace(session=None, state=lambda: {}),
+                  None, folder=tempfile.gettempdir())
+
+    class FS:
+        def __init__(self, groups):
+            self.groups = groups
+
+        def view(self):
+            return {"stale": False, "age_ms": 50,
+                    "groups": [{"name": n, "armed": a, "wanted": w}
+                               for n, a, w in self.groups]}
+    r.flame_status = FS([("front row", "armed", True),
+                         ("cat-walk", "held", True),
+                         ("wave", "disarmed", False)])
+    check(r.live_flame_armed_groups() == ["front row", "cat-walk"],
+          f"a group being armed (wanted) counts: "
+          f"{r.live_flame_armed_groups()}")
+
+    class Link:
+        lock_alarm = ""
+        state = "running"
+        purging = False
+
+        def sender_state(self):
+            return self.state
+
+        def purge_active(self):
+            return self.purging
+    lk = Link()
+    r.live_flame = types.SimpleNamespace(on=False, link=lambda: lk)
+    r.flame_status = FS([("front row", "disarmed", False)])
+    check(r.live_flame_blockers() == "", "setup: nothing in the way")
+    lk.state = "stalled"
+    check("not sending (stalled)" in r.live_flame_blockers(),
+          "a flame link that is not running: named")
+    lk.state = "running"
+    lk.lock_alarm = "something else holds the flame link"
+    check("alarm" in r.live_flame_blockers(), "a lock alarm: named")
+    lk.lock_alarm = ""
+    lk.purging = True
+    check("purge is firing" in r.live_flame_blockers(),
+          "a purge firing: named")
+    lk.purging = False
+    r.morning = types.SimpleNamespace(purge=types.SimpleNamespace(
+        selected=["gflame-1"]))
+    check("selected for a purge" in r.live_flame_blockers(),
+          "a purge selection: named")
+    r.morning = None
+    # The engine closing ends it.
+    from ltcplay import web as web_mod
+    httpd = web_mod.serve(tempfile.mkdtemp(), port=0, bind="127.0.0.1",
+                          remote_folder=tempfile.mkdtemp())
+    httpd.fire_ice = types.SimpleNamespace(flame_link=None)
+    cfg = types.SimpleNamespace(flame_controller="Flame Node",
+                                flamesafe_config=None)
+    web_mod._attach_live_flame(httpd, cfg, None)
+    check(isinstance(httpd.remote.live_flame, fp.LiveFlame),
+          "web.serve's helper builds it")
+    ended = []
+    httpd.remote.live_flame = types.SimpleNamespace(
+        end=lambda reason, **kw: ended.append(reason) or True)
+    httpd.server_close()
+    check(ended == ["the engine is closing"],
+          f"closing the engine ends it: {ended}")
+    print("  ok")
+
+
+def test_live_flame_end_to_end_armed_group_real_flamesafe():
+    section("live flame programming end to end with an ARMED group: the "
+            "real flamesafe, the real arm link and the real listener; "
+            "xLights fires the armed group, and a disarm, a lockout, an "
+            "Abort and the listener dying each cut it at the node")
+    import json as _j
+    import socket as _so
+    import subprocess
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    def free_udp():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.01)
+    listen, statusp, armp = free_udp(), free_udp(), free_udp()
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    lock_path = os.path.join(work, "ltcplay_lockout.json")
+    names = ["front row", "cat-walk"]
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "arm_port": armp, "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": n, "safety": 401 + i, "fire": [411 + 10 * i]}
+                   for i, n in enumerate(names)]}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    link = fl.FlameLink(fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+                        ).start()
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 2)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    stop = threading.Event()
+    level = [0]
+    d = tempfile.mkdtemp()
+    xml = os.path.join(d, "xlights_networks.xml")
+    open(xml, "w").write(
+        '<?xml version="1.0"?><Networks><Controller Name="Flame Node" '
+        'IP="127.0.0.1" ActiveState="xLights Only"><network '
+        'NetworkType="E131" BaudRate="100" MaxChannels="512"/>'
+        '</Controller></Networks>')
+
+    def armed_groups():
+        st = status.last
+        if not st:
+            return None
+        return [g["name"] for g in st["groups"]
+                if g.get("armed") == "armed" or g.get("wanted")]
+    lfp = [free_udp()]
+    lf = fp.LiveFlame(
+        link_get=lambda: link, blockers=lambda: "",
+        map_get=lambda: fp.FlameMap.from_networks(xml, "Flame Node"),
+        armed_groups=armed_groups,
+        fs_dest=lambda: fp.flamesafe_destination(cfg_path),
+        settings_get=lambda: fp.Settings(port=lfp[0]))
+
+    def deck():
+        while not stop.is_set():
+            arm.send(names)
+            status.poll()
+            time.sleep(0.05)
+
+    def xlights():
+        xl = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        seq = 0
+        while not stop.is_set():
+            seq += 1
+            v = bytearray(512)
+            v[410] = level[0]
+            try:
+                xl.sendto(fp.build_e131(100, bytes(v), seq=seq),
+                          ("127.0.0.1", lfp[0]))
+            except OSError:
+                pass
+            time.sleep(0.025)
+        xl.close()
+
+    def node_values(seconds):
+        """Slot 411 in every packet flamesafe sent the node for `seconds`."""
+        out = []
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            out.append(fp.parse_e131(data).values[410])
+        return out
+
+    def wait_for(cond, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return cond()
+
+    def group0():
+        st = status.last
+        return st["groups"][0]["armed"] if st else None
+
+    def arm_group0():
+        """A fresh arm cycle with xLights at zero (flamesafe refuses to
+        arm while a fire value is held), then xLights at 200."""
+        level[0] = 0
+        arm.set_group(0, False)
+        time.sleep(1.2)                  # past min_arm_dwell_ms
+        arm.set_group(0, True)
+        ok = wait_for(lambda: group0() == "armed", 5)
+        level[0] = 200
+        return ok
+
+    def begin():
+        for _try in range(5):
+            ok, text = lf.begin("Jeff", "Rack screen")
+            if ok or "could not be opened" not in text:
+                return ok, text
+            lfp[0] = free_udp()
+        return ok, text
+    threading.Thread(target=deck, daemon=True).start()
+    threading.Thread(target=xlights, daemon=True).start()
+    try:
+        if not check(wait_for(lambda: status.last is not None, 15),
+                     "flamesafe is up: " + "".join(said)[-500:]):
+            return
+        ok, text = begin()
+        check(ok, f"the mode is on: {text}")
+        check(arm_group0(), f"group 1 armed: {status.last and status.last['groups'][0]}")
+        got = node_values(0.6)
+        check(got and got[-1] == 200,
+              f"armed: xLights' 200 reaches the node: {got[-5:]}")
+        # A disarm: xLights still sends 200, the node gets zero.
+        arm.set_group(0, False)
+        wait_for(lambda: group0() != "armed", 3)
+        got = node_values(0.4)
+        check(got and max(got[len(got) // 2:]) == 0 and lf.on,
+              f"disarmed: zero at the node while xLights sends: {got[-5:]}")
+        check(arm_group0() and node_values(0.4)[-1:] == [200],
+              "armed again: 200 again")
+        # A lockout of the machine.
+        from ltcplay import morning as _mo
+        _j.dump({"lockout_format": _mo.LOCKOUT_FORMAT,
+                 "flame_channels": [411]}, open(lock_path, "w"))
+        got = node_values(1.5)
+        check(got and max(got[-10:]) == 0,
+              f"locked out: zero at the node: {got[-5:]}")
+        _j.dump({"lockout_format": _mo.LOCKOUT_FORMAT,
+                 "flame_channels": []}, open(lock_path, "w"))
+        time.sleep(1.0)               # flamesafe reads the file twice a second
+        check(arm_group0() and node_values(0.4)[-1:] == [200],
+              "unlocked (a fully locked group needs a fresh arm): 200 again")
+        # The listener dies: the link drops its frame within 0.25 s and the
+        # watchdog ends the mode.
+        def die(*_a, **_k):
+            raise SystemExit("listener killed by the test")
+        lf.feed = die
+        got = node_values(0.8)
+        check(got and max(got[-10:]) == 0,
+              f"the listener died: zero at the node: {got[-5:]}")
+        check(wait_for(lambda: not lf.on, 2) and
+              "listener" in (lf.last_end or {}).get("reason", ""),
+              f"and the watchdog ended the mode: {lf.last_end}")
+        del lf.feed
+        # A fresh session and an Abort.
+        level[0] = 0
+        ok, text = begin()
+        check(ok, f"on again: {text}")
+        check(arm_group0() and node_values(0.4)[-1:] == [200],
+              "armed in the new session: 200")
+        link.disarm_all("Abort from the rack screen (selftest)")
+        got = node_values(0.4)
+        check(got and max(got[len(got) // 2:]) == 0 and
+              wait_for(lambda: not lf.on, 1),
+              f"Abort: zero at the node, the mode over: {got[-5:]} "
+              f"{lf.last_end}")
+    finally:
+        stop.set()
+        lf.end("test over")
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
         import shutil
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(d, ignore_errors=True)
@@ -54312,6 +54827,8 @@ if __name__ == "__main__":
     test_live_flame_engine_routes_roles_and_presses()
     test_live_flame_page_banner_and_card()
     test_live_flame_end_to_end_real_flamesafe()
+    test_live_flame_review_round_one()
+    test_live_flame_end_to_end_armed_group_real_flamesafe()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

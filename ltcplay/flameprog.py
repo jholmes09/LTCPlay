@@ -71,6 +71,12 @@ HOLD_S = 0.25             # a universe with no packet this long is zeros
 WATCH_S = 0.05            # how often the listener thread checks the rules
 RATE_MAX = 200            # packets a second per universe; more is a flood
 RATE_WINDOW_S = 1.0
+# Every datagram, junk included, counts against this before it is parsed
+# (review of PR #96, P3-5): a local flood ends the mode instead of keeping
+# the listener busy.
+TOTAL_MAX = 1000
+WATCHDOG_S = 0.2          # how often the watchdog looks at the listener
+LISTENER_STALL_S = 1.0    # a listener quiet this long is dead to it
 SEQ_WINDOW = 20           # the E1.31 sequence rule (section 6.7.2)
 IDLE_OFF_S_DEFAULT = 600
 MAX_SESSION_S_DEFAULT = 4 * 3600
@@ -384,27 +390,11 @@ class FlameMap:
         rows = []
         seen = set()
         slot = 1
+        others = []
         for c, _first, _span in ctrls:
             a = c.attrib
             if a.get("Name", "") != name:
-                if a.get("ActiveState", "Active") == "Active":
-                    for net in c:
-                        if net.tag != "network":
-                            continue
-                        na = net.attrib
-                        dest = na.get("ComPort", "") or a.get("IP", "")
-                        proto = netmap.UDP_PROTOCOLS.get(
-                            (na.get("NetworkType") or "").lower())
-                        if proto == "e131" and (
-                                dest.startswith("127.") or
-                                dest.lower() in ("localhost",
-                                                 "multicast")):
-                            raise FlameMapError(
-                                f"Controller {a.get('Name', '?')!r} is "
-                                f"Active and sends E1.31 to {dest} in "
-                                f"{path}: its packets would reach the "
-                                f"{NAME} listener as a second sender. Give "
-                                f"it its real address in xLights.")
+                others.append(c)
                 continue
             for net in c:
                 if net.tag != "network":
@@ -448,6 +438,46 @@ class FlameMap:
                 count = min(count, UNIVERSE_SIZE - slot + 1)
                 rows.append((univ, slot, count))
                 slot += count
+        # Every OTHER controller (review of PR #96, P2-1): xLights sends any
+        # controller that is not "Inactive" ("Active" and "xLights Only"
+        # alike), and every sender in one xLights shares one CID and
+        # priority, so the second-sender rule cannot tell its streams
+        # apart. None may send E1.31 to this PC, and none may use a flame
+        # universe number at all, whatever its state or address.
+        for c in others:
+            a = c.attrib
+            cname = a.get("Name", "?")
+            sends = a.get("ActiveState", "Active") != "Inactive"
+            for net in c:
+                if net.tag != "network":
+                    continue
+                na = net.attrib
+                proto = netmap.UDP_PROTOCOLS.get(
+                    (na.get("NetworkType") or "").lower())
+                if proto != "e131":
+                    continue
+                dest = (na.get("ComPort", "") or a.get("IP", "")).strip()
+                try:
+                    univ = int(na.get("BaudRate", ""))
+                except ValueError:
+                    univ = None
+                if univ is not None and univ in seen:
+                    raise FlameMapError(
+                        f"Controller {cname!r} uses E1.31 universe {univ}, "
+                        f"which is one of the flame controller's, in "
+                        f"{path}. Give it another universe in xLights: a "
+                        f"flame universe belongs to the flame controller "
+                        f"only.")
+                if sends and (dest.startswith("127.") or
+                              dest.lower() in ("localhost", "0.0.0.0") or
+                              _multicast(dest)):
+                    raise FlameMapError(
+                        f"Controller {cname!r} is not Inactive and sends "
+                        f"E1.31 to {dest or 'no address'} in {path}: its "
+                        f"packets could reach the {NAME} listener with the "
+                        f"same sender identity as the flame controller. "
+                        f"Give it its real address in xLights, or set it "
+                        f"Inactive.")
         if not rows:
             raise FlameMapError(f"The flame controller {name!r} has no "
                                 f"channels in {path}.")
@@ -594,6 +624,10 @@ class LiveFlame:
         self._gen = 0
         self._sock = None
         self._thread = None
+        self._watchdog = None
+        self._thread_factory = threading.Thread   # the selftest's to swap
+        self._session = None          # the flame link's program session
+        self._cut_reason = ""         # why cut() stopped it, for end()
         self._reset()
         self.last_end = None          # {"reason", "who", "at"}
         self.ends = 0
@@ -613,6 +647,9 @@ class LiveFlame:
         self._blocked = set()         # slots not yet seen at zero
         self.counts = collections.Counter()
         self._bad_said_at = None
+        self._all = collections.deque()   # clock of every datagram, 1 s
+        self._beat = None             # the listener loop's last pass
+        self._last_tick = None
 
     # -- plumbing ---------------------------------------------------------
     def _note(self, who, screen, outcome, text, fault=False):
@@ -705,10 +742,11 @@ class LiveFlame:
                            f"the {screen}; refused: {why}")
                 self._audit(who, screen, "live flame on", "refused", why)
                 return False, f"{NAME} was not turned on: {why}"
-            s = self._settings_get()
-            fmap = self._map_get()
             sock = None
+            s = None
             try:
+                s = self._settings_get()
+                fmap = self._map_get()
                 check_listen_ip(s.listen_ip)
                 sock = self._sock_factory()
                 if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -716,30 +754,68 @@ class LiveFlame:
                                     socket.SO_EXCLUSIVEADDRUSE, 1)
                 sock.bind((s.listen_ip, s.port))
                 sock.settimeout(WATCH_S)
-            except (OSError, SettingsError) as e:
+            except Exception as e:
                 if sock is not None:
                     try:
                         sock.close()
                     except Exception:
                         pass
-                why = (f"{s.listen_ip}:{s.port} could not be opened ({e}). "
-                       f"Another program on this PC is using it.")
+                if isinstance(e, OSError):
+                    why = (f"{getattr(s, 'listen_ip', LISTEN_IP)}:"
+                           f"{getattr(s, 'port', '?')} could not be opened "
+                           f"({e}). Another program on this PC is using it.")
+                else:
+                    why = f"it could not be set up ({type(e).__name__}: {e})."
                 self._note(who, screen, "refused",
                            f"{who or 'Someone'} asked to turn {NAME} on on "
                            f"the {screen}; refused: {why}")
                 self._audit(who, screen, "live flame on", "refused", why)
                 return False, f"{NAME} was not turned on: {why}"
-            self._reset()
-            self.settings, self.map = s, fmap
-            self._blocked = set(fmap.slots)
-            self.began = self.last_data = self._clock()
-            self.began_wall = self._wall()
-            self.who, self.screen = who or "unsigned", screen
-            self._sock = sock
-            self._gen += 1
-            self.on = True
-            self._link().program_begin()
-            gen = self._gen
+            # From here on it is all or nothing (review of PR #96, P3-6): any
+            # failure leaves the mode OFF, the socket closed and the link's
+            # program slot shut.
+            link = self._link()
+            try:
+                self._reset()
+                self.settings, self.map = s, fmap
+                self._blocked = set(fmap.slots)
+                self.began = self.last_data = self._beat = self._clock()
+                self.began_wall = self._wall()
+                self.who, self.screen = who or "unsigned", screen
+                self._sock = sock
+                self._gen += 1
+                self._cut_reason = ""
+                self._session = link.program_begin()
+                self.on = True
+                gen = self._gen
+                if self._threaded:
+                    self._thread = self._thread_factory(
+                        target=self._run, args=(gen,), daemon=True,
+                        name="ltcplay-live-flame")
+                    self._thread.start()
+                    self._watchdog = self._thread_factory(
+                        target=self._watch, args=(gen,), daemon=True,
+                        name="ltcplay-live-flame-watchdog")
+                    self._watchdog.start()
+            except Exception as e:
+                self.on = False
+                self._gen += 1
+                self._sock = None
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                try:
+                    link.program_end()
+                except Exception:
+                    pass
+                self._reset()
+                why = f"it could not be started ({type(e).__name__}: {e})."
+                self._note(who, screen, "refused",
+                           f"{who or 'Someone'} asked to turn {NAME} on on "
+                           f"the {screen}; refused: {why}", fault=True)
+                self._audit(who, screen, "live flame on", "error", why)
+                return False, f"{NAME} was not turned on: {why}"
         rows = "; ".join(f"universe {u} channels 1 to {c} = flamesafe slots "
                          f"{f} to {f + c - 1}" for u, f, c in fmap.rows)
         text = (f"{self.who} turned {NAME} ON on the {screen}. Listening "
@@ -751,14 +827,28 @@ class LiveFlame:
         self._note(self.who, screen, "on", text)
         self._audit(self.who, screen, "live flame on", "accepted",
                     f"{s.listen_ip}:{s.port}")
-        if self._threaded:
-            self._thread = threading.Thread(
-                target=self._run, args=(gen,), daemon=True,
-                name="ltcplay-live-flame")
-            self._thread.start()
         return True, text
 
     # -- off ----------------------------------------------------------------
+    def cut(self, reason):
+        """The cheap half of ending, for an Abort or a Hold press (review of
+        PR #96, P3-3): the flame link's program slot is shut now (zeros
+        from the next frame, nothing more taken), with no journal line, no
+        disk and no wait. end() does the rest, off the press's thread.
+        True when it was on. Never raises."""
+        with self._lock:
+            if not self.on:
+                return False
+            if not self._cut_reason:
+                self._cut_reason = " ".join(str(reason or "").split())[:200]
+            link = self._link()
+        if link is not None:
+            try:
+                link.program_end()
+            except Exception:
+                pass
+        return True
+
     def end(self, reason, who="", screen="", system=True):
         """Off, for any reason: the listener closed, the link's frame
         dropped, and every flame group disarmed (D2). True when it was on.
@@ -800,10 +890,11 @@ class LiveFlame:
                    fault=not ok)
         self._audit(by, screen or "engine", "live flame off", "accepted",
                     why, system=system and not who)
-        t = self._thread
-        if t is not None and t is not threading.current_thread():
-            t.join(1.0)
+        # Never joined here (review of PR #96, P3-3): the listener sees the
+        # new generation within WATCH_S and stops by itself, and the flame
+        # link takes nothing from it any more (its session is over).
         self._thread = None
+        self._watchdog = None
         return True
 
     # -- the listener thread ----------------------------------------------
@@ -824,11 +915,43 @@ class LiveFlame:
                     data = None
                     time.sleep(WATCH_S)
                 now = self._clock()
+                self._beat = now
                 if data is not None:
                     self.feed(data, addr, now)
-                self.tick(now)
+                last = self._last_tick
+                if last is None or now - last >= WATCH_S or now < last:
+                    self._last_tick = now
+                    self.tick(now)
         except Exception as e:
             self.end(f"the listener failed ({type(e).__name__}: {e})")
+
+    def _watch(self, gen):
+        """The watchdog thread (review of PR #96, P3-6)."""
+        while True:
+            time.sleep(WATCHDOG_S)
+            with self._lock:
+                if not self.on or self._gen != gen:
+                    return
+            self.watchdog_check()
+
+    def watchdog_check(self, now=None):
+        """Ends the mode when the listener thread is gone or has not made a
+        pass for LISTENER_STALL_S. Returns the reason, or "". Never
+        raises."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            if not self.on:
+                return ""
+            t, beat = self._thread, self._beat
+        why = ""
+        if self._threaded and (t is None or not t.is_alive()):
+            why = "the listener thread stopped"
+        elif beat is not None and now - beat > LISTENER_STALL_S:
+            why = (f"the listener made no pass for more than "
+                   f"{LISTENER_STALL_S:g} s")
+        if why:
+            self.end(why)
+        return why
 
     # -- one packet ----------------------------------------------------------
     def feed(self, data, addr, now=None):
@@ -838,6 +961,15 @@ class LiveFlame:
         with self._lock:
             if not self.on:
                 return "off"
+            q = self._all
+            q.append(now)
+            while q and now - q[0] > RATE_WINDOW_S:
+                q.popleft()
+            flood = len(q) > TOTAL_MAX
+        if flood:
+            self.end(f"more than {TOTAL_MAX} datagrams in a second reached "
+                     f"the listener (a flood)")
+            return "ended"
         try:
             host = addr[0] if addr else ""
         except Exception:
@@ -973,17 +1105,41 @@ class LiveFlame:
         return bytes(vals)
 
     def _push(self, now):
+        why = self._groups_problem()
+        if why:
+            # Seen on the packet that would carry the values, before any
+            # value is set (review of PR #96, P3-1): zero, disarm, end.
+            self.end(why)
+            return
         with self._lock:
             if not self.on:
                 return
             frame = self.compose(now)
             link = self._link()
+            session = self._session
         if link is None:
             return
         if any(frame):
-            link.program_set(frame)
+            link.program_set(frame, session)
         else:
             link.program_clear()
+
+    def _groups_problem(self):
+        """Why the armed (or being armed) flame groups end the mode, or
+        "": flamesafe not reporting, or more than one group armed or asked
+        for with one group at a time."""
+        try:
+            armed = self._armed()
+        except Exception as e:
+            return f"flamesafe's armed groups could not be read ({e})"
+        if armed is None:
+            return ("flamesafe stopped reporting, so its armed groups are not "
+                    "known")
+        s = self.settings
+        if s is not None and s.one_group and len(armed) > 1:
+            return (f"{len(armed)} flame groups were armed or being armed at "
+                    f"once ({', '.join(armed)}); {NAME} allows one at a time")
+        return ""
 
     # -- the rules, every WATCH_S --------------------------------------------
     def tick(self, now=None):
@@ -998,19 +1154,13 @@ class LiveFlame:
         why = ""
         try:
             if link is None or not getattr(link, "program_on", False):
-                why = ("every flame group was disarmed (an Abort or a "
-                       "disarm of every group)")
+                why = self._cut_reason or (
+                    "the show zeroed or disarmed the flames (a Hold, an "
+                    "Abort, a disarm of every group or a show ending)")
             if not why:
                 why = self._blockers() or ""
             if not why:
-                armed = self._armed()
-                if armed is None:
-                    why = ("flamesafe stopped reporting, so its armed groups "
-                           "are not known")
-                elif s.one_group and len(armed) > 1:
-                    why = (f"{len(armed)} flame groups were armed at once "
-                           f"({', '.join(armed)}); {NAME} allows one at a "
-                           f"time")
+                why = self._groups_problem()
             if not why and self.map is not None and self.map.changed():
                 why = "xlights_networks.xml changed while it was on"
             if not why and now - self.last_data > s.idle_off_s:

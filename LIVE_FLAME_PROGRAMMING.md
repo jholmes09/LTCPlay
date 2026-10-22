@@ -16,7 +16,7 @@ Program flame effects in xLights and see them on the real flames, while LTC Play
 3. **One sender only.** If a second sender appears, everything goes to zero, every group disarms and the mode ends, with the reason. A second sender is another sACN program, another priority, or flamesafe's own output looping back.
 4. **It turns itself off.** That happens after 10 minutes with no xLights data, and after 4 hours in all.
 5. **Who can turn it on:** someone with the Settings permission (admin), on the rack screen of the show PC, never from an iPad. **Turning it off:** anyone, on any screen, even signed out.
-6. **One flame group at a time.** The rack screen refuses a hold on a second group and says why. The Stream Deck's own keys cannot be stopped in advance. If a second group gets armed anyway, the mode ends and every group disarms.
+6. **One flame group at a time.** The rack screen refuses a hold on a second group and says why. The Stream Deck's own keys cannot be stopped in advance. A group counts as soon as it is being armed (flamesafe reports it as wanted), not only once it is armed. The mode then ends at once: every value goes to zero, every group disarms, and it says why.
 
 ## What turns it off by itself
 
@@ -24,6 +24,9 @@ Each of these ends the mode. Each one disarms every flame group, sets the values
 
 - Off, from any screen or from the red banner.
 - Abort (from any screen, the Stream Deck or the scheduler), Hold, Start now, Run, or a show starting.
+- Anything that zeroes or disarms the flames through the show (a Hold, an Abort, a show ending). This stops xLights at the flame link at once, the same way it stops fire.
+- The listener stopping, or not checking in for 1 second (a watchdog looks every 0.2 s).
+- More than 1000 packets a second reaching the listener, of any kind.
 - A second sender, or flamesafe's own output coming back.
 - A flood: more than 200 packets a second on one universe.
 - Two groups armed.
@@ -45,7 +48,8 @@ The rack screen says the reason. It refuses to turn on while any of these is tru
 - A purge is selected or firing.
 - More than one group is armed.
 - The flame controller in xlights_networks.xml is not set as described in the steps below.
-- Another Active controller sends E1.31 to this PC.
+- Any other controller that is not Inactive ("Active" or "xLights Only") sends E1.31 to this PC.
+- Any other controller, whatever its setting, uses one of the flame controller's universe numbers.
 - flamesafe's own destination is this listener's address and port.
 - The port is in use.
 
@@ -65,7 +69,11 @@ Items marked **[verify in xLights]** are names I could not check without xLights
    - LTC Player refuses a show whose flame controller is Active.
 6. **Duplicate frame suppression: off** for this controller, if xLights offers it **[verify in xLights]**. If it is on, a held flame value stops being re-sent and LTC Player zeroes it after 0.25 s. The flame stutters. That is safe but confusing.
 7. **Priority:** leave it at the default **[verify in xLights]**. flamesafe always sends at 200 whatever xLights uses.
-8. **Leave every other controller alone.** No other controller may be Active and send E1.31 to 127.0.0.1. LTC Player refuses the mode if one does.
+8. **Leave every other controller alone, with two rules:**
+   - No other controller that is Active or "xLights Only" may send E1.31 to 127.0.0.1.
+   - No other controller may use the flame controller's universe numbers, even at another address.
+
+   xLights sends all its controllers with one sender identity, so LTC Player could not tell them apart. It refuses the mode if either rule is broken.
 9. **Save.** Then render the show again once. A render older than `xlights_networks.xml` gets no flame cues in a show (CUES FAULT). This is a one-time change, not something to do every session.
 
 ## Using it
@@ -134,19 +142,20 @@ flamesafe is not changed:
 | T4 | The xLights Test tools, "all on", or a stray effect | Only an armed group fires, one group at a time. flamesafe refuses to arm while a fire value is held ("dirty edge"). Operator rule: no Test while armed. |
 | T5 | flamesafe's own output loops back into the listener | Refused at entry when its destination is this listener's address and port. Its CID or source name on the wire ends the mode. |
 | T6 | Startup glitch: xLights opens with a value up | Nothing listens until the mode is on. Each channel stays zero until xLights has sent it at zero. A stream that stops and restarts must show zero again. |
-| T7 | Two senders | The first sender (its CID and priority) is locked. Any other ends the mode with every group disarmed. |
+| T7 | Two senders | The first sender (its CID and priority) is locked. Any other ends the mode with every group disarmed. One xLights sends every controller with the same identity, so at entry no other controller may send E1.31 to this PC or use a flame universe (review of PR #96, P2-1). |
 | T8 | xLights or the engine hangs with a value up | A universe goes to zero 0.25 s after its last packet. The flame link drops the frame 0.25 s after the last update, on its own clock. If the engine dies, flamesafe zeroes fire in 100 ms and disarms in 500 ms. |
 | T9 | A device on the network sends sACN | The listener binds 127.0.0.1 only. A non-loopback source ends the mode. |
 | T10 | Purge and program at once | The mode is refused while a purge is selected. The Morning page fires nothing while the mode is on. At the link, the mode's frame replaces the purge frame. |
 | T11 | Malformed or flooding input | Strict E1.31 parsing: every length, vector and the start code are checked, and preview data is ignored. The sACN sequence rule applies. More than 200 packets a second on a universe ends the mode. |
-| T12 | A second group armed from the Stream Deck | The engine cannot refuse a deck key in advance (that would need a Stream Deck change). It sees two groups armed in flamesafe's status within one watch pass. It ends the mode and disarms every group. |
+| T12 | A second group armed from the Stream Deck | The engine cannot refuse a deck key in advance (that would need a Stream Deck change). A group counts once flamesafe reports it wanted, which is at least 3 of flamesafe's ticks (75 ms) before it can be armed. It is checked on every xLights packet and on every 50 ms pass, and the mode ends with zeros first. flamesafe's own rule refuses to arm a group while a fire value is held on it ("dirty edge"), so a second group with xLights already sending a flame does not arm at all. |
+| T13 | An old listener after a quick Off then On | Every session gets a number from the flame link, and the link refuses a frame from any other session. |
+| T14 | Ending it holding up an Abort | At an Abort, Hold or Start now press only the flame link's program slot is shut (no disk, no wait). The journal, the audit line and the disarm of every group are written on a thread of their own, after the lasers. |
 
 **Residual risks:**
 
-- **Timing.** The checks run every 50 ms, so for up to 50 ms an armed group can fire from xLights:
-  - after Hold, Start now or Run pressed somewhere other than this engine's own buttons;
-  - after a second group is armed from the Stream Deck.
-  
-  An Abort ends the mode at the flame link at once.
+- **Timing.** The checks run every 50 ms, so for up to 50 ms an armed group can fire from xLights after Run is pressed somewhere other than this engine's own buttons.
+  - An Abort, a Hold or anything else that zeroes the flames ends the mode at the flame link at once.
+  - A second group from the Stream Deck: worst case, flamesafe's status reaches the engine (25 ms) after the group has armed, then up to one xLights packet or 50 ms. In practice it is seen while the group is still only wanted, before it can arm.
+- **The Stream Deck as a user.** The engine trusts a request from this PC that says it comes from the Stream Deck (`screen: "Stream Deck"` on loopback) to act as the person signed in on the show machine. Anything running on the show PC could claim that. This is the existing rule, not a new one.
 - **Sampling.** xLights frames are sampled at the flame link's 40 Hz, so one 25 ms pulse can be missed or doubled.
 - **Equal priority.** A multicast or node-addressed flame controller that someone sets Active outside this mode would still merge at equal priority on the node. That risk exists today, and this mode refuses to start while it is set.

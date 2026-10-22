@@ -178,9 +178,12 @@ PURGE_HOLD_S = 0.25
 # while the show is not live, and only for PROGRAM_HOLD_S after the last
 # program_set on this link's own clock, so xLights stopping, the listener
 # dying or the engine hanging all read as zeros here. They are taken only
-# between program_begin() and program_end(); disarm_all() ends them too (an
-# Abort from any surface ends the mode at the link at once). While the mode
-# is on the show's own cues are never sent (one source at a time).
+# between program_begin() and program_end(), and only with the session
+# number program_begin() gave (an old listener can never set the next
+# session's frame). zero() and disarm_all() end them too: the conductor's
+# Hold, Abort and every other zero stop xLights at the link at once, like
+# fire. While the mode is on the show's own cues are never sent (one
+# source at a time).
 PROGRAM_HOLD_S = 0.25
 LOCK_ALARM_S = 1.0          # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
@@ -489,6 +492,7 @@ class FlameLink:
         # clock when set) or None.
         self._program_on = False
         self._program = None
+        self._program_session = 0
         self.programs_sent = 0
         # Lockout (2026-10-17): channels (1-based slots) zeroed in every
         # frame this link sends, cue or purge. flamesafe enforces the same
@@ -939,12 +943,13 @@ class FlameLink:
         return self._unlocked(p[0])
 
     def program_begin(self):
-        """Live flame programming is on: program_set is taken from now on.
-        Starts with no frame (zeros). Returns True."""
+        """Live flame programming is on: program_set is taken from now on,
+        with the session number this returns. Starts with no frame."""
         with self._lock:
             self._program = None
+            self._program_session += 1
             self._program_on = True
-        return True
+            return self._program_session
 
     def program_end(self):
         """Live flame programming is off: the frame is dropped now and
@@ -957,11 +962,12 @@ class FlameLink:
     def program_on(self):
         return self._program_on
 
-    def program_set(self, values):
+    def program_set(self, values, session):
         """The listener's frame: `values` (512 ints 0 to 255) go out on the
         next frames for PROGRAM_HOLD_S, then stop by themselves unless set
-        again. Only while the mode is on and the show is not live. True
-        when the frame was taken. Never raises."""
+        again. Only while the mode is on, for the session program_begin
+        gave, and while the show is not live. True when the frame was
+        taken. Never raises."""
         try:
             vals = bytes(values)
             if len(vals) != UNIVERSE_SIZE:
@@ -970,6 +976,8 @@ class FlameLink:
             return False
         with self._lock:
             if not self._program_on:
+                return False
+            if session != self._program_session:
                 return False
             self._program = (vals, self._clock())
         return True
@@ -1208,7 +1216,11 @@ class FlameLink:
         one cannot delay it (fix round 1, item 7)."""
         with self._lock:
             self._purge = None
+            # Any zero (a Hold, a show's end, the dark sequence) ends live
+            # flame programming at the link too: xLights stops with the
+            # fire (flameprog.py ends the mode on its next pass).
             self._program = None
+            self._program_on = False
             self.zeroed = True
             self._zero_gen += 1
             return self._send_zero_frame()
