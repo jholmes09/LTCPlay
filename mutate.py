@@ -9212,8 +9212,12 @@ def build():
  ("deck: the FIRE heartbeats carry on after the engine refuses one (T3)",
   "ltcplay/streamdeck.py",
   '''            if not ok:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and''',
   '''            if False:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and'''),
 
  ("lasertest: a locked laser's test turns on (T10)",
