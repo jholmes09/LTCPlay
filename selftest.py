@@ -52504,12 +52504,18 @@ def test_rack_lasers_strip_engine():
         # Disarm all lasers: signed out (a role matrix that forbids
         # arming), from the show network, the switch off, that screen
         # arranging, the conductor's lock held by a stuck thread.
+        # As in the engine (threaded: the route only queues the dark job),
+        # but with no sender thread of its own, so nothing races the
+        # request for the job: a route that ran the queue itself would
+        # block on the conductor's lock, every time.
         threaded = LA.LaserArm(
             [(l.id, l.name) for l in R.m.cfg.lasers],
             groups=R.m.cfg.laser_groups, output=lambda: R.laser_out,
-            blank_now=R.c.lasers_dark_now, threaded=True)
-        threaded.wait_idle(5.0)
+            blank_now=R.c.lasers_dark_now, threaded=False)
+        threaded.run_pending()
+        threaded._threaded = True
         threaded.arm(ids, who="Andy", confirmed=True)
+        threaded.run_pending()
         check(threaded.armed_ids() == ids, "setup: every laser armed")
         real_arm, R.m.laser_arm = R.m.laser_arm, threaded
 
@@ -52553,12 +52559,17 @@ def test_rack_lasers_strip_engine():
               f"conductor stuck for 10 s, signed out, from the network with "
               f"the switch off, while that screen arranged: "
               f"{got[0][:3:2] if got else 'no answer'}")
-        check(threaded.wait_idle(5.0) and "disable" in R.laser_out.calls,
+        check(threaded.pending() == ["dark"],
+              f"the route left the blank and DisableLaserOutput to the "
+              f"sender: {threaded.pending()}")
+        threaded.run_pending()
+        check("disable" in R.laser_out.calls,
               f"and once the conductor let go, BEYOND was blanked and its "
               f"laser output switched off: {R.laser_out.calls}")
         R.m.laser_arm = real_arm
     finally:
         if threaded is not None:
+            threaded._threaded = False
             threaded.close()
         R.close()
     print("  ok")
