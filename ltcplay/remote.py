@@ -1284,6 +1284,27 @@ class Remote:
         return None
 
     def press(self, name, body, ctx):
+        """A show control press. An Abort or a Hold tells the laser arm it
+        is under way before ANY other work and until its answer is made
+        (review of PR #87, P2-2): an arm confirmed in that window, before
+        the scheduler's latch or Hold is set, is refused."""
+        arm = getattr(self.morning, "laser_arm", None) \
+            if name in ("abort", "hold") else None
+        if arm is not None:
+            try:
+                arm.press_begin()
+            except Exception:                    # noqa: BLE001
+                arm = None
+        try:
+            return self._press(name, body, ctx)
+        finally:
+            if arm is not None:
+                try:
+                    arm.press_end()
+                except Exception:                # noqa: BLE001
+                    pass
+
+    def _press(self, name, body, ctx):
         # The press's place in line, taken before anything else (an Abort's
         # disarm and laser blank, a lock): the scheduler compares a Reset's
         # with the latest Abort's, so work done first never reorders them.

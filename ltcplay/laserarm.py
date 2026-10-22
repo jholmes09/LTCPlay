@@ -81,7 +81,12 @@ import time
 DARK_RETRIES = 3
 DARK_RETRY_S = 0.25
 # What the closing of the night is called, by the scheduler's own states.
+# CLOSING disarms while it lasts; OFF (the night over) disarms on the way
+# in: a dry-run scheduler steps CLOSING to OFF inside one call, so the
+# watcher may never see CLOSING at all (review of PR #87, P1). Arming in
+# OFF stays allowed afterwards (the morning's calibration).
 CLOSING_STATES = ("CLOSING",)
+OFF_STATES = ("OFF",)
 # A laser group name, like the machine groups.
 GROUP_NAME_MAX = 48
 
@@ -180,6 +185,14 @@ class LaserArm:
         self.last_output = None  # {"what", "ok", "why", "at"}
         self.output_errors = 0
         self._was_closing = False
+        self._last_state = None
+        self._was_permitted = False
+        # Every disarm bumps it; an arm that saw another value at its start
+        # writes nothing (review of PR #87, P2-2: an arm racing an Abort).
+        self._disarm_gen = 0
+        # Abort and Hold presses being handled right now (press_begin and
+        # press_end): no laser arms while one is.
+        self._presses = 0
         self._threaded = threaded
         self._thread = None
         if threaded:
@@ -229,6 +242,11 @@ class LaserArm:
         """Why `ids` cannot be armed now, or None."""
         if not ids:
             return "no laser was named"
+        with self._lock:
+            pressing = self._presses
+        if pressing:
+            return ("an Abort or Hold is being pressed right now; arm again "
+                    "once it has landed")
         unknown = [lid for lid in ids if lid not in self.names]
         if unknown:
             return f"there is no laser called {', '.join(unknown)}"
@@ -282,6 +300,8 @@ class LaserArm:
         if confirmed is not True:
             return False, ("Arming lasers needs a confirm on the page. "
                            "Nothing was armed.")
+        with self._lock:
+            gen = self._disarm_gen
         why = self.refusal(ids)
         if why is not None:
             names = ", ".join(self.names.get(i, i) for i in ids) or "nothing"
@@ -293,10 +313,23 @@ class LaserArm:
             return False, f"Not armed: {why}. Nothing was armed."
         now = self._wall()
         with self._lock:
-            new = [lid for lid in ids if lid not in self.armed]
+            # The refusal was asked without the lock: a disarm (an Abort, a
+            # Hold) that landed since, or a press now under way, wins.
+            raced = self._disarm_gen != gen or self._presses
+            new = [] if raced else [lid for lid in ids
+                                    if lid not in self.armed]
             for lid in new:
                 self.armed[lid] = {"since": now, "who": label,
                                    "screen": screen}
+        if raced:
+            self._note(f"{label}'s arm was refused: a disarm (Abort, Hold or "
+                       f"a disarm press) came in while it was being armed.",
+                       action="laser-arm", outcome="refused", who=who,
+                       screen=screen)
+            self._audit(who, screen, "laser-arm", ",".join(ids), "refused",
+                        "a disarm came in first")
+            return False, ("Not armed: a disarm (Abort, Hold or a disarm "
+                           "press) came in while arming. Nothing was armed.")
         names = ", ".join(self.names[i] for i in ids)
         self._note(f"{names} ARMED by {label}"
                    f"{' on the ' + screen if screen and who else ''}.",
@@ -335,6 +368,7 @@ class LaserArm:
         ids = [str(i) for i in (ids or [])]
         label = who or screen or "someone"
         with self._lock:
+            self._disarm_gen += 1
             was = [lid for lid in self.order if lid in ids and
                    lid in self.armed]
             for lid in ids:
@@ -368,14 +402,38 @@ class LaserArm:
         return self.disarm([lid], f"{self.names.get(lid, lid)} was locked "
                                   f"out", who, screen)
 
+    def press_begin(self):
+        """An Abort or Hold press has started (remote.py, before any other
+        work): until press_end(), nothing arms."""
+        with self._lock:
+            self._presses += 1
+            self._disarm_gen += 1
+
+    def press_end(self):
+        with self._lock:
+            self._presses = max(0, self._presses - 1)
+
     def tick(self, state):
-        """The watcher's pass with the scheduler's state: the night
-        closing disarms every laser, once, on the way in (ruling 4)."""
+        """The watcher's pass with the scheduler's state (ruling 4): while
+        the night is CLOSING nothing stays armed, and the night being over
+        (OFF) disarms on the way in, whether or not CLOSING was ever seen.
+        And a blocker that appears while every laser is armed and lit (a
+        lockout or settings problem, the blanking lost) disarms them too:
+        the gate would only stop the NEXT light."""
         closing = state in CLOSING_STATES
-        if closing and not self._was_closing:
-            self.disarm_all("the night is closing", "", "engine",
-                            defer=False)
+        off_in = state in OFF_STATES and self._last_state not in OFF_STATES
+        if (closing and (not self._was_closing or self.armed_ids())) or \
+                off_in:
+            self.disarm_all("the night is closing" if closing else
+                            "the night is over", "", "engine", defer=False)
         self._was_closing = closing
+        self._last_state = state
+        why = self.may_enable()
+        if self._was_permitted and why is not None and \
+                len(self.armed_ids()) == len(self.order):
+            self.disarm_all(f"the lasers may no longer be lit: {why}", "",
+                            "engine", defer=False)
+        self._was_permitted = why is None
 
     # -- the sender ----------------------------------------------------------
     def _queue(self, kind, why, who, screen, ids=None, notes=None,
@@ -448,14 +506,16 @@ class LaserArm:
                     self._cv.notify_all()
 
     def _run(self, job):
-        for text, fields in job["notes"]:
-            self._note(text, **fields)
-        for a in job["audits"]:
-            self._audit(*a)
+        # The blank and DisableLaserOutput first, before any journal or
+        # audit line or test-off message (review of PR #87, P3-4).
         if job["kind"] == "dark":
             self._dark(job)
         else:
             self._enable(job)
+        for text, fields in job["notes"]:
+            self._note(text, **fields)
+        for a in job["audits"]:
+            self._audit(*a)
 
     def _blank(self, why):
         fn = self.blank_now
@@ -472,8 +532,25 @@ class LaserArm:
 
     def _dark(self, job):
         why = job["why"]
-        # Tests off and the placeholder disarm messages first: they only
-        # darken, and a test grid must not outlive its arm.
+        blanked = self._blank(why)
+        out = self._output_obj()
+        sendable = out is not None and getattr(out, "osc", None) is not None
+        ok = False
+        if sendable:
+            for i in range(DARK_RETRIES):
+                ok, err = _ask(out.output_disable)
+                ok = ok is True and err is None
+                if ok:
+                    break
+                with self._cv:
+                    newer = any(j["kind"] == "dark" for j in self._jobs)
+                if newer:
+                    break                # the next dark job tries again
+                if i < DARK_RETRIES - 1:
+                    self._sleep(DARK_RETRY_S)
+        # Then each disarmed laser's test off and its placeholder disarm
+        # messages: they only darken, and a test grid must not outlive its
+        # arm.
         pl = self.per_laser
         if pl is not None:
             for lid in (job["ids"] or self.order):
@@ -483,25 +560,11 @@ class LaserArm:
                     pl.send_placeholder(lid, "disarm", why)
                 except Exception:                # noqa: BLE001
                     pass
-        blanked = self._blank(why)
-        out = self._output_obj()
-        if out is None or getattr(out, "osc", None) is None:
+        if not sendable:
             # No OSC link at all: the standing "blanking not set up" fault
             # already says so on every screen; nothing more can be sent.
             self._record("disable", False, why, sent=False)
             return
-        ok = False
-        for i in range(DARK_RETRIES):
-            ok, err = _ask(out.output_disable)
-            ok = ok is True and err is None
-            if ok:
-                break
-            with self._cv:
-                newer = any(j["kind"] == "dark" for j in self._jobs)
-            if newer:
-                break                    # the next dark job tries again
-            if i < DARK_RETRIES - 1:
-                self._sleep(DARK_RETRY_S)
         self._record("disable", ok, why)
         if not ok:
             self._note(f"BEYOND's laser output could NOT be switched off "

@@ -9134,10 +9134,10 @@ def build():
 
  ("lasertest: BEYOND's BlackOut becomes an allowed address (T10)",
   "ltcplay/lasertest.py",
-  '''    if address in FORBIDDEN_ADDRESSES:
-        return False
-    return all(0x21 <= ord(c) <= 0x7e for c in address)''',
-  '''    return all(0x21 <= ord(c) <= 0x7e for c in address)'''),
+  '''    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:
+        return False''',
+  '''    if address in GLOBAL_ADDRESSES:
+        return False'''),
 
  ("checklist: a tick needs no name",
   "ltcplay/checklist.py",
@@ -9760,8 +9760,12 @@ def build():
   '        return None'),
  ('lasers: a laser test ON ignores the arm',
   'ltcplay/lasertest.py',
-  '            if not self.is_armed(laser.id):',
-  '            if False:'),
+  '            if not self.is_armed(laser.id):\n'
+  '                self.last_result[laser.id] = "refused"\n'
+  '                self._note(f"{label} asked',
+  '            if False:\n'
+  '                self.last_result[laser.id] = "refused"\n'
+  '                self._note(f"{label} asked'),
  ('lasers: a truthy answer from the arm counts as armed',
   'ltcplay/lasertest.py',
   '            return fn(laser_id) is True',
@@ -9873,12 +9877,12 @@ def build():
   '            with self._cv:'),
  ('lasers: a disarm sends no DisableLaserOutput',
   'ltcplay/laserarm.py',
-  '            ok, err = _ask(out.output_disable)',
-  '            ok, err = True, None'),
+  '                ok, err = _ask(out.output_disable)',
+  '                ok, err = True, None'),
  ("lasers: an unreachable BEYOND's disable is not retried",
   'ltcplay/laserarm.py',
-  '        for i in range(DARK_RETRIES):',
-  '        for i in range(1):'),
+  '            for i in range(DARK_RETRIES):',
+  '            for i in range(1):'),
  ('lasers: a disarm does not blank',
   'ltcplay/laserarm.py',
   '        blanked = self._blank(why)',
@@ -9895,8 +9899,9 @@ def build():
   '            pass'),
  ('lasers: the night closing does not disarm',
   'ltcplay/laserarm.py',
-  '        if closing and not self._was_closing:',
-  '        if False:'),
+  '            self.disarm_all("the night is closing" if closing else\n',
+  '            pass\n'
+  '            False and self.disarm_all("the night is closing" if closing else\n'),
  ('lasers: arming every laser never tells the conductor',
   'ltcplay/laserarm.py',
   '                    self.on_permitted(who, screen)',
@@ -10069,6 +10074,89 @@ def build():
   'ltcplay/web/remote.html',
   '  if(la.output_permitted) return "Lasers: ALL ARMED.',
   '  if(true) return "Lasers: ALL ARMED.'),
+ ('lasers: an arm racing a disarm still writes armed',
+  'ltcplay/laserarm.py',
+  '            raced = self._disarm_gen != gen or self._presses',
+  '            raced = False'),
+ ('lasers: a disarm does not move the disarm generation',
+  'ltcplay/laserarm.py',
+  '            self._disarm_gen += 1\n'
+  '            was = [',
+  '            was = ['),
+ ('lasers: an Abort or Hold press in flight does not refuse arming',
+  'ltcplay/laserarm.py',
+  '        if pressing:\n'
+  '            return ("an Abort or Hold is being pressed',
+  '        if False:\n'
+  '            return ("an Abort or Hold is being pressed'),
+ ('lasers: the remote never tells the arm an Abort or Hold is under way',
+  'ltcplay/remote.py',
+  '                arm.press_begin()',
+  '                pass'),
+ ('lasers: the remote never says the Abort or Hold press is over',
+  'ltcplay/remote.py',
+  '                    arm.press_end()',
+  '                    pass'),
+ ('lasers: the night over does not disarm when CLOSING was never seen',
+  'ltcplay/laserarm.py',
+  '        off_in = state in OFF_STATES and self._last_state not in OFF_STATES',
+  '        off_in = False'),
+ ('lasers: CLOSING lets a laser stay armed after its first pass',
+  'ltcplay/laserarm.py',
+  '        if (closing and (not self._was_closing or self.armed_ids())) or \\\n',
+  '        if (closing and not self._was_closing) or \\\n'),
+ ('lasers: a blocker appearing while lit does not disarm',
+  'ltcplay/laserarm.py',
+  '        if self._was_permitted and why is not None and \\\n',
+  '        if False and \\\n'),
+ ('lasers: one laser disarmed by hand disarms all the others',
+  'ltcplay/laserarm.py',
+  '                len(self.armed_ids()) == len(self.order):',
+  '                True:'),
+ ('lasers: an announcement does not disarm the lasers',
+  'ltcplay/conductor.py',
+  '            self._disarm_lasers("Announcement", who, screen)',
+  '            pass'),
+ ('lasers: the sender writes its lines before the blank and disable',
+  'ltcplay/laserarm.py',
+  '        if job["kind"] == "dark":\n'
+  '            self._dark(job)\n'
+  '        else:\n'
+  '            self._enable(job)\n'
+  '        for text, fields in job["notes"]:\n'
+  '            self._note(text, **fields)',
+  '        for text, fields in job["notes"]:\n'
+  '            self._note(text, **fields)\n'
+  '        if job["kind"] == "dark":\n'
+  '            self._dark(job)\n'
+  '        else:\n'
+  '            self._enable(job)'),
+ ('lasers: a test is recorded ON only after it was sent',
+  'ltcplay/lasertest.py',
+  '            with self._lock:\n'
+  '                self.on[laser.id] = {"since": self._clock(), "who": label}\n'
+  '            ok = self._send_list(laser, laser.on)',
+  '            ok = self._send_list(laser, laser.on)\n'
+  '            with self._lock:\n'
+  '                self.on[laser.id] = {"since": self._clock(), "who": label}'),
+ ('lasers: a test whose laser was disarmed during its ON stays on',
+  'ltcplay/lasertest.py',
+  '            if not self.is_armed(laser.id):\n'
+  '                with self._lock:\n'
+  '                    self.on.pop(laser.id, None)',
+  '            if False:\n'
+  '                with self._lock:\n'
+  '                    self.on.pop(laser.id, None)'),
+ ("lasers: a laser's own lists may send BEYOND's global controls",
+  'ltcplay/lasertest.py',
+  '    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:',
+  '    if address in FORBIDDEN_ADDRESSES:'),
+ ('lasers: the restore does not read the timecode epoch before the arm check',
+  'ltcplay/beyondtc.py',
+  '        epoch = self.gate.epoch() if self.gate is not None else None\n'
+  '        if self.arm_check is not None:',
+  '        epoch = None\n'
+  '        if self.arm_check is not None:'),
 ]
 
 

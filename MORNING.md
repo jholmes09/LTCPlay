@@ -188,8 +188,22 @@ every engine start and restart is DISARMED, and BEYOND's
   Reset never re-arm: the lasers stay dark until someone arms them again,
   and arming during a show that is already up lights them through the
   laser gate.
-- **Closing**: the scheduler entering CLOSING disarms every laser; so does
-  the engine stopping.
+- **Announcements** disarm every laser the way a Hold does (blank,
+  DisableLaserOutput, arm again by hand afterwards). Jeff has not ruled on
+  this; it is the safe default and can be reverted.
+- **Arming never races a disarm**: an arm whose checks were overtaken by a
+  disarm (an Abort, a Hold, a disarm press) writes nothing, and while an
+  Abort or Hold press is being handled no laser arms at all.
+- **Closing**: no laser stays armed while the scheduler is CLOSING, and the
+  night being over (OFF) disarms on the way in, even when a dry-run
+  scheduler went from CLOSING to OFF in one step; arming in OFF (the next
+  morning) works again afterwards. The engine stopping disarms too, and so
+  does a blocker that appears while every laser is armed (a lockout or
+  settings problem, the blanking lost).
+- **Order**: a disarm's blank and DisableLaserOutput go first, before any
+  journal line, audit event, test-off or placeholder message. A laser's own
+  OSC lists (`on`, `off`, `lock`, `arm`, `disarm`) can never name BEYOND's
+  global brightness or output switch.
 - **Per laser OSC**: each laser may carry `arm` and `disarm` message lists,
   PLACEHOLDERS, empty by default (nothing is sent). No per-projector or
   per-zone BEYOND address is verified anywhere; when Andy finds one that

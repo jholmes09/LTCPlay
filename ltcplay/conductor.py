@@ -55,7 +55,8 @@ then play. schedule_service.hold_for_announcement is the "may I hold" gate
 (called here, not re-implemented); announce.play plays the file.
 
 The laser arm (Jeff, 2026-10-22; laserarm.py): Abort and Hold DISARM every
-laser, the way Abort disarms every flame group, through `lasers_disarm`,
+laser (an announcement too, as a Hold), the way Abort disarms every flame
+group, through `lasers_disarm`,
 called at the press before anything else is asked (Abort: right after the
 flame cut, inside the same locked section, playing or not; Hold: before
 the lock is taken). It only changes the arm's state and queues the blank
@@ -1054,6 +1055,11 @@ class Conductor:
                 # journal "Latched until Reset" with nothing latched): it
                 # is out of the show, dark.
                 look = BETWEEN if self._look == ABORTED else self._look
+            # An announcement takes the lasers the way a Hold does (review
+            # of PR #87, P2-3; Jeff has not ruled, so the safe side): every
+            # laser disarmed, blanked and BEYOND's output off, and armed
+            # again by hand afterwards.
+            self._disarm_lasers("Announcement", who, screen)
             self._announcing = ann
             self._accept("Announcement", look, who, screen,
                          fade_s=self._fade(ANNOUNCE_FADE_S), announce=ann)

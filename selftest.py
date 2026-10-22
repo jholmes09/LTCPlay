@@ -50280,7 +50280,9 @@ def _arm_cond():
         why = arm.may_enable()
         return None if why is None else f"the lasers are not armed: {why}"
     c, rig, T, lines = _cond(gate=gate, lasers_disarm=lambda r, w, s:
-                             arm.disarm_all(r, w, s, defer=True))
+                             arm.disarm_all(r, w, s, defer=True),
+                             hold_gate=lambda w, s, d: (None, 0),
+                             announcer=lambda *a: None)
     box["c"] = c
     arm.on_permitted = c.lasers_armed
     arm.blank_now = c.lasers_dark_now
@@ -50646,6 +50648,7 @@ def test_laser_arm_morning_page_routes_and_surfaces():
                             client=loop)
         R.m.tick()
         check(st == 200 and "laser-2" not in R.m.laser_arm.armed_ids() and
+              len(R.m.laser_arm.armed_ids()) == 3 and
               dark_since(nb) and
               R.m.laser_arm.may_enable() is not None,
               f"locking a laser disarms it and BEYOND's output goes off: "
@@ -50720,18 +50723,32 @@ def test_laser_arm_morning_page_routes_and_surfaces():
                             client=loop)
         R.settle()
         R.feed()
-        R.m.laser_arm.armed["laser-1"] = {"since": 0, "who": "t",
-                                          "screen": ""}
-        R.m.laser_arm._was_closing = False
-        R.m._night_state = lambda: "CLOSING"
+        _mo_arm(R, "laser-1")
+        check(R.svc.dry_run, "setup: the scheduler is a dry run (the "
+                             "default install)")
+        # The REAL scheduler closes the night: in a dry run it steps
+        # CLOSING to OFF inside one call, so the watcher never sees
+        # CLOSING (review of PR #87, P1).
+        R.svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+        check(R.svc.machine.state == S.OFF,
+              f"the night closed straight to OFF: {R.svc.machine.state}")
         R.m.tick()
         check(R.m.laser_arm.armed_ids() == [] and any(
-            "night is closing" in (r.get("text") or r.get("reason") or "")
+            "night is over" in (r.get("text") or r.get("reason") or "")
             for r in R.svc.journal),
-              "the night closing disarms every laser, journaled")
+              "the night closing disarms every laser, journaled, though "
+              "CLOSING was never seen")
+        R.m.tick()
         ok, text = R.m.laser_arm.arm(["laser-1"], who="Andy", confirmed=True)
-        R.m._night_state = lambda: None
-        check(not ok, f"and nothing arms while it closes: {text}")
+        R.m.tick()
+        check(ok and R.m.laser_arm.armed_ids() == ["laser-1"],
+              f"the night over, the morning's arming works again (OFF "
+              f"disarms on the way in, not for ever): {text}")
+        R.m._night_state = lambda: "CLOSING"
+        ok, text = R.m.laser_arm.arm(["laser-2"], who="Andy", confirmed=True)
+        R.m._night_state = lambda: getattr(R.svc.machine, "state", None)
+        check(not ok and "closing" in text,
+              f"nothing arms while the night is CLOSING: {text}")
     finally:
         R.close()
     print("  ok")
@@ -50796,6 +50813,271 @@ def test_laser_arm_roles_disarm_signed_out_and_no_auto_run():
     check(".go(" not in src and "control" not in src and
           "start_show" not in src,
           "the laser arm never touches the show control or starts a show")
+    print("  ok")
+
+
+
+def test_laser_arm_review_races_closing_and_ordering():
+    section("lasers (review of PR #87): an arm racing an Abort or Hold "
+            "never sticks; an announcement disarms like a Hold; the night "
+            "over disarms even when CLOSING was never seen, and CLOSING "
+            "keeps nothing armed; a blocker appearing while lit disarms; "
+            "the blank and DisableLaserOutput go before any line or "
+            "test-off; a test racing a disarm ends off; a laser's own OSC "
+            "lists never reach BEYOND's global controls; a blank during "
+            "the restore's arm check still wins")
+    from ltcplay import laserarm as LA
+    from ltcplay import lasertest as LT
+    from ltcplay import beyond as BY
+    from ltcplay import beyondtc as BT
+    # P2-2 A: a disarm lands between the arm's checks and its write.
+    arm, out, st = _arm_parts()
+    arm.run_pending()
+    fired = []
+
+    def abort_lands():
+        if not fired:
+            fired.append(1)
+            arm.disarm_all("Abort pressed by Andy", "Andy", "Rack screen")
+        return ""
+    st["block"] = abort_lands
+    ok, text = arm.arm(["l1", "l2"], who="Andy", confirmed=True)
+    check(fired and not ok and arm.armed_ids() == [] and
+          "disarm" in text and st["permitted"] == [],
+          f"an Abort landing during the arm's checks: nothing armed, the "
+          f"conductor never told: {text}")
+    st["block"] = ""
+    # P2-2 B: an Abort or Hold press under way refuses every arm.
+    arm.press_begin()
+    ok, text = arm.arm(["l1"], who="Andy", confirmed=True)
+    check(not ok and "being pressed" in text and arm.armed_ids() == [],
+          f"while an Abort or Hold press is handled: refused: {text}")
+    arm.press_end()
+    ok, _t = arm.arm(["l1"], who="Andy", confirmed=True)
+    check(ok, "once it has landed, arming works")
+    # P1: the night over (OFF) disarms on the way in; CLOSING keeps
+    # nothing armed while it lasts; arming in OFF works afterwards.
+    arm, out, st = _arm_parts()
+    arm.tick("STANDBY")
+    arm.arm(["l1"], who="Andy", confirmed=True)
+    arm.tick("OFF")
+    check(arm.armed_ids() == [], "STANDBY straight to OFF: disarmed")
+    arm.arm(["l1"], who="Andy", confirmed=True)
+    arm.tick("OFF")
+    check(arm.armed_ids() == ["l1"], "OFF disarms on the way in only")
+    arm.tick("CLOSING")
+    check(arm.armed_ids() == [], "CLOSING disarms")
+    arm.armed["l2"] = {"since": 0, "who": "x", "screen": ""}
+    arm.tick("CLOSING")
+    check(arm.armed_ids() == [], "and keeps nothing armed while it lasts")
+    # P3-7: a blocker appearing while every laser is armed and lit.
+    arm, out, st = _arm_parts()
+    arm.arm(["l1", "l2"], who="Andy", confirmed=True)
+    arm.tick("SHOW")
+    st["block"] = "the lockout file could not be read"
+    arm.tick("SHOW")
+    check(arm.armed_ids() == [] and arm.pending()[-1:] == ["dark"],
+          "a blocker appearing while lit disarms and sends the dark")
+    st["block"] = ""
+    arm.arm(["l1", "l2"], who="Andy", confirmed=True)
+    arm.tick("SHOW")
+    arm.disarm(["l2"], who="Andy")
+    arm.tick("SHOW")
+    check(arm.armed_ids() == ["l1"],
+          "one laser disarmed by hand does not cascade to the others")
+    # P3-4: the blank and DisableLaserOutput before any line or test-off.
+    arm, out, st = _arm_parts()
+    arm.run_pending()
+    del out.calls[:]
+    arm._journal = lambda t, **f: out.calls.append("note")
+    arm.audit = types_ns(event=lambda **f: out.calls.append("audit"))
+    arm.per_laser = types_ns(on={"l1": {}}, set=lambda *a, **k:
+                             out.calls.append("test-off"),
+                             send_placeholder=lambda *a, **k: True)
+    arm.disarm_all("Hold pressed by Andy", "Andy", "Rack screen")
+    arm.run_pending()
+    check(out.calls[:2] == ["blank", "disable"] and "test-off" in out.calls
+          and "note" in out.calls,
+          f"the blank and DisableLaserOutput go first: {out.calls}")
+    # P3-5: a disarm landing while a test's ON goes out.
+    sent = []
+    armed = {"l1"}
+
+    class _Sock:
+        def sendto(self, pkt, addr):
+            sent.append(pkt)
+            if pkt.startswith(b"/beyond/general/startcue"):
+                armed.discard("l1")      # the disarm lands now
+
+        def close(self):
+            pass
+    lasers = LT.parse_lasers([
+        {"id": "l1", "name": "Laser 1", "mechanism": "osc",
+         "host": "127.0.0.2", "port": 8100,
+         "on": [["/beyond/general/startcue", 3]],
+         "off": [["/beyond/general/stopcue", 3]]}], "x")
+    lt = LT.LaserTests(lasers, socket_factory=_Sock, sleep=lambda s: None,
+                       armed=lambda lid: lid in armed)
+    seen_on = []
+    real_send = lt._send_list
+
+    def send_list(laser, msgs):
+        seen_on.append("l1" in lt.on)
+        return real_send(laser, msgs)
+    lt._send_list = send_list
+    ok, text = lt.set("l1", True, who="Andy")
+    check(seen_on[:1] == [True], "the test is recorded ON before it is sent, "
+                                 "so a disarm during the send sees it")
+    check(not ok and "l1" not in lt.on and
+          sent[-1].startswith(b"/beyond/general/stopcue"),
+          f"disarmed during the ON: the test ends off: {text}")
+    # P3-6: a laser's own lists never reach BEYOND's global controls.
+    check(LT.GLOBAL_ADDRESSES == BY.ALLOWED_ADDRESSES,
+          "lasertest's reserved addresses are beyond.py's allow-list")
+    for addr in sorted(BY.ALLOWED_ADDRESSES):
+        check(not LT.allowed_address(addr),
+              f"{addr} is not an address a laser's lists may send")
+        for key in ("on", "off", "lock", "arm", "disarm"):
+            try:
+                LT.parse_lasers([{"id": "l", "name": "L", "mechanism": "osc",
+                                  "host": "127.0.0.2", "port": 8100,
+                                  "on": [["/x", 1]], key: [[addr, 100.0]]}],
+                                "x")
+                check(False, f"{key} with {addr} loaded")
+            except LT.LaserConfigError:
+                pass
+    # P3-8: a blank landing during the restore's own arm check wins.
+    tcsent = []
+    gate = BT.TimecodeGate("127.0.0.2",
+                           socket_factory=lambda: _TcSock(tcsent))
+    link, _sent, _l = _laser_beyond_link()
+    bl = BT.Blanking("both", gate=gate, osc=link)
+    check(bl.blank() and gate.lit is False, "setup: dark")
+    asked = []
+
+    def arm_check():
+        if not asked:
+            asked.append(1)
+            bl.blank()                 # a Hold's blank lands right now
+        return None
+    bl.arm_check = arm_check
+    r = bl.unblank(in_show=True)
+    check(r is False and gate.lit is False,
+          f"a blank during the arm check: BEYOND's timecode stays in the "
+          f"black zone: {r} lit={gate.lit}")
+    print("  ok")
+
+
+def types_ns(**kw):
+    import types
+    return types.SimpleNamespace(**kw)
+
+
+def test_laser_arm_announcement_disarms_like_hold():
+    section("lasers (review of PR #87, P2-3, a default Jeff can revert): an "
+            "announcement disarms every laser like a Hold; no arming while "
+            "the show is dark for it; Resume does not re-arm")
+    c, rig, T, lines, arm, out = _arm_cond()
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    arm.arm(["l1", "l2"], who="Andy", confirmed=True)
+    c.run_pending()
+    arm.run_pending()
+    check(rig.count("lasers_restore") == 1, "setup: lit in the show")
+    r = c.announce("welcome", "Andy", "rack screen")
+    check(r.ok and arm.armed_ids() == [] and arm.pending() == ["dark"],
+          f"an announcement disarms every laser at the press: {r.sentence}")
+    c.run_pending()
+    arm.run_pending()
+    check(out.calls[-1:] == ["disable"], f"and DisableLaserOutput: "
+                                         f"{out.calls}")
+    ok, text = arm.arm(["l1"], who="Andy", confirmed=True)
+    check(not ok and "Hold" in text, f"no arming while dark for it: {text}")
+    n = rig.count("lasers_restore")
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == n, "Resume does not re-arm")
+    print("  ok")
+
+
+def test_laser_arm_through_web_serve():
+    section("lasers (review of PR #87): the real ltc serve wiring, not a "
+            "copy: arm over HTTP with a confirm, Hold over HTTP disarms, and "
+            "the real dry-run scheduler closing the night disarms through "
+            "the Morning page's own watcher thread")
+    import json as _json
+    import tempfile
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    from ltcplay import beyond as BY
+    S = _sched()
+    if S is None:
+        return
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    fs, show, doc = _fi_flame_files(work)
+    with open(fs, "w", encoding="utf-8") as fh:
+        _json.dump(doc, fh)
+    now = [_den(S, 17, 0)]
+    svc = _svc(S, work, now)
+    cfg = F.FireIceConfig(flamesafe_config=fs, flame_controller="Flames",
+                          beyond=BY.BeyondConfig("127.0.0.2",
+                                                 _free_udp_port()),
+                          beyond_blank="osc")
+    httpd = web_mod.serve(work, port=_free_port(), schedule=svc,
+                          fire_ice=cfg, flamesafe_config=fs)
+    loop = ("127.0.0.1", 5000)
+    try:
+        la = httpd.morning.laser_arm
+        check(httpd.fire_ice.laser_arm is la and svc.dry_run,
+              "ltc serve built the arm and handed it on; a dry run")
+        st, _h, out = _ask(httpd, "POST", "/api/remote/laser-arm",
+                           {"group": "All lasers", "on": True}, client=loop)
+        check(st == 409 and la.armed_ids() == [],
+              f"no confirm, nothing armed: {out}")
+        st, _h, out = _ask(httpd, "POST", "/api/remote/laser-arm",
+                           {"group": "All lasers", "on": True,
+                            "confirmed": True}, client=loop)
+        check(st == 200 and len(la.armed_ids()) == len(la.order) and
+              la.may_enable() is None,
+              f"armed over HTTP, every laser, output allowed: {st} {out}")
+        st, _h, out = _ask(httpd, "POST", "/api/remote/hold", {},
+                           client=loop)
+        check(la.armed_ids() == [], f"Hold over HTTP disarms: {st} {out}")
+        check(la.wait_idle(5.0) and la.last_output and
+              la.last_output["what"] == "disable",
+              f"and the sender switched BEYOND's output off: "
+              f"{la.last_output}")
+        _ask(httpd, "POST", "/api/remote/resume",
+             {"seen": int(time.time() * 1000)}, client=loop)
+        # An arm confirmed while an Abort press is being handled, before
+        # its scheduler step: refused (review of PR #87, P2-2 B).
+        tried = []
+        orig = httpd.remote._disarm_now
+
+        def mid_press(*a):
+            tried.append(la.arm(list(la.order), who="Andy", confirmed=True))
+            return orig(*a)
+        httpd.remote._disarm_now = mid_press
+        _ask(httpd, "POST", "/api/remote/abort", {"confirmed": True},
+             client=loop)
+        httpd.remote._disarm_now = orig
+        check(tried and not tried[0][0] and "being pressed" in tried[0][1]
+              and la.armed_ids() == [],
+              f"an arm during the Abort press is refused: {tried}")
+        ok, text = la.arm(list(la.order), who="Andy", confirmed=True)
+        check(ok, f"armed again: {text}")
+        svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+        check(svc.machine.state == S.OFF, f"closed: {svc.machine.state}")
+        deadline = time.time() + 5
+        while time.time() < deadline and la.armed_ids():
+            time.sleep(0.05)
+        check(la.armed_ids() == [],
+              "the Morning page's watcher disarmed every laser once the "
+              "night was over")
+    finally:
+        httpd.server_close()
+        svc.stop()
     print("  ok")
 
 
@@ -51310,6 +51592,9 @@ if __name__ == "__main__":
     test_laser_arm_blanking_unblank_needs_the_arm()
     test_laser_arm_morning_page_routes_and_surfaces()
     test_laser_arm_roles_disarm_signed_out_and_no_auto_run()
+    test_laser_arm_review_races_closing_and_ordering()
+    test_laser_arm_announcement_disarms_like_hold()
+    test_laser_arm_through_web_serve()
     test_checklist_audit_chain_pdf_export_and_tally()
     test_morning_lockout_trust_link_and_close()
     test_morning_arrange_mode_arms_nothing()

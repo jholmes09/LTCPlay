@@ -440,6 +440,11 @@ class Blanking:
     def unblank(self, show=None, in_show=False, still_wanted=None):
         if in_show is not True:
             return False
+        # Read before anything is decided, the arm's check and the output
+        # enable included (review of PR #87, P3-8): any blank from here on
+        # refuses the timecode half below, under the gate's own lock, so no
+        # blank can fall between the arm check and this read unseen.
+        epoch = self.gate.epoch() if self.gate is not None else None
         if self.arm_check is not None:
             # The laser arm (ruling 6): disarmed, locked out, not set up or
             # not known is dark. Asked again before every packet below, so
@@ -466,9 +471,6 @@ class Blanking:
                            fault=not cut, outcome="cut" if cut else
                            "restore_failed")
                 return False
-        # Read before anything is decided: any blank from here on refuses
-        # the timecode half below, under the gate's own lock.
-        epoch = self.gate.epoch() if self.gate is not None else None
         ok = True
         parts = []
         if self._uses("osc"):

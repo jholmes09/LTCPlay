@@ -44,6 +44,14 @@ import time
 # equal), written here so this module stands alone.
 FORBIDDEN_ADDRESSES = frozenset(("/beyond/general/BlackOut",
                                  "/beyond/general/MasterPause"))
+# BEYOND's GLOBAL controls, which only beyond.py and the laser arm may
+# send, behind their own guards (review of PR #87, P3-6): a laser's own
+# config lists (on, off, lock, arm, disarm) never reach them, or a test or
+# a placeholder could light every laser around the arm. The selftest
+# holds them equal to beyond.py's ALLOWED_ADDRESSES.
+GLOBAL_ADDRESSES = frozenset(("/beyond/master/livecontrol/brightness",
+                              "/beyond/general/EnableLaserOutput",
+                              "/beyond/general/DisableLaserOutput"))
 _SPECIAL_CHARS = frozenset("*?[]{}#")
 MECHANISMS = ("none", "osc")
 RETRY_COUNT = 3
@@ -64,7 +72,7 @@ def allowed_address(address):
         return False
     if any(c in _SPECIAL_CHARS for c in address) or " " in address:
         return False
-    if address in FORBIDDEN_ADDRESSES:
+    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:
         return False
     return all(0x21 <= ord(c) <= 0x7e for c in address)
 
@@ -341,9 +349,24 @@ class LaserTests:
                                f"is not set yet (a placeholder in "
                                f"ltcplay_morning.json, lasers). Nothing was "
                                f"sent.")
-            ok = self._send_list(laser, laser.on)
+            # Recorded ON before the send, so a disarm landing during it
+            # sees the test and turns it off; and asked again after it, so
+            # a disarm that came first is never outlived by the grid
+            # (review of PR #87, P3-5).
             with self._lock:
                 self.on[laser.id] = {"since": self._clock(), "who": label}
+            ok = self._send_list(laser, laser.on)
+            if not self.is_armed(laser.id):
+                with self._lock:
+                    self.on.pop(laser.id, None)
+                if laser.mechanism != "none":
+                    self._send_list(laser, laser.off)
+                self.last_result[laser.id] = "refused"
+                self._note(f"The {laser.name} test was turned straight off "
+                           f"again: the laser was disarmed while it went "
+                           f"on.", action="laser-test", outcome="refused")
+                return False, (f"{laser.name} was disarmed while its test "
+                               f"went on, so it was turned off again.")
             self.last_result[laser.id] = "sent" if ok else "failed"
             self._note(f"{label} turned the {laser.name} calibration test "
                        f"ON{'' if ok else ' (the OSC send FAILED)'}.",
