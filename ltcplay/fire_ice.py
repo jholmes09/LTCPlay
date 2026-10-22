@@ -1011,6 +1011,12 @@ def show_folder_render_faults(folder):
     return out
 
 
+RENDER_OLDER_THAN_LAYOUT = (
+    "the show's render is older than xlights_networks.xml: the layout was "
+    "changed after the show was rendered, so which channels are the flames "
+    "cannot be trusted. Render the show again for this layout")
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
     show's OWN render at the show timecode (PR #43 review, finding 1).
@@ -1065,6 +1071,15 @@ class FlameCues:
         # each new one (web.serve raises the rack screen's alert with it).
         self.render_fault = ""
         self.on_render_fault = None
+        # (session, the renders render_fault names), published by the
+        # reading thread BEFORE render_fault. __call__ refuses a cue whose
+        # render is named here even while the channels it reads from are
+        # still the ones published before the layout changed (the same pass
+        # reads xlights_networks.xml and the renders after its age check,
+        # which can take seconds on a stalled drive) or none are published
+        # yet, so the cues are never live, nor refused without the fault,
+        # while the screens say CUES FAULT.
+        self._stale = (None, frozenset())
 
     def _note(self, text, **f):
         if self._journal is not None:
@@ -1203,7 +1218,7 @@ class FlameCues:
         only (renders_older_than_layout). A new CUES FAULT is journaled
         and handed to on_render_fault once; none running, none."""
         s = getattr(self.control, "session", None)
-        text = ""
+        text, stale = "", []
         if s is not None and getattr(s, "running", False):
             tl = getattr(s, "tl", None)
             folder = getattr(tl, "show_dir", None)
@@ -1215,8 +1230,11 @@ class FlameCues:
             show = os.path.basename(str(getattr(s, "timeline_path", "")
                                         or ""))
             if nm:
-                text = render_age_sentence(
-                    nm, renders_older_than_layout(nm, paths), show)
+                stale = renders_older_than_layout(nm, paths)
+                text = render_age_sentence(nm, stale, show)
+        # The refusal first, then the screens: whoever sees render_fault
+        # set finds the cues already refused.
+        self._stale = (s, frozenset(stale))
         if text and text != self.render_fault:
             self._note(text, fault=True, action="flames",
                        outcome="cues_fault_renders")
@@ -1282,6 +1300,15 @@ class FlameCues:
             return self._zero("")
         if self._bg:
             self.start()
+            stale_s, stale = self._stale
+            label = cue.get("label") if isinstance(cue, dict) else None
+            if stale_s is s and any(
+                    getattr(c, "path", None) in stale
+                    for c in (getattr(getattr(s, "tl", None), "cues", None)
+                              or ()) if getattr(c, "name", None) == label):
+                # The reading thread has found this cue's render older than
+                # the layout: refused now, whatever the channels in memory say.
+                return self._zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
             lay = self._layout
             if lay is None or lay[0] is not s:
                 return self._zero("the flame controller's channels are "
@@ -1331,11 +1358,7 @@ class FlameCues:
                 # Review of PR #43, P0-6: a layout changed after the render
                 # was made can keep the same channel total and move the
                 # flames, so the count alone cannot tell.
-                return self._zero(
-                    "the show's render is older than xlights_networks.xml: "
-                    "the layout was changed after the show was rendered, so "
-                    "which channels are the flames cannot be trusted. Render "
-                    "the show again for this layout", fault=True)
+                return self._zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
             if checked_at is not None and checked_at != span[0]:
                 return self._zero(
                     f"the flame controller starts at channel {span[0]} in "

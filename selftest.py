@@ -48841,6 +48841,77 @@ def test_ltc_deck_runs_the_threaded_loop():
     print("  ok")
 
 
+def test_flame_cues_refused_while_the_reader_is_mid_pass():
+    section("flame cues, background reader: once the reading thread has "
+            "found a render older than the layout (the screens say CUES "
+            "FAULT), the cues are refused at once, even while the same pass "
+            "is still reading xlights_networks.xml and the channels it "
+            "published are the ones from before the layout changed")
+    import shutil
+    import tempfile
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        # The first pass: the age check has run, the renders have not been
+        # read yet. Refused as the fault, not as "still being read".
+        rig = _fi_cue_rig(os.path.join(work, "first"))
+        rig.layout("A")
+        rig.rerender(1534, 50)
+        r = os.stat(rig.render).st_mtime_ns
+        os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
+        cues = F.FlameCues(rig.control, "Flames", background=True)
+        cues._stop.set()                  # no thread: driven by hand
+        cues._check_renders_once()
+        check(cues.render_fault.startswith("CUES FAULT") and
+              cues("00:00:02:15") is None and
+              cues.fault == F.RENDER_OLDER_THAN_LAYOUT,
+              f"first pass, renders not read yet: refused as the fault: "
+              f"{cues.render_fault!r} {cues.fault!r}")
+        cues.close()
+        # The real reading thread, held inside its read of the layout (a
+        # slow drive) right after its age check said CUES FAULT.
+        rig = _fi_cue_rig(os.path.join(work, "thread"))
+        rig.layout("A")
+        rig.rerender(1534, 50)
+        cues = F.FlameCues(rig.control, "Flames", background=True)
+        real, entered, release = cues._locate, threading.Event(), \
+            threading.Event()
+        real_render, read_once = cues._render, threading.Event()
+
+        def slow(session):
+            if cues.render_fault:
+                entered.set()
+                release.wait(10)
+            return real(session)
+
+        def render(path, start=None):
+            got = real_render(path, start)
+            read_once.set()
+            return got
+        cues._locate, cues._render = slow, render
+        try:
+            cues.start()
+            check(read_once.wait(10), "setup: the reader read the render")
+            check(cues("00:00:02:15") == [50] * 512,
+                  "setup: the flames from the render in memory")
+            r = os.stat(rig.render).st_mtime_ns
+            os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
+            check(entered.wait(10), "the reader is held mid-pass after its "
+                                    "age check")
+            got = cues("00:00:02:15")
+            check(cues.render_fault.startswith("CUES FAULT") and
+                  got is None and cues.fault == F.RENDER_OLDER_THAN_LAYOUT,
+                  f"the screens say CUES FAULT and the cues are refused, "
+                  f"though the channels in memory predate the layout: "
+                  f"{got and got[:2]} {cues.fault!r}")
+        finally:
+            release.set()
+            cues.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
     section("soak 2026-10-21: a render older than xlights_networks.xml is a "
             "CUES FAULT from show load on (the rack screen, an alert, the "
@@ -52201,6 +52272,7 @@ if __name__ == "__main__":
     test_audit_upload_retries_resumes_and_waits_for_the_ack()
     test_audit_never_blocks_or_fails_a_press()
     test_soak_render_older_than_layout_is_a_cues_fault_at_show_load()
+    test_flame_cues_refused_while_the_reader_is_mid_pass()
     test_soak_flame_cues_preloaded_and_never_copied_under_the_lock()
     test_soak_show_folder_served_is_said_and_followed()
     test_soak_pc_clock_and_time_service_in_the_morning_checks()
