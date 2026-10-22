@@ -127,6 +127,12 @@ SOURCE_TREE = os.path.exists(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutate.py"))
 
 RAN = set()
+# Seconds each test took, from its first heading to the next test's first
+# heading, so the end of the run can name the slowest. mutate.py runs this
+# suite twice per mutation: a second here is minutes across a sweep. The
+# clock is captured now so a test that patches time cannot move it.
+TEST_SECONDS = {}
+_TEST_CLOCK = [time.perf_counter, None, 0.0]   # clock, current test, start
 
 
 def _close_logs_under(path):
@@ -489,6 +495,12 @@ def section(name):
     _who = _sys._getframe(1).f_code.co_name
     if _TEMPRUN is not None and _who.startswith("test_"):
         _TEMPRUN.next_test(_who)
+    if _who.startswith("test_") and _who != _TEST_CLOCK[1]:
+        _now = _TEST_CLOCK[0]()
+        if _TEST_CLOCK[1] is not None:
+            TEST_SECONDS[_TEST_CLOCK[1]] = (TEST_SECONDS.get(_TEST_CLOCK[1], 0.0)
+                                            + _now - _TEST_CLOCK[2])
+        _TEST_CLOCK[1:] = [_who, _now]
     RAN.add(_who)
     print(f"\n== {name}")
 
@@ -38876,9 +38888,13 @@ def test_mutate_reports_every_failure_it_can_have():
     code, lines, notes, summary = run(["--shard", "0/1"], [caught],
                                       target_text="SLEEP\nGUARD\n",
                                       SUITE_TIMEOUT=1)
-    check(code == 2 and said(notes, "nothing mutated",
+    check(code == 2 and said(notes, "INFRASTRUCTURE", "nothing mutated",
                              "did not finish inside 1 s"),
           f"a hung baseline is annotated as a timeout: {code} {notes}")
+    check("| TIMED OUT |" in summary and "running it once more" in
+          "\n".join(lines) and not any("NOT CAUGHT" in l for l in lines),
+          f"a hung baseline is retried once, then an infrastructure failure, "
+          f"never a miss:\n{summary}")
     # ... and when a test lets an exception out: the traceback's last line.
     code, lines, notes, summary = run(["--shard", "0/1"], [caught],
                                       target_text="CRASH\nGUARD\n")
@@ -38955,6 +38971,146 @@ def test_mutate_reports_every_failure_it_can_have():
     check(mutate.annotation("a, b: c", ["p%q"]).startswith(
         "::error title=a%2C b%3A c::p%25q"),
           "the title's commas and colons are escaped, the body's percent too")
+
+
+def test_mutate_mutant_limit_follows_the_baseline():
+    """A mutant's suite is stopped at a limit measured from the unmutated
+    baseline on the same runner, not a fixed 300 s, and a baseline that does
+    not finish is an infrastructure failure, retried once, never a missed
+    mutation. PR #87 shards 10 and 13 went red because a clean baseline took
+    longer than 300 s on a loaded runner. The suite runs here are faked with
+    chosen durations, so nothing waits."""
+    section("mutate.py: the mutant limit is relative to the baseline")
+    import contextlib
+    import io
+    import mutate
+
+    # The rule itself: three times the baseline, never under the old 300 s,
+    # never over the ceiling.
+    for base, want in ((0, 300), (60, 300), (100, 300), (150, 450),
+                       (280, 840), (600, 1800), (5000, 1800)):
+        check(mutate.mutant_timeout(base) == want,
+              f"baseline {base} s: mutant limit "
+              f"{mutate.mutant_timeout(base)} s, want {want} s")
+    check(mutate.MUTANT_CEILING <= mutate.SUITE_TIMEOUT,
+          "no mutant may run longer than the baseline is allowed to")
+    HANG = float("inf")
+
+    with tempfile.TemporaryDirectory() as tree:
+        target = os.path.join(tree, "target.py")
+
+        def sweep(baselines, mutant, mutant_red=False, ci=True):
+            """Run main() with the suite faked: `baselines` are the seconds
+            each unmutated run takes, `mutant` the seconds a mutated one
+            takes (HANG for never). (exit, lines, notes, calls, report)."""
+            with open(target, "w", encoding="utf-8", newline="") as fh:
+                fh.write("ok\nGUARD\n")
+            baselines = list(baselines)
+            calls = []
+
+            def fake_suite(limit=None):
+                limit = mutate.SUITE_TIMEOUT if limit is None else limit
+                with open(target, encoding="utf-8") as fh:
+                    mutated = "GUARD" not in fh.read()
+                took = mutant if mutated else baselines.pop(0)
+                calls.append(("mutant" if mutated else "baseline", limit))
+                if took > limit:
+                    mutate._LAST_RUN[:] = [limit, True]
+                    mutate._LAST_FAILS[:] = [
+                        f"FAIL  the suite did not finish inside {limit} s "
+                        f"(TimeoutExpired)"]
+                    return False
+                mutate._LAST_RUN[:] = [took, False]
+                red = mutated and mutant_red
+                mutate._LAST_FAILS[:] = ["FAIL  the guard is gone"] if red else []
+                return not red
+
+            saved = {k: getattr(mutate, k) for k in
+                     ("HERE", "LOCK", "MUTATIONS", "CI", "run_suite")}
+            env_saved = os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            old_argv = sys.argv
+            buf = io.StringIO()
+            try:
+                mutate.HERE = tree
+                mutate.LOCK = os.path.join(tree, ".mutating")
+                mutate.MUTATIONS = [("the guard is gone", "target.py",
+                                     "GUARD", "BROKEN")]
+                mutate.CI = ci
+                mutate.run_suite = fake_suite
+                sys.argv = ["mutate.py", "--shard", "0/1",
+                            "--expected", os.devnull]
+                with contextlib.redirect_stdout(buf):
+                    code = mutate.main()
+            finally:
+                for k, v in saved.items():
+                    setattr(mutate, k, v)
+                if env_saved is not None:
+                    os.environ["GITHUB_STEP_SUMMARY"] = env_saved
+                sys.argv = old_argv
+            lines = buf.getvalue().splitlines()
+            notes = [l for l in lines if l.startswith("::error ")]
+            return code, lines, notes, calls, mutate.REPORT
+
+        # A slow runner: the clean suite takes 290 s. A mutant that makes it
+        # hang is stopped at 870 s and caught, twice in CI.
+        code, lines, notes, calls, rep = sweep([290], HANG)
+        check(code == 0 and calls == [("baseline", mutate.SUITE_TIMEOUT),
+                                      ("mutant", 870), ("mutant", 870)],
+              f"a hanging mutant is stopped at 3 x the baseline and caught: "
+              f"exit {code}, runs {calls}")
+        check("  caught      the guard is gone" in lines
+              and any("did not finish inside 870 s" in l for l in lines)
+              and rep.limits == "290 s / 870 s",
+              f"the catch says it was a timeout at the measured limit: "
+              f"{lines} {rep.limits}")
+
+        # The same slow runner, a mutant that nothing tests: its suite is
+        # merely slow (400 s), not hung. The old fixed 300 s stopped it and
+        # called it caught; now it finishes green and is reported missed.
+        code, lines, notes, calls, rep = sweep([290], 400)
+        check(code == 1 and "  NOT CAUGHT  the guard is gone" in lines
+              and calls == [("baseline", mutate.SUITE_TIMEOUT),
+                            ("mutant", 870)],
+              f"a slow mutant is not passed off as caught by timeout: "
+              f"exit {code}, runs {calls}")
+
+        # An ordinary catch is unchanged.
+        code, lines, notes, calls, rep = sweep([120], 100, mutant_red=True)
+        check(code == 0 and calls[1:] == [("mutant", 360), ("mutant", 360)]
+              and "  caught      the guard is gone" in lines,
+              f"a red mutant is caught as before: exit {code}, runs {calls}")
+
+        # A fast runner: the floor keeps the old 300 s.
+        code, lines, notes, calls, rep = sweep([40], HANG)
+        check(code == 0 and calls[1:] == [("mutant", 300), ("mutant", 300)],
+              f"a fast baseline keeps the 300 s floor: {calls}")
+
+        # The baseline does not finish once: run once more, then measure the
+        # mutant limit from the run that finished.
+        code, lines, notes, calls, rep = sweep([HANG, 200], HANG)
+        check(code == 0 and [c[0] for c in calls] == [
+                  "baseline", "baseline", "mutant", "mutant"]
+              and calls[2] == ("mutant", 600)
+              and any("running it once more" in l for l in lines)
+              and rep.baseline == "green" and not notes,
+              f"a baseline timeout is retried once and the sweep goes on: "
+              f"exit {code}, runs {calls}, {notes}")
+
+        # Twice: an infrastructure failure. No mutant runs, nothing is
+        # counted missed or caught, and it says so in its own words.
+        code, lines, notes, calls, rep = sweep([HANG, HANG], HANG)
+        check(code == 2 and [c[0] for c in calls] == ["baseline", "baseline"],
+              f"two baseline timeouts stop the shard before any mutant: "
+              f"exit {code}, runs {calls}")
+        check(rep.baseline == "TIMED OUT" and not rep.missed
+              and not rep.caught
+              and any(l.startswith("INFRASTRUCTURE FAILURE") for l in lines)
+              and any("INFRASTRUCTURE" in n and "not a missed mutation" in n
+                      for n in notes)
+              and not any("NOT CAUGHT" in l or "FAILS with nothing mutated"
+                          in l for l in lines),
+              f"a baseline that never finishes is infrastructure, not a "
+              f"miss or a red suite: {rep.baseline} {lines} {notes}")
 
 
 def test_the_gpl_path_never_loads_the_flame_link():
@@ -52004,6 +52160,7 @@ if __name__ == "__main__":
     test_tracemalloc_diagnostic_is_opt_in()
     test_lasers_blanking_not_set_up_is_loud()
     test_mutate_reports_every_failure_it_can_have()
+    test_mutate_mutant_limit_follows_the_baseline()
     test_alerts_pure_logic()
     test_alerts_route_status_and_acknowledge()
     test_boothaudio_never_holds_and_never_uses_the_pa()
@@ -52082,6 +52239,13 @@ if __name__ == "__main__":
                      + _what)
         print(f"\n  FAIL  this run left {len(_left)} temp entries behind in "
               f"its own temp folder: {_what}")
+
+    if _TEST_CLOCK[1] is not None:
+        TEST_SECONDS[_TEST_CLOCK[1]] = (TEST_SECONDS.get(_TEST_CLOCK[1], 0.0)
+                                        + _TEST_CLOCK[0]() - _TEST_CLOCK[2])
+        print("\nslowest tests:")
+        for _n, _s in sorted(TEST_SECONDS.items(), key=lambda kv: -kv[1])[:15]:
+            print(f"  {_s:6.1f}s  {_n}")
 
     print(f"\n{'-'*50}")
     if SHOW_PROBLEMS:
