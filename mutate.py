@@ -829,6 +829,97 @@ MUTATIONS = [
   "  if(!c.running) return {kind:c.kind, label:c.label, running:false, s:s, at:null};",
   "  if(false) return {kind:c.kind, label:c.label, running:false, s:s, at:null};"),
 
+ # -- Art-Net receivers, one address each (soak 2026-10-21) ----------
+ ('artnet nodes: 127.0.0.2 is not the same address as 127.0.0.1',
+  'ltcplay/artnodes.py',
+  '    return LOOPBACK if is_loopback(addr) else addr',
+  '    return addr'),
+
+ ('artnet nodes: localhost is not the loopback',
+  'ltcplay/artnodes.py',
+  '    if s.lower() == "localhost":\n        return LOOPBACK',
+  '    if False:\n        return LOOPBACK'),
+
+ ('artnet nodes: two receivers on one address pass',
+  'ltcplay/artnodes.py',
+  '        if len(members) < 2:\n            continue',
+  '        if len(members) < 3:\n            continue'),
+
+ ('artnet nodes: the collision does not say what to do',
+  'ltcplay/artnodes.py',
+  'never chases timecode. {FIX}")',
+  'never chases timecode.")'),
+
+ ('artnet nodes: the duplicate refusal does not say what to do',
+  'ltcplay/clock.py',
+  'f"so that receiver would get every frame twice. "\n                    f"{artnodes.FIX}")',
+  'f"so that receiver would get every frame twice")'),
+
+ ('artnet nodes: a node not on the show PC is only a warning',
+  'ltcplay/artnodes.py',
+  '        level = "bad" if windows else "warn"',
+  '        level = "warn"'),
+
+ ('artnet nodes: adapters that cannot be read are a fault',
+  'ltcplay/artnodes.py',
+  '        if here is None:\n            out.append(("warn",',
+  '        if False:\n            out.append(("warn",'),
+
+ ('artnet nodes: adapters that cannot be read pass as fine',
+  'ltcplay/artnodes.py',
+  '        if here:\n            continue',
+  '        if here or here is None:\n            continue'),
+
+ ('artnet nodes: the adapter list is not asked first',
+  'ltcplay/artnodes.py',
+  '        if adapters is not None and addr in adapters:\n            continue',
+  '        pass'),
+
+ ('artnet nodes: the loopback is probed like an adapter',
+  'ltcplay/artnodes.py',
+  '        if is_loopback(addr):\n            continue',
+  '        pass'),
+
+ ('artnet nodes: the probe cannot tell a missing address',
+  'ltcplay/artnodes.py',
+  '                getattr(e, "winerror", None) == WSAEADDRNOTAVAIL:\n            return False',
+  '                getattr(e, "winerror", None) == WSAEADDRNOTAVAIL:\n            return None'),
+
+ ('artnet nodes: a file that is not a show is checked',
+  'ltcplay/artnodes.py',
+  '    if not isinstance(doc, dict) or "cues" not in doc:\n        return None\n    clock',
+  '    if not isinstance(doc, dict):\n        return None\n    clock'),
+
+ ('artnet nodes: the rack screen alert is not raised',
+  'ltcplay/remote.py',
+  '        self.artnet_alert()\n        self._apply_pulse()',
+  '        self._apply_pulse()'),
+
+ ('artnet nodes: a warning raises the rack screen alert',
+  'ltcplay/remote.py',
+  '            text = " ".join(t for lv, t in faults if lv == "bad")',
+  '            text = " ".join(t for lv, t in faults)'),
+
+ ('artnet nodes: the alert is raised again on every poll',
+  'ltcplay/remote.py',
+  '            if text and text != getattr(self, "_artnet_said", ""):',
+  '            if text:'),
+
+ ('artnet nodes: the Morning card is missing',
+  'ltcplay/remote.py',
+  '        out.append(self._artnet_check())\n',
+  ''),
+
+ ('artnet nodes: the Morning card is never red',
+  'ltcplay/remote.py',
+  '        level = "bad" if "bad" in levels else \\',
+  '        level = "warn" if "bad" in levels else \\'),
+
+ ('artnet nodes: show load says nothing',
+  'ltcplay/session.py',
+  '                self.notes.extend(t for lv, t in found if lv == "bad")',
+  '                pass'),
+
  # -- soak 2026-10-21 --------------------------------------------------
  ("soak: the countdown restarts from every poll and its digit flickers",
   "ltcplay/web/remote.html",

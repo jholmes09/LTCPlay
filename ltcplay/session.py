@@ -350,6 +350,18 @@ class Session:
             # it reads the rig watch and the input.
             self.player.clock = self.clock
             self.notes.append(f"Show clock: {self.tl.clock.summary()}.")
+            # Two receivers on one address, or a node address this PC does
+            # not have (soak 2026-10-21): said at show load, never refused
+            # here. The rack screen's alert and the Morning card say it too.
+            art = self.tl.clock.artnet
+            if art is not None and art.nodes:
+                from . import artnodes
+                try:
+                    found = artnodes.node_faults(
+                        art.nodes, artnodes.adapter_addresses())
+                except Exception:                # noqa: BLE001
+                    found = []
+                self.notes.extend(t for lv, t in found if lv == "bad")
             if self.clock.master:
                 # on_lost is a policy for a timecode feed that dies. Here the
                 # clock owns the pixels: a cue that ends or is halted hands

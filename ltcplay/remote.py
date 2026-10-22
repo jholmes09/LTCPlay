@@ -2063,6 +2063,7 @@ class Remote:
             level, text = "unknown", f"The clock check failed: {e}"
         out.append({"id": "clock", "title": "This PC's clock",
                     "level": level, "text": text})
+        out.append(self._artnet_check())
         folder = self._show_folder()
         problem = self.show_folder_problem()
         out.append({"id": "show_folder", "title": "Show folder served",
@@ -2070,6 +2071,60 @@ class Remote:
                     "text": problem or f"This engine serves {folder}."})
         self._checks = (out, now)
         return out
+
+    def artnet_faults(self):
+        """artnodes.folder_faults for the show folder, worked out at most
+        every CHECKS_READ_S: ([(level, sentence)], show files looked at).
+        Never raises."""
+        now = self.clock()
+        got = getattr(self, "_artnet", None)
+        if got is not None and now - got[1] < CHECKS_READ_S:
+            return got[0]
+        try:
+            from . import artnodes
+            adapters = getattr(self, "_artnet_adapters",
+                               artnodes.adapter_addresses)
+            res = artnodes.folder_faults(
+                self._show_folder(), adapters(),
+                getattr(self, "_artnet_probe", artnodes.bind_probe),
+                getattr(self, "_artnet_windows", None))
+        except Exception as e:                   # noqa: BLE001
+            res = ([("warn", f"The Art-Net receivers could not be checked: "
+                             f"{type(e).__name__}: {e}")], 0)
+        self._artnet = (res, now)
+        return res
+
+    def _artnet_check(self):
+        """The Morning page's Art-Net receivers card."""
+        faults, seen = self.artnet_faults()
+        levels = {lv for lv, _t in faults}
+        level = "bad" if "bad" in levels else \
+            "warn" if levels else "ok"
+        if faults:
+            text = " ".join(t for _lv, t in faults)
+        elif seen:
+            text = ("Every Art-Net timecode receiver in the show files has "
+                    "its own address, and each one is on this PC.")
+        else:
+            text = ("No show file in the folder names Art-Net timecode "
+                    "receivers (clock.artnet.nodes).")
+        return {"id": "artnet", "title": "Art-Net timecode receivers",
+                "level": level, "text": text}
+
+    def artnet_alert(self):
+        """A timecode alert on every screen (the rack screen's strip, the
+        booth note) for the Art-Net receiver faults ("bad" only: two
+        receivers on one address, or a node address not on this PC), once
+        for each new sentence. Warnings stay on the Morning card. Never
+        raises; never blocks a show."""
+        try:
+            faults, _seen = self.artnet_faults()
+            text = " ".join(t for lv, t in faults if lv == "bad")
+            if text and text != getattr(self, "_artnet_said", ""):
+                self.alerts.raise_("timecode", text)
+            self._artnet_said = text
+        except Exception:                        # noqa: BLE001
+            pass
 
     def laser_fault(self):
         """beyondtc.NOT_SET_UP while the conductor's laser blanking has no
@@ -2628,6 +2683,7 @@ class Remote:
         out["arming"] = {"enabled": self.arming_enabled(),
                          "needs_s": SCREEN_HOLD_S, "fresh_s": ARM_FRESH_S,
                          "holds": holds}
+        self.artnet_alert()
         self._apply_pulse()
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""

@@ -91,6 +91,8 @@ SHOW NETWORK, AUDIO, CLOCK AND MEMORY (from the 2026-10-21 soak)
     "10.250.2.1". To add one: Device Manager, Action, Add legacy
     hardware, Network adapters, Microsoft, "Microsoft KM-TEST Loopback
     Adapter". Then set its address and rename it in Network Connections.
+    LTC Player says it on the rack screen and the Morning page when two
+    receivers share an address or a node address is not on this PC.
 [ ] MadMapper: after opening the show project, check its Sync Source is
     Art-Net. It can come back empty after a reopen. Set it to Art-Net and
     save the project.
