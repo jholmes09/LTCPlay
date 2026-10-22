@@ -50,7 +50,7 @@ every run. A mutation runs when:
 
 - the file it breaks is in the diff;
 - any safety file is in the diff (anything under `flamesafe/`, the
-  conductor, the flame link, the Stream Deck, the scheduler, BEYOND,
+  conductor, the flame link, the Stream Deck, the scheduler, BEYOND, the laser arm,
   MadMapper, the devices, the trigger, the output, the player, the
   session, the clock, the announcements, the show audio, the one-copy
   guard): then every flamesafe, conductor and flame link mutation runs,

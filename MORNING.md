@@ -147,6 +147,72 @@ per laser show lockout inside BEYOND needs Jeff and Andy to say what BEYOND
 accepts; until then the `lock` list is empty and the lock is visible on
 every screen and in the journal.
 
+### Lasers: arm and disarm (Jeff, 2026-10-22)
+
+`laserarm.py` holds each laser's ARMED or DISARMED state, in memory only:
+every engine start and restart is DISARMED, and BEYOND's
+`/beyond/general/DisableLaserOutput` is sent at once.
+
+- **Arm**: the Arm button on a laser, or a laser group's button (a fast
+  multi-select, nothing saved; `laser_groups` in `ltcplay_morning.json`,
+  a PLACEHOLDER of one group "All lasers" until Jeff and Andy name them),
+  then Arm in the confirm box. All or none. Refused, with the reason, when
+  the lasers' blanking is not set up ("Lasers: blanking not set up": no
+  `beyond` block with its host and port), when the laser is locked out,
+  while the Abort latch stands, while the show is on Hold, while the night
+  is closing, and while this page's settings or lockout cannot be
+  trusted. It is the role matrix's "arm" row (as for arming flames), and
+  from the show network it needs `screen_arming`, as a laser test ON does.
+  Held back from a screen in Arrange mode.
+- **Disarm**: the Disarm button on a laser or group, or **Disarm all
+  lasers**. Never refused, never confirmed, from every surface, signed in
+  or not. Every disarm sends the blank (brightness 0) and
+  DisableLaserOutput.
+- **BEYOND's output switch is global.** The only laser output commands
+  this repo has verified are `/beyond/general/EnableLaserOutput` and
+  `/beyond/general/DisableLaserOutput` (no argument; bench B8.3: both
+  accepted by BEYOND 5.5, from Pangolin's OSC list; no laser hardware was
+  attached, so what they do to a projector was not seen). They switch every
+  projector at once. So EnableLaserOutput, and the show's unblank, go out
+  only when EVERY laser is armed and none is locked out. With one laser
+  disarmed and another armed, LTC Player keeps every laser dark: the
+  global command cannot leave one projector off and light another. A
+  laser's own calibration test needs that laser armed.
+- **When EnableLaserOutput is sent**: once when the last laser needed is
+  armed (output on, still blanked), and again at every show start and
+  Resume right before the unblank (through the conductor's laser gate).
+- **Abort and Hold** disarm every laser at the press, on every surface,
+  before anything else is asked; the blank and DisableLaserOutput go on
+  the arm's own sender thread, retried, so the press never waits on
+  BEYOND. Abort's own blank at the press stays the fast path. Resume and
+  Reset never re-arm: the lasers stay dark until someone arms them again,
+  and arming during a show that is already up lights them through the
+  laser gate.
+- **Announcements** disarm every laser the way a Hold does (blank,
+  DisableLaserOutput, arm again by hand afterwards). Jeff has not ruled on
+  this; it is the safe default and can be reverted.
+- **Arming never races a disarm**: an arm whose checks were overtaken by a
+  disarm (an Abort, a Hold, a disarm press) writes nothing, and while an
+  Abort or Hold press is being handled no laser arms at all.
+- **Closing**: no laser stays armed while the scheduler is CLOSING, and the
+  night being over (OFF) disarms on the way in, even when a dry-run
+  scheduler went from CLOSING to OFF in one step; arming in OFF (the next
+  morning) works again afterwards. The engine stopping disarms too, and so
+  does a blocker that appears while every laser is armed (a lockout or
+  settings problem, the blanking lost).
+- **Order**: a disarm's blank and DisableLaserOutput go first, before any
+  journal line, audit event, test-off or placeholder message. A laser's own
+  OSC lists (`on`, `off`, `lock`, `arm`, `disarm`) can never name BEYOND's
+  global brightness or output switch.
+- **Per laser OSC**: each laser may carry `arm` and `disarm` message lists,
+  PLACEHOLDERS, empty by default (nothing is sent). No per-projector or
+  per-zone BEYOND address is verified anywhere; when Andy finds one that
+  works on the rig, it goes there, and it never loosens the global rule.
+- **The record**: every arm, refusal and disarm is a journal line with who
+  and which surface, and an audit event; every Enable and Disable sent is
+  an audit event (system) and a journal line from beyond.py, a failed one a
+  fault.
+
 ### Checklists: append-only, hash-chained, exported
 
 Every tick, untick and note is one record in
@@ -189,6 +255,7 @@ the page shows queued, sent and the last error.
 | T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0.5 s at least) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
 | T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
 | T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |
+| T15 | A laser lights while disarmed or locked out, or after an Abort or Hold | default disarmed at every start (DisableLaserOutput sent); EnableLaserOutput and the unblank only with every laser armed and none locked out (the laser gate, and again before every unblank packet); Abort and Hold disarm at the press on every surface and the conductor; Resume and Reset never re-arm; the night closing and the engine stopping disarm; a disarm cuts an enable or a restore short; the allow-list in beyond.py holds exactly brightness 0/100 and the two output switches with no argument |
 
 Tier A guarantees that do not change: Abort wins over everything, flamesafe
 is the only writer of the flame universe, the link key and sender lock,

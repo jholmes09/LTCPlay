@@ -670,8 +670,9 @@ every heartbeat; any failure lets the hold go and is journaled):
   anyway, and the engine says it by name before a hold fills its bar. What
   only the deck knows (its re-arm wait, its latch, its operator gate) it
   reports back on its next `deck-input` read (`refused=<hold id>.<code>`),
-  and the hold's next heartbeat says it. Reporting only: nothing the deck
-  or flamesafe decides changed;
+  and the hold's next heartbeat says it. A hold is credited with arming
+  a group only when the deck reports it took THAT hold (`taken=<hold id>`).
+  Reporting only: nothing the deck or flamesafe decides changed;
 - the page's own status no older than 1 s, and flamesafe's status (the
   `status_mirror_port` copy) no older than 1 s, so the page is showing
   flamesafe's real state, not a cached one;

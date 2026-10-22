@@ -132,7 +132,8 @@ SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 # the flame link's purge frame, the lockout writes the file flamesafe reads.
 MORNING_GET_ROUTES = ("morning", "checklist-pdf", "checklist-export")
 MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
-                       "purge-stop", "purge-clear", "laser-test", "lock",
+                       "purge-stop", "purge-clear", "laser-test",
+                       "laser-arm", "lock",
                        "layout", "checklist-tick", "checklist-note",
                        "checklist-verify", "checklist-tally-retry")
 GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
@@ -161,6 +162,17 @@ DECK_REFUSALS = {
             "pressed. Let go of one of them."),
 }
 DECK_REFUSED_MAX = 16
+# How long a hold whose group became asked for waits for the deck to say it
+# armed it from this hold (deck-input `taken`) before it ends uncredited.
+TAKEN_WAIT_S = 0.5
+# Everything the screen_arming switch lets screens do (review of PR #90,
+# P2-1). The page's card and confirm box say the same words (selftest).
+SCREEN_ARMING_ENABLES = (
+    "On, this rack screen and every device on the show network can hold "
+    "to arm a flame group (through the Stream Deck, with all of its rules "
+    "and flamesafe's) and disarm one flame group. Devices on the show "
+    "network can also select and fire a purge, unlock a machine, turn a "
+    "laser test on and arm a laser (this rack screen does those without this switch).")
 # What the page says when screen arming is switched off (the default).
 ARMING_OFF = ("Arming from a screen is switched off on this show PC. To turn "
               "it on: on the show machine itself, Programming, Arming from "
@@ -371,6 +383,17 @@ def load_settings(folder=None):
             doc = json.load(fh)
     except (OSError, ValueError) as e:
         raise ValueError(f"{path} could not be read: {e}")
+    return settings_from_doc(doc, path, out)
+
+
+def settings_from_doc(doc, path, out=None):
+    """load_settings's checks on a parsed document: the settings, or
+    ValueError naming the file and what is wrong. save_settings runs the
+    same checks on what it is about to write, before writing it."""
+    if out is None:
+        out = {"show_network_address": None, "flamesafe_config": None,
+               "screen_arming": False, "purge_arming": True,
+               "booth_alert": None, "alert_pixels": None, "path": path}
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a settings object.")
     if doc.get("show_network_address"):
@@ -424,15 +447,33 @@ def check_alert_pixels(doc, path="ltcplay_remote.json"):
 
 
 def save_settings(folder, **changes):
+    """Change some settings in ltcplay_remote.json and keep every other one
+    (review of PR #90, P2-2). A file that cannot be read or parsed is
+    never overwritten: ValueError naming it, nothing written. What would
+    be written is checked first (settings_from_doc); a change that fails
+    is ValueError and nothing is written. The old file is kept beside it
+    as ltcplay_remote.json.bak, and the new one goes in whole (a temp file,
+    then a replace)."""
     path = os.path.join(folder or settings_folder(), SETTINGS_FILE)
     doc = {}
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh) or {}
-        except (OSError, ValueError):
-            doc = {}
+                doc = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ValueError(f"{path} could not be read ({e}), so it was "
+                             f"not changed. Fix or remove that file on the "
+                             f"show machine, then try again.")
+        if not isinstance(doc, dict):
+            raise ValueError(f"{path} is not a settings object, so it was "
+                             f"not changed. Fix or remove that file on the "
+                             f"show machine, then try again.")
+    doc = dict(doc)
     doc.update(changes)
+    settings_from_doc(doc, path)            # ValueError: nothing written
+    if os.path.exists(path):
+        import shutil
+        shutil.copyfile(path, path + ".bak")
     _write_json(path, doc)
     return load_settings(folder)
 
@@ -869,6 +910,19 @@ def deck_refused(query):
     except (ValueError, TypeError):
         return []
     return out
+
+
+def deck_taken(query):
+    """[hold id] from a deck-input query's `taken`: screen holds the Stream
+    Deck itself armed a group from (streamdeck.ScreenKeys.note_taken), at
+    most DECK_REFUSED_MAX. Never raises."""
+    import urllib.parse
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("taken") or []
+        return [int(h) for h in ",".join(vals).split(",")[:DECK_REFUSED_MAX]
+                if h.isdigit()]
+    except (ValueError, TypeError):
+        return []
 
 
 class Remote:
@@ -1337,23 +1391,37 @@ class Remote:
         if on is not True and on is not False:
             return 400, {"error": "on has to be true or false. Nothing was "
                                   "changed."}
-        who, screen, _surface = self._actor(ctx, body)
+        # Who: the signed-in person or "unsigned", never a name the caller
+        # wrote in the body (review of PR #90, P3-4).
+        who, screen = (ctx.user or "unsigned"), ctx.screen
         try:
             save_settings(self.folder, screen_arming=on)
-        except (ValueError, OSError) as e:
+        except ValueError as e:
+            # Nothing was written (save_settings checks before writing).
+            return 409, {"error": f"{e} Arming from a screen was not "
+                                  f"changed."}
+        except OSError as e:
             return 500, {"error": f"ltcplay_remote.json could not be "
-                                  f"written ({e}). Nothing was changed."}
+                                  f"written ({e}). Arming from a screen "
+                                  f"was not changed."}
         if not on:
             self.cancel_holds("arming from a screen was switched off")
-        text = ("Arming from a screen is ON. A hold of a group's Hold to "
-                "arm button on this rack screen, or on a device on the show "
-                "network, is a press of that group's key on the Stream "
-                "Deck, under every deck and flamesafe rule."
+            # A purge selection made from a device on the show network
+            # needed this switch: it goes too (review of PR #90, P3-6).
+            m = self.morning
+            pg = getattr(m, "purge", None) if m is not None else None
+            try:
+                if pg is not None and pg.owner and \
+                        pg.owner != "Rack screen":
+                    pg.clear("arming from a screen was switched off")
+            except Exception:                    # noqa: BLE001
+                pass
+        text = (f"Arming from a screen is ON. {SCREEN_ARMING_ENABLES}"
                 if on else
                 "Arming from a screen is OFF. Arm from the Stream Deck.")
-        self._journal(who or "Someone", screen, "screen arming",
+        self._journal(who, screen, "screen arming",
                       "on" if on else "off",
-                      f"{who or 'Someone'} switched arming from a screen "
+                      f"{who} switched arming from a screen "
                       f"{'ON' if on else 'OFF'} on the {screen}.")
         return 200, {"ok": True, "enabled": on, "text": text}
 
@@ -1373,6 +1441,27 @@ class Remote:
         return None
 
     def press(self, name, body, ctx):
+        """A show control press. An Abort or a Hold tells the laser arm it
+        is under way before ANY other work and until its answer is made
+        (review of PR #87, P2-2): an arm confirmed in that window, before
+        the scheduler's latch or Hold is set, is refused."""
+        arm = getattr(self.morning, "laser_arm", None) \
+            if name in ("abort", "hold") else None
+        if arm is not None:
+            try:
+                arm.press_begin()
+            except Exception:                    # noqa: BLE001
+                arm = None
+        try:
+            return self._press(name, body, ctx)
+        finally:
+            if arm is not None:
+                try:
+                    arm.press_end()
+                except Exception:                # noqa: BLE001
+                    pass
+
+    def _press(self, name, body, ctx):
         # The press's place in line, taken before anything else (an Abort's
         # disarm and laser blank, a lock): the scheduler compares a Reset's
         # with the latest Abort's, so work done first never reorders them.
@@ -1400,6 +1489,13 @@ class Remote:
             # risk, so an unconfirmed Abort still takes the flames off; the
             # rest of it is refused below.
             flames = self._disarm_now(who, screen, "Abort")
+        if name in ("abort", "hold"):
+            # Every laser disarmed at the press too (Jeff, 2026-10-22,
+            # ruling 3), from every surface, before the confirm check and
+            # before the scheduler: only the arm's state changes on this
+            # thread; the blank and BEYOND's DisableLaserOutput go on the
+            # arm's own sender, so nothing here waits on BEYOND.
+            self._lasers_disarm_now(who, screen, name)
         if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
             if flames is not None and flames[0] is not None:
                 why = ("Confirm it on the page first. Every flame group was "
@@ -1717,25 +1813,51 @@ class Remote:
         g = fl["groups"][i]
         if g["armed"] == "armed" or g["wanted"]:
             if body.get("hold_id") is not None:
-                # This device's own hold, and the group is now asked for:
-                # the Stream Deck took it. Said as what it is, not as a
-                # refusal ("already armed"), and the hold is over.
+                # This device's own hold, and the group is now asked for.
+                # Credited to the hold only when the Stream Deck said it
+                # armed the group from THIS hold (deck-input `taken`;
+                # review of PR #90, P3-1): a deck key or the Morning page
+                # may have armed it meanwhile. The deck's word follows
+                # flamesafe's status by a read or two, so it is waited
+                # for up to TAKEN_WAIT_S; then the hold ends without credit.
+                now = self.clock()
                 with self._arm_lock:
                     h = self._holds.get(i)
                     mine = (h is not None and h["token"] == token and
                             h["id"] == body.get("hold_id"))
-                    if mine:
+                    took = mine and \
+                        self._deck_refused.get(h["id"]) == "taken"
+                    wait = False
+                    if mine and not took:
+                        h.setdefault("wanted_at", now)
+                        wait = now - h["wanted_at"] < TAKEN_WAIT_S
+                        if wait:
+                            h["beat"] = now
+                    if mine and not wait:
                         del self._holds[i]
                         self._deck_refused.pop(h["id"], None)
+                if mine and wait:
+                    return 200, {"ok": True, "hold_id": h["id"],
+                                 "held_s": round(h["beat"] - h["start"], 3),
+                                 "needs_s": SCREEN_HOLD_S}
                 if mine:
-                    text = (f"{gname} is asked for: the Stream Deck took the "
-                            f"hold and set it. flamesafe's lamp shows when "
-                            f"it is armed.")
-                    self._journal(who, device, "arm hold", "taken",
-                                  f"{who}'s hold to arm {gname} on the "
-                                  f"{device} was taken by the Stream Deck "
-                                  f"after {h['beat'] - h['start']:.1f} s.")
-                    return 200, {"ok": True, "armed": True,
+                    if took:
+                        text = (f"{gname} is asked for: the Stream Deck took "
+                                f"the hold and set it. flamesafe's lamp shows "
+                                f"when it is armed.")
+                        what = (f"{who}'s hold to arm {gname} on the "
+                                f"{device} was taken by the Stream Deck "
+                                f"after {h['beat'] - h['start']:.1f} s.")
+                    else:
+                        text = (f"{gname} is asked for. flamesafe's lamp "
+                                f"shows when it is armed.")
+                        what = (f"{who}'s hold to arm {gname} on the "
+                                f"{device} ended: the group was asked for "
+                                f"without the Stream Deck saying this hold "
+                                f"did it.")
+                    self._journal(who, device, "arm hold",
+                                  "taken" if took else "ended", what)
+                    return 200, {"ok": True, "armed": True, "taken": took,
                                  "hold_id": h["id"], "text": text,
                                  "held_s": round(h["beat"] - h["start"], 3),
                                  "needs_s": SCREEN_HOLD_S}
@@ -1747,7 +1869,7 @@ class Remote:
         if body.get("hold_id") is not None:
             with self._arm_lock:
                 code = self._deck_refused.get(body.get("hold_id"))
-            if code is not None:
+            if code is not None and code != "taken":
                 # The Stream Deck would not take this hold (its own rules,
                 # streamdeck.Controller.screen_pass): said, and let go.
                 return refuse(409, DECK_REFUSALS[code].format(g=gname))
@@ -1760,12 +1882,18 @@ class Remote:
                 h = self._holds.get(i)
                 live = (h is not None and h["token"] == token and
                         h["id"] == body.get("hold_id") and
-                        now - h["beat"] <= BEAT_STALE_S)
+                        now - h["beat"] <= BEAT_STALE_S and
+                        "wanted_at" not in h)
                 if live:
                     h["beat"] = now
                     return 200, {"ok": True, "hold_id": h["id"],
                                  "held_s": round(now - h["start"], 3),
                                  "needs_s": SCREEN_HOLD_S}
+            if h is not None and h["token"] == token and \
+                    h["id"] == body.get("hold_id") and "wanted_at" in h:
+                return refuse(409, f"{gname} was asked for and then let go "
+                                   f"again during this hold. Lift your "
+                                   f"finger and hold again.")
             return refuse(409, "The hold was interrupted. Lift your finger "
                                "and hold again.")
         with self._arm_lock:
@@ -1854,6 +1982,7 @@ class Remote:
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)
         refused = deck_refused(query)
+        taken = deck_taken(query)
         enabled = self.arming_enabled()
         holds = []
         with self._arm_lock:
@@ -1872,6 +2001,9 @@ class Remote:
             for hid, code in refused:
                 if hid in live_ids:
                     self._deck_refused[hid] = code
+            for hid in taken:
+                if hid in live_ids:
+                    self._deck_refused[hid] = "taken"
             for hid in [k for k in self._deck_refused if k not in live_ids]:
                 del self._deck_refused[hid]
             disarms = list(self._disarms)
@@ -2026,10 +2158,12 @@ class Remote:
                                       "ltcplay_remote.json).",
                              "let_go": True}
         if ((name == "lock" and body.get("on") is False) or
-                (name == "laser-test" and body.get("on") is True)) and \
+                (name == "laser-test" and body.get("on") is True) or
+                (name == "laser-arm" and body.get("on") is True)) and \
                 not self.may_act_from(ctx.local):
             return 403, {"error": ("Unlocking" if name == "lock" else
-                                   "Turning a laser test on") +
+                                   "Arming a laser" if name == "laser-arm"
+                                   else "Turning a laser test on") +
                          " from a device on the show network needs "
                          "screen_arming true in ltcplay_remote.json. Do it on "
                          "the show machine itself."}
@@ -2075,6 +2209,43 @@ class Remote:
                           "Every flame group: a disarm was sent.")
         return False, (f"The disarm of every flame group did NOT go out "
                        f"({said}). Disarm from the Stream Deck.")
+
+    def _lasers_disarm_now(self, who, screen, what):
+        """Every laser disarmed (morning.Morning.lasers_disarm_now), on this
+        thread, at once. Never raises; nothing when there is no Morning
+        page (and so no laser arm) in this engine."""
+        m = self.morning
+        fn = getattr(m, "lasers_disarm_now", None)
+        if fn is None:
+            return
+        label = who or "An unnamed operator"
+        try:
+            fn(f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
+               f"{label} on the {screen}", who, screen)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def laser_arm_blockers(self):
+        """Why no laser may be armed (nor BEYOND's laser output switched
+        on) right now, or "": the Abort latch until Reset, a Hold until
+        Resume, the night closing, and no schedule at all (the show state
+        unknown). Plain reads, never a lock: the laser gate asks this."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        if m is None:
+            return ("the show state is not known (no schedule is loaded), "
+                    "so no laser may be armed")
+        cond = getattr(svc, "conductor", None)
+        if getattr(m, "abort_latched", False) or \
+                getattr(cond, "latched", False):
+            return "the show is aborted; press Reset first, then arm"
+        state = getattr(m, "state", None)
+        if state in ("PAUSED", "HOLD") or \
+                getattr(cond, "_look", None) in ("HELD", "DARK"):
+            return "the show is on Hold; press Resume first, then arm"
+        if state == "CLOSING":
+            return "the night is closing"
+        return ""
 
     def _lasers_dark_now(self):
         """(ok or None, sentence): the conductor's laser blank, on this
@@ -2748,6 +2919,20 @@ class Remote:
         except Exception:
             applied = {}
         laser_fault = self.laser_fault()
+        m = self.morning
+        if m is not None and getattr(m, "laser_arm", None) is not None:
+            # The laser arm (Jeff, 2026-10-22): shown on every screen.
+            try:
+                la = m.laser_arm.status_view()
+                n, total = len(la["armed"]), la["total"]
+                if n == 0:
+                    add("Laser arm", "off", "disarmed")
+                elif la["output_permitted"]:
+                    add("Laser arm", "warn", "ARMED")
+                else:
+                    add("Laser arm", "warn", f"{n} of {total} armed")
+            except Exception:                    # noqa: BLE001
+                add("Laser arm", "bad", "not known")
         for name, key in (("Video", "video"), ("Lasers", "lasers")):
             v = applied.get(key)
             if key == "lasers" and laser_fault:

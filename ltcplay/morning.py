@@ -24,6 +24,7 @@ import re
 import threading
 import time
 
+from . import laserarm
 from . import lasertest
 from .users import purge_fire_wanted
 
@@ -55,7 +56,7 @@ NAME_MAX = 48
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 
 TOP_KEYS = frozenset(("machines", "groups", "purge", "lasers", "checklists",
-                      "names", "tally", "notes"))
+                      "names", "tally", "notes", "laser_groups"))
 MACHINE_KEYS = frozenset(("id", "name", "kind", "group", "fire", "pan",
                           "tilt", "notes"))
 PURGE_KEYS = frozenset(("gflame_fire", "waver", "fireball"))
@@ -358,8 +359,13 @@ class MorningConfig:
     checklists, no names and the tally off."""
 
     def __init__(self, machines, banks, purge, lasers, checklists, names,
-                 tally, path=None, notes=""):
+                 tally, path=None, notes="", laser_groups=None):
         self.machines = machines
+        # The laser groups for arming (Jeff, 2026-10-22; laserarm.py): a
+        # fast multi-select, nothing saved. PLACEHOLDER until Jeff and Andy
+        # name them: left out, one group, "All lasers".
+        self.laser_groups = laser_groups if laser_groups is not None else \
+            laserarm.parse_groups(None, "", [l.id for l in lasers])
         self.by_id = {m.id: m for m in machines}
         self.banks = banks
         self.purge = purge
@@ -404,8 +410,14 @@ class MorningConfig:
         notes = doc.get("notes", "")
         if not isinstance(notes, str):
             raise MorningConfigError(f"{where}: notes has to be text.")
+        try:
+            laser_groups = laserarm.parse_groups(
+                doc.get("laser_groups"), where, [l.id for l in lasers])
+        except laserarm.LaserArmConfigError as e:
+            raise MorningConfigError(str(e)) from None
         return cls(machines, banks, purge, lasers, checklists, names, tally,
-                   path=where if where != CONFIG_FILE else None, notes=notes)
+                   path=where if where != CONFIG_FILE else None, notes=notes,
+                   laser_groups=laser_groups)
 
     @classmethod
     def load(cls, path, groups=None, laser_host=None, laser_port=None):
@@ -1066,7 +1078,9 @@ class Morning:
                  group_names=None, journal=None, night=None,
                  clock=time.monotonic, wall=time.time, laser_host=None,
                  laser_port=None, logs_dir=None, socket_factory=None,
-                 threaded=True, transport=None):
+                 threaded=True, transport=None, laser_output=lambda: None,
+                 laser_blockers=lambda: "", laser_blank=None,
+                 night_state=lambda: None, audit=None):
         from . import checklist as checklist_mod
         self.folder = folder
         self._journal = journal
@@ -1108,7 +1122,18 @@ class Morning:
         self.lasers = lasertest.LaserTests(
             self.cfg.lasers, locked=lambda lid: self.lockout.is_locked(
                 "laser", lid), journal=journal, socket_factory=socket_factory,
-            clock=clock)
+            clock=clock, armed=lambda lid: self.laser_arm.is_armed(lid))
+        # The laser arm (Jeff, 2026-10-22; laserarm.py): every laser starts
+        # disarmed, and BEYOND's laser output is switched off at once.
+        self._night_state = night_state
+        self._laser_blockers = laser_blockers
+        self.laser_arm = laserarm.LaserArm(
+            [(l.id, l.name) for l in self.cfg.lasers],
+            groups=self.cfg.laser_groups,
+            locked=lambda lid: self.lockout.is_locked("laser", lid),
+            output=laser_output, blockers=self._arm_blockers,
+            blank_now=laser_blank, per_laser=self.lasers, journal=journal,
+            audit=audit, threaded=threaded, clock=clock, wall=wall)
         logs_dir = logs_dir or os.path.join(folder, "logs")
         self.checklist = checklist_mod.ChecklistService(
             self.cfg, os.path.join(logs_dir, "checklists"), night=night,
@@ -1153,6 +1178,28 @@ class Morning:
             # until it is.
             return f"{lock_problem}; nothing fires from this page until then."
         return self._live_sentence()
+
+    def _arm_blockers(self):
+        """Why no laser may be armed, nor BEYOND's laser output switched on,
+        right now (laserarm.LaserArm's `blockers`): this page's settings or
+        lockout cannot be trusted, then the engine's own (an Abort latch,
+        a Hold, the night closing). "" when nothing blocks."""
+        if self.config_error:
+            return (f"ltcplay_morning.json could not be read "
+                    f"({self.config_error})")
+        why = self.lock_problem()
+        if why:
+            return why
+        state, err = laserarm._ask(self._night_state)
+        if err is None and state in laserarm.CLOSING_STATES:
+            return "the night is closing"
+        return self._laser_blockers() or ""
+
+    def lasers_disarm_now(self, why, who="", screen=""):
+        """Every laser disarmed on the caller's thread with nothing else
+        done there (Abort, Hold): the blank and DisableLaserOutput go on the
+        laser arm's sender."""
+        return self.laser_arm.disarm_all(why, who, screen, defer=True)
 
     def _live_sentence(self):
         """live_check alone: a show live or an Abort standing, or ""."""
@@ -1378,17 +1425,19 @@ class Morning:
 
     def arrange_refusal(self, name, body, device):
         """The sentence that refuses `name` from a device in Arrange mode,
-        or "". Arming a machine, a laser test going ON, an unlock and a
-        rewrite of the lockout file are held back from the arranging
-        device; every fire heartbeat is held back from EVERY device while
-        any screen arranges (fire_arrange_refusal). What only takes risk
-        away is never held back by Arrange mode, from any device: a
-        select or laser test going OFF, a lockout, a stop and a clear."""
+        or "". Arming a machine, a laser test going ON, arming a laser, an
+        unlock and a rewrite of the lockout file are held back from the
+        arranging device; every fire heartbeat is held back from EVERY
+        device while any screen arranges (fire_arrange_refusal). What only
+        takes risk away is never held back by Arrange mode, from any
+        device: a select or laser test going OFF, a laser disarm, a
+        lockout, a stop and a clear."""
         if name == "purge-fire":
             return self.fire_arrange_refusal()
         off = body.get("on") is False
         gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \
-            or (name in ("purge-select", "laser-test") and not off)
+            or (name in ("purge-select", "laser-test") and not off) \
+            or (name == "laser-arm" and body.get("on") is True)
         if not gated or not self.device_arranging(device):
             return ""
         return (f"{device} is in Arrange mode on the Morning and Shutdown "
@@ -1433,6 +1482,14 @@ class Morning:
         self._was_live = live
         self._lock_channels_to_link()
         self._check_flamesafe_lockout()
+        try:
+            # The night closing disarms every laser (ruling 4).
+            state, err = laserarm._ask(self._night_state)
+            self.laser_arm.tick(None if err else state)
+            if not self.laser_arm._threaded:
+                self.laser_arm.run_pending()
+        except Exception:
+            pass
         try:
             self.checklist.tick(now)
         except Exception:
@@ -1547,8 +1604,11 @@ class Morning:
         try:
             self.purge.clear("the engine is stopping")
         finally:
-            self.lasers.close()
-            self.checklist.close()
+            try:
+                self.laser_arm.close()
+            finally:
+                self.lasers.close()
+                self.checklist.close()
 
     # -- what deck-input and status carry -----------------------------------
     def deck_view(self):
@@ -1589,6 +1649,7 @@ class Morning:
                 "purge": self.purge.view()["firing"] or bool(
                     self.purge.selected),
                 "laser_tests_on": sorted(self.lasers.on),
+                "laser_arm": self.laser_arm.status_view(),
                 "open": self.page_open(), "config_error": self.config_error}
 
     # -- the routes ---------------------------------------------------------
@@ -1600,6 +1661,7 @@ class Morning:
         v["lockout"] = self.lockout.view(self.cfg)
         v["purge_state"] = self.purge.view()
         v["lasers"] = self.lasers.view()
+        v["laser_arm"] = self.laser_arm.view()
         v["checklists"] = self.checklist.view()
         v["config_error"] = self.config_error
         v["flamesafe_groups"] = list(self._group_names() or [])
@@ -1689,6 +1751,8 @@ class Morning:
                                        who=who, device=device)
             return (200 if ok else 409), ({"ok": True, "text": text} if ok
                                           else {"error": text})
+        if name == "laser-arm":
+            return self._laser_arm_post(body, who, device)
         if name == "lock":
             kind = body.get("kind")
             if kind == "rewrite":
@@ -1740,6 +1804,7 @@ class Morning:
                 if kind == "machine" and uid in self.purge.selected:
                     self.purge.select(uid, False, device, True)
                 if kind == "laser":
+                    self.laser_arm.on_lock(uid, who, device)
                     self.lasers.send_lock(uid, "locked out")
             self._lock_channels_to_link()
             return (200 if ok else 409), ({"ok": True, "text": text} if ok
@@ -1768,3 +1833,37 @@ class Morning:
         if name.startswith("checklist-"):
             return self.checklist.post(name, body, device, screen, local)
         return 404, {"error": "no such thing here"}
+
+    def _laser_arm_post(self, body, who, device):
+        """POST laser-arm: {"on": true, "confirmed": true} with "laser",
+        "lasers" or "group" arms (all or none); ANY other body disarms what
+        it names, and with "all" (or naming nothing) every laser: a request
+        that means disarm must never be able to arm (users.classify reads
+        it the same way)."""
+        arm = self.laser_arm
+        ids = []
+        if isinstance(body.get("lasers"), list):
+            ids = [str(i) for i in body["lasers"]]
+        elif body.get("laser") is not None:
+            ids = [str(body.get("laser"))]
+        elif body.get("group") is not None:
+            g = arm.groups.get(str(body.get("group")))
+            if g is None:
+                if body.get("on") is True:
+                    return 409, {"error": f"There is no laser group called "
+                                          f"{body.get('group')!r}. Nothing "
+                                          f"was armed."}
+                ids = list(arm.order)
+            else:
+                ids = list(g)
+        if body.get("on") is True:
+            ok, text = arm.arm(ids, who=who, screen=device,
+                               confirmed=body.get("confirmed"))
+            return (200 if ok else 409), ({"ok": True, "text": text} if ok
+                                          else {"error": text})
+        if body.get("all") is True or not ids:
+            ids = list(arm.order)
+        ok, text = arm.disarm(ids, "", who=who, screen=device)
+        if not arm._threaded:
+            arm.run_pending()
+        return 200, {"ok": True, "text": text}

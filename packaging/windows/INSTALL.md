@@ -104,7 +104,7 @@ is already there is never touched. The rack screen's "Getting started"
 card lists what is still missing (a show folder with a show file in it,
 the schedule) and where to click; it goes away once both exist.
 
-Arming flames from the rack screen (or an iPad) is OFF until you turn it on: on the show PC's rack screen, Programming, "Arming from a screen", Turn on (an admin once users exist; it is `"screen_arming": true` in ltcplay_remote.json in "Settings and logs").
+Arming flames from the rack screen (or an iPad) is OFF until you turn it on: on the show PC's rack screen, Programming, "Arming from a screen", Turn on (an admin once users exist; it is `"screen_arming": true` in ltcplay_remote.json in "Settings and logs"; the card lists everything it also lets iPads do: purge, unlock, laser tests and laser arming).
 
 ## The show folder
 

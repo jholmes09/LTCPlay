@@ -35,7 +35,12 @@ What it builds, from conductor.py's own integration notes:
                 BEYOND links, built from this config's "madmapper" and
                 "beyond" blocks; either may be absent, and the conductor then
                 says "not connected" at start.
-  laser gate    conductor.laser_gate_for(the scheduler's state).
+  laser gate    conductor.laser_gate_for(the scheduler's state), AND the
+                laser arm (laserarm.py, Jeff 2026-10-22): every laser armed,
+                none locked out. The arm lives on the Morning and Shutdown
+                page and is handed in later (Wiring.attach_laser_arm);
+                until it is, the lasers stay dark. The same check is the
+                Blanking's arm_check, asked before every unblank packet.
   hold_gate     schedule_service.Service.hold_for_announcement.
   announcer     announce.AnnounceService.play, when --announce is given.
 
@@ -1766,12 +1771,27 @@ class ShowRunner:
 class Wiring:
     """What attach() built, for web.serve to keep and close."""
 
-    def __init__(self, conductor, show, devices, runner, flame_link=None):
+    def __init__(self, conductor, show, devices, runner, flame_link=None,
+                 arm_slot=None):
         self.conductor = conductor
         self.show = show
         self.devices = devices
         self.runner = runner
         self.flame_link = flame_link
+        self._arm_slot = arm_slot if arm_slot is not None else {}
+
+    @property
+    def laser_arm(self):
+        return self._arm_slot.get("arm")
+
+    def attach_laser_arm(self, arm):
+        """The Morning page's laser arm (laserarm.LaserArm), once it is
+        built: the laser gate and the Blanking's arm_check ask it, Abort and
+        Hold disarm through it, and arming every laser tells the conductor
+        (lasers_armed) so a show already up lights them again."""
+        self._arm_slot["arm"] = arm
+        if arm is not None:
+            arm.on_permitted = self.conductor.lasers_armed
 
     def close(self):
         try:
@@ -1920,11 +1940,39 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     def state():
         m = svc.machine
         return m.state if m is not None else None
+    # The laser arm (laserarm.py, Jeff 2026-10-22), handed in later by
+    # Wiring.attach_laser_arm. Until then, and if it never comes, the
+    # lasers stay dark: there is no default that could light them.
+    arm_slot = {"arm": None}
+
+    def arm_gate(_slot=arm_slot):
+        arm = _slot.get("arm")
+        if arm is None:
+            return ("laser arming is not set up in this engine (it lives on "
+                    "the Morning and Shutdown page)")
+        return arm.may_enable()
+    blanking.arm_check = arm_gate
+    state_gate = C.laser_gate_for(state)
+
+    def laser_gate():
+        why = state_gate()
+        if why is not None:
+            return why
+        why = arm_gate()
+        if why is not None:
+            return f"the lasers are not armed: {why}. They stay dark."
+        return None
+
+    def lasers_disarm(reason, who, screen, _slot=arm_slot):
+        arm = _slot.get("arm")
+        if arm is not None:
+            arm.disarm_all(reason, who, screen, defer=True)
     conductor = C.Conductor(
-        devices, show, C.laser_gate_for(state),
+        devices, show, laser_gate,
         hold_gate=svc.hold_for_announcement,
         announcer=announce.play if announce is not None else None,
-        journal=journal, threaded=threaded, **conductor_kw)
+        journal=journal, threaded=threaded, lasers_disarm=lasers_disarm,
+        **conductor_kw)
     svc.conductor = conductor
     runner = None
     if cfg.scheduler_performs:
@@ -1937,7 +1985,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     if journal is not None:
         journal(f"Fire & Ice show conductor built: {cfg.summary()}.",
                 action="fire_ice", outcome="built")
-    return Wiring(conductor, show, devices, runner, built_link)
+    return Wiring(conductor, show, devices, runner, built_link, arm_slot)
 
 
 def build_blanking(cfg, beyond, journal=None, threaded=True):

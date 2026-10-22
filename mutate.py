@@ -1075,9 +1075,11 @@ MUTATIONS = [
   "BEYOND_BLANK_DEFAULT = \"timecode\""),
 
  ("arm: an interrupted hold carries on", "ltcplay/remote.py",
-  "                        now - h[\"beat\"] <= BEAT_STALE_S)\n"
+  "                        now - h[\"beat\"] <= BEAT_STALE_S and\n"
+  "                        \"wanted_at\" not in h)\n"
   "                if live:",
-  "                        True)\n                if live:"),
+  "                        True and\n"
+  "                        \"wanted_at\" not in h)\n                if live:"),
 
  ("arm: the deck is told a quiet hold is still fresh", "ltcplay/remote.py",
   "                              \"fresh\": age <= BEAT_STALE_S,",
@@ -1138,7 +1140,7 @@ MUTATIONS = [
   "                self._log(f\"Stream Deck: {self.names[i]} arm hold on the \""),
 
  ("arm: screen holds run while latched", "ltcplay/streamdeck.py",
-  "        holds = {} if self._latched_now() else self.screen.holds()",
+  "        holds = {} if latched else self.screen.holds()",
   "        holds = self.screen.holds()"),
 
  ("arm: a screen disarm does nothing", "ltcplay/streamdeck.py",
@@ -3280,19 +3282,18 @@ MUTATIONS = [
   "    if address != BRIGHTNESS_ADDR:"),
 
  ("_send()'s guard is removed, so anything can reach the socket",
-  "ltcplay/beyond.py",
-  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
-  "value):\n"
-  "            raise BeyondConfigError(\n"
-  "                f\"beyond.py refuses to send {address!r} with value \"\n"
-  "                f\"{value!r}: only the brightness address, with 0.0 or \"\n"
-  "                f\"100.0, is ever allowed (S5), and BlackOut/MasterPause \"\n"
-  "                f\"are refused by name as well (BlackOut restarts "
-  "BEYOND's \"\n"
-  "                f\"own core and needs a manual recovery; MasterPause \"\n"
-  "                f\"freezes the beams, a static-beam hazard).\")\n"
-  "        return self._osc.send(address, value, force=force)",
-  "        return self._osc.send(address, value, force=force)"),
+  'ltcplay/beyond.py',
+  '        if address in FORBIDDEN_ADDRESSES or not _allowed(address, value):\n'
+  '            raise BeyondConfigError(\n'
+  '                f"beyond.py refuses to send {address!r} with value "\n'
+  '                f"{value!r}: only the brightness address, with 0.0 or "\n'
+  '                f"100.0, and EnableLaserOutput or DisableLaserOutput with "\n'
+  '                f"no argument, are ever allowed (S5), and "\n'
+  '                f"BlackOut/MasterPause are refused by name as well (BlackOut restarts BEYOND\'s "\n'
+  '                f"own core and needs a manual recovery; MasterPause "\n'
+  '                f"freezes the beams, a static-beam hazard).")\n'
+  '        return self._osc.send(address, value, force=force)',
+  '        return self._osc.send(address, value, force=force)'),
 
  ("the socket's own send() no longer enforces the allow-list at all",
   "ltcplay/beyond.py",
@@ -3301,8 +3302,9 @@ MUTATIONS = [
   "            raise BeyondConfigError(\n"
   "                f\"beyond.py's socket layer refuses to send {address!r} \"\n"
   "                f\"with value {value!r}: only the brightness address, \"\n"
-  "                f\"with 0.0 or 100.0, is ever allowed off this module "
-  "(S5).\")\n"
+  "                f\"with 0.0 or 100.0, and EnableLaserOutput or \"\n"
+  "                f\"DisableLaserOutput with no argument, are ever allowed \"\n"
+  "                f\"off this module (S5).\")\n"
   "        now = self._clock()",
   "        now = self._clock()"),
 
@@ -4364,9 +4366,10 @@ def build():
   "            self._announcing = None\n"),
 
  ("conductor: Abort's flame cut waits for the executor",
-  "ltcplay/conductor.py",
-  "                self._flames_cut()\n                if not self._playing():",
-  "                if not self._playing():"),
+  'ltcplay/conductor.py',
+  '                self._flames_cut()\n'
+  '                # And every laser, the same way',
+  '                # And every laser, the same way'),
 
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
@@ -4804,11 +4807,12 @@ def build():
   "                if False:\n"
   "                    return ok, True"),
 
- ("conductor: a 100 already on its way out is not followed by a 0 "
-  "(finding D)",
-  "ltcplay/beyond.py",
-  "            if late:\n",
-  "            if False:\n"),
+ ('conductor: a 100 already on its way out is not followed by a 0 (finding D)',
+  'ltcplay/beyond.py',
+  '            if late:\n'
+  '                # A blank began while this 100',
+  '            if False:\n'
+  '                # A blank began while this 100'),
 
  ("conductor: a blank does not stop an unblank on another thread "
   "(finding D)",
@@ -7093,10 +7097,10 @@ def build():
   "                getattr(clk, \"_last_frame\", None) not in (None, 0):",
   "        if not cue[\"confirmed\"] and mine:"),
 
- ("fire & ice: the laser gate does not follow the scheduler",
-  "ltcplay/fire_ice.py",
-  "        devices, show, C.laser_gate_for(state),",
-  "        devices, show, lambda: None,"),
+ ('fire & ice: the laser gate does not follow the scheduler',
+  'ltcplay/fire_ice.py',
+  '    state_gate = C.laser_gate_for(state)',
+  '    state_gate = lambda: None'),
 
  ("fire & ice: closing is never reported done",
   "ltcplay/fire_ice.py",
@@ -8378,12 +8382,12 @@ def build():
   "            return getattr(self.osc, method)(show=show, **kw) is True\n"
   "        except ZeroDivisionError as e:"),
 
- ("lasers not set up: a raising OSC send is not a fault",
-  "ltcplay/beyondtc.py",
-  "                       f\"({type(e).__name__}: {e}).\", fault=True,\n"
-  "                       outcome=\"send_failed\")",
-  "                       f\"({type(e).__name__}: {e}).\", fault=False,\n"
-  "                       outcome=\"send_failed\")"),
+ ('lasers not set up: a raising OSC send is not a fault',
+  'ltcplay/beyondtc.py',
+  '            self._note(f"The OSC {method} to BEYOND failed "\n'
+  '                       f"({type(e).__name__}: {e}).", fault=True,',
+  '            self._note(f"The OSC {method} to BEYOND failed "\n'
+  '                       f"({type(e).__name__}: {e}).", fault=False,'),
 
  ("lasers not set up: nothing journaled at startup",
   "ltcplay/fire_ice.py",
@@ -8442,11 +8446,12 @@ def build():
   "    link.status_mirrored = _has_status_mirror(cfg.flamesafe_config)",
   "    link.status_mirrored = False"),
 
- ("an unconfirmed screen Abort no longer disarms the flames",
-  "ltcplay/remote.py",
-  "            flames = self._disarm_now(who, screen, \"Abort\")\n"
-  "        if name in CONFIRM_ROUTES",
-  "            flames = None\n        if name in CONFIRM_ROUTES"),
+ ('an unconfirmed screen Abort no longer disarms the flames',
+  'ltcplay/remote.py',
+  '            flames = self._disarm_now(who, screen, "Abort")\n'
+  '        if name in ("abort", "hold"):',
+  '            flames = None\n'
+  '        if name in ("abort", "hold"):'),
 
  ("MadMapper at High is left at High", "packaging/windows/supervisor.py",
   "HIGH_OR_ABOVE = (0x80, 0x100)", "HIGH_OR_ABOVE = ()"),
@@ -9209,8 +9214,12 @@ def build():
  ("deck: the FIRE heartbeats carry on after the engine refuses one (T3)",
   "ltcplay/streamdeck.py",
   '''            if not ok:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and''',
   '''            if False:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and'''),
 
  ("lasertest: a locked laser's test turns on (T10)",
@@ -9222,10 +9231,10 @@ def build():
 
  ("lasertest: BEYOND's BlackOut becomes an allowed address (T10)",
   "ltcplay/lasertest.py",
-  '''    if address in FORBIDDEN_ADDRESSES:
-        return False
-    return all(0x21 <= ord(c) <= 0x7e for c in address)''',
-  '''    return all(0x21 <= ord(c) <= 0x7e for c in address)'''),
+  '''    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:
+        return False''',
+  '''    if address in GLOBAL_ADDRESSES:
+        return False'''),
 
  ("checklist: a tick needs no name",
   "ltcplay/checklist.py",
@@ -9706,10 +9715,10 @@ def build():
   'ltcplay/remote.py',
   '            if age > self.DECK_QUIET_S:\n'
   '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
-  '            elif usb is None:',
+  '            elif self._deck_usb_fail:',
   '            if False:\n'
   '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
-  '            elif usb is None:'),
+  '            elif self._deck_usb_fail:'),
 
  ('deck hold: a Hold the engine found already done is ENGINE FAULT',
   'ltcplay/streamdeck.py',
@@ -9812,7 +9821,7 @@ def build():
 
  ('screen arm: the deck\'s refusal is never said',
   'ltcplay/remote.py',
-  '            if code is not None:\n                # The Stream Deck would not take this hold',
+  '            if code is not None and code != "taken":\n                # The Stream Deck would not take this hold',
   '            if False:\n                # The Stream Deck would not take this hold'),
 
  ('screen arm: deck_refused takes any code',
@@ -9823,9 +9832,9 @@ def build():
  ('screen arm: the deck taking the hold reads as already armed',
   'ltcplay/remote.py',
   '            if body.get("hold_id") is not None:\n'
-  '                # This device\'s own hold, and the group is now asked for:',
+  '                # This device\'s own hold, and the group is now asked for.',
   '            if False:\n'
-  '                # This device\'s own hold, and the group is now asked for:'),
+  '                # This device\'s own hold, and the group is now asked for.'),
 
  ('screen arm: another device\'s hold counts as this one\'s success',
   'ltcplay/remote.py',
@@ -9896,10 +9905,571 @@ def build():
   '    if(j.armed){',
   '    if(false){'),
 
+ ('screen arm: the hold is credited without the deck\'s word',
+  'ltcplay/remote.py',
+  '                    took = mine and \\\n'
+  '                        self._deck_refused.get(h["id"]) == "taken"',
+  '                    took = mine'),
+
+ ('screen arm: the deck never says it took the hold',
+  'ltcplay/streamdeck.py',
+  '                    else:\n'
+  '                        self._report_refused(self._vholds.get(i), "taken")',
+  '                    else:\n                        pass'),
+
+ ('screen arm: the engine never reads the deck\'s taken',
+  'ltcplay/remote.py',
+  '            for hid in taken:',
+  '            for hid in []:'),
+
+ ('screen arm: a hold asked for then disarmed carries on',
+  'ltcplay/remote.py',
+  '                        now - h["beat"] <= BEAT_STALE_S and\n'
+  '                        "wanted_at" not in h)',
+  '                        now - h["beat"] <= BEAT_STALE_S)'),
+
+ ('screen arm: Arrange mode unreadable lets the hold go on',
+  'ltcplay/remote.py',
+  '            except Exception as e:                   # noqa: BLE001\n'
+  '                return (f"Whether {device} is in Arrange mode',
+  '            except Exception as e:                   # noqa: BLE001\n'
+  '                arranging = False\n'
+  '                (f"Whether {device} is in Arrange mode'),
+
+ ('screen arm: save_settings overwrites a file it cannot parse',
+  'ltcplay/remote.py',
+  '        except (OSError, ValueError) as e:\n'
+  '            raise ValueError(f"{path} could not be read ({e}), so it was "',
+  '        except (OSError, ValueError) as e:\n'
+  '            doc = {}\n'
+  '            str(f"{path} could not be read ({e}), so it was "'),
+
+ ('screen arm: save_settings writes before it checks',
+  'ltcplay/remote.py',
+  '    settings_from_doc(doc, path)            # ValueError: nothing written',
+  '    pass'),
+
+ ('screen arm: save_settings keeps no .bak',
+  'ltcplay/remote.py',
+  '        shutil.copyfile(path, path + ".bak")',
+  '        pass'),
+
+ ('screen arm: the switch journals a name from the body',
+  'ltcplay/remote.py',
+  '        who, screen = (ctx.user or "unsigned"), ctx.screen',
+  '        who, screen, _s = self._actor(ctx, body)'),
+
+ ('screen arm: switching off leaves a network purge selection',
+  'ltcplay/remote.py',
+  '                    pg.clear("arming from a screen was switched off")',
+  '                    pass'),
+
+ ('screen arm: the confirm box says less than the switch does',
+  'ltcplay/web/remote.html',
+  'confirmBox("Turn on arming from a screen?", SCREEN_ARMING_ENABLES,',
+  'confirmBox("Turn on arming from a screen?", "Hold to arm.",'),
+
  ('screen arm: the page says nothing when arming is off',
   'ltcplay/web/remote.html',
   '  if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};',
   '  if(!a.enabled) return {ok:false, off:true, why:""};'),
+
+ # -- the laser arm (Jeff's rulings, 2026-10-22): BEYOND's laser output
+ # switch, arm and disarm by laser and by group, Abort and Hold disarm --
+ ('lasers: EnableLaserOutput or DisableLaserOutput is allowed with an argument',
+  'ltcplay/beyond.py',
+  '        return value is None\n'
+  '    if any(c in _SPECIAL_CHARS for c in address):',
+  '        return True\n'
+  '    if any(c in _SPECIAL_CHARS for c in address):'),
+ ('lasers: the allow-list admits an unverified per-zone enable address',
+  'ltcplay/beyond.py',
+  'OUTPUT_ADDRESSES = frozenset((ENABLE_OUTPUT_ADDR, DISABLE_OUTPUT_ADDR))',
+  'OUTPUT_ADDRESSES = frozenset((ENABLE_OUTPUT_ADDR, DISABLE_OUTPUT_ADDR,\n'
+  '                              "/beyond/zones/1/enable"))'),
+ ('lasers: EnableLaserOutput is sent under a wrong-case address',
+  'ltcplay/beyond.py',
+  'ENABLE_OUTPUT_ADDR = "/beyond/general/EnableLaserOutput"',
+  'ENABLE_OUTPUT_ADDR = "/beyond/general/enableLaserOutput"'),
+ ('lasers: DisableLaserOutput is sent under a wrong address',
+  'ltcplay/beyond.py',
+  'DISABLE_OUTPUT_ADDR = "/beyond/general/DisableLaserOutput"',
+  'DISABLE_OUTPUT_ADDR = "/beyond/general/DisableLaserOutput/"'),
+ ('lasers: a no-argument message goes out with a float type tag',
+  'ltcplay/beyond.py',
+  '    return _pad(address.encode("utf-8")) + _pad(b",")',
+  '    return _pad(address.encode("utf-8")) + _pad(b",f")'),
+ ("lasers: enable_output's armed type check is removed",
+  'ltcplay/beyond.py',
+  '        if not isinstance(armed, bool):',
+  '        if False:'),
+ ('lasers: enable_output ignores armed=False',
+  'ltcplay/beyond.py',
+  '        if armed is not True:',
+  '        if False:'),
+ ('lasers: a disable no longer cuts an enable under way',
+  'ltcplay/beyond.py',
+  '            self._disable_epoch += 1',
+  '            pass'),
+ ('lasers: an enable never asks still_wanted before a packet',
+  'ltcplay/beyond.py',
+  '                if self._disable_epoch != epoch or \\\n'
+  '                        not self._wanted(still_wanted):\n'
+  '                    cut = True',
+  '                if self._disable_epoch != epoch:\n'
+  '                    cut = True'),
+ ("lasers: a late disable is not sent again after the enable's packet",
+  'ltcplay/beyond.py',
+  '                self._send_output_retried(DISABLE_OUTPUT_ADDR)\n'
+  '                cut = True',
+  '                cut = True'),
+ ('lasers: DisableLaserOutput goes once, not 3 times',
+  'ltcplay/beyond.py',
+  '    def _send_output_retried(self, address):\n'
+  '        ok = False\n'
+  '        for i in range(RETRY_COUNT):',
+  '    def _send_output_retried(self, address):\n'
+  '        ok = False\n'
+  '        for i in range(1):'),
+ ('lasers: a disable that did not get out is reported as done',
+  'ltcplay/beyond.py',
+  '        self.output_command = "disable"\n'
+  '        self.output_result = "ok" if ok else "failed"',
+  '        self.output_command = "disable"\n'
+  '        self.output_result = "ok"\n'
+  '        ok = True'),
+ ("lasers: Blanking's unblank ignores the laser arm",
+  'ltcplay/beyondtc.py',
+  '        if self.arm_check is not None:\n'
+  '            # The laser arm (ruling 6)',
+  '        if False:\n'
+  '            # The laser arm (ruling 6)'),
+ ('lasers: an arm check that raises lets the lasers light',
+  'ltcplay/beyondtc.py',
+  '            return (f"the laser arm could not be read ({type(e).__name__}: "\n'
+  '                    f"{e})")',
+  '            return None'),
+ ('lasers: an arm check answering a non-None sentence-less value is a yes',
+  'ltcplay/beyondtc.py',
+  '        return str(why) or "the lasers are not armed"',
+  '        return str(why) or None'),
+ ("lasers: the unblank's packets no longer re-ask the arm",
+  'ltcplay/beyondtc.py',
+  '                return ((_inner is None or _inner() is True) and\n'
+  '                        self._arm_refusal() is None)',
+  '                return (_inner is None or _inner() is True)'),
+ ('lasers: EnableLaserOutput is not sent before the unblank',
+  'ltcplay/beyondtc.py',
+  '            if not self.output_enable(show, still_wanted=still_wanted):',
+  '            if False:'),
+ ('lasers: the output switch passes an OSC target with no host',
+  'ltcplay/beyondtc.py',
+  '        if cfg is None or not getattr(cfg, "host", None) or \\\n'
+  '                not getattr(cfg, "port", None):\n'
+  '            return NOT_SET_UP\n'
+  '        return None',
+  '        if cfg is None or not getattr(cfg, "port", None):\n'
+  '            return NOT_SET_UP\n'
+  '        return None'),
+ ('lasers: a laser test ON ignores the arm',
+  'ltcplay/lasertest.py',
+  '            if not self.is_armed(laser.id):\n'
+  '                self.last_result[laser.id] = "refused"\n'
+  '                self._note(f"{label} asked',
+  '            if False:\n'
+  '                self.last_result[laser.id] = "refused"\n'
+  '                self._note(f"{label} asked'),
+ ('lasers: a truthy answer from the arm counts as armed',
+  'ltcplay/lasertest.py',
+  '            return fn(laser_id) is True',
+  '            return bool(fn(laser_id))'),
+ ('lasers: with no arm wired every laser counts as armed',
+  'ltcplay/lasertest.py',
+  '        fn = self._armed\n'
+  '        if fn is None:\n'
+  '            return False',
+  '        fn = self._armed\n'
+  '        if fn is None:\n'
+  '            return True'),
+ ('lasers: a per-laser arm placeholder goes to a locked or disarmed laser',
+  'ltcplay/lasertest.py',
+  '            if locked or not self.is_armed(laser.id):\n'
+  '                return False',
+  '            if False:\n'
+  '                return False'),
+ ('lasers: an empty per-laser placeholder still sends something',
+  'ltcplay/lasertest.py',
+  '        if not msgs or laser.mechanism == "none":\n'
+  '            return True',
+  '        if not msgs and False:\n'
+  '            return True'),
+ ('lasers: the engine starts without telling BEYOND every laser is disarmed',
+  'ltcplay/laserarm.py',
+  '        self._queue("dark", "the engine started: every laser starts "\n'
+  '                            "disarmed", "", "engine")',
+  '        pass'),
+ ('lasers: arming needs no confirm',
+  'ltcplay/laserarm.py',
+  '        if confirmed is not True:',
+  '        if False:'),
+ ('lasers: a locked-out laser can be armed',
+  'ltcplay/laserarm.py',
+  '        locked = [self.names[lid] for lid in ids if self._is_locked(lid)]\n'
+  '        if locked:',
+  '        locked = []\n'
+  '        if locked:'),
+ ('lasers: arming is allowed with blanking not set up',
+  'ltcplay/laserarm.py',
+  '        why = self.output_fault()\n'
+  '        if why is not None:\n'
+  '            return (f"{why}: BEYOND\'s laser output cannot be switched from "',
+  '        why = None\n'
+  '        if why is not None:\n'
+  '            return (f"{why}: BEYOND\'s laser output cannot be switched from "'),
+ ('lasers: arming ignores the Abort latch, a Hold and the night closing',
+  'ltcplay/laserarm.py',
+  '        why = self._blocked()\n'
+  '        if why:\n'
+  '            return why\n'
+  '        return None',
+  '        return None'),
+ ('lasers: EnableLaserOutput is allowed with only some lasers armed',
+  'ltcplay/laserarm.py',
+  '        if missing:\n'
+  '            return (f"not every laser is armed',
+  '        if False:\n'
+  '            return (f"not every laser is armed'),
+ ('lasers: a laser locked out under an arm still lets the output on',
+  'ltcplay/laserarm.py',
+  '        if locked:\n'
+  '            return f"{\', \'.join(locked)} locked out"',
+  '        if False:\n'
+  '            return f"{\', \'.join(locked)} locked out"'),
+ ('lasers: the output may come on while blocked (latched, held, closing)',
+  'ltcplay/laserarm.py',
+  '        blocked = self._blocked()\n'
+  '        if blocked:\n'
+  '            return blocked',
+  '        blocked = self._blocked()\n'
+  '        if False:\n'
+  '            return blocked'),
+ ('lasers: the output may come on with blanking not set up',
+  'ltcplay/laserarm.py',
+  '            return "no lasers are configured"\n'
+  '        why = self.output_fault()\n'
+  '        if why is not None:\n'
+  '            return why',
+  '            return "no lasers are configured"'),
+ ('lasers: a show state that cannot be read counts as not blocked',
+  'ltcplay/laserarm.py',
+  '            return f"the show state could not be read ({err})"',
+  '            return ""'),
+ ('lasers: a lock that cannot be read counts as unlocked',
+  'ltcplay/laserarm.py',
+  '        return err is not None or v is not False',
+  '        return v is True'),
+ ('lasers: an enable queued before a disarm stays queued',
+  'ltcplay/laserarm.py',
+  '                self._jobs = collections.deque(\n'
+  '                    j for j in self._jobs if j["kind"] == "dark")',
+  '                pass'),
+ ('lasers: an enable is not asked again when it is sent',
+  'ltcplay/laserarm.py',
+  '        why = self.may_enable()\n'
+  '        if why is not None:\n'
+  '            self._note(f"BEYOND\'s laser output stays off: {why}.",',
+  '        why = None\n'
+  '        if why is not None:\n'
+  '            self._note(f"BEYOND\'s laser output stays off: {why}.",'),
+ ('lasers: a disarm during the enable does not cut it',
+  'ltcplay/laserarm.py',
+  '        def still():\n'
+  '            with self._cv:',
+  '        def still():\n'
+  '            return True\n'
+  '            with self._cv:'),
+ ('lasers: a disarm sends no DisableLaserOutput',
+  'ltcplay/laserarm.py',
+  '                ok, err = _ask(out.output_disable)',
+  '                ok, err = True, None'),
+ ("lasers: an unreachable BEYOND's disable is not retried",
+  'ltcplay/laserarm.py',
+  '            for i in range(DARK_RETRIES):',
+  '            for i in range(1):'),
+ ('lasers: a disarm does not blank',
+  'ltcplay/laserarm.py',
+  '        blanked = self._blank(why)',
+  '        blanked = True'),
+ ("lasers: a disarm does not end that laser's calibration test",
+  'ltcplay/laserarm.py',
+  '                    if lid in getattr(pl, "on", {}):\n'
+  '                        pl.set(lid, False, who=f"the engine ({why})")',
+  '                    pass'),
+ ('lasers: a disarm leaves the laser armed',
+  'ltcplay/laserarm.py',
+  '            for lid in ids:\n'
+  '                self.armed.pop(lid, None)',
+  '            pass'),
+ ('lasers: the night closing does not disarm',
+  'ltcplay/laserarm.py',
+  '            self.disarm_all("the night is closing" if closing else\n',
+  '            pass\n'
+  '            False and self.disarm_all("the night is closing" if closing else\n'),
+ ('lasers: arming every laser never tells the conductor',
+  'ltcplay/laserarm.py',
+  '                    self.on_permitted(who, screen)',
+  '                    pass'),
+ ('lasers: arming every laser never queues EnableLaserOutput',
+  'ltcplay/laserarm.py',
+  '            self._queue("enable", f"every laser armed, the last by {label}",\n'
+  '                        who, screen)',
+  '            pass'),
+ ('lasers: closing the engine does not disarm',
+  'ltcplay/laserarm.py',
+  '        self.disarm_all("the engine is stopping", "", "engine", defer=False)',
+  '        pass'),
+ ('lasers: arming is all-or-some instead of all-or-none',
+  'ltcplay/laserarm.py',
+  '        why = self.refusal(ids)\n'
+  '        if why is not None:\n'
+  '            names = ", ".join(self.names.get(i, i) for i in ids) or "nothing"',
+  '        why = self.refusal(ids[:1])\n'
+  '        if why is not None:\n'
+  '            names = ", ".join(self.names.get(i, i) for i in ids) or "nothing"'),
+ ('lasers: Hold no longer disarms the lasers',
+  'ltcplay/conductor.py',
+  '        self._disarm_lasers("Hold", who, screen)',
+  '        pass'),
+ ('lasers: Abort no longer disarms the lasers',
+  'ltcplay/conductor.py',
+  '                self._disarm_lasers("Abort", who, screen)',
+  '                pass'),
+ ('lasers: Abort disarms the lasers only while a show plays',
+  'ltcplay/conductor.py',
+  '                self._disarm_lasers("Abort", who, screen)',
+  '                if self._playing():\n'
+  '                    self._disarm_lasers("Abort", who, screen)'),
+ ('lasers: a laser disarm hook that raises stops the Abort',
+  'ltcplay/conductor.py',
+  '        try:\n'
+  '            fn(f"{what} pressed by {self._who(who, screen)}", who, screen)\n'
+  '        except Exception as e:',
+  '        fn(f"{what} pressed by {self._who(who, screen)}", who, screen)\n'
+  '        if False:\n'
+  '            e = None'),
+ ('lasers: re-arming lights a show whose flame cues are not released',
+  'ltcplay/conductor.py',
+  '            if self._look != PLAYING or self._done_gen != self._gen or \\\n'
+  '                    self._applied["flames"] != LIVE:',
+  '            if self._look != PLAYING or self._done_gen != self._gen:'),
+ ('lasers: re-arming starts a new sequence over one still running',
+  'ltcplay/conductor.py',
+  '            if self._look != PLAYING or self._done_gen != self._gen or \\\n'
+  '                    self._applied["flames"] != LIVE:',
+  '            if self._look != PLAYING or \\\n'
+  '                    self._applied["flames"] != LIVE:'),
+ ('lasers: re-arming runs the whole up sequence, not only the lasers',
+  'ltcplay/conductor.py',
+  '        if want.get("lasers_only"):\n'
+  '            # lasers_armed(): the show is up already; only the lasers.\n'
+  '            self._restore_lasers(gen, progress)\n'
+  '            return\n',
+  ''),
+ ('lasers: re-arming ignores the Abort latch',
+  'ltcplay/conductor.py',
+  '            refused = self._refuse_if_latched("Lighting the armed lasers")\n'
+  '            if refused:\n'
+  '                return refused',
+  '            pass'),
+ ("lasers: the conductor's laser gate ignores the arm",
+  'ltcplay/fire_ice.py',
+  '        why = arm_gate()\n'
+  '        if why is not None:\n'
+  '            return f"the lasers are not armed: {why}. They stay dark."',
+  '        pass'),
+ ("lasers: the Blanking's arm_check is never set",
+  'ltcplay/fire_ice.py',
+  '    blanking.arm_check = arm_gate',
+  '    pass'),
+ ('lasers: with no laser arm attached the lasers may light',
+  'ltcplay/fire_ice.py',
+  '        if arm is None:\n'
+  '            return ("laser arming is not set up in this engine (it lives on "',
+  '        if arm is None:\n'
+  '            return None\n'
+  '            return ("laser arming is not set up in this engine (it lives on "'),
+ ('lasers: Abort and Hold never reach the laser arm',
+  'ltcplay/fire_ice.py',
+  '            arm.disarm_all(reason, who, screen, defer=True)',
+  '            pass'),
+ ('lasers: attaching the arm never tells it about the conductor',
+  'ltcplay/fire_ice.py',
+  '            arm.on_permitted = self.conductor.lasers_armed',
+  '            pass'),
+ ('lasers: ltc serve never hands the laser arm to the conductor',
+  'ltcplay/web.py',
+  '            httpd.fire_ice.attach_laser_arm(httpd.morning.laser_arm)',
+  '            pass'),
+ ('lasers: a Hold press does not disarm the lasers at the press',
+  'ltcplay/remote.py',
+  '        if name in ("abort", "hold"):\n'
+  '            # Every laser disarmed',
+  '        if name == "abort":\n'
+  '            # Every laser disarmed'),
+ ('lasers: an unconfirmed Abort does not disarm the lasers',
+  'ltcplay/remote.py',
+  '        if name in ("abort", "hold"):\n'
+  '            # Every laser disarmed',
+  '        if name == "hold" or (name == "abort" and\n'
+  '                               body.get("confirmed") is True):\n'
+  '            # Every laser disarmed'),
+ ('lasers: arming from the show network needs no screen_arming',
+  'ltcplay/remote.py',
+  '                (name == "laser-test" and body.get("on") is True) or\n'
+  '                (name == "laser-arm" and body.get("on") is True)) and \\',
+  '                (name == "laser-test" and body.get("on") is True)) and \\'),
+ ('lasers: arming is allowed while the show is on Hold',
+  'ltcplay/remote.py',
+  '        if state in ("PAUSED", "HOLD") or \\\n'
+  '                getattr(cond, "_look", None) in ("HELD", "DARK"):',
+  '        if False:'),
+ ('lasers: arming is allowed while the Abort latch stands',
+  'ltcplay/remote.py',
+  '            return "the show is aborted; press Reset first, then arm"',
+  '            pass'),
+ ('lasers: with no schedule, arming is allowed',
+  'ltcplay/remote.py',
+  '            return ("the show state is not known (no schedule is loaded), "\n'
+  '                    "so no laser may be armed")',
+  '            return ""'),
+ ('lasers: the rack screen never shows the lasers disarmed',
+  'ltcplay/remote.py',
+  '                    add("Laser arm", "off", "disarmed")',
+  '                    pass'),
+ ('lasers: a laser-arm body that is not on:true arms',
+  'ltcplay/morning.py',
+  '        if body.get("on") is True:\n'
+  '            ok, text = arm.arm(',
+  '        if body.get("on"):\n'
+  '            ok, text = arm.arm('),
+ ('lasers: a lockout does not disarm the laser',
+  'ltcplay/morning.py',
+  '                    self.laser_arm.on_lock(uid, who, device)',
+  '                    pass'),
+ ('lasers: Arrange mode lets a laser arm through',
+  'ltcplay/morning.py',
+  '            or (name == "laser-arm" and body.get("on") is True)',
+  ''),
+ ('lasers: the night closing never reaches the laser arm',
+  'ltcplay/morning.py',
+  '            self.laser_arm.tick(None if err else state)',
+  '            self.laser_arm.tick(None)'),
+ ('lasers: arming is allowed while the night closes',
+  'ltcplay/morning.py',
+  '        if err is None and state in laserarm.CLOSING_STATES:\n'
+  '            return "the night is closing"',
+  '        if False:\n'
+  '            return "the night is closing"'),
+ ('lasers: closing the Morning page never closes the laser arm',
+  'ltcplay/morning.py',
+  '                self.laser_arm.close()',
+  '                pass'),
+ ('lasers: a laser disarm needs the arm permission',
+  'ltcplay/users.py',
+  '        if name == "laser-arm" and body.get("on") is not True:',
+  '        if False:'),
+ ('lasers: Arrange mode on the page lets a laser arm through',
+  'ltcplay/web/remote.html',
+  ' ||\n'
+  '    (route === "laser-arm" && extra && extra.on === true);',
+  ';'),
+ ("lasers: the page reads ALL ARMED without the engine's word",
+  'ltcplay/web/remote.html',
+  '  if(la.output_permitted) return "Lasers: ALL ARMED.',
+  '  if(true) return "Lasers: ALL ARMED.'),
+ ('lasers: an arm racing a disarm still writes armed',
+  'ltcplay/laserarm.py',
+  '            raced = self._disarm_gen != gen or self._presses',
+  '            raced = False'),
+ ('lasers: a disarm does not move the disarm generation',
+  'ltcplay/laserarm.py',
+  '            self._disarm_gen += 1\n'
+  '            was = [',
+  '            was = ['),
+ ('lasers: an Abort or Hold press in flight does not refuse arming',
+  'ltcplay/laserarm.py',
+  '        if pressing:\n'
+  '            return ("an Abort or Hold is being pressed',
+  '        if False:\n'
+  '            return ("an Abort or Hold is being pressed'),
+ ('lasers: the remote never tells the arm an Abort or Hold is under way',
+  'ltcplay/remote.py',
+  '                arm.press_begin()',
+  '                pass'),
+ ('lasers: the remote never says the Abort or Hold press is over',
+  'ltcplay/remote.py',
+  '                    arm.press_end()',
+  '                    pass'),
+ ('lasers: the night over does not disarm when CLOSING was never seen',
+  'ltcplay/laserarm.py',
+  '        off_in = state in OFF_STATES and self._last_state not in OFF_STATES',
+  '        off_in = False'),
+ ('lasers: CLOSING lets a laser stay armed after its first pass',
+  'ltcplay/laserarm.py',
+  '        if (closing and (not self._was_closing or self.armed_ids())) or \\\n',
+  '        if (closing and not self._was_closing) or \\\n'),
+ ('lasers: a blocker appearing while lit does not disarm',
+  'ltcplay/laserarm.py',
+  '        if self._was_permitted and why is not None and \\\n',
+  '        if False and \\\n'),
+ ('lasers: one laser disarmed by hand disarms all the others',
+  'ltcplay/laserarm.py',
+  '                len(self.armed_ids()) == len(self.order):',
+  '                True:'),
+ ('lasers: an announcement does not disarm the lasers',
+  'ltcplay/conductor.py',
+  '            self._disarm_lasers("Announcement", who, screen)',
+  '            pass'),
+ ('lasers: the sender writes its lines before the blank and disable',
+  'ltcplay/laserarm.py',
+  '        if job["kind"] == "dark":\n'
+  '            self._dark(job)\n'
+  '        else:\n'
+  '            self._enable(job)\n'
+  '        for text, fields in job["notes"]:\n'
+  '            self._note(text, **fields)',
+  '        for text, fields in job["notes"]:\n'
+  '            self._note(text, **fields)\n'
+  '        if job["kind"] == "dark":\n'
+  '            self._dark(job)\n'
+  '        else:\n'
+  '            self._enable(job)'),
+ ('lasers: a test is recorded ON only after it was sent',
+  'ltcplay/lasertest.py',
+  '            with self._lock:\n'
+  '                self.on[laser.id] = {"since": self._clock(), "who": label}\n'
+  '            ok = self._send_list(laser, laser.on)',
+  '            ok = self._send_list(laser, laser.on)\n'
+  '            with self._lock:\n'
+  '                self.on[laser.id] = {"since": self._clock(), "who": label}'),
+ ('lasers: a test whose laser was disarmed during its ON stays on',
+  'ltcplay/lasertest.py',
+  '            if not self.is_armed(laser.id):\n'
+  '                with self._lock:\n'
+  '                    self.on.pop(laser.id, None)',
+  '            if False:\n'
+  '                with self._lock:\n'
+  '                    self.on.pop(laser.id, None)'),
+ ("lasers: a laser's own lists may send BEYOND's global controls",
+  'ltcplay/lasertest.py',
+  '    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:',
+  '    if address in FORBIDDEN_ADDRESSES:'),
+ ('lasers: the restore does not read the timecode epoch before the arm check',
+  'ltcplay/beyondtc.py',
+  '        epoch = self.gate.epoch() if self.gate is not None else None\n'
+  '        if self.arm_check is not None:',
+  '        epoch = None\n'
+  '        if self.arm_check is not None:'),
 ]
 
 
@@ -10192,6 +10762,7 @@ def _load_expected(path):
 # A change to any of these re-runs every SAFETY_CORE mutation.
 SAFETY_TRIGGERS = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
                    "ltcplay/morning.py", "ltcplay/lasertest.py",
+                   "ltcplay/laserarm.py", "ltcplay/beyondtc.py",
                    "ltcplay/streamdeck.py", "ltcplay/schedule_service.py",
                    "ltcplay/schedule.py", "ltcplay/beyond.py",
                    "ltcplay/madmapper.py", "ltcplay/devices.py",

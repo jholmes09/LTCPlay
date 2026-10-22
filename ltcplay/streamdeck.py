@@ -1337,14 +1337,28 @@ class ScreenKeys:
         with self._lock:
             self._refused[hold_id] = (code, self._clock())
 
-    def _refused_param(self):
+    def note_taken(self, hold_id):
+        """The controller armed a group from screen hold `hold_id`: said
+        to the engine on the next reads (`taken`), so the page credits the
+        hold only when this deck says it was the cause (review of PR #90,
+        P3-1). Changes nothing the deck does."""
+        self.note_refused(hold_id, "taken")
+
+    def _codes(self, taken):
         now = self._clock()
         with self._lock:
             for k in [k for k, (_c, t) in self._refused.items()
                       if now - t > SCREEN_REFUSED_KEEP_S]:
                 del self._refused[k]
-            items = sorted(self._refused.items())[-8:]
-        return ",".join(f"{k}.{c}" for k, (c, _t) in items)
+            items = sorted((k, c) for k, (c, _t) in self._refused.items()
+                           if (c == "taken") == taken)[-8:]
+        return items
+
+    def _refused_param(self):
+        return ",".join(f"{k}.{c}" for k, c in self._codes(False))
+
+    def _taken_param(self):
+        return ",".join(str(k) for k, _c in self._codes(True))
 
     def _path(self):
         path = "/api/remote/deck-input"
@@ -1367,6 +1381,12 @@ class ScreenKeys:
             ref = ""
         if ref:
             path += ("&" if "?" in path else "?") + f"refused={ref}"
+        try:
+            took = self._taken_param()
+        except Exception:                        # noqa: BLE001
+            took = ""
+        if took:
+            path += ("&" if "?" in path else "?") + f"taken={took}"
         return path
 
     def poll_once(self):
@@ -3003,6 +3023,8 @@ class Controller:
                     why = self._do_arm_fire(i, now, who=who, screen=device)
                     if why:
                         self._report_refused(self._vholds.get(i), why)
+                    else:
+                        self._report_refused(self._vholds.get(i), "taken")
 
     def check_links(self):
         """Called once per MAIN-LOOP pass (after status.poll()), never
