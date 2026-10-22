@@ -34,6 +34,9 @@
   /* meaning colours, the Stream Deck's own */
   --green:#28BE5A; --green-ink:#061E0C; --amber:#F5A01E; --amber-ink:#281400;
   --red:#E61E18; --red-deep:#B3121B;
+  /* lasers only: the LASERS strip on the show screen, never a flame control */
+  --laser:#A898FF; --laser-soft:rgba(168,152,255,.55); --laser-deep:#241B52;
+  --laser-ink:#ECE8FF; --laser-wash:rgba(168,152,255,.07);
   --serif:"Playfair Display",Georgia,"Times New Roman",serif;
   --caps:"Cinzel","Trajan Pro",Georgia,serif;
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
@@ -168,7 +171,7 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}
 .lamp b{display:block;font:700 clamp(11px,1.6vh,17px)/1.2 var(--caps);letter-spacing:.16em;
   text-transform:uppercase;color:var(--champ);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lamp .word{flex:1 1 auto;min-height:clamp(30px,5vh,96px);display:flex;align-items:center;justify-content:center;text-align:center;
+.lamp .word{flex:1 1 auto;min-height:clamp(30px,4vh,96px);display:flex;align-items:center;justify-content:center;text-align:center;
   border-radius:6px;padding:4px 6px;font:800 clamp(18px,3.4vh,42px)/1.02 var(--sans);letter-spacing:.02em;
   text-transform:uppercase;background:var(--bronze);color:var(--champ);border:2px solid #7A6032;overflow:hidden}
 .lamp .why{font:400 clamp(11px,1.4vh,13px)/1.25 var(--sans);color:var(--cream);font-style:normal;
@@ -189,6 +192,32 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 @media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .word{animation-duration:2s}}
 .flamefoot{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center}
 button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);letter-spacing:.04em}
+/* LASERS on the show screen (Jeff, 2026-10-22): one compact strip of its
+   own under the flames, violet edged, never inside the flame block and
+   never sharing a button with it. Disarm all lasers always works; Arm
+   follows the Morning page's rules (laser-arm). One row; it takes its
+   room from the lamps, which give, and never from the Abort bar. */
+.lz{flex:0 0 auto;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 10px;align-items:center;
+  min-width:0;border:2px solid var(--laser);border-radius:8px;padding:2px 8px;background:var(--laser-wash)}
+.lz-head{display:flex;flex-direction:column;min-width:0;max-width:26vw}
+.lz-head b{font:800 clamp(13px,1.9vh,19px)/1.1 var(--caps);letter-spacing:.2em;color:var(--laser)}
+.lz-head span{font:700 clamp(11px,1.4vh,14px)/1.2 var(--sans);color:var(--cream);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lz-head span.armed{color:var(--amber)}
+.lz-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;overflow:hidden;align-items:center}
+.lz-chips button{flex:0 1 auto;min-width:0;min-height:clamp(34px,4.2vh,46px);padding:2px 10px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+  font:700 clamp(12px,1.5vh,15px)/1.05 var(--sans);white-space:nowrap;overflow:hidden;
+  background:transparent;border:1px solid var(--laser-soft);color:var(--champ)}
+.lz-chips button b,.lz-chips button i{max-width:100%;overflow:hidden;text-overflow:ellipsis;font-weight:inherit}
+.lz-chips button i{font:800 clamp(9px,1.15vh,12px)/1.05 var(--sans);font-style:normal;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.lz-chips button.armed{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
+.lz-chips button.armed i{color:var(--amber-ink)}
+.lz-chips button.locked{border-style:dashed;color:var(--muted)}
+.lz-chips button.lzg{border-width:2px;border-color:var(--laser)}
+button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(15px,2.1vh,20px)/1.1 var(--sans);
+  letter-spacing:.04em;background:var(--laser-deep);border:2px solid var(--laser);color:var(--laser-ink)}
+.lz .toast{grid-column:1 / -1;margin-top:-2px}
+.lz .toast:empty{display:none}
 
 /* ---- Tonight: one screen, two columns, detail behind a tap ---- */
 #v-tonight{display:flex;flex-direction:column;gap:8px}
@@ -390,6 +419,10 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
   .ctl button{min-height:44px}
   .lamp .word{min-height:28px}
   #abort-said .altext{max-height:2.8em}
+  .lz{gap:4px 8px}
+  .lz-head{flex-direction:row;align-items:baseline;gap:8px}
+  .lz-chips button{min-height:30px}
+  button.lzdis{min-height:34px}
 }
 @media (max-height:600px){
   .ctl button{min-height:40px;font-size:18px}
@@ -415,6 +448,8 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
   #subs{order:5;flex-basis:100%;justify-content:flex-start}
   header{flex-wrap:wrap}
   #tonight{grid-template-columns:1fr}
+  .lz-chips button{min-height:40px;padding:2px 8px}
+  button.lzdis{min-height:44px;padding:4px 10px}
 }
 </style>
 </head>
@@ -497,6 +532,16 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
         <button id="b-disarm" class="disarm">Disarm every flame group</button>
         <div class="toast" id="arm-note">Hold a group's Arm button to arm it. Lift your finger to stop.</div>
       </div>
+    </div>
+    <!-- LASERS (Jeff, 2026-10-22): their own strip, apart from the flames.
+         Disarm all lasers: one click, never refused. A laser or group
+         chip: Disarm at once, or Arm with a confirm, by the Morning
+         page's rules. -->
+    <div class="lz" id="lz" hidden aria-label="Lasers">
+      <div class="lz-head"><b>Lasers</b><span id="lz-st">not known yet</span></div>
+      <div class="lz-chips" id="lz-chips"></div>
+      <button class="lzdis" id="lz-disarm">Disarm all lasers</button>
+      <div class="toast" id="lz-msg"></div>
     </div>
   </section>
 
@@ -1073,6 +1118,7 @@ function renderStale(){
     const i = Number(el.dataset.arm);
     if(!(HOLD && HOLD.group === i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
   });
+  renderLaserStrip(ST && ST.laser_arm, stale);
   renderMode(stale);
   return stale;
 }
@@ -1581,6 +1627,107 @@ $("b-hold").addEventListener("click", () => press("hold"));
 $("b-resume").addEventListener("click", () => press("resume"));
 $("b-reset").addEventListener("click", () => press("reset"));
 $("b-disarm").addEventListener("click", () => { armStop("Disarm every flame group"); press("disarm-all"); });
+
+// LASER STRIP BEGIN. LASERS on the show screen (Jeff, 2026-10-22): the
+// lasers' own controls, apart from every flame control. Disarm all lasers
+// is one click that nothing on this page holds back: not a stale status,
+// not signing in, not Arrange mode, not the screen arming switch, no
+// confirm (the engine blanks, sends DisableLaserOutput and disarms; it
+// never waits on the show conductor). An armed laser's or group's chip
+// disarms it the same way. Arming goes through the same laser-arm route
+// and rules as the Morning page, with its confirm; the engine refuses
+// with its reason, said here in words. The selftest runs this block in
+// node and mutate.py takes each guard away.
+const LZ_ARM_NOTE = "BEYOND's laser output comes on only once EVERY laser is armed and none is locked out: its only verified command is for all lasers at once. Abort, Hold, the night closing and Disarm all lasers disarm them again. Disarm every flame group does not disarm them.";
+let LZ = null, LZ_STALE = true, LZ_TIMER = null;
+// What the strip shows, from the status's laser_arm view. Pure.
+function laserStripLook(la, stale){
+  if(!la) return {show:false};
+  if(la.error) return {show:true, armed:false, state:"Not known", title:"The laser arm could not be read: " + la.error + ". Disarm all lasers still works.", chips:[]};
+  const ls = la.lasers || [];
+  if(!ls.length) return {show:false};
+  const armedIds = ls.filter(x => x.armed).map(x => x.id);
+  let state, title;
+  if(stale){ state = "Not known: no contact"; title = "No contact with the engine: the lasers' state is not known. Disarm all lasers still works."; }
+  else {
+    if(!armedIds.length) state = "All disarmed";
+    else if(armedIds.length === ls.length) state = "ALL ARMED, output " + (la.output_permitted ? "on" : "off");
+    else state = armedIds.length + " of " + ls.length + " ARMED";
+    title = state + "." + (la.why_off && armedIds.length ? " BEYOND's laser output stays off: " + la.why_off + "." : "") +
+      (la.arm_here ? " Arming from here is off: " + la.arm_here + "." : la.arm_refusal ? " An arm now would be refused: " + la.arm_refusal + "." : "");
+  }
+  const chips = Object.keys(la.groups || {}).map(g => {
+    const ids = (la.groups[g] || []).slice();
+    const n = ids.filter(id => armedIds.includes(id)).length;
+    const all = !stale && ids.length > 0 && n === ids.length;
+    return {ids:ids, cls:"lzg" + (all ? " armed" : ""), label:g, off:stale,
+      word: stale ? "not known" : all ? "armed" : n ? n + " of " + ids.length : "off",
+      title: stale ? "Not known" : all ? "Every laser in " + g + " is ARMED. Click to disarm them now." : "Click to arm every laser in " + g + " (asks you to confirm)."};
+  }).concat(ls.map(x => ({ids:[x.id], off:stale,
+    cls: stale ? "" : x.armed ? "armed" : x.locked ? "locked" : "", label:x.name,
+    word: stale ? "not known" : x.armed ? "armed" : x.locked ? "locked" : "off",
+    title: stale ? "Not known" : x.armed ? x.name + " is ARMED. Click to disarm it now." :
+      x.locked ? x.name + " is locked out: unlock it on the Morning and Shutdown page first." : x.name + " is disarmed. Click to arm it (asks you to confirm)."})));
+  return {show:true, armed:!stale && armedIds.length > 0, state:state, title:title, chips:chips};
+}
+// Why this page will not even ask to arm `ls` (the laser list entries),
+// or "": no contact, nothing named, the screen arming switch from the
+// show network, a laser locked out. Everything else the engine decides.
+function lzArmRefusal(la, ls, stale){
+  if(stale) return "no contact with the engine, so the lasers' state is not known";
+  if(!ls.length) return "no laser was named";
+  if(la && la.arm_here) return la.arm_here;
+  const locked = ls.filter(x => x.locked).map(x => x.name);
+  if(locked.length) return locked.join(", ") + (locked.length === 1 ? " is" : " are") + " locked out; unlock on the Morning and Shutdown page first";
+  return "";
+}
+function lzSay(text){
+  const el = $("lz-msg");
+  el.textContent = text || ""; el.title = text || "";
+  clearTimeout(LZ_TIMER);
+  LZ_TIMER = setTimeout(() => { el.textContent = ""; el.title = ""; }, 20000);
+}
+async function lzPress(extra){
+  try{
+    const j = await post("/api/remote/laser-arm", actor(extra));
+    lzSay(j.text || "Done.");
+    return j;
+  }catch(e){ lzSay(e.message); return null; }
+}
+// Disarm all lasers: nothing on the page stands in front of it.
+function lzDisarmAll(){
+  return lzPress({all:true, on:false});
+}
+// A chip: every laser it names armed, a disarm at once; else an arm, with
+// the page's own refusals first, then Arrange, then the confirm.
+async function lzClick(ids){
+  const la = LZ || {};
+  const ls = (la.lasers || []).filter(x => ids.includes(x.id));
+  if(ls.length && ls.every(x => x.armed)) return lzPress({lasers:ids, on:false});
+  const why = lzArmRefusal(la, ls, LZ_STALE);
+  if(why){ lzSay("Not armed: " + why + ". Nothing was armed."); return null; }
+  if(arrangeBlocked("laser-arm", {on:true})) return null;
+  const names = ls.map(x => x.name).join(", ");
+  if(!(await confirmBox("Arm " + names + "?", LZ_ARM_NOTE, "Arm", "start"))) return null;
+  return lzPress({lasers:ids, on:true, confirmed:true});
+}
+function renderLaserStrip(la, stale){
+  LZ = la || null; LZ_STALE = !!stale;
+  const look = laserStripLook(la, stale);
+  $("lz").hidden = !look.show;
+  if(!look.show) return;
+  const st = $("lz-st");
+  st.textContent = look.state; st.title = look.title; st.className = look.armed ? "armed" : "";
+  const html = look.chips.map(c => `<button class="${c.cls}" data-lz="${esc(c.ids.join("\n"))}" title="${esc(c.title)}"${c.off ? " disabled" : ""}><b>${esc(c.label)}</b><i>${esc(c.word)}</i></button>`).join("");
+  const box = $("lz-chips");
+  if(box.dataset.html !== html){ box.dataset.html = html; box.innerHTML = html; }
+}
+$("lz-chips").addEventListener("click", e => {
+  const b = e.target.closest("[data-lz]");
+  if(b && !b.disabled) lzClick(b.dataset.lz.split("\n"));
+});
+$("lz-disarm").addEventListener("click", lzDisarmAll);
+// LASER STRIP END
 $("tr-play").addEventListener("click", () => press("play-from", {at:$("tr-at").value}, "tr-msg"));
 document.querySelectorAll("[data-jump]").forEach(b =>
   b.addEventListener("click", () => press("jump", {seconds:Number(b.dataset.jump)}, "tr-msg")));

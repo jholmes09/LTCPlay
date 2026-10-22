@@ -52388,6 +52388,371 @@ def test_laser_startup_dark_without_the_morning_page():
     print("  ok")
 
 
+def test_rack_lasers_strip_engine():
+    section("LASERS on the show screen (Jeff, 2026-10-22): the status "
+            "carries every laser's arm state and whether an arm from this "
+            "screen is refused before anyone confirms; Disarm all lasers "
+            "goes signed out, from the show network with the screen arming "
+            "switch off, while that screen arranges, and never waits on "
+            "the show conductor; an arm from the strip is refused with its "
+            "reason; Disarm every flame group leaves the lasers armed")
+    import threading
+    from ltcplay import remote as RM
+    from ltcplay import laserarm as LA
+    S = _sched()
+    if S is None:
+        return
+    R = _morning_rig(S, config=_MO_CONFIG)
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    ids = ["laser-1", "laser-2", "laser-3", "laser-4"]
+    threaded = None
+    try:
+        R.m.tick()
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        la = out.get("laser_arm") or {}
+        check(st == 200 and [x.get("id") for x in la.get("lasers") or []]
+              == ids and la.get("groups") == {"All lasers": ids} and
+              la.get("armed") == 0 and la.get("arm_here") == "" and
+              "per_laser_osc" not in la,
+              f"the status carries the strip: every laser, the groups, "
+              f"nothing armed, arming open on the rack screen: {la}")
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = R.ask("GET", "/api/remote/status", client=ipad)
+        why = (out.get("laser_arm") or {}).get("arm_here") or ""
+        check("screen_arming" in why and "Turn on" in why,
+              f"from the show network with the switch off, the strip "
+              f"says so before any confirm: {why!r}")
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        check((out.get("laser_arm") or {}).get("arm_here") == "",
+              "the rack screen arms a laser without the switch, as on the "
+              "Morning page")
+        # An arm from the strip: the same route and rules as the Morning
+        # page, refused with its reason.
+        st, _h, out = R.ask("POST", "/api/remote/laser-arm",
+                            {"lasers": ["laser-1"], "on": True,
+                             "confirmed": True}, client=ipad)
+        check(st == 403 and "screen_arming" in out.get("error", "") and
+              not R.m.laser_arm.armed_ids(),
+              f"no arm from the network with the switch off: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/laser-arm",
+                            {"lasers": ["laser-1"], "on": True},
+                            client=loop)
+        check(st == 409 and "confirm" in out.get("error", "") and
+              not R.m.laser_arm.armed_ids(), f"no confirm, no arm: {out}")
+        R.m.lockout.set(R.m.cfg, "laser", "laser-3", True, "Andy",
+                        "Rack screen")
+        st, _h, out = R.ask("POST", "/api/remote/laser-arm",
+                            {"lasers": ids, "on": True, "confirmed": True},
+                            client=loop)
+        check(st == 409 and "Laser 3 is locked out" in out.get("error", "")
+              and not R.m.laser_arm.armed_ids(),
+              f"a group with a locked laser: refused, named: {out}")
+        R.m.lockout.set(R.m.cfg, "laser", "laser-3", False, "Andy",
+                        "Rack screen", confirmed=True)
+        real_blockers = R.m._laser_blockers
+        R.m._laser_blockers = lambda: ("the show is aborted; press Reset "
+                                       "first, then arm")
+        st, _h, out = R.ask("POST", "/api/remote/laser-arm",
+                            {"lasers": ["laser-1"], "on": True,
+                             "confirmed": True}, client=loop)
+        R.m._laser_blockers = real_blockers
+        check(st == 409 and "aborted; press Reset" in out.get("error", ""),
+              f"the Abort latch refuses, in words: {out}")
+        R.laser_out.fault = "Lasers: blanking not set up"
+        st, _h, out = R.ask("POST", "/api/remote/laser-arm",
+                            {"lasers": ["laser-1"], "on": True,
+                             "confirmed": True}, client=loop)
+        R.laser_out.fault = None
+        check(st == 409 and "blanking not set up" in out.get("error", ""),
+              f"no blanking, no arm, in words: {out}")
+        st, _h, who = R.ask("GET", "/api/remote/whoami", client=loop)
+        R.m.open_beat(who["device"], arranging=True, inst="lz", seq=1)
+        st, _h, out = R.ask("POST", "/api/remote/laser-arm",
+                            {"lasers": ["laser-1"], "on": True,
+                             "confirmed": True}, client=loop)
+        check(st == 409 and "Arrange" in out.get("error", "") and
+              not R.m.laser_arm.armed_ids(),
+              f"Arrange blocks an arm: {out}")
+        R.m.open_beat(who["device"], arranging=False, inst="lz", seq=2)
+        st, _h, out = R.ask("POST", "/api/remote/laser-arm",
+                            {"lasers": ["laser-1", "laser-2"], "on": True,
+                             "confirmed": True}, client=loop)
+        R.m.laser_arm.run_pending()
+        check(st == 200 and R.m.laser_arm.armed_ids() ==
+              ["laser-1", "laser-2"], f"a confirmed arm goes: {out}")
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        la = out.get("laser_arm") or {}
+        check([x["armed"] for x in la.get("lasers") or []] ==
+              [True, True, False, False] and la.get("armed") == 2 and
+              la.get("output_permitted") is False,
+              f"the strip reads two armed, the output off: {la}")
+        # Disarm every flame group (the flame button and the alert's
+        # Disarm all) leaves the lasers alone (Jeff, 2026-10-22).
+        del R.laser_out.calls[:]
+        nb = R.rig.count("lasers_blank")
+        st, _h, out = R.ask("POST", "/api/remote/disarm-all", {},
+                            client=loop)
+        R.m.tick()
+        R.m.laser_arm.run_pending()
+        R.settle()
+        check(R.m.laser_arm.armed_ids() == ["laser-1", "laser-2"] and
+              "disable" not in R.laser_out.calls and
+              R.rig.count("lasers_blank") == nb,
+              f"Disarm every flame group did not disarm, blank or switch "
+              f"off a laser: {st} {out} {R.laser_out.calls}")
+        # Disarm all lasers: signed out (a role matrix that forbids
+        # arming), from the show network, the switch off, that screen
+        # arranging, the conductor's lock held by a stuck thread.
+        threaded = LA.LaserArm(
+            [(l.id, l.name) for l in R.m.cfg.lasers],
+            groups=R.m.cfg.laser_groups, output=lambda: R.laser_out,
+            blank_now=R.c.lasers_dark_now, threaded=True)
+        threaded.wait_idle(5.0)
+        threaded.arm(ids, who="Andy", confirmed=True)
+        check(threaded.armed_ids() == ids, "setup: every laser armed")
+        real_arm, R.m.laser_arm = R.m.laser_arm, threaded
+
+        class _NoArm:
+            def may(self, role, perm):
+                return perm != "arm"
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        R.remote.users = _NoArm()
+        st, _h, who = R.ask("GET", "/api/remote/whoami", client=ipad)
+        R.m.open_beat(who["device"], arranging=True, inst="lz", seq=3)
+        check(R.m.device_arranging(who["device"]),
+              "setup: the iPad is arranging")
+        held, go = threading.Event(), threading.Event()
+
+        def stuck():
+            with R.c._lock:
+                held.set()
+                go.wait(10.0)
+        th = threading.Thread(target=stuck, daemon=True)
+        th.start()
+        held.wait(5.0)
+        got = []
+        del R.laser_out.calls[:]
+        t0 = time.perf_counter()
+        pr = threading.Thread(target=lambda: got.append(R.ask(
+            "POST", "/api/remote/laser-arm", {"all": True, "on": False},
+            client=ipad)), daemon=True)
+        pr.start()
+        pr.join(1.5)
+        took = time.perf_counter() - t0
+        go.set()
+        th.join(5.0)
+        check(not pr.is_alive() and got and got[0][0] == 200 and
+              threaded.armed_ids() == [],
+              f"Disarm all lasers answered in {took:.2f} s with the "
+              f"conductor stuck for 10 s, signed out, from the network with "
+              f"the switch off, while that screen arranged: "
+              f"{got[0][:3:2] if got else 'no answer'}")
+        check(threaded.wait_idle(5.0) and "disable" in R.laser_out.calls,
+              f"and once the conductor let go, BEYOND was blanked and its "
+              f"laser output switched off: {R.laser_out.calls}")
+        R.m.laser_arm = real_arm
+    finally:
+        if threaded is not None:
+            threaded.close()
+        R.close()
+    print("  ok")
+
+
+def test_rack_lasers_strip_page():
+    section("LASERS on the show screen, the page (Jeff, 2026-10-22): its own "
+            "strip outside the flame block, violet, never sharing a button "
+            "with the flames; Disarm all lasers goes stale, arranging, with "
+            "arming switched off and with no confirm; a chip disarms an "
+            "armed laser at once and arms only after the page's own "
+            "refusals, Arrange and a confirm; refusals are said in words "
+            "(page logic in node, and the wiring)")
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    vs = page.find('<section id="v-show"')
+    fl = page.find('<div class="flames">', vs)
+    lz = page.find('<div class="lz" id="lz" hidden aria-label="Lasers">', vs)
+    end = page.find("</section>\n\n  <!-- Tonight", vs)
+    flames = page[fl:page.find("<!-- LASERS", fl)]
+    check(0 < vs < fl < len(flames) + fl <= lz < end,
+          "the LASERS strip is on the show screen, after the flame block")
+    check(flames.count("<div") == flames.count("</div>"),
+          "the LASERS strip is not inside the flame block")
+    check('<button id="b-disarm" class="disarm">Disarm every flame group'
+          '</button>' in flames and "laser" not in flames.lower(),
+          "the flame block keeps its own Disarm every flame group and "
+          "nothing of the lasers")
+    check('<button class="lzdis" id="lz-disarm">Disarm all lasers</button>'
+          in page[lz:end] and 'class="disarm"' not in page[lz:end],
+          "Disarm all lasers is its own button, not styled as a flame one")
+    line = [ln for ln in page.splitlines()
+            if '$("b-disarm").addEventListener' in ln]
+    check(len(line) == 1 and 'press("disarm-all")' in line[0] and
+          "laser" not in line[0].lower(),
+          f"Disarm every flame group presses disarm-all only: {line}")
+    check("  renderLaserStrip(ST && ST.laser_arm, stale);\n  renderMode(stale);"
+          in page, "the strip is drawn every 250 ms, stale or not")
+    rules = _css_rules(page)
+    lzr = _css_rule(rules, ".lz") or {}
+    chips = _css_rule(rules, ".lz-chips") or {}
+    dis = _css_rule(rules, "button.lzdis") or {}
+    check(lzr.get("flex") == "0 0 auto" and
+          "var(--laser)" in lzr.get("border", ""),
+          f"the strip keeps its height and its violet frame: {lzr}")
+    check(chips.get("min-width") == "0" and
+          chips.get("overflow") == "hidden",
+          f"the chips can never widen the page: {chips}")
+    check("var(--laser)" in dis.get("border", "") and
+          "var(--laser-deep)" in dis.get("background", ""),
+          f"Disarm all lasers is violet, never the flames' bronze: {dis}")
+    check((_css_rule(rules, ".lz .toast:empty") or {}).get("display") ==
+          "none", "the strip's message line takes no room until it says "
+                  "something")
+    a = page.find("// LASER STRIP BEGIN")
+    b = page.find("// LASER STRIP END")
+    check(0 < a < b, "the page has its LASER STRIP block")
+    block = page[a:b]
+    for bad in ("—", "–"):
+        check(bad not in block, "no em or en dashes in the strip")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner, so the LASERS "
+                         "strip cannot be run; install node in the workflow")
+        print("  note: node is not on this machine, so the strip was "
+              "checked by reading only (CI runs it)")
+        print("  ok")
+        return
+    prelude = r"""
+"use strict";
+class Node {
+  constructor(id){ this.id = id; this.listeners = {}; this.dataset = {}; this.hidden = false; this.textContent = ""; this.title = ""; this.className = ""; this.innerHTML = ""; }
+  addEventListener(t, f){ (this.listeners[t] = this.listeners[t] || []).push(f); }
+  fire(t, e){ for(const f of this.listeners[t] || []) f(e || {}); }
+}
+const byId = {};
+for(const id of ["lz", "lz-st", "lz-chips", "lz-disarm", "lz-msg", "mo-msg"]) byId[id] = new Node(id);
+const $ = id => byId[id];
+const esc = (t) => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+let posts = [], asked = [], ANSWER = true, ARRANGE = false, FAIL = null;
+function post(p, body){ posts.push([p, body]); return FAIL ? Promise.reject(new Error(FAIL)) : Promise.resolve({text:"ok from the engine"}); }
+function actor(extra){ return Object.assign({seen: 123}, extra || {}); }
+async function confirmBox(q){ asked.push(q); return ANSWER; }
+function arrangeBlocked(route, extra){
+  if(!ARRANGE) return false;
+  if(route === "laser-arm" && extra && extra.on === true){ $("mo-msg").textContent = "ARRANGING"; return true; }
+  return false;
+}
+"""
+    body = r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const L = (id, armed, locked) => ({id:id, name:"Laser " + id.slice(-1), armed:!!armed, locked:!!locked});
+const VIEW = {lasers:[L("laser-1"), L("laser-2", true), L("laser-3", false, true), L("laser-4")],
+  groups:{"All lasers":["laser-1", "laser-2", "laser-3", "laser-4"]}, output_permitted:false,
+  why_off:"not every laser is armed", arm_refusal:null, arm_here:""};
+const reset = () => { posts = []; asked = []; ANSWER = true; ARRANGE = false; FAIL = null; $("lz-msg").textContent = ""; };
+(async () => {
+// What it shows.
+t(laserStripLook(undefined, false).show === false, "no laser arm in this engine: no strip");
+t(laserStripLook({lasers:[], groups:{}}, false).show === false, "no lasers: no strip");
+let k = laserStripLook({error:"boom"}, false);
+t(k.show === true && k.chips.length === 0 && /Disarm all lasers still works/.test(k.title), "a broken view: the strip and its Disarm all lasers stay");
+k = laserStripLook(VIEW, false);
+t(k.state === "1 of 4 ARMED" && k.armed === true, "one armed: " + k.state);
+t(k.chips.length === 5 && k.chips[0].label === "All lasers" && k.chips[0].word === "1 of 4" && k.chips[0].ids.length === 4, "the group chip first, with its count: " + JSON.stringify(k.chips[0]));
+t(k.chips[2].cls === "armed" && k.chips[2].word === "armed" && /Click to disarm/.test(k.chips[2].title), "an armed laser reads ARMED and says a click disarms");
+t(k.chips[1].cls === "" && k.chips[1].word === "off", "a disarmed laser reads off");
+t(k.chips[3].cls === "locked" && k.chips[3].word === "locked", "a locked laser reads locked");
+t(k.chips.every(c => c.off === false), "fresh: every chip can be pressed");
+const all = Object.assign({}, VIEW, {lasers:VIEW.lasers.map(x => Object.assign({}, x, {armed:true, locked:false})), output_permitted:true});
+t(laserStripLook(all, false).state === "ALL ARMED, output on" && laserStripLook(all, false).chips[0].word === "armed", "all armed and permitted: ALL ARMED, output on");
+t(laserStripLook(Object.assign({}, all, {output_permitted:false}), false).state === "ALL ARMED, output off", "all armed, output not permitted: said");
+t(laserStripLook(Object.assign({}, VIEW, {lasers:VIEW.lasers.map(x => Object.assign({}, x, {armed:false}))}), false).state === "All disarmed", "none armed: All disarmed");
+k = laserStripLook(VIEW, true);
+t(/Not known/.test(k.state) && k.chips.every(c => c.off === true && c.cls.indexOf("armed") < 0), "stale: not known, no chip pressable, nothing shown as armed");
+t(/Arming from here is off: no switch/.test(laserStripLook(Object.assign({}, VIEW, {arm_here:"no switch"}), false).title), "the switch's refusal is in the strip's words");
+// Drawing it, and the wiring.
+renderLaserStrip(VIEW, false);
+t($("lz").hidden === false && $("lz-st").textContent === "1 of 4 ARMED" && $("lz-st").className === "armed", "drawn: the state line");
+t(($("lz-chips").innerHTML.match(/data-lz=/g) || []).length === 5 && !/ disabled/.test($("lz-chips").innerHTML), "drawn: five chips, none disabled");
+renderLaserStrip(VIEW, true);
+t(($("lz-chips").innerHTML.match(/ disabled/g) || []).length === 5, "stale: every chip disabled");
+renderLaserStrip({lasers:[], groups:{}}, false);
+t($("lz").hidden === true, "no lasers: hidden");
+// Disarm all lasers: stale, arranging, the switch off, nobody confirming.
+renderLaserStrip(Object.assign({}, VIEW, {arm_here:"no switch"}), true);
+reset(); ARRANGE = true; ANSWER = false;
+$("lz-disarm").fire("click");
+await new Promise(r => setTimeout(r, 0));
+t(posts.length === 1 && posts[0][0] === "/api/remote/laser-arm" && posts[0][1].all === true && posts[0][1].on === false, "Disarm all lasers posts all:true on:false whatever the page's state: " + JSON.stringify(posts));
+t(asked.length === 0, "and asks no confirm");
+t($("lz-msg").textContent === "ok from the engine", "and says the engine's answer");
+reset(); FAIL = "the engine said no";
+await lzDisarmAll();
+t($("lz-msg").textContent === "the engine said no", "a failed disarm says why, never silent");
+// A chip.
+renderLaserStrip(VIEW, false);
+reset(); ARRANGE = true; ANSWER = false;
+$("lz-chips").fire("click", {target:{closest:() => ({disabled:false, dataset:{lz:"laser-2"}})}});
+await new Promise(r => setTimeout(r, 0));
+t(posts.length === 1 && posts[0][1].on === false && posts[0][1].lasers.join() === "laser-2" && asked.length === 0, "an armed laser's chip disarms at once, arranging, no confirm: " + JSON.stringify(posts));
+reset();
+$("lz-chips").fire("click", {target:{closest:() => ({disabled:true, dataset:{lz:"laser-1"}})}});
+t(posts.length === 0 && asked.length === 0, "a disabled chip does nothing");
+reset(); ANSWER = false;
+await lzClick(["laser-1"]);
+t(asked.length === 1 && /Arm Laser 1\?/.test(asked[0]) && posts.length === 0, "an arm asks to confirm; no, and nothing is posted");
+reset();
+await lzClick(["laser-1"]);
+t(posts.length === 1 && posts[0][1].on === true && posts[0][1].confirmed === true && posts[0][1].lasers.join() === "laser-1", "confirmed: posted with on:true and confirmed:true");
+reset(); FAIL = "Not armed: the show is aborted; press Reset first, then arm. Nothing was armed.";
+await lzClick(["laser-1"]);
+t($("lz-msg").textContent.indexOf("the show is aborted") >= 0, "the engine's refusal is said in its words: " + $("lz-msg").textContent);
+reset(); ARRANGE = true;
+await lzClick(["laser-1"]);
+t(posts.length === 0 && asked.length === 0 && $("mo-msg").textContent === "ARRANGING", "Arrange holds an arm back before the confirm");
+reset();
+await lzClick(["laser-3"]);
+t(posts.length === 0 && asked.length === 0 && /Laser 3 is locked out/.test($("lz-msg").textContent), "a locked laser: refused in words, no confirm: " + $("lz-msg").textContent);
+reset();
+renderLaserStrip(Object.assign({}, VIEW, {arm_here:"arming a laser from a device on the show network needs screen_arming"}), false);
+await lzClick(["laser-1"]);
+t(posts.length === 0 && asked.length === 0 && /needs screen_arming/.test($("lz-msg").textContent), "the switch off: refused in words, no confirm");
+reset();
+renderLaserStrip(VIEW, true);
+await lzClick(["laser-1"]);
+t(posts.length === 0 && asked.length === 0 && /no contact/.test($("lz-msg").textContent), "stale: no arm, said");
+reset();
+renderLaserStrip(VIEW, false);
+await lzClick(["laser-1", "laser-2", "laser-3", "laser-4"].filter(x => x !== "laser-3"));
+t(posts.length === 1 && posts[0][1].on === true && posts[0][1].lasers.length === 3, "a group with one armed: an arm of all of them, confirmed");
+reset();
+await lzClick([]);
+t(posts.length === 0 && /no laser was named/.test($("lz-msg").textContent), "nothing named: nothing posted");
+console.log(JSON.stringify(out));
+process.exit(0);
+})().catch(e => { console.log(JSON.stringify(["threw: " + e])); process.exit(0); });
+"""
+    r = _sp.run([node, "-e", prelude + block + body], capture_output=True,
+                text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1] or "null")
+    except (ValueError, IndexError):
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"the LASERS strip, in node: {r.stdout[-1500:]!r} "
+          f"{r.stderr[-600:]!r}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -52906,6 +53271,8 @@ if __name__ == "__main__":
     test_laser_arm_through_web_serve()
     test_laser_arm_review_round_two()
     test_laser_startup_dark_without_the_morning_page()
+    test_rack_lasers_strip_engine()
+    test_rack_lasers_strip_page()
     test_checklist_audit_chain_pdf_export_and_tally()
     test_morning_lockout_trust_link_and_close()
     test_morning_arrange_mode_arms_nothing()

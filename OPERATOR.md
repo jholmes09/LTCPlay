@@ -92,6 +92,20 @@ blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels
 blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
 
+**LASERS on the show screen (Fire & Ice).** Under the flame lamps and
+the Disarm every flame group button is a violet LASERS strip, apart from
+everything for the flames. Disarm all lasers (right) is one click, no
+confirm, signed in or not, from the rack screen and every iPad, whatever
+else the page is doing: the lasers are blanked, BEYOND's laser output is
+switched off and every laser is disarmed. Next to LASERS it says how many
+are armed. Each laser has a chip (ARMED in amber, off, or locked) and so
+does each laser group: click an armed one to disarm it at once; click one
+that is off to arm it, with the same confirm and the same rules as the
+Morning and Shutdown page. When an arm is refused the strip says why in
+plain words. Disarm every flame group does not disarm, blank or switch
+off the lasers (it still ends a laser calibration test, as it always
+has), and the Stream Deck has no laser key.
+
 **Morning and Shutdown (Fire & Ice).** The rack screen has a Morning and
 Shutdown page (the button in the header). On it: the laser arm (every
 laser starts DISARMED each time the engine starts; Arm on a laser, or Arm
