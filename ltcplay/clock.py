@@ -60,6 +60,7 @@ import socket
 import threading
 import time
 
+from . import artnodes
 from .output import ARTNET_PORT
 from .tc import frames_to_tc, tc_to_frames
 
@@ -687,7 +688,8 @@ class ArtNetConfig:
             if addr in seen:
                 raise ClockConfigError(
                     f"{where}: {seen[addr]!r} and {name!r} are both {addr}, "
-                    f"so that receiver would get every frame twice")
+                    f"so that receiver would get every frame twice. "
+                    f"{artnodes.FIX}")
             seen[addr] = name
             clean[name.strip()] = addr
         bc = doc.get("broadcast")

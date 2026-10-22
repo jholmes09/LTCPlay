@@ -46,7 +46,7 @@ import threading
 DEFAULT_RESPONSE_S = 30
 MAX_NOTE_S = 8.0          # a booth note is a short line plus a tone
 NOTE_KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-              "test")
+              "timecode", "test")
 
 
 def parse_config(doc, where="ltcplay_remote.json booth_alert"):

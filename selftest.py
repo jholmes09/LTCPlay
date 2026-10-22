@@ -48971,6 +48971,244 @@ def test_soak_pc_clock_and_time_service_in_the_morning_checks():
     print("  ok")
 
 
+def test_artnet_receivers_one_address_each_and_on_this_pc():
+    section("soak 2026-10-21: MadMapper and BEYOND took Art-Net timecode on "
+            "one address and BEYOND never chased it; two receivers on one "
+            "address, and a node address this PC does not have, are said "
+            "at show load, on the rack screen and on the Morning page")
+    import json
+    import shutil
+    import tempfile
+    from ltcplay import artnodes as A
+    from ltcplay import clock as C
+    FIXW = "Give each receiver its own address"
+    DMX = "MadMapper's DMX input counts as a receiver"
+    good = {"MadMapper": "10.250.1.1", "BEYOND": "10.250.2.1"}
+
+    # Same address twice: still refused at show load, as before, and the
+    # refusal now says what to do.
+    try:
+        C.ClockConfig.parse({"source": "artnet_master", "artnet": {
+            "nodes": {"MadMapper": "10.250.1.1", "BEYOND": "10.250.1.1"}}},
+            "show.json")
+        check(False, "the same address twice was accepted at show load")
+    except C.ClockConfigError as e:
+        check("'MadMapper' and 'BEYOND'" in str(e) and "twice" in str(e)
+              and FIXW in str(e) and DMX in str(e),
+              f"the duplicate refusal names both and what to do: {e}")
+        _no_dashes(str(e), "the duplicate refusal")
+    same = A.collisions({"MadMapper": "10.250.1.1",
+                         "BEYOND": "10.250.1.1"})
+    check(len(same) == 1 and "MadMapper and BEYOND are both 10.250.1.1"
+          in same[0] and FIXW in same[0] and DMX in same[0],
+          f"the same address twice is one collision: {same}")
+
+    # Loopback aliases: one address on port 6454.
+    for other in ("localhost", "LocalHost", "127.0.0.2", "127.1.2.3"):
+        got = A.collisions({"MadMapper": "127.0.0.1", "BEYOND": other})
+        check(len(got) == 1 and "MadMapper and BEYOND" in got[0] and
+              "6454" in got[0] and FIXW in got[0] and DMX in got[0],
+              f"127.0.0.1 and {other} collide: {got}")
+        _no_dashes(got[0], "the collision sentence")
+    three = A.collisions({"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
+                          "Soak": "127.0.0.9"})
+    check(len(three) == 1 and "MadMapper, BEYOND and Soak" in three[0],
+          f"three on the loopback: one sentence naming all three: {three}")
+    check(A.collisions(good) == [] and
+          A.collisions({"MadMapper": "127.0.0.1", "BEYOND": "10.250.2.1"})
+          == [] and A.collisions({"MadMapper": "127.0.0.1"}) == [],
+          "a valid layout has no collision")
+    check(A.collisions({"MadMapper": "127.0.0.1", "BEYOND": "not ip"}) ==
+          [] and A.collisions(None) == [], "a non-address is clock.py's")
+    check(A.resolve("localhost") == "127.0.0.1" and
+          A.resolve(" 10.250.1.1 ") == "10.250.1.1" and
+          A.resolve("10.0.0.300") is None and A.resolve(5) is None,
+          "resolve: localhost is the loopback, junk is None")
+
+    # Not an address on this PC.
+    asked = []
+
+    def probe(answer):
+        def p(addr):
+            asked.append(addr)
+            return answer
+        return p
+    nf = A.not_here(good, adapters=set(), probe=probe(False), windows=True)
+    check([lv for lv, _t in nf] == ["bad", "bad"] and
+          nf[0][1].startswith("MadMapper node 10.250.1.1 is not an address "
+                              "on this PC") and
+          nf[1][1].startswith("BEYOND node 10.250.2.1 is not an address on "
+                              "this PC"),
+          f"on the show PC a missing address is a fault, named: {nf}")
+    for _lv, t in nf:
+        _no_dashes(t, "the not-on-this-PC sentence")
+    nf = A.not_here(good, adapters=set(), probe=probe(False), windows=False)
+    check([lv for lv, _t in nf] == ["warn", "warn"],
+          f"off Windows a receiver elsewhere can be right: a warning: {nf}")
+    del asked[:]
+    check(A.not_here(good, adapters={"10.250.1.1", "10.250.2.1"},
+                     probe=probe(False), windows=True) == [] and
+          asked == [], "on an adapter the PC lists: fine, and not probed")
+    check(A.not_here(good, adapters=set(), probe=probe(True),
+                     windows=True) == [],
+          "the PC takes the address: fine")
+    unk = A.not_here(good, adapters=None, probe=probe(None), windows=True)
+    check([lv for lv, _t in unk] == ["warn", "warn"] and
+          "not known" in unk[0][1],
+          f"adapters that cannot be read: a warning note, no fault: {unk}")
+
+    def boom(addr):
+        raise RuntimeError("no")
+    check([lv for lv, _t in A.not_here(good, None, boom, True)] ==
+          ["warn", "warn"], "a probe that raises is not known, not a fault")
+    del asked[:]
+    check(A.not_here({"MadMapper": "127.0.0.1", "B": "localhost"}, set(),
+                     probe(False), True) == [] and asked == [],
+          "the loopback is always on this PC")
+    check(A.bind_probe("127.0.0.1") is True,
+          "the real probe: the loopback is on this PC")
+    check(A.bind_probe("192.0.2.1") is False,
+          "the real probe: a documentation address is not")
+    nfx = A.node_faults({"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
+                         "Far": "10.9.9.9"}, set(), probe(False), True)
+    check([lv for lv, _t in nfx] == ["bad", "bad"] and
+          "share one address" in nfx[0][1] and
+          nfx[1][1].startswith("Far node 10.9.9.9"),
+          f"node_faults: the collision, then the missing address: {nfx}")
+
+    # The Morning card and the rack screen alert, over a show folder.
+    def show(folder, name, nodes):
+        with open(os.path.join(folder, name), "w") as fh:
+            json.dump({"fps": 30, "cues": [],
+                       "clock": {"source": "artnet_master",
+                                 "artnet": {"nodes": nodes}}}, fh)
+    d = tempfile.mkdtemp()
+    try:
+        show(d, "a.json", {"MadMapper": "127.0.0.1", "BEYOND": "localhost"})
+        show(d, "b.json", good)
+        with open(os.path.join(d, "notes.json"), "w") as fh:
+            json.dump({"clock": {"artnet": {"nodes": {"x": "127.0.0.1",
+                                                      "y": "127.0.0.2"}}}},
+                      fh)
+        ff, seen = A.folder_faults(d, set(), probe(False), True)
+        check(seen == 2 and [lv for lv, _t in ff] == ["bad"] * 3 and
+              ff[0][1].startswith("a.json: Art-Net timecode: MadMapper and "
+                                  "BEYOND") and
+              ff[1][1].startswith("b.json: MadMapper node 10.250.1.1"),
+              f"every show file, named; not a file without cues: {ff}")
+        check(A.folder_faults(os.path.join(d, "gone")) == ([], 0) and
+              A.folder_faults("") == ([], 0), "no folder: nothing")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    S = _sched()
+    if S is not None:
+        R = _RemoteRig(S)
+        try:
+            rm = R.remote
+            rm._artnet_adapters = lambda: set()
+            rm._artnet_windows = True
+            here = {"ok": True}
+            rm._artnet_probe = lambda a: here["ok"]
+            show(R.folder, "show.json", good)
+            ck = {c["id"]: c for c in rm.engine_checks()}
+            check(ck["artnet"]["level"] == "ok" and
+                  "its own address" in ck["artnet"]["text"],
+                  f"a valid layout on this PC passes: {ck['artnet']}")
+            R.ask("GET", "/api/remote/status")
+            check(not [a for a in rm.alerts.view()
+                       if a["kind"] == "timecode"],
+                  "a valid layout raises no alert")
+            # The venue network gave the PC another address.
+            here["ok"] = False
+            show(R.folder, "show.json", {"MadMapper": "10.250.1.1",
+                                         "BEYOND": "127.0.0.1",
+                                         "Lights": "localhost"})
+            R.mono[0] += 60
+            ck = {c["id"]: c for c in rm.engine_checks()}
+            c = ck["artnet"]
+            check(c["level"] == "bad" and
+                  "MadMapper node 10.250.1.1 is not an address on this PC"
+                  in c["text"] and "BEYOND and Lights" in c["text"] and
+                  FIXW in c["text"] and DMX in c["text"],
+                  f"the Morning card names both faults: {c}")
+            _no_dashes(c["text"], "the Morning Art-Net card")
+            R.ask("GET", "/api/remote/status")
+            tc = [a for a in rm.alerts.view() if a["kind"] == "timecode"]
+            check(len(tc) == 1 and tc[0]["severity"] == "fault" and
+                  "MadMapper node 10.250.1.1 is not an address on this PC"
+                  in tc[0]["text"] and "BEYOND and Lights" in tc[0]["text"],
+                  f"the rack screen's alert says it: {tc}")
+            raised = [r for r in R.svc.journal if "Alert (fault, timecode)"
+                      in str(r.get("text"))]
+            R.ask("GET", "/api/remote/status")
+            R.mono[0] += 60
+            R.ask("GET", "/api/remote/status")
+            again = [r for r in R.svc.journal if "Alert (fault, timecode)"
+                     in str(r.get("text"))]
+            check(len(raised) == 1 and len(again) == 1,
+                  f"raised once for one sentence, not on every poll: "
+                  f"{len(raised)} then {len(again)}")
+            # Adapters that cannot be read: a warning note, no alert.
+            rm.alerts.clear(kind="timecode", action="Acknowledge")
+            here["ok"] = None
+            rm._artnet_adapters = lambda: None
+            show(R.folder, "show.json", good)
+            R.mono[0] += 60
+            ck = {c["id"]: c for c in rm.engine_checks()}
+            check(ck["artnet"]["level"] == "warn" and
+                  "not known" in ck["artnet"]["text"],
+                  f"unknown adapters: a warning: {ck['artnet']}")
+            R.ask("GET", "/api/remote/status")
+            check(not [a for a in rm.alerts.view()
+                       if a["kind"] == "timecode"],
+                  "unknown adapters raise no alert")
+        finally:
+            R.close()
+
+    # At show load: a note, never a refusal.
+    from ltcplay.session import Session
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    real_prepare = plmod.Player._prepare
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=4000)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+    plmod.Player._prepare = fake_prepare
+    sess = None
+    try:
+        tlp, net = _clock_show(
+            work, {"source": "artnet_master",
+                   "artnet": {"nodes": {"MadMapper": "127.0.0.1",
+                                        "BEYOND": "127.0.0.2"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                       sd=FakeSD(), device="MOTU M4", channel=2)
+        sess.open()
+        said = [n for n in sess.notes if "share one address" in n]
+        check(sess.clock is not None and len(said) == 1 and
+              "MadMapper and BEYOND" in said[0] and FIXW in said[0],
+              f"show load says it and still loads: {sess.notes}")
+    finally:
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_soak_bench_render_universes_and_fps():
     section("stress kit: the soak plays a render of N pixel universes at F "
             "frames a second (soak 2026-10-21), its pixel limits follow the "
@@ -50146,6 +50384,7 @@ if __name__ == "__main__":
     test_soak_flame_cues_preloaded_and_never_copied_under_the_lock()
     test_soak_show_folder_served_is_said_and_followed()
     test_soak_pc_clock_and_time_service_in_the_morning_checks()
+    test_artnet_receivers_one_address_each_and_on_this_pc()
     test_soak_bench_render_universes_and_fps()
     for arg in sys.argv[1:]:
         test_real_show(arg)
