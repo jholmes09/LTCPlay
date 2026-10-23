@@ -1206,7 +1206,7 @@ function render(){
   // on the screen can be read off against the Releases page by phone.
   $("version").textContent = s.version ? ("LTC Player " + s.version) : "";
   $("subs").innerHTML = (s.subsystems || []).map(x =>
-    `<span class="chip ${esc(x.state)}"><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
+    `<span class="chip ${esc(x.state)}"${x.title ? ` title="${esc(x.title)}"` : ""}><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
 
   setWarn("tr-why", tr.programming ? "" : (tr.why || ""));
   const bits = [];

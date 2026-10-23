@@ -148,6 +148,7 @@ class Control:
         self.folder = folder
         self.defaults = defaults or {}
         self.session = None
+        self.last_timeline = None
         self.lock = threading.Lock()
         self._starting = False
         self._start_gen = 0
@@ -605,6 +606,9 @@ class Control:
                     self.session = None
             raise
         self.last_error = ""
+        # The show file last Run (2026-10-23): the Art-Net receiver check
+        # judges this one when nothing is loaded (remote._active_show_files).
+        self.last_timeline = os.path.basename(path)
         if s.wav:
             threading.Thread(target=s.pump_wav, daemon=True,
                              name="ltcplay-wav").start()

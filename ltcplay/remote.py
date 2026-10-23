@@ -130,6 +130,12 @@ ARM_ROUTES = ("arm-hold", "arm-release", "group-disarm")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 # Disarm all flame groups is a plain disarm through the Stream Deck (Jeff,
 # 2026-10-23): it goes that way only while the deck read this engine within
+# The Lasers lamp's tooltip while it reads lit (review of PR #97, P3): what
+# the BEYOND watch can and cannot tell.
+BEYOND_LAMP_TITLE = ("Lit is what this program last sent. BEYOND never "
+                     "answers, and the watch only sees that BEYOND's program "
+                     "is running on this PC: a hung BEYOND, or one whose OSC "
+                     "input is off, still reads as running.")
 # PLAIN_DECK_FRESH_S, and flamesafe must report every group off within
 # PLAIN_CONFIRM_S, else the flame link's disarm_all (the Abort's) goes.
 PLAIN_DECK_FRESH_S = 0.5
@@ -967,7 +973,14 @@ class Remote:
         self._holds = {}
         self._hold_ids = 0
         self._disarms = collections.deque(maxlen=64)
-        self._disarm_ids = 0
+        # Disarm ids start from the wall clock in milliseconds (review of
+        # PR #97, P2-3): the Stream Deck's ScreenKeys keeps the highest id
+        # it has seen across an engine restart, so a new engine's ids must
+        # always be above the old one's, or its first disarms are dropped.
+        try:
+            self._disarm_ids = max(0, int(wall() * 1000))
+        except Exception:                        # noqa: BLE001
+            self._disarm_ids = int(time.time() * 1000)
         # Disarm all flame groups (plain): which press is the latest, and
         # how its confirmation is scheduled (a test runs it by hand).
         self._plain_gen = 0
@@ -1535,13 +1548,32 @@ class Remote:
             # Nor a purge or a laser test (the Morning and Shutdown page):
             # Abort wins over everything, before the scheduler is asked.
             m = self.morning
-            if m is not None:
+            if m is not None and name == "abort":
                 try:
                     m.on_abort(who, screen)
                 except Exception:
                     pass
         if name == "disarm-all":
-            return self.disarm_all(who, screen)
+            # Disarm all flame groups (2026-10-23): the purge selection is
+            # cleared first (in memory only), so the deck cannot want a
+            # purge group again right after the disarm; then the disarm;
+            # the laser calibration tests end only after it, off its path.
+            m = self.morning
+            purge = getattr(m, "purge", None)
+            if purge is not None:
+                try:
+                    purge.clear(f"Disarm all flame groups pressed by "
+                                f"{who or screen or 'someone'}")
+                except Exception:
+                    pass
+            out = self.disarm_all(who, screen)
+            tests = getattr(m, "lasers", None)
+            if tests is not None:
+                try:
+                    tests.all_off("Disarm all flame groups pressed")
+                except Exception:
+                    pass
+            return out
         if name == "abort":
             return self.abort(who, screen, flames, lasers, pressed)
         if name in TRANSPORT_ROUTES:
@@ -2434,14 +2466,23 @@ class Remote:
                f"flamesafe did not confirm every group off within "
                f"{PLAIN_CONFIRM_S:g} s of the plain disarm")
         code, out = self._disarm_all_forced(who, screen, why)
+        if out.get("ok"):
+            text = (f"Disarm all flame groups was not confirmed: {why}. "
+                    f"Every group was sent the disarm Abort uses, so each "
+                    f"needs Arm again (let go, then hold) before it can "
+                    f"fire. {out.get('text') or ''}")
+        else:
+            # Review of PR #97, P2-4: never say off when it may not be.
+            text = (f"Disarm all flame groups COULD NOT be confirmed: {why}, "
+                    f"and the Abort's disarm did not go out either "
+                    f"({out.get('error') or out.get('text') or 'no answer'})."
+                    f" A group may still be armed: press Abort, or disarm "
+                    f"at the Stream Deck.")
         try:
-            self.alerts.raise_(
-                "flames", f"Disarm all flame groups was not confirmed: {why}. "
-                f"Every group was disarmed the way Abort does it, so each "
-                f"needs Arm again (let go, then hold) before it can fire. "
-                f"{out.get('text') or out.get('error') or ''}")
+            self.alerts.raise_("flames", text=text)
         except Exception:                        # noqa: BLE001
-            pass
+            self._journal(who or "system", screen or "engine",
+                          "disarm all", "fault", text, fault=True)
         return False
 
     def _disarm_all_forced(self, who, screen, why):
@@ -2571,8 +2612,12 @@ class Remote:
         every CHECKS_READ_S: ([(level, sentence)], show files looked at).
         Never raises."""
         now = self.clock()
+        active = self._active_show_files()
         got = getattr(self, "_artnet", None)
-        if got is not None and now - got[1] < CHECKS_READ_S:
+        # A newly loaded show is judged at once (review of PR #97, P2-1),
+        # not on the next CHECKS_READ_S.
+        if got is not None and now - got[1] < CHECKS_READ_S and \
+                got[2] == active:
             return got[0]
         try:
             from . import artnodes
@@ -2581,35 +2626,59 @@ class Remote:
             res = artnodes.folder_faults(
                 self._show_folder(), adapters(),
                 getattr(self, "_artnet_probe", artnodes.bind_probe),
-                getattr(self, "_artnet_windows", None),
-                active=self._active_show_files())
+                getattr(self, "_artnet_windows", None), active=active)
+            if active is None and res[1] > 1 and \
+                    any(lv == "bad" for lv, _t in res[0]):
+                res = ([(lv, (f"No show has been Run here yet, so every "
+                              f"show file is checked: {t}") if k == 0 else t)
+                        for k, (lv, t) in enumerate(res[0])], res[1])
         except Exception as e:                   # noqa: BLE001
             res = ([("warn", f"The Art-Net receivers could not be checked: "
                              f"{type(e).__name__}: {e}")], 0)
-        self._artnet = (res, now)
+        self._artnet = (res, now, active)
         return res
 
+    LAST_SHOW_FILE = "ltcplay_last_show.json"
+
     def _active_show_files(self):
-        """The show file names in use, for the Art-Net receiver check
-        (2026-10-23): the one the engine has loaded (running or last Run),
-        else the only show file in the folder, else none: then every file
-        there is only a quiet note until one is Run (Run's own show load
-        still checks its receivers, session.py). Never raises."""
+        """The show file in use, for the Art-Net receiver check (Jeff,
+        2026-10-23: an unused soak_show.json was a live fault), as a set of
+        one name: the one loaded now, else the one last Run in this engine,
+        else the one last Run before a restart (LAST_SHOW_FILE in the
+        settings folder, while that file is still in the show folder).
+        None when no show has been Run here: then every show file is
+        checked as a fault, each named (review of PR #97, P2-1: never a
+        silent note for the show about to run). Never raises."""
+        name = None
         try:
             s = getattr(self.control, "session", None)
             p = getattr(s, "timeline_path", None) or getattr(s, "path",
                                                              None)
-            if p:
-                return {os.path.basename(str(p))}
+            name = os.path.basename(str(p)) if p else None
+            if not name:
+                last = getattr(self.control, "last_timeline", None)
+                name = os.path.basename(str(last)) if last else None
         except Exception:                        # noqa: BLE001
-            pass
+            name = None
+        path = os.path.join(self.folder, self.LAST_SHOW_FILE)
+        if name:
+            if name != getattr(self, "_last_show_said", None):
+                try:
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump({"show": name}, fh)
+                except OSError:
+                    pass
+                self._last_show_said = name
+            return {name}
         try:
-            tls = list(self.control.timelines())
-        except Exception:                        # noqa: BLE001
-            return None
-        if len(tls) == 1:
-            return {str(tls[0].get("file"))}
-        return set()
+            with open(path, encoding="utf-8") as fh:
+                was = str(json.load(fh).get("show") or "")
+            if was and os.path.isfile(os.path.join(self._show_folder(),
+                                                   os.path.basename(was))):
+                return {os.path.basename(was)}
+        except (OSError, ValueError, AttributeError):
+            pass
+        return None
 
     def _artnet_check(self):
         """The Morning page's Art-Net receivers card."""
@@ -2623,7 +2692,7 @@ class Remote:
             text = " ".join(t for _lv, t in faults)
         elif notes:
             text = ("No Art-Net timecode receiver fault in the show in "
-                    "use (or no show is loaded yet: Run checks its own).")
+                    "use.")
         elif seen:
             text = ("Every Art-Net timecode receiver in the show files has "
                     "its own address, and each one is on this PC.")
@@ -2664,20 +2733,48 @@ class Remote:
             return {"link": "unknown", "age_s": None,
                     "why": f"the BEYOND watch failed: {type(e).__name__}"}
 
+    def _lasers_ver(self, cond):
+        """The conductor's lasers record count (it moves on every laser
+        command it records), or None. Display only."""
+        try:
+            return getattr(cond, "_ver", {}).get("lasers")
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def _lit_since_loss(self, cond):
+        """None when BEYOND has not been lost; False while the conductor
+        has recorded no laser command since; True once it has."""
+        at = getattr(self, "_beyond_lost_ver", None)
+        if at is None:
+            return None
+        now = self._lasers_ver(cond)
+        if now is None or now == at[0]:
+            return False
+        self._beyond_lost_ver = None
+        return True
+
     def beyond_link_changed(self, link, why):
         """The BEYOND watch's word changed (its own thread): journaled,
         and a lost link is an alert on every screen, once per loss: only
         when BEYOND was seen running and then was not (it exited or
         crashed). Not running from the start is the lamp and a journal
         line, no alert: BEYOND is often started after this engine."""
-        if link == "lost" and getattr(self, "_beyond_said", None) != "up":
+        if link == "up":
+            self._beyond_was_up = True
+        if link == "lost":
+            cond = getattr(self.schedule, "conductor", None)
+            self._beyond_lost_ver = (self._lasers_ver(cond),)
+        if link == "lost" and not getattr(self, "_beyond_was_up", False):
             self._journal("system", "engine", "lasers", "link lost",
                           f"BEYOND: {why}. The Lasers lamp reads LINK LOST "
                           f"until it is running.", fault=True)
         elif link == "lost":
+            # Seen running since the last loss, whatever came between
+            # (up, unknown, lost is a loss too: review of PR #97, P3).
+            self._beyond_was_up = False
             text = (f"BEYOND was running and is not any more ({why}). "
-                    f"Nothing sent to it lands, so the Lasers lamp reads LINK LOST until it is "
-                    f"back. Start BEYOND and its show again; the lasers are "
+                    f"Nothing sent to it lands, so the Lasers lamp reads "
+                    f"LINK LOST until it is back. Start BEYOND and its show again; the lasers are "
                     f"not lit by this program meanwhile.")
             try:
                 self.alerts.raise_("lasers", text)
@@ -3163,11 +3260,18 @@ class Remote:
                     str(v) == "lit":
                 # BEYOND never answers: "lit" is only what was sent. With
                 # its process seen running it is sent and unconfirmed;
-                # with no word on the link at all it is a warning.
-                if link is not None and link["link"] == "up":
+                # with no word on the link at all it is a warning. After
+                # BEYOND was lost, the new process has had no unblank
+                # until the conductor sends lit again (review of PR #97,
+                # P2-2): the conductor's lasers record must have moved.
+                if self._lit_since_loss(cond) is False:
+                    add(name, "warn", "BEYOND restarted: dark until lit "
+                                      "again")
+                elif link is not None and link["link"] == "up":
                     add(name, "ok", "lit, unconfirmed")
                 else:
                     add(name, "warn", "lit? link unknown")
+                out[-1]["title"] = BEYOND_LAMP_TITLE
             elif cond is None or v is None:
                 add(name, "off", "none")
             elif str(v) == "unknown":
