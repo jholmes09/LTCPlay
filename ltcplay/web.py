@@ -1261,6 +1261,14 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/check":
                 return self._send(200, c.check(body.get("timeline", "")))
             if route == "/api/start":
+                # Run ends live flame programming first (flameprog.py):
+                # the show's own flame cues and xLights are never both a
+                # source of fire values.
+                _rm = getattr(self.server, "remote", None)
+                if _rm is not None and hasattr(_rm, "live_flame_end"):
+                    _rm.live_flame_end("Run was pressed",
+                                       self._ctx().user or "unsigned",
+                                       self._ctx().screen)
                 s = c.start(body.get("timeline", ""),
                             no_output=bool(body.get("no_output")),
                             on_lost=body.get("on_lost"),
@@ -1473,6 +1481,59 @@ def _startup_lasers_dark(wiring):
     except Exception:                            # noqa: BLE001
         pass
 
+
+
+def _attach_live_flame(httpd, fire_ice, flamesafe_config):
+    """Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md):
+    built for the Fire & Ice engine with a flame link and a flame
+    controller. Always OFF at start; nothing listens until it is turned on
+    on the rack screen. A failure to build it leaves it unavailable and is
+    said once; the show is never held back."""
+    from . import flameprog
+    from . import fire_ice as fire_ice_mod
+    remote = httpd.remote
+    try:
+        def _map():
+            s = flameprog.load_settings(remote.live_flame_settings_path())
+            return flameprog.find_map(
+                getattr(remote.control, "folder", None),
+                fire_ice.flame_controller,
+                show_networks=fire_ice_mod._show_networks,
+                explicit=s.networks_xml)
+
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "live flame", outcome, text, fault=fault)
+
+        def _disarm(reason):
+            fn = remote._disarm_fn()
+            if fn is None:
+                link = getattr(httpd.fire_ice, "flame_link", None)
+                return bool(link is not None and link.disarm_all(reason))
+            r = fn(reason)
+            return bool(getattr(r, "ok", False))
+        remote.live_flame = flameprog.LiveFlame(
+            link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
+            blockers=remote.live_flame_blockers, map_get=_map,
+            armed_groups=remote.live_flame_armed_groups,
+            fs_dest=lambda: flameprog.flamesafe_destination(
+                flamesafe_config or fire_ice.flamesafe_config),
+            settings_get=lambda: flameprog.load_settings(
+                remote.live_flame_settings_path()),
+            disarm=_disarm, journal=_journal,
+            audit=getattr(remote, "audit", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"Live flame programming could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_live_flame():
+        try:
+            remote.live_flame_end("the engine is closing")
+        finally:
+            _close_before()
+    httpd.server_close = _close_live_flame
 
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
@@ -1796,7 +1857,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             httpd.morning = morning_mod.Morning(
                 httpd.remote.folder, flamesafe_config=flamesafe_config,
                 link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
-                flames_get=_flames_view, live_check=httpd.remote.show_live_refusal,
+                flames_get=_flames_view,
+                live_check=httpd.remote.morning_live_refusal,
                 group_names=_group_names if fstatus is not None else None,
                 journal=httpd.remote._morning_journal,
                 night=getattr(httpd_schedule, "_night", None),
@@ -1827,6 +1889,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             # the show engine. Said once, here.
             print(f"The Morning and Shutdown page could not be built: "
                   f"{type(e).__name__}: {e}")
+    if fire_ice is not None and \
+            getattr(httpd.fire_ice, "flame_link", None) is not None and \
+            getattr(fire_ice, "flame_controller", None):
+        _attach_live_flame(httpd, fire_ice, flamesafe_config)
     _bey_cfg = getattr(fire_ice, "beyond", None) if fire_ice else None
     if _bey_cfg is not None:
         # Is BEYOND still running (2026-10-23)? Its own thread, display

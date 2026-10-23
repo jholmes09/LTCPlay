@@ -127,6 +127,14 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   background:rgba(245,160,30,.14);color:var(--champ);border-radius:6px;padding:6px 10px;
   font-size:clamp(14px,1.8vh,18px)}
 .alertbox.fault{border-color:#E61E18;background:rgba(230,30,24,.16)}
+/* Live flame programming (flameprog.py): one red bar on every screen while
+   it is on, with its Off button. Never clipped, never hidden by a toggle. */
+.lfbanner{display:flex;align-items:center;gap:10px;border:2px solid var(--red);
+  background:rgba(230,30,24,.22);color:var(--champ);border-radius:6px;padding:6px 10px;
+  font-size:clamp(14px,1.8vh,18px);min-width:0}
+.lfbanner[hidden]{display:none}
+.lfbanner b{font:800 clamp(14px,1.9vh,19px)/1.1 var(--sans);letter-spacing:.06em;color:#fff;white-space:nowrap}
+.lfbanner span{flex:1 1 auto;min-width:0}
 .alertbox .altext{flex:1 1 auto;min-width:0}
 .alertbox .alkind{font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-right:8px;opacity:.85}
 .alertbox button{flex:0 0 auto;min-height:40px;padding:6px 14px;font-size:clamp(14px,1.8vh,18px)}
@@ -506,7 +514,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </nav>
 </header>
 
-<div id="alerts"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -776,6 +784,13 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
       <div class="dim" style="font-size:14px">The Stream Deck has to be running for a hold to arm. Off: arm flames from the Stream Deck only; this rack screen can still purge, unlock and test lasers.</div>
       <div class="row" style="margin-top:8px"><b id="sa-now" style="flex:2 1 0"></b><button id="sa-on" style="flex:1 1 0">Turn on</button><button id="sa-off" style="flex:1 1 0">Turn off</button></div>
       <div class="toast" id="sa-msg"></div>
+    </section>
+    <section class="card" id="lf-card">
+      <h2>Live flame programming</h2>
+      <div class="dim" style="font-size:14px" id="lf-what"></div>
+      <div class="dim" style="font-size:14px">Turned on here on the show machine only (Settings permission). Anyone can turn it off, from any screen, signed in or not. The steps for xLights are in LIVE_FLAME_PROGRAMMING.md.</div>
+      <div class="row" style="margin-top:8px"><b id="lf-now" style="flex:2 1 0"></b><button id="lf-on" style="flex:1 1 0">Turn on</button><button id="lf-off" style="flex:1 1 0">Turn off</button></div>
+      <div class="toast" id="lf-msg"></div>
     </section>
     <section class="card" id="folders" hidden>
       <h2>Show folder, on this machine</h2>
@@ -1994,6 +2009,44 @@ $("sa-off").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/screen-arming", {on: false}); $("sa-msg").textContent = j.text; }
   catch(e){ $("sa-msg").textContent = e.message; }
   $("sa-msg").title = $("sa-msg").textContent;
+});
+// Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md). The
+// engine decides everything; remote.py LIVE_FLAME_ENABLES says the same
+// words as the confirm box below.
+const LIVE_FLAME_ENABLES = "On, LTC Player listens for xLights on this PC only (E1.31 to 127.0.0.1) and passes the flame controller's channels to flamesafe through its own flame link. flamesafe still fires only a group that is armed (hold to arm on the Stream Deck), and still applies lockouts and Abort. One flame group may be armed at a time. It turns itself off, and disarms every flame group, on Off, Abort, Hold, Start now, Run, a show starting, a second sender, no xLights data for a while, or the session limit. Never use xLights' test tools while a group is armed.";
+$("lf-what").textContent = LIVE_FLAME_ENABLES;
+function renderLiveFlame(){
+  const lf = (ST && ST.live_flame) || {};
+  const on = lf.on === true;
+  const ban = $("lf-banner");
+  ban.hidden = !on;
+  if(on){
+    const map = (lf.map || []).map(m => "universe " + m.universe + " to slots " + m.slots).join(", ");
+    const rx = lf.receiving ? "receiving xLights" : ("no xLights data for " + (lf.last_data_s || 0) + " s");
+    $("lf-banner-text").textContent = "xLights drives the flames through flamesafe. Only an armed group fires. " + rx + "; " + (map || "") + ". Turned on by " + (lf.who || "someone") + ".";
+  }
+  const le = lf.last_end;
+  $("lf-now").textContent = !ST ? "" : on ? "ON" : (lf.available === false ? "Not available in this engine" : "OFF");
+  if(!on && le && le.reason && !$("lf-msg").dataset.mine) $("lf-msg").textContent = "Last ended: " + le.reason;
+  $("lf-on").hidden = !(ME && ME.local);
+  $("lf-on").disabled = on || lf.available === false;
+  $("lf-off").disabled = !on;
+}
+setInterval(renderLiveFlame, 250);
+async function liveFlameOff(){
+  $("lf-msg").dataset.mine = "1";
+  try{ const j = await post("/api/remote/live-flame", {on: false}); $("lf-msg").textContent = j.text; }
+  catch(e){ $("lf-msg").textContent = e.message; }
+  $("lf-msg").title = $("lf-msg").textContent;
+}
+$("lf-off").addEventListener("click", liveFlameOff);
+$("lf-banner-off").addEventListener("click", liveFlameOff);
+$("lf-on").addEventListener("click", async () => {
+  if(!(await confirmBox("Turn on live flame programming?", LIVE_FLAME_ENABLES, "Yes, turn it on", "go"))) return;
+  $("lf-msg").dataset.mine = "1";
+  try{ const j = await post("/api/remote/live-flame", {on: true, confirmed: true}); $("lf-msg").textContent = j.text; }
+  catch(e){ $("lf-msg").textContent = e.message; }
+  $("lf-msg").title = $("lf-msg").textContent;
 });
 $("net-pick").addEventListener("change", () => { if($("net-pick").value) $("net-addr").value = $("net-pick").value; });
 $("net-save").addEventListener("click", async () => {
