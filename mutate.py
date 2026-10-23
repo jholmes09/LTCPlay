@@ -5854,8 +5854,8 @@ def build():
 
  ("fix1: a frame read before a zero() goes out with its values",
   "ltcplay/flamelink.py",
-  "            if gen != self._zero_gen or (self.zeroed and self._purge is None):",
-  "            if self.zeroed and self._purge is None:"),
+  "            if gen != self._zero_gen or (self.zeroed and self._purge is None\n",
+  "            if (self.zeroed and self._purge is None\n"),
 
  ("fix1: an Abort is not repeated",
   "ltcplay/flamelink.py",
@@ -8459,9 +8459,9 @@ def build():
  ('an unconfirmed screen Abort no longer disarms the flames',
   'ltcplay/remote.py',
   '            flames = self._disarm_now(who, screen, "Abort")\n'
-  '        if name in ("abort", "hold"):',
+  '        if name in ("abort", "hold", "start-now"):',
   '            flames = None\n'
-  '        if name in ("abort", "hold"):'),
+  '        if name in ("abort", "hold", "start-now"):'),
 
  ("MadMapper at High is left at High", "packaging/windows/supervisor.py",
   "HIGH_OR_ABOVE = (0x80, 0x100)", "HIGH_OR_ABOVE = ()"),
@@ -9107,23 +9107,15 @@ def build():
   "ltcplay/flamelink.py",
   '''        with self._lock:
             self._purge = None
-            self.zeroed = True
-            self._zero_gen += 1
-            return self._send_zero_frame()''',
+            # Any zero (a Hold''',
   '''        with self._lock:
-            self.zeroed = True
-            self._zero_gen += 1
-            return self._send_zero_frame()'''),
+            # Any zero (a Hold'''),
 
  ("flamelink: disarm_all no longer clears a purge frame (T7)",
   "ltcplay/flamelink.py",
   '''                self._purge = None
-                self.zeroed = True
-                self._zero_gen += 1
-                self._send_zero_frame()''',
-  '''                self.zeroed = True
-                self._zero_gen += 1
-                self._send_zero_frame()'''),
+                # An Abort ends live flame programming''',
+  '''                # An Abort ends live flame programming'''),
 
  ("flamelink: a locked channel's value goes out in a frame (T5)",
   "ltcplay/flamelink.py",
@@ -10600,12 +10592,119 @@ def build():
   '        arm.run_pending()'),
  ('rack lasers: Disarm every flame group disarms the lasers too',
   'ltcplay/remote.py',
-  '        if name == "disarm-all":\n'
-  '            return self.disarm_all(who, screen)',
-  '        if name == "disarm-all":\n'
+  '            out = self.disarm_all(who, screen)\n',
   '            self._lasers_disarm_now(who, screen, name)\n'
-  '            return self.disarm_all(who, screen)'),
-
+  '            out = self.disarm_all(who, screen)\n'),
+ ('disarm all: the screen Disarm all forces an arm cycle again (Abort way)',
+  'ltcplay/remote.py',
+  '        if not names or not deck_fresh:\n',
+  '        if True:\n'),
+ ('disarm all: a plain disarm goes with no deck reading the engine',
+  'ltcplay/remote.py',
+  '        if not names or not deck_fresh:\n',
+  '        if not names:\n'),
+ ('disarm all: a plain disarm is never checked by flamesafe',
+  'ltcplay/remote.py',
+  '        if left == []:\n            self._journal(who or "system"',
+  '        if True:\n            self._journal(who or "system"'),
+ ('disarm all: a plain disarm is handed to the deck for one group only',
+  'ltcplay/remote.py',
+  '            for i, gname in enumerate(names):\n'
+  '                self._disarm_ids += 1',
+  '            for i, gname in enumerate(names[:1]):\n'
+  '                self._disarm_ids += 1'),
+ ('disarm all: an older press forces after a newer one',
+  'ltcplay/remote.py',
+  '            if gen != self._plain_gen:\n                return None',
+  '            if False:\n                return None'),
+ ('lasers lamp: says lit with BEYOND gone',
+  'ltcplay/remote.py',
+  '                    link["link"] == "lost":\n',
+  '                    False:\n'),
+ ('lasers lamp: lit reads ok whatever the BEYOND link says',
+  'ltcplay/remote.py',
+  '                elif link is not None and link["link"] == "up":\n',
+  '                elif True:\n'),
+ ('beyond watch: a look of any age still counts',
+  'ltcplay/beyondwatch.py',
+  '        if age > self.stale_s:\n',
+  '        if False:\n'),
+ ('beyond watch: BEYOND exiting raises no alert',
+  'ltcplay/remote.py',
+  '                self.alerts.raise_("lasers", text)',
+  '                pass'),
+ ('beyond watch: a process list without BEYOND reads as running',
+  'ltcplay/beyondwatch.py',
+  '            return True\n    return False\n',
+  '            return True\n    return True\n'),
+ ('artnet: an unused show file in the folder is a live fault again',
+  'ltcplay/artnodes.py',
+  '        quiet = active is not None and n not in active\n',
+  '        quiet = False\n'),
+ ('artnet: the loaded show is not the one checked',
+  'ltcplay/remote.py',
+  '        if name:\n            if name != getattr(self, "_last_show_said", None):',
+  '        if False:\n            if name != getattr(self, "_last_show_said", None):'),
+ ('artnet: the show last Run is forgotten after a restart',
+  'ltcplay/remote.py',
+  '                return {os.path.basename(was)}',
+  '                return set()'),
+ ('artnet: with no show Run yet the files are only notes',
+  'ltcplay/remote.py',
+  '                return {os.path.basename(was)}\n'
+  '        except (OSError, ValueError, AttributeError):\n'
+  '            pass\n        return None',
+  '                return {os.path.basename(was)}\n'
+  '        except (OSError, ValueError, AttributeError):\n'
+  '            pass\n        return set()'),
+ ('artnet: a newly loaded show waits for the 15 s cache',
+  'ltcplay/remote.py',
+  '        if got is not None and now - got[1] < CHECKS_READ_S and \\\n'
+  '                got[2] == active:',
+  '        if got is not None and now - got[1] < CHECKS_READ_S:'),
+ ('disarm all: a group still wanted counts as confirmed off',
+  'ltcplay/remote.py',
+  '                            (gs[i].get("armed") != "disarmed" or\n'
+  '                             gs[i].get("wanted"))]',
+  '                            (gs[i].get("armed") != "disarmed")]'),
+ ('disarm all: a direct Disarm all leaves screen holds running',
+  'ltcplay/remote.py',
+  '        self._drop_holds_all()\n        with self._arm_lock:\n'
+  '            for i, gname',
+  '        with self._arm_lock:\n            for i, gname'),
+ ('disarm all: a press on a stale status watches no group',
+  'ltcplay/remote.py',
+  '            return names, set(range(len(names)))',
+  '            return names, set()'),
+ ('disarm all: a check that cannot be scheduled leaves it unconfirmed',
+  'ltcplay/remote.py',
+  '            self.confirm_plain_disarm(gen, who, screen, None)\n',
+  '            pass\n'),
+ ('disarm all: a deck silent for 30 s still carries the plain disarm',
+  'ltcplay/remote.py',
+  'PLAIN_DECK_FRESH_S = 0.5',
+  'PLAIN_DECK_FRESH_S = 30.0'),
+ ('disarm all: a forced disarm that failed is said as done',
+  'ltcplay/remote.py',
+  '        if out.get("ok"):\n            text = (f"Disarm all flame groups was not confirmed',
+  '        if True:\n            text = (f"Disarm all flame groups was not confirmed'),
+ ('disarm all: the purge selection is cleared after the disarm',
+  'ltcplay/remote.py',
+  '            purge = getattr(m, "purge", None)\n',
+  '            purge = None\n'),
+ ('disarm ids: a new engine starts its disarm ids at 0 again',
+  'ltcplay/remote.py',
+  '            self._disarm_ids = max(0, int(wall() * 1000))',
+  '            self._disarm_ids = 0'),
+ ('lasers lamp: a restarted BEYOND reads lit with no new unblank',
+  'ltcplay/remote.py',
+  '        if now is None or now == at[0]:\n            return False',
+  '        if False:\n            return False'),
+ ('beyond watch: up, unknown, then lost raises no alert',
+  'ltcplay/remote.py',
+  '        if link == "up":\n            self._beyond_was_up = True\n',
+  '        if link == "up":\n            self._beyond_was_up = True\n'
+  '        if link == "unknown":\n            self._beyond_was_up = False\n'),
  # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): one
  # mutation per guard.
  ("live flame: the show's cues go out while it is on",

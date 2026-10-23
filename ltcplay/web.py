@@ -148,6 +148,7 @@ class Control:
         self.folder = folder
         self.defaults = defaults or {}
         self.session = None
+        self.last_timeline = None
         self.lock = threading.Lock()
         self._starting = False
         self._start_gen = 0
@@ -605,6 +606,9 @@ class Control:
                     self.session = None
             raise
         self.last_error = ""
+        # The show file last Run (2026-10-23): the Art-Net receiver check
+        # judges this one when nothing is loaded (remote._active_show_files).
+        self.last_timeline = os.path.basename(path)
         if s.wav:
             threading.Thread(target=s.pump_wav, daemon=True,
                              name="ltcplay-wav").start()
@@ -1886,6 +1890,27 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):
         _attach_live_flame(httpd, fire_ice, flamesafe_config)
+    _bey_cfg = getattr(fire_ice, "beyond", None) if fire_ice else None
+    if _bey_cfg is not None:
+        # Is BEYOND still running (2026-10-23)? Its own thread, display
+        # only: the Lasers lamp and an alert when it is gone.
+        from . import beyondwatch as beyondwatch_mod
+        try:
+            _bw = beyondwatch_mod.BeyondWatch(
+                beyondwatch_mod.probe_for(getattr(_bey_cfg, "host", None)),
+                on_change=httpd.remote.beyond_link_changed).start()
+            httpd.remote.beyond_watch = _bw
+            _close_before_bw = httpd.server_close
+
+            def _close_bw():
+                try:
+                    _bw.stop()
+                finally:
+                    _close_before_bw()
+            httpd.server_close = _close_bw
+        except Exception as e:                       # noqa: BLE001
+            print(f"The BEYOND watch could not start: "
+                  f"{type(e).__name__}: {e}")
     if fire_ice is not None and fstatus is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         # flamesafe's status_mirror_port (PR #39): the remote page's copy of

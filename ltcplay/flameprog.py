@@ -637,6 +637,7 @@ class LiveFlame:
         self._reset()
         self.last_end = None          # {"reason", "who", "at"}
         self.ends = 0
+        self.datagrams = 0            # every datagram feed() took, ever
 
     def _reset(self):
         self.settings = None
@@ -887,16 +888,24 @@ class LiveFlame:
         """Off, for any reason: the listener closed, the link's frame
         dropped, and every flame group disarmed (D2). True when it was on.
         Never raises."""
+        why = " ".join(str(reason or "turned off").split())[:200]
+        by = who or ("system" if system else "unsigned")
         with self._lock:
             if not self.on:
                 return False
             self.on = False
+            # Said in the same step as "off" (CI shard 6 of run
+            # 39883993911: a reader that saw on false before end() had
+            # finished read no reason at all).
+            self.ends += 1
+            self.last_end = {"reason": why, "who": by,
+                             "at": int(self._wall() * 1000),
+                             "started_by": self.who}
             self._gen += 1
             my_gen = self._gen
             session = self._session
             sock, self._sock = self._sock, None
             link = self._link()
-            was = self.who
         if link is not None:
             try:
                 link.program_end()
@@ -907,7 +916,6 @@ class LiveFlame:
                 sock.close()
             except Exception:
                 pass
-        why = " ".join(str(reason or "turned off").split())[:200]
         ok = False
         try:
             if self._disarm is not None:
@@ -916,10 +924,6 @@ class LiveFlame:
                 ok = bool(link.disarm_all(f"{NAME} ended: {why}"))
         except Exception:
             ok = False
-        by = who or ("system" if system else "unsigned")
-        self.ends += 1
-        self.last_end = {"reason": why, "who": by,
-                         "at": int(self._wall() * 1000), "started_by": was}
         self._note(by, screen or "engine", "off",
                    f"{NAME} is OFF (session {session}): {why}. Every flame value is zero and "
                    f"{'a disarm of every flame group went out' if ok else 'the disarm of every flame group did NOT go out: disarm from the Stream Deck'}.",
@@ -1001,6 +1005,7 @@ class LiveFlame:
         with self._lock:
             if not self.on:
                 return "off"
+            self.datagrams += 1
             q = self._all
             q.append(now)
             while q and now - q[0] > RATE_WINDOW_S:
