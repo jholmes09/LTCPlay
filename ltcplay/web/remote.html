@@ -192,8 +192,8 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   position:relative;overflow:hidden;touch-action:none;-webkit-touch-callout:none}
 .lamp button.armb:disabled{opacity:1;filter:none;cursor:default}
 .lamp button.armb .fill{position:absolute;left:0;bottom:0;height:100%;width:0;background:rgba(40,190,90,.45)}
-.lamp button.armb .word{position:relative;font:800 clamp(18px,3.4vh,42px)/1.02 var(--sans);letter-spacing:.02em;
-  text-transform:uppercase;color:inherit;overflow:hidden;max-width:100%}
+.lamp button.armb .word{position:relative;font:800 clamp(14px,min(3.4vh,2.3vw),42px)/1.02 var(--sans);letter-spacing:.02em;
+  text-transform:uppercase;color:inherit;overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
 .lamp button.armb small{position:relative;font:700 clamp(11px,1.5vh,15px)/1.1 var(--sans);color:inherit;opacity:.85}
 .lamp button.armb small:empty{display:none}
 .lamp .gdis{min-height:clamp(44px,6vh,140px);font-size:clamp(13px,1.9vh,17px);padding:2px 4px}
@@ -214,7 +214,9 @@ button.disarm small{display:block;font:400 clamp(10px,1.3vh,13px)/1.1 var(--sans
 .lz-head span.lost{color:var(--red);font-weight:800}
 .lz-head span.armed{color:var(--amber)}
 .lz-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;overflow:hidden;align-items:center}
-.lz-chips button{flex:0 1 auto;min-width:0;min-height:clamp(34px,4.2vh,46px);padding:2px 10px;
+/* One equal tile per laser and group across the strip, laid out like the
+   flame groups above (Jeff, 2026-10-23). */
+.lz-chips button{flex:1 1 0;min-width:0;min-height:clamp(34px,4.2vh,46px);padding:2px 10px;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
   font:700 clamp(12px,1.5vh,15px)/1.05 var(--sans);white-space:nowrap;overflow:hidden;
   background:transparent;border:1px solid var(--laser-soft);color:var(--champ)}
@@ -470,7 +472,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   .ctl{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ctl button{min-height:clamp(44px,5vh,80px)}
   .lamp button.armb,.lamp .gdis{min-height:44px}
-  .lamp button.armb .word{font-size:clamp(15px,2.4vh,30px)}
+  .lamp button.armb .word{font-size:clamp(14px,min(2.4vh,2.3vw),30px)}
   #arm-note{white-space:normal;font-size:13px}
   #subs{order:5;flex-basis:100%;justify-content:flex-start}
   header{flex-wrap:wrap}
