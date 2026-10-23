@@ -26828,8 +26828,8 @@ def test_streamdeck_pure_logic():
           f"a dwell counts down from the REAL dwell_s, steady: {held_dwell}")
     held_cycle = sd.group_look({"armed": "held", "reason": "cycle the arm",
                                 "amber": "flashing", "dwell_s": 0})
-    check(held_cycle[:2] == ("CYCLE", "ARM") and held_cycle[4] is True,
-          f"'cycle the arm' flashes and reads CYCLE ARM: {held_cycle}")
+    check(held_cycle[:2] == ("ARM", "AGAIN") and held_cycle[4] is True,
+          f"'cycle the arm' flashes and reads ARM AGAIN: {held_cycle}")
     held_lost = sd.group_look({"armed": "held", "reason":
                                "Show program stopped answering: disarmed. "
                                "Cycle the arm to re-arm once it is back.",
@@ -26864,7 +26864,7 @@ def test_streamdeck_pure_logic():
           f"every look is the plain 5-tuple, no caveat element: {plain}")
     held = sd.group_look({"armed": "held", "reason": "cycle the arm",
                           "amber": "flashing", "dwell_s": 0})
-    check(held[:2] == ("CYCLE", "ARM") and len(held) == 5,
+    check(held[:2] == ("ARM", "AGAIN") and len(held) == 5,
           f"a two-line held reason is a plain 5-tuple too: {held}")
     check(sd.group_look({"armed": "armed"})[0] == "ARMED",
           "fault='' (the default) changes nothing: every existing caller "
@@ -43617,8 +43617,8 @@ def test_screen_arming_switch_and_refusals():
                  'SCREEN_ARMING_ENABLES,',
                  "if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};",
                  "    ab.hidden = false;\n",
-                 'ab.querySelector("span").textContent = on ? "Hold to arm" '
-                 ': "Arming off";',
+                 'ab.querySelector("small").textContent = armHint(c, look, on);',
+                 'if(!on) return c === "armed" ? "" : "arming off";',
                  "if(!on && !HOLD && $(\"arm-note\").textContent !== "
                  "ARMING_OFF) armSay(ARMING_OFF, 1);",
                  "  #arm-note.said{display:block}",
@@ -52591,7 +52591,7 @@ def test_rack_lasers_strip_page():
     vs = page.find('<section id="v-show"')
     fl = page.find('<div class="flames">', vs)
     lz = page.find('<div class="lz" id="lz" hidden aria-label="Lasers">', vs)
-    end = page.find("</section>\n\n  <!-- Tonight", vs)
+    end = page.find("</section>\n\n  <!-- Schedule (was Tonight", vs)
     flames = page[fl:page.find("<!-- LASERS", fl)]
     check(0 < vs < fl < len(flames) + fl <= lz < end,
           "the LASERS strip is on the show screen, after the flame block")
@@ -53494,6 +53494,196 @@ def test_artnet_faults_only_for_the_show_in_use():
               f"a newly loaded show is judged on the next status, not "
               f"after the 15 s cache: {al}")
         R.httpd.control.session = None
+    finally:
+        R.close()
+    print("  ok")
+
+
+def _js_block(page, start, end):
+    """The page's text from `start` up to (not including) `end`."""
+    a = page.find(start)
+    b = page.find(end, a + 1)
+    return page[a:b] if 0 <= a < b else ""
+
+
+def _js_fn(page, name):
+    """One top-level `function name(...) {...}` of the page, by braces."""
+    a = page.find(f"function {name}(")
+    if a < 0:
+        return ""
+    i = page.find("{", a)
+    depth = 0
+    for j in range(i, len(page)):
+        c = page[j]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return page[a:j + 1]
+    return ""
+
+
+def test_rack_screen_jeff_2026_10_23_page():
+    section("rack screen (Jeff, 2026-10-23): the arm button shows the "
+            "group's state in colour and words and stays hold to arm; ARM "
+            "AGAIN in plain words with why; Schedule (was Tonight) opens "
+            "each show's notes on a tap, even with a live show polling "
+            "every 250 ms; a time zone list with friendly names; a Show and "
+            "Programming switch, locked with the reason during a live show; "
+            "Startup (was Morning and Shutdown) with Shutdown its own "
+            "section; the show file and deck operator in one column")
+    import json
+    import shutil as _sh
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    # Static wiring.
+    for need in ('data-go="tonight">Schedule</button>',
+                 'data-go="morning" hidden>Startup</button>',
+                 '<section class="card compact" id="mo-shut">\n        <h2>Shutdown</h2>',
+                 '<div class="seg" id="run-mode" role="radiogroup"',
+                 '<div class="progcol" id="run-col">',
+                 '<select id="se-tz"></select>',
+                 'b.addEventListener("pointerdown", e => { e.preventDefault(); armStart(i); });',
+                 '.lamp button.armb:disabled{opacity:1;filter:none;cursor:default}',
+                 'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f})'):
+        check(need in page, f"the page has {need!r}")
+    for gone in (">Tonight</button>", ">Morning and Shutdown</button>",
+                 '<input id="se-tz"', "Cycle the arm\"", "click to arm"):
+        check(gone not in page, f"the page no longer has {gone!r}")
+    a = page.find('<div class="progcol" id="run-col">')
+    col = page[a:page.find('<section class="card" id="admin"', a)]
+    check('id="local-run"' in col and 'id="deck-op"' in col,
+          "the show file and the Stream Deck operator share one column")
+    rules = _css_rules(page)
+    check("align-items:start" in page[page.find("#v-prog{"):
+                                      page.find("}", page.find("#v-prog{"))],
+          "Programming's cards are as tall as their content, never "
+          "stretched to the tallest in the row")
+    for bad in ("\u2014", "\u2013"):
+        check(bad not in page, "no em or en dashes on the page")
+    node = _sh.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = "\n".join([
+        _js_block(page, "const LAMP_SHORT = {", "function lampLook("),
+        _js_fn(page, "lampLook"),
+        _js_fn(page, "modeLook"),
+        _js_block(page, "const MODE_WHAT = {", "let RUN_MODE"),
+        _js_fn(page, "runModeNow"), _js_fn(page, "runModeView"),
+        _js_block(page, "const SLOT_OPEN = new Set();",
+                  "let SLOT_DOWN = null;"),
+        _js_block(page, "let SLOT_DOWN = null;", '$("tonight").addEventListener("keydown"'),
+        _js_block(page, "const TZ_GROUPS = [", '$("se-tz").addEventListener'),
+        _js_fn(page, "listTitle")])
+    prelude = r"""
+"use strict";
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+class El { constructor(){ this.l = {}; this._h = ""; this.sets = 0; this.value = ""; this.textContent = ""; }
+  set innerHTML(v){ this._h = v; this.sets++; } get innerHTML(){ return this._h; }
+  addEventListener(n, f){ (this.l[n] = this.l[n] || []).push(f); }
+  fire(n, e){ for(const f of this.l[n] || []) f(e); } }
+const els = {tonight: new El(), "se-tz": new El(), "se-tz-now": new El()};
+const $ = id => els[id];
+let ST = null;
+"""
+    body = r"""
+// B6: plain words, and why.
+t(reasonWords("cycle the arm").startsWith("Re-arm needed after a fault"), "cycle the arm reads as re-arm needed, with why");
+t(reasonWords("Disarmed by the show's Abort. Cycle the arm to re-arm.").indexOf("after the Abort") >= 0, "after an Abort: says so");
+t(!/cycle/i.test(reasonWords("Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.")), "no cycle wording left: " + reasonWords("Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back."));
+const lk = lampLook({armed:"held", reason:"cycle the arm"}, "held");
+t(lk.word === "Arm again" && lk.held === "cycle", "the button reads Arm again: " + JSON.stringify(lk));
+// B1: what the arm button's small line says.
+t(armHint("disarmed", {held:""}, true) === "hold to arm", "off: hold to arm");
+t(armHint("armed", {held:""}, true) === "", "armed: the word says it all");
+t(armHint("held", {held:"cycle"}, true) === "Disarm, then hold", "re-arm: Disarm, then hold");
+t(armHint("disarmed", {held:""}, false) === "arming off", "screen arming off: said on the button");
+t(lampLook({armed:"armed"}, "armed").word === "Armed" && lampLook({armed:"disarmed"}, "disarmed").word === "Off", "Armed and Off words");
+// B5: the switch.
+const live = {show:{running:true}, transport:{programming:false}, schedule:{state:"SHOW"}};
+let v = runModeView(live, "programming");
+t(v.locked && /Press Hold/.test(v.text) && /a scheduled show is live/.test(v.text), "Programming during a live show: locked, why, and what to press: " + v.text);
+v = runModeView(live, "show");
+t(!v.locked && v.now === "show" && /Running now/.test(v.text), "Show while a show runs: running now");
+v = runModeView({show:{running:true}, transport:{programming:true}, schedule:{state:"STANDBY"}}, "show");
+t(!v.locked && v.now === "programming" && /press Stop, then Run/.test(v.text), "switching: Stop, then Run: " + v.text);
+v = runModeView({show:{running:false}, transport:{}, schedule:{state:"STANDBY"}}, "programming");
+t(!v.locked && v.now === null && /rehearsal/.test(v.text), "nothing running: the one line says what Programming is");
+// B3: the Schedule list, during a live show polled every 250 ms.
+const slots = [{show:1, start:"18:00", status:"DONE", reason:"", origin:"rule", planned:"18:00"},
+               {show:2, start:"18:25", status:"PLAYING", reason:"MOVED (operator)", origin:"rule", planned:"18:20", in_s:5},
+               {show:3, start:"18:40", status:"NEXT", reason:"", origin:"edit", planned:null, past_last_end:true}];
+ST = {schedule:{state:"SHOW", slots}};
+renderSchedule(slots);
+const n0 = els.tonight.sets;
+for(let i = 0; i < 8; i++){ slots[1].in_s = 5 - i; renderSchedule(slots); }
+t(els.tonight.sets === n0, "a live show's 250 ms polls do not rebuild an unchanged list (" + (els.tonight.sets - n0) + " rebuilds)");
+const slotEl = k => ({closest: () => ({dataset:{k}})});
+els.tonight.fire("pointerdown", {clientX:10, clientY:10});
+renderSchedule(slots);                         // a poll between press and release
+els.tonight.fire("pointerup", {clientX:11, clientY:12, target: slotEl("1@18:00")});
+t(/No notes for this show\./.test(els.tonight.innerHTML) && /aria-expanded="true"/.test(els.tonight.innerHTML), "a tap opens a show with no reason: No notes: " + els.tonight.innerHTML.slice(0, 300));
+els.tonight.fire("pointerdown", {clientX:10, clientY:10});
+els.tonight.fire("pointerup", {clientX:10, clientY:10, target: slotEl("2@18:25")});
+t(/MOVED \(operator\) Planned for 18:20, moved to 18:25\./.test(els.tonight.innerHTML), "a moved show's notes: the reason and the planned time");
+t(/Added for tonight only\. Runs past the night/.test(slotNotes(slots[2])), "an added late show: both said");
+els.tonight.fire("pointerdown", {clientX:10, clientY:10});
+els.tonight.fire("pointerup", {clientX:10, clientY:80, target: slotEl("2@18:25")});
+t(SLOT_OPEN.has("2@18:25"), "a scroll (the finger moved) is not a tap");
+els.tonight.fire("pointerdown", {clientX:10, clientY:10});
+els.tonight.fire("pointerup", {clientX:10, clientY:10, target: slotEl("2@18:25")});
+t(!SLOT_OPEN.has("2@18:25"), "a second tap closes it");
+// B4: the time zone list.
+t(zoneLabel("America/Denver") === "Mountain Time (Denver)" && zoneLabel("Asia/Kolkata") === "Asia / Kolkata", "friendly names, and every other zone readable");
+fillZones("America/Chicago");
+t(els["se-tz"].value === "America/Chicago" && /<optgroup label="United States and Canada">/.test(els["se-tz"].innerHTML), "the schedule's zone chosen, grouped");
+t(/Show's local time now: /.test(els["se-tz-now"].textContent), "the local time beside it: " + els["se-tz-now"].textContent);
+fillZones("Etc/GMT+7");
+t(els["se-tz"].innerHTML.indexOf('value="Etc/GMT+7"') >= 0, "a zone outside the list is kept, never lost on save");
+// B7.
+t(listTitle({id:"morning", title:"Morning"}) === "Startup" && listTitle({id:"shutdown", title:"Shutdown"}) === "Shutdown", "the morning list reads Startup");
+console.log(JSON.stringify(out));
+"""
+    r = _sp.run([node, "-e", prelude + js + body], capture_output=True,
+                text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"the rack screen's new logic, in node: {r.stdout[-1500:]!r} "
+          f"{r.stderr[-800:]!r}")
+    print("  ok")
+
+
+def test_schedule_time_zone_is_checked_by_the_engine():
+    section("the time zone dropdown (Jeff, 2026-10-23): the engine still "
+            "refuses a zone it does not know when the schedule is saved")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        st, _h, out = R.ask("GET", "/api/remote/schedule-file",
+                            client=("127.0.0.1", 5000))
+        doc = dict(out.get("doc") or {})
+        doc["timezone"] = "Mars/Olympus_Mons"
+        st, _h, out = R.ask("POST", "/api/remote/schedule-file",
+                            {"doc": doc}, client=("127.0.0.1", 5000))
+        check(st == 400 and "Not saved" in out.get("error", "") and
+              "Mars/Olympus_Mons" in out.get("error", ""),
+              f"an unknown zone is refused, named: {st} {out}")
+        doc["timezone"] = "America/Chicago"
+        st, _h, out = R.ask("POST", "/api/remote/schedule-file",
+                            {"doc": doc}, client=("127.0.0.1", 5000))
+        check(st in (200, 409), f"a real zone is taken: {st} {out}")
     finally:
         R.close()
     print("  ok")
@@ -55722,6 +55912,8 @@ if __name__ == "__main__":
     test_disarm_all_end_to_end_rearms_without_a_cycle()
     test_lasers_lamp_follows_the_beyond_link()
     test_artnet_faults_only_for_the_show_in_use()
+    test_rack_screen_jeff_2026_10_23_page()
+    test_schedule_time_zone_is_checked_by_the_engine()
     test_soak_bench_render_universes_and_fps()
     test_live_flame_sacn_parser_fuzz()
     test_live_flame_map_from_a_synthetic_networks_file()

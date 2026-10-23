@@ -1418,7 +1418,7 @@ class Morning:
             return ""
         names = " and ".join(who)
         return (f"Firing is off: {names} {'is' if len(who) == 1 else 'are'} "
-                f"in Arrange mode on the Morning and Shutdown page, and "
+                f"in Arrange mode on the Startup page, and "
                 f"nothing fires while any screen is arranging. Press Save "
                 f"layout or Cancel there (a page that has closed lets go "
                 f"by itself within {OPEN_STALE_S:g} s). Nothing was fired.")
@@ -1440,7 +1440,7 @@ class Morning:
             or (name == "laser-arm" and body.get("on") is True)
         if not gated or not self.device_arranging(device):
             return ""
-        return (f"{device} is in Arrange mode on the Morning and Shutdown "
+        return (f"{device} is in Arrange mode on the Startup "
                 f"page: nothing can be armed, fired or unlocked from it "
                 f"until Save layout or Cancel. Nothing was done.")
 
@@ -1516,7 +1516,7 @@ class Morning:
                        "flamesafe. Set lockout_file in flamesafe.json to this "
                        f"engine's {self.lockout.path} (the default when both "
                        "files sit in the same folder) and restart flamesafe. "
-                       "Nothing fires from the Morning page until it "
+                       "Nothing fires from the Startup page until it "
                        "confirms the lock.", fault=True, action="lockout",
                        outcome="unconfirmed")
         elif state == "missing" and self.lockout.machines:
@@ -1526,7 +1526,7 @@ class Morning:
                        f"lockout_file points elsewhere"
                        f"{' (' + self._fs_lockout_path + ')' if self._fs_lockout_path else ''}"
                        ". The machines locked out here are not held at zero "
-                       "by flamesafe. Nothing fires from the Morning page "
+                       "by flamesafe. Nothing fires from the Startup page "
                        "until it confirms the lock.", fault=True,
                        action="lockout", outcome="unconfirmed")
         elif state == "missing_kept":
@@ -1575,7 +1575,7 @@ class Morning:
         mine = os.path.realpath(self.lockout.path)
         if p == "":
             self._note("flamesafe's config switches its lockout_file off "
-                       "(false): nothing locked out on the Morning page is "
+                       "(false): nothing locked out on the Startup page is "
                        "held at zero by flamesafe, and no purge can go while "
                        "anything is locked.", fault=True, action="lockout",
                        outcome="unconfirmed")

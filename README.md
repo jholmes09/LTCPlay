@@ -432,7 +432,7 @@ Hold, Resume, Reset, each flame group as flamesafe last reported it with its
 Hold to arm and Disarm, Disarm all flame groups, the big Abort bar, and a
 status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
 same scheduler and conductor paths. Tonight's list is its own compact screen
-(Tonight), and everything else is on the Programming screen: the transport
+(Schedule), and everything else is on the Programming screen: the transport
 below, Run and Stop, the Stream Deck operator and the show network, the last
 three on the machine itself only. Each has a Back to the show button, and the
 Abort bar is on every screen. If the page has not heard from the engine for 2
