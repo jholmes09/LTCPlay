@@ -198,10 +198,17 @@ def show_file_nodes(path):
     return nodes if isinstance(nodes, dict) and nodes else None
 
 
-def folder_faults(folder, adapters=None, probe=bind_probe, windows=None):
+def folder_faults(folder, adapters=None, probe=bind_probe, windows=None,
+                  active=None):
     """node_faults() for every show file in `folder` that names Art-Net
     nodes: [(level, "<file>: sentence")], and how many files were looked
-    at. Never raises."""
+    at. Never raises.
+
+    `active` (Jeff, 2026-10-23: an old, unused soak_show.json was a live
+    fault at start-up): the show file names in use (loaded, or the only
+    show file there is). A file not among them gives only quiet notes
+    (level "note", never a fault or an alert). None: every file counts,
+    as before."""
     import os
     out, seen = [], 0
     try:
@@ -215,6 +222,10 @@ def folder_faults(folder, adapters=None, probe=bind_probe, windows=None):
         if nodes is None:
             continue
         seen += 1
+        quiet = active is not None and n not in active
         for level, text in node_faults(nodes, adapters, probe, windows):
-            out.append((level, f"{n}: {text}"))
+            if quiet:
+                out.append(("note", f"{n} (not the show in use): {text}"))
+            else:
+                out.append((level, f"{n}: {text}"))
     return out, seen

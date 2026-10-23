@@ -98,6 +98,11 @@ EXPECTED_FAULTS = (
     ("heartbeat", "MadMapper is not running, so its heartbeat never "
                   "arrives"),
     ("madmapper", "MadMapper is not running"),
+    # The BEYOND watch (ltcplay/beyondwatch.py, 2026-10-23): with no
+    # BEYOND in the fallback mode, its "not running" line is expected. In
+    # all programs mode a BEYOND that stops mid block stays a real fault,
+    # named in the journal as "BEYOND was running and is not any more".
+    ("beyond: beyond is not running", "BEYOND is not running"),
     ("example key", "the bench uses flamesafe's example key"),
     ("unconfirmed", "flamesafe's example group map is unconfirmed"),
 )
@@ -2060,7 +2065,9 @@ class Soak:
                     low = text.lower()
                     why = next((w for k, w in EXPECTED_FAULTS if k in low
                                 and not (self.mode != "fallback" and
-                                         k in ("heartbeat", "madmapper"))),
+                                         k in ("heartbeat", "madmapper",
+                                               "beyond: beyond is not "
+                                               "running"))),
                                None)
                     if why:
                         self.journal_expected[why] = \

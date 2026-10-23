@@ -192,6 +192,7 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 @media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .word{animation-duration:2s}}
 .flamefoot{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center}
 button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);letter-spacing:.04em}
+button.disarm small{display:block;font:400 clamp(10px,1.3vh,13px)/1.1 var(--sans);letter-spacing:0;color:var(--cream)}
 /* LASERS on the show screen (Jeff, 2026-10-22): one compact strip of its
    own under the flames, violet edged, never inside the flame block and
    never sharing a button with it. Disarm all lasers always works; Arm
@@ -202,6 +203,7 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 .lz-head{display:flex;flex-direction:column;min-width:0;max-width:26vw}
 .lz-head b{font:800 clamp(13px,1.9vh,19px)/1.1 var(--caps);letter-spacing:.2em;color:var(--laser)}
 .lz-head span{font:700 clamp(11px,1.4vh,14px)/1.2 var(--sans);color:var(--cream);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lz-head span.lost{color:var(--red);font-weight:800}
 .lz-head span.armed{color:var(--amber)}
 .lz-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;overflow:hidden;align-items:center}
 .lz-chips button{flex:0 1 auto;min-width:0;min-height:clamp(34px,4.2vh,46px);padding:2px 10px;
@@ -529,7 +531,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
     <div class="flames">
       <div class="lamps" id="fl-lamps"></div>
       <div class="flamefoot">
-        <button id="b-disarm" class="disarm">Disarm every flame group</button>
+        <button id="b-disarm" class="disarm" title="A plain disarm of every flame group: no Reset and no Abort. Hold a group's Arm to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset.">Disarm all flame groups<small>plain disarm: arm again with a hold</small></button>
         <div class="toast" id="arm-note">Hold a group's Arm button to arm it. Lift your finger to stop.</div>
       </div>
     </div>
@@ -939,7 +941,7 @@ function abortPlan(st){
   const live = sch.state === "SHOW" || sch.state === "PAUSED";
   const out = [];
   if(s.disarm_connected && fl.connected)
-    out.push({ok:true, text:"Flames: every group is sent a disarm through the flame link. flamesafe confirms it; the lamps show each group off."});
+    out.push({ok:true, text:"Flames: every group is sent a disarm through the flame link, the Abort way. flamesafe confirms it; the lamps show each group off. After Reset each group needs Arm again (let go, then hold). Disarm all flame groups is the plain disarm that needs none of that."});
   else
     out.push({ok:false, text:"Flames: NOT disarmed from this screen. No flame link is connected in this engine. Use the Stream Deck's Abort or the hardware e-stop."});
   if(s.laser_fault) out.push({ok:false, text:"Lasers: NOT blanked from here (" + s.laser_fault + "). Blank them at BEYOND."});
@@ -1166,7 +1168,7 @@ function render(){
   const flKnown = fl.connected && !fl.stale;
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
-  $("abort-sub").textContent = idle ? "Nothing to abort right now" : "";
+  $("abort-sub").textContent = idle ? "Nothing to abort right now" : "Stops the show. Flames then need Arm again";
   setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
 
   let fmsg = "";
@@ -1204,7 +1206,7 @@ function render(){
   // on the screen can be read off against the Releases page by phone.
   $("version").textContent = s.version ? ("LTC Player " + s.version) : "";
   $("subs").innerHTML = (s.subsystems || []).map(x =>
-    `<span class="chip ${esc(x.state)}"><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
+    `<span class="chip ${esc(x.state)}"${x.title ? ` title="${esc(x.title)}"` : ""}><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
 
   setWarn("tr-why", tr.programming ? "" : (tr.why || ""));
   const bits = [];
@@ -1282,7 +1284,7 @@ function renderAlerts(alerts){
     catch(e){ $("ctl-msg").textContent = e.message; }
   }));
   box.querySelectorAll("[data-aldis]").forEach(b => b.addEventListener("click", () => {
-    armStop("Disarm every flame group"); press("disarm-all");
+    armStop("Disarm all flame groups"); press("disarm-all");
   }));
 }
 function renderLamps(fl){
@@ -1295,7 +1297,7 @@ function renderLamps(fl){
     box.innerHTML = groups.map((g, i) =>
       `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b><span class="word"></span><i class="why"></i>
         <div class="lb"><button class="armb" data-arm="${i}"><div class="fill"></div><span>Hold to arm</span></button>
-        <button class="gdis" data-gdis="${i}">Disarm</button></div></div>`).join("");
+        <button class="gdis" data-gdis="${i}" title="A plain disarm of this group: hold Arm to arm it again. No Reset needed.">Disarm</button></div></div>`).join("");
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
       b.addEventListener("pointerdown", e => { e.preventDefault(); armStart(i); });
@@ -1323,7 +1325,7 @@ function renderLamps(fl){
     // Screen arming switched off (the default): the button stays in sight,
     // greyed and saying so (2026-10-22: a hidden button read as "arming
     // from the screen is broken"), and the note says how to turn it on.
-    // No per-group Disarm here then; Disarm every flame group and the
+    // No per-group Disarm here then; Disarm all flame groups and the
     // Stream Deck still work.
     const on = !!(ST && ST.arming && ST.arming.enabled);
     ab.hidden = false;
@@ -1626,7 +1628,7 @@ $("b-stoprun").addEventListener("click", async () => {
 $("b-hold").addEventListener("click", () => press("hold"));
 $("b-resume").addEventListener("click", () => press("resume"));
 $("b-reset").addEventListener("click", () => press("reset"));
-$("b-disarm").addEventListener("click", () => { armStop("Disarm every flame group"); press("disarm-all"); });
+$("b-disarm").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
 
 // LASER STRIP BEGIN. LASERS on the show screen (Jeff, 2026-10-22): the
 // lasers' own controls, apart from every flame control. Disarm all lasers
@@ -1638,7 +1640,7 @@ $("b-disarm").addEventListener("click", () => { armStop("Disarm every flame grou
 // and rules as the Morning page, with its confirm; the engine refuses
 // with its reason, said here in words. The selftest runs this block in
 // node and mutate.py takes each guard away.
-const LZ_ARM_NOTE = "BEYOND's laser output comes on only once EVERY laser is armed and none is locked out: its only verified command is for all lasers at once. Abort, Hold, the night closing and Disarm all lasers disarm them again. Disarm every flame group does not disarm them.";
+const LZ_ARM_NOTE = "BEYOND's laser output comes on only once EVERY laser is armed and none is locked out: its only verified command is for all lasers at once. Abort, Hold, the night closing and Disarm all lasers disarm them again. Disarm all flame groups does not disarm them.";
 let LZ = null, LZ_STALE = true, LZ_TIMER = null;
 // What the strip shows, from the status's laser_arm view. Pure.
 function laserStripLook(la, stale){
@@ -1717,7 +1719,12 @@ function renderLaserStrip(la, stale){
   $("lz").hidden = !look.show;
   if(!look.show) return;
   const st = $("lz-st");
-  st.textContent = look.state; st.title = look.title; st.className = look.armed ? "armed" : "";
+  // BEYOND not running (2026-10-23): said first, in red, whatever the arm.
+  const bl = (typeof ST === "object" && ST && ST.beyond_link) || null;
+  const lost = !stale && bl && bl.link === "lost";
+  st.textContent = (lost ? "BEYOND LINK LOST: nothing reaches the lasers. " : "") + look.state;
+  st.title = (lost ? bl.why + ". " : "") + look.title;
+  st.className = lost ? "lost" : (look.armed ? "armed" : "");
   const html = look.chips.map(c => `<button class="${c.cls}" data-lz="${esc(c.ids.join("\n"))}" title="${esc(c.title)}"${c.off ? " disabled" : ""}><b>${esc(c.label)}</b><i>${esc(c.word)}</i></button>`).join("");
   const box = $("lz-chips");
   if(box.dataset.html !== html){ box.dataset.html = html; box.innerHTML = html; }
