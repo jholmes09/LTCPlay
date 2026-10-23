@@ -39,6 +39,10 @@ ltcplay_abort_latch.json
 # The iPad remote: the show network address, and the operators' PIN hashes
 ltcplay_remote.json
 ltcplay_remote_pins.json
+# The rack screen's selected show, and the engine's reserved disarm ids
+ltcplay_selected_show.json
+ltcplay_last_show.json
+ltcplay_disarm_ids.json
 # The Morning and Shutdown page (MORNING.md): the machine's own settings
 # (the tally server's address and token file path), its layout and what
 # is locked out. Only ltcplay/ltcplay_morning.example.json is committed.

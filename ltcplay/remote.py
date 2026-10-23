@@ -220,7 +220,8 @@ LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1", "[::1]")
 # the Windows supervisor to restart the engine, which it refuses during a
 # show; the schedule is refused while a show is live.
 SETUP_GET_ROUTES = ("setup", "schedule-file")
-SETUP_POST_ROUTES = ("schedule-file", "open-folder", "show-folder", "screen")
+SETUP_POST_ROUTES = ("schedule-file", "open-folder", "show-folder", "screen",
+                     "show-select")
 PROGRAMS_FILE = "programs.json"      # packaging/windows/supervisor.py writes
 FIRST_RUN_FILE = "first-run.json"    # what the supervisor wrote at first run
 SHOWPC_FILE = "showpc.json"          # the supervisor's own settings
@@ -977,6 +978,9 @@ class Remote:
         # PR #97, P2-3): the Stream Deck's ScreenKeys keeps the highest id
         # it has seen across an engine restart, so a new engine's ids must
         # always be above the old one's, or its first disarms are dropped.
+        # The show engine (web.serve with accounts, `ltc serve`) then
+        # lifts it to the range the last engine reserved (reserve_disarm_
+        # ids, second review of #97, P3-3).
         try:
             self._disarm_ids = max(0, int(wall() * 1000))
         except Exception:                        # noqa: BLE001
@@ -1018,6 +1022,34 @@ class Remote:
         self.users = None
         self.audit = None
         self.uploader = None
+
+    DISARM_IDS_FILE = "ltcplay_disarm_ids.json"
+    DISARM_ID_RESERVE = 10_000_000
+
+    def reserve_disarm_ids(self):
+        """At the show engine's start, before any press: the next disarm id
+        is the larger of the wall clock's (set in __init__) and the range
+        the last engine reserved in the settings folder (a PC clock stepped
+        back between two runs must not put the new ids under the old,
+        which the Stream Deck would drop); then this engine reserves its
+        own range (DISARM_ID_RESERVE ids) for the next one. Written once,
+        here, never on a press. Never raises."""
+        with self._arm_lock:
+            seed = self._disarm_ids
+        path = os.path.join(self.folder, self.DISARM_IDS_FILE)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                seed = max(seed, int(json.load(fh).get("next", 0)))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"next": seed + self.DISARM_ID_RESERVE}, fh)
+        except OSError:
+            pass
+        with self._arm_lock:
+            self._disarm_ids = max(self._disarm_ids, seed)
+        return seed
 
     def _alert_journal(self, text, fault=False, action="alert",
                        outcome="", who="", screen="", **_kw):
@@ -2627,28 +2659,32 @@ class Remote:
                 self._show_folder(), adapters(),
                 getattr(self, "_artnet_probe", artnodes.bind_probe),
                 getattr(self, "_artnet_windows", None), active=active)
-            if active is None and res[1] > 1 and \
-                    any(lv == "bad" for lv, _t in res[0]):
-                res = ([(lv, (f"No show has been Run here yet, so every "
-                              f"show file is checked: {t}") if k == 0 else t)
-                        for k, (lv, t) in enumerate(res[0])], res[1])
         except Exception as e:                   # noqa: BLE001
             res = ([("warn", f"The Art-Net receivers could not be checked: "
                              f"{type(e).__name__}: {e}")], 0)
         self._artnet = (res, now, active)
         return res
 
+    # Written by the first build of #97 at every Run; no longer read: a
+    # show last Run is not the selection (second review of #97, P2-a).
     LAST_SHOW_FILE = "ltcplay_last_show.json"
+
+    SELECTED_SHOW_FILE = "ltcplay_selected_show.json"
+    SELECTED_READ_S = 2.0
 
     def _active_show_files(self):
         """The show file in use, for the Art-Net receiver check (Jeff,
         2026-10-23: an unused soak_show.json was a live fault), as a set of
-        one name: the one loaded now, else the one last Run in this engine,
-        else the one last Run before a restart (LAST_SHOW_FILE in the
-        settings folder, while that file is still in the show folder).
-        None when no show has been Run here: then every show file is
-        checked as a fault, each named (review of PR #97, P2-1: never a
-        silent note for the show about to run). Never raises."""
+        one name: the one loaded now, else the one last Run in this
+        engine, else the one the Programming screen's show picker has
+        selected (SELECTED_SHOW_FILE in the settings folder: written by the
+        picker and by every Run, so it is the show Run will run), while
+        that file is still in the show folder. None when no show is loaded
+        or selected: then every show file is checked as a fault, each
+        named (second review of PR #97, P2-a: a show last Run is not
+        assumed to be tonight's unless the picker says so). The selection
+        file is read at most every SELECTED_READ_S (P3-4). Never
+        raises."""
         name = None
         try:
             s = getattr(self.control, "session", None)
@@ -2660,29 +2696,63 @@ class Remote:
                 name = os.path.basename(str(last)) if last else None
         except Exception:                        # noqa: BLE001
             name = None
-        path = os.path.join(self.folder, self.LAST_SHOW_FILE)
         if name:
-            if name != getattr(self, "_last_show_said", None):
-                try:
-                    with open(path, "w", encoding="utf-8") as fh:
-                        json.dump({"show": name}, fh)
-                except OSError:
-                    pass
-                self._last_show_said = name
+            if name != self._selected_show():
+                self._save_selected_show(name)
             return {name}
+        sel = self._selected_show()
+        return {sel} if sel else None
+
+    def _selected_show(self):
+        """The picker's selection (or the last Run), if that show file is
+        still in the show folder, else None. Cached SELECTED_READ_S."""
+        now = self.clock()
+        got = getattr(self, "_sel_cache", None)
+        if got is not None and now - got[1] < self.SELECTED_READ_S:
+            return got[0]
+        sel = None
         try:
-            with open(path, encoding="utf-8") as fh:
-                was = str(json.load(fh).get("show") or "")
+            with open(os.path.join(self.folder, self.SELECTED_SHOW_FILE),
+                      encoding="utf-8") as fh:
+                was = os.path.basename(str(json.load(fh).get("show") or ""))
             if was and os.path.isfile(os.path.join(self._show_folder(),
-                                                   os.path.basename(was))):
-                return {os.path.basename(was)}
+                                                   was)):
+                sel = was
         except (OSError, ValueError, AttributeError):
+            sel = None
+        self._sel_cache = (sel, now)
+        return sel
+
+    def _save_selected_show(self, name):
+        try:
+            with open(os.path.join(self.folder, self.SELECTED_SHOW_FILE),
+                      "w", encoding="utf-8") as fh:
+                json.dump({"show": name}, fh)
+        except OSError:
             pass
-        return None
+        self._sel_cache = (name, self.clock())
+
+    def select_show(self, body):
+        """POST show-select {"file"}: the Programming screen's show picker
+        changed (the show machine only). Display and checks only: nothing
+        runs until Run."""
+        f = os.path.basename(str((body or {}).get("file") or ""))
+        try:
+            names = [t.get("file") for t in self.control.timelines()]
+        except Exception:                        # noqa: BLE001
+            names = []
+        if not f or f not in names:
+            return 400, {"error": "That is not a show file in the show "
+                                  "folder. Nothing was changed."}
+        self._save_selected_show(f)
+        self._artnet = None
+        self._checks = None
+        return 200, {"ok": True, "selected": f}
 
     def _artnet_check(self):
         """The Morning page's Art-Net receivers card."""
         faults, seen = self.artnet_faults()
+        lead = self._artnet_lead(faults, seen)
         notes = [t for lv, t in faults if lv == "note"]
         faults = [(lv, t) for lv, t in faults if lv != "note"]
         levels = {lv for lv, _t in faults}
@@ -2702,8 +2772,24 @@ class Remote:
         if notes:
             text += " Other show files, not checked as faults: " + \
                 " ".join(notes)
+        if lead and faults:
+            text = lead + text
         return {"id": "artnet", "title": "Art-Net timecode receivers",
                 "level": level, "text": text}
+
+    AMBIGUOUS = ("No show is loaded or picked yet, so every show file in "
+                 "the folder is checked. Pick the show on the Programming "
+                 "screen (or Run it) and only that one is. ")
+
+    def _artnet_lead(self, faults, seen):
+        """AMBIGUOUS when every file was checked because none is in use
+        and there is more than one, else "" (P3-5: said once for the whole
+        card and alert, never only on the first sentence)."""
+        got = getattr(self, "_artnet", None)
+        active = got[2] if got is not None else None
+        if active is None and seen > 1 and faults:
+            return self.AMBIGUOUS
+        return ""
 
     def artnet_alert(self):
         """A timecode alert on every screen (the rack screen's strip, the
@@ -2712,8 +2798,10 @@ class Remote:
         for each new sentence. Warnings stay on the Morning card. Never
         raises; never blocks a show."""
         try:
-            faults, _seen = self.artnet_faults()
+            faults, seen = self.artnet_faults()
             text = " ".join(t for lv, t in faults if lv == "bad")
+            if text:
+                text = self._artnet_lead(faults, seen) + text
             if text and text != getattr(self, "_artnet_said", ""):
                 self.alerts.raise_("timecode", text)
             self._artnet_said = text
@@ -2747,6 +2835,8 @@ class Remote:
         at = getattr(self, "_beyond_lost_ver", None)
         if at is None:
             return None
+        if at[0] == "pending":
+            return False                # lost, and not back up yet
         now = self._lasers_ver(cond)
         if now is None or now == at[0]:
             return False
@@ -2761,9 +2851,15 @@ class Remote:
         line, no alert: BEYOND is often started after this engine."""
         if link == "up":
             self._beyond_was_up = True
+            at = getattr(self, "_beyond_lost_ver", None)
+            if at is not None and at[0] == "pending":
+                # Counted from when BEYOND is back (second review of #97,
+                # P2-b): a laser command sent while it was gone reached
+                # nobody, so only one recorded after this counts.
+                cond = getattr(self.schedule, "conductor", None)
+                self._beyond_lost_ver = (self._lasers_ver(cond),)
         if link == "lost":
-            cond = getattr(self.schedule, "conductor", None)
-            self._beyond_lost_ver = (self._lasers_ver(cond),)
+            self._beyond_lost_ver = ("pending",)
         if link == "lost" and not getattr(self, "_beyond_was_up", False):
             self._journal("system", "engine", "lasers", "link lost",
                           f"BEYOND: {why}. The Lasers lamp reads LINK LOST "
@@ -3141,6 +3237,8 @@ class Remote:
             return self.open_folder(body)
         if name == "show-folder":
             return self.set_show_folder(body)
+        if name == "show-select":
+            return self.select_show(body)
         return self.screen(body)
 
     def audio_interface_view(self):
@@ -3264,7 +3362,8 @@ class Remote:
                 # BEYOND was lost, the new process has had no unblank
                 # until the conductor sends lit again (review of PR #97,
                 # P2-2): the conductor's lasers record must have moved.
-                if self._lit_since_loss(cond) is False:
+                if link is not None and link["link"] == "up" and \
+                        self._lit_since_loss(cond) is False:
                     add(name, "warn", "BEYOND restarted: dark until lit "
                                       "again")
                 elif link is not None and link["link"] == "up":
@@ -3367,6 +3466,8 @@ class Remote:
         out["flames"]["cues_fault"] = self.cues_fault()
         out["laser_fault"] = self.laser_fault()
         out["beyond_link"] = self.beyond_link()
+        if ctx.local:
+            out["selected_show"] = self._selected_show()
         out["show_folder"] = {"served": self._show_folder(),
                               "problem": self.show_folder_problem()}
         out["disarm_connected"] = self._disarm_fn() is not None

@@ -53006,6 +53006,30 @@ def test_disarm_ids_survive_an_engine_restart():
     check(min(e["id"] for e in new.deck_input()["disarms"]) >
           max(e["id"] for e in old.deck_input()["disarms"]),
           "a new engine's ids are above the old engine's")
+    # The PC's clock stepped back two minutes between two engine runs
+    # (second review, P3-3): the range the last engine reserved in the
+    # settings folder still puts the new ids above the old.
+    folder = tempfile.mkdtemp()
+    try:
+        a = RM.Remote(types.SimpleNamespace(session=None), None,
+                      folder=folder, wall=lambda: 1_800_000_000.0)
+        a.reserve_disarm_ids()
+        for _ in range(3):
+            a._disarm_ids += 1
+        b = RM.Remote(types.SimpleNamespace(session=None), None,
+                      folder=folder, wall=lambda: 1_800_000_000.0 - 90)
+        b.reserve_disarm_ids()
+        web_src = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web.py"), encoding="utf-8").read()
+        check("    if accounts:\n" in web_src and
+              "        httpd.remote.reserve_disarm_ids()" in web_src,
+              "the show engine reserves its disarm id range at start")
+        check(b._disarm_ids > a._disarm_ids,
+              f"a clock stepped back: still above ({a._disarm_ids} then "
+              f"{b._disarm_ids})")
+    finally:
+        import shutil as _shu
+        _shu.rmtree(folder, ignore_errors=True)
     print("  ok")
 
 
@@ -53355,6 +53379,9 @@ def test_lasers_lamp_follows_the_beyond_link():
     check(lamp() == ("bad", "LINK LOST") and
           len([a for a in r.alerts.view() if a["kind"] == "lasers"]) == 1,
           f"hours later it still says LINK LOST, one alert: {lamp()}")
+    # A laser command recorded while BEYOND is gone reaches nobody: it
+    # never counts as the new process's unblank (second review, P2-b).
+    cond._ver["lasers"] += 1
     # BEYOND starts again: the new process has had no unblank, so the
     # lamp waits for the conductor to send lit again (review of PR #97,
     # P2-2).
@@ -53444,7 +53471,8 @@ def test_artnet_faults_only_for_the_show_in_use():
         rm._checks = None
         ck, al = card(), alerts()
         check(ck.get("level") == "bad" and len(al) == 1 and
-              "No show has been Run here yet" in al[0]["text"] and
+              al[0]["text"].startswith("No show is loaded or picked yet")
+              and "No show is loaded or picked yet" in ck.get("text", "") and
               "soak_show.json:" in al[0]["text"],
               f"nothing Run yet: every show file is a fault, named: {ck} "
               f"{al}")
@@ -53494,6 +53522,70 @@ def test_artnet_faults_only_for_the_show_in_use():
               f"a newly loaded show is judged on the next status, not "
               f"after the 15 s cache: {al}")
         R.httpd.control.session = None
+        # Second review of #97, P2-a: soak_show.json last Run, tonight's
+        # show.json bad. A show last Run is not the selection: with no
+        # selection file (an engine from before it, the reviewer's probe)
+        # every file is checked, and show.json is a fault.
+        rm.alerts.clear(kind="timecode", action="Acknowledge")
+        show("show.json", bad)
+        show("soak_show.json", good)
+        os.remove(os.path.join(R.work, rm.SELECTED_SHOW_FILE))
+        with open(os.path.join(R.work, rm.LAST_SHOW_FILE), "w") as fh:
+            json.dump({"show": "soak_show.json"}, fh)
+        R.httpd.control.last_timeline = None
+        rm._sel_cache = None
+        R.mono[0] += 60
+        rm._checks = None
+        ck, al = card(), alerts()
+        check(ck.get("level") == "bad" and "show.json: " in ck.get("text", "")
+              and len(al) == 1 and "10.99.0.1" in al[0]["text"],
+              f"the last Run alone does not make soak_show.json the show: "
+              f"{ck} {al}")
+        # The picker on the show machine selects show.json: judged at once.
+        rm.alerts.clear(kind="timecode", action="Acknowledge")
+        st, _h, out = R.ask("POST", "/api/remote/show-select",
+                            {"file": "show.json"}, client=("127.0.0.1", 5000))
+        check(st == 200 and out.get("selected") == "show.json",
+              f"the picker's choice is taken: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/show-select",
+                            {"file": "show.json"})
+        check(st == 403, f"only from the show machine itself: {st}")
+        st, _h, out = R.ask("POST", "/api/remote/show-select",
+                            {"file": "../x.json"}, client=("127.0.0.1", 5000))
+        check(st == 400, f"a file that is not in the folder is refused: {st}")
+        st, _h, out = R.ask("GET", "/api/remote/status",
+                            client=("127.0.0.1", 5000))
+        check(out.get("selected_show") == "show.json",
+              f"the page is told the selection: {out.get('selected_show')}")
+        ck, al = card(), alerts()
+        check(ck.get("level") == "bad" and "show.json: " in
+              ck.get("text", "") and len(al) == 1 and
+              not ck.get("text", "").startswith("No show is loaded") and
+              not al[0]["text"].startswith("No show is loaded"),
+              f"show.json picked: its own fault, no longer every file: "
+              f"{ck} {al}")
+        # The picker selects the good soak file: show.json is a note.
+        R.ask("POST", "/api/remote/show-select", {"file": "soak_show.json"},
+              client=("127.0.0.1", 5000))
+        rm.alerts.clear(kind="timecode", action="Acknowledge")
+        check(card().get("level") == "ok" and not alerts(),
+              "the good show picked: no fault")
+        # P3-4: the selection file is read at most every SELECTED_READ_S.
+        with open(os.path.join(R.work, rm.SELECTED_SHOW_FILE), "w") as fh:
+            json.dump({"show": "show.json"}, fh)
+        check(rm._active_show_files() == {"soak_show.json"},
+              "within SELECTED_READ_S the cached selection is used")
+        R.mono[0] += rm.SELECTED_READ_S + 0.1
+        check(rm._active_show_files() == {"show.json"},
+              "after it, the file is read again")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web", "remote.html"),
+            encoding="utf-8").read()
+        check('post("/api/remote/show-select", {file: $("run-file").value})'
+              in page and "if(sel && ok.includes(sel) && !RUN_PICKED) "
+              '$("run-file").value = sel;' in page,
+              "the page's show picker sends its choice and shows the "
+              "engine's")
     finally:
         R.close()
     print("  ok")

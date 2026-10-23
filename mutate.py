@@ -10651,20 +10651,16 @@ def build():
   '        quiet = False\n'),
  ('artnet: the loaded show is not the one checked',
   'ltcplay/remote.py',
-  '        if name:\n            if name != getattr(self, "_last_show_said", None):',
-  '        if False:\n            if name != getattr(self, "_last_show_said", None):'),
+  '        if name:\n            if name != self._selected_show():',
+  '        if False:\n            if name != self._selected_show():'),
  ('artnet: the show last Run is forgotten after a restart',
   'ltcplay/remote.py',
-  '                return {os.path.basename(was)}',
-  '                return set()'),
+  '                sel = was\n',
+  '                sel = None\n'),
  ('artnet: with no show Run yet the files are only notes',
   'ltcplay/remote.py',
-  '                return {os.path.basename(was)}\n'
-  '        except (OSError, ValueError, AttributeError):\n'
-  '            pass\n        return None',
-  '                return {os.path.basename(was)}\n'
-  '        except (OSError, ValueError, AttributeError):\n'
-  '            pass\n        return set()'),
+  '        return {sel} if sel else None',
+  '        return {sel} if sel else set()'),
  ('artnet: a newly loaded show waits for the 15 s cache',
   'ltcplay/remote.py',
   '        if got is not None and now - got[1] < CHECKS_READ_S and \\\n'
@@ -10713,6 +10709,37 @@ def build():
   '        if link == "up":\n            self._beyond_was_up = True\n',
   '        if link == "up":\n            self._beyond_was_up = True\n'
   '        if link == "unknown":\n            self._beyond_was_up = False\n'),
+ ('artnet: the show last Run is taken as the selection again',
+  'ltcplay/remote.py',
+  '            with open(os.path.join(self.folder, self.SELECTED_SHOW_FILE),\n'
+  '                      encoding="utf-8") as fh:',
+  '            with open(os.path.join(self.folder, self.LAST_SHOW_FILE),\n'
+  '                      encoding="utf-8") as fh:'),
+ ('artnet: the show picker\'s choice is not kept',
+  'ltcplay/remote.py',
+  '        self._save_selected_show(f)\n        self._artnet = None',
+  '        self._artnet = None'),
+ ('artnet: the selection file is read on every status poll',
+  'ltcplay/remote.py',
+  '        if got is not None and now - got[1] < self.SELECTED_READ_S:',
+  '        if False:'),
+ ('artnet: why every show file is checked is not said',
+  'ltcplay/remote.py',
+  '            return self.AMBIGUOUS',
+  '            return ""'),
+ ('lasers lamp: a laser command sent while BEYOND was gone counts',
+  'ltcplay/remote.py',
+  '            self._beyond_lost_ver = ("pending",)',
+  '            self._beyond_lost_ver = (self._lasers_ver(\n'
+  '                getattr(self.schedule, "conductor", None)),)'),
+ ('disarm ids: the range the last engine reserved is ignored',
+  'ltcplay/remote.py',
+  '                seed = max(seed, int(json.load(fh).get("next", 0)))',
+  '                json.load(fh)'),
+ ('disarm ids: the show engine never reserves its range',
+  'ltcplay/web.py',
+  '        httpd.remote.reserve_disarm_ids()',
+  '        pass'),
 ]
 
 
