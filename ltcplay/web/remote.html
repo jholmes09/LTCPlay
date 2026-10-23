@@ -171,25 +171,33 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}
 .lamp b{display:block;font:700 clamp(11px,1.6vh,17px)/1.2 var(--caps);letter-spacing:.16em;
   text-transform:uppercase;color:var(--champ);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lamp .word{flex:1 1 auto;min-height:clamp(30px,4vh,96px);display:flex;align-items:center;justify-content:center;text-align:center;
-  border-radius:6px;padding:4px 6px;font:800 clamp(18px,3.4vh,42px)/1.02 var(--sans);letter-spacing:.02em;
-  text-transform:uppercase;background:var(--bronze);color:var(--champ);border:2px solid #7A6032;overflow:hidden}
 .lamp .why{font:400 clamp(11px,1.4vh,13px)/1.25 var(--sans);color:var(--cream);font-style:normal;
   text-align:center;min-height:1.25em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lamp.armed .word{background:var(--green);color:var(--green-ink);border-color:#5FE08A}
-.lamp.held .word{background:var(--amber);color:var(--amber-ink);border-color:#FFC266}
-.lamp.held[data-held="cycle"] .word{animation:cyclearm 1s steps(1,end) infinite}
-.lamp.held[data-held="lost"] .word{background:var(--bronze);color:var(--champ);border-color:#7A6032}
+.lamp.armed .armb{background:var(--green);color:var(--green-ink);border-color:#5FE08A}
+.lamp.held .armb{background:var(--amber);color:var(--amber-ink);border-color:#FFC266}
+.lamp.held[data-held="cycle"] .armb{animation:cyclearm 1s steps(1,end) infinite}
+.lamp.held[data-held="lost"] .armb{background:var(--bronze);color:var(--champ);border-color:#7A6032}
 @keyframes cyclearm{50%{background:#3A2606;color:var(--amber);border-color:var(--amber)}}
-.lamp.unknown .word{border-style:dashed;font-size:clamp(15px,2.4vh,30px);color:var(--muted);
-  background:transparent;border-color:var(--hair)}
-.lamp .lb{display:grid;grid-template-columns:1.6fr 1fr;gap:6px}
-.lamp .lb button{min-height:clamp(40px,6vh,64px);font-size:clamp(14px,2vh,18px);padding:4px}
-.lamp button.armb{background:transparent;border:2px solid var(--green);color:var(--champ);
+.lamp.unknown .armb{border-style:dashed;color:var(--muted);background:transparent;border-color:var(--hair)}
+.lamp.unknown .armb .word{font-size:clamp(15px,2.4vh,30px)}
+/* The arm button IS the lamp (Jeff, 2026-10-23: "also for flames", to save
+   room): its colour and its word are the group's state, its small line
+   what a hold does. Still hold to arm, never a click; Disarm stays its own
+   button under it. */
+.lamp .lb{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,2.2fr) minmax(0,1fr);gap:6px}
+.lamp .lb:has(.gdis[hidden]){grid-template-columns:minmax(0,1fr)}
+.lamp button.armb{min-height:clamp(44px,6vh,140px);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:2px;padding:4px 6px;border-radius:6px;
+  background:var(--bronze);color:var(--champ);border:2px solid #7A6032;
   position:relative;overflow:hidden;touch-action:none;-webkit-touch-callout:none}
+.lamp button.armb:disabled{opacity:1;filter:none;cursor:default}
 .lamp button.armb .fill{position:absolute;left:0;bottom:0;height:100%;width:0;background:rgba(40,190,90,.45)}
-.lamp button.armb span{position:relative;font:inherit;color:var(--champ)}
-@media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .word{animation-duration:2s}}
+.lamp button.armb .word{position:relative;font:800 clamp(14px,min(3.4vh,2.3vw),42px)/1.02 var(--sans);letter-spacing:.02em;
+  text-transform:uppercase;color:inherit;overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
+.lamp button.armb small{position:relative;font:700 clamp(11px,1.5vh,15px)/1.1 var(--sans);color:inherit;opacity:.85}
+.lamp button.armb small:empty{display:none}
+.lamp .gdis{min-height:clamp(44px,6vh,140px);font-size:clamp(13px,1.9vh,17px);padding:2px 4px}
+@media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .armb{animation-duration:2s}}
 .flamefoot{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center}
 button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);letter-spacing:.04em}
 button.disarm small{display:block;font:400 clamp(10px,1.3vh,13px)/1.1 var(--sans);letter-spacing:0;color:var(--cream)}
@@ -206,7 +214,9 @@ button.disarm small{display:block;font:400 clamp(10px,1.3vh,13px)/1.1 var(--sans
 .lz-head span.lost{color:var(--red);font-weight:800}
 .lz-head span.armed{color:var(--amber)}
 .lz-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;overflow:hidden;align-items:center}
-.lz-chips button{flex:0 1 auto;min-width:0;min-height:clamp(34px,4.2vh,46px);padding:2px 10px;
+/* One equal tile per laser and group across the strip, laid out like the
+   flame groups above (Jeff, 2026-10-23). */
+.lz-chips button{flex:1 1 0;min-width:0;min-height:clamp(34px,4.2vh,46px);padding:2px 10px;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
   font:700 clamp(12px,1.5vh,15px)/1.05 var(--sans);white-space:nowrap;overflow:hidden;
   background:transparent;border:1px solid var(--laser-soft);color:var(--champ)}
@@ -237,7 +247,19 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .tsum{display:flex;gap:16px;flex-wrap:wrap;font:700 clamp(14px,2vh,20px)/1.3 var(--sans)}
 
 /* ---- Programming: its own screen, may scroll inside itself ---- */
-#v-prog{overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start}
+#v-prog{overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start;align-items:start}
+.progcol{display:flex;flex-direction:column;gap:10px;min-width:0}
+.progcol:not(:has(.card:not([hidden]))){display:none}
+.card.compact{padding:8px 12px}
+.card.compact h2{margin-bottom:6px}
+.card.compact .row button,.card.compact select{min-height:40px}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--gold);border-radius:8px;overflow:hidden;margin-bottom:4px}
+.seg button{min-height:38px;border:0;border-radius:0;background:transparent;color:var(--champ);font-size:clamp(14px,1.8vh,17px)}
+.seg button.on{background:var(--gold);color:var(--btn-ink)}
+.seg button.now{box-shadow:inset 0 -4px 0 var(--green)}
+.modeline{font-size:13px;line-height:1.3;color:var(--cream);margin-bottom:6px}
+.modeline b{color:var(--champ)}
+.modeline.locked{color:var(--amber)}
 /* ---- Users and the audit log (users.py, audit.py): their own screen,
    reached from the user chip; may scroll inside itself like Programming ---- */
 #v-users{overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start}
@@ -256,6 +278,11 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #v-morning{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:10px;min-height:0}
 #mo-left{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
 #mo-right{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
+#mo-shut{flex:0 0 auto}
+#mo-shut h2{margin:0 0 4px}
+#mo-shut .shutrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#mo-shut .shutrow .dim{flex:1 1 12em;font-size:clamp(12px,1.5vh,14px)}
+#mo-shut button{min-height:36px;padding:4px 12px;font-size:14px}
 .mo-groups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) auto auto;gap:6px}
 .mo-groups button{min-height:clamp(38px,5.5vh,56px);font-size:clamp(12px,1.7vh,16px);padding:4px 6px}
 .mo-groups button.on{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
@@ -419,7 +446,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   #arm-note{display:none}
   #arm-note.said{display:block}
   .ctl button{min-height:44px}
-  .lamp .word{min-height:28px}
+  .lamp button.armb,.lamp .gdis{min-height:44px}
   #abort-said .altext{max-height:2.8em}
   .lz{gap:4px 8px}
   .lz-head{flex-direction:row;align-items:baseline;gap:8px}
@@ -444,8 +471,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   .now{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ctl{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ctl button{min-height:clamp(44px,5vh,80px)}
-  .lamp .word{min-height:32px;font-size:clamp(15px,2.4vh,30px)}
-  .lamp .lb button{min-height:44px}
+  .lamp button.armb,.lamp .gdis{min-height:44px}
+  .lamp button.armb .word{font-size:clamp(14px,min(2.4vh,2.3vw),30px)}
   #arm-note{white-space:normal;font-size:13px}
   #subs{order:5;flex-basis:100%;justify-content:flex-start}
   header{flex-wrap:wrap}
@@ -472,9 +499,9 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
     <span id="version" hidden aria-hidden="true"></span>
     <button id="nav-user" class="ghost" data-go="users" title="Who is signed in on this screen. Users, who may do what, and the audit log.">Signed out</button>
     <button id="nav-info" class="infob" title="About this LTC Player: version, mode, how to leave this window" aria-label="Information">i</button>
-    <button id="nav-tonight" class="ghost" data-go="tonight">Tonight</button>
+    <button id="nav-tonight" class="ghost" data-go="tonight">Schedule</button>
     <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
-    <button id="nav-morning" class="ghost" data-go="morning" hidden>Morning and Shutdown</button>
+    <button id="nav-morning" class="ghost" data-go="morning" hidden>Startup</button>
     <button id="nav-back" class="go" data-go="show" hidden>Back to the show</button>
   </nav>
 </header>
@@ -547,11 +574,11 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
     </div>
   </section>
 
-  <!-- Tonight: the night's shows, compact. -->
+  <!-- Schedule (was Tonight; Jeff, 2026-10-23): the night's shows, compact. -->
   <section id="v-tonight" class="view" hidden>
     <div class="tsum"><span id="tn-state"></span><span id="tn-next" class="dim"></span></div>
     <div id="tonight"></div>
-    <div class="dim" style="font-size:13px">Tap a show to see all of its note.</div>
+    <div class="dim" style="font-size:13px">Tap a show to see its notes.</div>
   </section>
 
   <!-- Morning and Shutdown (Jeff, 2026-10-17): laser tests, the purge, the
@@ -564,6 +591,12 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <span class="dim">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
       <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
       <div id="mo-firebar"><div class="key" id="mo-key">Hold SPACE to fire</div><div class="toast" id="mo-msg"></div></div>
+      <!-- Shutdown (Jeff, 2026-10-23): its own labelled section on the
+           Startup page. Whether it becomes its own tab is still open. -->
+      <section class="card compact" id="mo-shut">
+        <h2>Shutdown</h2>
+        <div class="shutrow"><span class="dim" id="mo-shut-st">At the end of the night: the Shutdown checklist, then lock the machines.</span><button class="ghost" id="mo-shut-go">Shutdown checklist</button></div>
+      </section>
     </div>
     <div id="mo-right">
       <section class="card">
@@ -577,7 +610,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <div class="mo-checks" id="mo-engine"><div class="dim">Not checked yet.</div></div>
       </section>
       <section class="card" id="mo-check">
-        <h2>Checklists</h2>
+        <h2>Checklists: Startup and Shutdown</h2>
         <div class="tabs" id="mo-tabs"></div>
         <div id="mo-steps"></div>
         <div class="mo-foot">
@@ -697,25 +730,35 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
       </div>
       <div class="toast" id="tr-msg"></div>
     </section>
-    <section class="card" id="local-run" hidden>
+    <!-- The show file and the Stream Deck operator, one compact column
+         (Jeff, 2026-10-23, note 12: both frames were far too large). -->
+    <div class="progcol" id="run-col">
+    <section class="card compact" id="local-run" hidden>
       <h2>Show file, on this machine</h2>
-      <label for="run-file">Show file (nothing reaches the rig until Run)</label>
+      <!-- Show or Programming (Jeff, 2026-10-23): which mode Run starts,
+           the engine's own: Programming is a rehearsal (on_lost hold). -->
+      <div class="seg" id="run-mode" role="radiogroup" aria-label="Mode Run starts">
+        <button type="button" role="radio" data-mode="show">Show</button>
+        <button type="button" role="radio" data-mode="programming">Programming</button>
+      </div>
+      <div class="modeline" id="run-mode-what"></div>
       <div class="row">
-        <select id="run-file" style="flex:2 1 0"></select>
+        <select id="run-file" style="flex:2 1 0" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
         <button id="b-run" class="go" style="flex:1 1 0">Run</button>
         <button id="b-stoprun" style="flex:1 1 0">Stop</button>
       </div>
       <div class="toast" id="run-msg"></div>
     </section>
-    <section class="card" id="deck-op" hidden>
+    <section class="card compact" id="deck-op" hidden>
       <h2>Stream Deck operator, on this machine</h2>
-      <div class="dim" style="font-size:14px">The Stream Deck's own Arm, Start, Hold and Resume keys work once someone is chosen here. This page needs no name.</div>
-      <div class="row" style="margin-top:8px">
-        <select id="deck-op-pick" style="flex:2 1 0"></select>
+      <div class="row">
+        <select id="deck-op-pick" style="flex:2 1 0" aria-label="Stream Deck operator"></select>
         <button id="b-deck-op" style="flex:1 1 0">Choose</button>
       </div>
+      <div class="dim" style="font-size:12px;margin-top:4px">Unlocks the deck's Arm, Start, Hold and Resume keys. This page needs no name.</div>
       <div class="toast" id="deck-op-msg"></div>
     </section>
+    </div>
     <section class="card" id="admin" hidden>
       <h2>Show network, on this machine</h2>
       <label for="net-addr">Show Wi-Fi address of this machine (port 7878)</label>
@@ -750,7 +793,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
       <h2>Schedule: the show times</h2>
       <div class="dim" style="font-size:14px">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Edits here are written to the schedule file and loaded at once.</div>
       <div class="three" style="margin-top:8px">
-        <div><label for="se-tz">Time zone</label><input id="se-tz" placeholder="America/Denver"></div>
+        <div><label for="se-tz">Time zone</label><select id="se-tz"></select><div class="dim" style="font-size:12px;margin-top:2px" id="se-tz-now"></div></div>
         <div><label for="se-first">Season starts</label><input id="se-first" type="date"></div>
         <div><label for="se-last">Season ends</label><input id="se-last" type="date"></div>
       </div>
@@ -792,7 +835,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
     <div class="kv" id="info-flames" hidden></div>
     <h2>Mode</h2>
     <div class="kv" id="info-mode"></div>
-    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Programming screen.</div>
+    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Programming screen. To switch between Show and Programming: the Show and Programming switch on the Programming screen's Show file card, then Run (Stop first if something is running).</div>
     <h2>Leaving this window</h2>
     <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. It is an ordinary window: the Minimize, Maximize and Close buttons are at its top right. To minimize without them, press the <kbd>Windows</kbd> key + <kbd>Down arrow</kbd> (twice if it is maximized); <kbd>Alt</kbd>+<kbd>F4</kbd> closes it, or use the button below. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</div>
     <div class="row">
@@ -928,10 +971,10 @@ function modeLook(st){
   const tr = (st && st.transport) || {};
   if(!st) return {cls:"", word:"...", text:"Waiting for the engine."};
   if(show.running && tr.programming)
-    return {cls:"prog", word:"Programming", text:"A rehearsal is running: the scrubbing controls work, and the scheduler starts no show. Press Stop, then Run, for a show."};
+    return {cls:"prog", word:"Programming", text:"A rehearsal is running: the scrubbing controls work, and the scheduler starts no show. To go back to Show: Stop, choose Show on the Show file card, then Run."};
   if(show.running)
     return {cls:"show", word:"Show", text:"Show mode: a show file is running and the scheduler starts each show at its time. Scrubbing is off."};
-  return {cls:"", word:"Not running", text:"No show file is running. Nothing reaches the rig until Run is pressed on the Programming screen."};
+  return {cls:"", word:"Not running", text:"No show file is running. Nothing reaches the rig until Run is pressed on the Programming screen, in Show or in Programming."};
 }
 // What the Abort confirm must say, from the engine's state: what it WILL do
 // and what it CANNOT do from this screen (Jeff, 2026-10-17: the old text
@@ -1095,7 +1138,7 @@ function renderStale(){
     // Never show an old lamp or timecode as if it were now.
     document.querySelectorAll(".lamp").forEach(el => {
       el.className = "lamp unknown";
-      const sp = el.querySelector("span");
+      const sp = el.querySelector(".word");
       if(sp) sp.textContent = "not known: no contact";
       const why = el.querySelector(".why");
       if(why) why.textContent = "";
@@ -1197,10 +1240,10 @@ function render(){
       (mo.flamesafe_confirmed === true ? "flamesafe is holding the locked flame slots at zero." :
        mo.flamesafe_confirmed === false ? "flamesafe has NOT yet confirmed the flame lock: check its lockout_file setting." :
        "flamesafe's word on the lock is not known right now.") +
-      " Unlock on the Morning and Shutdown page.";
+      " Unlock on the Startup page.";
   }
-  if(mo && mo.config_error) lockText += (lockText ? " " : "") + "Morning and Shutdown settings: " + mo.config_error;
-  if(mo && mo.lock_error) lockText += (lockText ? " " : "") + "LOCKOUT NOT TRUSTED: " + mo.lock_error + ". Nothing fires from the Morning page.";
+  if(mo && mo.config_error) lockText += (lockText ? " " : "") + "Startup page settings: " + mo.config_error;
+  if(mo && mo.lock_error) lockText += (lockText ? " " : "") + "LOCKOUT NOT TRUSTED: " + mo.lock_error + ". Nothing fires from the Startup page.";
   setWarn("lock-banner", lockText);
   // Which LTC Player this is (its release and build id), so the version
   // on the screen can be read off against the Releases page by phone.
@@ -1220,17 +1263,52 @@ function render(){
 
   $("tn-state").textContent = word + (label ? ": " + label : "");
   $("tn-next").textContent = "Next: " + nextText;
-  const slots = sch.slots || [];
-  const open = new Set([...document.querySelectorAll(".slot.open")].map(e => e.dataset.k));
-  $("tonight").innerHTML = slots.length ? slots.map(r => {
-    const k = esc(r.show + "@" + r.start);
-    return `<div class="slot${open.has(r.show + "@" + r.start) ? " open" : ""}" data-k="${k}"><b>Show ${esc(r.show)}</b><span class="t">${esc(r.start)}</span><span class="s">${esc(r.status)}</span><span class="r">${esc(r.reason || "")}</span></div>`;
-  }).join("") : `<div class="dim">No shows tonight.</div>`;
+  renderSchedule(sch.slots || []);
   renderStale();
 }
-$("tonight").addEventListener("click", e => {
-  const el = e.target.closest(".slot");
-  if(el) el.classList.toggle("open");
+// The Schedule tab (Jeff, 2026-10-23: tapping a show did nothing, even
+// with a show running). Two causes: the list was rebuilt on every 250 ms
+// status poll, so a tap's press and release landed on two different
+// elements and the browser sent no click; and a show with no reason had
+// nothing to open. Now the list is redrawn only when what it shows
+// changes, a tap is read on release wherever it lands, and every show
+// opens to its notes: the reason, the planned time if it moved, how it
+// was added, a late warning, or "No notes".
+const SLOT_OPEN = new Set();
+let SLOT_KEY = "";
+function slotNotes(r){
+  const out = [];
+  if(r.reason) out.push(String(r.reason));
+  if(r.planned && r.planned !== r.start) out.push("Planned for " + r.planned + ", moved to " + r.start + ".");
+  if(r.origin === "edit") out.push("Added for tonight only.");
+  if(r.origin === "operator") out.push("Started with Start now.");
+  if(r.past_last_end) out.push("Runs past the night's last end time.");
+  return out.join(" ");
+}
+function renderSchedule(slots){
+  const key = JSON.stringify([slots.map(r => [r.show, r.start, r.status, slotNotes(r)]), [...SLOT_OPEN]]);
+  if(key === SLOT_KEY) return;
+  SLOT_KEY = key;
+  $("tonight").innerHTML = slots.length ? slots.map(r => {
+    const k = r.show + "@" + r.start, notes = slotNotes(r), open = SLOT_OPEN.has(k);
+    return `<div class="slot${open ? " open" : ""}" data-k="${esc(k)}" role="button" tabindex="0" aria-expanded="${open}"><b>Show ${esc(r.show)}</b><span class="t">${esc(r.start)}</span><span class="s">${esc(r.status)}</span><span class="r">${esc(open ? (notes || "No notes for this show.") : notes)}</span></div>`;
+  }).join("") : `<div class="dim">No shows tonight.</div>`;
+}
+function toggleSlot(k){
+  if(SLOT_OPEN.has(k)) SLOT_OPEN.delete(k); else SLOT_OPEN.add(k);
+  renderSchedule((ST && ST.schedule && ST.schedule.slots) || []);
+}
+let SLOT_DOWN = null;
+$("tonight").addEventListener("pointerdown", e => { SLOT_DOWN = {x:e.clientX, y:e.clientY}; });
+$("tonight").addEventListener("pointerup", e => {
+  const d = SLOT_DOWN; SLOT_DOWN = null;
+  if(d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 12) return;   // a scroll, not a tap
+  const el = e.target.closest && e.target.closest(".slot");
+  if(el) toggleSlot(el.dataset.k);
+});
+$("tonight").addEventListener("keydown", e => {
+  const el = e.target.closest && e.target.closest(".slot");
+  if(el && (e.key === "Enter" || e.key === " ")){ e.preventDefault(); toggleSlot(el.dataset.k); }
 });
 
 // What a lamp reads, in the Stream Deck's words: ARMED in green, OFF in
@@ -1240,6 +1318,25 @@ $("tonight").addEventListener("click", e => {
 const LAMP_SHORT = {"dirty edge":"Dirty edge", "chatter":"Chatter",
   "arm input stale":"No signal", "arm input has never asserted":"Never armed",
   "safety program fault":"Fault"};
+// flamesafe's reasons in the operator's words (Jeff, 2026-10-23: "cycle the
+// arm" read as a fault). The lamp's tooltip keeps flamesafe's own words.
+const REASON_WORDS = {
+  "cycle the arm": "Re-arm needed after a fault or a lost link: Disarm, then hold Arm again",
+  "Disarmed by the show's Abort. Cycle the arm to re-arm.": "Re-arm needed after the Abort: Disarm, then hold Arm again"};
+function reasonWords(r){
+  r = String(r || "");
+  if(REASON_WORDS[r]) return REASON_WORDS[r];
+  return r.replace(/Cycle the arm to re-arm/g, "Arm it again").replace(/Cycle the arm/g, "Arm again").replace(/cycle the arm/g, "arm again");
+}
+// The arm button's small line: what a hold does now.
+function armHint(c, look, on){
+  if(!on) return c === "armed" ? "" : "arming off";
+  if(c === "armed") return "";
+  if(look.held === "cycle") return "Disarm, then hold";
+  if(look.held === "wait") return "re-arm wait";
+  if(c === "unknown") return "";
+  return "hold to arm";
+}
 function lampLook(g, c){
   const r = String(g.reason || "");
   const lost = /^Show program/.test(r);
@@ -1249,7 +1346,7 @@ function lampLook(g, c){
   if(lost) return {word:"Show lost", held:"lost"};
   const d = Number(g.dwell_s) || 0;
   if(d > 0) return {word:"Wait " + Math.ceil(d), held:"wait"};
-  if(/cycle/i.test(r)) return {word:"Cycle the arm", held:"cycle"};
+  if(/cycle/i.test(r)) return {word:"Arm again", held:"cycle"};
   return {word:LAMP_SHORT[r] || "Held back", held:"steady"};
 }
 // The lamp grid: as few rows as fit, each row as full as the others
@@ -1295,9 +1392,9 @@ function renderLamps(fl){
     armStop("the group list changed");
     LAMP_KEY = key;
     box.innerHTML = groups.map((g, i) =>
-      `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b><span class="word"></span><i class="why"></i>
-        <div class="lb"><button class="armb" data-arm="${i}"><div class="fill"></div><span>Hold to arm</span></button>
-        <button class="gdis" data-gdis="${i}" title="A plain disarm of this group: hold Arm to arm it again. No Reset needed.">Disarm</button></div></div>`).join("");
+      `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b>
+        <div class="lb"><button class="armb" data-arm="${i}"><div class="fill"></div><span class="word"></span><small></small></button>
+        <button class="gdis" data-gdis="${i}" title="A plain disarm of this group: hold Arm to arm it again. No Reset needed.">Disarm</button></div><i class="why"></i></div>`).join("");
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
       b.addEventListener("pointerdown", e => { e.preventDefault(); armStart(i); });
@@ -1316,8 +1413,9 @@ function renderLamps(fl){
     el.className = "lamp " + c;
     const look = lampLook(g, c);
     el.dataset.held = look.held;
-    el.querySelector("span").textContent = look.word;
-    el.querySelector(".why").textContent = c === "unknown" ? "" : (g.reason || "");
+    el.querySelector(".word").textContent = look.word;
+    el.querySelector(".why").textContent = c === "unknown" ? "" : reasonWords(g.reason);
+    el.querySelector(".why").title = g.reason || "";
     const as = armState(ST, Date.now(), LAST_OK, i);
     const ab = el.querySelector("[data-arm]");
     if(!(HOLD && HOLD.group === i)) ab.disabled = !as.ok;
@@ -1329,7 +1427,7 @@ function renderLamps(fl){
     // Stream Deck still work.
     const on = !!(ST && ST.arming && ST.arming.enabled);
     ab.hidden = false;
-    ab.querySelector("span").textContent = on ? "Hold to arm" : "Arming off";
+    ab.querySelector("small").textContent = armHint(c, look, on);
     el.querySelector("[data-gdis]").hidden = !on;
   });
   const on = !!(ST && ST.arming && ST.arming.enabled);
@@ -1468,6 +1566,7 @@ function renderMode(stale){
   $("info-flames").hidden = !unconf;
   $("info-flames").textContent = unconf ? "flamesafe's config is not yet confirmed by Andy (confirmed is false in it): the flame universe, group map and arm value it sends are the config's own numbers. The lamps and the Stream Deck keys show each group's real state as usual." : "";
   renderSetup(s.setup, s.programs);
+  renderRunMode();
   const sch = s.schedule || {};
   // The banner goes by itself only when the Abort it reported is Reset:
   // the latch read true after the press, then false. An Abort with no show
@@ -1546,6 +1645,53 @@ $("fo-save").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/show-folder", {path:p}); $("fo-msg").textContent = j.text; loadFolders(); }
   catch(e){ $("fo-msg").textContent = e.message; }
 });
+// The time zone (Jeff, 2026-10-23): a dropdown of friendly names, grouped,
+// the schedule's zone (or this PC's, for a new file) chosen, and the
+// schedule's local time beside it. The engine still checks the name when
+// the schedule is saved (schedule.zone): an unknown zone is refused.
+const TZ_GROUPS = [
+  ["United States and Canada", [["America/New_York", "Eastern Time (New York)"], ["America/Chicago", "Central Time (Chicago)"],
+    ["America/Denver", "Mountain Time (Denver)"], ["America/Phoenix", "Mountain Time, no daylight saving (Phoenix)"],
+    ["America/Los_Angeles", "Pacific Time (Los Angeles)"], ["America/Anchorage", "Alaska Time (Anchorage)"],
+    ["Pacific/Honolulu", "Hawaii Time (Honolulu)"], ["America/Halifax", "Atlantic Time (Halifax)"],
+    ["America/St_Johns", "Newfoundland Time (St. John's)"], ["America/Toronto", "Eastern Time (Toronto)"],
+    ["America/Vancouver", "Pacific Time (Vancouver)"]]],
+  ["Europe", [["Europe/London", "UK Time (London)"], ["Europe/Dublin", "Irish Time (Dublin)"],
+    ["Europe/Paris", "Central European Time (Paris)"], ["Europe/Berlin", "Central European Time (Berlin)"],
+    ["Europe/Madrid", "Central European Time (Madrid)"], ["Europe/Amsterdam", "Central European Time (Amsterdam)"],
+    ["Europe/Athens", "Eastern European Time (Athens)"]]],
+  ["Asia and Pacific", [["Asia/Dubai", "Gulf Time (Dubai)"], ["Asia/Singapore", "Singapore Time"],
+    ["Asia/Shanghai", "China Time (Shanghai)"], ["Asia/Tokyo", "Japan Time (Tokyo)"],
+    ["Australia/Perth", "Western Australia Time (Perth)"], ["Australia/Sydney", "Eastern Australia Time (Sydney)"],
+    ["Pacific/Auckland", "New Zealand Time (Auckland)"]]]];
+function pcZone(){ try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }catch(e){ return ""; } }
+function zoneLabel(z){
+  for(const [, zs] of TZ_GROUPS) for(const [id, name] of zs) if(id === z) return name;
+  return String(z || "").replace(/_/g, " ").replace(/\//g, " / ");
+}
+function allZones(){
+  try{ return Intl.supportedValuesOf("timeZone"); }catch(e){ return []; }
+}
+function fillZones(want){
+  const sel = $("se-tz");
+  const known = new Set(TZ_GROUPS.flatMap(g => g[1].map(x => x[0])));
+  const others = allZones().filter(z => !known.has(z));
+  let h = "";
+  if(want && !known.has(want) && !others.includes(want)) h += `<option value="${esc(want)}">${esc(zoneLabel(want))}</option>`;
+  for(const [g, zs] of TZ_GROUPS) h += `<optgroup label="${esc(g)}">` + zs.map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join("") + `</optgroup>`;
+  if(others.length) h += `<optgroup label="Every other zone">` + others.map(z => `<option value="${esc(z)}">${esc(zoneLabel(z))}</option>`).join("") + `</optgroup>`;
+  sel.innerHTML = h;
+  sel.value = want || "America/Denver";
+  tzNow();
+}
+function tzNow(){
+  const z = $("se-tz").value, pc = pcZone();
+  let t = "";
+  try{ t = new Intl.DateTimeFormat("en-US", {timeZone:z, weekday:"short", hour:"2-digit", minute:"2-digit", hour12:false, timeZoneName:"short"}).format(new Date()); }catch(e){ t = "not a zone this browser knows"; }
+  $("se-tz-now").textContent = "Show's local time now: " + t + (pc && pc !== z ? ". This PC: " + zoneLabel(pc) + "." : ". Same as this PC.");
+}
+$("se-tz").addEventListener("change", tzNow);
+setInterval(() => { if(!$("sched-edit").hidden) tzNow(); }, 15000);
 // The schedule editor (Programming, this machine only): the weekly times,
 // the season and the three lengths. Exceptions stay as the file has them.
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -1553,7 +1699,7 @@ const DAY_NAMES = {mon:"Monday", tue:"Tuesday", wed:"Wednesday", thu:"Thursday",
 let SCHED_DOC = null;
 function drawSchedule(doc){
   SCHED_DOC = doc;
-  $("se-tz").value = doc.timezone || "";
+  fillZones(doc.timezone || pcZone());
   $("se-first").value = (doc.season || {}).first_date || "";
   $("se-last").value = (doc.season || {}).last_date || "";
   $("se-len").value = doc.show_len_s == null ? "" : doc.show_len_s;
@@ -1574,7 +1720,7 @@ function drawSchedule(doc){
 }
 function readSchedule(){
   const doc = Object.assign({}, SCHED_DOC || {});
-  doc.timezone = $("se-tz").value.trim();
+  doc.timezone = $("se-tz").value;
   doc.season = {first_date: $("se-first").value, last_date: $("se-last").value};
   const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
   doc.show_len_s = num("se-len"); doc.guard_s = num("se-guard"); doc.late_grace_s = num("se-grace");
@@ -1623,11 +1769,56 @@ $("run-file").addEventListener("change", () => {
   RUN_PICKED = true;
   post("/api/remote/show-select", {file: $("run-file").value}).catch(e => { $("run-msg").textContent = e.message; });
 });
+// Show or Programming (Jeff, 2026-10-23: "unclear how to switch"): which
+// mode Run starts. The engine's existing modes, unchanged: Show is a Run
+// as before (the scheduler starts each show; scrubbing off); Programming
+// is a Run as a rehearsal (on_lost "hold", remote.programming(): the
+// scrubbing controls work and the scheduler starts nothing).
+const MODE_WHAT = {
+  show: "<b>Show:</b> the scheduler starts each show at its time. Scrubbing is off.",
+  programming: "<b>Programming:</b> a rehearsal. Play from, jump and loop work; the scheduler starts no show."};
+let RUN_MODE = null;
+function runModeNow(st){
+  const mo = modeLook(st);
+  return mo.cls === "prog" ? "programming" : (mo.cls === "show" ? "show" : null);
+}
+function runModeView(st, want){
+  const s = st || {}, sch = s.schedule || {};
+  const now = runModeNow(st);
+  const live = sch.state === "SHOW" || sch.state === "PAUSED";
+  let text = MODE_WHAT[want], locked = false;
+  if(want === "programming" && live){
+    locked = true;
+    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Run here in Programming.";
+  } else if(now && now !== want){
+    text += " Now running in " + (now === "show" ? "Show" : "Programming") + ": press Stop, then Run, to switch.";
+  } else if(now === want){
+    text += " Running now.";
+  }
+  return {now, text, locked};
+}
+function renderRunMode(){
+  if(RUN_MODE === null) RUN_MODE = runModeNow(ST) || "show";
+  const v = runModeView(ST, RUN_MODE);
+  document.querySelectorAll("#run-mode [data-mode]").forEach(b => {
+    const on = b.dataset.mode === RUN_MODE;
+    b.classList.toggle("on", on);
+    b.classList.toggle("now", b.dataset.mode === v.now);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const el = $("run-mode-what");
+  if(el.dataset.html !== v.text){ el.dataset.html = v.text; el.innerHTML = v.text; }
+  el.classList.toggle("locked", v.locked);
+}
+document.querySelectorAll("#run-mode [data-mode]").forEach(b => b.addEventListener("click", () => { RUN_MODE = b.dataset.mode; renderRunMode(); }));
 $("b-run").addEventListener("click", async () => {
   const f = $("run-file").value;
   if(!f){ $("run-msg").textContent = "No show file in the show folder."; return; }
-  if(!(await confirmBox("Press Run?", "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "start"))) return;
-  try{ const j = await post("/api/start", {timeline:f}); $("run-msg").textContent = j.banner || "Running."; }
+  const prog = RUN_MODE === "programming";
+  const v = runModeView(ST, RUN_MODE || "show");
+  if(v.locked){ $("run-msg").textContent = "Programming is locked while a scheduled show is live. Press Hold to pause it now; Programming opens once the show has ended."; return; }
+  if(!(await confirmBox(prog ? "Run in Programming?" : "Press Run?", prog ? "Run " + f + " as a rehearsal. Play from, jump and loop work, and the scheduler starts no show." : "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "start"))) return;
+  try{ const j = await post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f}); $("run-msg").textContent = j.banner || "Running."; }
   catch(e){ $("run-msg").textContent = e.message; }
 });
 $("b-stoprun").addEventListener("click", async () => {
@@ -1679,7 +1870,7 @@ function laserStripLook(la, stale){
     cls: stale ? "" : x.armed ? "armed" : x.locked ? "locked" : "", label:x.name,
     word: stale ? "not known" : x.armed ? "armed" : x.locked ? "locked" : "off",
     title: stale ? "Not known" : x.armed ? x.name + " is ARMED. Click to disarm it now." :
-      x.locked ? x.name + " is locked out: unlock it on the Morning and Shutdown page first." : x.name + " is disarmed. Click to arm it (asks you to confirm)."})));
+      x.locked ? x.name + " is locked out: unlock it on the Startup page first." : x.name + " is disarmed. Click to arm it (asks you to confirm)."})));
   return {show:true, armed:!stale && armedIds.length > 0, state:state, title:title, chips:chips};
 }
 // Why this page will not even ask to arm `ls` (the laser list entries),
@@ -1690,7 +1881,7 @@ function lzArmRefusal(la, ls, stale){
   if(!ls.length) return "no laser was named";
   if(la && la.arm_here) return la.arm_here;
   const locked = ls.filter(x => x.locked).map(x => x.name);
-  if(locked.length) return locked.join(", ") + (locked.length === 1 ? " is" : " are") + " locked out; unlock on the Morning and Shutdown page first";
+  if(locked.length) return locked.join(", ") + (locked.length === 1 ? " is" : " are") + " locked out; unlock on the Startup page first";
   return "";
 }
 function lzSay(text){
@@ -2234,14 +2425,25 @@ function fireStop(why){
   post("/api/remote/purge-stop", moActor({})).catch(() => {});
 }
 // The checklists: a name is picked once, every tick is recorded for audit.
+// The morning list is called Startup on screen (Jeff, 2026-10-23); its id
+// and the settings file keep "morning".
+function listTitle(l){ return (l.id === "morning" && /^morning$/i.test(l.title || "")) ? "Startup" : (l.title || l.id); }
+$("mo-shut-go").addEventListener("click", () => {
+  const lists = (MO && MO.checklists && MO.checklists.checklists) || [];
+  const sh = lists.find(l => l.id === "shutdown");
+  if(!sh){ $("mo-shut-st").textContent = "No Shutdown checklist is set up (ltcplay_morning.json, checklists)."; return; }
+  MO_TAB = "shutdown"; MO_KEY = ""; renderChecklists(MO.checklists);
+});
 function renderChecklists(c){
   const lists = c.checklists || [];
+  const sh = lists.find(l => l.id === "shutdown");
+  $("mo-shut-st").textContent = "At the end of the night: the Shutdown checklist" + (sh ? " (" + sh.done + " of " + sh.total + " done)" : "") + ", then lock the machines.";
   if(!MO_TAB && lists.length) MO_TAB = lists[0].id;
   const tabs = $("mo-tabs");
   const tkey = JSON.stringify([lists.map(l => l.id + ":" + l.done + "/" + l.total), c.names, MO_TAB, c.show_date]);
   if(tkey !== MO_KEY){
     MO_KEY = tkey;
-    tabs.innerHTML = lists.map(l => `<button class="${l.id === MO_TAB ? "on" : "ghost"}" data-tab="${esc(l.id)}">${esc(l.title)} ${l.done}/${l.total}</button>`).join("") +
+    tabs.innerHTML = lists.map(l => `<button class="${l.id === MO_TAB ? "on" : "ghost"}" data-tab="${esc(l.id)}">${esc(listTitle(l))} ${l.done}/${l.total}</button>`).join("") +
       `<select id="mo-name"><option value="">Who is ticking?</option>${(c.names || []).map(n => `<option${n === MO_NAME ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>` +
       `<span class="dim" style="font-size:11px">Show date ${esc(c.show_date || "")}</span>`;
     tabs.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { MO_TAB = b.dataset.tab; MO_KEY = ""; renderChecklists(MO.checklists); }));

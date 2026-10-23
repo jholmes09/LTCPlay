@@ -659,7 +659,7 @@ def group_look(group_status, fault="", slot=0):
 # it is just less specific; nothing here hides a real reason, it only
 # abbreviates the ones already catalogued in CONTRACT.md.
 _SHORT_REASON = {
-    "cycle the arm": "CYCLE ARM",
+    "cycle the arm": "ARM AGAIN",   # plain words (Jeff, 2026-10-23)
     "dirty edge": "DIRTY EDGE",
     "re-arm dwell": "WAIT",
     "chatter": "CHATTER",

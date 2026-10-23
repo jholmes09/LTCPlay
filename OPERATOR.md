@@ -101,13 +101,14 @@ switched off and every laser is disarmed. Next to LASERS it says how many
 are armed. Each laser has a chip (ARMED in amber, off, or locked) and so
 does each laser group: click an armed one to disarm it at once; click one
 that is off to arm it, with the same confirm and the same rules as the
-Morning and Shutdown page. When an arm is refused the strip says why in
+Startup page. When an arm is refused the strip says why in
 plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
-**Morning and Shutdown (Fire & Ice).** The rack screen has a Morning and
-Shutdown page (the button in the header). On it: the laser arm (every
+**Startup (Fire & Ice; it was called Morning and Shutdown).** The rack
+screen has a Startup page (the button in the header). Shutdown is its own
+labelled section on it: one press opens the Shutdown checklist. On it: the laser arm (every
 laser starts DISARMED each time the engine starts; Arm on a laser, or Arm
 on a laser group, then Arm in the confirm box; Disarm all lasers is one
 click and always works, signed in or not; BEYOND's laser output comes on
@@ -124,7 +125,7 @@ let go and it stops; nothing fires while a show is live or an Abort
 stands); lock out of any one machine or laser (the L button on it; a lock
 stays across restarts until unlocked here, with a confirm; a locked unit
 cannot be armed or fired from anywhere and show cues skip it; a banner on
-every screen says what is locked); and the Morning and Shutdown
+every screen says what is locked); and the Startup and Shutdown
 checklists (pick your name, tick each step; every tick is recorded for
 audit and the day's record is a PDF you can download, or Export all).
 While the page is open the Stream Deck's Start key is FIRE and reads
@@ -318,10 +319,26 @@ still, because the show's own clock is stopped. Between shows the next
 show's countdown is shown instead. If the show's length is not known,
 nothing is shown rather than a guess.
 
-Tonight shows the night's shows on one screen; tap a show to read all of its
-note. Programming has the scrubbing controls and, on the show machine only,
-Run and Stop, the Stream Deck operator and the show network. Back to the
-show returns to the show screen.
+Schedule (it was called Tonight) shows the night's shows on one screen; tap
+a show to see its notes (why it was moved, skipped or added, or "No notes";
+tap again to close). Programming has the scrubbing controls and, on the
+show machine only, the Show file card (the Show and Programming switch, the
+show file, Run and Stop), the Stream Deck operator and the show network.
+Show: the scheduler starts each show at its time and scrubbing is off.
+Programming: a rehearsal; play from, jump and loop work and the scheduler
+starts no show. To switch, press Stop, pick the other side of the switch,
+then Run. While a scheduled show is live, Programming is locked and the
+switch says so. Back to the show returns to the show screen.
+
+The time zone on the schedule card is a list of plain names (for example
+Mountain Time (Denver)); the show's local time is shown under it. The
+engine checks the zone again when the schedule is saved.
+
+Each flame group's Arm button shows its state in colour and words: ARMED
+(green), OFF (bronze), ARM AGAIN (amber, flashing: re-arm needed after an
+Abort, a fault or a lost link; press Disarm, then hold Arm), WAIT (the
+re-arm wait). Holding it still arms; Disarm is the button beside it. The
+Stream Deck says ARM AGAIN on the key too.
 
 If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
 The show carries on by itself and a Hold stays held. Start now, Resume, Reset

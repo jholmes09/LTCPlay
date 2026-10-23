@@ -1645,17 +1645,17 @@ class Remote:
         s = getattr(self.control, "session", None)
         p = getattr(s, "player", None)
         if s is None or not s.running or p is None:
-            return False, ("Nothing is playing. Start the show on the show "
-                           "machine with Rehearse, or in Rehearsal mode, to "
-                           "scrub it.")
+            return False, ("Nothing is playing. To scrub, on the show "
+                           "machine choose Programming on the Show file "
+                           "card and press Run.")
         cond = getattr(svc, "conductor", None)
         rehearsal = (getattr(s, "no_output", False)
                      or getattr(p, "on_lost", "") == "hold"
                      or getattr(cond, "mode", None) == "rehearsal")
         if not rehearsal:
             return False, ("This show was started in Show mode. Scrubbing "
-                           "only works in a programming session: start it "
-                           "with Rehearse, or in Rehearsal mode.")
+                           "only works in Programming: press Stop, choose "
+                           "Programming on the Show file card, then Run.")
         return True, ""
 
     def transport(self, name, body, who, screen):
@@ -1818,8 +1818,8 @@ class Remote:
                         f"read ({type(e).__name__}), so nothing arms from "
                         f"it. Nothing was armed.")
             if arranging:
-                return (f"{device} is in Arrange mode on the Morning and "
-                        f"Shutdown page: nothing arms from it until Save "
+                return (f"{device} is in Arrange mode on the Startup "
+                        f"page: nothing arms from it until Save "
                         f"layout or Cancel there (a page that has closed "
                         f"lets go by itself within 2 s).")
             try:
@@ -1828,7 +1828,7 @@ class Remote:
                 locked = False      # flamesafe still holds a locked group
             if locked:
                 return (f"Every machine in {gname} is locked out on the "
-                        f"Morning and Shutdown page, so flamesafe will not "
+                        f"Startup page, so flamesafe will not "
                         f"arm it. Unlock one there first.")
         return ""
 
@@ -2170,7 +2170,7 @@ class Remote:
     def morning_get(self, name, query, ctx):
         m = self.morning
         if m is None:
-            return 404, {"error": "The Morning and Shutdown page is not "
+            return 404, {"error": "The Startup page is not "
                                   "set up in this engine (it needs the Fire "
                                   "& Ice scheduler)."}
         if name == "morning":
@@ -2204,7 +2204,7 @@ class Remote:
     def morning_post(self, name, body, ctx):
         m = self.morning
         if m is None:
-            return 404, {"error": "The Morning and Shutdown page is not "
+            return 404, {"error": "The Startup page is not "
                                   "set up in this engine."}
         who, screen, _surface = self._actor(ctx, body)
         device = ctx.device
