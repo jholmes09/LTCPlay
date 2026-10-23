@@ -1613,6 +1613,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                                      flame_status=fstatus,
                                      flame_disarm=flame_disarm)
     if accounts:
+        # The show engine (`ltc serve`): its disarm ids start above the
+        # last engine's, whatever the PC clock did (remote.py).
+        httpd.remote.reserve_disarm_ids()
         # Named users and the audit log (users.py, audit.py, auditsend.py;
         # Jeff, 2026-10-20), for `ltc serve` (the show engine). A failure
         # here leaves them off and says so; the show is never held back.

@@ -1757,8 +1757,18 @@ async function loadShowFiles(){
     const j = await getJSON("/api/timelines", 3000);
     const ok = (j.timelines || []).filter(t => !t.error).map(t => t.file);
     fill($("run-file"), ok, true);
+    // The engine's selection (the picker's, or the show last Run): shown
+    // here until someone picks another (2026-10-23; the Art-Net receiver
+    // check judges this show).
+    const sel = ST && ST.selected_show;
+    if(sel && ok.includes(sel) && !RUN_PICKED) $("run-file").value = sel;
   }catch(e){}
 }
+let RUN_PICKED = false;
+$("run-file").addEventListener("change", () => {
+  RUN_PICKED = true;
+  post("/api/remote/show-select", {file: $("run-file").value}).catch(e => { $("run-msg").textContent = e.message; });
+});
 // Show or Programming (Jeff, 2026-10-23: "unclear how to switch"): which
 // mode Run starts. The engine's existing modes, unchanged: Show is a Run
 // as before (the scheduler starts each show; scrubbing off); Programming

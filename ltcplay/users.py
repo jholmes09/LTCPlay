@@ -139,6 +139,7 @@ REMOTE_ROUTES = {
     "checklist-tick": "checklist", "checklist-note": "checklist",
     "morning-open": None, "checklist-verify": None,
     "checklist-tally-retry": None, "open-folder": None, "screen": None,
+    "show-select": None,
     "audit-verify": None, "my-password": None,
     # These depend on the body: see classify().
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
