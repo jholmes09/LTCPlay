@@ -585,6 +585,10 @@ def feedback_refusal(dest, settings):
 
 # --------------------------------------------------------------- the mode --
 
+class _CutWhileStarting(Exception):
+    """A cut() landed while begin() was turning the mode on."""
+
+
 class LiveFlame:
     """The mode: on/off, the listener socket and its thread, the rules.
 
@@ -628,6 +632,8 @@ class LiveFlame:
         self._thread_factory = threading.Thread   # the selftest's to swap
         self._session = None          # the flame link's program session
         self._cut_reason = ""         # why cut() stopped it, for end()
+        self._cut_epoch = 0           # +1 on every cut(), lock-free
+        self._starting = False        # a begin() is under way
         self._reset()
         self.last_end = None          # {"reason", "who", "at"}
         self.ends = 0
@@ -687,94 +693,113 @@ class LiveFlame:
     def refusal(self):
         """Why the mode may not start now, in a sentence, or "". Every
         check the entry makes except binding the port."""
+        return self._check()[0]
+
+    def _check(self):
+        """(why, settings, map): every entry check, reading the engine's
+        state, flamesafe's config and the show folder. Never under the
+        mode's lock (second review of PR #96, N1): a slow disk here must
+        never hold up a cut() at an Abort or a Hold."""
         try:
             s = self._settings_get()
         except SettingsError as e:
-            return str(e)
+            return str(e), None, None
         except Exception as e:
-            return f"its settings could not be read ({type(e).__name__})."
+            return (f"its settings could not be read ({type(e).__name__}).",
+                    None, None)
         try:
             why = self._blockers() or ""
         except Exception as e:
             why = f"the engine's state could not be read ({type(e).__name__})."
         if why:
-            return why
+            return why, s, None
         link = self._link()
         if link is None or not hasattr(link, "program_begin"):
             return ("no flame link is connected in this engine, so nothing "
-                    "could reach flamesafe.")
+                    "could reach flamesafe."), s, None
         try:
             armed = self._armed()
         except Exception:
             armed = None
         if armed is None:
             return ("flamesafe has not reported in the last second, so its "
-                    "armed groups are not known.")
+                    "armed groups are not known."), s, None
         if s.one_group and len(armed) > 1:
             return (f"{len(armed)} flame groups are armed "
                     f"({', '.join(armed)}). {NAME} allows one at a time: "
-                    f"disarm the others first.")
+                    f"disarm the others first."), s, None
         try:
             why = feedback_refusal(self._fs_dest(), s)
         except Exception as e:
             why = f"flamesafe's destination could not be read ({e})."
         if why:
-            return why
+            return why, s, None
         try:
-            self._map_get()
+            fmap = self._map_get()
         except FlameMapError as e:
-            return str(e)
+            return str(e), s, None
         except Exception as e:
             return (f"the flame controller's channels could not be read "
-                    f"({type(e).__name__}: {e}).")
-        return ""
+                    f"({type(e).__name__}: {e})."), s, None
+        return "", s, fmap
+
+    def _refused(self, who, screen, why, result="refused"):
+        self._note(who, screen, "refused",
+                   f"{who or 'Someone'} asked to turn {NAME} on on the "
+                   f"{screen}; refused: {why}", fault=result != "refused")
+        self._audit(who, screen, "live flame on", result, why)
+        return False, f"{NAME} was not turned on: {why}"
 
     def begin(self, who, screen):
         """(ok, sentence). Turns the mode on after every check; the socket
-        is bound only now, on 127.0.0.1 only."""
+        is bound only now, on 127.0.0.1 only. Every slow step (the checks,
+        the show folder, the bind, the journal) is done outside the mode's
+        lock, which is taken only to flip the state (second review of PR
+        #96, N1)."""
         with self._lock:
             if self.on:
                 return False, f"{NAME} is already on (since {self.who})."
-            why = self.refusal()
-            if why:
-                self._note(who, screen, "refused",
-                           f"{who or 'Someone'} asked to turn {NAME} on on "
-                           f"the {screen}; refused: {why}")
-                self._audit(who, screen, "live flame on", "refused", why)
-                return False, f"{NAME} was not turned on: {why}"
-            sock = None
-            s = None
-            try:
-                s = self._settings_get()
-                fmap = self._map_get()
-                check_listen_ip(s.listen_ip)
-                sock = self._sock_factory()
-                if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                    sock.setsockopt(socket.SOL_SOCKET,
-                                    socket.SO_EXCLUSIVEADDRUSE, 1)
-                sock.bind((s.listen_ip, s.port))
-                sock.settimeout(WATCH_S)
-            except Exception as e:
-                if sock is not None:
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-                if isinstance(e, OSError):
-                    why = (f"{getattr(s, 'listen_ip', LISTEN_IP)}:"
-                           f"{getattr(s, 'port', '?')} could not be opened "
-                           f"({e}). Another program on this PC is using it.")
-                else:
-                    why = f"it could not be set up ({type(e).__name__}: {e})."
-                self._note(who, screen, "refused",
-                           f"{who or 'Someone'} asked to turn {NAME} on on "
-                           f"the {screen}; refused: {why}")
-                self._audit(who, screen, "live flame on", "refused", why)
-                return False, f"{NAME} was not turned on: {why}"
-            # From here on it is all or nothing (review of PR #96, P3-6): any
-            # failure leaves the mode OFF, the socket closed and the link's
-            # program slot shut.
-            link = self._link()
+            if self._starting:
+                return False, f"{NAME} is already being turned on."
+            self._starting = True
+            epoch = self._cut_epoch
+        try:
+            return self._begin(who, screen, epoch)
+        finally:
+            with self._lock:
+                self._starting = False
+
+    def _begin(self, who, screen, epoch):
+        why, s, fmap = self._check()
+        if why:
+            return self._refused(who, screen, why)
+        sock = None
+        try:
+            check_listen_ip(s.listen_ip)
+            sock = self._sock_factory()
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                sock.setsockopt(socket.SOL_SOCKET,
+                                socket.SO_EXCLUSIVEADDRUSE, 1)
+            sock.bind((s.listen_ip, s.port))
+            sock.settimeout(WATCH_S)
+        except Exception as e:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            if isinstance(e, OSError):
+                why = (f"{s.listen_ip}:{s.port} could not be opened ({e}). "
+                       f"Another program on this PC is using it.")
+            else:
+                why = f"it could not be set up ({type(e).__name__}: {e})."
+            return self._refused(who, screen, why)
+        # From here on it is all or nothing (review of PR #96, P3-6): any
+        # failure leaves the mode OFF, the socket closed and the link's
+        # program slot shut.
+        link = self._link()
+        why = ""
+        with self._lock:
             try:
                 self._reset()
                 self.settings, self.map = s, fmap
@@ -782,10 +807,15 @@ class LiveFlame:
                 self.began = self.last_data = self._beat = self._clock()
                 self.began_wall = self._wall()
                 self.who, self.screen = who or "unsigned", screen
-                self._sock = sock
-                self._gen += 1
                 self._cut_reason = ""
                 self._session = link.program_begin()
+                # A cut() since the checks (an Abort, a Hold, Start now) wins:
+                # checked AFTER the link's slot opened, so a cut that lands
+                # now either is seen here or shuts the slot itself.
+                if self._cut_epoch != epoch:
+                    raise _CutWhileStarting()
+                self._sock = sock
+                self._gen += 1
                 self.on = True
                 gen = self._gen
                 if self._threaded:
@@ -810,16 +840,18 @@ class LiveFlame:
                 except Exception:
                     pass
                 self._reset()
-                why = f"it could not be started ({type(e).__name__}: {e})."
-                self._note(who, screen, "refused",
-                           f"{who or 'Someone'} asked to turn {NAME} on on "
-                           f"the {screen}; refused: {why}", fault=True)
-                self._audit(who, screen, "live flame on", "error", why)
-                return False, f"{NAME} was not turned on: {why}"
+                why = ("an Abort, Hold or Start now was pressed while it was "
+                       "starting." if isinstance(e, _CutWhileStarting) else
+                       f"it could not be started ({type(e).__name__}: {e}).")
+                cut = isinstance(e, _CutWhileStarting)
+        if why:
+            return self._refused(who, screen, why,
+                                 "refused" if cut else "error")
         rows = "; ".join(f"universe {u} channels 1 to {c} = flamesafe slots "
                          f"{f} to {f + c - 1}" for u, f, c in fmap.rows)
-        text = (f"{self.who} turned {NAME} ON on the {screen}. Listening "
-                f"for xLights E1.31 on {s.listen_ip}:{s.port} only: {rows}. "
+        text = (f"{self.who} turned {NAME} ON on the {screen} (session "
+                f"{self._session}). Listening for xLights E1.31 on "
+                f"{s.listen_ip}:{s.port} only: {rows}. "
                 f"flamesafe fires only an armed group; "
                 f"{'one group at a time; ' if s.one_group else ''}off after "
                 f"{s.idle_off_s} s with no xLights data or {s.max_session_s} "
@@ -834,20 +866,22 @@ class LiveFlame:
         """The cheap half of ending, for an Abort or a Hold press (review of
         PR #96, P3-3): the flame link's program slot is shut now (zeros
         from the next frame, nothing more taken), with no journal line, no
-        disk and no wait. end() does the rest, off the press's thread.
-        True when it was on. Never raises."""
-        with self._lock:
-            if not self.on:
-                return False
-            if not self._cut_reason:
-                self._cut_reason = " ".join(str(reason or "").split())[:200]
-            link = self._link()
+        disk and no wait. It never takes the mode's lock (second review,
+        N1), so a begin() reading a slow disk cannot hold it up; a begin()
+        under way sees the cut and does not turn the mode on. end() does
+        the rest, off the press's thread. True when it was on. Never
+        raises."""
+        self._cut_epoch += 1
+        was_on = self.on
+        if was_on and not self._cut_reason:
+            self._cut_reason = " ".join(str(reason or "").split())[:200]
+        link = self._link()
         if link is not None:
             try:
                 link.program_end()
             except Exception:
                 pass
-        return True
+        return was_on
 
     def end(self, reason, who="", screen="", system=True):
         """Off, for any reason: the listener closed, the link's frame
@@ -858,6 +892,8 @@ class LiveFlame:
                 return False
             self.on = False
             self._gen += 1
+            my_gen = self._gen
+            session = self._session
             sock, self._sock = self._sock, None
             link = self._link()
             was = self.who
@@ -885,7 +921,7 @@ class LiveFlame:
         self.last_end = {"reason": why, "who": by,
                          "at": int(self._wall() * 1000), "started_by": was}
         self._note(by, screen or "engine", "off",
-                   f"{NAME} is OFF: {why}. Every flame value is zero and "
+                   f"{NAME} is OFF (session {session}): {why}. Every flame value is zero and "
                    f"{'a disarm of every flame group went out' if ok else 'the disarm of every flame group did NOT go out: disarm from the Stream Deck'}.",
                    fault=not ok)
         self._audit(by, screen or "engine", "live flame off", "accepted",
@@ -893,8 +929,12 @@ class LiveFlame:
         # Never joined here (review of PR #96, P3-3): the listener sees the
         # new generation within WATCH_S and stops by itself, and the flame
         # link takes nothing from it any more (its session is over).
-        self._thread = None
-        self._watchdog = None
+        # Only this session's handles (second review of PR #96, N2): an Off
+        # then a quick On must not have this end() wipe the new session's.
+        with self._lock:
+            if self._gen == my_gen:
+                self._thread = None
+                self._watchdog = None
         return True
 
     # -- the listener thread ----------------------------------------------

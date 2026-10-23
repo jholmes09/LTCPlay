@@ -53970,13 +53970,12 @@ def test_live_flame_review_round_one():
 
         def flaky():
             calls[0] += 1
-            if calls[0] > 1:
-                raise ValueError("gone")
-            return real_map()
+            raise ValueError("gone")
         R.lf._map_get = flaky
         ok, text = R.lf.begin("Jeff", "Rack screen")
-        check(not ok and not R.lf.on and not R.link.program_on,
-              f"a map that fails the second read: off: {text}")
+        check(not ok and not R.lf.on and not R.link.program_on and
+              calls[0] == 1 and "gone" in text,
+              f"a map that cannot be read: off, read once: {text}")
         R.lf._map_get = real_map
         # The watchdog.
         R.on()
@@ -54273,6 +54272,105 @@ def test_live_flame_end_to_end_armed_group_real_flamesafe():
         import shutil
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+
+def test_live_flame_review_round_two():
+    section("live flame programming, second review of PR #96: an Abort or "
+            "Hold press's cut never waits on a begin() reading a slow disk, "
+            "and a begin() under way at the cut does not turn it on; the "
+            "status answers meanwhile; an old end() never wipes the next "
+            "session's listener")
+    R = _LfRig()
+    try:
+        real_map = R.lf._map_get
+        gate = threading.Event()
+
+        def slow_map():
+            gate.wait(5)
+            return real_map()
+        R.lf._map_get = slow_map
+        got = []
+        t = threading.Thread(target=lambda: got.append(
+            R.lf.begin("Jeff", "Rack screen")))
+        t.start()
+        time.sleep(0.1)
+        t0 = time.monotonic()
+        view = R.lf.view()
+        took_view = time.monotonic() - t0
+        t0 = time.monotonic()
+        R.lf.cut("Jeff pressed hold on the Rack screen")
+        took_cut = time.monotonic() - t0
+        check(took_cut < 0.2 and took_view < 0.2 and view["on"] is False,
+              f"while begin() reads a slow show folder, a cut takes "
+              f"{took_cut:.3f} s and the status {took_view:.3f} s")
+        ok, text = R.lf.begin("Andy", "Rack screen")
+        check(not ok and "being turned on" in text,
+              f"a second begin meanwhile: refused: {text}")
+        gate.set()
+        t.join(5)
+        check(got and not got[0][0] and "pressed while it was starting" in
+              got[0][1] and not R.lf.on and not R.link.program_on and
+              ("close",) == R.socks[-1],
+              f"the begin under way at the cut does not turn it on: {got}")
+        R.lf._map_get = real_map
+        # The cut never takes the mode's lock at all: with another thread
+        # holding it, the cut still returns at once.
+        held = threading.Event()
+        free = threading.Event()
+
+        def holder():
+            with R.lf._lock:
+                held.set()
+                free.wait(5)
+        h = threading.Thread(target=holder)
+        h.start()
+        held.wait(5)
+        t0 = time.monotonic()
+        R.lf.cut("Jeff pressed abort on the Rack screen")
+        took = time.monotonic() - t0
+        free.set()
+        h.join(5)
+        check(took < 0.2, f"a cut with the mode's lock held elsewhere: "
+                          f"{took:.3f} s")
+        # An old end() finishing after a new On keeps the new handles.
+
+        class Alive:
+            def __init__(self, **kw):
+                pass
+
+            def start(self):
+                pass
+
+            def is_alive(self):
+                return True
+        R.lf._threaded = True
+        R.lf._thread_factory = Alive
+        R.on()
+        first = R.lf._session
+        slow = threading.Event()
+        R.lf._disarm = lambda reason: slow.wait(5) or True
+        e = threading.Thread(target=lambda: R.lf.end("Off pressed"))
+        e.start()
+        time.sleep(0.1)
+        R.lf._disarm = lambda reason: True
+        R.on()
+        handle = R.lf._thread
+        slow.set()
+        e.join(5)
+        check(R.lf.on and R.lf._thread is handle and handle is not None and
+              R.lf.watchdog_check(R.t[0]) == "" and R.lf.on,
+              "an Off's end() that finishes after a new On leaves the new "
+              "session's listener and watchdog alone")
+        offs = [t_ for o, t_, _f in R.lines if o == "off"]
+        check(offs and f"(session {first})" in offs[-1],
+              f"its journal line names its own session: {offs[-1:]}")
+        R.lf.end("test over")
+        R.lf._threaded = False
+        R.lf._thread_factory = threading.Thread
+    finally:
+        R.close()
     print("  ok")
 
 
@@ -54829,6 +54927,7 @@ if __name__ == "__main__":
     test_live_flame_end_to_end_real_flamesafe()
     test_live_flame_review_round_one()
     test_live_flame_end_to_end_armed_group_real_flamesafe()
+    test_live_flame_review_round_two()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
