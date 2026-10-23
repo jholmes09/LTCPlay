@@ -39,10 +39,10 @@ asking before an unattended start.
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-         "timecode")
+         "timecode", "lasers")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
-            "link": "fault", "timecode": "fault"}
+            "link": "fault", "timecode": "fault", "lasers": "fault"}
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any

@@ -28,9 +28,13 @@ Start now, Hold, Resume and Abort are the scheduler's own operator events
 (schedule_service.Service.operator_press: the same schedule.step every
 press goes through, journaled with who and which screen, the Abort latch
 saved before the conductor is asked). Reset is Service.reset_conductor.
-"Disarm every flame group" is the show's own flames_disarm_all (the flame
-link's disarm_all, the same call the conductor's Abort makes), journaled
-with the surface and which screen.
+"Disarm all flame groups" is a PLAIN disarm (Jeff, 2026-10-23): every
+group's disarm handed to the Stream Deck process, exactly as a group's own
+Disarm is, so no fresh arm cycle is forced; only when that cannot be
+trusted to land (the deck not reading this engine, or flamesafe not
+confirming every group off within PLAIN_CONFIRM_S) does the show's own
+flames_disarm_all go (the flame link's disarm_all, the Abort's, which
+forces one). Journaled with the surface and which screen.
 
 ARMING (Jeff, 2026-10-03, its own PR): the page never arms anything. A
 hold to arm (arm-hold, repeated every 100 ms while the
@@ -124,6 +128,12 @@ CONFIRM_ROUTES = frozenset(("start-now", "abort"))
 # flamesafe/CONTRACT.md, "Arming from a screen".
 ARM_ROUTES = ("arm-hold", "arm-release", "group-disarm")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
+# Disarm all flame groups is a plain disarm through the Stream Deck (Jeff,
+# 2026-10-23): it goes that way only while the deck read this engine within
+# PLAIN_DECK_FRESH_S, and flamesafe must report every group off within
+# PLAIN_CONFIRM_S, else the flame link's disarm_all (the Abort's) goes.
+PLAIN_DECK_FRESH_S = 0.5
+PLAIN_CONFIRM_S = 1.0
 BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
@@ -942,6 +952,9 @@ class Remote:
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
+        # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
+        # the Lasers lamp never says lit while BEYOND is not running.
+        self.beyond_watch = None
         self.morning = None          # morning.Morning, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -955,6 +968,10 @@ class Remote:
         self._hold_ids = 0
         self._disarms = collections.deque(maxlen=64)
         self._disarm_ids = 0
+        # Disarm all flame groups (plain): which press is the latest, and
+        # how its confirmation is scheduled (a test runs it by hand).
+        self._plain_gen = 0
+        self._later = self._timer
         self._deck_seen = None       # clock() of the deck's last read
         # The deck's worst USB frame write of its last minute, in ms, as
         # its last deck-input read carried it (streamdeck.UsbMeter), or
@@ -1953,7 +1970,7 @@ class Remote:
             # "sent" to nobody.
             why = ("Disarming one group from a screen goes through the "
                    "Stream Deck's screen link, which is off with screen "
-                   "arming. Use Disarm every flame group, or the group's key "
+                   "arming. Use Disarm all flame groups, or the group's key "
                    "on the Stream Deck. Nothing was changed.")
             self._journal(who, device, "disarm", "refused",
                           f"{who or 'Someone'}'s Disarm {gname} on the "
@@ -2302,31 +2319,159 @@ class Remote:
         return (200 if ok else 409), out
 
     def disarm_all(self, who, screen):
-        """Every flame group disarmed by the flame link's disarm_all: the
-        same call the conductor's Abort makes. Never waits on a show, an
-        operator or a fresh page."""
+        """Disarm all flame groups: a PLAIN disarm (Jeff, 2026-10-23), the
+        same thing a group's own Disarm is, for every group at once: handed
+        to the Stream Deck process, which owns the arm link, as an instant
+        tap of each group's key (wanted false). flamesafe disarms on the
+        next arm frame, and a group is armed again by an ordinary hold:
+        no Abort latch and no forced arm cycle (only the show's Abort and
+        a fault force one, CONTRACT.md "Disarm every group").
+
+        Safety first, always: never gated by a role, a sign-in, Arrange,
+        screen arming or a lockout, never waits on a fresh page or a show,
+        and never touches the lasers. When the plain disarm cannot be
+        trusted to land, the flame link's disarm_all goes instead (the
+        Abort's disarm, which forces a fresh arm cycle) and the page says
+        so:
+          - the Stream Deck program has not read this engine within
+            PLAIN_DECK_FRESH_S, or flamesafe names no groups: at once;
+          - flamesafe has not reported every group that was armed or
+            wanted at the press as off and not wanted within
+            PLAIN_CONFIRM_S: then, journaled as a fault, with an alert."""
+        label = who or "An unnamed operator"
+        names, watch = self._plain_disarm_groups()
+        seen = self._deck_seen
+        deck_fresh = (seen is not None and
+                      self.clock() - seen <= PLAIN_DECK_FRESH_S)
+        if not names or not deck_fresh:
+            why = ("flamesafe names no flame groups to this engine"
+                   if not names else
+                   "the Stream Deck program is not reading this engine, "
+                   "and it is what carries a plain disarm")
+            return self._disarm_all_forced(who, screen, why)
+        self._drop_holds_all()
+        with self._arm_lock:
+            for i, gname in enumerate(names):
+                self._disarm_ids += 1
+                self._disarms.append({"id": self._disarm_ids, "group": i,
+                                      "name": gname, "who": who,
+                                      "device": screen, "all": True})
+            self._plain_gen += 1
+            gen = self._plain_gen
+        text = (f"{label} pressed Disarm all flame groups on the {screen}. "
+                f"Every group was sent a plain disarm through the Stream "
+                f"Deck, which owns the arm link; flamesafe's lamps show each "
+                f"one off. A plain disarm needs no reset: hold a group's Arm "
+                f"to arm it again.")
+        self._journal(who, screen, "disarm all", "sent", text)
+        try:
+            self._later(PLAIN_CONFIRM_S,
+                        lambda: self.confirm_plain_disarm(gen, who, screen,
+                                                          watch))
+        except Exception:                        # noqa: BLE001
+            # No way to check it later: the forced disarm now, never a
+            # disarm left unconfirmed.
+            self.confirm_plain_disarm(gen, who, screen, None)
+        return 200, {"ok": True, "plain": True, "text": text}
+
+    def _plain_disarm_groups(self):
+        """(group names flamesafe reports, the indices to confirm off):
+        every group armed or wanted in a fresh status, or every group
+        when the status is stale. Never raises."""
+        fs = self.flame_status
+        try:
+            v = fs.view() if fs is not None else None
+        except Exception:                        # noqa: BLE001
+            v = None
+        if not v:
+            return [], set()
+        groups = v.get("groups") or []
+        names = [str(g.get("name", "")) for g in groups]
+        if v.get("stale"):
+            return names, set(range(len(names)))
+        return names, {i for i, g in enumerate(groups)
+                       if g.get("armed") != "disarmed" or g.get("wanted")}
+
+    def _drop_holds_all(self):
+        with self._arm_lock:
+            self._holds.clear()
+
+    @staticmethod
+    def _timer(seconds, fn):
+        t = threading.Timer(seconds, fn)
+        t.daemon = True
+        t.start()
+
+    def confirm_plain_disarm(self, gen, who, screen, watch):
+        """PLAIN_CONFIRM_S after a plain Disarm all flame groups: every
+        group in `watch` must read off and not wanted in a fresh flamesafe
+        status, else the flame link's disarm_all goes now (the forced
+        disarm, a fresh arm cycle), journaled as a fault with an alert.
+        `watch` None: forced at once. A newer Disarm all supersedes this
+        one. Never raises."""
+        with self._arm_lock:
+            if gen != self._plain_gen:
+                return None
+        left = None
+        if watch is not None:
+            try:
+                v = self.flame_status.view()
+                if not v.get("stale"):
+                    gs = v.get("groups") or []
+                    left = [gs[i]["name"] for i in sorted(watch)
+                            if i < len(gs) and
+                            (gs[i].get("armed") != "disarmed" or
+                             gs[i].get("wanted"))]
+            except Exception:                    # noqa: BLE001
+                left = None
+        if left == []:
+            self._journal(who or "system", screen or "engine", "disarm all",
+                          "confirmed", "Disarm all flame groups: flamesafe "
+                          "reports every group off.")
+            return True
+        why = (f"flamesafe still reported {', '.join(left)} on "
+               f"{PLAIN_CONFIRM_S:g} s after the plain disarm" if left else
+               f"flamesafe did not confirm every group off within "
+               f"{PLAIN_CONFIRM_S:g} s of the plain disarm")
+        code, out = self._disarm_all_forced(who, screen, why)
+        try:
+            self.alerts.raise_(
+                "flames", f"Disarm all flame groups was not confirmed: {why}. "
+                f"Every group was disarmed the way Abort does it, so each "
+                f"needs Arm again (let go, then hold) before it can fire. "
+                f"{out.get('text') or out.get('error') or ''}")
+        except Exception:                        # noqa: BLE001
+            pass
+        return False
+
+    def _disarm_all_forced(self, who, screen, why):
+        """The flame link's disarm_all (the Abort's disarm, which forces a
+        fresh arm cycle), for when a plain disarm cannot be trusted."""
         fn = self._disarm_fn()
         label = who or "An unnamed operator"
         if fn is None:
-            text = (f"{label} pressed Disarm every flame group on the "
-                    f"{screen}, but no flame link is connected in this "
-                    f"engine, so nothing could be sent. Disarm from the "
-                    f"Stream Deck.")
+            text = (f"{label} pressed Disarm all flame groups on the "
+                    f"{screen}, but {why}, and no flame link is connected "
+                    f"in this engine, so nothing could be sent. Disarm from "
+                    f"the Stream Deck.")
             self._journal(who, screen, "disarm all", "fault", text,
                           fault=True)
             return 409, {"ok": False, "error": text}
         try:
-            r = fn(f"{label} pressed Disarm every flame group on the "
-                   f"{screen}")
+            r = fn(f"{label} pressed Disarm all flame groups on the "
+                   f"{screen} ({why}: disarmed the Abort way)")
             ok = bool(getattr(r, "ok", False))
             said = str(getattr(r, "sentence", "") or "")
         except Exception as e:
             ok, said = False, f"{type(e).__name__}: {e}"
-        text = (f"{label} pressed Disarm every flame group on the {screen}. "
-                f"{said}").strip()
+        text = (f"{label} pressed Disarm all flame groups on the {screen}. "
+                f"A plain disarm could not go ({why}), so every group was "
+                f"disarmed the way Abort does it: each needs Arm again (let "
+                f"go, then hold) before it can fire. {said}").strip()
         self._journal(who, screen, "disarm all", "done" if ok else "fault",
                       text, fault=not ok)
-        return (200 if ok else 409), {"ok": ok, "text": text}
+        return (200 if ok else 409), {"ok": ok, "plain": False,
+                                      "text": text}
 
     # -- status ------------------------------------------------------------
     DECK_QUIET_S = 2.0
@@ -2436,27 +2581,58 @@ class Remote:
             res = artnodes.folder_faults(
                 self._show_folder(), adapters(),
                 getattr(self, "_artnet_probe", artnodes.bind_probe),
-                getattr(self, "_artnet_windows", None))
+                getattr(self, "_artnet_windows", None),
+                active=self._active_show_files())
         except Exception as e:                   # noqa: BLE001
             res = ([("warn", f"The Art-Net receivers could not be checked: "
                              f"{type(e).__name__}: {e}")], 0)
         self._artnet = (res, now)
         return res
 
+    def _active_show_files(self):
+        """The show file names in use, for the Art-Net receiver check
+        (2026-10-23): the one the engine has loaded (running or last Run),
+        else the only show file in the folder, else none: then every file
+        there is only a quiet note until one is Run (Run's own show load
+        still checks its receivers, session.py). Never raises."""
+        try:
+            s = getattr(self.control, "session", None)
+            p = getattr(s, "timeline_path", None) or getattr(s, "path",
+                                                             None)
+            if p:
+                return {os.path.basename(str(p))}
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            tls = list(self.control.timelines())
+        except Exception:                        # noqa: BLE001
+            return None
+        if len(tls) == 1:
+            return {str(tls[0].get("file"))}
+        return set()
+
     def _artnet_check(self):
         """The Morning page's Art-Net receivers card."""
         faults, seen = self.artnet_faults()
+        notes = [t for lv, t in faults if lv == "note"]
+        faults = [(lv, t) for lv, t in faults if lv != "note"]
         levels = {lv for lv, _t in faults}
         level = "bad" if "bad" in levels else \
             "warn" if levels else "ok"
         if faults:
             text = " ".join(t for _lv, t in faults)
+        elif notes:
+            text = ("No Art-Net timecode receiver fault in the show in "
+                    "use (or no show is loaded yet: Run checks its own).")
         elif seen:
             text = ("Every Art-Net timecode receiver in the show files has "
                     "its own address, and each one is on this PC.")
         else:
             text = ("No show file in the folder names Art-Net timecode "
                     "receivers (clock.artnet.nodes).")
+        if notes:
+            text += " Other show files, not checked as faults: " + \
+                " ".join(notes)
         return {"id": "artnet", "title": "Art-Net timecode receivers",
                 "level": level, "text": text}
 
@@ -2474,6 +2650,44 @@ class Remote:
             self._artnet_said = text
         except Exception:                        # noqa: BLE001
             pass
+
+    def beyond_link(self):
+        """beyondwatch.BeyondWatch.state() while a BEYOND watch runs in
+        this engine (Fire & Ice with BEYOND configured), else None.
+        Display only; never raises."""
+        w = self.beyond_watch
+        if w is None:
+            return None
+        try:
+            return w.state()
+        except Exception as e:                   # noqa: BLE001
+            return {"link": "unknown", "age_s": None,
+                    "why": f"the BEYOND watch failed: {type(e).__name__}"}
+
+    def beyond_link_changed(self, link, why):
+        """The BEYOND watch's word changed (its own thread): journaled,
+        and a lost link is an alert on every screen, once per loss: only
+        when BEYOND was seen running and then was not (it exited or
+        crashed). Not running from the start is the lamp and a journal
+        line, no alert: BEYOND is often started after this engine."""
+        if link == "lost" and getattr(self, "_beyond_said", None) != "up":
+            self._journal("system", "engine", "lasers", "link lost",
+                          f"BEYOND: {why}. The Lasers lamp reads LINK LOST "
+                          f"until it is running.", fault=True)
+        elif link == "lost":
+            text = (f"BEYOND was running and is not any more ({why}). "
+                    f"Nothing sent to it lands, so the Lasers lamp reads LINK LOST until it is "
+                    f"back. Start BEYOND and its show again; the lasers are "
+                    f"not lit by this program meanwhile.")
+            try:
+                self.alerts.raise_("lasers", text)
+            except Exception:                    # noqa: BLE001
+                self._journal("system", "engine", "lasers", "link lost",
+                              text, fault=True)
+        elif link == "up" and getattr(self, "_beyond_said", None) == "lost":
+            self._journal("system", "engine", "lasers", "link back",
+                          "BEYOND is running again on this PC.")
+        self._beyond_said = link
 
     def laser_fault(self):
         """beyondtc.NOT_SET_UP while the conductor's laser blanking has no
@@ -2933,11 +3147,27 @@ class Remote:
                     add("Laser arm", "warn", f"{n} of {total} armed")
             except Exception:                    # noqa: BLE001
                 add("Laser arm", "bad", "not known")
+        link = self.beyond_link()
         for name, key in (("Video", "video"), ("Lasers", "lasers")):
             v = applied.get(key)
             if key == "lasers" and laser_fault:
                 # Never "ok" or "lit" while nothing can blank them.
                 add(name, "bad", "blanking not set up")
+            elif key == "lasers" and link is not None and \
+                    link["link"] == "lost":
+                # BEYOND is not running (2026-10-23: the lamp said lit for
+                # hours after it exited): whatever was sent last, nothing
+                # lands.
+                add(name, "bad", "LINK LOST")
+            elif key == "lasers" and cond is not None and \
+                    str(v) == "lit":
+                # BEYOND never answers: "lit" is only what was sent. With
+                # its process seen running it is sent and unconfirmed;
+                # with no word on the link at all it is a warning.
+                if link is not None and link["link"] == "up":
+                    add(name, "ok", "lit, unconfirmed")
+                else:
+                    add(name, "warn", "lit? link unknown")
             elif cond is None or v is None:
                 add(name, "off", "none")
             elif str(v) == "unknown":
@@ -3032,6 +3262,7 @@ class Remote:
         # is a fault (the render and the layout do not fit, and the like).
         out["flames"]["cues_fault"] = self.cues_fault()
         out["laser_fault"] = self.laser_fault()
+        out["beyond_link"] = self.beyond_link()
         out["show_folder"] = {"served": self._show_folder(),
                               "problem": self.show_folder_problem()}
         out["disarm_connected"] = self._disarm_fn() is not None

@@ -429,7 +429,7 @@ and 1024x768 on an iPad: the show state, the timecode, the current show with
 stands still while held, and is not shown when the length is not known),
 the next show with its countdown, Start now and Abort (each asks first),
 Hold, Resume, Reset, each flame group as flamesafe last reported it with its
-Hold to arm and Disarm, Disarm every flame group, the big Abort bar, and a
+Hold to arm and Disarm, Disarm all flame groups, the big Abort bar, and a
 status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
 same scheduler and conductor paths. Tonight's list is its own compact screen
 (Tonight), and everything else is on the Programming screen: the transport

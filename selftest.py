@@ -42252,7 +42252,7 @@ def test_screen_arming_is_off_unless_switched_on():
                         "wanted": True, "reason": ""}]}).encode())
         st, _h, out = R.ask("POST", "/api/remote/group-disarm",
                             {"group": "front row"})
-        check(st == 409 and "Disarm every flame group" in
+        check(st == 409 and "Disarm all flame groups" in
               out.get("error", "") and not R.remote.deck_input()["disarms"],
               f"a per-group Disarm from a screen says it cannot go and "
               f"where to disarm instead: {st} {out}")
@@ -52597,9 +52597,10 @@ def test_rack_lasers_strip_page():
           "the LASERS strip is on the show screen, after the flame block")
     check(flames.count("<div") == flames.count("</div>"),
           "the LASERS strip is not inside the flame block")
-    check('<button id="b-disarm" class="disarm">Disarm every flame group'
-          '</button>' in flames and "laser" not in flames.lower(),
-          "the flame block keeps its own Disarm every flame group and "
+    check('<button id="b-disarm" class="disarm"' in flames and
+          '>Disarm all flame groups<small>' in flames and
+          "laser" not in flames.lower(),
+          "the flame block keeps its own Disarm all flame groups and "
           "nothing of the lasers")
     check('<button class="lzdis" id="lz-disarm">Disarm all lasers</button>'
           in page[lz:end] and 'class="disarm"' not in page[lz:end],
@@ -52763,6 +52764,537 @@ process.exit(0);
           f"{r.stderr[-600:]!r}")
     print("  ok")
 
+
+
+def test_disarm_all_is_a_plain_disarm_and_never_gated():
+    section("Disarm all flame groups (Jeff, 2026-10-23): a plain disarm of "
+            "every group through the Stream Deck, no Abort latch and no "
+            "forced cycle; signed out, screen arming off, a stale page; the "
+            "lasers untouched; the Abort's disarm only when the deck is not "
+            "reading or flamesafe does not confirm every group off in 1 s")
+    import json as _j
+    import types
+    from ltcplay import remote as RM
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        rem = R.remote
+        names = ["front row", "cat-walk", "wave flamer"]
+        rem.flame_status = RM.FlameStatus("127.0.0.1", 0, "k" * 20, names,
+                                          clock=lambda: R.mono[0])
+
+        def fs(armed):
+            rem.flame_status.note(_j.dumps({
+                "t": "status", "k": "k" * 20, "fault": "",
+                "groups": [{"name": n, "armed": a,
+                            "wanted": a == "armed", "reason": ""}
+                           for n, a in zip(names, armed)]}).encode())
+        later = []
+        rem._later = lambda s, fn: later.append((s, fn))
+        lz = []
+        rem.morning = types.SimpleNamespace(
+            on_abort=lambda *a: None,
+            lasers_disarm_now=lambda *a: lz.append(a))
+        RM.save_settings(R.work, screen_arming=False)
+        fs(["armed", "disarmed", "armed"])
+        rem.deck_input()                       # the deck reads: fresh
+        n = R.rig.count("flames_disarm_all")
+        st, _h, out = R.ask("POST", "/api/remote/disarm-all", {"seen": 1})
+        ev = [e for e in rem.deck_input()["disarms"] if e.get("all")]
+        check(st == 200 and out.get("plain") is True and
+              [e["group"] for e in ev] == [0, 1, 2] and
+              R.rig.count("flames_disarm_all") == n,
+              f"a plain disarm: every group handed to the deck, no "
+              f"flame-link disarm_all, with screen arming off and a stale "
+              f"page: {st} {out} {ev}")
+        check("needs no reset" in out.get("text", "") and
+              "Abort" not in out.get("text", ""),
+              f"the answer says it is the plain one: {out.get('text')}")
+        _no_dashes(out.get("text", ""), "the plain disarm answer")
+        check(lz == [], f"the lasers are not touched: {lz}")
+        check(len(later) == 1 and later[0][0] == RM.PLAIN_CONFIRM_S,
+              f"its confirmation is checked {RM.PLAIN_CONFIRM_S} s later: "
+              f"{later}")
+        # flamesafe reports every group off: confirmed, nothing forced.
+        fs(["disarmed", "disarmed", "disarmed"])
+        check(later[0][1]() is True and
+              R.rig.count("flames_disarm_all") == n and
+              not [a for a in rem.alerts.view() if a["kind"] == "flames"],
+              "confirmed off: no Abort-style disarm, no alert")
+        # A role matrix that forbids everything, nobody signed in: the
+        # same (users.py: a disarm is a safety press).
+        del later[:]
+        fs(["armed", "armed", "armed"])
+        rem.deck_input()
+        st, _h, out = R.ask("POST", "/api/remote/disarm-all", {})
+        check(st == 200 and out.get("plain") is True and len(later) == 1,
+              f"again, signed out: {st} {out}")
+        # Still armed at the check: the Abort's disarm goes, said.
+        R.mono[0] += 0.2
+        fs(["armed", "disarmed", "disarmed"])
+        check(later[0][1]() is False and
+              R.rig.count("flames_disarm_all") == n + 1,
+              "not confirmed off in time: the flame link's disarm_all goes")
+        al = [a for a in rem.alerts.view() if a["kind"] == "flames"]
+        check(len(al) == 1 and "front row" in al[0]["text"] and
+              "Arm again" in al[0]["text"],
+              f"and an alert names the group and what it means: {al}")
+        rows = [r for r in R.svc.journal if r.get("action") == "disarm all"]
+        check(rows and "plain disarm could not go" in rows[-1]["text"],
+              f"journaled as the forced disarm: {rows[-1:]}")
+        # A newer press supersedes an older confirmation.
+        del later[:]
+        rem.deck_input()
+        R.ask("POST", "/api/remote/disarm-all", {})
+        R.ask("POST", "/api/remote/disarm-all", {})
+        m = R.rig.count("flames_disarm_all")
+        fs(["armed", "armed", "armed"])
+        check(later[0][1]() is None and
+              R.rig.count("flames_disarm_all") == m,
+              "an older press's check is superseded by the newer one")
+        # The status stale at the check: not confirmed, so forced.
+        R.mono[0] += 5
+        check(later[1][1]() is False and
+              R.rig.count("flames_disarm_all") == m + 1,
+              "a stale flamesafe status confirms nothing: forced")
+        # The deck not reading this engine: the Abort's disarm at once.
+        del later[:]
+        fs(["armed", "armed", "armed"])
+        R.mono[0] += RM.PLAIN_DECK_FRESH_S + 0.1
+        k = R.rig.count("flames_disarm_all")
+        st, _h, out = R.ask("POST", "/api/remote/disarm-all", {})
+        check(st == 200 and out.get("plain") is False and
+              R.rig.count("flames_disarm_all") == k + 1 and not later and
+              "Stream Deck program is not reading" in out.get("text", ""),
+              f"no deck: the flame link's disarm_all at once, said: {st} "
+              f"{out}")
+        check(lz == [], f"the lasers are still not touched: {lz}")
+        # The page says which one a press does.
+        page = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web", "remote.html"),
+            encoding="utf-8").read()
+        check(">Disarm all flame groups<small>plain disarm: arm again with "
+              "a hold</small>" in page and
+              'abort-sub").textContent = idle ? "Nothing to abort right '
+              'now" : "Stops the show. Flames then need Arm again"' in page,
+              "the page labels the plain disarm and the Abort apart")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_disarm_all_end_to_end_rearms_without_a_cycle():
+    section("Disarm all flame groups end to end: the real flamesafe, deck "
+            "controller and engine; armed groups go off with screen "
+            "arming switched off, flamesafe takes no disarm_all, and a "
+            "plain hold arms again; after an Abort the same hold cannot")
+    import json as _j
+    import socket as _so
+    import subprocess
+    import tempfile
+    import threading
+    import types
+    import urllib.request
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    S = _sched()
+    if S is None:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    names = ["front row", "cat-walk"]
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    listen, armp, statusp, mirror = (free_port(), free_port(), free_port(),
+                                     free_port())
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "status_mirror_port": mirror, "arm_port": armp,
+                 "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": n, "safety": 401 + i, "fire": [411 + 10 * i]}
+                   for i, n in enumerate(names)]}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    stop = threading.Event()
+    threading.Thread(target=lambda: [None for _l in proc.stdout],
+                     daemon=True).start()
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    link = fl.FlameLink(cfg, show_state=lambda: (show_tc(), True)).start()
+    folder = tempfile.mkdtemp()
+    httpd = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          remote_folder=work, flamesafe_config=cfg_path)
+    rem = httpd.remote
+    # The Abort's disarm is the flame link's disarm_all (no scheduler here).
+    rem._flame_disarm = lambda reason: types.SimpleNamespace(
+        ok=link.disarm_all(reason), sentence="sent")
+    RM.save_settings(work, screen_arming=True)
+    threading.Thread(target=httpd.serve_forever,
+                     kwargs={"poll_interval": 0.05}, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    _noproxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def http(path, body=None):
+        req = urllib.request.Request(
+            base + path, data=None if body is None else
+            _j.dumps(body).encode(), method="GET" if body is None else "POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with _noproxy.open(req, timeout=5) as r:
+                return r.status, _j.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, _j.loads(e.read() or b"{}")
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 2)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    screen = sd.ScreenKeys(base).start()
+    events = []
+    ctl = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                        show_running_provider=lambda: None,
+                        journal=lambda t_, **kw: events.append(t_),
+                        screen=screen)
+    lock = threading.Lock()
+
+    def deck_loop():
+        while not stop.is_set():
+            with lock:
+                ctl.screen_pass()
+                ctl.tick()
+                status.poll()
+                arm.send(names)
+            time.sleep(0.05)
+    threading.Thread(target=deck_loop, daemon=True).start()
+
+    def group(i):
+        st = status.last
+        return st["groups"][i] if st else {}
+
+    def armed(i):
+        return group(i).get("armed") == "armed"
+
+    def hold(gname, seconds=1.6):
+        """Like the page: a heartbeat every 100 ms with a fresh served_at,
+        up to three tries for a slow runner's lapsed hold. True once the
+        group reads armed."""
+        i = names.index(gname)
+        for _try in range(3):
+            hid, end = None, time.perf_counter() + seconds
+            while time.perf_counter() < end and not armed(i):
+                seen = http("/api/remote/status")[1]["served_at"]
+                body = {"group": gname, "seen": seen}
+                if hid is not None:
+                    body["hold_id"] = hid
+                code, out = http("/api/remote/arm-hold", body)
+                if code != 200:
+                    break
+                hid = out["hold_id"]
+                time.sleep(0.1)
+            end = time.perf_counter() + 2
+            while time.perf_counter() < end and not armed(i):
+                time.sleep(0.02)
+            if armed(i):
+                return True
+            time.sleep(sd.REARM_REFRACTORY_S + 0.2)
+        return False
+
+    def wait(pred, s=3.0):
+        end = time.perf_counter() + s
+        while time.perf_counter() < end:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return pred()
+    try:
+        end = time.perf_counter() + 10
+        while time.perf_counter() < end:
+            s = http("/api/remote/status")[1]
+            if s["flames"].get("connected") and not s["flames"]["stale"] \
+                    and status.last:
+                break
+            time.sleep(0.1)
+        time.sleep(1.2)                    # the deck's lows prove a cycle
+        check(hold("front row") and hold("cat-walk"),
+              f"setup: both groups armed from the screen: {status.last}; "
+              f"{events[-4:]}")
+        accepted0 = (status.last.get("disarm_all") or {}).get("accepted", 0)
+        # Screen arming off, and Disarm all flame groups.
+        RM.save_settings(work, screen_arming=False)
+        code, out = http("/api/remote/disarm-all", {})
+        check(code == 200 and out.get("plain") is True,
+              f"a plain Disarm all with screen arming off: {code} {out}")
+        check(wait(lambda: not armed(0) and not armed(1)),
+              f"both groups off on flamesafe's own wire: {status.last}")
+        wait(lambda: not any(g.get("wanted")
+                             for g in status.last["groups"]), 1.0)
+        check(all(g["armed"] == "disarmed" and not g["wanted"] and
+                  "Abort" not in g.get("reason", "")
+                  for g in status.last["groups"]) and
+              (status.last.get("disarm_all") or {}).get("accepted", 0) ==
+              accepted0,
+              f"flamesafe took no disarm_all, and no group reads the "
+              f"Abort's cycle: {status.last['groups']} "
+              f"{status.last.get('disarm_all')}")
+        time.sleep(RM.PLAIN_CONFIRM_S + 0.3)
+        rows = [r for r in rem.schedule.journal
+                if r.get("action") == "disarm all"] \
+            if getattr(rem.schedule, "journal", None) else []
+        check(not [a for a in rem.alerts.view() if a["kind"] == "flames"],
+              f"confirmed off: no alert {rem.alerts.view()} {rows[-2:]}")
+        # Re-armed by a plain hold: no fresh cycle, no Reset.
+        time.sleep(max(0.0, sd.REARM_REFRACTORY_S - RM.PLAIN_CONFIRM_S))
+        RM.save_settings(work, screen_arming=True)
+        check(hold("front row"),
+              f"after a plain disarm one hold arms again: {group(0)} "
+              f"{events[-4:]}")
+        # The contrast: the Abort's disarm (the flame link's disarm_all)
+        # leaves the deck still asking, and flamesafe holds the group
+        # until it is cycled; the same hold does not arm it.
+        http("/api/remote/abort", {"confirmed": True})
+        check(wait(lambda: not armed(0)),
+              f"Abort disarms it: {group(0)}")
+        check(wait(lambda: "Abort" in group(0).get("reason", "")),
+              f"and flamesafe reads the Abort's cycle: {group(0)}")
+        time.sleep(sd.REARM_REFRACTORY_S + 0.2)
+        seen = http("/api/remote/status")[1]["served_at"]
+        code, out = http("/api/remote/arm-hold",
+                         {"group": "front row", "seen": seen})
+        time.sleep(1.5)
+        check(not armed(0),
+              f"after an Abort a hold alone does not arm: {group(0)} "
+              f"{code} {out}")
+    finally:
+        stop.set()
+        screen.stop()
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        rs = getattr(httpd.remote, "flame_status", None)
+        if rs is not None:
+            rs.stop()
+        link.stop()
+        arm.close()
+        status.close()
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(folder, ignore_errors=True)
+    print("  ok")
+
+
+def test_lasers_lamp_follows_the_beyond_link():
+    section("BEYOND exited at 03:27 and the Lasers lamp said lit for hours "
+            "(2026-10-23): the watch says up, lost or unknown, a look older "
+            "than STALE_S says nothing, the lamp reads LINK LOST with BEYOND "
+            "gone and 'lit, unconfirmed' with it running, and a BEYOND that "
+            "was running and exits is an alert, once")
+    import tempfile
+    import types
+    from ltcplay import beyondwatch as BW, remote as RM
+    t = [100.0]
+    res = [True]
+    said = []
+    w = BW.BeyondWatch(lambda: res[0], clock=lambda: t[0],
+                       on_change=lambda l, why: said.append(l))
+    check(w.state()["link"] == "unknown", "never looked: unknown")
+    w.check_once()
+    check(w.state()["link"] == "up" and said == ["up"], "running: up")
+    t[0] += BW.STALE_S + 0.1
+    check(w.state()["link"] == "unknown",
+          "a look older than STALE_S says nothing: unknown")
+    res[0] = False
+    w.check_once()
+    check(w.state()["link"] == "lost" and said == ["up", "lost"],
+          f"not running: lost, said once: {said}")
+    w.check_once()
+    check(said == ["up", "lost"], "the same word is not said again")
+    res[0] = None
+    w.check_once()
+    check(w.state()["link"] == "unknown", "cannot tell: unknown")
+
+    def boom():
+        raise OSError("x")
+    w2 = BW.BeyondWatch(boom, clock=lambda: t[0])
+    check(w2.check_once() is None and w2.state()["link"] == "unknown",
+          "a probe that raises is unknown, never up")
+    # The Windows process list.
+    run = lambda out: (lambda *a, **k: types.SimpleNamespace(stdout=out))
+    check(BW.windows_probe(run('"System","4","Services","0","1 K"\n'
+                               '"BEYOND.exe","812","Console","1","9 K"\n'))
+          is True and
+          BW.windows_probe(run('"System","4","Services","0","1 K"\n')) is
+          False and BW.windows_probe(run("")) is None,
+          "BEYOND.exe in the list: True; a list without it: False; "
+          "nothing read: None")
+
+    def raises(*a, **k):
+        raise OSError("no tasklist")
+    check(BW.windows_probe(raises) is None, "tasklist missing: None")
+    check(BW.on_this_pc("127.0.0.2") and BW.on_this_pc("localhost") and
+          not BW.on_this_pc("10.0.0.9") and not BW.on_this_pc(None),
+          "only the loopback is this PC")
+    check(BW.probe_for("127.0.0.2", windows=True) is BW.windows_probe and
+          BW.probe_for("10.0.0.9", windows=True)() is None and
+          BW.probe_for("127.0.0.2", windows=False)() is None,
+          "the process is looked for only on Windows, BEYOND on loopback")
+    # The lamp, through a Remote with a conductor that last sent lit.
+    cond = types.SimpleNamespace(
+        snapshot=lambda: {"applied": {"lasers": "lit", "video": "playing"}},
+        devices=types.SimpleNamespace(beyond=types.SimpleNamespace(
+            fault="")))
+    sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+    r = RM.Remote(types.SimpleNamespace(session=None), sched,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+
+    def lamp():
+        got = [x for x in r.subsystems({}) if x["name"] == "Lasers"]
+        return (got[0]["state"], got[0]["word"]) if got else None
+    check(lamp() == ("warn", "lit? link unknown"),
+          f"no watch: lit is a warning, never plain ok: {lamp()}")
+    res[0] = True
+    r.beyond_watch = BW.BeyondWatch(lambda: res[0], clock=lambda: t[0],
+                                    on_change=r.beyond_link_changed)
+    r.beyond_watch.check_once()
+    check(lamp() == ("ok", "lit, unconfirmed"),
+          f"BEYOND running: sent lit, unconfirmed: {lamp()}")
+    res[0] = False                       # BEYOND exits (stubbed dead)
+    r.beyond_watch.check_once()
+    check(lamp() == ("bad", "LINK LOST"),
+          f"BEYOND gone: LINK LOST, whatever was sent: {lamp()}")
+    al = [a for a in r.alerts.view() if a["kind"] == "lasers"]
+    check(len(al) == 1 and al[0]["severity"] == "fault" and
+          "BEYOND was running and is not any more" in al[0]["text"],
+          f"and an alert says so: {al}")
+    _no_dashes(al[0]["text"] if al else "", "the BEYOND alert")
+    t[0] += 3600                         # hours later, still dead
+    r.beyond_watch.check_once()
+    check(lamp() == ("bad", "LINK LOST") and
+          len([a for a in r.alerts.view() if a["kind"] == "lasers"]) == 1,
+          f"hours later it still says LINK LOST, one alert: {lamp()}")
+    t[0] += BW.STALE_S + 1               # the watch stopped looking
+    check(lamp() == ("warn", "lit? link unknown"),
+          f"a watch that stopped looking: unknown, never lit: {lamp()}")
+    # Dead from the start: the lamp, and no alert.
+    r2 = RM.Remote(types.SimpleNamespace(session=None), sched,
+                   folder=tempfile.gettempdir(), clock=lambda: t[0])
+    r2.beyond_watch = BW.BeyondWatch(lambda: False, clock=lambda: t[0],
+                                     on_change=r2.beyond_link_changed)
+    r2.beyond_watch.check_once()
+    check([x["word"] for x in r2.subsystems({}) if x["name"] == "Lasers"]
+          == ["LINK LOST"] and
+          not [a for a in r2.alerts.view() if a["kind"] == "lasers"],
+          "BEYOND not started yet: LINK LOST on the lamp, no alert")
+    st = r2.status(RM.Ctx(True, "127.0.0.1"))
+    check((st.get("beyond_link") or {}).get("link") == "lost",
+          f"the page is told: {st.get('beyond_link')}")
+    print("  ok")
+
+
+def test_artnet_faults_only_for_the_show_in_use():
+    section("Art-Net receivers (Jeff, 2026-10-23): an old unused show file "
+            "in the folder (soak_show.json) is a quiet note, never a fault "
+            "or an alert; the show in use (loaded, or the only one) keeps "
+            "the check")
+    import json
+    import types
+    from ltcplay import artnodes as A
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        rm = R.remote
+        rm._artnet_adapters = lambda: set()
+        rm._artnet_windows = True
+        rm._artnet_probe = lambda a: False
+
+        def show(name, nodes):
+            with open(os.path.join(R.folder, name), "w") as fh:
+                json.dump({"fps": 30, "cues": [],
+                           "clock": {"source": "artnet_master",
+                                     "artnet": {"nodes": nodes}}}, fh)
+        show("soak_show.json", {"MadMapper": "127.0.0.1",
+                                "BEYOND": "10.99.0.1"})
+        show("show.json", {"MadMapper": "127.0.0.1"})
+        ff, seen = A.folder_faults(R.folder, set(), lambda a: False, True,
+                                   active={"show.json"})
+        check(seen == 2 and ff and all(lv == "note" for lv, _t in ff) and
+              "soak_show.json (not the show in use)" in ff[0][1],
+              f"an unused file gives notes only: {ff}")
+        check([lv for lv, _t in A.folder_faults(
+            R.folder, set(), lambda a: False, True)[0]] == ["bad"],
+              "with no active list every file counts, as before")
+        # Two show files, none loaded: notes, no alert.
+        R.mono[0] += 60
+        ck = {c["id"]: c for c in rm.engine_checks()}.get("artnet", {})
+        R.ask("GET", "/api/remote/status")
+        check(ck.get("level") == "ok" and "soak_show.json" in
+              ck.get("text", "") and
+              not [a for a in rm.alerts.view() if a["kind"] == "timecode"],
+              f"no show loaded, two files: a note on the card, no fault, "
+              f"no alert: {ck}")
+        # show.json loaded: soak_show.json stays a note.
+        R.httpd.control.session = types.SimpleNamespace(
+            timeline_path=os.path.join(R.folder, "show.json"), running=True)
+        R.mono[0] += 60
+        rm._checks = None
+        ck = {c["id"]: c for c in rm.engine_checks()}.get("artnet", {})
+        R.ask("GET", "/api/remote/status")
+        check(ck.get("level") == "ok" and
+              not [a for a in rm.alerts.view() if a["kind"] == "timecode"],
+              f"show.json in use: the old soak file is no fault: {ck}")
+        # The soak file is the one loaded: its fault is live again.
+        R.httpd.control.session = types.SimpleNamespace(
+            timeline_path=os.path.join(R.folder, "soak_show.json"),
+            running=True)
+        R.mono[0] += 60
+        rm._checks = None
+        ck = {c["id"]: c for c in rm.engine_checks()}.get("artnet", {})
+        R.ask("GET", "/api/remote/status")
+        tc = [a for a in rm.alerts.view() if a["kind"] == "timecode"]
+        check(ck.get("level") == "bad" and len(tc) == 1 and
+              "10.99.0.1" in tc[0]["text"],
+              f"the show in use keeps its fault and alert: {ck} {tc}")
+        R.httpd.control.session = None
+    finally:
+        R.close()
+    print("  ok")
 
 if __name__ == "__main__":
     t0 = time.time()
@@ -53305,6 +53837,10 @@ if __name__ == "__main__":
     test_soak_show_folder_served_is_said_and_followed()
     test_soak_pc_clock_and_time_service_in_the_morning_checks()
     test_artnet_receivers_one_address_each_and_on_this_pc()
+    test_disarm_all_is_a_plain_disarm_and_never_gated()
+    test_disarm_all_end_to_end_rearms_without_a_cycle()
+    test_lasers_lamp_follows_the_beyond_link()
+    test_artnet_faults_only_for_the_show_in_use()
     test_soak_bench_render_universes_and_fps()
     for arg in sys.argv[1:]:
         test_real_show(arg)

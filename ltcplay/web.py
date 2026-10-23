@@ -1820,6 +1820,27 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             # the show engine. Said once, here.
             print(f"The Morning and Shutdown page could not be built: "
                   f"{type(e).__name__}: {e}")
+    _bey_cfg = getattr(fire_ice, "beyond", None) if fire_ice else None
+    if _bey_cfg is not None:
+        # Is BEYOND still running (2026-10-23)? Its own thread, display
+        # only: the Lasers lamp and an alert when it is gone.
+        from . import beyondwatch as beyondwatch_mod
+        try:
+            _bw = beyondwatch_mod.BeyondWatch(
+                beyondwatch_mod.probe_for(getattr(_bey_cfg, "host", None)),
+                on_change=httpd.remote.beyond_link_changed).start()
+            httpd.remote.beyond_watch = _bw
+            _close_before_bw = httpd.server_close
+
+            def _close_bw():
+                try:
+                    _bw.stop()
+                finally:
+                    _close_before_bw()
+            httpd.server_close = _close_bw
+        except Exception as e:                       # noqa: BLE001
+            print(f"The BEYOND watch could not start: "
+                  f"{type(e).__name__}: {e}")
     if fire_ice is not None and fstatus is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         # flamesafe's status_mirror_port (PR #39): the remote page's copy of

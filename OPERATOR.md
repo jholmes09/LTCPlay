@@ -93,7 +93,7 @@ or an alert the booth speaker could not play, also pulses the floor pixels
 blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
 
 **LASERS on the show screen (Fire & Ice).** Under the flame lamps and
-the Disarm every flame group button is a violet LASERS strip, apart from
+the Disarm all flame groups button is a violet LASERS strip, apart from
 everything for the flames. Disarm all lasers (right) is one click, no
 confirm, signed in or not, from the rack screen and every iPad, whatever
 else the page is doing: the lasers are blanked, BEYOND's laser output is
@@ -102,7 +102,7 @@ are armed. Each laser has a chip (ARMED in amber, off, or locked) and so
 does each laser group: click an armed one to disarm it at once; click one
 that is off to arm it, with the same confirm and the same rules as the
 Morning and Shutdown page. When an arm is refused the strip says why in
-plain words. Disarm every flame group does not disarm, blank or switch
+plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
@@ -298,8 +298,20 @@ show and how long is left in it, the next show, Start now, Hold, Resume,
 Reset, the flame groups and the status strip along the top (deck,
 flamesafe, audio, video, lasers, pixels). The big red ABORT bar is always at
 the bottom, on every screen; it asks once. Start now asks once too. Hold,
-Resume and Reset are one press. Disarm every flame group is one press and
-never asks.
+Resume and Reset are one press. Disarm all flame groups is one press and
+never asks. It is a plain disarm: every group goes off, and a group is armed
+again by holding its Arm, with no Reset. Abort is different: it stops the
+show, and every group then needs Arm again (let go, then hold) after Reset.
+If the Stream Deck program is not running, or flamesafe does not report
+every group off within a second, Disarm all flame groups disarms them the
+way Abort does instead, and says so.
+
+The lasers chip in the status strip never says lit while BEYOND is not
+running: it reads LINK LOST (red), and if BEYOND was running and stops, an
+alert says so. BEYOND never answers back, so "lit, unconfirmed" means the
+lasers were sent lit and BEYOND is running; it cannot prove the beams are
+on. Off the show PC, or with BEYOND on another machine, it reads
+"lit? link unknown".
 
 "Left in this show" counts down the show that is playing. On Hold it stands
 still, because the show's own clock is stopped. Between shows the next
