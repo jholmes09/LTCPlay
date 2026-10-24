@@ -55,6 +55,7 @@ import json
 import os
 import threading
 
+from . import benchhooks
 from . import conductor as C
 from . import showlog as showlog_mod
 
@@ -62,7 +63,8 @@ CONFIG_FILE = "ltcplay_fire_ice.json"
 KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
                   "madmapper", "beyond", "flamesafe_config",
                   "flame_controller", "notes", "show_name", "venue",
-                  "beyond_blank", "beyond_black_hour", "beyond_timecode_ip"))
+                  "beyond_blank", "beyond_black_hour", "beyond_timecode_ip",
+                  "soak_only"))
 
 # "auto_start": the ONE setting that decides whether the scheduler, once it
 # performs, starts a scheduled show by itself (an open question for Jeff,
@@ -73,8 +75,9 @@ KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
 #                       pressed on the page.
 #   "off"               the scheduler never starts a show by itself: a show
 #                       that comes due is refused by the runner and reported
-#                       as a failed start (which disarms every flame group);
-#                       an operator's Start now still starts one.
+#                       as a failed start that sent nothing (no fade, no
+#                       MadMapper or BEYOND command, no disarm); an
+#                       operator's Start now still starts one.
 # Every start, automatic or Start now, is journaled either way.
 AUTO_START = ("when_run_pressed", "off")
 
@@ -105,11 +108,16 @@ class FireIceConfig:
                  auto_start="when_run_pressed", flamesafe_config=None,
                  flame_controller=None, show_name=None, venue=None,
                  beyond_blank=BEYOND_BLANK_DEFAULT, beyond_black_hour=23,
-                 beyond_timecode_ip=None):
+                 beyond_timecode_ip=None, soak_only=False):
         # How the lasers are kept dark (beyondtc.py): "osc" (beyond.py's
         # brightness 0/100, the default since Jeff 2026-10-07), "timecode"
         # (BEYOND's own timecode to the black zone) or "both".
         self.beyond_blank = beyond_blank
+        # Written by the soak test (packaging/windows/soak.py) only: any
+        # engine the soak did not start itself refuses these settings
+        # (soak_refusal), so a soak kit file left behind on a show PC can
+        # never run a show unattended (Pico, 2026-10-23).
+        self.soak_only = soak_only
         self.beyond_black_hour = beyond_black_hour
         self.beyond_timecode_ip = beyond_timecode_ip
         # The show's own name and where it plays, for the screens' title
@@ -145,6 +153,11 @@ class FireIceConfig:
             raise FireIceConfigError(
                 f"{where}: 'scheduler_performs' has to be true or false, "
                 f"not {performs!r}.")
+        soak_only = doc.get("soak_only", False)
+        if soak_only is not True and soak_only is not False:
+            raise FireIceConfigError(
+                f"{where}: 'soak_only' has to be true or false, not "
+                f"{soak_only!r}.")
         cue = doc.get("show_cue")
         if cue is not None and (not isinstance(cue, str) or not cue.strip()):
             raise FireIceConfigError(
@@ -207,7 +220,7 @@ class FireIceConfig:
                     f"{where}: 'beyond_timecode_ip' is BEYOND's address for "
                     f"its timecode, like 127.0.0.2, not {tip!r}.")
         titles.update(beyond_blank=blank, beyond_black_hour=hour,
-                      beyond_timecode_ip=tip)
+                      beyond_timecode_ip=tip, soak_only=soak_only)
         mm = bey = None
         if "madmapper" in doc:
             from . import madmapper as madmapper_mod
@@ -247,6 +260,21 @@ class FireIceConfig:
              else ", no MadMapper") + \
             (", BEYOND " + self.beyond.summary() if self.beyond
              else ", no BEYOND")
+
+
+def soak_refusal(cfg, env=None, ppid=None):
+    """None, or why `ltc serve` refuses these settings: they are the soak
+    kit's ("soak_only": true) and the soak did not start this engine
+    (benchhooks.soak_started, its own process id as this engine's parent).
+    `env` and `ppid` are the selftest's."""
+    if not getattr(cfg, "soak_only", False) or \
+            benchhooks.soak_started(env, ppid):
+        return None
+    return (f"{cfg.path or CONFIG_FILE} was written by the soak test "
+            f"(\"soak_only\": true), and only the soak's own engine may use "
+            f"it. LTC Player did not start, so nothing reaches the rig. Put "
+            f"the show's own ltcplay_fire_ice.json and schedule back beside "
+            f"each other, then start LTC Player again.")
 
 
 # ----------------------------------------------------------- ShowOutputs --
@@ -1584,7 +1612,10 @@ class ShowRunner:
                      clock (and the MadMapper show bank selected first).
                      Only once Run has been pressed: nothing reaches the
                      rig until then (CLAUDE.md), so without a running show
-                     the start is refused and reported as SHOW_FAILED.
+                     the start is refused and reported as SHOW_FAILED
+                     with nothing_sent: no fade or dark sequence follows
+                     it, and while Run is not pressed the scheduler sends
+                     the conductor nothing at all (Service.run_gate).
       SHOW_CONFIRMED the timecode is seen moving after the start.
       SHOW_ENDED     the cue it started has ended on its own (the audio's
                      end), while the scheduler is still in SHOW.
@@ -1636,7 +1667,7 @@ class ShowRunner:
                    "scheduler does not start a show by itself; press Start "
                    "now to start it")
             with self._lock:
-                self._cue = {"show": n, "failed": why}
+                self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
         if s is None or clk is None or self.conductor.latched:
             why = ("Run has not been pressed, so nothing may reach the rig"
@@ -1645,8 +1676,10 @@ class ShowRunner:
                    if clk is None else
                    "the show is aborted, and the show conductor stays "
                    "latched until someone presses Reset")
+            # Refused before anything went out: the failed start this is
+            # reported as sends nothing either (no fade, no MadMapper).
             with self._lock:
-                self._cue = {"show": n, "failed": why}
+                self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
         self._clear_look(s, n)
         if self.mm is not None:
@@ -1735,7 +1768,8 @@ class ShowRunner:
                 with self._lock:
                     if self._cue is cue:
                         self._cue = None
-                self.svc.report("SHOW_FAILED", cue["failed"], show=n)
+                self.svc.report("SHOW_FAILED", cue["failed"], show=n,
+                                nothing_sent=cue.get("nothing_sent") is True)
             return
         clk = cue["clock"]
         mine = clk.playing and clk.cues_played == cue["played"]
@@ -1754,11 +1788,16 @@ class ShowRunner:
                             else "SHOW_FAILED", how, show=n)
 
     def _close(self):
-        r = self.conductor.intermission("the scheduler", "")
-        if not r.ok:
-            self._note(f"Closing: {r.sentence}", fault=True,
-                       action="closing", outcome="failed")
-        if self.show._session() is not None:
+        if self.show._session() is None:
+            # Run is not pressed: the closing sends nothing to the rig.
+            self._note("Closing: Run has not been pressed, so nothing was "
+                       "sent to the rig.", action="closing",
+                       outcome="held back")
+        else:
+            r = self.conductor.intermission("the scheduler", "")
+            if not r.ok:
+                self._note(f"Closing: {r.sentence}", fault=True,
+                           action="closing", outcome="failed")
             self.show.pixels_fade_out(1.0)
         self._note("Closing: the MadMapper stop is not performed in this "
                    "build.", action="closing", outcome="not performed")
@@ -1997,6 +2036,9 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
         journal=journal, threaded=threaded, lasers_disarm=lasers_disarm,
         **conductor_kw)
     svc.conductor = conductor
+    # Nothing the scheduler decides by itself reaches this conductor until
+    # the operator presses Run (Service._hold_back_unattended).
+    svc.run_gate = lambda: show._session() is not None
     runner = None
     if cfg.scheduler_performs:
         runner = ShowRunner(svc, control, show, conductor, cfg,

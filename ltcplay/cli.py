@@ -1285,6 +1285,12 @@ def _cmd_serve(args):
         try:
             fire_ice = fire_ice_mod.FireIceConfig.load(
                 fire_ice_mod.config_path_for(schedule))
+            _soak_why = fire_ice_mod.soak_refusal(fire_ice)
+            if _soak_why:
+                # The soak kit's settings, left behind: refused where the
+                # rack screen can see it, before anything is built.
+                _say_refused(_soak_why)
+                return _err(_soak_why)
             fire_ice_mod.flame_link_config(fire_ice)
             # The alert pulse's floor pixels (ltcplay_remote.json) must not
             # be the flame controller's channels; a settings file that

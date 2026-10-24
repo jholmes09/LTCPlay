@@ -11058,6 +11058,88 @@ def build():
   'ltcplay/flameprog.py',
   '            if self._starting:\n                return False, f"{NAME} is already being turned on."',
   '            if False:\n                return False, f"{NAME} is already being turned on."'),
+
+ # No auto-Run (Jeff's standing rule; Pico, 2026-10-23: a leftover schedule
+ # with Run never pressed faded MadMapper every 15 minutes overnight).
+ ("the scheduler's own decisions reach the rig before Run",
+  "ltcplay/schedule_service.py",
+  'if not plan or ev.actor == "operator" or self._run_pressed():',
+  'if True:'),
+
+ ("a scheduler call that finds Run stopped is still sent",
+  "ltcplay/schedule_service.py",
+  'if call.who == "the scheduler" and call.method != "start_show" and \\\n'
+  '                not self._run_pressed():',
+  'if False:'),
+
+ ("a Run check that raises counts as Run pressed",
+  "ltcplay/schedule_service.py",
+  "        except Exception:      # noqa: BLE001  never the scheduler\n"
+  "            return False",
+  "        except Exception:      # noqa: BLE001  never the scheduler\n"
+  "            return True"),
+
+ ("anything truthy counts as Run pressed", "ltcplay/schedule_service.py",
+  "            return gate() is True", "            return bool(gate())"),
+
+ ("Fire & Ice never gates the scheduler on Run", "ltcplay/fire_ice.py",
+  "    svc.run_gate = lambda: show._session() is not None",
+  "    svc.run_gate = None"),
+
+ ("a start refused before anything went out fades the rig again",
+  "ltcplay/fire_ice.py",
+  'nothing_sent=cue.get("nothing_sent") is True)',
+  'nothing_sent=False)'),
+
+ ("a start refused for no Run is reported as one that sent something",
+  "ltcplay/fire_ice.py",
+  '            # Refused before anything went out: the failed start this is\n'
+  '            # reported as sends nothing either (no fade, no MadMapper).\n'
+  '            with self._lock:\n'
+  '                self._cue = {"show": n, "failed": why, "nothing_sent": True}',
+  '            with self._lock:\n'
+  '                self._cue = {"show": n, "failed": why}'),
+
+ ("the closing reaches the rig before Run", "ltcplay/fire_ice.py",
+  "        if self.show._session() is None:\n"
+  "            # Run is not pressed: the closing sends nothing to the rig.",
+  "        if False:"),
+
+ ("a failed start that sent nothing still fades", "ltcplay/schedule.py",
+  "    if ev.nothing_sent:\n        # Refused before anything went out",
+  "    if False:\n        # Refused before anything went out"),
+
+ ("the refused start alert says the rig went dark",
+  "ltcplay/schedule_service.py",
+  "alert = (self.REFUSED_START_ALERT", "alert = (self.FAILED_START_ALERT"),
+
+ ("a leftover soak schedule loads on a show PC",
+  "ltcplay/schedule_service.py",
+  "            not benchhooks.soak_started(env, ppid):\n"
+  "        raise sch.RuleError([SOAK_ONLY_REFUSED], where=path)",
+  "            False:\n"
+  "        raise sch.RuleError([SOAK_ONLY_REFUSED], where=path)"),
+
+ ("soak Fire & Ice settings are taken outside the soak",
+  "ltcplay/fire_ice.py",
+  '    if not getattr(cfg, "soak_only", False) or \\\n'
+  '            benchhooks.soak_started(env, ppid):',
+  '    if True:'),
+
+ ("the soak's schedule is not marked soak_only",
+  "packaging/windows/soak.py",
+  '                # on a show PC (Pico, 2026-10-23).\n'
+  '                "soak_only": True}',
+  '                # on a show PC (Pico, 2026-10-23).\n'
+  '                "soak_only": False}'),
+
+ ("the soak's Fire & Ice settings are not marked soak_only",
+  "packaging/windows/soak.py",
+  '"notes": "BENCH ONLY, written by the soak test",\n'
+  '              "soak_only": True}',
+  '"notes": "BENCH ONLY, written by the soak test",\n'
+  '              "soak_only": False}'),
+
 ]
 
 

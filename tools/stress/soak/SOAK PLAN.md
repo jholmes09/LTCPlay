@@ -23,6 +23,13 @@ in), a 7 min 24 s show every 15 minutes, every group armed by the
 exerciser through the screen's arm-hold, a Hold every 2 minutes, an Abort
 and Reset on every other show.
 
+The soak's own schedule and `ltcplay_fire_ice.json` (in each block's
+folder) carry `"soak_only": true`. Only the engine the soak starts itself
+takes them: LTC Player started any other way refuses that schedule (no
+show is scheduled, a fault line says why) and refuses to start on those
+Fire & Ice settings, so a soak file left behind can never start or fade
+anything on the show PC.
+
 Containment ON. `--contain on` is a command line switch for the timed
 soak only; in `--days` mode it is read from `unattended.json`, so the start
 script writes `"contain": true` there first. Containment puts MadMapper and
