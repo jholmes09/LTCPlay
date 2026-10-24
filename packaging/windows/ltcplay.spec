@@ -56,6 +56,9 @@ except Exception as e:  # an icon is not worth a failed build
     print(f"no icon: {e}")
     ICON = None
 
+# ltcplay/web is the pages, their fonts and logo (web/brand) and their
+# icons (web/icons, made by tools/make_web_icons.py). The engine's
+# --selfcheck fails a build that lost the pages or the icons.
 LTCPLAY_DATA = [
     (os.path.join(ROOT, "ltcplay", "web"), os.path.join("ltcplay", "web")),
     (os.path.join(ROOT, "ltcplay_brand.json"), "."),

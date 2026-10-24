@@ -39,6 +39,22 @@ USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "web", "index.html")
 REMOTE_PAGE = os.path.join(HERE, "web", "remote.html")
+# The pages' icons (tab, iPad home screen, installed web app), made from the
+# LTC Player app icon by tools/make_web_icons.py. A fixed list of files at
+# fixed addresses: nothing here reads a path the request names.
+ICONS_DIR = os.path.join(HERE, "web", "icons")
+ICONS = {
+    "/favicon.ico": ("favicon.ico", "image/x-icon"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+    "/apple-touch-icon-precomposed.png": ("apple-touch-icon.png",
+                                          "image/png"),
+    "/icon-192.png": ("icon-192.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
+    "/manifest.webmanifest": ("manifest.webmanifest",
+                              "application/manifest+json"),
+}
+# They change only with a new build, so a browser may keep them a month.
+ICON_CACHE = "public, max-age=2592000"
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
 WILDCARD = ("0.0.0.0", "::", "")
 
@@ -98,14 +114,14 @@ def normalize_bind(bind):
 
 def network_may_reach(route):
     """Fix round 1 of #39, F1: what a request from the network may reach
-    at all. The remote page and its own routes, the
-    logo, and nothing else: the operator page's API (Stop, Start, GO, the
+    at all. The remote page and its own routes, the logo, the pages'
+    icons, and nothing else: the operator page's API (Stop, Start, GO, the
     input, the show folder) and the scheduler's routes (choosing the
     operator, the Stream Deck's journal lines) are the machine's own, and
     a network session reaching them bypassed every rule /api/remote/*
     keeps (who pressed, no scrubbing during a show). Loopback is unchanged."""
     return (route in ("/", "/index.html", "/remote", "/api/brand")
-            or route.startswith("/brand/")
+            or route.startswith("/brand/") or route in ICONS
             or route == "/api/remote" or route.startswith("/api/remote/"))
 
 
@@ -943,9 +959,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        headers = dict(headers or {})
+        self.send_header("Cache-Control",
+                         headers.pop("Cache-Control", "no-store"))
         self.send_header("X-Frame-Options", "DENY")
-        for k, v in (headers or {}).items():
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         try:
@@ -1134,6 +1152,15 @@ class Handler(BaseHTTPRequestHandler):
                     with open(f, "rb") as fh:
                         return self._send(200, fh.read(), kind)
                 return self._send(404, {"error": "no such thing here"})
+            if route in ICONS:
+                name, kind = ICONS[route]
+                try:
+                    with open(os.path.join(ICONS_DIR, name), "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    return self._send(404, {"error": "no such thing here"})
+                return self._send(200, data, kind,
+                                  headers={"Cache-Control": ICON_CACHE})
             if route == "/api/brand":
                 return self._send(200, brand_doc(self.server))
             if route == "/api/state":
