@@ -11210,6 +11210,38 @@ def build():
   "  setWarn(\"an-note\", s.artnet_note || \"\");",
   "  setWarn(\"an-note\", \"\");"),
 
+ # Review of #102: the folded line is red and names every fault, a new
+ # fault opens it, and the deck alert's Disarm all stays outside it.
+ ("rack screen: a lockout is folded as a note",
+  "ltcplay/web/remote.html",
+  '  LOCAL_FAULT["lock-banner"] = !!lockText;',
+  '  LOCAL_FAULT["lock-banner"] = false;'),
+
+ ("rack screen: the cue fault and the deck not heard are folded as a note",
+  "ltcplay/web/remote.html",
+  '  LOCAL_FAULT["fl-warn"] = !!fmsg;',
+  '  LOCAL_FAULT["fl-warn"] = false;'),
+
+ ("rack screen: the folded line does not name the faults",
+  "ltcplay/web/remote.html",
+  '      (faults.length === 1 ? "Fault: " : faults.length + " faults: ") + faults.join(", "),',
+  '      "Fault",'),
+
+ ("rack screen: a new fault only bumps the count",
+  "ltcplay/web/remote.html",
+  "  const fresh = !!seen && keys.some(k => !seen.has(k));",
+  "  const fresh = false;"),
+
+ ("rack screen: a fresh fault never opens the fold",
+  "ltcplay/web/remote.html",
+  "  if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }",
+  ""),
+
+ ("rack screen: the deck alert's Disarm all is behind Show all",
+  "ltcplay/web/remote.html",
+  '  $("al-sum-dis").hidden = !f.fold || ALERTS_OPEN ||',
+  '  $("al-sum-dis").hidden = true ||'),
+
  # -- the render's end (2026-10-24): a tiny overrun is zero and no fault;
  # past the end the output is zero always.
  ("flame cues: no overrun tolerance, the end of every show a fault again",

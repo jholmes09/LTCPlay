@@ -134,8 +134,12 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   font-size:clamp(14px,1.8vh,18px);min-width:0}
 .alsum.fault{border-color:#E61E18;background:rgba(230,30,24,.16)}
 .alsum .altext{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.alsum .alkind{font-weight:700;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;opacity:.85}
+.alsum .alkind{flex:0 1 auto;min-width:0;max-width:50%;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.85}
 .alsum button{flex:0 0 auto;min-height:44px;padding:4px 14px;font-size:clamp(14px,1.8vh,18px)}
+.alsum button.disarm{min-height:44px;font-size:clamp(14px,1.8vh,18px);letter-spacing:.02em}
+.alsum.fresh{animation:alfresh 1s steps(1,end) infinite}
+@keyframes alfresh{50%{background:rgba(230,30,24,.45)}}
 .warnbox{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
   border-radius:6px;padding:4px 10px;font-size:clamp(13px,1.6vh,16px);
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
@@ -541,7 +545,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -1056,20 +1060,26 @@ function laserArmLine(la){
 }
 // The banners above the show screen, folded (Jeff, 2026-10-24: two FAULT
 // banners and a flame note squashed the flame groups). `items` are the
-// banners showing, each {fault, text}, in the order drawn. One banner is
-// shown whole; two or more fold into one line naming the worst (the first
-// fault, else the first) and how many there are, opened with Show all.
-// Folding hides nothing for good: every banner, and every Acknowledge, is
-// one tap away.
-function alertFold(items){
+// banners showing, each {key, fault, label, text}, in the order drawn. One
+// banner is shown whole; two or more fold into one line: red when any is a
+// fault, every fault named by its label, the worst one's sentence (the
+// first fault, else the first), opened with Show all. Folding hides
+// nothing for good: every banner, and every Acknowledge, is one tap away.
+// `seen` is the set of fault keys drawn before (null on the first draw):
+// a fault key not in it is `fresh` (review of #102: a new fault must not
+// just bump a count), and `keys` is what to remember for the next draw.
+function alertFold(items, seen){
   const list = (items || []).filter(i => i && i.text);
-  if(list.length < 2) return {fold:false, n:list.length};
+  const keys = list.filter(i => i.fault).map(i => String(i.key));
+  const fresh = !!seen && keys.some(k => !seen.has(k));
+  if(list.length < 2) return {fold:false, n:list.length, fresh:fresh, keys:keys};
   const worst = list.find(i => i.fault) || list[0];
-  const fault = list.some(i => i.fault);
-  return {fold:true, n:list.length, fault:fault,
-    kind: worst.fault ? "Fault" : "Note",
+  const faults = list.filter(i => i.fault).map(i => i.label || "Fault");
+  return {fold:true, n:list.length, fault:faults.length > 0,
+    kind: !faults.length ? "Note" :
+      (faults.length === 1 ? "Fault: " : faults.length + " faults: ") + faults.join(", "),
     text: worst.text,
-    more: list.length - 1};
+    more: list.length - 1, fresh:fresh, keys:keys};
 }
 // LOGIC END
 </script>
@@ -1271,6 +1281,8 @@ function render(){
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "Stops the show. Flames then need Arm again";
+  LOCAL_FAULT["st-trouble"] = !!s.laser_fault;
+  LOCAL_LABEL["st-trouble"] = s.laser_fault ? "Lasers" : "Engine";
   setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
 
   let fmsg = "";
@@ -1283,6 +1295,16 @@ function render(){
   // what this engine looked for, what it found, what to do.
   const dk = s.deck || {};
   if(dk.text && !dk.heard) fmsg += (fmsg ? " " : "") + dk.text;
+  // Every part of this banner is a fault (review of #102, P1-a): the
+  // flames' state not known, no flame link, the cue fault, the deck not
+  // heard. Its label names which.
+  const flWhy = [];
+  if(!fl.connected || fl.stale || fl.fault) flWhy.push("flamesafe");
+  if(!s.disarm_connected) flWhy.push("Flame link");
+  if(fl.cues_fault) flWhy.push("Flame cues");
+  if(dk.text && !dk.heard) flWhy.push("Stream Deck");
+  LOCAL_FAULT["fl-warn"] = !!fmsg;
+  LOCAL_LABEL["fl-warn"] = flWhy.join(", ") || "Flames";
   setWarn("fl-warn", fmsg);
   // The Art-Net receiver check with no show in use (2026-10-24): one note,
   // never a fault (remote.py artnet_note).
@@ -1306,6 +1328,8 @@ function render(){
   }
   if(mo && mo.config_error) lockText += (lockText ? " " : "") + "Startup page settings: " + mo.config_error;
   if(mo && mo.lock_error) lockText += (lockText ? " " : "") + "LOCKOUT NOT TRUSTED: " + mo.lock_error + ". Nothing fires from the Startup page.";
+  LOCAL_FAULT["lock-banner"] = !!lockText;
+  LOCAL_LABEL["lock-banner"] = "Lockout";
   setWarn("lock-banner", lockText);
   renderAlertFold();
   // Which LTC Player this is (its release and build id), so the version
@@ -1447,26 +1471,41 @@ function renderAlerts(alerts){
     armStop("Disarm all flame groups"); press("disarm-all");
   }));
 }
-let ALERTS_OPEN = false;
+let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
+// The page's own banners: whether each is a fault now, and its label.
+const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note"};
+const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
+  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
-  (s.alerts || []).forEach(a => items.push({fault: a.severity === "fault", text: a.text}));
+  (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
+    label: ALERT_LABEL[a.kind] || a.kind, text: a.text}));
   ["lock-banner", "st-trouble", "fl-warn", "an-note"].forEach(id => {
     const el = $(id);
-    if(!el.hidden) items.push({fault:false, text:el.textContent});
+    if(!el.hidden) items.push({key:id + ":" + (LOCAL_LABEL[id] || id), fault:!!LOCAL_FAULT[id], label:LOCAL_LABEL[id] || "", text:el.textContent});
   });
-  const f = alertFold(items);
+  const f = alertFold(items, FAULTS_SEEN);
+  FAULTS_SEEN = new Set(f.keys);
+  // A new fault opens the fold (review of #102). Never under a finger
+  // holding an arm: then the line flashes and opens once the hold ends.
+  if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }
+  if(PENDING_OPEN && !HOLD){ PENDING_OPEN = false; ALERTS_OPEN = true; }
   $("al-sum").hidden = !f.fold;
   $("al-body").hidden = f.fold && !ALERTS_OPEN;
+  // The deck alert's Disarm all stays outside the fold (review of #102).
+  $("al-sum-dis").hidden = !f.fold || ALERTS_OPEN ||
+    !(s.alerts || []).some(a => (a.options || []).includes("Disarm all"));
   if(!f.fold) return;
-  $("al-sum").className = "alsum" + (f.fault ? " fault" : "");
-  $("al-sum-kind").textContent = f.kind + (f.more ? " and " + f.more + " more" : "");
+  $("al-sum").className = "alsum" + (f.fault ? " fault" : "") + (PENDING_OPEN ? " fresh" : "");
+  $("al-sum-kind").textContent = f.kind + (f.more ? " (" + f.n + " in all)" : "");
+  $("al-sum-kind").title = f.kind;
   $("al-sum-text").textContent = f.text;
   $("al-sum-text").title = f.text;
   $("al-more").textContent = ALERTS_OPEN ? "Fold" : "Show all " + f.n;
   $("al-more").setAttribute("aria-expanded", ALERTS_OPEN ? "true" : "false");
 }
-$("al-more").addEventListener("click", () => { ALERTS_OPEN = !ALERTS_OPEN; renderAlertFold(); });
+$("al-more").addEventListener("click", () => { ALERTS_OPEN = !ALERTS_OPEN; PENDING_OPEN = false; renderAlertFold(); });
+$("al-sum-dis").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
 function renderLamps(fl){
   const groups = fl.groups || [];
   const key = groups.map(g => g.name).join("\n");

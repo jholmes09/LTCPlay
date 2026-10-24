@@ -42268,6 +42268,11 @@ function measure(tag){
     if(!shown(el)) return;
     for(const b of hits(el)) out.problems.push("Acknowledge " + el.dataset.ack + ": " + b);
   });
+  const sum = document.getElementById("al-sum");
+  out.sum = shown(sum) ? {cls:sum.className, kind:(document.getElementById("al-sum-kind") || {}).textContent || ""} : null;
+  const sdis = document.getElementById("al-sum-dis");
+  out.sum_disarm = shown(sdis);
+  if(shown(sdis)) for(const b of hits(sdis)) out.problems.push("the folded line's Disarm all: " + b);
   out.alerts_top = Math.round(rectOf(document.getElementById("alerts")).h);
   // The folded part alone (the live flame programming bar is never folded).
   out.fold_h = ["al-sum", "al-body"].map(id => document.getElementById(id))
@@ -42395,6 +42400,17 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
     return out
 
 
+def _rack_status_cue_fault_behind_a_warning():
+    """Review of #102, P1-a: a server warning (the start gate) and the
+    page's own cue fault and deck-not-heard text, nothing else."""
+    st = _rack_status_pico(many=False)
+    st["alerts"] = [{"id": 3, "kind": "gate", "severity": "warning",
+                     "text": "The start check asks before the next show.",
+                     "since": 0, "options": ["Acknowledge"], "booth": "",
+                     "pulse": False}]
+    return st
+
+
 def _rack_status_live_flame():
     """The Pico's screen after this change, with live flame programming on
     as well: its red bar is never folded away."""
@@ -42461,7 +42477,18 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
                  '<div class="warnbox" id="an-note" hidden></div>',
                  'setWarn("an-note", s.artnet_note || "");',
                  '$("al-body").hidden = f.fold && !ALERTS_OPEN;',
-                 '  setWarn("lock-banner", lockText);\n  renderAlertFold();'):
+                 '  setWarn("lock-banner", lockText);\n  renderAlertFold();',
+                 # Review of #102, P1-a: the page's own banners carry
+                 # whether they are a fault, and a label.
+                 'LOCAL_FAULT["lock-banner"] = !!lockText;',
+                 'LOCAL_FAULT["fl-warn"] = !!fmsg;',
+                 'LOCAL_FAULT["st-trouble"] = !!s.laser_fault;',
+                 'items.push({key:id + ":" + (LOCAL_LABEL[id] || id), fault:!!LOCAL_FAULT[id], label:LOCAL_LABEL[id] || "", text:el.textContent});',
+                 # P1/P2-b: a new fault opens the fold, or flashes it
+                 # while a finger is holding an arm.
+                 'if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }',
+                 # P2-d: Disarm all stays outside the fold.
+                 '<button class="disarm" id="al-sum-dis" hidden>Disarm all</button>'):
         check(need in page, f"the page has {need!r}")
     a = page.find('<div id="alerts">')
     check(page.find('id="lf-banner"', a) < page.find('id="al-body"', a),
@@ -42474,12 +42501,25 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 t(alertFold([]).fold === false && alertFold([{fault:true, text:"a"}]).fold === false, "none or one banner: shown whole");
-let f = alertFold([{fault:false, text:"note"}, {fault:true, text:"deck gone"}, {fault:true, text:"artnet"}]);
-t(f.fold && f.n === 3 && f.more === 2 && f.fault && f.kind === "Fault" && f.text === "deck gone", "the first fault leads: " + JSON.stringify(f));
-f = alertFold([{fault:false, text:"one"}, {fault:false, text:"two"}]);
+let f = alertFold([{key:"n", fault:false, label:"Disk", text:"note"}, {key:"a7", fault:true, label:"Stream Deck", text:"deck gone"}, {key:"a8", fault:true, label:"Timecode", text:"artnet"}]);
+t(f.fold && f.n === 3 && f.more === 2 && f.fault && f.text === "deck gone", "the first fault leads: " + JSON.stringify(f));
+t(f.kind === "2 faults: Stream Deck, Timecode", "every fault is named on the folded line: " + f.kind);
+f = alertFold([{key:"x", fault:false, label:"Disk", text:"one"}, {key:"y", fault:false, label:"Engine", text:"two"}]);
 t(f.fold && !f.fault && f.kind === "Note" && f.text === "one" && f.n === 2, "no fault: the first, as a note: " + JSON.stringify(f));
 f = alertFold([{fault:false, text:""}, {fault:true, text:"x"}]);
 t(!f.fold && f.n === 1, "an empty banner is not counted");
+// Review of #102, P1-a: a server warning and the page's own cue fault:
+// the line is red and names the cue fault.
+f = alertFold([{key:"a3", fault:false, label:"Start check", text:"gate asks"}, {key:"fl-warn:Flame cues", fault:true, label:"Flame cues", text:"Flame cues are zero, a fault: x."}]);
+t(f.fold && f.fault && f.kind === "Fault: Flame cues" && /Flame cues are zero/.test(f.text), "a cue fault behind a warning is red and named: " + JSON.stringify(f));
+// P1/P2-b: a NEW fault id is fresh; the first draw only seeds what was seen.
+const two = [{key:"a7", fault:true, label:"Stream Deck", text:"deck"}, {key:"a8", fault:true, label:"Timecode", text:"tc"}];
+t(alertFold(two, null).fresh === false, "the first draw is never fresh");
+t(alertFold(two, new Set(["a7", "a8"])).fresh === false, "the same faults: not fresh");
+t(alertFold(two.concat([{key:"a9", fault:true, label:"Flames", text:"new"}]), new Set(["a7", "a8"])).fresh === true, "a new fault id is fresh");
+t(alertFold(two.concat([{key:"n1", fault:false, label:"Disk", text:"note"}]), new Set(["a7", "a8"])).fresh === false, "a new note is not");
+t(JSON.stringify(alertFold(two, null).keys) === JSON.stringify(["a7", "a8"]), "the fault keys are handed back to remember");
+t(alertFold([{key:"a9", fault:true, label:"Flames", text:"new"}], new Set()).fresh === true, "fresh is said even with one banner");
 console.log(JSON.stringify(out));
 """
         r = _sp.run([node, "-e", js], capture_output=True, text=True,
@@ -42506,6 +42546,19 @@ console.log(JSON.stringify(out));
                                    RACK_SIZES)
     got2 = _rack_screen_in_chromium(chrome, page, _rack_status_live_flame(),
                                     ((1366, 600), (768, 1024)))
+    got3 = _rack_screen_in_chromium(
+        chrome, page, _rack_status_cue_fault_behind_a_warning(),
+        ((1366, 768),))
+    for (w, h), res in got3.items():
+        m = res[0] if isinstance(res, list) and res else {}
+        sm = m.get("sum") or {}
+        check("fault" in sm.get("cls", "").split() and
+              "Flame cues" in sm.get("kind", "") and
+              "Stream Deck" in sm.get("kind", ""),
+              f"{w}x{h}, a warning alert and the page's cue fault: the "
+              f"folded line is red and names the cue fault and the deck: "
+              f"{sm} {res if not m else ''}")
+        check(not m.get("problems"), f"{w}x{h}: {m.get('problems')}")
     runs = [(f"{w}x{h}", r) for (w, h), r in got.items()] + \
         [(f"{w}x{h} with live flame programming on", r)
          for (w, h), r in got2.items()]
@@ -42529,6 +42582,15 @@ console.log(JSON.stringify(out));
                   m["overflow_y"][1] not in ("hidden", "clip"),
                   f"{where}: the wheel and a finger scroll the page: "
                   f"{m['overflow_y']}")
+            if m["tag"] == "collapsed" and size.startswith(("1366x768",
+                                                             "1920x1080")) \
+                    and "live flame" not in size:
+                # The Pico's screen: the deck alert offers Disarm all; it
+                # stays on the folded line, pressable (review of #102,
+                # P2-d).
+                check(m.get("sum_disarm"),
+                      f"{where}: the deck alert's Disarm all is on the "
+                      f"folded line")
             if m["tag"] == "collapsed" and len(m["alerts"]) > 1:
                 check(m.get("fold_h", 999) <= 56,
                       f"{where}: the banners are one line: "
