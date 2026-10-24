@@ -39971,6 +39971,129 @@ def test_remote_network_session_reaches_only_remote_routes():
     print("  ok")
 
 
+def test_web_page_icons():
+    section("web page icons (Jeff, 2026-10-24): every page the engine "
+            "serves names the LTC Player icon, the manifest and the iPad's "
+            "home screen icon; the engine serves them itself, with the "
+            "right types and a long cache, to the network without sign-in, "
+            "and opening them widens nothing else")
+    import struct
+    import tempfile
+    import threading
+    import urllib.request
+    from ltcplay import web as web_mod
+    folder = tempfile.mkdtemp()
+    httpd = web_mod.serve(folder, port=0, bind="127.0.0.1")
+    t = threading.Thread(target=httpd.serve_forever,
+                         kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def fetch(path):
+        try:
+            with urllib.request.urlopen(base + path, timeout=5) as r:
+                return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    want = {"/favicon.ico": "image/x-icon",
+            "/apple-touch-icon.png": "image/png",
+            "/apple-touch-icon-precomposed.png": "image/png",
+            "/icon-192.png": "image/png", "/icon-512.png": "image/png",
+            "/manifest.webmanifest": "application/manifest+json"}
+    got = {}
+    try:
+        for path, kind in want.items():
+            st, h, body = fetch(path)
+            got[path] = body
+            check(st == 200, f"GET {path} answers: {st}")
+            check((h.get("Content-Type") or "") == kind,
+                  f"{path} is {kind}: {h.get('Content-Type')}")
+            check(len(body) > 0, f"{path} is not empty")
+            cc = h.get("Cache-Control") or ""
+            m = re.search(r"max-age=(\d+)", cc)
+            check("no-store" not in cc and m and int(m.group(1)) >= 86400,
+                  f"{path} may be kept by the browser: {cc!r}")
+        ico = got.get("/favicon.ico", b"")
+        n = struct.unpack("<HHH", ico[:6])[2] if len(ico) >= 6 else 0
+        sizes = sorted((ico[6 + 16 * i] or 256)
+                       for i in range(n) if len(ico) >= 22 + 16 * i)
+        check(ico[:4] == b"\0\0\1\0" and sizes == [16, 32, 48],
+              f"favicon.ico holds 16, 32 and 48 px: {sizes}")
+        for path, px in (("/apple-touch-icon.png", 180),
+                         ("/icon-192.png", 192), ("/icon-512.png", 512)):
+            b = got.get(path, b"")
+            w, hh = struct.unpack(">II", b[16:24]) if len(b) >= 24 else (0, 0)
+            check(b[:8] == b"\x89PNG\r\n\x1a\n" and (w, hh) == (px, px),
+                  f"{path} is a {px} px PNG: {(w, hh)}")
+        try:
+            man = json.loads(got.get("/manifest.webmanifest") or b"{}")
+        except ValueError:
+            man = {}
+        check(man.get("name") == "LTC Player" and
+              man.get("short_name") == "LTC Player" and
+              man.get("display") == "standalone" and
+              man.get("theme_color") == man.get("background_color") ==
+              "#070605", f"the manifest names LTC Player in the pages' "
+                         f"colours: {man}")
+        for icon in man.get("icons") or [{}]:
+            st, _h, _b = fetch(icon.get("src") or "/missing")
+            check(st == 200, f"the manifest's icon {icon} is served: {st}")
+        # Every HTML page the engine serves: the operator page on "/", the
+        # rack screen and iPad remote on "/remote" (the Startup page and
+        # the rest are views of it).
+        for path in ("/", "/remote"):
+            st, h, body = fetch(path)
+            page = body.decode("utf-8", "replace")
+            head = page.split("</head>")[0]
+            check(st == 200 and "text/html" in (h.get("Content-Type") or ""),
+                  f"{path} is a page: {st}")
+            for tag in ('<link rel="icon" href="/favicon.ico"',
+                        '<link rel="apple-touch-icon" '
+                        'href="/apple-touch-icon.png"',
+                        '<link rel="manifest" href="/manifest.webmanifest"'):
+                check(tag in head, f"{path} names its icon in <head>: {tag}")
+            for href in re.findall(r'<link rel="(?:icon|apple-touch-icon|'
+                                   r'manifest)"[^>]*href="([^"]+)"', head):
+                st, _h, b = fetch(href)
+                check(st == 200 and b, f"{path} links {href}, which is "
+                                       f"served: {st}")
+            check(re.search(r"<title>[^<]+</title>", head),
+                  f"{path} has a title")
+        # Only the fixed list: no folder of files opened up.
+        for path in ("/icons/favicon.ico", "/favicon.svg",
+                     "/favicon.ico/x", "/icon-1024.png"):
+            st, _h, _b = fetch(path)
+            check(st == 404, f"GET {path} is not an icon: {st}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+    # From the show network, signed out: the icons answer (an iPad adds the
+    # home screen icon before anyone signs in); nothing else was opened.
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        for path, kind in want.items():
+            st, h, _out = R.ask("GET", path)
+            check(st == 200 and h.get("content-type") == [kind] and
+                  int((h.get("content-length") or ["0"])[0]) > 0,
+                  f"the iPad, signed out, gets {path}: {st} {h}")
+        for path in ("/api/state", "/icons/favicon.ico", "/favicon.svg"):
+            st, _h, _out = R.ask("GET", path)
+            check(st in (403, 404), f"and not {path} from the network: {st}")
+        check(all(web_mod.network_may_reach(p) for p in want) and
+              not web_mod.network_may_reach("/favicon.ico/x") and
+              not web_mod.network_may_reach("/api/stop"),
+              "network_may_reach gained the icon addresses and nothing else")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_remote_countdown_left_in_this_show():
     section("rack screen countdown (Jeff, 2026-10-07): during a running show "
             "the time left in THIS show from the engine's own show clock; "
@@ -57141,6 +57264,7 @@ if __name__ == "__main__":
     test_remote_no_sign_in_over_the_network()
     test_remote_countdown_left_in_this_show()
     test_remote_network_session_reaches_only_remote_routes()
+    test_web_page_icons()
     test_remote_cross_site_posts_refused_on_loopback()
     test_remote_localhost_unaffected_and_proxies_refused()
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()

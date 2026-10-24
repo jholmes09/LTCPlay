@@ -48,6 +48,13 @@ def _self_check():
     if not os.path.isfile(page):
         raise RuntimeError(f"the show page is missing: {page}")
     yield "show page present"
+    icons = sorted({name for name, _ in web.ICONS.values()})
+    missing = [n for n in icons
+               if not os.path.isfile(os.path.join(web.ICONS_DIR, n)) or
+               not os.path.getsize(os.path.join(web.ICONS_DIR, n))]
+    if missing:
+        raise RuntimeError(f"the web page icons are missing: {missing}")
+    yield f"web page icons present ({len(icons)} files)"
     yield f"brand: {brand.load()['product']}"
     yield f"version: {version.status()}"
     import ltcwin
