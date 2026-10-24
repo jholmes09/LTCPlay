@@ -1036,6 +1036,12 @@ class Remote:
         self.users = None
         self.audit = None
         self.uploader = None
+        # The black box and the heartbeat (blackbox.py, heartbeat.py; Jeff,
+        # 2026-10-24), set by web.serve for the show engine. Read only.
+        self.black_box = None
+        self.black_box_off = False
+        self.heartbeat = None
+        self._bb_said = None
 
     DISARM_IDS_FILE = "ltcplay_disarm_ids.json"
     DISARM_ID_RESERVE = 10_000_000
@@ -3022,6 +3028,65 @@ class Remote:
         except Exception:                        # noqa: BLE001
             pass
 
+    def black_box_status(self):
+        """blackbox.Recorder.status(), or None without one. Never raises."""
+        bb = self.black_box
+        if bb is None:
+            return None
+        try:
+            return bb.status()
+        except Exception as e:                   # noqa: BLE001
+            return {"state": "stopped", "age_s": None,
+                    "fault": f"{type(e).__name__}: {e}"}
+
+    def black_box_view(self):
+        """The rack screen's read-only black box line: {"state", "age_s",
+        "text"}, or None when this engine has no black box at all."""
+        st = self.black_box_status()
+        if st is None:
+            if not self.black_box_off:
+                return None
+            return {"state": "off", "age_s": None,
+                    "text": "Black box: off"}
+        age = st.get("age_s")
+        if st["state"] == "recording":
+            text = (f"Black box: recording, last sample "
+                    f"{max(0, int(round(age or 0)))} s ago")
+        elif st["state"] == "starting":
+            text = "Black box: starting, no sample yet"
+        else:
+            text = ("Black box: STOPPED, " + (
+                f"last sample {int(round(age))} s ago" if age is not None
+                else "no sample written") +
+                (f" ({st['fault']})" if st.get("fault") else ""))
+        return {"state": st["state"], "age_s": age, "text": text}
+
+    def black_box_check(self):
+        """A black box that stops writing is an alert on every screen,
+        once per stop, and its return is a journal line. Called by the
+        heartbeat every second and by every status poll. Never raises;
+        never touches the rig."""
+        try:
+            st = self.black_box_status()
+            state = None if st is None else st["state"]
+            if state == "stopped" and self._bb_said != "stopped":
+                age = st.get("age_s")
+                text = ("The black box has stopped recording: " + (
+                    f"its last sample was {int(round(age))} s ago"
+                    if age is not None else "it has written no sample") +
+                    (f" ({st['fault']})" if st.get("fault") else "") +
+                    ". The show is not affected; only the record of this "
+                    "PC's heat, load and disk is missing. Look at the "
+                    "disk the settings folder is on.")
+                self.alerts.raise_("recorder", text)
+            elif state == "recording" and self._bb_said == "stopped":
+                self._journal("system", "engine", "black box", "recording",
+                              "The black box is recording again.")
+            if state is not None:
+                self._bb_said = state
+        except Exception:                        # noqa: BLE001
+            pass
+
     def beyond_link(self):
         """beyondwatch.BeyondWatch.state() while a BEYOND watch runs in
         this engine (Fire & Ice with BEYOND configured), else None.
@@ -3535,6 +3600,10 @@ class Remote:
                     add("Audit", "warn", "not writing")
             except Exception:                    # noqa: BLE001
                 add("Audit", "warn", "not writing")
+        bb = self.black_box_status()
+        if bb is not None and bb["state"] == "stopped":
+            # Only while it has stopped (blackbox.py). Display only.
+            add("Black box", "bad", "stopped")
         applied = {}
         cond = getattr(self.schedule, "conductor", None)
         try:
@@ -3681,6 +3750,8 @@ class Remote:
         out["laser_fault"] = self.laser_fault()
         out["live_flame"] = self.live_flame_view()
         out["beyond_link"] = self.beyond_link()
+        self.black_box_check()
+        out["black_box"] = self.black_box_view()
         if ctx.local:
             out["selected_show"] = self._selected_show()
         out["show_folder"] = {"served": self._show_folder(),

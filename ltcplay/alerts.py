@@ -39,10 +39,11 @@ asking before an unattended start.
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-         "timecode", "lasers")
+         "timecode", "lasers", "recorder")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
-            "link": "fault", "timecode": "fault", "lasers": "fault"}
+            "link": "fault", "timecode": "fault", "lasers": "fault",
+            "recorder": "fault"}
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any
@@ -52,6 +53,9 @@ RESOUND_S = 60.0
 BOOTH_UNAVAILABLE = "Booth speaker not available"
 # The kinds whose pulse also runs during a show (section 2).
 PULSE_DURING_SHOW = frozenset(("audio",))
+# The kinds that never run the pulse: the black box (blackbox.py) is a
+# record of the PC, and its stopping must never paint pixels on the rig.
+NEVER_PULSE = frozenset(("recorder",))
 
 
 class Alert:
@@ -211,6 +215,8 @@ class Alerts:
         for a in self._open.values():
             mine = a.kind in PULSE_DURING_SHOW or a.booth_ok is False
             if live and a.kind not in PULSE_DURING_SHOW:
+                mine = False
+            if a.kind in NEVER_PULSE:
                 mine = False
             a.pulse = mine
             want = want or mine

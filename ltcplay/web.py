@@ -1535,6 +1535,117 @@ def _attach_live_flame(httpd, fire_ice, flamesafe_config):
             _close_before()
     httpd.server_close = _close_live_flame
 
+def engine_state_fn(control, schedule_get, flames_get):
+    """The engine's state for the black box and the heartbeat, read
+    without taking any of the engine's locks (a plain read of what its
+    threads last set): Run or idle, the flame groups flamesafe says are
+    armed, the schedule's state and the next show's start, and the pixel
+    frames sent. Never raises; anything it cannot read is "unavailable".
+    """
+    def fn():
+        out = {}
+        try:
+            s = getattr(control, "session", None)
+            running = bool(s is not None and getattr(s, "running", False))
+            out["run"] = running
+            out["state"] = ("Run" if running else "starting"
+                            if getattr(control, "_starting", False)
+                            else "idle")
+            p = getattr(s, "player", None) if s is not None else None
+            out["frames_out"] = getattr(p, "frames_sent", None)
+            snd = getattr(s, "sender", None) if s is not None else None
+            since = getattr(snd, "seconds_since_ok", None)
+            out["since_ok_s"] = (round(since, 2)
+                                 if isinstance(since, (int, float)) else None)
+        except Exception as e:                   # noqa: BLE001
+            out["run_error"] = f"{type(e).__name__}"
+        try:
+            fs = flames_get()
+            v = fs.view() if fs is not None else None
+            if not v or v.get("stale"):
+                out["armed_groups"] = "unavailable"
+            else:
+                out["armed_groups"] = sum(
+                    1 for g in v.get("groups") or []
+                    if g.get("armed") == "armed")
+        except Exception:                        # noqa: BLE001
+            out["armed_groups"] = "unavailable"
+        try:
+            sv = schedule_get()
+            m = getattr(sv, "machine", None) if sv is not None else None
+            if m is None:
+                out["schedule"] = None
+                out["next_start"] = None
+            else:
+                out["schedule"] = str(m.state)
+                nxt = m.next_slot()
+                out["next_start"] = (nxt.start.isoformat()
+                                     if nxt is not None else None)
+        except Exception:                        # noqa: BLE001
+            out["schedule"] = "unavailable"
+            out["next_start"] = "unavailable"
+        return out
+    return fn
+
+
+def _attach_black_box(httpd, flames_get):
+    """The black box (blackbox.py) and the heartbeat (heartbeat.py) for
+    the show engine. Both read only; neither reaches the rig. A failure
+    leaves them off and says so; the show is never held back."""
+    from . import remote as remote_mod
+    r = httpd.remote
+    try:
+        doc = {}
+        path = os.path.join(r.folder, remote_mod.SETTINGS_FILE)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        if not isinstance(doc, dict):
+            doc = {}
+    except (OSError, ValueError) as e:
+        print(f"Black box and heartbeat: {e}; the defaults are used.")
+        doc = {}
+    state = engine_state_fn(httpd.control, lambda: httpd.schedule,
+                            flames_get)
+    try:
+        from . import blackbox
+        r.black_box = blackbox.start(r.folder, engine_state=state,
+                                     config=doc.get("black_box"))
+    except Exception as e:                       # noqa: BLE001
+        print(f"Black box: could not start: {type(e).__name__}: {e}")
+        r.black_box = None
+    if r.black_box is None:
+        r.black_box_off = True
+    try:
+        from . import heartbeat
+        addr = None
+        try:
+            addr = remote_mod.check_show_address(
+                doc["show_network_address"]) if doc.get(
+                "show_network_address") else None
+        except ValueError:
+            addr = None
+        r.heartbeat = heartbeat.start(
+            r.folder, engine_state=state, black_box=r.black_box_status,
+            on_beat=r.black_box_check, config=doc.get("heartbeat"),
+            show_network_address=addr)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Heartbeat: could not start: {type(e).__name__}: {e}")
+        r.heartbeat = None
+    before = httpd.server_close
+
+    def _close():
+        try:
+            if r.heartbeat is not None:
+                r.heartbeat.stop()
+            if r.black_box is not None:
+                r.black_box.stop(1.0)
+        except Exception:                        # noqa: BLE001
+            pass
+        before()
+    httpd.server_close = _close
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
@@ -1940,6 +2051,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                       "morning"):
             if hasattr(httpd, _name):
                 setattr(httpd.loopback, _name, getattr(httpd, _name))
+    if accounts:
+        # The black box and the heartbeat (blackbox.py, heartbeat.py; Jeff,
+        # 2026-10-24): the show engine's own record of the PC, and a GET
+        # an outside watchdog can read. Read only; neither reaches the rig.
+        _attach_black_box(httpd, lambda: fstatus)
     if on_ready:
         on_ready(httpd, control, token)
     return httpd

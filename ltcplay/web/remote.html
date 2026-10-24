@@ -580,6 +580,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
       <button class="lzdis" id="lz-disarm">Disarm all lasers</button>
       <div class="toast" id="lz-msg"></div>
     </div>
+    <!-- The black box (blackbox.py, Jeff, 2026-10-24): read only. -->
+    <div class="dim" id="bb-line" hidden style="font-size:13px;margin-top:6px"></div>
   </section>
 
   <!-- Schedule (was Tonight; Jeff, 2026-10-23): the night's shows, compact. -->
@@ -1242,6 +1244,11 @@ function render(){
   setWarn("fl-warn", fmsg);
   renderAlerts(s.alerts || []);
   renderLamps(fl);
+  // The black box line: read only, never a control.
+  const bb = s.black_box;
+  $("bb-line").hidden = !bb;
+  $("bb-line").textContent = bb ? (bb.text || "") : "";
+  $("bb-line").style.color = bb && bb.state === "stopped" ? "var(--red)" : "";
   // The Morning and Shutdown page exists only with the Fire & Ice engine;
   // its lock banner shows on every screen while anything is locked out.
   const mo = s.morning;

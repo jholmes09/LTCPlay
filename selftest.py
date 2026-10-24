@@ -53286,6 +53286,469 @@ def test_disarm_all_end_to_end_rearms_without_a_cycle():
     print("  ok")
 
 
+
+def _bb_recorder(folder, **kw):
+    from ltcplay import blackbox as BB
+    kw.setdefault("cpu", type("C", (), {"read": lambda self: (12.5, 3.0)})())
+    kw.setdefault("mem", lambda: (40, 2048.0, 150.0))
+    kw.setdefault("probe", lambda path: 1.5)
+    kw.setdefault("engine_state",
+                  lambda: {"run": True, "state": "Run", "armed_groups": 2,
+                           "schedule": "SHOW",
+                           "next_start": "2026-10-24T20:00:00-04:00"})
+    return BB.Recorder(folder, **kw)
+
+
+def test_black_box_lines_survive_a_reset_and_rotate():
+    import shutil
+    section("the black box (Pico froze 2026-10-24, nothing recorded): one "
+            "JSON line a sample, written then fsync'd, a torn last line "
+            "skipped and ended at the next start, unavailable temperatures "
+            "said, rotation by size, and the config checked")
+    import json
+    import tempfile
+    from ltcplay import blackbox as BB
+    d = tempfile.mkdtemp()
+    try:
+        synced = []
+        real_fsync = BB.os.fsync
+        BB.os.fsync = lambda fd: (synced.append(fd), real_fsync(fd))[1]
+        try:
+            r = _bb_recorder(d)
+            r.write_record(r.start_record())
+            for _ in range(3):
+                r.write_sample(r.sample(late_ms=0.0))
+        finally:
+            BB.os.fsync = real_fsync
+        check(len(synced) == 4, f"every line is fsync'd before the next: "
+                                f"{len(synced)} of 4")
+        raw = open(os.path.join(d, BB.FILENAME), "rb").read()
+        lines = raw.split(b"\n")
+        check(raw.endswith(b"\n") and len(lines) == 5,
+              f"one line a record, each ended: {raw[-40:]!r}")
+        recs = [json.loads(x) for x in lines if x]
+        s = recs[1]
+        check(recs[0]["kind"] == "start" and s["kind"] == "sample",
+              f"a start line, then samples: {[x['kind'] for x in recs]}")
+        for key in ("cpu_pct", "engine_cpu_pct", "mem_load_pct",
+                    "mem_avail_mb", "engine_rss_mb", "disk_free_mb",
+                    "disk_probe_ms", "late_ms", "temps", "engine",
+                    "dropped", "t", "local"):
+            check(key in s, f"a sample carries {key}: {sorted(s)}")
+        check(s["cpu_pct"] == 12.5 and s["disk_probe_ms"] == 1.5 and
+              s["engine"]["armed_groups"] == 2 and
+              s["engine"]["state"] == "Run" and
+              s["engine"]["next_start"].startswith("2026-10-24T20"),
+              f"the readings and the engine state are in it: {s}")
+        check(s["temps"]["acpi_c"] == BB.UNAVAILABLE and
+              s["temps"]["nvme_c"] == BB.UNAVAILABLE,
+              f"temperatures not read yet are said unavailable: "
+              f"{s['temps']}")
+        check(isinstance(recs[2]["last_write_ms"], float),
+              "the previous line's write and fsync time is recorded")
+        # A hard reset in the middle of a write: a torn last line.
+        with open(os.path.join(d, BB.FILENAME), "ab") as fh:
+            fh.write(b'{"t":"2026-10-24T05:31:5')
+        last = BB.read_last(d)
+        check(last is not None and last["seq"] == recs[-1]["seq"],
+              f"the last whole line is read past a torn one: {last}")
+        r2 = _bb_recorder(d)
+        st = r2.start_record()
+        r2.write_record(st)
+        check(st.get("previous_last_t") == recs[-1]["t"] and
+              "hard reset" in st.get("previous_ended", ""),
+              f"the next start says when the last run's last line was and "
+              f"that it ended with no stop line: {st}")
+        lines = open(os.path.join(d, BB.FILENAME), "rb").read().split(b"\n")
+        check(json.loads(lines[-2])["kind"] == "start",
+              "the new start is a line of its own after the torn one")
+        whole = BB.read_all(d)
+        check(len(whole) == 5, f"read_all skips the torn line: {len(whole)}")
+        r2.stop(0.5)
+        check(BB.read_last(d)["kind"] == "stop", "a clean stop is a line")
+        out = BB.summarize(BB.read_all(d))
+        check(any("START" in x for x in out) and
+              any("STOP, clean" in x for x in out),
+              f"the summary names each run: {out}")
+        for x in out:
+            _no_dashes(x, "the black box summary")
+        # Rotation: three files at most, the newest the current one.
+        d2 = tempfile.mkdtemp(dir=d)
+        r3 = _bb_recorder(d2, max_bytes=2000, files=3)
+        for _ in range(60):
+            r3.write_sample(r3.sample())
+        names = sorted(os.listdir(d2))
+        check(names == ["blackbox.1.jsonl", "blackbox.2.jsonl",
+                        "blackbox.jsonl", "probe.bin"] or
+              names == ["blackbox.1.jsonl", "blackbox.2.jsonl",
+                        "blackbox.jsonl"],
+              f"rotated by size, the file count kept: {names}")
+        check(all(os.path.getsize(os.path.join(d2, n)) <= 2000
+                  for n in names if n.endswith(".jsonl")),
+              "no file over the size")
+        r3._close()
+        # The config.
+        cfg, why = BB.load_config(None)
+        check(cfg["every_s"] == BB.EVERY_S == 5.0 and not why and
+              not cfg["off"], f"default every 5 s: {cfg}")
+        cfg, why = BB.load_config({"every_s": 2})
+        check(cfg["every_s"] == 2.0 and not why, "every_s is configurable")
+        cfg, why = BB.load_config({"every_s": 0.01, "off": "yes"})
+        check(cfg["every_s"] == 5.0 and cfg["off"] is False and
+              "every_s" in why and "off" in why,
+              f"bad values fall back and are said: {why}")
+        _no_dashes(why, "the black box config sentence")
+        check(BB.start(d, config={"off": True}, log=lambda *a: None) is None,
+              "off is off")
+        # The NVMe temperature descriptor and the thermal zones.
+        import struct
+        buf = struct.pack("<IIhhH2x8x", 1, 24 + 32, 85, 75, 2) + \
+            struct.pack("<Hhhh4B4x", 0, 47, 0, 0, 0, 0, 0, 0) + \
+            struct.pack("<Hhhh4B4x", 1, 52, 0, 0, 0, 0, 0, 0)
+        check(BB.parse_storage_temperature(buf) == [47, 52],
+              f"the drive's temperatures are read from Windows' "
+              f"descriptor: {BB.parse_storage_temperature(buf)}")
+        check(BB.parse_storage_temperature(b"") == [],
+              "a short answer is no temperature")
+        check(BB.thermal_kelvin_to_c([0, 323.15]) == [50.0],
+              "thermal zones in Kelvin, zero dropped")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_black_box_never_blocks_and_drops_samples():
+    import shutil
+    section("the black box never waits: a stalled disk drops samples, "
+            "counted, while the sampler keeps its beat; an engine state "
+            "that raises is recorded, not raised; and the rack screen says "
+            "it stopped")
+    import tempfile
+    import threading as _th
+    import time as _t
+    from ltcplay import blackbox as BB
+    d = tempfile.mkdtemp()
+    gate = _th.Event()
+    try:
+        def stalled(path):
+            gate.wait(10)
+            return 9999.0
+
+        def boom():
+            raise RuntimeError("engine busy")
+        r = _bb_recorder(d, every_s=0.05, probe=stalled, engine_state=boom,
+                         slow=type("S", (), {"why": {},
+                                             "read": lambda self: {}})())
+        r.start()
+        check(wait_for(lambda: r.dropped >= 3, timeout=5.0),
+              f"with the disk stalled, samples are dropped and counted: "
+              f"{r.dropped}")
+        t0 = _t.perf_counter()
+        for _ in range(10):
+            r.offer(r.sample())
+        check(_t.perf_counter() - t0 < 0.5,
+              "offering samples never waits on the stalled writer")
+        sampler = [th for th in r._threads if th.name == "ltcplay-blackbox"]
+        check(sampler and sampler[0].is_alive(),
+              "the sampler thread is still running")
+        s = r.sample()
+        check("error" in s["engine"] and "RuntimeError" in s["engine"]["error"],
+              f"an engine state that raises is recorded: {s['engine']}")
+        gate.set()
+        check(wait_for(lambda: r.last_sample_at is not None, timeout=5.0),
+              "the disk back: samples are written again")
+        recs = BB.read_all(d)
+        check(any(x.get("disk_probe_ms") == 9999.0 for x in recs),
+              "the stall's probe time is in the record")
+        check(wait_for(lambda: any((x.get("dropped") or 0) > 0
+                                   for x in BB.read_all(d)), timeout=5.0),
+              "and the dropped count, in the next line written")
+        r.stop(1.0)
+    finally:
+        gate.set()
+        shutil.rmtree(d, ignore_errors=True)
+    # The status: starting, recording, stopped, by the injected clock.
+    t = [100.0]
+    d = tempfile.mkdtemp()
+    try:
+        r = _bb_recorder(d, every_s=5.0, clock=lambda: t[0])
+        r.started_at = t[0]
+        check(r.status()["state"] == "starting", "no sample yet: starting")
+        r.write_sample(r.sample())
+        t[0] += 3
+        st = r.status()
+        check(st["state"] == "recording" and st["age_s"] == 3.0,
+              f"recording, last sample 3 s ago: {st}")
+        t[0] += BB.stopped_after_s(5.0)
+        check(r.status()["state"] == "stopped",
+              "no sample for 3 beats: stopped")
+        r._close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_black_box_and_heartbeat_never_reach_the_rig():
+    import shutil
+    section("the black box and the heartbeat import nothing that reaches "
+            "the rig, the heartbeat answers GET only, and flamesafe has no "
+            "part in either")
+    import ast as _ast
+    here = os.path.dirname(os.path.abspath(__file__))
+    rig = ("flamelink", "flamesafe", "sacn", "output", "artnodes",
+           "conductor", "player", "session", "trigger", "fire_ice",
+           "beyond", "beyondtc", "madmapper", "laserarm", "flameprog",
+           "streamdeck")
+    for name in ("blackbox.py", "heartbeat.py"):
+        tree = _ast.parse(open(os.path.join(here, "ltcplay", name),
+                               encoding="utf-8").read())
+        got = set()
+        for n in _ast.walk(tree):
+            if isinstance(n, _ast.Import):
+                got.update(a.name.split(".")[-1] for a in n.names)
+            elif isinstance(n, _ast.ImportFrom):
+                got.add((n.module or "").split(".")[-1])
+                got.update(a.name for a in n.names)
+        bad = sorted(got & set(rig))
+        check(not bad, f"{name} imports nothing that reaches the rig: {bad}")
+    bb_tree = open(os.path.join(here, "ltcplay", "blackbox.py"),
+                   encoding="utf-8").read()
+    check("import socket" not in bb_tree,
+          "the black box opens no socket at all")
+    for name in os.listdir(os.path.join(here, "flamesafe")):
+        if name.endswith(".py"):
+            txt = open(os.path.join(here, "flamesafe", name),
+                       encoding="utf-8").read()
+            check("blackbox" not in txt and "black_box" not in txt and
+                  "ltcplay.heartbeat" not in txt,
+                  f"flamesafe/{name} has no part in the black box")
+    from ltcplay import heartbeat as HB
+    import http.server as _hs
+    allowed = {"do_GET", "do_HEAD", "do_POST", "do_PUT", "do_DELETE",
+               "do_PATCH"}
+    verbs = {k for k in vars(HB._Handler) if k.startswith("do_")}
+    check(verbs <= allowed, f"the heartbeat's verbs: {sorted(verbs)}")
+    check(HB._Handler.do_POST is HB._Handler._refuse and
+          HB._Handler.do_PUT is HB._Handler._refuse,
+          "every verb but GET and HEAD is refused")
+    print("  ok")
+
+
+def test_heartbeat_counter_json_and_binds():
+    import shutil
+    section("the heartbeat (for a watchdog or a smart relay): a counter "
+            "that moves every beat, a timestamp and the engine state, on "
+            "127.0.0.1 only unless the show network is asked for, a "
+            "refusal for anything but GET, and the optional file")
+    import json
+    import socket as _so
+    import tempfile
+    import urllib.error
+    import urllib.request
+    from ltcplay import heartbeat as HB
+    s = _so.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    d = tempfile.mkdtemp()
+    beats = []
+    hb = HB.Heartbeat(engine_state=lambda: {"run": False, "state": "idle",
+                                            "armed_groups": 0},
+                      black_box=lambda: {"state": "recording", "age_s": 1.0},
+                      on_beat=lambda: beats.append(1), port=port,
+                      file_path=os.path.join(d, HB.FILENAME), every_s=0.05,
+                      log=lambda *a: None)
+    try:
+        hb.start()
+        check([x.server_address[0] for x in hb.servers] == ["127.0.0.1"],
+              f"loopback only by default: "
+              f"{[x.server_address for x in hb.servers]}")
+
+        def get(path="/heartbeat"):
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}{path}", timeout=3) as resp:
+                return resp.status, json.loads(resp.read())
+        code, a = get()
+        check(wait_for(lambda: hb.counter >= a["counter"] + 3, timeout=3.0),
+              "the counter moves")
+        code, b = get("/")
+        check(code == 200 and b["counter"] > a["counter"] and
+              b["service"] == "ltcplay-engine" and
+              b["ts_utc"].endswith("Z") and isinstance(b["mono_s"], float)
+              and b["engine"]["state"] == "idle" and
+              b["black_box"]["state"] == "recording" and
+              b["beat_age_s"] is not None and b["beat_age_s"] < 2,
+              f"the JSON: counter, timestamps, engine, black box: {b}")
+        check(beats, "on_beat runs every beat (the rack screen's check)")
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/heartbeat",
+                                     data=b"{}", method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=3)
+            refused = None
+        except urllib.error.HTTPError as e:
+            refused = e.code
+        check(refused == 405, f"a POST is refused: {refused}")
+        try:
+            get("/api/abort")
+            nf = None
+        except urllib.error.HTTPError as e:
+            nf = e.code
+        check(nf == 404, f"no other path: {nf}")
+        doc = json.load(open(os.path.join(d, HB.FILENAME)))
+        check(doc.get("counter", 0) >= 1 and doc["service"] ==
+              "ltcplay-engine", f"the heartbeat file: {doc}")
+        # A second heartbeat on the same port is refused, never shared.
+        hb2 = HB.Heartbeat(port=port, log=lambda *a: None).start()
+        check(not hb2.servers and "127.0.0.1" in hb2.bind_errors,
+              "a second listener on the port is refused")
+        hb2.stop()
+    finally:
+        hb.stop()
+        shutil.rmtree(d, ignore_errors=True)
+    cfg, why = HB.load_config(None)
+    check(cfg == {"off": False, "port": 7881, "show_network": False,
+                  "file": False} and not why, f"defaults: {cfg}")
+    cfg, why = HB.load_config({"port": 80, "show_network": "on"})
+    check(cfg["port"] == 7881 and cfg["show_network"] is False and
+          "port" in why and "show_network" in why,
+          f"bad values fall back and are said: {why}")
+    _no_dashes(why, "the heartbeat config sentence")
+    said = []
+    real = HB.Heartbeat.start
+    HB.Heartbeat.start = lambda self: self
+    try:
+        h = HB.start(tempfile.gettempdir(), config={"show_network": True},
+                     show_network_address="10.20.0.5", log=said.append)
+        check(h.binds == ("127.0.0.1", "10.20.0.5"),
+              f"show_network adds the show network address: {h.binds}")
+        h = HB.start(tempfile.gettempdir(), config={"show_network": True},
+                     show_network_address=None, log=said.append)
+        check(h.binds == ("127.0.0.1",) and any(
+            "not set" in x for x in said),
+            f"no address set: loopback only, and said: {said}")
+        check(HB.start(tempfile.gettempdir(), config={"off": True},
+                       log=said.append) is None, "off is off")
+    finally:
+        HB.Heartbeat.start = real
+    doc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "docs", "HEARTBEAT.md"), encoding="utf-8").read()
+    check("GET http://127.0.0.1:7881/heartbeat" in doc and
+          "never" in doc.lower(), "docs/HEARTBEAT.md says how to poll it")
+    _no_dashes(doc, "docs/HEARTBEAT.md")
+    print("  ok")
+
+
+def test_black_box_rack_line_alert_and_engine_state():
+    import shutil
+    section("the rack screen's black box line, its alert once per stop "
+            "(never the pixel pulse), its chip, the engine state read "
+            "without locks, and the engine attaching both")
+    import tempfile
+    import types
+    from ltcplay import remote as RM, web as W, alerts as AL
+    t = [100.0]
+    st = {"state": "recording", "age_s": 3.2, "fault": ""}
+    r = RM.Remote(types.SimpleNamespace(session=None), None,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+    check(r.black_box_view() is None, "no black box: no line")
+    r.black_box = types.SimpleNamespace(status=lambda: dict(st))
+    v = r.black_box_view()
+    check(v["text"] == "Black box: recording, last sample 3 s ago",
+          f"the line: {v}")
+    check(not [x for x in r.subsystems({}) if x["name"] == "Black box"],
+          "no chip while it records")
+    r.black_box_check()
+    check(not r.alerts.view(), "no alert while it records")
+    st.update(state="stopped", age_s=42.0, fault="OSError: disk full")
+    r.black_box_check()
+    r.black_box_check()
+    al = [a for a in r.alerts.view() if a["kind"] == "recorder"]
+    check(len(al) == 1 and "42 s ago" in al[0]["text"] and
+          "disk full" in al[0]["text"],
+          f"stopped: one alert, with why: {al}")
+    _no_dashes(al[0]["text"] if al else "", "the black box alert")
+    check(r.alerts.pulse_wanted() is False and al[0]["pulse"] is False,
+          "the black box alert never runs the pixel pulse")
+    check("recorder" in AL.KINDS and "recorder" in AL.NEVER_PULSE,
+          "the recorder is an alert kind that never pulses")
+    v = r.black_box_view()
+    check(v["state"] == "stopped" and v["text"].startswith(
+        "Black box: STOPPED, last sample 42 s ago"), f"the line: {v}")
+    _no_dashes(v["text"], "the black box line")
+    chip = [x for x in r.subsystems({}) if x["name"] == "Black box"]
+    check(chip and chip[0]["state"] == "bad", f"a chip says so: {chip}")
+    page = r.status(RM.Ctx(True, "127.0.0.1"))
+    check(page["black_box"]["state"] == "stopped",
+          "the status poll carries it")
+    st.update(state="recording", age_s=1.0, fault="")
+    r.black_box_check()
+    st.update(state="stopped", age_s=30.0)
+    r.alerts.clear(kind="recorder")
+    r.black_box_check()
+    check(len([a for a in r.alerts.view() if a["kind"] == "recorder"]) == 1,
+          "a second stop after it recorded again is a new alert")
+    r.black_box, r.black_box_off = None, True
+    check(r.black_box_view()["text"] == "Black box: off", "off says off")
+    html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('id="bb-line"' in html and "s.black_box" in html,
+          "the rack screen draws the line")
+    # The engine state, without locks.
+    fl = types.SimpleNamespace(view=lambda: {
+        "stale": False, "groups": [{"armed": "armed"}, {"armed": "disarmed"},
+                                   {"armed": "armed"}]})
+    import datetime as _dt
+    slot = types.SimpleNamespace(start=_dt.datetime(
+        2026, 10, 24, 20, 0, tzinfo=_dt.timezone.utc))
+    m = types.SimpleNamespace(state="IDLE", next_slot=lambda: slot)
+    ctl = types.SimpleNamespace(session=types.SimpleNamespace(
+        running=True, player=types.SimpleNamespace(frames_sent=77),
+        sender=types.SimpleNamespace(seconds_since_ok=0.01)),
+        _starting=False)
+    fn = W.engine_state_fn(ctl, lambda: types.SimpleNamespace(machine=m),
+                           lambda: fl)
+    e = fn()
+    check(e["run"] is True and e["state"] == "Run" and
+          e["armed_groups"] == 2 and e["schedule"] == "IDLE" and
+          e["next_start"].startswith("2026-10-24T20:00") and
+          e["frames_out"] == 77, f"the engine state: {e}")
+    fn = W.engine_state_fn(types.SimpleNamespace(session=None),
+                           lambda: None, lambda: None)
+    e = fn()
+    check(e["run"] is False and e["state"] == "idle" and
+          e["armed_groups"] == "unavailable" and e["next_start"] is None,
+          f"idle, nothing known: {e}")
+    # The engine attaching both, from the settings file, and closing.
+    d = tempfile.mkdtemp()
+    try:
+        import json
+        with open(os.path.join(d, RM.SETTINGS_FILE), "w") as fh:
+            json.dump({"black_box": {"every_s": 1},
+                       "heartbeat": {"off": True}}, fh)
+        r2 = RM.Remote(types.SimpleNamespace(session=None), None, folder=d)
+        closed = []
+        httpd = types.SimpleNamespace(remote=r2, control=r2.control,
+                                      schedule=None,
+                                      server_close=lambda: closed.append(1))
+        W._attach_black_box(httpd, lambda: None)
+        check(r2.black_box is not None and r2.black_box.every_s == 1.0 and
+              r2.heartbeat is None, "the engine starts the black box from "
+              "the settings, heartbeat off as asked")
+        from ltcplay import blackbox as BB
+        folder = BB.default_folder(d)
+        check(folder == os.path.join(d, "logs", "blackbox"),
+              "beside the audit log, under logs")
+        check(wait_for(lambda: r2.black_box.last_sample_at is not None,
+                       timeout=5.0), "it records")
+        httpd.server_close()
+        check(closed and BB.read_last(folder)["kind"] == "stop",
+              "closing the engine writes the stop line")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 def test_lasers_lamp_follows_the_beyond_link():
     section("BEYOND exited at 03:27 and the Lasers lamp said lit for hours "
             "(2026-10-23): the watch says up, lost or unknown, a look older "
@@ -56003,6 +56466,11 @@ if __name__ == "__main__":
     test_disarm_ids_survive_an_engine_restart()
     test_disarm_all_end_to_end_rearms_without_a_cycle()
     test_lasers_lamp_follows_the_beyond_link()
+    test_black_box_lines_survive_a_reset_and_rotate()
+    test_black_box_never_blocks_and_drops_samples()
+    test_black_box_and_heartbeat_never_reach_the_rig()
+    test_heartbeat_counter_json_and_binds()
+    test_black_box_rack_line_alert_and_engine_state()
     test_artnet_faults_only_for_the_show_in_use()
     test_rack_screen_jeff_2026_10_23_page()
     test_schedule_time_zone_is_checked_by_the_engine()
