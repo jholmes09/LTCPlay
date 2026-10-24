@@ -999,6 +999,13 @@ class Remote:
             self._disarm_ids = max(0, int(wall() * 1000))
         except Exception:                        # noqa: BLE001
             self._disarm_ids = int(time.time() * 1000)
+        # The show in use, written to SELECTED_SHOW_FILE off the request
+        # (review of #102, P2-c): the name waiting to be written, the lock
+        # the writes take in turn, and an event set while none is waiting.
+        self._sel_pending = None
+        self._sel_lock = threading.Lock()
+        self._sel_idle = threading.Event()
+        self._sel_idle.set()
         # Disarm all flame groups (plain): which press is the latest, and
         # how its confirmation is scheduled (a test runs it by hand).
         self._plain_gen = 0
@@ -2921,6 +2928,9 @@ class Remote:
         """The picker's selection (or the last Run), if that show file is
         still in the show folder, else None. Cached SELECTED_READ_S."""
         now = self.clock()
+        pend = getattr(self, "_sel_pending", None)
+        if pend:
+            return pend        # chosen, its write still on its way
         got = getattr(self, "_sel_cache", None)
         if got is not None and now - got[1] < self.SELECTED_READ_S:
             return got[0]
@@ -2938,13 +2948,46 @@ class Remote:
         return sel
 
     def _save_selected_show(self, name):
-        try:
-            with open(os.path.join(self.folder, self.SELECTED_SHOW_FILE),
-                      "w", encoding="utf-8") as fh:
-                json.dump({"show": name}, fh)
-        except OSError:
-            pass
+        """`name` is the show in use from now on: known at once, and
+        written to SELECTED_SHOW_FILE on a thread of its own, so a stalled
+        disk never holds up the request that chose it (Run's reply, a
+        status poll, the picker; review of #102, P2-c). Never raises."""
         self._sel_cache = (name, self.clock())
+        self._sel_pending = name
+        self._sel_idle.clear()
+        try:
+            threading.Thread(target=self._selection_writer, daemon=True,
+                             name="ltcplay-show-select").start()
+        except RuntimeError:
+            self._selection_writer()
+
+    def _selection_writer(self):
+        with self._sel_lock:
+            name = self._sel_pending
+            if name is not None:
+                self._write_selection_file(name)
+            if self._sel_pending == name:
+                self._sel_pending = None
+                self._sel_idle.set()
+
+    def _write_selection_file(self, name):
+        """One whole file or none: a temp file beside it, then one
+        os.replace. Never raises."""
+        path = os.path.join(self.folder, self.SELECTED_SHOW_FILE)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"show": name}, fh)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    def selection_written(self, timeout=5.0):
+        """True once no selection write is waiting (tests)."""
+        return self._sel_idle.wait(timeout)
 
     def select_show(self, body):
         """POST show-select {"file"}: the Programming screen's show picker

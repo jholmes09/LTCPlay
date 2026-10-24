@@ -39778,6 +39778,9 @@ class _RemoteRig:
     def close(self):
         self.httpd.server_close()
         self.svc.stop()
+        # A show selection still being written (off the request) lands
+        # before its folder goes.
+        self.remote.selection_written(5.0)
         import shutil
         shutil.rmtree(self.work, ignore_errors=True)
         shutil.rmtree(self.folder, ignore_errors=True)
@@ -54495,7 +54498,9 @@ def test_artnet_faults_only_for_the_show_in_use():
         rm._checks = None
         check(card().get("level") == "ok" and not alerts(),
               "after Stop the show last Run is still the one judged")
-        # The engine restarts: the show last Run is remembered.
+        # The engine restarts: the show last Run is remembered (once its
+        # write, off the request, has landed).
+        check(rm.selection_written(5.0), "the last Run's write finished")
         R.httpd.control.last_timeline = None
         rm2 = RM.Remote(R.httpd.control, R.svc, folder=R.work,
                         clock=lambda: R.mono[0], wall=lambda: R.wall[0],
@@ -54533,6 +54538,8 @@ def test_artnet_faults_only_for_the_show_in_use():
         rm.alerts.clear(kind="timecode", action="Acknowledge")
         show("show.json", bad)
         show("soak_show.json", good)
+        check(rm.selection_written(5.0) and rm2.selection_written(5.0),
+              "no selection write is still on its way")
         os.remove(os.path.join(R.work, rm.SELECTED_SHOW_FILE))
         with open(os.path.join(R.work, rm.LAST_SHOW_FILE), "w") as fh:
             json.dump({"show": "soak_show.json"}, fh)
@@ -54577,6 +54584,7 @@ def test_artnet_faults_only_for_the_show_in_use():
         check(card().get("level") == "ok" and not alerts(),
               "the good show picked: no fault")
         # P3-4: the selection file is read at most every SELECTED_READ_S.
+        check(rm.selection_written(5.0), "the picker's write finished")
         with open(os.path.join(R.work, rm.SELECTED_SHOW_FILE), "w") as fh:
             json.dump({"show": "show.json"}, fh)
         check(rm._active_show_files() == {"soak_show.json"},
@@ -54586,6 +54594,8 @@ def test_artnet_faults_only_for_the_show_in_use():
               "after it, the file is read again")
         # Run (web.py /api/start) writes the show in use at once, with no
         # status asked for before the engine restarts (2026-10-24).
+        check(rm.selection_written(5.0) and rm2.selection_written(5.0),
+              "no selection write is still on its way")
         os.remove(os.path.join(R.work, rm.SELECTED_SHOW_FILE))
         rm._sel_cache = None
         started = []
@@ -54605,6 +54615,7 @@ def test_artnet_faults_only_for_the_show_in_use():
             R.httpd.control.start = real_start
         check(st == 200 and started == ["show.json"],
               f"Run reached the (fake) start: {st} {out} {started}")
+        check(rm.selection_written(5.0), "the selection write finished")
         try:
             with open(os.path.join(R.work, rm.SELECTED_SHOW_FILE)) as fh:
                 kept = json.load(fh).get("show")
@@ -54618,6 +54629,61 @@ def test_artnet_faults_only_for_the_show_in_use():
         check(rm3._active_show_files() == {"show.json"},
               f"an engine restarted straight after Run judges it: "
               f"{rm3._active_show_files()}")
+        # Review of #102, P2-c: the selection is written atomically (a
+        # temp file, then one replace), and a stalled disk never holds up
+        # Run's reply: the write is off the request, and the show in use
+        # is known at once all the same.
+        import threading as _th
+        replaced = []
+        real_replace = os.replace
+
+        def spy_replace(a, b, *args, **kw):
+            replaced.append((a, b))
+            return real_replace(a, b, *args, **kw)
+        os.replace = spy_replace
+        try:
+            rm._save_selected_show("soak_show.json")
+            check(rm.selection_written(5.0), "the picker's write finished")
+        finally:
+            os.replace = real_replace
+        sel_path = os.path.join(R.work, rm.SELECTED_SHOW_FILE)
+        check(replaced and replaced[-1][1] == sel_path and
+              replaced[-1][0] != sel_path and
+              not os.path.exists(replaced[-1][0]),
+              f"the selection is written to a temp file and replaced into "
+              f"place: {replaced}")
+        with open(sel_path) as fh:
+            check(json.load(fh).get("show") == "soak_show.json",
+                  "the replaced file is whole")
+        gate = _th.Event()
+        real_write = rm._write_selection_file
+
+        def stalled(name):
+            gate.wait(10)
+            return real_write(name)
+        rm._write_selection_file = stalled
+        R.httpd.control.start = fake_start
+        try:
+            t0 = time.monotonic()
+            st, _h, out = R.ask("POST", "/api/start",
+                                {"timeline": "show.json"},
+                                client=("127.0.0.1", 5000))
+            took = time.monotonic() - t0
+            check(st == 200 and took < 2.0,
+                  f"a stalled disk does not hold up Run's reply: {st} "
+                  f"{took:.2f} s")
+            R.mono[0] += rm.SELECTED_READ_S + 1
+            check(rm._selected_show() == "show.json",
+                  f"the show Run is in use at once, while the disk stalls: "
+                  f"{rm._selected_show()!r}")
+        finally:
+            gate.set()
+            R.httpd.control.start = real_start
+            check(rm.selection_written(10.0), "the stalled write finished")
+            rm._write_selection_file = real_write
+        with open(sel_path) as fh:
+            check(json.load(fh).get("show") == "show.json",
+                  "once the disk answers, the file says the show Run")
         page = open(os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "ltcplay", "web", "remote.html"),
             encoding="utf-8").read()
