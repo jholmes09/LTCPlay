@@ -42301,11 +42301,64 @@ go();
 """
 
 
-def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
-    """Draw `page` (remote.html's text) in headless `chrome` at each
-    (width, height) in `sizes`, its engine a stub answering `status`, and
-    return {(w, h): [measure, ...]} (see _RACK_MEASURE_JS) or
-    {(w, h): "why not"}."""
+# How long one draw may take. Under mutate.py's load a draw that takes 3 s
+# alone took over 60 s (PR #102, shard 8), so the limit is measured, the
+# way mutate.py scales a mutant's limit from its baseline: RACK_DRAW_FACTOR
+# times the slowest draw so far in this run, never under RACK_DRAW_FLOOR
+# and never over RACK_DRAW_CEILING. A draw that runs out of time is tried
+# once more with twice the limit (still capped). Only running out of time
+# is retried: a page that was drawn and measured is returned as it is, so
+# a real layout failure always fails.
+RACK_DRAW_FLOOR = 90
+RACK_DRAW_FACTOR = 4
+RACK_DRAW_CEILING = 300
+
+
+def _rack_draw_limit(slowest):
+    return int(min(RACK_DRAW_CEILING,
+                   max(RACK_DRAW_FLOOR, RACK_DRAW_FACTOR * slowest)))
+
+
+def _run_browser(cmd, limit, env):
+    """`cmd` with a time limit: (returncode, stdout, stderr). On running
+    out of time the browser and every process it started are killed, then
+    subprocess.TimeoutExpired is raised."""
+    import signal
+    import subprocess as _sp
+    posix = os.name != "nt"
+    p = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE, encoding="utf-8",
+                  errors="replace", env=env, start_new_session=posix)
+    try:
+        so, se = p.communicate(timeout=limit)
+    except _sp.TimeoutExpired:
+        try:
+            if posix:
+                os.killpg(p.pid, signal.SIGKILL)
+            else:
+                _sp.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
+                        capture_output=True, timeout=30)
+        except (OSError, _sp.SubprocessError):
+            pass
+        try:
+            p.kill()
+        except OSError:
+            pass
+        try:
+            p.communicate(timeout=30)
+        except _sp.SubprocessError:
+            pass
+        raise
+    return p.returncode, so or "", se or ""
+
+
+def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
+                             tries=None):
+    """Draw `page` (remote.html's text) in headless `chrome` (a path, or a
+    command as a list) at each (width, height) in `sizes`, its engine a
+    stub answering `status`, and return {(w, h): [measure, ...]} (see
+    _RACK_MEASURE_JS) or {(w, h): "why not"}. `floor` overrides
+    RACK_DRAW_FLOOR (tests). `tries`, a list, is given each draw's
+    (size, attempt, limit, outcome)."""
     import http.server
     import shutil
     import subprocess as _sp
@@ -42352,6 +42405,7 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
     out = {}
+    slowest = [0.0]
     tmp_root = tempfile.gettempdir()
     try:
         before = set(os.listdir(tmp_root))
@@ -42366,28 +42420,46 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
             scratch = os.path.join(prof, "tmp")
             os.makedirs(scratch, exist_ok=True)
             env = dict(os.environ, TMPDIR=scratch, TMP=scratch, TEMP=scratch)
+            cmd = (list(chrome) if isinstance(chrome, (list, tuple))
+                   else [chrome]) + [
+                "--headless=new", "--no-sandbox", "--disable-gpu",
+                "--no-first-run", "--no-default-browser-check",
+                "--hide-scrollbars", f"--user-data-dir={prof}",
+                f"--window-size={w},{h}", "--virtual-time-budget=6000",
+                "--dump-dom",
+                f"http://127.0.0.1:{srv.server_address[1]}/remote"]
             try:
-                r = _sp.run([chrome, "--headless=new", "--no-sandbox",
-                             "--disable-gpu", "--no-first-run",
-                             "--no-default-browser-check",
-                             "--hide-scrollbars",
-                             f"--user-data-dir={prof}",
-                             f"--window-size={w},{h}",
-                             "--virtual-time-budget=6000", "--dump-dom",
-                             f"http://127.0.0.1:{srv.server_address[1]}/remote"],
-                            capture_output=True, encoding="utf-8",
-                            errors="replace", timeout=timeout, env=env)
-                dom = r.stdout or ""
+                limit = _rack_draw_limit(slowest[0]) if floor is None else \
+                    max(floor, min(RACK_DRAW_CEILING,
+                                   RACK_DRAW_FACTOR * slowest[0]))
+                for attempt in (1, 2):
+                    t0 = time.monotonic()
+                    try:
+                        code, dom, err = _run_browser(cmd, limit, env)
+                    except _sp.TimeoutExpired:
+                        if tries is not None:
+                            tries.append(((w, h), attempt, limit, "timeout"))
+                        if attempt == 2:
+                            raise
+                        limit = min(RACK_DRAW_CEILING, limit * 2)
+                        continue
+                    took = time.monotonic() - t0
+                    slowest[0] = max(slowest[0], took)
+                    if tries is not None:
+                        tries.append(((w, h), attempt, limit, "drawn"))
+                    break
                 a = dom.find('<pre id="rack-measure">')
                 if a < 0:
                     out[(w, h)] = (f"the page never measured itself "
-                                   f"(exit {r.returncode}): "
-                                   f"{r.stderr[-600:]!r}")
+                                   f"(exit {code}): {err[-600:]!r}")
                     continue
                 b = dom.find("</pre>", a)
                 import html as _html
                 out[(w, h)] = json.loads(_html.unescape(
                     dom[a + len('<pre id="rack-measure">'):b]))
+            except _sp.TimeoutExpired as e:
+                out[(w, h)] = (f"the browser ran out of time twice "
+                               f"(limits {e.timeout:g} s and less): {e}")
             except (OSError, _sp.SubprocessError, ValueError) as e:
                 out[(w, h)] = f"{type(e).__name__}: {e}"
             finally:
@@ -42617,6 +42689,62 @@ console.log(JSON.stringify(out));
         for (w, h), r in got.items() if isinstance(r, list) and r))
     print("  ok")
 
+
+def test_rack_screen_browser_check_retries_only_a_timeout():
+    section("rack screen browser check (PR #102, mutate shard 8): a draw "
+            "that runs out of time under load is tried once more with a "
+            "longer limit; the limit scales with the slowest draw; a page "
+            "that was drawn and measured, failures and all, is never "
+            "retried; two timeouts are a failure")
+    import shutil
+    import tempfile
+    work = tempfile.mkdtemp()
+    try:
+        fake = os.path.join(work, "fake_browser.py")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import json, os, sys, time\n"
+                "mode, state = sys.argv[1], sys.argv[2]\n"
+                "n = int(open(state).read()) if os.path.exists(state) else 0\n"
+                "open(state, 'w').write(str(n + 1))\n"
+                "if mode == 'slow' or (mode == 'slow-once' and n == 0):\n"
+                "    time.sleep(6)\n"
+                "probs = ['front row arm: 14.0 px tall'] if mode == 'bad' else []\n"
+                "m = [{'tag': 'collapsed', 'problems': probs}]\n"
+                "print('<html><pre id=\"rack-measure\">' + json.dumps(m)"
+                ".replace('\"', '&quot;') + '</pre></html>')\n")
+        page = "<html><body>x</body></html>"
+
+        def draw(mode):
+            state = os.path.join(work, mode + ".n")
+            tries = []
+            got = _rack_screen_in_chromium(
+                [sys.executable, fake, mode, state], page, {}, ((800, 600),),
+                floor=1, tries=tries)
+            return got[(800, 600)], tries
+        got, tries = draw("slow-once")
+        check(isinstance(got, list) and got[0]["problems"] == [] and
+              [t[3] for t in tries] == ["timeout", "drawn"] and
+              tries[1][2] == 2 * tries[0][2],
+              f"one timeout: tried again with twice the limit, and drawn: "
+              f"{got!r} {tries}")
+        got, tries = draw("slow")
+        check(isinstance(got, str) and "ran out of time twice" in got and
+              [t[3] for t in tries] == ["timeout", "timeout"],
+              f"two timeouts: a failure, said: {got!r} {tries}")
+        got, tries = draw("bad")
+        check(isinstance(got, list) and got[0]["problems"] and
+              [t[3] for t in tries] == ["drawn"],
+              f"a measured layout failure is returned as it is, never "
+              f"retried: {got!r} {tries}")
+        check(_rack_draw_limit(0) == RACK_DRAW_FLOOR and
+              _rack_draw_limit(30) == 120 and
+              _rack_draw_limit(500) == RACK_DRAW_CEILING,
+              "the limit: the floor, four times the slowest draw, the "
+              "ceiling")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
 
 def test_remote_setup_routes_this_machine_only():
     section("rack screen, first run (Jeff, 2026-10-17): the getting-started "
@@ -57048,6 +57176,7 @@ if __name__ == "__main__":
     test_remote_has_no_arm_route()
     test_rack_screen_width_guard_css_contract()
     test_rack_screen_banners_never_squeeze_the_flame_controls()
+    test_rack_screen_browser_check_retries_only_a_timeout()
     test_remote_setup_routes_this_machine_only()
     test_windows_supervisor_first_run_defaults()
     test_remote_page_loss_changes_nothing()
