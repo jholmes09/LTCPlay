@@ -42344,9 +42344,20 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
     out = {}
+    tmp_root = tempfile.gettempdir()
+    try:
+        before = set(os.listdir(tmp_root))
+    except OSError:
+        before = set()
     try:
         for w, h in sizes:
             prof = tempfile.mkdtemp(prefix="ltc-rack-chrome-")
+            # Chrome's own scratch folders (Google Chrome leaves
+            # org.chromium.Chromium.* behind in TMPDIR) go inside the
+            # profile, which is removed below: the run leaves nothing.
+            scratch = os.path.join(prof, "tmp")
+            os.makedirs(scratch, exist_ok=True)
+            env = dict(os.environ, TMPDIR=scratch, TMP=scratch, TEMP=scratch)
             try:
                 r = _sp.run([chrome, "--headless=new", "--no-sandbox",
                              "--disable-gpu", "--no-first-run",
@@ -42357,7 +42368,7 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
                              "--virtual-time-budget=6000", "--dump-dom",
                              f"http://127.0.0.1:{srv.server_address[1]}/remote"],
                             capture_output=True, encoding="utf-8",
-                            errors="replace", timeout=timeout)
+                            errors="replace", timeout=timeout, env=env)
                 dom = r.stdout or ""
                 a = dom.find('<pre id="rack-measure">')
                 if a < 0:
@@ -42373,6 +42384,11 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
                 out[(w, h)] = f"{type(e).__name__}: {e}"
             finally:
                 shutil.rmtree(prof, ignore_errors=True)
+                # And any Chrome put in the run's temp folder regardless.
+                for left in set(os.listdir(tmp_root)) - before:
+                    if left.startswith("org.chromium."):
+                        shutil.rmtree(os.path.join(tmp_root, left),
+                                      ignore_errors=True)
     finally:
         srv.shutdown()
         srv.server_close()
