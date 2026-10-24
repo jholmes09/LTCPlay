@@ -10715,10 +10715,32 @@ def build():
   'ltcplay/remote.py',
   '        if got is not None and now - got[1] < self.SELECTED_READ_S:',
   '        if False:'),
- ('artnet: why every show file is checked is not said',
+ ('artnet: why no show file is judged is not said',
   'ltcplay/remote.py',
-  '            return self.AMBIGUOUS',
-  '            return ""'),
+  '                return "Art-Net receivers, a note: " + self.AMBIGUOUS + \\\n',
+  '                return "Art-Net receivers, a note: " + \\\n'),
+ ('artnet: with no show in use an unused file is a red FAULT again',
+  'ltcplay/remote.py',
+  '                text = ""         # a note on the rack screen, not an alert',
+  '                pass'),
+ ('artnet: with no show in use the rack screen gets no note',
+  'ltcplay/remote.py',
+  '            if found and self._artnet_unchosen(seen):',
+  '            if False:'),
+ ('artnet: the only show file in the folder is no longer judged',
+  'ltcplay/remote.py',
+  '        return active is None and seen > 1',
+  '        return active is None'),
+ ('artnet: with no show in use the Morning card is red',
+  'ltcplay/remote.py',
+  '                    "level": "warn",\n'
+  '                    "text": self.AMBIGUOUS',
+  '                    "level": "bad",\n'
+  '                    "text": self.AMBIGUOUS'),
+ ('artnet: Run does not keep the show in use for a restart',
+  'ltcplay/web.py',
+  '                    _rm.note_run(getattr(s, "timeline_path", None))',
+  '                    pass'),
  ('lasers lamp: a laser command sent while BEYOND was gone counts',
   'ltcplay/remote.py',
   '            self._beyond_lost_ver = ("pending",)',
@@ -11139,6 +11161,86 @@ def build():
   '              "soak_only": True}',
   '"notes": "BENCH ONLY, written by the soak test",\n'
   '              "soak_only": False}'),
+
+ # -- the rack screen's banners never squeeze the flame controls (Jeff,
+ # 2026-10-24, the show PC): caught by the page's CSS contract and by the
+ # page drawn in headless Chromium (selftest.py, RACK_SIZES).
+ ("rack screen: the flame groups' rows give their room to banners again",
+  "ltcplay/web/remote.html",
+  "  grid-auto-rows:minmax(min-content,1fr);gap:8px}",
+  "  grid-auto-rows:minmax(0,1fr);gap:8px}"),
+
+ ("rack screen: the flame block shrinks below its content again",
+  "ltcplay/web/remote.html",
+  ".flames{flex:1 0 auto;min-height:min-content;",
+  ".flames{flex:1 1 auto;min-height:0;"),
+
+ ("rack screen: the screens' row may shrink to nothing again",
+  "ltcplay/web/remote.html",
+  "  grid-template-rows:auto auto minmax(min-content,1fr) auto;",
+  "  grid-template-rows:auto auto minmax(0,1fr) auto;"),
+
+ ("rack screen: the page cannot be scrolled again",
+  "ltcplay/web/remote.html",
+  "html{height:100%;overflow-x:hidden;overflow-y:auto}",
+  "html{height:100%;overflow:hidden}"),
+
+ ("rack screen: the banners are never folded",
+  "ltcplay/web/remote.html",
+  "  if(list.length < 2) return {fold:false, n:list.length};",
+  "  if(list.length < 99) return {fold:false, n:list.length};"),
+
+ ("rack screen: the fold is never drawn",
+  "ltcplay/web/remote.html",
+  "  setWarn(\"lock-banner\", lockText);\n  renderAlertFold();",
+  "  setWarn(\"lock-banner\", lockText);"),
+
+ ("rack screen: Show all never opens the banners",
+  "ltcplay/web/remote.html",
+  "  $(\"al-body\").hidden = f.fold && !ALERTS_OPEN;",
+  "  $(\"al-body\").hidden = f.fold;"),
+
+ ("rack screen: the Abort bar scrolls off the window",
+  "ltcplay/web/remote.html",
+  "  position:sticky;bottom:0;z-index:15;background:var(--bg)}",
+  "  background:var(--bg)}"),
+
+ ("rack screen: the Art-Net note is never shown",
+  "ltcplay/web/remote.html",
+  "  setWarn(\"an-note\", s.artnet_note || \"\");",
+  "  setWarn(\"an-note\", \"\");"),
+
+ # -- the render's end (2026-10-24): a tiny overrun is zero and no fault;
+ # past the end the output is zero always.
+ ("flame cues: no overrun tolerance, the end of every show a fault again",
+  "ltcplay/fire_ice.py",
+  "RENDER_END_TOLERANCE_FRAMES = 2\n",
+  "RENDER_END_TOLERANCE_FRAMES = 0\n"),
+
+ ("flame cues: the overrun tolerance is wider than two frames",
+  "ltcplay/fire_ice.py",
+  "RENDER_END_TOLERANCE_FRAMES = 2\n",
+  "RENDER_END_TOLERANCE_FRAMES = 3\n"),
+
+ ("flame cues: any overrun past the render is no fault",
+  "ltcplay/fire_ice.py",
+  "                if idx >= f.frame_count and over_ms <= \\\n"
+  "                        RENDER_END_TOLERANCE_FRAMES * f.step_time_ms:",
+  "                if idx >= f.frame_count:"),
+
+ ("flame cues: exactly two frames past the render is a fault",
+  "ltcplay/fire_ice.py",
+  "                if idx >= f.frame_count and over_ms <= \\\n",
+  "                if idx >= f.frame_count and over_ms < \\\n"),
+
+ ("flame cues: past the render's end the last frame is held",
+  "ltcplay/fire_ice.py",
+  "                    return self._zero(\n"
+  "                        f\"the show's render has ended (the timecode is \"",
+  "                    data = f.frame(f.frame_count - 1)\n"
+  "                    if data: return [data[0]] * 512\n"
+  "                    return self._zero(\n"
+  "                        f\"the show's render has ended (the timecode is \""),
 
 ]
 

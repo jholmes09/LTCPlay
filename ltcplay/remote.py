@@ -2966,7 +2966,13 @@ class Remote:
     def _artnet_check(self):
         """The Morning page's Art-Net receivers card."""
         faults, seen = self.artnet_faults()
-        lead = self._artnet_lead(faults, seen)
+        if self._artnet_unchosen(seen) and \
+                any(lv != "note" for lv, _t in faults):
+            # No show in use and more than one show file (2026-10-24):
+            # what was found is said, amber, and is not a fault.
+            return {"id": "artnet", "title": "Art-Net timecode receivers",
+                    "level": "warn",
+                    "text": self.AMBIGUOUS + " ".join(t for _lv, t in faults)}
         notes = [t for lv, t in faults if lv == "note"]
         faults = [(lv, t) for lv, t in faults if lv != "note"]
         levels = {lv for lv, _t in faults}
@@ -2986,24 +2992,53 @@ class Remote:
         if notes:
             text += " Other show files, not checked as faults: " + \
                 " ".join(notes)
-        if lead and faults:
-            text = lead + text
         return {"id": "artnet", "title": "Art-Net timecode receivers",
                 "level": level, "text": text}
 
-    AMBIGUOUS = ("No show is loaded or picked yet, so every show file in "
-                 "the folder is checked. Pick the show on the Programming "
-                 "screen (or Run it) and only that one is. ")
+    AMBIGUOUS = ("No show is loaded, Run or picked yet, so no show file "
+                 "is judged as a fault: what the check found in them is a "
+                 "note. Pick the show on the Programming screen (or Run "
+                 "it) and that one is checked. ")
 
-    def _artnet_lead(self, faults, seen):
-        """AMBIGUOUS when every file was checked because none is in use
-        and there is more than one, else "" (P3-5: said once for the whole
-        card and alert, never only on the first sentence)."""
+    def _artnet_unchosen(self, seen):
+        """True when the last check judged no show file in use (none
+        loaded, Run or picked) and there is more than one show file. Then
+        nothing found is a FAULT or an alert (Jeff, 2026-10-24: after a
+        restart an unused soak_show.json was a red FAULT on the rack
+        screen): it is one collapsed note on the rack screen
+        (artnet_note) and an amber line on the Morning card. The show
+        actually being run is loaded, so it is always judged as a fault;
+        so is the only show file in the folder."""
         got = getattr(self, "_artnet", None)
         active = got[2] if got is not None else None
-        if active is None and seen > 1 and faults:
-            return self.AMBIGUOUS
+        return active is None and seen > 1
+
+    def artnet_note(self):
+        """The rack screen's one collapsed note while no show is in use
+        (_artnet_unchosen): AMBIGUOUS and what was found, or "". Never
+        raises."""
+        try:
+            faults, seen = self.artnet_faults()
+            found = [t for lv, t in faults if lv in ("bad", "warn")]
+            if found and self._artnet_unchosen(seen):
+                return "Art-Net receivers, a note: " + self.AMBIGUOUS + \
+                    " ".join(found)
+        except Exception:                        # noqa: BLE001
+            pass
         return ""
+
+    def note_run(self, path):
+        """Run started `path` (web.py's /api/start, once the show is open):
+        it is the show in use from now on, written to SELECTED_SHOW_FILE
+        at once, so a restart judges it even if no status was asked for
+        between the Run and the restart (2026-10-24). Never raises."""
+        try:
+            name = os.path.basename(str(path or ""))
+            if name:
+                self._save_selected_show(name)
+                self._artnet = None
+        except Exception:                        # noqa: BLE001
+            pass
 
     def artnet_alert(self):
         """A timecode alert on every screen (the rack screen's strip, the
@@ -3014,8 +3049,8 @@ class Remote:
         try:
             faults, seen = self.artnet_faults()
             text = " ".join(t for lv, t in faults if lv == "bad")
-            if text:
-                text = self._artnet_lead(faults, seen) + text
+            if self._artnet_unchosen(seen):
+                text = ""         # a note on the rack screen, not an alert
             if text and text != getattr(self, "_artnet_said", ""):
                 self.alerts.raise_("timecode", text)
             self._artnet_said = text
@@ -3698,6 +3733,7 @@ class Remote:
                          "needs_s": SCREEN_HOLD_S, "fresh_s": ARM_FRESH_S,
                          "holds": holds}
         self.artnet_alert()
+        out["artnet_note"] = self.artnet_note()
         self._apply_pulse()
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""

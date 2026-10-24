@@ -1274,6 +1274,10 @@ class Handler(BaseHTTPRequestHandler):
                             on_lost=body.get("on_lost"),
                             allow_missing=bool(body.get("allow_missing")),
                             auto_reload=body.get("auto_reload"))
+                # The show Run is the show in use, kept across a restart
+                # (remote.note_run; 2026-10-24).
+                if _rm is not None and hasattr(_rm, "note_run"):
+                    _rm.note_run(getattr(s, "timeline_path", None))
                 return self._send(200, {"started": True, "banner": s.banner,
                                         "notes": s.notes,
                                         "problems": s.problems})

@@ -1039,6 +1039,12 @@ def show_folder_render_faults(folder):
     return out
 
 
+# How far past a render's last frame the timecode may be before the zero
+# flame output there is also called a FAULT, in frames of the render's own
+# step time (a render a few ms shorter than its audio is normal). Only the
+# fault depends on it: past the end the output is zero either way.
+RENDER_END_TOLERANCE_FRAMES = 2
+
 RENDER_OLDER_THAN_LAYOUT = (
     "the show's render is older than xlights_networks.xml: the layout was "
     "changed after the show was rendered, so which channels are the flames "
@@ -1397,6 +1403,19 @@ class FlameCues:
             rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
             idx = int(rel * 1000.0 // f.step_time_ms)
             if not 0 <= idx < f.frame_count:
+                # Past the render's last frame the flame output is zero,
+                # always: never the last frame held, never extended.
+                # Whether that is also a FAULT on the screens (2026-10-24:
+                # a render 20 ms shorter than its audio raised one at the
+                # end of every show) allows a tiny overrun: up to
+                # RENDER_END_TOLERANCE_FRAMES of the render's own step.
+                over_ms = rel * 1000.0 - f.frame_count * f.step_time_ms
+                if idx >= f.frame_count and over_ms <= \
+                        RENDER_END_TOLERANCE_FRAMES * f.step_time_ms:
+                    return self._zero(
+                        f"the show's render has ended (the timecode is "
+                        f"within {RENDER_END_TOLERANCE_FRAMES} frames of "
+                        f"its end)")
                 return self._zero("the timecode is past the end of the "
                                   "show's render", fault=True)
             data = f.frame(idx)
