@@ -13,8 +13,17 @@
    capitals for labels, gold hairlines. Green, amber and red only ever mean
    armed, held back and Abort or a fault. The fonts are in the repo
    (ltcplay/web/brand, SIL OFL): the show machine may have no internet.
-   ONE SCREEN, NO SCROLLING (Jeff, 2026-10-07): the show screen and Tonight
-   fit 1920x1080 and 1024x768 whole. Programming is its own screen. */
+   ONE SCREEN (Jeff, 2026-10-07): the show screen and Tonight fit 1920x1080
+   and 1024x768 whole. Programming is its own screen.
+   THE FLAME CONTROLS WIN (Jeff, 2026-10-24: on the show PC two FAULT
+   banners and a flame note squashed the three flame groups to 15 px
+   slivers; their Hold to arm and Disarm could not be reached and the wheel
+   did not scroll). No banner may take the flame groups' room: the show
+   screen's row is never shorter than its content (the groups' buttons at
+   44 px and more), two or more banners fold into one line that opens with
+   a tap, and when the window is still too short the PAGE scrolls (wheel
+   and touch) while the Abort bar stays on the bottom edge. selftest.py
+   draws the page in a real browser and measures it. */
 @font-face{font-family:"Playfair Display";font-weight:900;font-style:normal;
   font-display:swap;src:url(/brand/PlayfairDisplay-900.woff2) format("woff2")}
 @font-face{font-family:"Cinzel";font-weight:700;font-style:normal;
@@ -42,7 +51,9 @@
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{background:var(--bg);height:100%;margin:0;overflow:hidden}
+html,body{background:var(--bg);margin:0}
+html{height:100%;overflow-x:hidden;overflow-y:auto}
+body{min-height:100%}
 body{color:var(--cream);font:16px/1.35 var(--sans);-webkit-font-smoothing:antialiased;
   -webkit-user-select:none;user-select:none;
   background-image:radial-gradient(rgba(212,168,74,.11) 1px,transparent 1.3px);
@@ -55,8 +66,8 @@ body{color:var(--cream);font:16px/1.35 var(--sans);-webkit-font-smoothing:antial
    2700 px wide and slid off the screen. minmax(0,1fr) pins the track to
    the screen, #main clips, and every row of the show screen may shrink
    below its text. selftest.py's CSS contract fails if any of these go. */
-#app{height:100vh;height:100dvh;display:grid;grid-template-columns:minmax(0,1fr);
-  grid-template-rows:auto auto minmax(0,1fr) auto;
+#app{min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto auto minmax(min-content,1fr) auto;
   gap:clamp(6px,1vh,12px);padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) 0}
 #app > *{min-width:0}
 header{display:flex;align-items:center;flex-wrap:wrap;gap:clamp(8px,1vw,20px);min-width:0;
@@ -114,8 +125,21 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   color:var(--champ);margin:0 0 8px;padding-bottom:6px;border-bottom:1px solid var(--hair-soft)}
 .toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;min-width:0;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#alerts{display:flex;flex-direction:column;gap:4px;min-width:0}
+#alerts,#al-body,#al-list{display:flex;flex-direction:column;gap:4px;min-width:0}
 #alerts:empty{display:none}
+/* Two or more banners (2026-10-24): one line, the worst first, with Show
+   all. Every banner and its Acknowledge is one tap away; none is lost. */
+.alsum{display:flex;align-items:center;gap:10px;border:2px solid var(--amber);
+  background:rgba(245,160,30,.14);color:var(--champ);border-radius:6px;padding:4px 10px;
+  font-size:clamp(14px,1.8vh,18px);min-width:0}
+.alsum.fault{border-color:#E61E18;background:rgba(230,30,24,.16)}
+.alsum .altext{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alsum .alkind{flex:0 1 auto;min-width:0;max-width:50%;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.85}
+.alsum button{flex:0 0 auto;min-height:44px;padding:4px 14px;font-size:clamp(14px,1.8vh,18px)}
+.alsum button.disarm{min-height:44px;font-size:clamp(14px,1.8vh,18px);letter-spacing:.02em}
+.alsum.fresh{animation:alfresh 1s steps(1,end) infinite}
+@keyframes alfresh{50%{background:rgba(230,30,24,.45)}}
 .warnbox{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
   border-radius:6px;padding:4px 10px;font-size:clamp(13px,1.6vh,16px);
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
@@ -143,6 +167,9 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   padding:10px 14px;font:800 clamp(17px,2.4vh,26px)/1.25 var(--sans);text-align:center}
 #main{min-height:0;min-width:0;position:relative;overflow:hidden}
 .view{height:100%;min-height:0;min-width:0}
+/* Every screen but the show screen keeps its own inner scrolling, as
+   before: its content never sets the page's height. */
+.view:not(#v-show){contain:size}
 [hidden]{display:none !important}
 
 /* ---- the show screen ---- */
@@ -172,11 +199,13 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 .ctl{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .ctl button{min-height:clamp(52px,8vh,96px);font-size:clamp(18px,3vh,30px)}
 #ctl-msg{margin-top:-2px}
-.flames{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:6px}
-.lamps{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
-  grid-auto-rows:minmax(0,1fr);gap:8px}
+/* The flame groups never give their room (2026-10-24): neither the block
+   nor a group's row may shrink below its content. */
+.flames{flex:1 0 auto;min-height:min-content;display:flex;flex-direction:column;gap:6px}
+.lamps{flex:1 0 auto;min-height:min-content;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-auto-rows:minmax(min-content,1fr);gap:8px}
 .lamp{border-radius:8px;padding:6px 8px;border:1px solid var(--hair);background:rgba(7,6,5,.7);
-  display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}
+  display:flex;flex-direction:column;gap:4px;min-width:0;min-height:min-content;overflow:hidden}
 .lamp b{display:block;font:700 clamp(11px,1.6vh,17px)/1.2 var(--caps);letter-spacing:.16em;
   text-transform:uppercase;color:var(--champ);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lamp .why{font:400 clamp(11px,1.4vh,13px)/1.25 var(--sans);color:var(--cream);font-style:normal;
@@ -192,7 +221,7 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
    room): its colour and its word are the group's state, its small line
    what a hold does. Still hold to arm, never a click; Disarm stays its own
    button under it. */
-.lamp .lb{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,2.2fr) minmax(0,1fr);gap:6px}
+.lamp .lb{flex:1 0 auto;min-height:min-content;display:grid;grid-template-columns:minmax(0,2.2fr) minmax(0,1fr);gap:6px}
 .lamp .lb:has(.gdis[hidden]){grid-template-columns:minmax(0,1fr)}
 .lamp button.armb{min-height:clamp(44px,6vh,140px);display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:2px;padding:4px 6px;border-radius:6px;
@@ -377,7 +406,9 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .mo-foot{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
 .mo-foot button{min-height:34px;font-size:12px;padding:2px 10px}
 .mo-foot .tally{font:400 11px/1.2 var(--sans);color:var(--muted);flex:1 1 100%}
-#abortbar{padding:6px 0 calc(8px + env(safe-area-inset-bottom));border-top:1px solid var(--hair)}
+/* The Abort bar stays on the bottom edge while the page scrolls. */
+#abortbar{padding:6px 0 calc(8px + env(safe-area-inset-bottom));border-top:1px solid var(--hair);
+  position:sticky;bottom:0;z-index:15;background:var(--bg)}
 #abortbar button{width:100%;min-height:clamp(60px,9vh,108px);display:flex;align-items:center;
   justify-content:center;gap:.6em;flex-wrap:wrap;
   font:800 clamp(28px,5vh,58px)/1 var(--sans);letter-spacing:.22em;
@@ -514,7 +545,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -1027,6 +1058,29 @@ function laserArmLine(la){
   if(la.output_permitted) return "Lasers: ALL ARMED. BEYOND's laser output is on; the show lights them.";
   return "Lasers: " + armed.map(x => x.name).join(", ") + " ARMED (" + armed.length + " of " + ls.length + "). BEYOND's laser output stays OFF: " + (la.why_off || "not every laser is armed") + ".";
 }
+// The banners above the show screen, folded (Jeff, 2026-10-24: two FAULT
+// banners and a flame note squashed the flame groups). `items` are the
+// banners showing, each {key, fault, label, text}, in the order drawn. One
+// banner is shown whole; two or more fold into one line: red when any is a
+// fault, every fault named by its label, the worst one's sentence (the
+// first fault, else the first), opened with Show all. Folding hides
+// nothing for good: every banner, and every Acknowledge, is one tap away.
+// `seen` is the set of fault keys drawn before (null on the first draw):
+// a fault key not in it is `fresh` (review of #102: a new fault must not
+// just bump a count), and `keys` is what to remember for the next draw.
+function alertFold(items, seen){
+  const list = (items || []).filter(i => i && i.text);
+  const keys = list.filter(i => i.fault).map(i => String(i.key));
+  const fresh = !!seen && keys.some(k => !seen.has(k));
+  if(list.length < 2) return {fold:false, n:list.length, fresh:fresh, keys:keys};
+  const worst = list.find(i => i.fault) || list[0];
+  const faults = list.filter(i => i.fault).map(i => i.label || "Fault");
+  return {fold:true, n:list.length, fault:faults.length > 0,
+    kind: !faults.length ? "Note" :
+      (faults.length === 1 ? "Fault: " : faults.length + " faults: ") + faults.join(", "),
+    text: worst.text,
+    more: list.length - 1, fresh:fresh, keys:keys};
+}
 // LOGIC END
 </script>
 <script>
@@ -1227,6 +1281,8 @@ function render(){
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "Stops the show. Flames then need Arm again";
+  LOCAL_FAULT["st-trouble"] = !!s.laser_fault;
+  LOCAL_LABEL["st-trouble"] = s.laser_fault ? "Lasers" : "Engine";
   setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
 
   let fmsg = "";
@@ -1239,7 +1295,20 @@ function render(){
   // what this engine looked for, what it found, what to do.
   const dk = s.deck || {};
   if(dk.text && !dk.heard) fmsg += (fmsg ? " " : "") + dk.text;
+  // Every part of this banner is a fault (review of #102, P1-a): the
+  // flames' state not known, no flame link, the cue fault, the deck not
+  // heard. Its label names which.
+  const flWhy = [];
+  if(!fl.connected || fl.stale || fl.fault) flWhy.push("flamesafe");
+  if(!s.disarm_connected) flWhy.push("Flame link");
+  if(fl.cues_fault) flWhy.push("Flame cues");
+  if(dk.text && !dk.heard) flWhy.push("Stream Deck");
+  LOCAL_FAULT["fl-warn"] = !!fmsg;
+  LOCAL_LABEL["fl-warn"] = flWhy.join(", ") || "Flames";
   setWarn("fl-warn", fmsg);
+  // The Art-Net receiver check with no show in use (2026-10-24): one note,
+  // never a fault (remote.py artnet_note).
+  setWarn("an-note", s.artnet_note || "");
   renderAlerts(s.alerts || []);
   renderLamps(fl);
   // The Morning and Shutdown page exists only with the Fire & Ice engine;
@@ -1259,7 +1328,10 @@ function render(){
   }
   if(mo && mo.config_error) lockText += (lockText ? " " : "") + "Startup page settings: " + mo.config_error;
   if(mo && mo.lock_error) lockText += (lockText ? " " : "") + "LOCKOUT NOT TRUSTED: " + mo.lock_error + ". Nothing fires from the Startup page.";
+  LOCAL_FAULT["lock-banner"] = !!lockText;
+  LOCAL_LABEL["lock-banner"] = "Lockout";
   setWarn("lock-banner", lockText);
+  renderAlertFold();
   // Which LTC Player this is (its release and build id), so the version
   // on the screen can be read off against the Releases page by phone.
   $("version").textContent = s.version ? ("LTC Player " + s.version) : "";
@@ -1399,6 +1471,41 @@ function renderAlerts(alerts){
     armStop("Disarm all flame groups"); press("disarm-all");
   }));
 }
+let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
+// The page's own banners: whether each is a fault now, and its label.
+const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note"};
+const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
+  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check"};
+function renderAlertFold(){
+  const s = ST || {}, items = [];
+  (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
+    label: ALERT_LABEL[a.kind] || a.kind, text: a.text}));
+  ["lock-banner", "st-trouble", "fl-warn", "an-note"].forEach(id => {
+    const el = $(id);
+    if(!el.hidden) items.push({key:id + ":" + (LOCAL_LABEL[id] || id), fault:!!LOCAL_FAULT[id], label:LOCAL_LABEL[id] || "", text:el.textContent});
+  });
+  const f = alertFold(items, FAULTS_SEEN);
+  FAULTS_SEEN = new Set(f.keys);
+  // A new fault opens the fold (review of #102). Never under a finger
+  // holding an arm: then the line flashes and opens once the hold ends.
+  if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }
+  if(PENDING_OPEN && !HOLD){ PENDING_OPEN = false; ALERTS_OPEN = true; }
+  $("al-sum").hidden = !f.fold;
+  $("al-body").hidden = f.fold && !ALERTS_OPEN;
+  // The deck alert's Disarm all stays outside the fold (review of #102).
+  $("al-sum-dis").hidden = !f.fold || ALERTS_OPEN ||
+    !(s.alerts || []).some(a => (a.options || []).includes("Disarm all"));
+  if(!f.fold) return;
+  $("al-sum").className = "alsum" + (f.fault ? " fault" : "") + (PENDING_OPEN ? " fresh" : "");
+  $("al-sum-kind").textContent = f.kind + (f.more ? " (" + f.n + " in all)" : "");
+  $("al-sum-kind").title = f.kind;
+  $("al-sum-text").textContent = f.text;
+  $("al-sum-text").title = f.text;
+  $("al-more").textContent = ALERTS_OPEN ? "Fold" : "Show all " + f.n;
+  $("al-more").setAttribute("aria-expanded", ALERTS_OPEN ? "true" : "false");
+}
+$("al-more").addEventListener("click", () => { ALERTS_OPEN = !ALERTS_OPEN; PENDING_OPEN = false; renderAlertFold(); });
+$("al-sum-dis").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
 function renderLamps(fl){
   const groups = fl.groups || [];
   const key = groups.map(g => g.name).join("\n");

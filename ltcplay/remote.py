@@ -999,6 +999,13 @@ class Remote:
             self._disarm_ids = max(0, int(wall() * 1000))
         except Exception:                        # noqa: BLE001
             self._disarm_ids = int(time.time() * 1000)
+        # The show in use, written to SELECTED_SHOW_FILE off the request
+        # (review of #102, P2-c): the name waiting to be written, the lock
+        # the writes take in turn, and an event set while none is waiting.
+        self._sel_pending = None
+        self._sel_lock = threading.Lock()
+        self._sel_idle = threading.Event()
+        self._sel_idle.set()
         # Disarm all flame groups (plain): which press is the latest, and
         # how its confirmation is scheduled (a test runs it by hand).
         self._plain_gen = 0
@@ -2921,6 +2928,9 @@ class Remote:
         """The picker's selection (or the last Run), if that show file is
         still in the show folder, else None. Cached SELECTED_READ_S."""
         now = self.clock()
+        pend = getattr(self, "_sel_pending", None)
+        if pend:
+            return pend        # chosen, its write still on its way
         got = getattr(self, "_sel_cache", None)
         if got is not None and now - got[1] < self.SELECTED_READ_S:
             return got[0]
@@ -2938,13 +2948,46 @@ class Remote:
         return sel
 
     def _save_selected_show(self, name):
-        try:
-            with open(os.path.join(self.folder, self.SELECTED_SHOW_FILE),
-                      "w", encoding="utf-8") as fh:
-                json.dump({"show": name}, fh)
-        except OSError:
-            pass
+        """`name` is the show in use from now on: known at once, and
+        written to SELECTED_SHOW_FILE on a thread of its own, so a stalled
+        disk never holds up the request that chose it (Run's reply, a
+        status poll, the picker; review of #102, P2-c). Never raises."""
         self._sel_cache = (name, self.clock())
+        self._sel_pending = name
+        self._sel_idle.clear()
+        try:
+            threading.Thread(target=self._selection_writer, daemon=True,
+                             name="ltcplay-show-select").start()
+        except RuntimeError:
+            self._selection_writer()
+
+    def _selection_writer(self):
+        with self._sel_lock:
+            name = self._sel_pending
+            if name is not None:
+                self._write_selection_file(name)
+            if self._sel_pending == name:
+                self._sel_pending = None
+                self._sel_idle.set()
+
+    def _write_selection_file(self, name):
+        """One whole file or none: a temp file beside it, then one
+        os.replace. Never raises."""
+        path = os.path.join(self.folder, self.SELECTED_SHOW_FILE)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"show": name}, fh)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    def selection_written(self, timeout=5.0):
+        """True once no selection write is waiting (tests)."""
+        return self._sel_idle.wait(timeout)
 
     def select_show(self, body):
         """POST show-select {"file"}: the Programming screen's show picker
@@ -2966,7 +3009,13 @@ class Remote:
     def _artnet_check(self):
         """The Morning page's Art-Net receivers card."""
         faults, seen = self.artnet_faults()
-        lead = self._artnet_lead(faults, seen)
+        if self._artnet_unchosen(seen) and \
+                any(lv != "note" for lv, _t in faults):
+            # No show in use and more than one show file (2026-10-24):
+            # what was found is said, amber, and is not a fault.
+            return {"id": "artnet", "title": "Art-Net timecode receivers",
+                    "level": "warn",
+                    "text": self.AMBIGUOUS + " ".join(t for _lv, t in faults)}
         notes = [t for lv, t in faults if lv == "note"]
         faults = [(lv, t) for lv, t in faults if lv != "note"]
         levels = {lv for lv, _t in faults}
@@ -2986,24 +3035,53 @@ class Remote:
         if notes:
             text += " Other show files, not checked as faults: " + \
                 " ".join(notes)
-        if lead and faults:
-            text = lead + text
         return {"id": "artnet", "title": "Art-Net timecode receivers",
                 "level": level, "text": text}
 
-    AMBIGUOUS = ("No show is loaded or picked yet, so every show file in "
-                 "the folder is checked. Pick the show on the Programming "
-                 "screen (or Run it) and only that one is. ")
+    AMBIGUOUS = ("No show is loaded, Run or picked yet, so no show file "
+                 "is judged as a fault: what the check found in them is a "
+                 "note. Pick the show on the Programming screen (or Run "
+                 "it) and that one is checked. ")
 
-    def _artnet_lead(self, faults, seen):
-        """AMBIGUOUS when every file was checked because none is in use
-        and there is more than one, else "" (P3-5: said once for the whole
-        card and alert, never only on the first sentence)."""
+    def _artnet_unchosen(self, seen):
+        """True when the last check judged no show file in use (none
+        loaded, Run or picked) and there is more than one show file. Then
+        nothing found is a FAULT or an alert (Jeff, 2026-10-24: after a
+        restart an unused soak_show.json was a red FAULT on the rack
+        screen): it is one collapsed note on the rack screen
+        (artnet_note) and an amber line on the Morning card. The show
+        actually being run is loaded, so it is always judged as a fault;
+        so is the only show file in the folder."""
         got = getattr(self, "_artnet", None)
         active = got[2] if got is not None else None
-        if active is None and seen > 1 and faults:
-            return self.AMBIGUOUS
+        return active is None and seen > 1
+
+    def artnet_note(self):
+        """The rack screen's one collapsed note while no show is in use
+        (_artnet_unchosen): AMBIGUOUS and what was found, or "". Never
+        raises."""
+        try:
+            faults, seen = self.artnet_faults()
+            found = [t for lv, t in faults if lv in ("bad", "warn")]
+            if found and self._artnet_unchosen(seen):
+                return "Art-Net receivers, a note: " + self.AMBIGUOUS + \
+                    " ".join(found)
+        except Exception:                        # noqa: BLE001
+            pass
         return ""
+
+    def note_run(self, path):
+        """Run started `path` (web.py's /api/start, once the show is open):
+        it is the show in use from now on, written to SELECTED_SHOW_FILE
+        at once, so a restart judges it even if no status was asked for
+        between the Run and the restart (2026-10-24). Never raises."""
+        try:
+            name = os.path.basename(str(path or ""))
+            if name:
+                self._save_selected_show(name)
+                self._artnet = None
+        except Exception:                        # noqa: BLE001
+            pass
 
     def artnet_alert(self):
         """A timecode alert on every screen (the rack screen's strip, the
@@ -3014,8 +3092,8 @@ class Remote:
         try:
             faults, seen = self.artnet_faults()
             text = " ".join(t for lv, t in faults if lv == "bad")
-            if text:
-                text = self._artnet_lead(faults, seen) + text
+            if self._artnet_unchosen(seen):
+                text = ""         # a note on the rack screen, not an alert
             if text and text != getattr(self, "_artnet_said", ""):
                 self.alerts.raise_("timecode", text)
             self._artnet_said = text
@@ -3698,6 +3776,7 @@ class Remote:
                          "needs_s": SCREEN_HOLD_S, "fresh_s": ARM_FRESH_S,
                          "holds": holds}
         self.artnet_alert()
+        out["artnet_note"] = self.artnet_note()
         self._apply_pulse()
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""

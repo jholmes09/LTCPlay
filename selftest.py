@@ -35820,9 +35820,9 @@ def _fi_cue_rig(work, total_after=True):
                 extra=pix if order == "B" else "", name="Flames",
                 state="Inactive", after="" if order == "B" else pix))
 
-    def rerender(channels, fill, frames=400):
+    def rerender(channels, fill, frames=400, step_ms=25):
         _fx.write_fseq(render, frame_count=frames, channel_count=channels,
-                       step_ms=25, compression="zlib", block_frames=100,
+                       step_ms=step_ms, compression="zlib", block_frames=100,
                        fill=fill)
         lay = os.stat(net).st_mtime_ns
         os.utime(render, ns=(lay, max(lay, os.stat(render).st_mtime_ns)
@@ -35897,6 +35897,92 @@ def test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout():
             check(ask() == [70] * 512 and cues.fault == "",
                   f"{mode}: rendered again for this layout: the cues come "
                   f"back and the fault clears: {cues.fault!r}")
+            cues.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault():
+    section("fire & ice (2026-10-24): a render 20 ms shorter than its audio "
+            "raised 'Flame cues are zero, a fault' at the end of every show. "
+            "Past the render's last frame the flame output stays ZERO, "
+            "always; the FAULT allows two frames of the render's step time; "
+            "beyond that it is still a fault")
+    import shutil
+    import tempfile
+    F = _fi_mod()
+    check(F.RENDER_END_TOLERANCE_FRAMES == 2,
+          f"the tolerance is two frames: {F.RENDER_END_TOLERANCE_FRAMES}")
+    work = tempfile.mkdtemp()
+    try:
+        for bg in (False, True):
+            lines = []
+            rig = _fi_cue_rig(os.path.join(work, f"bg{bg}"))
+            rig.layout("A")
+            cues = F.FlameCues(rig.control, "Flames",
+                               lambda text, **f: lines.append(
+                                   (text, f.get("fault", False))),
+                               background=bg)
+            if bg:
+                cues._stop.set()          # no thread: refreshed by hand
+            mode = "background" if bg else "in the call"
+
+            def at(frames, step, fill=50):
+                # The timecode is 00:00:02:15, 2500 ms into the cue.
+                rig.rerender(1534, fill, frames=frames, step_ms=step)
+                if bg:
+                    cues._refresh_once()
+                n = len(lines)
+                got = cues("00:00:02:15")
+                return got, cues.fault, lines[n:]
+            # Inside the render: the frame, as before.
+            got, fault, _l = at(101, 25)
+            check(got == [50] * 512 and fault == "",
+                  f"{mode}: the last frame inside the render is read: "
+                  f"{got and got[:2]} {fault!r}")
+            # (step ms, frames, overrun ms): each within two frames. The
+            # Pico's case: 20 ms short at a 20 ms step (444.40 s against
+            # 444.42 s); 0 ms past (the first frame after the last); one
+            # frame; exactly two frames.
+            for step, frames, over in ((20, 124, 20), (25, 100, 0),
+                                       (25, 99, 25), (25, 98, 50),
+                                       (20, 123, 40)):
+                got, fault, said = at(frames, step, fill=77)
+                check(frames * step + over == 2500, "the case is what it says")
+                check(got is None, f"{mode}: {over} ms past a {step} ms "
+                                   f"render: the output is ZERO, never the "
+                                   f"last frame held: {got and got[:2]}")
+                check(fault == "", f"{mode}: {over} ms past a {step} ms "
+                                   f"render: no fault: {fault!r}")
+                check(not any(f for _t, f in said),
+                      f"{mode}: {over} ms past: nothing journaled as a "
+                      f"fault: {said}")
+            # The rack screen and the Stream Deck read cues.fault: empty.
+            check(cues.faults_now() == "",
+                  f"{mode}: no CUES FAULT for the screens: "
+                  f"{cues.faults_now()!r}")
+            # Beyond two frames: still the fault, still zero.
+            for step, frames, over in ((25, 97, 75), (20, 122, 60),
+                                       (25, 40, 1500)):
+                got, fault, said = at(frames, step, fill=77)
+                check(frames * step + over == 2500, "the case is what it says")
+                # Journaled once per episode: the first time the reason
+                # changes to this one.
+                check(got is None and "past the end of the show's render"
+                      in fault and (over != 75 or any(
+                          f and "past the end" in t for t, f in said)),
+                      f"{mode}: {over} ms past a {step} ms render: zero and "
+                      f"a fault, journaled: {got and got[:2]} {fault!r} "
+                      f"{said}")
+            # Within tolerance again after a fault: the fault clears, the
+            # output stays zero.
+            got, fault, _l = at(99, 25, fill=77)
+            check(got is None and fault == "",
+                  f"{mode}: back within two frames: zero, the fault "
+                  f"cleared: {fault!r}")
+            check(not any("\u2014" in t or "\u2013" in t for t, _f in lines),
+                  "no dashes in what is journaled")
             cues.close()
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -39692,6 +39778,9 @@ class _RemoteRig:
     def close(self):
         self.httpd.server_close()
         self.svc.stop()
+        # A show selection still being written (off the request) lands
+        # before its folder goes.
+        self.remote.selection_written(5.0)
         import shutil
         shutil.rmtree(self.work, ignore_errors=True)
         shutil.rmtree(self.folder, ignore_errors=True)
@@ -41894,8 +41983,10 @@ def test_rack_screen_width_guard_css_contract():
           toast.get("white-space") == "nowrap" and
           toast.get("min-width") == "0",
           f"a toast clips its one line and never widens anything: {toast}")
-    check((_css_rule(rules, "html,body") or {}).get("overflow") == "hidden",
-          "the document never scrolls")
+    # The document scrolls up and down when the show screen is taller than
+    # the window (2026-10-24), never sideways: the width guard holds.
+    check((_css_rule(rules, "html") or {}).get("overflow-x") == "hidden",
+          "the document never scrolls sideways")
     bar = _css_rule(rules, "#abortbar button") or {}
     check(bar.get("width") == "100%" and
           bar.get("justify-content") == "center",
@@ -41987,6 +42078,543 @@ console.log(JSON.stringify(out));
         bad = None
     check(r.returncode == 0 and bad == [],
           f"modeLook and abortPlan, in node: {r.stdout!r} {r.stderr[-400:]!r}")
+    print("  ok")
+
+
+# -- the rack screen in a real browser (Jeff, 2026-10-24) --------------------
+# On the Windows show PC (Edge, 1920x1080, STANDBY) two red FAULT banners and
+# a yellow flame note filled the top of the rack screen, the three flame
+# group cards were squashed to slivers about 15 px tall, their Hold to arm
+# and Disarm buttons could not be seen or reached, Disarm all flame groups
+# overlapped them and the mouse wheel did not scroll. The CSS contract above
+# could not see it: only a browser laying the page out can. This draws the
+# page in headless Chromium (or Chrome or Edge) at the show PC's sizes with
+# three or more banners, and measures every button that arms, disarms or
+# stops.
+
+def _find_chromium():
+    """A Chromium, Chrome or Edge to draw the page with, or None.
+    LTCPLAY_CHROME names one by hand."""
+    import glob
+    import shutil
+    env = os.environ.get("LTCPLAY_CHROME")
+    if env and os.path.isfile(env):
+        return env
+    for n in ("chromium", "chromium-browser", "google-chrome",
+              "google-chrome-stable", "chrome", "msedge"):
+        p = shutil.which(n)
+        if p:
+            return p
+    for p in (sorted(glob.glob("/opt/pw-browsers/chromium-*/chrome-linux/"
+                               "chrome"), reverse=True) +
+              [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+               r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+               r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+               r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+               "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+# The Pico's screen on 2026-10-24, and then some: STANDBY, three flame
+# groups off, arming from the screen on, the Stream Deck not plugged in, the
+# stale soak_show.json Art-Net fault, a flame cues fault, a lockout and a
+# trouble line: five banners above the flames, every one of them long.
+def _rack_status_pico(many=True):
+    deck = ("Stream Deck: not plugged in. This engine looked for an Elgato "
+            "Stream Deck on USB and found none. Plug it in; the keys come "
+            "up by themselves within 5 s. Until then use the buttons on "
+            "this screen.")
+    artnet = ("No show is loaded or picked yet, so every show file in the "
+              "folder is checked. Pick the show on the Programming screen "
+              "(or Run it) and only that one is. soak_show.json: two "
+              "Art-Net timecode receivers are on one address, 127.0.0.1: "
+              "MadMapper and BEYOND. Each needs its own (127.0.0.1, "
+              "127.0.0.2), or one of them never hears the timecode. "
+              "soak_show.json: the node address 127.0.0.2 is not on this "
+              "PC.")
+    alerts = [{"id": 7, "kind": "deck", "text": deck, "severity": "fault",
+               "since": 0, "options": ["Acknowledge", "Disarm all"],
+               "booth": "", "pulse": False},
+              {"id": 8, "kind": "timecode", "text": artnet,
+               "severity": "fault", "since": 0, "options": ["Acknowledge"],
+               "booth": "", "pulse": False}]
+    st = {
+        "served_at": 0, "fresh_s": 2.0, "version": "bench test",
+        "schedule": {"attached": True, "ok": True, "state": "STANDBY",
+                     "running": None, "held": False, "aborted": False,
+                     "conductor": True, "trouble": None, "next": None,
+                     "delayed": None, "slots": []},
+        "show": {"running": False, "timecode": None},
+        "transport": {"programming": False},
+        "flames": {"connected": True, "stale": False, "age_ms": 120,
+                   "fault": "",
+                   "cues_fault": ("the timecode is past the end of the "
+                                  "show's render"),
+                   "groups": [{"name": "front row", "armed": "disarmed"},
+                              {"name": "cat-walk", "armed": "disarmed"},
+                              {"name": "wave flamer", "armed": "disarmed"}]},
+        "deck": {"text": deck, "heard": False},
+        "disarm_connected": True,
+        "arming": {"enabled": True, "needs_s": 2.0, "fresh_s": 1.0,
+                   "holds": []},
+        "alerts": alerts,
+        "subsystems": [{"name": n, "state": s, "word": w} for n, s, w in (
+            ("Show", "ok", "ready"), ("Timecode", "bad", "fault"),
+            ("flamesafe", "ok", "live"), ("Stream Deck", "bad", "missing"),
+            ("Lasers", "ok", "dark"), ("Audio", "ok", "ready"))],
+        "laser_arm": {"lasers": [{"id": "L1", "name": "Laser 1",
+                                  "armed": False},
+                                 {"id": "L2", "name": "Laser 2",
+                                  "armed": False}],
+                      "groups": {"All": ["L1", "L2"]}},
+        "laser_fault": "",
+        "artnet_note": "",
+    }
+    if many:
+        st["morning"] = {"locked_machines": ["wave flamer 3"],
+                         "locked_lasers": [], "flamesafe_confirmed": True}
+        st["disk"] = {"text": ("The show PC's drive is 93 percent full: "
+                               "clear space before the next show night so "
+                               "the logs and the journal keep writing.")}
+    return st
+
+
+_RACK_MEASURE_JS = r"""
+<script>
+(function(){
+function rectOf(el){ const r = el.getBoundingClientRect();
+  return {top:r.top + scrollY, bottom:r.bottom + scrollY, left:r.left, right:r.right, h:r.height, w:r.width}; }
+function clipH(el){
+  // How much of the button's height can be seen: cut by its card, the
+  // show screen's box and the window, at the page's top.
+  let r = el.getBoundingClientRect(), top = r.top, bot = r.bottom;
+  for(let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement){
+    const cs = getComputedStyle(p);
+    if(cs.overflowY !== "visible" || cs.overflowX !== "visible"){ const q = p.getBoundingClientRect(); top = Math.max(top, q.top); bot = Math.min(bot, q.bottom); }
+  }
+  return Math.max(0, bot - top);
+}
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function hits(el){
+  // Every point of the button a finger can land on, with it scrolled to the
+  // middle of the window: the button itself, never something over it.
+  el.scrollIntoView({block:"center", inline:"nearest"});
+  const r = el.getBoundingClientRect(), bad = [];
+  if(r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) bad.push("not wholly inside the window when scrolled to");
+  const ins = Math.min(4, r.width / 4, r.height / 4);
+  for(const [x, y] of [[r.left + r.width/2, r.top + r.height/2], [r.left + ins, r.top + ins], [r.right - ins, r.top + ins],
+                       [r.left + ins, r.bottom - ins], [r.right - ins, r.bottom - ins]]){
+    const at = document.elementFromPoint(x, y);
+    if(!at || !(el === at || el.contains(at))) bad.push("covered or clipped at " + Math.round(x) + "," + Math.round(y) +
+      " by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
+  }
+  return bad;
+}
+function measure(tag){
+  scrollTo(0, 0);
+  const se = document.scrollingElement;
+  const out = {tag:tag, vw:innerWidth, vh:innerHeight, scroll_h:se.scrollHeight,
+    overflow_y:[getComputedStyle(document.documentElement).overflowY, getComputedStyle(document.body).overflowY],
+    lamps:[], controls:[], alerts:[], problems:[]};
+  const lamps = [...document.querySelectorAll("#fl-lamps .lamp")];
+  const atLoad = [];
+  lamps.forEach((lp, i) => {
+    const name = (lp.querySelector("b") || {}).textContent || ("group " + i);
+    const arm = lp.querySelector("[data-arm]"), dis = lp.querySelector("[data-gdis]");
+    const row = {name:name, card:rectOf(lp).h};
+    for(const [k, el] of [["arm", arm], ["disarm", dis]]){
+      if(!shown(el)){ out.problems.push(name + " " + k + ": not shown"); continue; }
+      const r = rectOf(el);
+      row[k] = Math.round(r.h * 10) / 10;
+      row[k + "_seen"] = Math.round(clipH(el) * 10) / 10;
+      if(clipH(el) < 44) out.problems.push(name + " " + k + ": only " + clipH(el).toFixed(1) + " px of it can be seen");
+      row[k + "_w"] = Math.round(r.w);
+      atLoad.push([name + " " + k, r]);
+      if(r.h < 44) out.problems.push(name + " " + k + ": " + r.h.toFixed(1) + " px tall, under 44");
+      if(r.w < 44) out.problems.push(name + " " + k + ": " + r.w.toFixed(1) + " px wide, under 44");
+      for(const b of hits(el)) out.problems.push(name + " " + k + ": " + b);
+    }
+    out.lamps.push(row);
+  });
+  if(lamps.length < 3) out.problems.push("only " + lamps.length + " flame groups drawn");
+  scrollTo(0, 0);
+  // At 1920x1080 and a laptop's 1366x768 the operator sees every group's
+  // buttons without scrolling.
+  out.flames_visible_at_load = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= innerHeight);
+  const ctl = {"Abort": "b-abort", "Hold": "b-hold", "Disarm all flame groups": "b-disarm", "Disarm all lasers": "lz-disarm"};
+  for(const k in ctl){
+    const el = document.getElementById(ctl[k]);
+    if(!shown(el)){ out.problems.push(k + ": not shown"); continue; }
+    const r = rectOf(el);
+    out.controls.push({name:k, h:Math.round(r.h * 10) / 10});
+    if(k !== "Disarm all lasers" && r.h < 40) out.problems.push(k + ": " + r.h.toFixed(1) + " px tall");
+    for(const b of hits(el)) out.problems.push(k + ": " + b);
+  }
+  scrollTo(0, 0);
+  // Nothing that arms or disarms overlaps anything else that does. (The
+  // Abort bar is left out: it stays on the window's bottom edge while the
+  // page scrolls under it, by design; hits() above proves each button can
+  // be scrolled clear of it and pressed.)
+  const rs = [...document.querySelectorAll("#fl-lamps button, #b-disarm, #lz-disarm, #lz-chips button, #b-hold, #b-start, #b-resume, #b-reset, #alerts button")]
+    .filter(shown).map(el => [el.id || el.dataset.arm && ("arm " + el.dataset.arm) || el.dataset.gdis && ("disarm " + el.dataset.gdis) || el.textContent.trim().slice(0, 24), rectOf(el)]);
+  for(let i = 0; i < rs.length; i++) for(let j = i + 1; j < rs.length; j++){
+    const a = rs[i][1], b = rs[j][1];
+    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+      out.problems.push("overlap: " + rs[i][0] + " and " + rs[j][0]);
+  }
+  // Every banner: reachable, and each alert's Acknowledge pressable.
+  document.querySelectorAll("#alerts .alertbox, #alerts .warnbox:not([hidden]), #alerts .lfbanner:not([hidden])").forEach(el => {
+    out.alerts.push({id:el.id || el.dataset.alert || "", shown:shown(el), h:shown(el) ? Math.round(rectOf(el).h) : 0}); });
+  document.querySelectorAll("#alerts [data-ack]").forEach(el => {
+    if(!shown(el)) return;
+    for(const b of hits(el)) out.problems.push("Acknowledge " + el.dataset.ack + ": " + b);
+  });
+  const sum = document.getElementById("al-sum");
+  out.sum = shown(sum) ? {cls:sum.className, kind:(document.getElementById("al-sum-kind") || {}).textContent || ""} : null;
+  const sdis = document.getElementById("al-sum-dis");
+  out.sum_disarm = shown(sdis);
+  if(shown(sdis)) for(const b of hits(sdis)) out.problems.push("the folded line's Disarm all: " + b);
+  out.alerts_top = Math.round(rectOf(document.getElementById("alerts")).h);
+  // The folded part alone (the live flame programming bar is never folded).
+  out.fold_h = ["al-sum", "al-body"].map(id => document.getElementById(id))
+    .filter(shown).reduce((n, el) => n + Math.round(rectOf(el).h), 0);
+  scrollTo(0, 0);
+  return out;
+}
+window.__rackMeasure = measure;
+function go(){
+  if(!document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 100);
+  setTimeout(() => {
+    const res = [measure("collapsed")];
+    const more = document.getElementById("al-more");
+    if(more && shown(more)){ more.click(); res.push(measure("expanded")); }
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify(res);
+    document.body.appendChild(pre);
+  }, 600);
+}
+go();
+})();
+</script>
+"""
+
+
+def _rack_screen_in_chromium(chrome, page, status, sizes, timeout=60):
+    """Draw `page` (remote.html's text) in headless `chrome` at each
+    (width, height) in `sizes`, its engine a stub answering `status`, and
+    return {(w, h): [measure, ...]} (see _RACK_MEASURE_JS) or
+    {(w, h): "why not"}."""
+    import http.server
+    import shutil
+    import subprocess as _sp
+    import tempfile
+    import threading
+    html = page.replace("</body>", _RACK_MEASURE_JS + "</body>", 1)
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _out(self, code, body, ctype="application/json"):
+            data = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            p = self.path.split("?")[0]
+            if p in ("/", "/remote"):
+                return self._out(200, html, "text/html; charset=utf-8")
+            if p == "/api/remote/whoami":
+                return self._out(200, json.dumps(
+                    {"local": True, "device": "this PC (rack screen)",
+                     "fresh_s": 2.0}))
+            if p == "/api/remote/status":
+                st = dict(status)
+                st["served_at"] = int(time.time() * 1000)
+                return self._out(200, json.dumps(st))
+            if p.startswith("/brand/"):
+                return self._out(404, "{}")
+            return self._out(200, "{}")
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            return self._out(200, "{}")
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    srv.daemon_threads = True
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    out = {}
+    tmp_root = tempfile.gettempdir()
+    try:
+        before = set(os.listdir(tmp_root))
+    except OSError:
+        before = set()
+    try:
+        for w, h in sizes:
+            prof = tempfile.mkdtemp(prefix="ltc-rack-chrome-")
+            # Chrome's own scratch folders (Google Chrome leaves
+            # org.chromium.Chromium.* behind in TMPDIR) go inside the
+            # profile, which is removed below: the run leaves nothing.
+            scratch = os.path.join(prof, "tmp")
+            os.makedirs(scratch, exist_ok=True)
+            env = dict(os.environ, TMPDIR=scratch, TMP=scratch, TEMP=scratch)
+            try:
+                r = _sp.run([chrome, "--headless=new", "--no-sandbox",
+                             "--disable-gpu", "--no-first-run",
+                             "--no-default-browser-check",
+                             "--hide-scrollbars",
+                             f"--user-data-dir={prof}",
+                             f"--window-size={w},{h}",
+                             "--virtual-time-budget=6000", "--dump-dom",
+                             f"http://127.0.0.1:{srv.server_address[1]}/remote"],
+                            capture_output=True, encoding="utf-8",
+                            errors="replace", timeout=timeout, env=env)
+                dom = r.stdout or ""
+                a = dom.find('<pre id="rack-measure">')
+                if a < 0:
+                    out[(w, h)] = (f"the page never measured itself "
+                                   f"(exit {r.returncode}): "
+                                   f"{r.stderr[-600:]!r}")
+                    continue
+                b = dom.find("</pre>", a)
+                import html as _html
+                out[(w, h)] = json.loads(_html.unescape(
+                    dom[a + len('<pre id="rack-measure">'):b]))
+            except (OSError, _sp.SubprocessError, ValueError) as e:
+                out[(w, h)] = f"{type(e).__name__}: {e}"
+            finally:
+                shutil.rmtree(prof, ignore_errors=True)
+                # And any Chrome put in the run's temp folder regardless.
+                for left in set(os.listdir(tmp_root)) - before:
+                    if left.startswith("org.chromium."):
+                        shutil.rmtree(os.path.join(tmp_root, left),
+                                      ignore_errors=True)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    return out
+
+
+def _rack_status_cue_fault_behind_a_warning():
+    """Review of #102, P1-a: a server warning (the start gate) and the
+    page's own cue fault and deck-not-heard text, nothing else."""
+    st = _rack_status_pico(many=False)
+    st["alerts"] = [{"id": 3, "kind": "gate", "severity": "warning",
+                     "text": "The start check asks before the next show.",
+                     "since": 0, "options": ["Acknowledge"], "booth": "",
+                     "pulse": False}]
+    return st
+
+
+def _rack_status_live_flame():
+    """The Pico's screen after this change, with live flame programming on
+    as well: its red bar is never folded away."""
+    st = _rack_status_pico()
+    st["alerts"] = st["alerts"][:1]
+    st["artnet_note"] = ("Art-Net receivers, a note: No show is loaded, Run "
+                         "or picked yet, so no show file is judged as a "
+                         "fault. soak_show.json: two Art-Net timecode "
+                         "receivers are on one address, 127.0.0.1.")
+    st["live_flame"] = {"on": True, "receiving": True, "who": "Jeff",
+                        "map": [{"universe": 9, "slots": "1-24"}]}
+    return st
+
+
+# The sizes the rack screen is drawn at (window sizes; the browser's own
+# frame takes some): the show PC's 1920x1080, the same screen at Windows'
+# 125 and 150 percent, a 1366x768 laptop, a short 1366x600 window, and an
+# iPad both ways.
+RACK_SIZES = ((1920, 1080), (1536, 864), (1280, 720), (1366, 768),
+              (1366, 600), (1024, 768), (768, 1024))
+
+
+def test_rack_screen_banners_never_squeeze_the_flame_controls():
+    section("rack screen (Jeff, 2026-10-24, the show PC): banners never "
+            "squeeze the flame groups' Hold to arm and Disarm; two or more "
+            "banners fold into one line that opens; the page scrolls when "
+            "it is taller than the window, the Abort bar staying on the "
+            "bottom edge. Drawn in a real browser at seven sizes with five "
+            "banners, every arm, disarm, Hold and Abort button measured")
+    import shutil as _sh
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    rules = _css_rules(page)
+    html_r = _css_rule(rules, "html") or {}
+    check(html_r.get("overflow-y") == "auto" and
+          html_r.get("overflow-x") == "hidden",
+          f"the page scrolls up and down, never sideways: {html_r}")
+    for sel in ("html,body", "body"):
+        check((_css_rule(rules, sel) or {}).get("overflow") is None,
+              f"{sel} does not stop the page scrolling")
+    app = _css_rule(rules, "#app") or {}
+    check(app.get("grid-template-rows") ==
+          "auto auto minmax(min-content,1fr) auto" and
+          "height" not in app,
+          f"the screens' row is never shorter than its content and the "
+          f"page may grow past the window: {app}")
+    check((_css_rule(rules, ".lamps") or {}).get("grid-auto-rows") ==
+          "minmax(min-content,1fr)",
+          "a flame group's row is never shorter than its buttons")
+    for sel in (".flames", ".lamps", ".lamp", ".lamp .lb"):
+        check((_css_rule(rules, sel) or {}).get("min-height") ==
+              "min-content", f"{sel} never shrinks below its content")
+    bar = _css_rule(rules, "#abortbar") or {}
+    check(bar.get("position") == "sticky" and bar.get("bottom") == "0" and
+          bar.get("background") == "var(--bg)",
+          f"the Abort bar stays on the bottom edge, opaque: {bar}")
+    check((_css_rule(rules, ".view:not(#v-show)") or {}).get("contain") ==
+          "size", "the other screens keep their own inner scrolling")
+    for need in ('<div class="alsum" id="al-sum" hidden>',
+                 '<button class="ghost" id="al-more" aria-expanded="false">',
+                 '<div id="al-body"><div id="al-list"></div>',
+                 '<div class="warnbox" id="an-note" hidden></div>',
+                 'setWarn("an-note", s.artnet_note || "");',
+                 '$("al-body").hidden = f.fold && !ALERTS_OPEN;',
+                 '  setWarn("lock-banner", lockText);\n  renderAlertFold();',
+                 # Review of #102, P1-a: the page's own banners carry
+                 # whether they are a fault, and a label.
+                 'LOCAL_FAULT["lock-banner"] = !!lockText;',
+                 'LOCAL_FAULT["fl-warn"] = !!fmsg;',
+                 'LOCAL_FAULT["st-trouble"] = !!s.laser_fault;',
+                 'items.push({key:id + ":" + (LOCAL_LABEL[id] || id), fault:!!LOCAL_FAULT[id], label:LOCAL_LABEL[id] || "", text:el.textContent});',
+                 # P1/P2-b: a new fault opens the fold, or flashes it
+                 # while a finger is holding an arm.
+                 'if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }',
+                 # P2-d: Disarm all stays outside the fold.
+                 '<button class="disarm" id="al-sum-dis" hidden>Disarm all</button>'):
+        check(need in page, f"the page has {need!r}")
+    a = page.find('<div id="alerts">')
+    check(page.find('id="lf-banner"', a) < page.find('id="al-body"', a),
+          "the live flame programming bar is never inside the fold")
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function alertFold" in logic, "alertFold is pure page logic")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(alertFold([]).fold === false && alertFold([{fault:true, text:"a"}]).fold === false, "none or one banner: shown whole");
+let f = alertFold([{key:"n", fault:false, label:"Disk", text:"note"}, {key:"a7", fault:true, label:"Stream Deck", text:"deck gone"}, {key:"a8", fault:true, label:"Timecode", text:"artnet"}]);
+t(f.fold && f.n === 3 && f.more === 2 && f.fault && f.text === "deck gone", "the first fault leads: " + JSON.stringify(f));
+t(f.kind === "2 faults: Stream Deck, Timecode", "every fault is named on the folded line: " + f.kind);
+f = alertFold([{key:"x", fault:false, label:"Disk", text:"one"}, {key:"y", fault:false, label:"Engine", text:"two"}]);
+t(f.fold && !f.fault && f.kind === "Note" && f.text === "one" && f.n === 2, "no fault: the first, as a note: " + JSON.stringify(f));
+f = alertFold([{fault:false, text:""}, {fault:true, text:"x"}]);
+t(!f.fold && f.n === 1, "an empty banner is not counted");
+// Review of #102, P1-a: a server warning and the page's own cue fault:
+// the line is red and names the cue fault.
+f = alertFold([{key:"a3", fault:false, label:"Start check", text:"gate asks"}, {key:"fl-warn:Flame cues", fault:true, label:"Flame cues", text:"Flame cues are zero, a fault: x."}]);
+t(f.fold && f.fault && f.kind === "Fault: Flame cues" && /Flame cues are zero/.test(f.text), "a cue fault behind a warning is red and named: " + JSON.stringify(f));
+// P1/P2-b: a NEW fault id is fresh; the first draw only seeds what was seen.
+const two = [{key:"a7", fault:true, label:"Stream Deck", text:"deck"}, {key:"a8", fault:true, label:"Timecode", text:"tc"}];
+t(alertFold(two, null).fresh === false, "the first draw is never fresh");
+t(alertFold(two, new Set(["a7", "a8"])).fresh === false, "the same faults: not fresh");
+t(alertFold(two.concat([{key:"a9", fault:true, label:"Flames", text:"new"}]), new Set(["a7", "a8"])).fresh === true, "a new fault id is fresh");
+t(alertFold(two.concat([{key:"n1", fault:false, label:"Disk", text:"note"}]), new Set(["a7", "a8"])).fresh === false, "a new note is not");
+t(JSON.stringify(alertFold(two, null).keys) === JSON.stringify(["a7", "a8"]), "the fault keys are handed back to remember");
+t(alertFold([{key:"a9", fault:true, label:"Flames", text:"new"}], new Set()).fresh === true, "fresh is said even with one banner");
+console.log(JSON.stringify(out));
+"""
+        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"alertFold, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    chrome = _find_chromium()
+    if not chrome:
+        # Ubuntu's runner has Chrome; the cloud session has Playwright's.
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: the rack screen "
+              "could not be drawn")
+        print("  note: no Chromium, Chrome or Edge here, so the rack "
+              "screen was not drawn (set LTCPLAY_CHROME to one)")
+        print("  ok")
+        return
+    got = _rack_screen_in_chromium(chrome, page, _rack_status_pico(),
+                                   RACK_SIZES)
+    got2 = _rack_screen_in_chromium(chrome, page, _rack_status_live_flame(),
+                                    ((1366, 600), (768, 1024)))
+    got3 = _rack_screen_in_chromium(
+        chrome, page, _rack_status_cue_fault_behind_a_warning(),
+        ((1366, 768),))
+    for (w, h), res in got3.items():
+        m = res[0] if isinstance(res, list) and res else {}
+        sm = m.get("sum") or {}
+        check("fault" in sm.get("cls", "").split() and
+              "Flame cues" in sm.get("kind", "") and
+              "Stream Deck" in sm.get("kind", ""),
+              f"{w}x{h}, a warning alert and the page's cue fault: the "
+              f"folded line is red and names the cue fault and the deck: "
+              f"{sm} {res if not m else ''}")
+        check(not m.get("problems"), f"{w}x{h}: {m.get('problems')}")
+    runs = [(f"{w}x{h}", r) for (w, h), r in got.items()] + \
+        [(f"{w}x{h} with live flame programming on", r)
+         for (w, h), r in got2.items()]
+    for size, res in runs:
+        if not check(isinstance(res, list) and res,
+                     f"{size}: the page was drawn and measured: {res!r}"):
+            continue
+        for m in res:
+            where = f"{size}, banners {m['tag']}"
+            check(not m["problems"],
+                  f"{where}: every flame group's Hold to arm and Disarm at "
+                  f"least 44 px, wholly seen and pressable, nothing "
+                  f"overlapping; Abort, Hold and the disarms pressable: "
+                  f"{m['problems'][:8]}")
+            check(len(m["lamps"]) == 3 and all(
+                l.get("arm_seen", 0) >= 44 and l.get("disarm_seen", 0) >= 44
+                for l in m["lamps"]),
+                f"{where}: the three groups' buttons are seen whole: "
+                f"{m['lamps']}")
+            check(m["overflow_y"][0] in ("auto", "scroll") and
+                  m["overflow_y"][1] not in ("hidden", "clip"),
+                  f"{where}: the wheel and a finger scroll the page: "
+                  f"{m['overflow_y']}")
+            if m["tag"] == "collapsed" and size.startswith(("1366x768",
+                                                             "1920x1080")) \
+                    and "live flame" not in size:
+                # The Pico's screen: the deck alert offers Disarm all; it
+                # stays on the folded line, pressable (review of #102,
+                # P2-d).
+                check(m.get("sum_disarm"),
+                      f"{where}: the deck alert's Disarm all is on the "
+                      f"folded line")
+            if m["tag"] == "collapsed" and len(m["alerts"]) > 1:
+                check(m.get("fold_h", 999) <= 56,
+                      f"{where}: the banners are one line: "
+                      f"{m.get('fold_h')} px")
+                if m["vh"] >= 600:
+                    check(m["flames_visible_at_load"],
+                          f"{where}: every group's buttons are on the "
+                          f"screen without scrolling")
+            if m["tag"] == "expanded":
+                check(len(m["alerts"]) >= 3 and
+                      all(x["shown"] for x in m["alerts"]),
+                      f"{where}: Show all shows every banner: "
+                      f"{m['alerts']}")
+        tags = [m["tag"] for m in res]
+        check(tags == ["collapsed", "expanded"],
+              f"{size}: the banners folded, and Show all opened them: "
+              f"{tags}")
+    print("  measured (Hold to arm px seen, folded / opened): " + ", ".join(
+        f"{w}x{h} {r[0]['lamps'][0].get('arm_seen')}/"
+        f"{r[-1]['lamps'][0].get('arm_seen')}"
+        for (w, h), r in got.items() if isinstance(r, list) and r))
     print("  ok")
 
 
@@ -53769,8 +54397,11 @@ def test_artnet_faults_only_for_the_show_in_use():
     section("Art-Net receivers (Jeff, 2026-10-23): an old unused show file "
             "in the folder (soak_show.json) is a quiet note once a show is "
             "in use (loaded, last Run, or last Run before a restart); with "
-            "no show Run yet every file is a fault, named; a newly loaded "
-            "show is judged at once")
+            "no show in use (2026-10-24) what is found is one collapsed "
+            "note on the rack screen and amber on the Morning card, never "
+            "a red FAULT or an alert, except for the only show file there "
+            "is; Run keeps the show for a restart; a newly loaded show is "
+            "judged at once")
     import json
     import types
     from ltcplay import artnodes as A
@@ -53808,28 +54439,58 @@ def test_artnet_faults_only_for_the_show_in_use():
         def card():
             return {c["id"]: c for c in rm.engine_checks()}.get("artnet", {})
 
+        NOTE = [""]
+
         def alerts():
-            R.ask("GET", "/api/remote/status")
+            st, _h, out = R.ask("GET", "/api/remote/status")
+            NOTE[0] = out.get("artnet_note")
             return [a for a in rm.alerts.view() if a["kind"] == "timecode"]
-        # No show Run here yet: every file is checked, named (P2-1).
+        # No show Run here yet (2026-10-24): nothing is a FAULT or an
+        # alert; the rack screen has one note naming what was found, the
+        # Morning card says it in amber.
+        R.mono[0] += 60
+        rm._checks = None
+        ck, al = card(), alerts()
+        check(ck.get("level") == "warn" and not al and
+              ck.get("text", "").startswith(rm.AMBIGUOUS) and
+              "soak_show.json: " in ck.get("text", "") and
+              "10.99.0.1" in ck.get("text", ""),
+              f"nothing Run yet: no fault, no alert, the card amber and "
+              f"naming the file: {ck} {al}")
+        check(NOTE[0].startswith("Art-Net receivers, a note: No show is "
+                                 "loaded, Run or picked yet") and
+              "soak_show.json: " in NOTE[0] and "10.99.0.1" in NOTE[0],
+              f"the rack screen is given one note: {NOTE[0]!r}")
+        check(rm.AMBIGUOUS.startswith("No show is loaded, Run or picked "
+                                      "yet, so no show file is judged as "
+                                      "a fault"),
+              f"the note says why: {rm.AMBIGUOUS!r}")
+        # The only show file in the folder is the show that will run: its
+        # fault stands, with nothing picked.
+        os.rename(os.path.join(R.folder, "show.json"),
+                  os.path.join(R.work, "show.json.aside"))
         R.mono[0] += 60
         rm._checks = None
         ck, al = card(), alerts()
         check(ck.get("level") == "bad" and len(al) == 1 and
-              al[0]["text"].startswith("No show is loaded or picked yet")
-              and "No show is loaded or picked yet" in ck.get("text", "") and
-              "soak_show.json:" in al[0]["text"],
-              f"nothing Run yet: every show file is a fault, named: {ck} "
-              f"{al}")
+              "soak_show.json: " in al[0]["text"] and not NOTE[0] and
+              not al[0]["text"].startswith("No show"),
+              f"the only show file: a fault and an alert, no note: {ck} "
+              f"{al} {NOTE[0]!r}")
         rm.alerts.clear(kind="timecode", action="Acknowledge")
+        os.rename(os.path.join(R.work, "show.json.aside"),
+                  os.path.join(R.folder, "show.json"))
+        R.mono[0] += 60
+        rm._checks = None
         # show.json loaded (Run): judged at once, the soak file a note.
         R.httpd.control.session = types.SimpleNamespace(
             timeline_path=os.path.join(R.folder, "show.json"), running=True)
         rm._checks = None
         ck, al = card(), alerts()
         check(ck.get("level") == "ok" and "soak_show.json" in
-              ck.get("text", "") and not al,
-              f"show.json in use: the old soak file is a note: {ck} {al}")
+              ck.get("text", "") and not al and not NOTE[0],
+              f"show.json in use: the old soak file is a note, and no "
+              f"rack screen note: {ck} {al} {NOTE[0]!r}")
         # Stopped: the last Run show stays the one in use.
         R.httpd.control.session = None
         R.httpd.control.last_timeline = "show.json"
@@ -53837,7 +54498,9 @@ def test_artnet_faults_only_for_the_show_in_use():
         rm._checks = None
         check(card().get("level") == "ok" and not alerts(),
               "after Stop the show last Run is still the one judged")
-        # The engine restarts: the show last Run is remembered.
+        # The engine restarts: the show last Run is remembered (once its
+        # write, off the request, has landed).
+        check(rm.selection_written(5.0), "the last Run's write finished")
         R.httpd.control.last_timeline = None
         rm2 = RM.Remote(R.httpd.control, R.svc, folder=R.work,
                         clock=lambda: R.mono[0], wall=lambda: R.wall[0],
@@ -53870,10 +54533,13 @@ def test_artnet_faults_only_for_the_show_in_use():
         # Second review of #97, P2-a: soak_show.json last Run, tonight's
         # show.json bad. A show last Run is not the selection: with no
         # selection file (an engine from before it, the reviewer's probe)
-        # every file is checked, and show.json is a fault.
+        # every file is looked at, and show.json's problem is said, as the
+        # note (2026-10-24), never hidden.
         rm.alerts.clear(kind="timecode", action="Acknowledge")
         show("show.json", bad)
         show("soak_show.json", good)
+        check(rm.selection_written(5.0) and rm2.selection_written(5.0),
+              "no selection write is still on its way")
         os.remove(os.path.join(R.work, rm.SELECTED_SHOW_FILE))
         with open(os.path.join(R.work, rm.LAST_SHOW_FILE), "w") as fh:
             json.dump({"show": "soak_show.json"}, fh)
@@ -53882,10 +54548,11 @@ def test_artnet_faults_only_for_the_show_in_use():
         R.mono[0] += 60
         rm._checks = None
         ck, al = card(), alerts()
-        check(ck.get("level") == "bad" and "show.json: " in ck.get("text", "")
-              and len(al) == 1 and "10.99.0.1" in al[0]["text"],
+        check(ck.get("level") == "warn" and "show.json: " in
+              ck.get("text", "") and not al and "show.json: " in NOTE[0] and
+              "10.99.0.1" in NOTE[0],
               f"the last Run alone does not make soak_show.json the show: "
-              f"{ck} {al}")
+              f"show.json's problem is the note: {ck} {al} {NOTE[0]!r}")
         # The picker on the show machine selects show.json: judged at once.
         rm.alerts.clear(kind="timecode", action="Acknowledge")
         st, _h, out = R.ask("POST", "/api/remote/show-select",
@@ -53906,7 +54573,8 @@ def test_artnet_faults_only_for_the_show_in_use():
         check(ck.get("level") == "bad" and "show.json: " in
               ck.get("text", "") and len(al) == 1 and
               not ck.get("text", "").startswith("No show is loaded") and
-              not al[0]["text"].startswith("No show is loaded"),
+              not al[0]["text"].startswith("No show is loaded") and
+              not NOTE[0],
               f"show.json picked: its own fault, no longer every file: "
               f"{ck} {al}")
         # The picker selects the good soak file: show.json is a note.
@@ -53916,6 +54584,7 @@ def test_artnet_faults_only_for_the_show_in_use():
         check(card().get("level") == "ok" and not alerts(),
               "the good show picked: no fault")
         # P3-4: the selection file is read at most every SELECTED_READ_S.
+        check(rm.selection_written(5.0), "the picker's write finished")
         with open(os.path.join(R.work, rm.SELECTED_SHOW_FILE), "w") as fh:
             json.dump({"show": "show.json"}, fh)
         check(rm._active_show_files() == {"soak_show.json"},
@@ -53923,6 +54592,98 @@ def test_artnet_faults_only_for_the_show_in_use():
         R.mono[0] += rm.SELECTED_READ_S + 0.1
         check(rm._active_show_files() == {"show.json"},
               "after it, the file is read again")
+        # Run (web.py /api/start) writes the show in use at once, with no
+        # status asked for before the engine restarts (2026-10-24).
+        check(rm.selection_written(5.0) and rm2.selection_written(5.0),
+              "no selection write is still on its way")
+        os.remove(os.path.join(R.work, rm.SELECTED_SHOW_FILE))
+        rm._sel_cache = None
+        started = []
+
+        def fake_start(timeline, **kw):
+            started.append(timeline)
+            return types.SimpleNamespace(
+                timeline_path=os.path.join(R.folder, timeline), banner="",
+                notes=[], problems=[])
+        real_start = R.httpd.control.start
+        R.httpd.control.start = fake_start
+        try:
+            st, _h, out = R.ask("POST", "/api/start",
+                                {"timeline": "show.json"},
+                                client=("127.0.0.1", 5000))
+        finally:
+            R.httpd.control.start = real_start
+        check(st == 200 and started == ["show.json"],
+              f"Run reached the (fake) start: {st} {out} {started}")
+        check(rm.selection_written(5.0), "the selection write finished")
+        try:
+            with open(os.path.join(R.work, rm.SELECTED_SHOW_FILE)) as fh:
+                kept = json.load(fh).get("show")
+        except (OSError, ValueError):
+            kept = None
+        check(kept == "show.json",
+              f"Run wrote the show in use at once: {kept!r}")
+        rm3 = RM.Remote(R.httpd.control, R.svc, folder=R.work,
+                        clock=lambda: R.mono[0], wall=lambda: R.wall[0],
+                        log=lambda t: None)
+        check(rm3._active_show_files() == {"show.json"},
+              f"an engine restarted straight after Run judges it: "
+              f"{rm3._active_show_files()}")
+        # Review of #102, P2-c: the selection is written atomically (a
+        # temp file, then one replace), and a stalled disk never holds up
+        # Run's reply: the write is off the request, and the show in use
+        # is known at once all the same.
+        import threading as _th
+        replaced = []
+        real_replace = os.replace
+
+        def spy_replace(a, b, *args, **kw):
+            replaced.append((a, b))
+            return real_replace(a, b, *args, **kw)
+        os.replace = spy_replace
+        try:
+            rm._save_selected_show("soak_show.json")
+            check(rm.selection_written(5.0), "the picker's write finished")
+        finally:
+            os.replace = real_replace
+        sel_path = os.path.join(R.work, rm.SELECTED_SHOW_FILE)
+        check(replaced and replaced[-1][1] == sel_path and
+              replaced[-1][0] != sel_path and
+              not os.path.exists(replaced[-1][0]),
+              f"the selection is written to a temp file and replaced into "
+              f"place: {replaced}")
+        with open(sel_path) as fh:
+            check(json.load(fh).get("show") == "soak_show.json",
+                  "the replaced file is whole")
+        gate = _th.Event()
+        real_write = rm._write_selection_file
+
+        def stalled(name):
+            gate.wait(10)
+            return real_write(name)
+        rm._write_selection_file = stalled
+        R.httpd.control.start = fake_start
+        try:
+            t0 = time.monotonic()
+            st, _h, out = R.ask("POST", "/api/start",
+                                {"timeline": "show.json"},
+                                client=("127.0.0.1", 5000))
+            took = time.monotonic() - t0
+            check(st == 200 and took < 2.0,
+                  f"a stalled disk does not hold up Run's reply: {st} "
+                  f"{took:.2f} s")
+            R.mono[0] += rm.SELECTED_READ_S + 1
+            check(rm._selected_show() == "show.json",
+                  f"the show Run is in use at once, while the disk stalls: "
+                  f"{rm._selected_show()!r}")
+        finally:
+            gate.set()
+            R.httpd.control.start = real_start
+            check(rm.selection_written(10.0), "the stalled write finished")
+            rm._write_selection_file = real_write
+        with open(sel_path) as fh:
+            check(json.load(fh).get("show") == "show.json",
+                  "once the disk answers, the file says the show Run")
         page = open(os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "ltcplay", "web", "remote.html"),
             encoding="utf-8").read()
@@ -56228,6 +56989,7 @@ if __name__ == "__main__":
     test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender()
     test_fire_ice_flame_cues_follow_a_changed_layout()
     test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout()
+    test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault()
     test_fire_ice_flame_cue_refusals_are_faults_on_the_screens()
     test_fire_ice_flame_node_address_never_in_the_pixel_output()
     test_fire_ice_active_flame_controller_refused()
@@ -56285,6 +57047,7 @@ if __name__ == "__main__":
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()
     test_rack_screen_width_guard_css_contract()
+    test_rack_screen_banners_never_squeeze_the_flame_controls()
     test_remote_setup_routes_this_machine_only()
     test_windows_supervisor_first_run_defaults()
     test_remote_page_loss_changes_nothing()
