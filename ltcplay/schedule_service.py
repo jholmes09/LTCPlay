@@ -30,6 +30,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from . import appdata
+from . import benchhooks
 from . import journal
 from . import schedule as sch
 from . import settings as settings_mod
@@ -342,9 +343,22 @@ def save_current_operator(folder, name):
 
 # ------------------------------------------------------------ the file --
 
-def load_rule(path):
+SOAK_ONLY_REFUSED = (
+    "This schedule was written by the soak test (\"soak_only\": true) and "
+    "only the soak's own engine may use it, so no show is scheduled from "
+    "it and nothing is started, faded or stopped. Put the show's own "
+    "schedule file back, then quit and start LTC Player again.")
+
+
+def load_rule(path, env=None, ppid=None):
     """Read and validate the rule file. Every failure is one sentence (or a
-    list of them) naming the file."""
+    list of them) naming the file.
+
+    A schedule marked "soak_only" (the soak kit's, packaging/windows/
+    soak.py) is refused unless the soak itself started this engine
+    (benchhooks.soak_started): a soak schedule left behind on a show PC
+    must never start anything unattended (Pico, 2026-10-23). `env` and
+    `ppid` are the selftest's."""
     try:
         # utf-8-sig: Notepad on Windows puts a byte order mark at the front of
         # a UTF-8 file, and plain utf-8 reads that as garbage before the {.
@@ -355,7 +369,11 @@ def load_rule(path):
     except OSError as e:
         raise sch.RuleError([f"The schedule file {path} cannot be read: "
                              f"{e.strerror or e}."])
-    return sch.parse_rule(text, where=path)
+    rule = sch.parse_rule(text, where=path)
+    if json.loads(text).get("soak_only") is True and \
+            not benchhooks.soak_started(env, ppid):
+        raise sch.RuleError([SOAK_ONLY_REFUSED], where=path)
+    return rule
 
 
 def _replace(src, dst, replace_fn, sleep_fn, tries):
@@ -746,6 +764,15 @@ class Service:
         # only ever asked for anything while dry_run is False.
         self.dry_run = DRY_RUN
         self.performer = None
+        # Whether the operator has pressed Run (a show file is running), set
+        # by fire_ice.attach() with the conductor. While it says no, nothing
+        # the scheduler decides by itself reaches the show conductor, so no
+        # fade, blank, MadMapper or BEYOND command and no flame cue goes out
+        # unattended (Jeff's standing rule: no auto-Run; Pico, 2026-10-23).
+        # Only the show start itself is still handed on, to be refused by
+        # the performer, which checks Run on its own. None (no conductor,
+        # or one built without fire_ice) gates nothing, as before.
+        self.run_gate = None
         # alerts.Alerts.raise_(kind, text), set by remote.Remote: a failed
         # start raises a "start" alert for the rack screen and the booth
         # (Jeff, 2026-10-12: the groups are left as they are, so a person
@@ -1095,6 +1122,33 @@ class Service:
                          frozenset((sch.START_SHOW,)), shows[0]))
         return plan
 
+    RUN_NOT_PRESSED = ("Run has not been pressed, so the scheduler sends "
+                       "nothing to the rig: no fade, no blank, no MadMapper "
+                       "or BEYOND command and no flame cue.")
+
+    def _run_pressed(self):
+        """True while the operator's Run is in force, or when this service
+        has no Run to wait for (run_gate None). A gate that raises counts as
+        not pressed: nothing goes out on a guess."""
+        gate = self.run_gate
+        if gate is None:
+            return True
+        try:
+            return gate() is True
+        except Exception:      # noqa: BLE001  never the scheduler
+            return False
+
+    def _hold_back_unattended(self, plan, ev):
+        """(sent, held back): what the scheduler decided BY ITSELF (every
+        event but an operator's press) is not sent to the show conductor
+        while Run is not pressed. The show start alone still goes, to the
+        performer, which refuses it with nothing sent (and reports that as
+        a failed start that sent nothing)."""
+        if not plan or ev.actor == "operator" or self._run_pressed():
+            return plan, []
+        return ([p for p in plan if p[1] == "start_show"],
+                [p for p in plan if p[1] != "start_show"])
+
     def _reworded(self, le):
         """A log event as this engine says it: with a show conductor
         attached, the engine's "nothing was disarmed" sentence is replaced
@@ -1113,18 +1167,33 @@ class Service:
                           "once you have seen it; Start now or the next show "
                           "brings the rig back.")
 
-    def _record(self, out, now, plan=()):
+    REFUSED_START_ALERT = ("The show did not start. Nothing was sent to the "
+                           "rig for it: no fade, no MadMapper or BEYOND "
+                           "command, and every flame group stays as it was. "
+                           "Press Acknowledge once you have seen it; the "
+                           "journal says why the start was refused.")
+
+    def _record(self, out, now, plan=(), held=(), ev=None):
         for le in out.log:
             self._record_logevent(self._reworded(le))
             if le.action == sch.SHOW_FAILED and self.alert_sink is not None:
+                alert = (self.REFUSED_START_ALERT
+                         if ev is not None and ev.nothing_sent and
+                         not out.effects else self.FAILED_START_ALERT)
                 try:
-                    self.alert_sink("start", self.FAILED_START_ALERT)
+                    self.alert_sink("start", alert)
                 except Exception as e:   # noqa: BLE001  never the scheduler
                     self._journal_line(
                         "system", f"The failed-start alert could not be "
                                   f"raised ({type(e).__name__}: {e}); the "
                                   f"journal line above is the only notice.",
                         action="alert", outcome="not raised", fault=True)
+        for entry in held:
+            self._journal_line(
+                "system", f"Not sent to the show conductor, {entry[0]}: "
+                          f"{self.RUN_NOT_PRESSED}",
+                action="conductor", outcome="held back",
+                reason=f"{entry[1]} held back, Run not pressed")
         claimed = set()
         for entry in plan:
             label, method, kinds = entry[:3]
@@ -1265,6 +1334,20 @@ class Service:
         """On _ConductorCalls' thread. One conductor request, whatever it
         does or raises, then one journal line for it. Anything but a good
         Result is a fault, raised on the scheduler so the page shows it."""
+        if call.who == "the scheduler" and call.method != "start_show" and \
+                not self._run_pressed():
+            # Decided while Run was in force, but it no longer is (Stop
+            # was pressed before this call's turn): still nothing goes out.
+            call.ok = False
+            call.sentence = f"{call.label} was not sent: " \
+                            f"{self.RUN_NOT_PRESSED}"
+            with self._locked():
+                self._journal_line(
+                    "system", f"Not sent to the show conductor, "
+                              f"{call.label}: {self.RUN_NOT_PRESSED}",
+                    action="conductor", outcome="held back",
+                    reason=f"{call.method} held back, Run not pressed")
+            return
         try:
             if call.method == "start_show":
                 # The Fire & Ice show runner, not the conductor (see
@@ -1517,7 +1600,8 @@ class Service:
             ev = replace(ev, latched=True)
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
-        plan = self._drive_conductor(out, ev)
+        plan, held = self._hold_back_unattended(
+            self._drive_conductor(out, ev), ev)
         # Numbered (and an Abort stamped) now, with the latch, not when
         # they are sent after the save: see _decide_conductor.
         calls = self._decide_conductor(plan, ev)
@@ -1527,7 +1611,7 @@ class Service:
             # Reset clears it, see _after_reset).
             self.machine = replace(self.machine, abort_latched=True)
             self._marker_clear_pending = False
-        self._record(out, now, plan)
+        self._record(out, now, plan, held, ev)
         if self.dry_run and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
@@ -2613,7 +2697,7 @@ class Service:
                          sch.SHOW_FAILED, sch.FAULT_RAISED,
                          sch.CLOSING_DONE))
 
-    def report(self, kind, detail="", show=0):
+    def report(self, kind, detail="", show=0, nothing_sent=False):
         """A performer's report (fire_ice.ShowRunner): applied as a
         "system" event exactly like the dry run's own made-up SHOW_ENDED
         and CLOSING_DONE, journaled, refused with a sentence when the state
@@ -2624,7 +2708,9 @@ class Service:
         with self._locked():
             if self.dry_run or self.machine is None:
                 return None
-            ev = sch.Event(kind, "system", detail=detail, show=show)
+            ev = sch.Event(kind, "system", detail=detail, show=show,
+                           nothing_sent=(nothing_sent is True and
+                                         kind == "SHOW_FAILED"))
             self._apply(ev)
             return None
 

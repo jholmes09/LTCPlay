@@ -65,8 +65,11 @@ Whatever drives this engine and carries out its effects must:
 4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
    START_SHOW. Until then the show counts as not yet started.
 5. Send SHOW_FAILED only for a show that did not start: never confirmed,
-   and within CONFIRM_WINDOW_S of the start. A later SHOW_FAILED is not a
-   show failure and is recorded as a fault with the show left running.
+   and within CONFIRM_WINDOW_S of the start. With nothing_sent when the
+   start was refused before anything went to the rig: it then has no
+   effects at all, so nothing is faded or stopped for it. A later
+   SHOW_FAILED is not a show failure and is recorded as a fault with the
+   show left running.
 6. Never send SHOW_FAILED for a fault during a show. Send FAULT_RAISED,
    which sets the FAULT flag and leaves the show running: a show that loses
    MadMapper midway free runs to its end.
@@ -263,7 +266,8 @@ class RuleError(ValueError):
 
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 RULE_KEYS = frozenset(("timezone", "season", "weekly", "exceptions",
-                       "show_len_s", "guard_s", "late_grace_s", "version"))
+                       "show_len_s", "guard_s", "late_grace_s", "version",
+                       "soak_only"))
 SEASON_KEYS = frozenset(("first_date", "last_date"))
 NIGHT_KEYS = frozenset(("first_start", "interval_min", "last_end"))
 
@@ -425,6 +429,12 @@ def parse_rule(doc, where=""):
     for k in ("timezone", "season", "weekly", "show_len_s", "guard_s"):
         if k not in doc:
             problems.append(f"The schedule is missing {k}.")
+    soak_only = doc.get("soak_only", False)
+    if soak_only is not True and soak_only is not False:
+        # Written by the soak test only (schedule_service.load_rule refuses
+        # it anywhere else). Only the JSON words true and false.
+        problems.append(f"'soak_only' has to be true or false, not "
+                        f"{soak_only!r}.")
 
     tz = None
     if "timezone" in doc:
@@ -714,6 +724,12 @@ class Event:
     # latched after an Abort and nobody has pressed Reset. Filled in by the
     # service, never by an operator; always False without a conductor.
     latched: bool = False
+    # SHOW_FAILED only: the performer refused the start before it sent
+    # anything to the rig (Run not pressed, auto_start off, the conductor
+    # latched). Nothing started, so nothing is faded or stopped: the
+    # failed start has no effects (Pico, 2026-10-23: a leftover schedule
+    # with Run never pressed faded MadMapper every 15 minutes overnight).
+    nothing_sent: bool = False
 
 
 @dataclass(frozen=True)
@@ -1393,7 +1409,8 @@ def _pause_so_far(tx):
     return raw
 
 
-def _show_stopped(m, ev, now, status, reason, text, effects, abort=False):
+def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
+                  stopped=None):
     tx = _Tx(m, ev, now)
     n = m.running
     s = m.slot(n)
@@ -1404,7 +1421,8 @@ def _show_stopped(m, ev, now, status, reason, text, effects, abort=False):
     if status == FAULT:
         tx.m = replace(tx.m, faults=tx.m.faults + (text,))
     tx.effects.extend(effects)
-    _after_show(tx, abort=abort, stopped=bool(effects))
+    _after_show(tx, abort=abort,
+                stopped=bool(effects) if stopped is None else stopped)
     tx.note(ev.kind, status.lower(), reason, text, show=n)
     return tx.done()
 
@@ -1467,6 +1485,16 @@ def _show_failed(m, ev, now):
                 f"too late for a failed start: {what}",
                 f"{sentence} {ev.actor} said: {what}.", show=s.n)
         return tx.done()
+    if ev.nothing_sent:
+        # Refused before anything went out: no effects at all, and the
+        # night waits as it does after any failed start (no look of its
+        # own), so nothing is sent for it either.
+        return _show_stopped(
+            m, ev, now, FAULT, f"FAULT ({what})",
+            f"Show {m.running} did not start: {what}. Reported by "
+            f"{ev.actor}. Slot marked FAULT. {NOTHING_SENT_TO_RIG} Nothing "
+            f"is latched: Start now works at once, and the next show is "
+            f"still attempted.", [], stopped=True)
     return _show_stopped(
         m, ev, now, FAULT, f"FAULT ({what})",
         f"Show {m.running} did not start: {what}. Reported by {ev.actor}. "
@@ -1762,6 +1790,10 @@ FAILED_START_NOT_DISARMED = (
     "No flame group is disarmed: every group stays as it was (Jeff, "
     "2026-10-12), and the alert on the rack screen waits for an "
     "Acknowledge.")
+NOTHING_SENT_TO_RIG = (
+    "Nothing was sent to the rig for it: no fade, no blank, no MadMapper "
+    "or BEYOND command and no flame cue, and every flame group stays as it "
+    "was.")
 ABORT_CONFIRM_DISARM = ("Every flame cue goes to zero and every flame group "
                         "is disarmed at once.")
 

@@ -34785,7 +34785,8 @@ def test_lasers_blanking_not_set_up_is_loud():
     print("  ok")
 
 
-def _fi_night(performs=True, session=True, flames=True, armed=True):
+def _fi_night(performs=True, session=True, flames=True, armed=True,
+              work=None, auto_start="when_run_pressed"):
     """A Fire & Ice night: the real scheduler service on a fake wall clock,
     the real conductor built by fire_ice.attach() on fake time, the real
     ConductorDevices on real BEYOND and MadMapper links whose sockets write
@@ -34818,12 +34819,13 @@ def _fi_night(performs=True, session=True, flames=True, armed=True):
                    clock=steps.clock, sleep=steps.sleep, journal=journal)
     sess = _FiSession(calls, T) if session else None
     control = types.SimpleNamespace(session=sess)
-    work = tempfile.mkdtemp()
+    work = work or tempfile.mkdtemp()
     now = [_den(S, 17, 55)]
     svc = _svc(S, work, now)
     # This rig proves the OSC path (beyond_blank "osc"); the timecode
     # black zone has tests of its own (test_beyond_timecode_blanking).
-    cfg = F.FireIceConfig(scheduler_performs=performs, beyond_blank="osc")
+    cfg = F.FireIceConfig(scheduler_performs=performs, beyond_blank="osc",
+                          auto_start=auto_start)
     w = F.attach(svc, control, cfg, madmapper=(link, None), beyond=bey,
                  journal=journal,
                  flame_link=_FiFlames(calls, T) if flames else None,
@@ -35049,6 +35051,349 @@ def test_fire_ice_night_end_to_end():
           f"{svc.machine.state} {s2}")
     c.close()
     n.link.close()
+    print("  ok")
+
+
+def _fi_rig_touched(calls, since=0):
+    """Every command a Fire & Ice rig was sent after `since`: MadMapper
+    (its packets and its calls), BEYOND, pixels, music and flames."""
+    return [(k, a) for k, a, _t in calls[since:]
+            if k in ("mm", "mm_call", "beyond", "pixels") or
+            k.startswith("music_") or k.startswith("flames_")]
+
+
+def _fi_walk(n, until_h, until_m, start=(17, 55)):
+    """The night moved a minute at a time, the scheduler ticked, the show
+    runner polled and every conductor call and effect run, as the engine
+    does with nobody at the screen."""
+    S, svc, c = n.S, n.svc, n.c
+    h, m = start
+    while (h, m) <= (until_h, until_m):
+        n.now[0] = _den(S, h, m)
+        svc.tick()
+        _settle(svc, c)
+        n.w.runner.poll()
+        _settle(svc, c)
+        n.now[0] = _den(S, h, m, 30)
+        svc.tick()
+        n.w.runner.poll()
+        _settle(svc, c)
+        m += 1
+        if m == 60:
+            h, m = h + 1, 0
+
+
+def test_schedule_never_touches_the_rig_before_run():
+    section("fire & ice: a schedule left live with Run never pressed tries "
+            "each show, refuses it in words, and sends NOTHING to MadMapper, "
+            "BEYOND, the surfaces, the pixels, the music or the flames: no "
+            "failed-start fade, no dark sequence at a restart, no closing "
+            "(Pico, 2026-10-23 overnight)")
+    n = _fi_night(session=False, armed=False)
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    k0 = len(n.calls)
+    _fi_walk(n, 19, 5)
+    starts = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(len(starts) >= 3 and
+          all(r["outcome"] == "refused" and
+              "Run has not been pressed" in r["text"] for r in starts),
+          f"every show that came due (18:00, 18:20, 18:40, 19:00) was "
+          f"tried and refused because Run was not pressed: "
+          f"{[(r['outcome'], r['text']) for r in starts]}")
+    touched = _fi_rig_touched(n.calls, k0)
+    check(touched == [],
+          f"nothing at all reached the rig while Run was not pressed: "
+          f"{touched[:8]}")
+    sent = [r for r in svc.journal if r.get("action") == "conductor" and
+            r.get("outcome") == "sent"]
+    check(sent and all("Start the show" in r["text"] for r in sent),
+          f"the show conductor was asked for nothing (no Failed start, no "
+          f"Out of the show); only the performer was handed each start, to "
+          f"refuse: {[r['text'] for r in sent][:4]}")
+    failed = [r for r in svc.journal if r.get("action") == S.SHOW_FAILED]
+    check(len(failed) >= 3 and
+          all(S.NOTHING_SENT_TO_RIG in r["text"] and
+              "faded to black" not in r["text"] and
+              "MadMapper stopped" not in r["text"] for r in failed),
+          f"each refused start is journaled as one that sent nothing, never "
+          f"as a fade or a MadMapper stop: {[r['text'] for r in failed][:2]}")
+    held = [r for r in svc.journal if r.get("outcome") == "held back"]
+    check(all(svc.RUN_NOT_PRESSED in r["text"] for r in held),
+          f"anything the scheduler would have asked of the conductor says "
+          f"why it was held back: {[r['text'] for r in held][:2]}")
+    slots = [s for s in svc.machine.slots if s.n <= 4]
+    check(len(slots) == 4 and all(s.status == S.FAULT for s in slots),
+          f"the shows are marked as not started: {slots}")
+    # A restart while the rig is meant to be dark (after those refused
+    # starts) still sends nothing while Run is not pressed: the dark
+    # sequence a restart sends is held back too.
+    check(svc.machine.dark, "the night is left dark after the refusals")
+    k1 = len(n.calls)
+    n2 = _fi_night(session=False, armed=False, work=n.work)
+    n2.now[0] = n.now[0]
+    n2.svc.tick()
+    _settle(n2.svc, n2.c)
+    n2.c.run_pending()
+    again = [r for r in n2.svc.journal if r.get("action") == "conductor" and
+             r.get("outcome") == "sent" and
+             "Start the show" not in r["text"]]
+    check(not again and _fi_rig_touched(n2.calls) == [] and
+          len(n.calls) == k1,
+          f"a restart with Run not pressed sends no dark sequence: "
+          f"{[r['text'] for r in again]} {_fi_rig_touched(n2.calls)[:6]}")
+    check(any(svc.RUN_NOT_PRESSED in r["text"] and
+              svc.DARK_AGAIN in r["text"] for r in n2.svc.journal),
+          f"and says it held the restart's dark sequence back: "
+          f"{[r['text'] for r in n2.svc.journal][-6:]}")
+    # The rest of the night, its closing included, with Run still not
+    # pressed: nothing reaches the rig, and the night still closes.
+    k2 = len(n.calls)
+    _fi_walk(n, 22, 10, start=(19, 6))
+    check(_fi_rig_touched(n.calls, k2) == [] and
+          svc.machine.state == S.OFF,
+          f"the night's closing with Run not pressed touches nothing and "
+          f"still closes: {svc.machine.state} "
+          f"{_fi_rig_touched(n.calls, k2)[:6]}")
+    # A call decided while Run was in force reaches the line after Stop:
+    # it is held back then too. An operator's own press still goes.
+    from ltcplay import schedule_service as SV
+    k3 = len(n.calls)
+    late = SV._ConductorCall("Out of the show", "intermission",
+                             "the scheduler", "")
+    svc._run_conductor_call(late)
+    c.run_pending()
+    check(late.ok is False and svc.RUN_NOT_PRESSED in late.sentence and
+          _fi_rig_touched(n.calls, k3) == [],
+          f"a scheduler call that finds Run no longer pressed is not sent: "
+          f"{late.ok} {late.sentence!r} {_fi_rig_touched(n.calls, k3)[:4]}")
+    mine = SV._ConductorCall("Out of the show", "intermission", "Andy",
+                             "Rack screen")
+    svc._run_conductor_call(mine)
+    c.run_pending()
+    check(mine.ok is True and _fi_rig_touched(n.calls, k3) != [],
+          f"an operator's own press is still carried out: {mine.ok} "
+          f"{mine.sentence!r}")
+    was = svc.run_gate
+
+    def broken():
+        raise RuntimeError("no idea")
+    svc.run_gate = broken
+    check(svc._run_pressed() is False,
+          "a Run check that raises counts as Run not pressed")
+    svc.run_gate = lambda: "yes"
+    check(svc._run_pressed() is False,
+          "only a plain True counts as Run pressed")
+    svc.run_gate = was
+    # Once Run is pressed, the next show is started as before.
+    n3 = _fi_night(session=True, armed=False)
+    _fi_walk(n3, 18, 0)
+    ok = [r for r in n3.svc.journal if r.get("action") == "automatic start"]
+    check(ok and ok[-1]["outcome"] == "done" and
+          ("mm_call", ("select_bank", "Bank-1")) in
+          [(k, a[:2]) for k, a in _fi_rig_touched(n3.calls)],
+          f"with Run pressed the scheduled show starts (MadMapper's show "
+          f"bank selected): {[r['text'] for r in ok]}")
+    for x in (n, n2, n3):
+        x.c.close()
+        x.link.close()
+    print("  ok")
+
+
+def test_a_refused_start_sends_no_fade():
+    section("fire & ice: a start refused before anything went out (Run "
+            "pressed, auto_start off) sends no fade and no dark sequence: "
+            "the slot is a fault, the alert says nothing was sent, and the "
+            "rig is left exactly as it was")
+    n = _fi_night(session=True, armed=False, auto_start="off")
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    got = []
+    svc.alert_sink = lambda kind, text: got.append((kind, text))
+    _fi_walk(n, 17, 59)
+    k0 = len(n.calls)
+    _fi_walk(n, 18, 1)
+    starts = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(starts and starts[-1]["outcome"] == "refused" and
+          "auto_start is off" in starts[-1]["text"],
+          f"the start is refused: {[r['text'] for r in starts]}")
+    touched = _fi_rig_touched(n.calls, k0)
+    check(touched == [],
+          f"a refused start sends no fade, no blank and no stop: "
+          f"{touched[:8]}")
+    sent = [r for r in svc.journal if r.get("action") == "conductor" and
+            "Failed start" in r["text"]]
+    check(sent == [], f"failed_start is never asked: {sent[:1]}")
+    s1 = [s for s in svc.machine.slots if s.n == 1]
+    check(s1 and s1[0].status == S.FAULT and svc.machine.state == S.STANDBY,
+          f"show 1 is a fault and the night carries on: {s1} "
+          f"{svc.machine.state}")
+    check(got and got[-1] == ("start", svc.REFUSED_START_ALERT) and
+          "Nothing was sent" in svc.REFUSED_START_ALERT and
+          "dark" not in svc.REFUSED_START_ALERT,
+          f"the alert says nothing was sent, not that the rig went dark: "
+          f"{got}")
+    _no_dashes(svc.REFUSED_START_ALERT, "the refused start alert")
+    _no_dashes(svc.RUN_NOT_PRESSED, "the held back line")
+    _no_dashes(S.NOTHING_SENT_TO_RIG, "the refused start journal line")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_schedule_failed_start_effects_follow_what_was_sent():
+    section("scheduler engine: a failed start that sent nothing has no "
+            "effects; one that went out and never confirmed still fades")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    for nothing, want in ((True, set()),
+                          (False, {S.ZERO_FLAME_CUES, S.BLANK_LASERS,
+                                   S.FADE_VIDEO_OUT, S.FADE_PIXELS,
+                                   S.FADE_MUSIC_OUT, S.STOP_CONDUCTOR})):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        svc = _svc(S, work, now)
+        svc.tick()
+        now[0] = _den(S, 18, 0)
+        svc.tick()
+        check(svc.machine.state == S.SHOW, "setup: show 1 started")
+        now[0] = _den(S, 18, 0, 5)
+        out = S.step(svc.machine, S.Event(S.SHOW_FAILED, "system",
+                                          detail="refused",
+                                          nothing_sent=nothing), now[0])
+        kinds = {e.kind for e in out.effects}
+        check(kinds >= want and (not nothing or kinds == set()),
+              f"nothing_sent={nothing}: effects {sorted(kinds)}")
+        s1 = out.machine.slot(1)
+        check(s1.status == S.FAULT and out.machine.state == S.STANDBY,
+              f"nothing_sent={nothing}: show 1 FAULT, STANDBY: {s1} "
+              f"{out.machine.state}")
+        text = " ".join(le.text for le in out.log)
+        check((S.NOTHING_SENT_TO_RIG in text) == nothing and
+              ("faded to black" in text) == (not nothing),
+              f"nothing_sent={nothing}: the journal says what happened: "
+              f"{text}")
+    print("  ok")
+
+
+def test_soak_schedule_is_refused_outside_the_soak():
+    section("soak kit: the schedule and Fire & Ice settings the soak writes "
+            "are marked soak_only, and outside the soak's own engine both "
+            "are refused in words, so a leftover cannot run unattended")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from ltcplay import benchhooks as BH, schedule_service as SV
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    rule = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                      "interval_min": 15,
+                                      "last_end": "22:00"}},
+                      exceptions={})
+    rule["soak_only"] = True
+    path = os.path.join(work, SV.RULE_FILE)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(rule, fh)
+    soak_env = {BH.SOAK_ENV: "4242"}
+    try:
+        SV.load_rule(path, env={}, ppid=4242)
+        check(False, "a soak_only schedule loaded outside the soak")
+    except S.RuleError as e:
+        check(SV.SOAK_ONLY_REFUSED in str(e),
+              f"outside the soak it is refused in words: {e}")
+        _no_dashes(str(e), "the soak schedule refusal")
+    check(SV.load_rule(path, env=soak_env, ppid=4242) is not None,
+          "the soak's own engine (its parent is the soak) loads it")
+    try:
+        SV.load_rule(path, env={BH.SOAK_ENV: "4242"}, ppid=99)
+        check(False, "a leftover soak mark in the environment was trusted")
+    except S.RuleError as e:
+        check(SV.SOAK_ONLY_REFUSED in str(e),
+              f"a mark naming another process is not the soak: {e}")
+    rule["soak_only"] = "yes"
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(rule, fh)
+    try:
+        SV.load_rule(path, env=soak_env, ppid=4242)
+        check(False, "soak_only 'yes' was accepted")
+    except S.RuleError as e:
+        check("soak_only" in str(e), f"only true or false: {e}")
+    del rule["soak_only"]
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(rule, fh)
+    check(SV.load_rule(path, env={}, ppid=1) is not None,
+          "a show's own schedule (no soak_only) loads anywhere")
+    # The Service with a leftover soak schedule: no night, a fault line.
+    rule["soak_only"] = True
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(rule, fh)
+    now = [_den(S, 18, 0)]
+    svc = SV.Service(path, clock=lambda: now[0], state_dir=work,
+                     ntp_query=lambda: 0.0)
+    svc.tick()
+    check(svc.machine is None and SV.SOAK_ONLY_REFUSED in svc.error and
+          any(r.get("fault") and SV.SOAK_ONLY_REFUSED in r["text"]
+              for r in svc.journal),
+          f"the engine schedules nothing from it and says so as a fault: "
+          f"{svc.error}")
+    # Fire & Ice settings.
+    cfg = F.FireIceConfig.parse({"soak_only": True,
+                                 "scheduler_performs": True})
+    why = F.soak_refusal(cfg, env={}, ppid=1)
+    check(cfg.soak_only is True and why and "soak" in why,
+          f"soak_only Fire & Ice settings are refused outside the soak: "
+          f"{why}")
+    _no_dashes(why or "", "the soak Fire & Ice refusal")
+    check(F.soak_refusal(cfg, env=soak_env, ppid=4242) is None,
+          "and taken by the soak's own engine")
+    check(F.soak_refusal(F.FireIceConfig.parse({"scheduler_performs": True}),
+                         env={}, ppid=1) is None,
+          "a show's own settings are never refused for this")
+    try:
+        F.FireIceConfig.parse({"soak_only": 1})
+        check(False, "soak_only 1 was accepted")
+    except F.FireIceConfigError as e:
+        check("soak_only" in str(e), f"only true or false: {e}")
+    # The soak kit writes the mark in both files.
+    sp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "packaging", "windows")
+    sys.path.insert(0, sp)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        for m in ("soak", "ltcwin", "soak_apps", "soak_exercise",
+                  "supervisor"):
+            sys.modules.pop(m, None)
+        import soak
+        s = soak.Soak(60, None, folder=os.path.join(work, "run"))
+        s.show_s = 60.0
+        s.mode = "fallback"
+        s.engine_fs_cfg = os.path.join(work, "fs.json")
+        s.make_schedule()
+        with open(s.rule_path, encoding="utf-8") as fh:
+            r = json.load(fh)
+        with open(os.path.join(s.sched_dir, F.CONFIG_FILE),
+                  encoding="utf-8") as fh:
+            fi = json.load(fh)
+        check(r.get("soak_only") is True and fi.get("soak_only") is True,
+              f"the soak's schedule and Fire & Ice settings carry soak_only "
+              f"true: {r.get('soak_only')!r} {fi.get('soak_only')!r}")
+        check(S.parse_rule(json.dumps(r)) is not None and
+              F.FireIceConfig.parse(fi).soak_only is True,
+              "and both still parse")
+    finally:
+        sys.dont_write_bytecode = was
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m in ("soak", "ltcwin", "soak_apps", "soak_exercise",
+                  "supervisor"):
+            sys.modules.pop(m, None)
     print("  ok")
 
 
@@ -55873,6 +56218,10 @@ if __name__ == "__main__":
     test_audio_master_per_call_fade()
     test_fire_ice_night_end_to_end()
     test_fire_ice_runner_reports_the_show()
+    test_schedule_never_touches_the_rig_before_run()
+    test_a_refused_start_sends_no_fade()
+    test_schedule_failed_start_effects_follow_what_was_sent()
+    test_soak_schedule_is_refused_outside_the_soak()
     test_fire_ice_flame_link_from_flamesafe_config()
     test_onlyone_named_lock_sees_a_copy_in_another_folder()
     test_onlyone_named_lock_is_machine_wide_or_says_so()

@@ -813,7 +813,12 @@ class Soak:
                             "sun")},
                 "exceptions": {}, "show_len_s": int(self.show_s) + 5,
                 "guard_s": GUARD_S,
-                "late_grace_s": 15}
+                "late_grace_s": 15,
+                # Only the soak's own engine takes these two files: one this
+                # soak did not start refuses them (ltcplay/benchhooks.py), so
+                # a soak schedule left behind never starts anything unattended
+                # on a show PC (Pico, 2026-10-23).
+                "soak_only": True}
         self.rule_path = os.path.join(self.sched_dir,
                                       "ltcplay_schedule.json")
         with open(self.rule_path, "w", encoding="utf-8") as fh:
@@ -834,7 +839,8 @@ class Soak:
               "beyond_timecode_ip": BEYOND_TC_IP,
               "show_name": "Ignite the Night",
               "venue": "Thanksgiving Point",
-              "notes": "BENCH ONLY, written by the soak test"}
+              "notes": "BENCH ONLY, written by the soak test",
+              "soak_only": True}
         if self.mode != "fallback":
             # MadMapper's heartbeat track (its project sends it; see the
             # checklist), read by the engine's own watchdog.
