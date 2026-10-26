@@ -1135,6 +1135,7 @@ function machineWait(m, flames, purge, pageAgeMs, aborted){
   if(m.kind === "waver" && (m.pan == null || m.tilt == null)) return "";
   if(aborted) return REARM_ABORTED;
   if(g.purge_refused === "refractory") return REARM_REFUSED_PURGE;
+  if(g.purge_refused === "screenonly") return "Not armed: it has no Stream Deck key, so only its Hold to arm button arms it.";
   const left = rearmLeftMs(g, pageAgeMs, flames && flames.age_ms);
   return left > 0 ? rearmText(left) : "";
 }

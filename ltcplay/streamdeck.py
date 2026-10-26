@@ -41,6 +41,13 @@ REAL, unconditionally, the moment this runs against the real hardware:
     below). ABORT and disarming a group are NEVER gated on this: a press
     that only reduces risk must never wait on a picker.
 
+THE START/STOP KEY (Jeff, 2026-10-26): the top-left key is Start Now
+while nothing is running (unchanged: it journals a refusal, there is no
+start entry point) and Stop while Run has been pressed and playback is
+going (the Rack screen's Stop button, POST /api/stop: never behind the
+operator gate, refused by the engine while a scheduled show is live).
+Hold and Abort are unchanged. See Controller.start_key_mode.
+
 NOT REAL unless this module is given a `conductor` (ltcplay.conductor.
 Conductor, or anything shaped like it) by whoever starts it:
   - START NOW, HOLD and RESUME do nothing but journal a refusal. There is
@@ -145,10 +152,11 @@ FAILURE MODES, assumptions made here (flag these in the safety review):
      row is Start, Hold and Abort. A 4th group (Jeff's fireball,
      2026-10-26) gets NO key and shares none: the first 3 groups in the
      deck's key order (below) get keys 3, 4 and 5, and a group after them
-     is a SCREEN-ONLY group. It is armed only by a
-     screen hold (the rack screen or a listed device, through this
-     process: screen_pass, with every rule a key has: the hold, the re-arm
-     refractory window, the latch, the operator gate) and disarmed by a
+     is a SCREEN-ONLY group. It is armed only by a screen hold (the rack
+     screen or a listed device, through this process: screen_pass, with
+     every rule a key has: the hold, the re-arm refractory window, the
+     latch, the operator gate), never by a Morning page purge click
+     (purge_pass refuses it, review of PR #120, P1), and disarmed by a
      screen disarm, Disarm all flame groups, or Abort on any surface (the
      deck's Abort sends every group false, this one included). With
      screen arming off (the default) it cannot be armed at all. Its state
@@ -333,64 +341,94 @@ DECK_ORDER = ("front row", "cat-walk", "wave flamer", "fireball")
 LABEL_MAX = 12          # the key's name bar fits this many letters
 
 
+def _default_layout(names):
+    """(order, labels) with no ltcplay_deck.json: DECK_ORDER's groups first,
+    in that order, then the rest in flamesafe's order; DECK_LABELS' words,
+    else the group's own name."""
+    order = [names.index(n) for n in DECK_ORDER if n in names]
+    order += [i for i in range(len(names)) if i not in order]
+    return order, [DECK_LABELS.get(n, n) for n in names]
+
+
+def _keys_text(order, labels, names):
+    """The key map in words: "key 1 Floor G (front row), ...; no key:
+    Fireball (fireball)"."""
+    keyed = [f"key {j + 1} {labels[g]} ({names[g]})"
+             for j, g in enumerate(order[:GROUP_KEY_LIMIT])]
+    rest = [f"{labels[g]} ({names[g]})" for g in order[GROUP_KEY_LIMIT:]]
+    return ", ".join(keyed) + (f"; no key: {', '.join(rest)}" if rest else "")
+
+
 def deck_layout(names, doc=None, where=DECK_CONFIG_FILE):
-    """(order, labels, notes) for flamesafe's group `names` (its file
+    """(order, labels, notes, ok) for flamesafe's group `names` (its file
     order). `order`: group indices in key order, every group once; the
     first GROUP_KEY_LIMIT get keys 3, 4 and 5, the rest are screen-only.
-    `labels`: one per group index. `notes`: plain sentences about anything
-    in `doc` (ltcplay_deck.json, parsed, or None for no file) that was
-    left out or does not fit. Never raises: a layout that does not fit is
-    said, and the deck still starts (Jeff, 2026-10-26)."""
+    `labels`: one per group index. `notes`: plain sentences for the
+    journal. `ok`: False when `doc` (ltcplay_deck.json, parsed; None for no
+    file) had anything wrong with it: then the WHOLE default layout is used,
+    never a partly applied file, so no key moves because of a typo (review
+    of PR #120, P2-1), and the notes say why. A label that is another
+    group's name or label is wrong (P2-2): a key must never read like
+    another group's. Never raises: the deck still starts (Jeff,
+    2026-10-26)."""
     names = list(names)
-    notes = []
-    entries = None
-    if doc is not None:
-        lst = doc.get("groups") if isinstance(doc, dict) else None
-        if isinstance(lst, list):
-            entries = lst
-        else:
-            notes.append(f"{where} has no \"groups\" list, so the deck uses "
-                         f"its default order and labels.")
-    if entries is None:
-        entries = [{"group": n} for n in DECK_ORDER]
-    order, labels = [], list(names)
-    for i, n in enumerate(names):
-        labels[i] = DECK_LABELS.get(n, n)
-    for e in entries:
+    d_order, d_labels = _default_layout(names)
+    if doc is None:
+        notes = []
+        if d_order != list(range(len(names))):
+            notes.append(f"There is no {where}, so the keys follow the "
+                         f"deck's default order, not the order of "
+                         f"flamesafe's file: "
+                         f"{_keys_text(d_order, d_labels, names)}.")
+        return d_order, d_labels, notes, True
+    problems = []
+    lst = doc.get("groups") if isinstance(doc, dict) else None
+    order, labels = [], list(d_labels)
+    if not isinstance(lst, list):
+        problems.append(f"{where} has no \"groups\" list.")
+        lst = []
+    for e in lst:
         g = e.get("group") if isinstance(e, dict) else None
         if not isinstance(g, str) or not g.strip():
-            notes.append(f"{where}: an entry with no \"group\" name was "
-                         f"left out.")
+            problems.append(f"{where} has an entry with no \"group\" name.")
             continue
         if g not in names:
-            if doc is not None:
-                notes.append(f"{where} lists {g!r}, which is not a flame "
-                             f"group in flamesafe's config; left out.")
+            problems.append(f"{where} lists {g!r}, which is not a flame "
+                            f"group in flamesafe's config "
+                            f"({', '.join(names)}).")
             continue
         i = names.index(g)
         if i in order:
-            notes.append(f"{where} lists {g!r} twice; the first one counts.")
+            problems.append(f"{where} lists {g!r} twice.")
             continue
         order.append(i)
-        lab = e.get("label") if isinstance(e, dict) else None
+        lab = e.get("label")
         if lab is None:
             continue
         if not isinstance(lab, str) or not lab.strip() or \
                 len(lab.strip()) > LABEL_MAX:
-            notes.append(f"{where}: the label for {g!r} has to be words, up "
-                         f"to {LABEL_MAX} letters; the key says "
-                         f"{labels[i]!r} instead.")
+            problems.append(f"{where}: the label for {g!r} has to be words, "
+                            f"up to {LABEL_MAX} letters.")
             continue
         labels[i] = lab.strip()
-    for i, n in enumerate(names):
-        if i not in order:
-            order.append(i)
-            if doc is not None:
-                notes.append(f"{n!r} is a flame group in flamesafe's config "
-                             f"but not in {where}; it goes after the listed "
-                             f"ones.")
-    # A group past the keys is said by the Controller at start.
-    return order, labels, notes
+    missing = [n for i, n in enumerate(names) if i not in order]
+    if lst and missing:
+        problems.append(f"{where} does not list {', '.join(map(repr, missing))}"
+                        f", a flame group in flamesafe's config.")
+    for i in order:
+        mine = labels[i].strip().lower()
+        for j, other in enumerate(names):
+            if j != i and mine in (other.lower(), d_labels[j].lower(),
+                                   labels[j].strip().lower()):
+                problems.append(f"{where}: the label {labels[i]!r} for "
+                                f"{names[i]!r} reads like {other!r}'s. A "
+                                f"key must never read like another group.")
+                break
+    if problems:
+        return d_order, d_labels, problems + [
+            f"So the deck ignores {where} and uses its default layout: "
+            f"{_keys_text(d_order, d_labels, names)}."], False
+    return order, labels, [], True
 
 
 def load_deck_layout(names, folder):
@@ -403,10 +441,11 @@ def load_deck_layout(names, folder):
             with open(path, encoding="utf-8-sig") as fh:
                 doc = json.load(fh)
         except (OSError, ValueError) as e:
-            order, labels, notes = deck_layout(names)
-            return order, labels, [f"{path} could not be read ({e}); the "
-                                   f"deck uses its default order and "
-                                   f"labels."] + notes
+            order, labels = _default_layout(list(names))
+            return order, labels, [
+                f"{path} could not be read ({e}), so the deck uses its "
+                f"default layout: {_keys_text(order, labels, list(names))}."
+            ], False
     return deck_layout(names, doc, path or DECK_CONFIG_FILE)
 
 
@@ -848,7 +887,7 @@ def role_gate(user, action):
 def deck_key_name(k, names, latched=False, morning=False, ack=False):
     """What the audit log calls a deck key (audit.py)."""
     if k == TOP_START:
-        return "ACK" if ack else ("FIRE" if morning else "Start now")
+        return "ACK" if ack else ("FIRE" if morning else "Start/Stop")
     if k == TOP_HOLD:
         return "Hold/Resume"
     if k == TOP_ABORT:
@@ -1010,7 +1049,12 @@ class LocalSchedule:
     def _poll_once(self):
         op = self._fetch("/api/schedule/operator")
         running = self._fetch("/api/schedule/state")
+        # Whether Run has been pressed and playback is going (the page's
+        # own /api/state "running"), for the Start/Stop key (2026-10-26).
+        play = self._fetch("/api/state")
         with self._lock:
+            self._run_live = (bool(play.get("running"))
+                              if isinstance(play, dict) else None)
             if isinstance(op, dict):
                 self._operator = str(op.get("current_operator") or "")
             else:
@@ -1047,6 +1091,13 @@ class LocalSchedule:
         Never touches the network: see the class docstring."""
         with self._lock:
             return self._operator
+
+    def run_live(self):
+        """True while Run has been pressed and playback is going (ltc
+        serve's /api/state "running"), False when stopped, None if
+        unreachable or before the first poll. Never touches the network."""
+        with self._lock:
+            return getattr(self, "_run_live", None)
 
     def show_running(self):
         """True while the scheduler's own state says a show is playing or
@@ -1185,7 +1236,17 @@ class EngineConductor:
             self._local = (False, self._clock())
         return self._press("reset", who, screen)
 
-    def _press(self, name, who, screen, **extra):
+    def stop_run(self, who="", screen="Stream Deck"):
+        """The Start/Stop key's Stop (Jeff, 2026-10-26): exactly the Rack
+        screen's Stop button, POST /api/stop on ltc serve. The engine's own
+        rules decide, as for that button: refused while a scheduled show
+        is live (SHOW or PAUSED; only Hold, Resume and Abort then), taken
+        while aborted, never behind a role ("safety", users.WEB_ROUTES).
+        It stops playback and blacks the outputs out; no show starts until
+        Run is pressed again. On the queue, like Hold."""
+        return self._press("stop", who, screen, path="/api/stop")
+
+    def _press(self, name, who, screen, path=None, **extra):
         body = {"who": who, "screen": screen or "Stream Deck",
                 "seen": int(self._wall() * 1000)}
         body.update(extra)
@@ -1201,7 +1262,8 @@ class EngineConductor:
                                       "conductor at once; the engine's "
                                       "journal says what it did.")
         try:
-            self._q.put_nowait((name, body))
+            self._q.put_nowait((name, body) if path is None
+                               else (name, body, path))
         except queue.Full:
             self.dropped += 1
             return EngineResult(False, f"{name} could NOT be sent to the "
@@ -1218,12 +1280,13 @@ class EngineConductor:
                 return
             self._post_one(*item)
 
-    def _post_one(self, name, body):
+    def _post_one(self, name, body, path=None):
         """One press to the engine; its answer journaled, and kept as
-        the deck's engine fault when the engine did not take it."""
+        the deck's engine fault when the engine did not take it. `path`:
+        a route of its own (Stop's /api/stop), else /api/remote/<name>."""
         doc = {}
         try:
-            got = self._poster("/api/remote/" + name, body)
+            got = self._poster(path or "/api/remote/" + name, body)
             ok, text = got[0], got[1]
             if len(got) > 2 and isinstance(got[2], dict):
                 doc = got[2]
@@ -1422,6 +1485,9 @@ class ScreenKeys:
         # re-arm refractory window) and prefused (a purge arm refused for
         # it), for the rack screen's words (2026-10-26). Display only.
         self.report_rearm = None
+        # () -> True when ltcplay_deck.json could not be used and the keys
+        # are in the default layout: said as layout=default (Deck chip).
+        self.report_layout_default = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
         # Screen holds this deck would not take: hold id -> (code, clock),
@@ -1535,6 +1601,13 @@ class ScreenKeys:
                           if isinstance(i, int) and str(c).isalpha())
         except Exception:                        # noqa: BLE001
             pr = ""
+        try:
+            dflt = bool(self.report_layout_default()) \
+                if self.report_layout_default is not None else False
+        except Exception:                        # noqa: BLE001
+            dflt = False
+        if dflt:
+            path += ("&" if "?" in path else "?") + "layout=default"
         if rearm:
             path += ("&" if "?" in path else "?") + f"rearm={rearm}"
         if pr:
@@ -2401,7 +2474,7 @@ class Controller:
                 conductor=None, journal=None, clock=time.monotonic,
                 sleep=time.sleep, screen=None, user_provider=None,
                 audit=None, held_provider=None, key_order=None,
-                labels=None):
+                labels=None, run_live_provider=None):
         if not group_names:
             raise ValueError("the Stream Deck was given no flamesafe group "
                              "names, so it has nothing to arm.")
@@ -2458,6 +2531,10 @@ class Controller:
         # chip (ScreenKeys, hw=). Display only: never read by arming.
         self.deck_present = False
         self.held_provider = held_provider or (lambda: None)
+        # () -> True while Run has been pressed and playback is going
+        # (LocalSchedule.run_live): the Start key is then Stop (Jeff,
+        # 2026-10-26). None: not known, the key stays Start.
+        self.run_live_provider = run_live_provider or (lambda: None)
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -2759,6 +2836,54 @@ class Controller:
                   f"({kinds}): Acknowledge. {r.sentence}", fault=not r.ok,
                   action="alert", who=who, screen="Stream Deck")
 
+    def start_key_mode(self):
+        """What the Start/Stop key is right now (Jeff, 2026-10-26: Start
+        and Stop are one key): "show" while a scheduled show is live (Stop
+        is refused then, as on the Rack screen: only Hold, Resume and Abort
+        work during a show; the key keeps saying what the show is doing),
+        "stop" while Run has been pressed and playback is going, else
+        "start"."""
+        try:
+            if self.show_running_provider() is True:
+                return "show"
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            if self.run_live_provider() is True:
+                return "stop"
+        except Exception:                        # noqa: BLE001
+            pass
+        return "start"
+
+    def _do_start_or_stop(self):
+        mode = self.start_key_mode()
+        if mode == "start":
+            self._do_start_now()
+        elif mode == "stop":
+            self._do_stop()
+        else:
+            self._log("Stream Deck Stop pressed while a scheduled show is "
+                      "live: refused, as on the Rack screen. Only Hold, "
+                      "Resume and Abort work during a show. Nothing was "
+                      "stopped.", action="stop",
+                      who=self.operator_provider() or "",
+                      screen="Stream Deck")
+
+    def _do_stop(self):
+        """Stop: the Rack screen's Stop button, from the deck (Jeff,
+        2026-10-26). Never behind the operator gate or a role: it only
+        takes the show's outputs down ("safety" in users.WEB_ROUTES)."""
+        who = self.operator_provider() or ""
+        fn = getattr(self.conductor, "stop_run", None)
+        if fn is None:
+            self._log("Stream Deck Stop pressed: no engine is connected in "
+                      "this build. Nothing was stopped.", fault=True,
+                      action="stop", who=who, screen="Stream Deck")
+            return
+        r = fn(who=who, screen="Stream Deck")
+        self._log(f"Stream Deck Stop: {r.sentence}", fault=not r.ok,
+                  action="stop", who=who, screen="Stream Deck")
+
     def _do_start_now(self):
         who = self.operator_provider() or ""
         refusal = operator_gate(who, "start")
@@ -2947,6 +3072,17 @@ class Controller:
         for i in sorted(entered):
             if self.arm.wanted[i]:
                 continue             # already armed by the operator
+            if i not in self._group_key:
+                # A screen-only group (module docstring 5) is armed by a
+                # screen HOLD only, never by a purge click (review of PR
+                # #120, P1): no key, so no click may stand in for one.
+                self._purge_refused[i] = "screenonly"   # reporting only
+                self._log(f"Stream Deck: {self.labels[i]} ({self.names[i]}) "
+                          f"was not armed for a purge: it has no key on the "
+                          f"deck, so it is armed only by holding its Hold to "
+                          f"arm button on the Rack screen.",
+                          action="arm-refused", screen="Morning page")
+                continue
             # The same guards as a completed hold, in the same code
             # (_do_arm_fire, review of PR #68, P2-6): the latch and the
             # refractory window re-checked at the moment of arming, and the
@@ -3189,7 +3325,8 @@ class Controller:
                     # Re-mapped while the Morning page is open: FIRE.
                     self._fire_press(now)
                 else:
-                    self._do_start_now()
+                    # Start and Stop are one key (Jeff, 2026-10-26).
+                    self._do_start_or_stop()
             elif k == TOP_HOLD:
                 self._do_hold_or_resume(self._hold_press_resumes())
             elif k == TOP_ABORT:
@@ -3570,12 +3707,17 @@ class Controller:
                 fonts.show_key(d, b0, ["AUDIO", "LOST"], text, bg=bg,
                                kind="sans")
             elif running:
-                # Start Now does nothing during a show (_do_start_now
-                # journals and starts nothing), so the key says what the
-                # show is doing: NOW PLAYING, flashing green on the
-                # engine's own answers like every other top-row flash.
+                # Stop is refused during a scheduled show (only Hold,
+                # Resume and Abort), so the key says what the show is
+                # doing: NOW PLAYING, flashing green on the engine's own
+                # answers like every other top-row flash.
                 bg, text = PLAYING_ON if blink_on else PLAYING_OFF
                 fonts.show_key(d, b0, ["NOW", "PLAYING"], text, bg=bg,
+                               kind="sans")
+            elif self.start_key_mode() == "stop":
+                # Run pressed and playback going: this key is Stop (Jeff,
+                # 2026-10-26), the Rack screen's Stop.
+                fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:
                 # The demo's idle hold: START NOW dims while held.
@@ -4706,6 +4848,38 @@ def load_flamesafe_link(path):
             int(link["status_port"]), link["key"], names)
 
 
+def deck_layout_at_start(names, folder, journal, settings_folder=None):
+    """(key_order, labels, ok) for `ltc deck` at start: ltcplay_deck.json in
+    `folder` (None: the settings folder), and every note about it, the
+    settings folder not found, and the key map itself, journaled (review
+    of PR #120, P2). `ok` False: the default layout stands in for a file
+    that could not be used, which the Deck chip says too."""
+    notes = []
+    if not folder:
+        try:
+            if settings_folder is None:
+                from . import remote as remote_mod
+                settings_folder = remote_mod.settings_folder
+            folder = settings_folder()
+        except Exception as e:                   # noqa: BLE001
+            notes.append(f"the settings folder could not be found "
+                         f"({type(e).__name__}: {e}), so {DECK_CONFIG_FILE} "
+                         f"was not read and the deck uses its default "
+                         f"layout.")
+    order, labels, more, ok = load_deck_layout(names, folder)
+    notes += more
+    ok = ok and bool(folder)
+    notes.append(f"the keys are {_keys_text(order, labels, list(names))}. "
+                 f"Start/Stop, Hold and Abort are on the top row.")
+    for note in notes:
+        try:
+            journal(f"Stream Deck: {note}", action="config",
+                    outcome="layout" if ok else "layout-default")
+        except Exception:                        # noqa: BLE001
+            pass
+    return order, labels, ok
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(
@@ -4797,19 +4971,8 @@ def _main(args):
     # Which group is on which key, and what each key says (Jeff,
     # 2026-10-26; ltcplay_deck.json, DECK_CONFIG_FILE). Whatever does not
     # fit is said here and in the journal; the deck still starts.
-    deck_folder = getattr(args, "deck_folder", None)
-    try:
-        from . import remote as remote_mod
-        deck_folder = deck_folder or remote_mod.settings_folder()
-    except Exception:                            # noqa: BLE001
-        pass
-    key_order, labels, layout_notes = load_deck_layout(names, deck_folder)
-    for note in layout_notes:
-        try:
-            journal(f"Stream Deck: {note}", action="config",
-                    outcome="layout")
-        except Exception:                        # noqa: BLE001
-            pass
+    key_order, labels, layout_ok = deck_layout_at_start(
+        names, getattr(args, "deck_folder", None), journal)
     controller = Controller(arm, status, names, key_order=key_order,
                             labels=labels,
                             operator_provider=sched.current_operator,
@@ -4818,7 +4981,8 @@ def _main(args):
                             screen=screen,
                             audit=(audit_log.event if audit_log is not None
                                    else None),
-                            held_provider=sched.held)
+                            held_provider=sched.held,
+                            run_live_provider=sched.run_live)
     # The deck's worst USB key image write rides along on every deck-input
     # read, for the rack screen's Deck chip (2026-10-21). Display only.
     controller.usb = UsbMeter(journal)
@@ -4831,6 +4995,9 @@ def _main(args):
     # And each group's re-arm wait and any purge arm refused for it, so the
     # rack screen counts the wait down in words (2026-10-26). Display only.
     screen.report_rearm = controller.rearm_report
+    # And whether ltcplay_deck.json was set aside for the default layout,
+    # for the Deck chip (review of PR #120, P2-1). Display only.
+    screen.report_layout_default = lambda: not layout_ok
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.

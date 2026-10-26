@@ -8242,8 +8242,8 @@ def build():
 
  ("deck states: START NOW stays on the Start key during a show",
   "ltcplay/streamdeck.py",
-  "            elif running:\n                # Start Now does nothing",
-  "            elif False:\n                # Start Now does nothing"),
+  "            elif running:\n                # Stop is refused during",
+  "            elif False:\n                # Stop is refused during"),
 
  ("deck states: a held show reads NOW PLAYING, never PAUSED",
   "ltcplay/streamdeck.py",
@@ -8508,9 +8508,9 @@ def build():
  ("morning: a default wave flamer with no pan, tilt and fire map is purged "
   "(raises, or writes a guessed fire value)",
   "ltcplay/morning.py",
-  '''                no_map = m.purge_refusal()
+  '''                no_map = cfg.purge_refusal(m)
                 if no_map:''',
-  '''                no_map = m.purge_refusal()
+  '''                no_map = cfg.purge_refusal(m)
                 if False:'''),
 
  ("morning: a waver with no pan or tilt slot is not purge-refused",
@@ -8521,7 +8521,7 @@ def build():
 
  ("morning: a fire press on only never-purged machines is not refused",
   "ltcplay/morning.py",
-  '''            if ms and all(m.purge_refusal() for m in ms):''',
+  '''            if ms and all(cfg.purge_refusal(m) for m in ms):''',
   '''            if False:'''),
 
  ("morning: a fireball is purged with one value on every slot (fuel, air, "
@@ -8534,14 +8534,15 @@ def build():
 
  ("morning: a click on a fireball arms its group for a purge",
   "ltcplay/morning.py",
-  '''        if m.purge_refusal() == NO_FIREBALL_PURGE:
+  '''        if cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
             # Never armed for a purge at all''',
   '''        if False:
             # Never armed for a purge at all'''),
 
  ("morning: a fireball in the purge selection asks the deck to arm its group",
   "ltcplay/morning.py",
-  '''            if m.purge_refusal() == NO_FIREBALL_PURGE:
+  '''            if m.group in cfg.fireball_groups or \\
+                    cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
                 continue''',
   '''            if False:
                 continue'''),
@@ -8580,8 +8581,8 @@ def build():
 
  ("deck: the default labels are not Jeff's",
   "ltcplay/streamdeck.py",
-  "        labels[i] = DECK_LABELS.get(n, n)\n",
-  "        labels[i] = n\n"),
+  "    return order, [DECK_LABELS.get(n, n) for n in names]\n",
+  "    return order, list(names)\n"),
 
  ("deck: the keys are drawn under flamesafe's names, not their labels",
   "ltcplay/streamdeck.py",
@@ -8592,6 +8593,144 @@ def build():
   "ltcplay/streamdeck.py",
   "                len(lab.strip()) > LABEL_MAX:",
   "                len(lab.strip()) > 99:"),
+
+ ("morning: a machine of another kind in a fireball group is accepted "
+  "(review of #120, P1)",
+  "ltcplay/morning.py",
+  '''        if group in fireball_groups and kind != "fireball":''',
+  '''        if False:'''),
+
+ ("morning: the never-purge rule goes by machine kind, not by group (P1)",
+  "ltcplay/morning.py",
+  '''        if m.group in self.fireball_groups or m.kind == "fireball":''',
+  '''        if m.kind == "fireball":'''),
+
+ ("morning: fireball_groups is read and ignored",
+  "ltcplay/morning.py",
+  '''                    f"flamesafe group ({', '.join(sorted(known))}).")
+            out.add(x)''',
+  '''                    f"flamesafe group ({', '.join(sorted(known))}).")'''),
+
+ ("morning: a group named ... ball is not a fireball",
+  "ltcplay/morning.py",
+  '''    if "fireball" in n or "ball" in n:''',
+  '''    if "fireball" in n:'''),
+
+ ("morning: a declared fireball group is built as G-Flames",
+  "ltcplay/morning.py",
+  '''        kind = "fireball" if g["name"] in fireball_groups else \\''',
+  '''        kind = "fireball" if False else \\'''),
+
+ ("morning page: a purge refused for a group with no deck key reads Arming...",
+  "ltcplay/web/remote.html",
+  '''  if(g.purge_refused === "screenonly") return''',
+  '''  if(false) return'''),
+
+ ("deck: a purge click arms a group with no key (review of #120, P1)",
+  "ltcplay/streamdeck.py",
+  '''            if i not in self._group_key:
+                # A screen-only group''',
+  '''            if False:
+                # A screen-only group'''),
+
+ ("deck: a file with a typo is partly applied, moving keys (P2-1)",
+  "ltcplay/streamdeck.py",
+  "    if problems:\n        return d_order, d_labels, problems + [",
+  "    if False:\n        return d_order, d_labels, problems + ["),
+
+ ("deck: a label may read like another group (P2-2)",
+  "ltcplay/streamdeck.py",
+  "            if j != i and mine in (other.lower(), d_labels[j].lower(),",
+  "            if False and mine in (other.lower(), d_labels[j].lower(),"),
+
+ ("deck: a reorder with no ltcplay_deck.json is not said (P2-3)",
+  "ltcplay/streamdeck.py",
+  "        if d_order != list(range(len(names))):\n            notes.append(",
+  "        if False:\n            notes.append("),
+
+ ("deck: the layout notes and key map are never journaled",
+  "ltcplay/streamdeck.py",
+  "    for note in notes:\n        try:\n            journal(f\"Stream Deck: {note}\"",
+  "    for note in []:\n        try:\n            journal(f\"Stream Deck: {note}\""),
+
+ ("deck: a settings folder that cannot be found is not said (P2-4)",
+  "ltcplay/streamdeck.py",
+  '''            notes.append(f"the settings folder could not be found "
+                         f"({type(e).__name__}: {e}), so {DECK_CONFIG_FILE} "
+                         f"was not read and the deck uses its default "
+                         f"layout.")''',
+  '''            pass'''),
+
+ ("deck: the Deck chip never hears of a layout set aside",
+  "ltcplay/streamdeck.py",
+  '''        if dflt:
+            path += ("&" if "?" in path else "?") + "layout=default"''',
+  '''        if False:
+            path += ("&" if "?" in path else "?") + "layout=default"'''),
+
+ ("Deck chip: a layout set aside reads ok",
+  "ltcplay/remote.py",
+  '''        elif getattr(self, "_deck_layout_default", False):''',
+  '''        elif False:'''),
+
+ ("deck: a latched tap disarms by key position, not the key's group",
+  "ltcplay/streamdeck.py",
+  "                    i = self._key_group[k]\n",
+  "                    i = k - GROUP_KEYS[0]\n"),
+
+ ("deck: an early let go cancels by key position, not the key's group",
+  "ltcplay/streamdeck.py",
+  "                self._arm_holds[self._key_group[k]].release()",
+  "                self._arm_holds[k - GROUP_KEYS[0]].release()"),
+
+ ("deck: the audit names keys in flamesafe's order",
+  "ltcplay/streamdeck.py",
+  '''                k, [self.names[g] for g in
+                    self.key_order[:len(GROUP_KEYS)]], latched=latched,''',
+  '''                k, self.names, latched=latched,'''),
+
+ ("deck: a screen-only group's arm skips the fire-time latch check",
+  "ltcplay/streamdeck.py",
+  '''        if self._latched_now():
+            self._log(f"Stream Deck: {self.names[i]} arm-hold completed "''',
+  '''        if self._latched_now() and i in self._group_key:
+            self._log(f"Stream Deck: {self.names[i]} arm-hold completed "'''),
+
+ ("deck: the Start/Stop key never becomes Stop",
+  "ltcplay/streamdeck.py",
+  '''            if self.run_live_provider() is True:
+                return "stop"''',
+  '''            if False:
+                return "stop"'''),
+
+ ("deck: Stop is sent during a scheduled show",
+  "ltcplay/streamdeck.py",
+  '''            if self.show_running_provider() is True:
+                return "show"''',
+  '''            if False:
+                return "show"'''),
+
+ ("deck: Stop waits on the operator gate",
+  "ltcplay/streamdeck.py",
+  '''        fn = getattr(self.conductor, "stop_run", None)''',
+  '''        if operator_gate(who, "start"):
+            return
+        fn = getattr(self.conductor, "stop_run", None)'''),
+
+ ("deck: Stop is not the Rack screen's Stop route",
+  "ltcplay/streamdeck.py",
+  '''        return self._press("stop", who, screen, path="/api/stop")''',
+  '''        return self._press("stop", who, screen)'''),
+
+ ("deck: the run is never seen as live",
+  "ltcplay/streamdeck.py",
+  '''            self._run_live = (bool(play.get("running"))''',
+  '''            self._run_live = (None'''),
+
+ ("deck: the key never reads STOP RUN",
+  "ltcplay/streamdeck.py",
+  '''            elif self.start_key_mode() == "stop":''',
+  '''            elif False:'''),
 
  ("deck: Abort leaves the screen-only fourth group armed",
   "ltcplay/streamdeck.py",
@@ -10235,8 +10374,8 @@ def build():
 
  ('deck hold: ltc deck never gives the Hold key the scheduler',
   'ltcplay/streamdeck.py',
-  '                            held_provider=sched.held)',
-  '                            held_provider=None)'),
+  '                            held_provider=sched.held,',
+  '                            held_provider=None,'),
 
  # -- arming from the rack screen (Jeff, 2026-10-22): off said and switchable
  # on the show machine, every refusal named, the deck taking it a success --

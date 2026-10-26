@@ -873,7 +873,9 @@ class Soak:
         # flamesafe's copy of its status for the engine (PR #39), so the
         # engine's flame link sees flamesafe confirm a disarm.
         cfg["link"]["status_mirror_port"] = STATUS_MIRROR
-        cfg["groups"] = cfg.get("groups", [])[:3]
+        # Four groups (2026-10-26): the fourth has no deck key and is armed
+        # from a screen hold, as the exerciser arms every group.
+        cfg["groups"] = cfg.get("groups", [])[:4]
         cfg["log_dir"] = os.path.join(self.dir, "flamesafe-journal")
         self.fs_cfg_doc = cfg
         self.fs_cfg = os.path.join(self.dir, "flamesafe-soak.json")
