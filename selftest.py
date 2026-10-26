@@ -45775,6 +45775,159 @@ def _mo_advance(R, dt, beat=True):
     R.m.tick()
 
 
+def test_flamesafe_multi_safety_ltcplay_side():
+    """flamesafe multi-safety (Jeff, 2026-10-26): the wave flamer is ONE
+    arm group driving three 6-channel fixtures, each with its own safety
+    slot. Everything in ltcplay that read a group's safety as one slot
+    reads a list too; the Stream Deck is unchanged; the rack screen card
+    says how many safeties are up for such a group only."""
+    section("flamesafe multi-safety: ltcplay reads a list of safety slots; "
+            "the deck is unchanged; the rack screen card counts safeties")
+    import json as _json
+    import types as _types
+    import shutil as _sh
+    import subprocess
+    from ltcplay import fire_ice as FI
+    from ltcplay import morning as MO
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    ex = _json.load(open(os.path.join(here, "flamesafe",
+                                      "flamesafe.example.json"),
+                         encoding="utf-8"))
+    wave = ex["groups"][2]
+    check(wave["name"] == "wave flamer" and wave["safety"] == [6, 12, 18]
+          and wave["fire"] == [1, 2, 3, 4, 5, 7, 8, 9, 10, 11,
+                               13, 14, 15, 16, 17],
+          f"the example's wave flamer: three safety slots and the 15 "
+          f"control slots, explicitly: {wave}")
+    work = tempfile.mkdtemp()
+    try:
+        def fs_with(groups):
+            d = dict(ex, groups=groups)
+            p = os.path.join(work, "fs.json")
+            with open(p, "w", encoding="utf-8") as fh:
+                _json.dump(d, fh)
+            return p
+        three = ex["groups"][:3]
+        cfg = _types.SimpleNamespace(flamesafe_config=fs_with(three),
+                                     flame_controller=None)
+        try:
+            FI.check_flame_groups(work, cfg)
+            check(True, "")
+        except FI.FireIceConfigError as e:
+            check(False, f"fire_ice refused a list of safety slots: {e}")
+        for bad, why in (([6, 12, 21], "a safety slot that is front row's "
+                                       "fire channel"),
+                         ([6, 12, "18"], "a safety that is not a number"),
+                         ([], "an empty list of safety slots")):
+            g = [dict(three[0]), dict(three[1]), dict(wave, safety=bad)]
+            g[0]["fire"] = [21, 22]
+            cfg.flamesafe_config = fs_with(g)
+            try:
+                FI.check_flame_groups(work, cfg)
+                check(False, f"fire_ice accepted {why}")
+            except FI.FireIceConfigError as e:
+                check("—" not in str(e) and "–" not in str(e),
+                      f"fire_ice refuses {why}: {e}")
+        # The deck: the same three keys, the same names, whatever a
+        # group's safety is.
+        fs3 = fs_with(three)
+        got = sd.load_flamesafe_link(fs3)
+        check(got[5] == ["front row", "cat-walk", "wave flamer"] and
+              sd.GROUP_KEY_LIMIT == 3 and sd.GROUP_KEYS == (3, 4, 5),
+              f"the Stream Deck: three arm keys, one per group, the wave "
+              f"flamer one key: {got[5]}")
+        base = {"name": "wave flamer", "armed": "armed", "wanted": True,
+                "reason": "", "amber": "", "dwell_s": 0}
+        more = dict(base, safety_slots=[6, 12, 18],
+                    safeties_up=[True, False, True],
+                    safeties_locked=[False, True, False])
+        for st in ("armed", "held", "disarmed"):
+            check(sd.group_look(dict(base, armed=st), slot=2) ==
+                  sd.group_look(dict(more, armed=st), slot=2),
+                  f"the deck key shows the group's one state ({st}), not "
+                  f"the per-safety list")
+        # Morning: one machine per fixture, each with its own safety slot,
+        # so locking one machine puts its safety in the lockout file.
+        groups = MO.load_flamesafe_groups(fs3)
+        check(groups[2]["safeties"] == [6, 12, 18] and
+              groups[0]["safeties"] == [ex["groups"][0]["safety"]],
+              f"the morning engine reads every safety slot: {groups}")
+        mc = MO.MorningConfig.parse({}, "x", groups)
+        wm = [m for m in mc.machines if m.group == "wave flamer"]
+        check([(m.id, m.fire, m.safety) for m in wm] ==
+              [("wave-flamer-1", [1, 2, 3, 4, 5], 6),
+               ("wave-flamer-2", [7, 8, 9, 10, 11], 12),
+               ("wave-flamer-3", [13, 14, 15, 16, 17], 18)],
+              f"three wave flamer machines, five fire slots and a safety "
+              f"each: {[(m.id, m.fire, m.safety) for m in wm]}")
+        check(wm[1].channels() == {7, 8, 9, 10, 11, 12} and
+              all(m.safety is None for m in mc.machines
+                  if m.group != "wave flamer"),
+              "a locked fixture names its safety slot too; no other "
+              "machine has one")
+        doc = {"machines": [{"id": "w1", "kind": "gflame",
+                             "group": "wave flamer", "fire": [1, 2],
+                             "safety": 6}]}
+        check(MO.MorningConfig.parse(doc, "x", groups).by_id["w1"].safety
+              == 6, "a machine may name its own safety in a multi-safety "
+                    "group")
+        for bad in ({"group": "wave flamer", "fire": [1], "safety": 7},
+                    {"group": "front row",
+                     "fire": [ex["groups"][0]["fire"][0]],
+                     "safety": ex["groups"][0]["safety"]}):
+            try:
+                MO.MorningConfig.parse(
+                    {"machines": [dict(bad, id="b1", kind="gflame")]},
+                    "x", groups)
+                check(False, f"a machine safety was accepted: {bad}")
+            except MO.MorningConfigError as e:
+                check("safety" in str(e), f"refused: {e}")
+    finally:
+        _sh.rmtree(work, ignore_errors=True)
+    # The rack screen: flamesafe's per-safety lists reach the card.
+    fs = RM.FlameStatus("127.0.0.1", 1, "k" * 16, ["wave flamer"],
+                        clock=lambda: 10.0)
+    fs.last, fs.last_at = {"groups": [dict(more, locked_fire=[])]}, 10.0
+    g = fs.view()["groups"][0]
+    check(g["safeties_up"] == [True, False, True] and
+          g["safeties_locked"] == [False, True, False],
+          f"the rack screen gets the per-safety state: {g}")
+    fs.last = {"groups": [dict(base)]}
+    g = fs.view()["groups"][0]
+    check(g["safeties_up"] == [] and g["safeties_locked"] == [],
+          "an older flamesafe without the lists: empty, no line")
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function safetyLine" in logic and
+          'const sl = safetyLine(g, c), se = el.querySelector(".saf");'
+          in page, "the card draws the safety line from page logic")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const W = {name:"wave flamer"};
+t(safetyLine(Object.assign({safeties_up:[true,true,false], safeties_locked:[false,false,false]}, W), "held") === "wave flamer: 2 of 3 safeties up; NOT armed", "2 of 3, not armed");
+t(safetyLine(Object.assign({safeties_up:[true,false,true], safeties_locked:[false,true,false]}, W), "armed") === "wave flamer: 2 of 2 unlocked safeties up, 1 locked out; ARMED", "one locked, armed");
+t(safetyLine(Object.assign({safeties_up:[true,true,true], safeties_locked:[false,false,false]}, W), "armed") === "wave flamer: 3 of 3 safeties up; ARMED", "all up");
+t(safetyLine(Object.assign({safeties_up:[false,false,false], safeties_locked:[true,true,true]}, W), "held") === "wave flamer: 0 of 0 unlocked safeties up, 3 locked out; NOT armed", "all locked");
+t(safetyLine({name:"front row", safeties_up:[true], safeties_locked:[false]}, "armed") === "", "one safety: no line");
+t(safetyLine({name:"front row"}, "armed") === "", "an older flamesafe: no line");
+t(safetyLine(Object.assign({safeties_up:[true,true,true], safeties_locked:[false,false,false]}, W), "unknown") === "", "not known: no line");
+console.log(JSON.stringify(out));
+"""
+        r = subprocess.run([node, "-e", js], capture_output=True, text=True,
+                           timeout=30)
+        try:
+            bad = _json.loads(r.stdout.strip().splitlines()[-1])
+        except Exception:
+            bad = [f"node did not run: {r.stderr[-300:]}"]
+        check(not bad, f"the card's safety line: {bad}")
+
+
 def test_morning_config_layout_and_lockout_file():
     section("Morning and Shutdown: ltcplay_morning.json (machines, Jeff's four "
             "groups, placeholder purge values, lasers, checklists, names, "
@@ -45792,12 +45945,15 @@ def test_morning_config_layout_and_lockout_file():
     groups = MO.load_flamesafe_groups(
         os.path.join(here, "flamesafe", "flamesafe.example.json"))
     cfg = MO.MorningConfig.parse({}, "x", groups)
-    check(len(cfg.machines) == sum(len(g["fire"]) for g in groups),
-          f"no file: one machine per flamesafe fire slot "
-          f"({len(cfg.machines)})")
+    check(len(cfg.machines) == sum(len(g["safeties"]) if
+                                   len(g["safeties"]) > 1 else len(g["fire"])
+                                   for g in groups),
+          f"no file: one machine per flamesafe fire slot, and one per "
+          f"fixture of a multi-safety group ({len(cfg.machines)})")
     check(set(cfg.banks) == set(MO.GROUP_NAMES) and
           cfg.banks["Fireball"] == ["fireball"] and
-          cfg.banks["Scaffold Wavers"] == ["wave-flamer-1", "wave-flamer-2"],
+          cfg.banks["Scaffold Wavers"] == ["wave-flamer-1", "wave-flamer-2",
+                                            "wave-flamer-3"],
           f"the default groups sort by name: {cfg.banks}")
     check(cfg.purge == MO.PURGE_DEFAULTS and
           cfg.purge["gflame_fire"] == 255 and
@@ -57324,6 +57480,7 @@ if __name__ == "__main__":
     test_alert_pixels_never_the_flame_controllers()
     test_audio_interface_watch()
     test_morning_config_layout_and_lockout_file()
+    test_flamesafe_multi_safety_ltcplay_side()
     test_purge_frame_on_the_flame_link()
     test_purge_rules_at_the_engine()
     test_morning_deck_remap_and_purge_arming()

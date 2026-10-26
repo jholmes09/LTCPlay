@@ -97,6 +97,15 @@ TIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?\s\
 
 
 # ----------------------------------------------------------------- time ---
+
+def _safeties(g):
+    """Every safety slot of a group: one number, or a list (flamesafe
+    multi-safety, 2026-10-26), or a "safeties" list from witness.py."""
+    v = g.get("safeties") or g.get("safety")
+    if isinstance(v, list):
+        return [int(x) for x in v]
+    return [int(v)]
+
 def parse_time(s):
     """Local wall clock as written, offset dropped (the files were written
     on the show PC; its wall clock is the one axis everything shares)."""
@@ -672,11 +681,12 @@ def check(w, recs, fs_lines, groups, arm_value, gap_ms=250.0, stall_s=2.0,
     fire_of = {}
     arm_of = {}
     for g in groups:
-        safety_of[g["safety"]] = g["name"]
+        for s in _safeties(g):
+            safety_of[s] = g["name"]
         arm_of[g["name"]] = int(g.get("arm_value", arm_value))
         for f in g["fire"]:
             fire_of[f] = g["name"]
-    safety_slot = {g["name"]: g["safety"] for g in groups}
+    safety_slots = {g["name"]: _safeties(g) for g in groups}
     locked = set(locked_slots)
     fire_packets = 0
     armed_packets = 0
@@ -710,11 +720,14 @@ def check(w, recs, fs_lines, groups, arm_value, gap_ms=250.0, stall_s=2.0,
             elif slot in fire_of:
                 name = fire_of[slot]
                 fired = True
-                sv = values.get(safety_slot[name], 0)
-                if sv != arm_of[name]:
+                # Every safety slot of the group not locked out must carry
+                # the arm value (multi-safety: a locked one stays at zero).
+                down = [(s, values.get(s, 0)) for s in safety_slots[name]
+                        if s not in locked and values.get(s, 0) != arm_of[name]]
+                if down:
                     ep.add("FIRE WITHOUT ARM", slot, t,
                            f"{name}: fire slot {slot} = {v} while its safety "
-                           f"slot {safety_slot[name]} = {sv}")
+                           f"slot {down[0][0]} = {down[0][1]}")
                 if tl.has_state:
                     purging = st["purge_until"] is not None and \
                         t <= st["purge_until"]
@@ -979,7 +992,7 @@ def main(argv=None):
         with open(a.config, encoding="utf-8-sig") as fh:
             d = json.load(fh)
         arm_value = int(d.get("arm_value", 0))
-        groups = [{"name": g["name"], "safety": int(g["safety"]),
+        groups = [{"name": g["name"], "safety": g["safety"],
                    "fire": [int(f) for f in g["fire"]],
                    "arm_value": int(g.get("arm_value", arm_value))}
                   for g in d.get("groups", [])]

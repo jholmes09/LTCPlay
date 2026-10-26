@@ -285,6 +285,8 @@ what is in it.
  "stats": {"...": "counters, for the journal"},
  "groups": [
    {"name": "front row", "safety_slot": 401,
+    "safety_slots": [401], "safeties_up": [true],
+    "safeties_locked": [false],
     "fire_slots": [411, 412, 413, 414, 415],
     "wanted": true, "armed": "armed", "reason": "", "amber": "",
     "dwell_s": 0, "sent_safety": 78,
@@ -325,8 +327,47 @@ Per group, the two lamps of section 8 panel 5:
 | `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto, the flame link's included). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
 | `sent_safety` | the SENT safety value this tick: 0 or the arm value |
+| `safety_slot` | the group's safety slot; for a multi-safety group, the first of `safety_slots` |
+| `safety_slots` | every safety slot of the group, in config order (added 2026-10-26, multi-safety). One entry for a group whose config `safety` is one number |
+| `safeties_up` | one per safety slot: true when that slot carries the arm value in this frame (added 2026-10-26). `armed` stays the one state of the whole group; this list is for the rack screen's "2 of 3 safeties up" line |
+| `safeties_locked` | one per safety slot: true when that slot is in the lockout file and so held at zero and left out of the arm (added 2026-10-26). Always false for a one-safety group |
 | `sent_fire` | the SENT fire values this tick, one per fire slot |
 | `commanded_fire` | what ltcplay asked for on those slots this tick (COMMANDED). Not a lamp; for the journal and the amber row flag (armed, commanded fire, sent none, for more than 3 frames) |
+
+### Multi-safety groups (added 2026-10-26)
+
+A group's `safety` in the config is one slot (as before, behaviour
+unchanged) or a list of distinct slots: one arm group driving several
+fixtures, each with a safety channel of its own (the wave flamer: three
+6-channel fixtures, channels 1 to 5 fire slots and channel 6 that fixture's
+safety). A list of one is the same group as that one number. Every slot
+rule applies to every safety slot: 1 to 512, never one of any group's fire
+slots, never shared with another group. Such a group is still one arm
+group: one Stream Deck key, one rack screen card, one hold to arm, one
+disarm, one `armed` state.
+
+- Arming raises every unlocked safety slot of the group in the same frame.
+  Disarming, an Abort, a lost link or any other disarm lowers all of them
+  in the same frame.
+- A safety slot named in the lockout file stays at zero under any command
+  and is left out of "every safety up": the group arms on its other
+  safeties. With every safety slot locked the group is held (steady amber,
+  "Every safety slot of this group is locked out: it cannot arm until one
+  is unlocked."). Fire slots follow the lockout file exactly as before.
+- After composing each frame flamesafe confirms that every unlocked safety
+  slot of every raised group carries its arm value. If one does not (it
+  dropped, was overwritten, or was unlocked while the group was up, so its
+  rising edge was never checked), the whole group comes down in that same
+  frame: every safety slot and every fire slot zero, the latch cleared, a
+  journal line, `stats.safety_unconfirmed` counted, and the lamp reads
+  "Not every unlocked safety slot of this group was up: it was disarmed.
+  Cycle the arm to re-arm." (flashing amber). A valid config cannot trip
+  this; it is the fail safe.
+- Nothing from the show program's frame (show data, xLights live, the
+  purge) ever reaches a safety slot, exactly as for a one-safety group:
+  flamesafe writes safety slots from its own arm state only.
+- A safety slot in the lockout file of a ONE-safety group is ignored, as
+  it always was (only that group's fire slots are zeroed by the lockout).
 
 What ltcplay does with it: display, journal, the amber row flag. There is no
 path from a status frame to flame output, because ltcplay never writes the
@@ -1008,3 +1049,12 @@ fresh status frame says `confirmed: false` (and one more if it later says
 true), `flames.confirmed` in the engine's `/api/remote/status`, and one line
 in the rack screen's Info popup. Display only: `confirmed` never changed
 what the deck sends, and no field on any wire changed.
+
+Version 2, 2026-10-26 (multi-safety, the wave flamer): a group's `safety`
+may be a list of distinct slots, one per fixture, armed as one group (see
+"Multi-safety groups" under the status frame). The status frame gains per
+group `safety_slots`, `safeties_up` and `safeties_locked`, and `stats`
+gains `safety_lock_blocks` and `safety_unconfirmed`. A group whose
+`safety` is one number behaves exactly as before; no existing field's name,
+type or meaning changed (`safety_slot` is the first of the list for a
+multi-safety group).

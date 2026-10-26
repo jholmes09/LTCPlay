@@ -58,6 +58,22 @@ ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
 # nothing; unlocking a machine on the Morning and Shutdown page does.
 LOCKED_OUT = ("Every machine in this group is locked out: it cannot arm "
               "until one is unlocked.")
+# Multi-safety (Jeff, 2026-10-26): a group with more than one safety slot
+# drives one fixture per safety slot.  Jeff locks single machines out for
+# the night through the lockout file, and a locked machine must not block
+# the others: a safety slot named in the lockout file is held at zero and
+# left out of "every safety up".  The words on the ARMED lamp when every
+# safety slot of such a group is locked.  Steady amber: cycling fixes
+# nothing, unlocking a machine does.
+SAFETIES_LOCKED = ("Every safety slot of this group is locked out: it "
+                   "cannot arm until one is unlocked.")
+# Multi-safety: the words when a raised group's unlocked safety slots were
+# not all at its arm value in the frame composed (one dropped, was
+# overwritten, or was unlocked while the group was up and so never had its
+# rising edge checked).  The whole group came down on that tick with its
+# fire slots zeroed, and a fresh cycle is needed.
+SAFETY_UNCONFIRMED = ("Not every unlocked safety slot of this group was up: "
+                      "it was disarmed. Cycle the arm to re-arm.")
 # Rejections on the flame link are journaled exactly as the arm link's are
 # (arminput._RejectJournal, round 4 of #31's safety review, item C): one
 # line per REASON when an episode starts, one closing line with the count
@@ -197,6 +213,17 @@ class Composer:
         self._locked = frozenset()
         self._lockout_state = "none"
         self._lockout_refused = [False] * self.n
+        self._safety_lock_refused = [False] * self.n
+        # Multi-safety: the safety slots raised on the group's rising edge
+        # (every unlocked one), less any locked since.  Only these carry
+        # the arm value: a slot unlocked while the group is up never rises
+        # on its own without its edge being checked; it is not up, so the
+        # group is not confirmed and comes down (tick, step 6).
+        self._raised = [frozenset()] * self.n
+        # Multi-safety: like _aborted, only the WORDS on a group the
+        # confirmation step (tick, step 6) took down; read by nothing that
+        # decides a safety value.  Cleared when the group latches again.
+        self._unconfirmed = [False] * self.n
         self._name_mismatch_logging = False   # item 10: once per episode
         self._name_mismatch_count = 0
         self._last_tick = None
@@ -212,6 +239,7 @@ class Composer:
             "link_lost", "disarm_all", "disarm_all_rejected",
             "second_sender_disarms", "flame_link_floods",
             "lockout_zeroed", "lockout_blocks",
+            "safety_lock_blocks", "safety_unconfirmed",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
@@ -420,6 +448,7 @@ class Composer:
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
                 self._aborted[i] = False
+                self._unconfirmed[i] = False
             self._wanted[i] = w[i]
         return True
 
@@ -456,13 +485,28 @@ class Composer:
         if got != self._locked:
             names = [g.name for g in self.groups
                      if any(f in got for f in g.fire)]
+            saf = [(g.name, s) for g in self.groups if g.multi_safety
+                   for s in g.safeties if s in got]
             self._event("lockout",
                         f"locked out fire slots: {sorted(got) or 'none'}"
                         + (f" (in {', '.join(names)})" if names else "")
                         + ". A locked slot is zero on every packet; a group "
-                          "with every fire slot locked cannot arm.")
+                          "with every fire slot locked cannot arm."
+                        + ("".join(f" Safety slot {s} of {n} is locked out: "
+                                   f"it stays at zero and its fixture is left "
+                                   f"out of the group's arm." for n, s in saf)
+                           if saf else ""))
         self._locked = got
         self._lockout_state = str(state)
+
+    def _locked_safeties(self, g):
+        """Multi-safety (2026-10-26): the safety slots of `g` that are
+        locked out.  Each stays at zero and is left out of "every safety
+        up"; a group with every one locked cannot arm.  Always empty for a
+        one-safety group: its behaviour is exactly what it was before."""
+        if not g.multi_safety:
+            return frozenset()
+        return frozenset(s for s in g.safeties if s in self._locked)
 
     def _group_locked_out(self, g):
         """True when every fire slot of `g` is locked out: nothing in it
@@ -901,6 +945,22 @@ class Composer:
                                            f"fire slot in it is locked out")
                 continue
             self._lockout_refused[i] = False
+            locked_saf = self._locked_safeties(g)
+            if g.multi_safety and len(locked_saf) == len(g.safeties):
+                # Multi-safety (2026-10-26): every safety slot locked out,
+                # so no fixture of the group may arm; an established arm
+                # comes down with every fire slot zeroed on this tick.
+                # Checked before "already up", like the lockout above.
+                values.append(DISARM)
+                held.append((SAFETIES_LOCKED, "steady"))
+                self.stats["safety_lock_blocks"] += 1
+                if not self._safety_lock_refused[i]:
+                    self._safety_lock_refused[i] = True
+                    self._event("lockout",
+                                f"{g.name}: held disarmed, every safety slot "
+                                f"in it is locked out")
+                continue
+            self._safety_lock_refused[i] = False
             if prev != DISARM:
                 # Already up.  Holding an established arm is not a rising
                 # edge, so the precondition does not re-apply.
@@ -949,6 +1009,8 @@ class Composer:
                 rt.append(t)
                 values.append(g.arm_value)
                 held.append(("", ""))
+                # The safety slots this rise raises: every unlocked one.
+                self._raised[i] = frozenset(g.safeties) - locked_saf
                 # +1 because this tick consumes one count and this tick is
                 # clean by construction; the count is about the ticks AFTER
                 # the rise.
@@ -970,7 +1032,19 @@ class Composer:
         sent_fire = []
         commanded_fire = []
         for i, g in enumerate(self.groups):
-            buf[g.safety - 1] = values[i]
+            # Every safety slot of the group, in this one frame: a group
+            # with several (multi-safety) raises and lowers them together.
+            # A locked one (multi-safety only) stays at zero whatever else
+            # holds, and leaves the raised set for good: unlocking it later
+            # does not raise it without a fresh rising edge.
+            locked_saf = self._locked_safeties(g)
+            if values[i] == DISARM:
+                self._raised[i] = frozenset()
+            else:
+                self._raised[i] = self._raised[i] - locked_saf
+            for s in g.safeties:
+                buf[s - 1] = (values[i] if s in self._raised[i]
+                              and s not in locked_saf else DISARM)
             quiet = self._edge_quiet[i] > 0
             if quiet:
                 self._edge_quiet[i] -= 1
@@ -1010,6 +1084,45 @@ class Composer:
             sent_fire.append(sf)
             commanded_fire.append(cf)
 
+        # 6. Every raised group is confirmed: each of its safety slots carries
+        # its arm value in the frame about to go out.  One that does not
+        # (dropped, or overwritten by another slot) takes the whole group
+        # down on this tick: every safety slot and every fire slot of it to
+        # zero, the latch cleared, a fresh cycle needed.  A valid config can
+        # never trip this (no slot belongs to two groups); it is the fail
+        # safe for multi-safety groups, where "armed" means every safety up.
+        for i, g in enumerate(self.groups):
+            if values[i] == DISARM:
+                continue
+            locked_saf = self._locked_safeties(g)
+            down = [s for s in g.safeties
+                    if s not in locked_saf and buf[s - 1] != g.arm_value]
+            if not down and len(locked_saf) < len(g.safeties):
+                continue
+            self._raised[i] = frozenset()
+            for s in g.safeties:
+                buf[s - 1] = DISARM
+            for f in g.fire:
+                buf[f - 1] = 0
+            values[i] = DISARM
+            sent_fire[i] = [0] * len(g.fire)
+            held[i] = ((SAFETY_UNCONFIRMED, "flashing") if self._wanted[i]
+                       else ("", ""))
+            self._latched[i] = False
+            self._seen_down[i] = False
+            self._edge_quiet[i] = 0
+            self._unconfirmed[i] = True
+            self.stats["safety_unconfirmed"] += 1
+            self._event("safety-unconfirmed",
+                        f"{g.name}: safety slot "
+                        f"{', '.join(str(s) for s in down)} was not at the "
+                        f"arm value in the frame composed; the whole group "
+                        f"was disarmed and its fire slots zeroed")
+        ups = [[values[i] != DISARM and buf[s - 1] == g.arm_value
+                for s in g.safeties] for i, g in enumerate(self.groups)]
+        locks = [[s in self._locked_safeties(g) for s in g.safeties]
+                 for g in self.groups]
+
         self._last_sent = values
         self._held = held
         if any(v != DISARM for v in values):
@@ -1018,7 +1131,7 @@ class Composer:
             self._fault = fault
             self._fault_at = t
         status = self._status(t, values, sent_fire, commanded_fire, held,
-                              live, frame_fresh, fire_live)
+                              live, frame_fresh, fire_live, ups, locks)
         return Output(bytes(buf), status, fault)
 
     def _why_not(self, i, live, link_live, flame_disturbed=False):
@@ -1047,6 +1160,8 @@ class Composer:
         if not self._latched[i]:
             if self._aborted[i]:
                 return (ABORT_DISARMED, "flashing")
+            if self._unconfirmed[i]:
+                return (SAFETY_UNCONFIRMED, "flashing")
             return ("cycle the arm", "flashing")
         return ("not composing", "steady")
 
@@ -1067,6 +1182,7 @@ class Composer:
         try:
             self._last_sent = [DISARM] * self.n
             self._edge_quiet = [0] * self.n
+            self._raised = [frozenset()] * self.n
             self._reset_latches("panic")
             self._held = [("safety program fault", "steady")
                           if self._wanted[i] else ("", "")
@@ -1079,7 +1195,12 @@ class Composer:
                                   [[0] * len(g.fire) for g in self.groups],
                                   [[0] * len(g.fire) for g in self.groups],
                                   self._held, self._arm_is_live(t),
-                                  self._frame_is_fresh(t), False)
+                                  self._frame_is_fresh(t), False,
+                                  [[False] * len(g.safeties)
+                                   for g in self.groups],
+                                  [[s in self._locked_safeties(g)
+                                    for s in g.safeties]
+                                   for g in self.groups])
         except Exception:                               # noqa: BLE001
             status = {"v": CONTRACT_VERSION, "t": "status",
                       "heartbeat": self.heartbeat, "fault": self._fault,
@@ -1098,7 +1219,7 @@ class Composer:
         return int(math.ceil(left_ms / 1000.0))
 
     def _status(self, t, values, sent_fire, commanded_fire, held, live,
-                frame_fresh, fire_live):
+                frame_fresh, fire_live, ups, locks):
         groups = []
         for i, g in enumerate(self.groups):
             reason, amber = held[i]
@@ -1114,6 +1235,14 @@ class Composer:
             groups.append({
                 "name": g.name,
                 "safety_slot": g.safety,
+                # Multi-safety (2026-10-26): every safety slot of the group,
+                # whether each carries the arm value in this frame, and
+                # whether each is locked out (held at zero and left out of
+                # the arm).  One entry for a one-safety group, never
+                # locked.  `armed` stays the one state of the whole group.
+                "safety_slots": list(g.safeties),
+                "safeties_up": list(ups[i]),
+                "safeties_locked": list(locks[i]),
                 "fire_slots": list(g.fire),
                 "wanted": self._wanted[i],
                 "armed": state,

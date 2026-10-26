@@ -712,6 +712,12 @@ def decode_status(data, key):
     return obj
 
 
+def _list(v):
+    """`v` if it is a list, else an empty one (a status field from an older
+    flamesafe that does not send it)."""
+    return v if isinstance(v, list) else []
+
+
 class FlameStatus:
     """flamesafe's status frames, read for display only. CONTRACT.md:
     there is no path from a status frame to flame output, and nothing read
@@ -780,7 +786,15 @@ class FlameStatus:
                            "wanted": bool(g.get("wanted")),
                            "reason": str(g.get("reason", "")),
                            "dwell_s": g.get("dwell_s", 0),
-                           "locked_fire": list(g.get("locked_fire") or [])})
+                           "locked_fire": list(g.get("locked_fire") or []),
+                           # flamesafe multi-safety (2026-10-26): one entry
+                           # per safety slot; the card shows the count line
+                           # only for a group with more than one.
+                           "safeties_up": [bool(x) for x in
+                                           _list(g.get("safeties_up"))],
+                           "safeties_locked": [bool(x) for x in
+                                               _list(g.get(
+                                                   "safeties_locked"))]})
         if not groups:
             groups = [{"name": n, "armed": "unknown", "wanted": False,
                        "reason": "", "dwell_s": 0} for n in self.names]

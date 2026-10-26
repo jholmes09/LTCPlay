@@ -64,6 +64,12 @@ def make_config(**over):
 ARM = 78
 FRONT_SAFETY, FRONT_FIRE = 401, [411, 412, 413, 414, 415]
 N_GROUPS = 6
+# The example's wave flamer (2026-10-26): three 6-channel fixtures armed as
+# one group, channels 1 to 5 fire and channel 6 the fixture's own safety.
+# Slots 1 to 18 of universe 1, as Jeff gave them on 2026-10-26.
+WAVE = 2
+WAVE_SAFETIES = [6, 12, 18]
+WAVE_FIRE = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
 KEY = example_dict()["link"]["key"]
 NAMES = [g["name"] for g in example_dict()["groups"]]
 SENDER = ("127.0.0.1", 40001)
@@ -403,9 +409,13 @@ def test_rule8_config_refuses_every_bad_table():
 def test_example_config_loads_and_is_marked_unconfirmed():
     section("the example config is the rev 6 fixture table, unconfirmed")
     c = config.load(os.path.join(HERE, "flamesafe.example.json"))
-    check(c.n == 6 and [g.safety for g in c.groups] == [401, 402, 403, 404,
-                                                        405, 406],
-          "six groups on safety slots 401 to 406")
+    check(c.n == 6 and [g.safeties for g in c.groups]
+          == [[401], [402], WAVE_SAFETIES, [404], [405], [406]],
+          f"six groups: five on one safety slot each, the wave flamer on "
+          f"three: {[g.safeties for g in c.groups]}")
+    check(c.groups[2].fire == WAVE_FIRE and "wave flamer" in c.note,
+          "the wave flamer is three 6-channel fixtures, 15 fire slots, and "
+          "the note says so")
     check(c.groups[1].fire == [421, 422, 423, 424, 425, 426],
           "cat-walk has its six fire slots")
     check(c.arm_value == 78 and c.gflame_range == "30-50%",
@@ -4990,6 +5000,332 @@ def test_lockout_zeroes_locked_slots_and_blocks_a_locked_group():
         shutil.rmtree(d, ignore_errors=True)
 
 
+# =========================================================================
+# multi-safety groups (Jeff, 2026-10-26): one arm group, several fixtures,
+# each with a safety slot of its own
+# =========================================================================
+
+def _groups_with(i, **over):
+    d = example_dict()
+    d["groups"][i].update(over)
+    return d
+
+
+def _refused(msg, d):
+    try:
+        config.from_dict(d)
+    except config.ConfigError as e:
+        check(str(e).strip().endswith(".") and "\n" not in str(e),
+              f"the refusal is one plain sentence: {e}")
+        return check(True, msg)
+    return check(False, f"NOT refused: {msg}")
+
+
+def safeties_on_wire(r, i=WAVE):
+    return [r.out.universe[s - 1] for s in r.cfg.groups[i].safeties]
+
+
+def armed_wave(**over):
+    r = Rig(**over)
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.step()
+    assert safeties_on_wire(r) == [ARM] * 3, "the fixture could not arm"
+    return r
+
+
+def test_multi_safety_config():
+    section("multi-safety config: safety is one slot (unchanged) or a list "
+            "of distinct slots; every slot rule applies to every safety")
+    c = make_config()
+    front = c.groups[0]
+    check(front.safety == 401 and front.safeties == [401]
+          and not front.multi_safety,
+          f"an integer safety reads exactly as before: {front!r}")
+    w = c.groups[WAVE]
+    check(w.safeties == WAVE_SAFETIES and w.safety == WAVE_SAFETIES[0]
+          and w.multi_safety and w.fire == WAVE_FIRE,
+          f"a list safety keeps every slot in order: {w!r}")
+    check(sorted(c.all_slots()) == sorted(
+        [s for g in c.groups for s in g.safeties]
+        + [f for g in c.groups for f in g.fire]),
+          "all_slots lists every safety slot of every group")
+    one = config.from_dict(_groups_with(0, safety=[401]))
+    check(one.groups[0].safeties == [401] and one.groups[0].safety == 401
+          and not one.groups[0].multi_safety,
+          "a list of one is the same group as that one number")
+    _refused("an empty safety list",
+             _groups_with(WAVE, safety=[]))
+    _refused("a safety slot listed twice",
+             _groups_with(WAVE, safety=[6, 12, 6]))
+    _refused("a safety slot that is one of the group's own fire slots",
+             _groups_with(WAVE, safety=[6, 12, 1]))
+    _refused("a safety slot that is another group's safety slot",
+             _groups_with(WAVE, safety=[6, 12, 401]))
+    _refused("a safety slot that is another group's fire slot",
+             _groups_with(WAVE, safety=[6, 12, 411]))
+    for bad in (0, 513, -1, "476", True, 47.6, None):
+        _refused(f"a safety slot {bad!r} out of range or not a number",
+                 _groups_with(WAVE, safety=[6, 12, bad]))
+    _refused("a fire slot of another group that is one of this group's "
+             "safety slots",
+             _groups_with(0, fire=[411, 18]))
+    _refused("another group's safety equal to one of the list",
+             _groups_with(3, safety=12))
+    d = _groups_with(WAVE, fire=[])
+    _refused("an empty fire list with a list safety", d)
+    _refused("a fire slot listed twice with a list safety",
+             _groups_with(WAVE, fire=WAVE_FIRE + [1]))
+    d = _groups_with(WAVE, arm_value=157)
+    _refused("a per-group arm value is validated for a list safety too", d)
+    _refused("an integer safety out of range is still refused as before",
+             _groups_with(0, safety=513))
+
+
+def test_multi_safety_single_safety_unchanged():
+    section("multi-safety: a one-safety group composes byte for byte as "
+            "before, written as a number or a list of one, and a locked "
+            "slot that is its safety does not change it")
+    def run(groups_over):
+        d = example_dict()
+        d["groups"][0].update(groups_over)
+        r = Rig(groups=d["groups"])
+        out = []
+        r.prove_alive()
+        out.append(r.out.universe)
+        r.inp.set(0)
+        for v in (0, 0, 200, 200, 0):
+            r.run(1, {411: v} if v else {})
+            out.append(r.out.universe)
+        r.run(rules.EDGE_QUIET_FRAMES + 2, {411: 200, 415: 9})
+        out.append(r.out.universe)
+        r.inp.set(0, on=False)
+        r.step()
+        out.append(r.out.universe)
+        return out, r
+    a, ra = run({})
+    b, rb = run({"safety": [401]})
+    check(a == b, "the integer and the one-element list compose the same "
+                  "frames")
+    check(ra.group(0)["safety_slots"] == [401]
+          and ra.group(0)["safety_slot"] == 401,
+          f"the status frame of a one-safety group: "
+          f"{ra.group(0)['safety_slot']} {ra.group(0)['safety_slots']}")
+    r = Rig()
+    r.c.note_locked_slots({401})
+    r.prove_alive()
+    r.inp.set(0)
+    r.step()
+    check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
+          f"a one-safety group is not held by a lock on its safety slot, "
+          f"exactly as before: {r.group(0)}")
+
+
+def test_multi_safety_arms_and_disarms_as_one():
+    section("multi-safety: one cycle raises every safety slot in the same "
+            "tick, fire reaches every fire slot only while armed, a disarm "
+            "or an Abort lowers every safety at once")
+    r = Rig()
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.cue = {}
+    pre = r.out
+    check([pre.universe[s - 1] for s in WAVE_SAFETIES] == [0, 0, 0],
+          "before the cycle every safety is zero")
+    r.step()
+    check(safeties_on_wire(r) == [ARM, ARM, ARM],
+          f"every safety slot rises on the one tick: {safeties_on_wire(r)}")
+    g = r.group(WAVE)
+    check(g["armed"] == "armed" and g["safeties_up"] == [True] * 3
+          and g["safety_slots"] == WAVE_SAFETIES and g["sent_safety"] == ARM
+          and g["safety_slot"] == WAVE_SAFETIES[0],
+          f"one state, armed, every safety up: {g}")
+    cue = {f: 200 for f in WAVE_FIRE}
+    r.run(rules.EDGE_QUIET_FRAMES + 2, cue)
+    check(r.fire(WAVE) == [200] * 15 and safeties_on_wire(r) == [ARM] * 3,
+          f"fire reaches all 15 fire slots while armed: {r.fire(WAVE)}")
+    r.inp.set(WAVE, on=False)
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+          and r.group(WAVE)["armed"] == "disarmed"
+          and r.group(WAVE)["safeties_up"] == [False] * 3,
+          f"a disarm lowers every safety and zeroes every fire slot in one "
+          f"tick: {safeties_on_wire(r)} {r.fire(WAVE)}")
+    r2 = armed_wave()
+    r2.step(n=rules.EDGE_QUIET_FRAMES + 1)
+    check(_disarm(r2) == "", "setup: the Abort is accepted")
+    r2.step()
+    check(safeties_on_wire(r2) == [0, 0, 0] and r2.fire(WAVE) == [0] * 15
+          and r2.group(WAVE)["reason"] == composer.ABORT_DISARMED,
+          f"the show's Abort lowers every safety: {r2.group(WAVE)}")
+    # The rising-edge gate looks at every one of the 15 fire slots.
+    r3 = Rig()
+    r3.prove_alive()
+    r3.inp.set(WAVE)
+    r3.run(3, {WAVE_FIRE[-1]: rules.GFLAME_EDGE_BELOW})
+    check(safeties_on_wire(r3) == [0, 0, 0]
+          and r3.group(WAVE)["reason"] == "dirty edge",
+          f"a held fire slot on the last fixture blocks the rise of every "
+          f"safety: {safeties_on_wire(r3)} {r3.group(WAVE)['reason']}")
+
+
+def test_multi_safety_show_data_never_writes_a_safety():
+    section("multi-safety: no value from the show program's frame (show "
+            "data, xLights live, purge) ever reaches a safety slot")
+    r = Rig()
+    r.prove_alive()
+    loud = {s: 255 for s in WAVE_SAFETIES}
+    loud.update({s: 200 for s in (401, 402)})
+    r.run(5, loud)
+    check(safeties_on_wire(r) == [0, 0, 0],
+          f"disarmed: the frame's 255 on every safety slot never goes out: "
+          f"{safeties_on_wire(r)}")
+    r.inp.set(WAVE)
+    r.run(rules.EDGE_QUIET_FRAMES + 3, loud)
+    check(safeties_on_wire(r) == [ARM] * 3,
+          f"armed: every safety carries the arm value and nothing else: "
+          f"{safeties_on_wire(r)}")
+    check(r.safety(0) == 0 and r.safety(1) == 0,
+          "and no other group's safety moves either")
+
+
+def test_multi_safety_a_locked_safety_is_left_out():
+    section("multi-safety: a locked safety slot stays at zero and is left "
+            "out of the arm; the group arms on every unlocked safety; with "
+            "every safety locked it cannot arm")
+    # One fixture locked out for the night: the others still arm.
+    r = Rig()
+    r.c.note_locked_slots({12})
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.step()
+    check(safeties_on_wire(r) == [ARM, 0, ARM],
+          f"one safety locked: the other two rise, the locked one stays "
+          f"zero: {safeties_on_wire(r)}")
+    g = r.group(WAVE)
+    check(g["armed"] == "armed" and g["safeties_up"] == [True, False, True]
+          and g["safeties_locked"] == [False, True, False],
+          f"armed, and the status says which safety is locked: {g}")
+    check(any(k == "lockout" and "Safety slot 12 of wave flamer" in m
+              for k, m in r.log.events),
+          "the lock of a safety slot is journaled")
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+    check(r.fire(WAVE) == [200] * 15,
+          "fire slots follow the lockout file exactly as today: none of "
+          "them is locked, so all fire")
+    # Every safety locked: no arm.
+    r = Rig()
+    r.c.note_locked_slots(set(WAVE_SAFETIES))
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.run(rules.EDGE_QUIET_FRAMES + 3, {f: 200 for f in WAVE_FIRE})
+    g = r.group(WAVE)
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15,
+          f"every safety locked: nothing rises, no fire: "
+          f"{safeties_on_wire(r)} {r.fire(WAVE)}")
+    check(g["armed"] == "held" and g["reason"] == composer.SAFETIES_LOCKED
+          and g["amber"] == "steady" and g["safeties_locked"] == [True] * 3,
+          f"held, steady, saying why: {g}")
+    check(r.c.stats["safety_lock_blocks"] >= 1, "the block is counted")
+    r.c.note_locked_slots({6, 18})
+    r.run(2, {})
+    check(safeties_on_wire(r) == [0, ARM, 0],
+          f"one unlocked: the group rises on it alone: {safeties_on_wire(r)}")
+    # A lock landing on an armed, firing group: that safety drops to zero,
+    # the rest stay up and keep firing.
+    r = armed_wave()
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+    r.c.note_locked_slots({18, 13, 14, 15, 16, 17})
+    r.step()
+    check(safeties_on_wire(r) == [ARM, ARM, 0]
+          and r.fire(WAVE) == [200] * 10 + [0] * 5
+          and r.group(WAVE)["armed"] == "armed",
+          f"a machine locked on an armed group: its safety and fire slots "
+          f"to zero on that tick, the others keep going: "
+          f"{safeties_on_wire(r)} {r.fire(WAVE)}")
+    # Unlocking it while the group is up does not raise it without its
+    # edge checked: the group is not confirmed and comes down.
+    r.c.note_locked_slots(set())
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+          and r.group(WAVE)["reason"] == composer.SAFETY_UNCONFIRMED,
+          f"a safety unlocked under an armed group: the whole group "
+          f"disarms, fire zeroed: {safeties_on_wire(r)} {r.group(WAVE)}")
+
+
+def test_multi_safety_a_locked_safety_never_rises():
+    section("multi-safety: a locked safety slot never carries the arm "
+            "value, whatever is commanded or armed")
+    rng = random.Random(26)
+    r = Rig()
+    r.c.note_locked_slots({6})
+    r.prove_alive()
+    bad = []
+    for n in range(600):
+        if n % 37 == 0:
+            r.inp.set(WAVE, on=rng.random() < 0.7)
+        cue = {s: rng.choice((0, 78, 200, 255)) for s in WAVE_SAFETIES}
+        if rng.random() < 0.5:
+            cue.update({f: rng.choice((0, 0, 200)) for f in WAVE_FIRE})
+        if n == 300:
+            _disarm(r)
+        r.run(1, cue)
+        if r.out.universe[5] != 0:
+            bad.append((n, r.out.universe[5]))
+    check(not bad and r.c.stats["ticks_armed"] > 0,
+          f"600 ticks of random commands, arms and an Abort: slot 6 never "
+          f"left zero ({bad[:3]}), and the group did arm "
+          f"({r.c.stats['ticks_armed']} armed ticks)")
+
+
+def test_multi_safety_a_dropped_safety_disarms_the_group():
+    section("multi-safety: an unlocked safety slot not at the arm value in "
+            "the frame composed takes the whole group down that tick, fire "
+            "zeroed, a fresh cycle needed")
+    r = armed_wave()
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+    check(r.fire(WAVE) == [200] * 15, "setup: armed and firing")
+    # Something overwrites one safety slot (only a config the loader would
+    # refuse can do it: the spare's fire slot on the wave flamer's safety).
+    r.cfg.groups[5].fire = [12]
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15,
+          f"one safety overwritten: every safety and every fire slot zero "
+          f"on that tick: {safeties_on_wire(r)} {r.fire(WAVE)}")
+    g = r.group(WAVE)
+    check(g["armed"] != "armed" and g["safeties_up"] == [False] * 3
+          and g["reason"] == composer.SAFETY_UNCONFIRMED,
+          f"the group says it was disarmed for it: {g}")
+    check(r.c.stats["safety_unconfirmed"] == 1
+          and "safety-unconfirmed" in r.log.kinds(),
+          "counted and journaled once")
+    r.cfg.groups[5].fire = [461]
+    r.run(rules.EDGE_QUIET_FRAMES + 3, {})
+    check(safeties_on_wire(r) == [0, 0, 0]
+          and r.group(WAVE)["reason"] == composer.SAFETY_UNCONFIRMED,
+          f"it does not come back by itself: {r.group(WAVE)}")
+    r.inp.set(WAVE, on=False)
+    r.step(n=int(r.cfg.min_arm_dwell_ms / 1000.0 / r.period) + 2)
+    r.inp.set(WAVE)
+    r.step()
+    check(safeties_on_wire(r) == [ARM] * 3,
+          f"a fresh cycle arms it again: {safeties_on_wire(r)}")
+    # With one safety locked, an UNLOCKED one dropping still takes the
+    # group down.
+    r = Rig()
+    r.c.note_locked_slots({6})
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.step()
+    check(safeties_on_wire(r) == [0, ARM, ARM], "setup: armed on two")
+    r.cfg.groups[5].fire = [18]
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+          and r.group(WAVE)["armed"] != "armed",
+          f"an unlocked safety overwritten with one locked: the group "
+          f"disarms: {safeties_on_wire(r)}")
+
+
 if __name__ == "__main__":
     t0 = time.perf_counter()
     test_rule1_arm_value_is_derived()
@@ -5070,6 +5406,13 @@ if __name__ == "__main__":
     test_second_copy_restart_gap_takeover_over_loopback()
     test_status_mirror_port()
     test_lockout_zeroes_locked_slots_and_blocks_a_locked_group()
+    test_multi_safety_config()
+    test_multi_safety_single_safety_unchanged()
+    test_multi_safety_arms_and_disarms_as_one()
+    test_multi_safety_show_data_never_writes_a_safety()
+    test_multi_safety_a_locked_safety_is_left_out()
+    test_multi_safety_a_locked_safety_never_rises()
+    test_multi_safety_a_dropped_safety_disarms_the_group()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

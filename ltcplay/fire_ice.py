@@ -756,7 +756,18 @@ def check_flame_groups(folder, cfg):
             raise FireIceConfigError(
                 f"{path}: two groups are both called {name!r}.")
         names.add(name)
-        slots = [g.get("safety")] + list(g.get("fire") or [])
+        # A group's safety is one channel, or a list of them (flamesafe
+        # multi-safety, 2026-10-26: one arm group, one safety channel per
+        # fixture). Every one of them is checked like a fire channel.
+        safety = g.get("safety")
+        if isinstance(safety, list):
+            if not safety:
+                raise FireIceConfigError(
+                    f"{path}: {name} has an empty list of safety channels.")
+            slots = list(safety)
+        else:
+            slots = [safety]
+        slots += list(g.get("fire") or [])
         for s in slots:
             if not isinstance(s, int) or isinstance(s, bool):
                 raise FireIceConfigError(

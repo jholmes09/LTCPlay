@@ -58,7 +58,7 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 TOP_KEYS = frozenset(("machines", "groups", "purge", "lasers", "checklists",
                       "names", "tally", "notes", "laser_groups"))
 MACHINE_KEYS = frozenset(("id", "name", "kind", "group", "fire", "pan",
-                          "tilt", "notes"))
+                          "tilt", "notes", "safety"))
 PURGE_KEYS = frozenset(("gflame_fire", "waver", "fireball"))
 WAVER_KEYS = frozenset(("pan_up", "tilt_up", "head_settle_s", "fire"))
 FIREBALL_KEYS = frozenset(("fire",))
@@ -90,9 +90,11 @@ def _write_json(path, doc):
 
 
 def load_flamesafe_groups(path):
-    """[{"name", "safety", "fire": [...]}] from flamesafe's config, read as
-    plain JSON (ltcplay never imports flamesafe). ValueError on anything
-    missing."""
+    """[{"name", "safety", "safeties": [...], "fire": [...]}] from
+    flamesafe's config, read as plain JSON (ltcplay never imports
+    flamesafe). ValueError on anything missing. `safety` is what the file
+    says (one slot, or a list for a multi-safety group, 2026-10-26);
+    `safeties` is always the list."""
     with open(path, encoding="utf-8-sig") as fh:
         doc = json.load(fh)
     groups = doc.get("groups") if isinstance(doc, dict) else None
@@ -105,7 +107,11 @@ def load_flamesafe_groups(path):
         fire = g.get("fire")
         if not isinstance(fire, list):
             raise ValueError(f"{path}: {g['name']} has no fire slots.")
-        out.append({"name": g["name"], "safety": g.get("safety"),
+        saf = g.get("safety")
+        saf_list = saf if isinstance(saf, list) else \
+            ([] if saf is None else [saf])
+        out.append({"name": g["name"], "safety": saf,
+                    "safeties": [int(x) for x in saf_list],
                     "fire": [int(f) for f in fire]})
     return out
 
@@ -137,10 +143,10 @@ def _bank_for(group_name, kind):
 
 class Machine:
     __slots__ = ("id", "name", "kind", "group", "fire", "pan", "tilt",
-                 "bank", "notes")
+                 "bank", "notes", "safety")
 
     def __init__(self, id, name, kind, group, fire, pan=None, tilt=None,
-                 bank=None, notes=""):
+                 bank=None, notes="", safety=None):
         self.id = id
         self.name = name
         self.kind = kind
@@ -150,11 +156,17 @@ class Machine:
         self.tilt = tilt
         self.bank = bank
         self.notes = notes
+        # Its own safety slot, for a fixture in a flamesafe multi-safety
+        # group (2026-10-26): locking the machine puts it in the lockout
+        # file, and flamesafe holds that safety at zero and arms the
+        # group's other fixtures without it. None for every other machine.
+        self.safety = safety
 
     def channels(self):
-        """Every slot this machine owns: fire, and a Waver's pan and tilt."""
+        """Every slot this machine owns: fire, a Waver's pan and tilt, and
+        its own safety slot in a multi-safety group."""
         out = set(self.fire)
-        for c in (self.pan, self.tilt):
+        for c in (self.pan, self.tilt, self.safety):
             if c is not None:
                 out.add(c)
         return out
@@ -163,7 +175,7 @@ class Machine:
         return {"id": self.id, "name": self.name, "kind": self.kind,
                 "group": self.group, "fire": list(self.fire),
                 "pan": self.pan, "tilt": self.tilt, "bank": self.bank,
-                "notes": self.notes}
+                "notes": self.notes, "safety": self.safety}
 
 
 def default_machines(groups):
@@ -173,6 +185,18 @@ def default_machines(groups):
     for g in groups:
         kind = _kind_for(g["name"])
         bank = _bank_for(g["name"], kind)
+        saf = g.get("safeties") or []
+        if len(saf) > 1 and len(g["fire"]) % len(saf) == 0:
+            # A multi-safety group (2026-10-26): one machine per fixture,
+            # the fire slots split evenly in order, each with its own
+            # safety slot, so locking one locks that fixture's safety too.
+            per = len(g["fire"]) // len(saf)
+            for n, s in enumerate(saf, 1):
+                out.append(Machine(f"{_slug(g['name'])}-{n}",
+                                   f"{g['name']} {n}", kind, g["name"],
+                                   g["fire"][(n - 1) * per:n * per],
+                                   bank=bank, safety=s))
+            continue
         for n, slot in enumerate(g["fire"], 1):
             many = len(g["fire"]) > 1
             out.append(Machine(f"{_slug(g['name'])}-{n}" if many
@@ -249,6 +273,8 @@ def parse_machines(doc, where, groups):
         raise MorningConfigError(f"{where}: machines has to be a list with "
                                  f"at least one machine, or be left out.")
     by_group = {g["name"]: set(g["fire"]) for g in (groups or [])}
+    saf_of = {g["name"]: list(g.get("safeties") or [])
+              for g in (groups or [])}
     out, ids, owned = [], set(), {}
     for i, d in enumerate(doc):
         w = f"{where}: machines[{i + 1}]"
@@ -299,10 +325,19 @@ def parse_machines(doc, where, groups):
         notes = d.get("notes", "")
         if not isinstance(notes, str):
             raise MorningConfigError(f"{w}: notes has to be text.")
+        safety = None
+        if "safety" in d:
+            safety = _slot(d["safety"], f"{w}: safety")
+            if groups and (len(saf_of[group]) < 2 or
+                           safety not in saf_of[group]):
+                raise MorningConfigError(
+                    f"{w}: safety {safety} is not one of {group!r}'s safety "
+                    f"slots in flamesafe's config. Only a machine in a group "
+                    f"with a list of safety slots names its own.")
         m = Machine(mid, name.strip(), kind, group, fire, pan, tilt,
-                    notes=notes)
+                    notes=notes, safety=safety)
         for c in m.channels():
-            if groups and c not in by_group[group]:
+            if groups and c != safety and c not in by_group[group]:
                 raise MorningConfigError(
                     f"{w}: slot {c} is not one of {group!r}'s fire slots in "
                     f"flamesafe's config, so flamesafe would hold it at "
@@ -1380,8 +1415,12 @@ class Morning:
         for g in self.groups:
             if g["name"] == name:
                 fire = set(g["fire"])
-                return bool(fire) and \
-                    fire <= self.lockout.channels(self.cfg)
+                locked = self.lockout.channels(self.cfg)
+                # A multi-safety group (2026-10-26) with every safety slot
+                # locked is held too (composer.SAFETIES_LOCKED).
+                saf = set(g.get("safeties") or [])
+                return (bool(fire) and fire <= locked) or \
+                    (len(saf) > 1 and saf <= locked)
         return False
 
     def device_arranging(self, device):
