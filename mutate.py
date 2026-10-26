@@ -12466,6 +12466,11 @@ def build():
   "<button data-refill=\"${esc(u.id)}\" ${f.may_refill ? \"\" : \"disabled\"}",
   "<button data-refill=\"${esc(u.id)}\""),
 
+ ("fuel: the Fuel page cannot scroll, so its lower tiles are cut off",
+  "ltcplay/web/remote.html",
+  "#v-fuel{overflow:auto;display:flex;",
+  "#v-fuel{display:flex;"),
+
  ("fuel: the Fuel button never turns amber",
   "ltcplay/web/remote.html",
   "  $(\"nav-fuel\").classList.toggle(\"soon\", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));",

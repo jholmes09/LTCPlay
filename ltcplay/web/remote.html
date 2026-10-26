@@ -594,7 +594,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
    health bar and the shows left. Green, amber and red mean what they mean
    everywhere: plenty, refill soon, nearly empty. ---- */
 #nav-fuel.soon{border-color:var(--amber);color:var(--amber)}
-#v-fuel{display:flex;flex-direction:column;gap:10px;align-content:start}
+#v-fuel{overflow:auto;display:flex;flex-direction:column;gap:10px}
+#v-fuel > *{flex:0 0 auto}
 #v-fuel .card h2{font-size:14px}
 .fu-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .fu-head > div{flex:1 1 18em;font-size:14px}
@@ -621,10 +622,6 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .fu-rec{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--hair-soft);font-size:14px}
 .fu-rec span{flex:1 1 16em}
 .fu-rec button{min-height:40px;font-size:15px;flex:0 0 auto}
-/* A narrow window (an iPad standing up): the nav buttons wrap onto a second
-   line instead of running off the right edge, where they could not be
-   reached (they did already, one button short of this one). */
-@media (max-width:900px){nav{flex:1 1 auto;min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end}}
 </style>
 </head>
 <body>

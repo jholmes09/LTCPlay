@@ -62007,6 +62007,20 @@ function go(){
       if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
         out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
     }
+    // Nothing is cut off at the bottom: below the window's room, the view
+    // scrolls (as Programming and Users do), and nothing in it is squashed.
+    const mainR = document.getElementById("main").getBoundingClientRect();
+    const vf = document.getElementById("v-fuel"), scrolls = /auto|scroll/.test(getComputedStyle(vf).overflowY);
+    [...document.querySelectorAll("#v-fuel > .card, #fu-units .fu-unit, #fu-recent .fu-rec")].filter(shown).forEach(el => {
+      if(el.getBoundingClientRect().bottom > mainR.bottom + 0.5 && !scrolls) out.problems.push((el.id || el.dataset.unit || el.className) + " is cut off at the bottom");
+      if(el.scrollHeight > el.clientHeight + 1 && getComputedStyle(el).overflowY !== "visible") out.problems.push((el.id || el.dataset.unit || el.className) + " is squashed");
+    });
+    out.fits = vf.scrollHeight <= vf.clientHeight + 1 || scrolls;
+    // Scrolled to the end, the last refill line can be reached.
+    vf.scrollTop = vf.scrollHeight;
+    const recs = [...document.querySelectorAll("#fu-recent .fu-rec")].filter(shown);
+    out.last_reachable = !recs.length || recs[recs.length - 1].getBoundingClientRect().bottom <= mainR.bottom + 0.5;
+    vf.scrollTop = 0;
     history.replaceState(null, "", location.pathname);
     showView();
     setTimeout(() => {
@@ -62124,7 +62138,8 @@ def test_fuel_page_in_a_browser():
             else:
                 check(not m["all_disabled"] and
                       not any(x["disabled"] for x in m["tiles"]) and
-                      m["undo_shown"] and m["undo_buttons"] >= 1,
+                      m["undo_shown"] and m["undo_buttons"] >= 1 and
+                      m["last_reachable"],
                       f"an admin: Refilled on, the undo list shown: {m}")
     print("  ok")
 
