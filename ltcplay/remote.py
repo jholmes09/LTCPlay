@@ -163,13 +163,17 @@ MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
                        "laser-arm", "lock",
                        "layout", "checklist-tick", "checklist-note",
                        "checklist-verify", "checklist-tally-retry")
+# The Fuel page (fuel.py, FUEL.md): read by anyone on the show network; a
+# refill needs a signed-in operator or admin, an undo an admin (fuel.py).
+FUEL_GET_ROUTES = ("fuel",)
+FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
 GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
-    MORNING_GET_ROUTES
+    MORNING_GET_ROUTES + FUEL_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
-    "scrub-flames") + MORNING_POST_ROUTES
+    "scrub-flames") + MORNING_POST_ROUTES + FUEL_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1112,6 +1116,7 @@ class Remote:
         self.madmapper_heartbeat = None
         self.madmapper_heartbeat_cfg = None
         self.morning = None          # morning.Morning, set by web.serve
+        self.fuel = None             # fuel.FuelTracker, set by web.serve
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         # scrubflames.ScrubFlames, set by web.serve (Fire & Ice with a flame
         # link and a flame controller). Always off at start.
@@ -1329,6 +1334,9 @@ class Remote:
             return 200, self.network_view()
         if name in MORNING_GET_ROUTES:
             return self.morning_get(name, query, ctx)
+        if name in FUEL_GET_ROUTES:
+            from . import fuel as fuel_mod
+            return fuel_mod.route_get(self.fuel, ctx, self.users, self.wall)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -1358,6 +1366,10 @@ class Remote:
             return self.users_post(name, body, ctx)
         if name in MORNING_POST_ROUTES:
             return (*self.morning_post(name, body, ctx),) + ({},)
+        if name in FUEL_POST_ROUTES:
+            from . import fuel as fuel_mod
+            return (*fuel_mod.route_post(self.fuel, name, body, ctx,
+                                         self.users),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -4408,6 +4420,12 @@ class Remote:
                 out["morning"] = {"error": f"{type(e).__name__}: {e}"}
             out["morning"]["purge_enabled"] = self.purge_enabled(ctx.local)
             out["laser_arm"] = self.rack_laser_view(m, ctx)
+        if self.fuel is not None:
+            # The Fuel nav button's colour (fuel.py). Display only.
+            try:
+                out["fuel"] = self.fuel.summary()
+            except Exception as e:                   # noqa: BLE001
+                out["fuel"] = {"fault": f"{type(e).__name__}: {e}"}
         return out
 
     def rack_laser_view(self, m, ctx):

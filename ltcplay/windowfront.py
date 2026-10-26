@@ -60,6 +60,30 @@ class Win32:
         self._w = wintypes
         self.u = ctypes.windll.user32
         self.k = ctypes.windll.kernel32
+        W = wintypes
+        # Handles are pointer sized: said so, or 64-bit Windows could cut
+        # one short.
+        for fn, res, args in (
+                (self.u.IsWindowVisible, W.BOOL, [W.HWND]),
+                (self.u.GetWindow, W.HWND, [W.HWND, W.UINT]),
+                (self.u.GetWindowTextW, ctypes.c_int,
+                 [W.HWND, W.LPWSTR, ctypes.c_int]),
+                (self.u.GetWindowThreadProcessId, W.DWORD,
+                 [W.HWND, ctypes.POINTER(W.DWORD)]),
+                (self.u.IsIconic, W.BOOL, [W.HWND]),
+                (self.u.ShowWindow, W.BOOL, [W.HWND, ctypes.c_int]),
+                (self.u.GetForegroundWindow, W.HWND, []),
+                (self.u.AttachThreadInput, W.BOOL,
+                 [W.DWORD, W.DWORD, W.BOOL]),
+                (self.u.SetForegroundWindow, W.BOOL, [W.HWND]),
+                (self.u.BringWindowToTop, W.BOOL, [W.HWND]),
+                (self.k.OpenProcess, W.HANDLE, [W.DWORD, W.BOOL, W.DWORD]),
+                (self.k.QueryFullProcessImageNameW, W.BOOL,
+                 [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]),
+                (self.k.CloseHandle, W.BOOL, [W.HANDLE]),
+                (self.k.GetCurrentThreadId, W.DWORD, [])):
+            fn.restype = res
+            fn.argtypes = args
 
     def windows(self):
         """Every top-level window handle, in Z order."""

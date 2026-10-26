@@ -1608,6 +1608,36 @@ def _attach_scrub_flames(httpd):
     httpd.server_close = _close_scrub_flames
 
 
+def _attach_fuel(httpd):
+    """The Fuel page (fuel.py, FUEL.md): the Morning page's machines, and
+    the flame link watched when there is one. It only observes: a failure
+    to build it leaves the page unavailable and is said once."""
+    from . import fuel as fuel_mod
+    remote = httpd.remote
+    try:
+        def _journal(text, fault=False):
+            remote._journal("system", "engine", "fuel",
+                            "fault" if fault else "done", text, fault=fault)
+        remote.fuel = fuel_mod.build(
+            remote, httpd.morning,
+            getattr(httpd.fire_ice, "flame_link", None), journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"The Fuel page could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_fuel():
+        # Last: the flame link, the conductor and everything closed before
+        # this was built go first, and its save never waits more than
+        # fuel.CLOSE_TIMEOUT_S, so its disk can never hold up a safety step.
+        try:
+            _close_before()
+        finally:
+            remote.fuel.close()
+    httpd.server_close = _close_fuel
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
@@ -1984,6 +2014,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             # the show engine. Said once, here.
             print(f"The Morning and Shutdown page could not be built: "
                   f"{type(e).__name__}: {e}")
+    if httpd.morning is not None:
+        _attach_fuel(httpd)
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):

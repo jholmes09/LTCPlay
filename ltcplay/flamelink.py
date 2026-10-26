@@ -562,6 +562,10 @@ class FlameLink:
         # unconfirmed disarm is expected, not a fault on every Abort (safety
         # audit of bench-build, P2 a). The Stream Deck still confirms it.
         self.status_mirrored = True
+        # The fuel tracker (fuel.py, 2026-10-26): (tc, values, ok) after
+        # each frame send_frame sent. It only appends to a queue; it can
+        # neither change nor hold up a frame. None: nothing is called.
+        self.observer = None
 
     # -- the journal -----------------------------------------------------------
     def _note(self, text, **fields):
@@ -1350,6 +1354,13 @@ class FlameLink:
             late = self._abort_overdue()
         if late is not None:
             self._note_unconfirmed(late)
+        obs = self.observer
+        if obs is not None:
+            # The fuel tracker (fuel.py): told what went out, after it went.
+            try:
+                obs(tc, values, ok)
+            except Exception:
+                pass
         return ok
 
     def _send_zero_frame(self):

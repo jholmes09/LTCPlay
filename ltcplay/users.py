@@ -162,6 +162,9 @@ REMOTE_ROUTES = {
     "audit-verify": None, "my-password": None,
     # Open BEYOND (windowfront.py) only moves a window on the show PC.
     "open-beyond": None,
+    # The Fuel page (fuel.py): not a show control, so no matrix row; the
+    # route itself needs a signed-in operator or admin (an undo, an admin).
+    "fuel-refill": None, "fuel-undo": None,
     # These depend on the body: see classify().
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
     "laser-arm": "arm",
