@@ -48271,8 +48271,11 @@ def test_flamesafe_multi_safety_ltcplay_side():
                 encoding="utf-8").read()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function safetyLine" in logic and
-          'const sl = safetyLine(g, c), se = el.querySelector(".saf");'
-          in page, "the card draws the safety line from page logic")
+          'const sl = safetyLine(g, c) || machineCountLine(g, c, ST && '
+          'ST.morning && ST.morning.group_machines), se = '
+          'el.querySelector(".saf");' in page,
+          "the card draws the safety line (or, with one safety, the "
+          "machine count) from page logic")
     node = _sh.which("node")
     if node:
         js = logic + r"""
