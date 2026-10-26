@@ -318,11 +318,13 @@ Three buttons under the lasers on the Startup page:
   the grid can be checked in BEYOND itself (`windowfront.py`). It only
   moves a window: it never sends anything to BEYOND, presses no key and
   never starts BEYOND. It works on the show PC itself only (the button is
-  not shown elsewhere), signed in or not, and is refused while a show is
-  live, on Hold or between shows (STANDBY), while an Abort stands, and
-  while a hold to arm, a purge or a laser calibration test is going on
-  (the rack screen stays in front for those): open BEYOND first, then
-  turn the tests on. It finds BEYOND's window by its program
+  not shown elsewhere), signed in or not, any time no show is live: it is
+  refused only while a show is live, on Hold or between shows (STANDBY),
+  while an Abort stands, and while a hold to arm or a purge is going on
+  (the rack screen stays in front for those). The calibration test can be
+  running: bringing BEYOND forward to adjust it is what it is for.
+  Calibration off stays on the rack screen; click the rack screen (or
+  its taskbar button) to come back to it. It finds BEYOND's window by its program
   (`beyond*.exe`, the same names the BEYOND watch uses), restores it if
   it was minimized and puts it in front, never waiting on BEYOND; if
   BEYOND is not responding, or nothing has come back within 3 seconds, it

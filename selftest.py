@@ -49179,13 +49179,26 @@ def test_calibrate_all_and_open_beyond_routes():
         check(st == 409 and "Hold" in out["error"] and not calls,
               f"Open BEYOND on Hold: refused: {out}")
         R.svc.machine = _rep(m_standby, state="IDLE")
-        # Anything going on at the rig keeps the rack screen in front.
-        R.m.lasers.on["laser-3"] = {"since": 0, "who": "x"}
+        # With the calibration test ON, Open BEYOND goes: bringing BEYOND
+        # forward to adjust is the point of it (Jeff, 2026-10-26). And
+        # Calibration off still works from the rack screen afterwards.
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": True}, client=loop)
+        check(st == 200 and "laser-3" in R.m.lasers.on,
+              f"setup: the calibration test is on: {out}")
         st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
                             client=loop)
-        check(st == 409 and "laser calibration test is on" in out["error"]
-              and not calls, f"a laser test on: refused: {out}")
-        R.m.lasers.on.clear()
+        check(st == 200 and calls == ["127.0.0.2"] and
+              "laser-3" in R.m.lasers.on,
+              f"Open BEYOND with the calibration test on: it goes, the "
+              f"test stays on: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": False}, client=loop)
+        check(st == 200 and not R.m.lasers.on,
+              f"Calibration off from the rack screen afterwards: {out}")
+        del calls[:]
+        n_osc = len(R.osc)
+        # Anything else going on at the rig keeps the rack screen in front.
         R.m.purge.selected = ["g1"]
         st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
                             client=loop)

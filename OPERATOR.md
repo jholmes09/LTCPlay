@@ -139,9 +139,11 @@ in `lasers` in ltcplay_morning.json); Calibrate all lasers (the test on
 for every armed laser that is not locked out, one after another; it names
 any it skipped and why) and Calibration off (every test off, always
 works); Open BEYOND (on the show PC only: brings the BEYOND window to the
-front; press it before turning the calibration tests on, as it is refused
-while a test, a purge or a hold to arm is going on, on Hold and between
-shows; it sends nothing to BEYOND; if Windows will not let it come
+front, any time no show is live, with the calibration tests on or off,
+so you can adjust there; it is refused while a purge or a hold to arm is
+going on, on Hold and between shows; come back to the rack screen (click
+it, or its taskbar button) for Calibration off; it sends nothing to
+BEYOND; if Windows will not let it come
 forward, BEYOND's button on the taskbar flashes, click it); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
 let go and it stops; nothing fires while a show is live or an Abort

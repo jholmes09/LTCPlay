@@ -13140,10 +13140,15 @@ def build():
   "        why = self.show_live_refusal() or self._open_beyond_state() or \\\n"
   "            ''"),
 
- ("open beyond: a laser test on does not count as busy (P2-3)",
+ ("open beyond: refused while the calibration test is on",
   "ltcplay/remote.py",
-  "                if m.lasers.on:\n                    return \"a laser calibration test is on\"",
-  "                if False:\n                    return \"a laser calibration test is on\""),
+  "                if armed and m.lasers.on:",
+  "                if m.lasers.on:"),
+
+ ("last show sign out: a laser test on does not hold it back (P2-5)",
+  "ltcplay/remote.py",
+  "                if armed and m.lasers.on:",
+  "                if False:"),
 
  ("open beyond: a screen's hold to arm does not count as busy (P2-3)",
   "ltcplay/remote.py",

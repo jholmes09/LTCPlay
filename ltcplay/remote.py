@@ -2865,10 +2865,11 @@ class Remote:
     def rig_busy(self, armed=False):
         """What is going on at the rig that a window in front of the rack
         screen, or a sign-out, must not cut into, as a sentence, or "": a
-        screen's hold to arm, a purge selected or firing, a laser
-        calibration test on; with `armed`, also any laser armed and any
-        flame group flamesafe reports armed or wanted (the Stream Deck's
-        holds show there). Fails closed: a state that cannot be read is
+        screen's hold to arm, a purge selected or firing; with `armed`
+        (the sign-out), also a laser calibration test on, any laser armed
+        and any flame group flamesafe reports armed or wanted (the Stream
+        Deck's holds show there). Open BEYOND asks without `armed`: it is
+        meant to be pressed while the calibration test is on. Fails closed: a state that cannot be read is
         busy. Plain reads (review of PR #125, P2-3 and P2-5)."""
         try:
             with self._arm_lock:
@@ -2880,7 +2881,10 @@ class Remote:
                     return "a purge is firing"
                 if m.purge.selected:
                     return "machines are armed for a purge"
-                if m.lasers.on:
+                if armed and m.lasers.on:
+                    # Not for Open BEYOND: bringing BEYOND forward while
+                    # the calibration test is on is the point of it (Jeff,
+                    # 2026-10-26). The sign-out waits for it.
                     return "a laser calibration test is on"
                 if armed and m.laser_arm.armed_ids():
                     return "a laser is armed"
