@@ -75,7 +75,7 @@ the ticks there. These are the proposed defaults:
 | Unlock a machine, turn a laser test on | yes | yes | no | yes |
 | Tick the Morning and Shutdown checklists | yes | yes | no | yes |
 | Show files and setup (show folder, schedule, layout) | yes | yes | no | no |
-| Settings (show network, arming from a screen, audit upload, idle sign out) | yes | no | no | no |
+| Settings (show network, arming from a screen, fire flames while scrubbing, audit upload, idle sign out) | yes | no | no | no |
 | Users (add, remove, passwords, roles, lockouts) | yes | no | no | no |
 
 "Signed out" keeps your 2026-10-07 rule: nobody needs to sign in to run

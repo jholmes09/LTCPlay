@@ -167,6 +167,20 @@ class Player:
         # release, so a show following timecode never sees either.
         self.freerun_paused_at = None
         self.loop = None
+        # Fire flames while scrubbing (scrubflames.py, review of #117): who
+        # started the free run ("operator": GO, Play from and the rest of
+        # the transport; "lost": on_lost freerun when the feed died; None),
+        # and a count bumped by EVERY move of the position (each transport
+        # command, a loop wrap, a release), so the flame link can treat
+        # each one as a landing however small the move.
+        self.freerun_by = None
+        self.transport_moves = 0
+        # (position, transport_moves) as ONE value, written by the output
+        # thread's tick on a free run (review of #117, P1-A): the count is
+        # read BEFORE the position, and every move changes the position
+        # BEFORE it bumps the count, so a pair whose count is the current
+        # one always holds a position from after that move.
+        self.transport_at = None
         # The FEED's own state while a free run is on; the show's
         # state is FREERUN. Kept apart so the display can tell the
         # truth about the feed without logging a flip per frame.
@@ -511,6 +525,8 @@ class Player:
             self.freerun_epoch = None
             self.freerun_paused_at = None
             self.loop = None
+            self.freerun_by = None
+            self.transport_moves += 1
         self._event("clock", "the show clock stopped; back to the idle look")
 
     def _now_tc(self):
@@ -701,6 +717,7 @@ class Player:
             # visibly counting.
             self.feed_state = self.state
             self.state = FREERUN
+            moves = self.transport_moves
             paused = self.freerun_paused_at
             if paused is not None:
                 self.tc_seconds = paused
@@ -713,6 +730,8 @@ class Player:
                     # one (flamelink's seek guard).
                     self.freerun_epoch = now - loop[0]
                     self.tc_seconds = loop[0]
+                    self.transport_moves += 1
+            self.transport_at = (self.tc_seconds, moves)
             return self._play_at(self.tc_seconds, prev_state, prev_cue,
                                  prev_source)
 
@@ -778,6 +797,8 @@ class Player:
                 # Start from where the feed actually was, not from now: the
                 # hold window has already elapsed, and the music did not wait.
                 self.freerun_epoch = last - self.last_ltc_seconds
+                self.freerun_by = "lost"
+                self.transport_moves += 1
                 self._event("freerun",
                             f"timecode lost; running the rest of the set on "
                             f"this Mac's clock from "
@@ -894,6 +915,8 @@ class Player:
                              "show clock")
         self.freerun_epoch = _now() - tc_seconds
         self.freerun_paused_at = None
+        self.freerun_by = "operator"
+        self.transport_moves += 1
         self.override = None
         self._event("freerun", f"GO from {tc_seconds:.3f}s on this machine's "
                                f"own clock; the timecode feed is being "
@@ -918,13 +941,15 @@ class Player:
         self.freerun_epoch = _now() - at
         if self.freerun_paused_at is not None:
             self.freerun_paused_at = at
+        self.transport_moves += 1
         self._event("freerun", f"skipped {float(seconds):+.1f}s to {at:.3f}s")
         return at
 
     def freerun_pause(self, on):
         """Pause a free run on the frame it is at, or carry on from it.
         Programming sessions only (the remote page refuses it otherwise).
-        Returns the show time it paused or continued at."""
+        Returns the show time it paused or continued at. Every call is a
+        move, counted after the position changes."""
         if self.freerun_epoch is None:
             raise ValueError("The show is following timecode, so this Mac "
                              "cannot pause it. Pause only applies to a free "
@@ -934,12 +959,15 @@ class Player:
                 self.freerun_paused_at = max(0.0, _now() - self.freerun_epoch)
                 self._event("freerun", f"paused at "
                                        f"{self.freerun_paused_at:.3f}s")
+            self.transport_moves += 1
             return self.freerun_paused_at
         at = self.freerun_paused_at
         if at is None:
+            self.transport_moves += 1
             return _now() - self.freerun_epoch
         self.freerun_epoch = _now() - at
         self.freerun_paused_at = None
+        self.transport_moves += 1
         self._event("freerun", f"continued from {at:.3f}s")
         return at
 
@@ -948,6 +976,7 @@ class Player:
         clear the loop with a = b = None."""
         if a is None and b is None:
             self.loop = None
+            self.transport_moves += 1
             self._event("freerun", "loop off")
             return None
         a, b = float(a), float(b)
@@ -956,6 +985,7 @@ class Player:
         if b - a < 1.0:
             raise ValueError("A loop has to be at least 1 second long.")
         self.loop = (a, b)
+        self.transport_moves += 1
         self._event("freerun", f"looping {a:.3f}s to {b:.3f}s")
         return self.loop
 
@@ -993,6 +1023,7 @@ class Player:
         self.freerun_epoch = _now() - target.tc_seconds
         if self.freerun_paused_at is not None:
             self.freerun_paused_at = target.tc_seconds
+        self.transport_moves += 1
         self._event("freerun", f"skipped to {target.name} at "
                                f"{target.tc_text}")
         return target
@@ -1005,6 +1036,8 @@ class Player:
         self.freerun_paused_at = None
         self.loop = None
         live = self.feed_state == LOCKED
+        self.freerun_by = None
+        self.transport_moves += 1
         self._event("freerun", "released; the show is following timecode "
                                "again" if live else
                                "released while NO timecode was arriving, so "
