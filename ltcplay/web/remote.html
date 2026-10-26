@@ -1301,6 +1301,23 @@ function safetyLine(g, c){
     " safeties up" + (locked ? ", " + locked + " locked out" : "") +
     (c === "armed" ? "; ARMED" : "; NOT armed");
 }
+// "armed n of m machines" (Jeff, 2026-10-26), on every flame group's card:
+// m is the group's machines on the Startup page's list that are not
+// locked out (those are said apart, "k locked out"), n how many of them
+// flamesafe has armed: a one-safety group arms all its machines together,
+// so it reads 0 of m or m of m. A group with several safeties keeps its
+// own count (safetyLine). "" when the list, or the group's state, is not
+// known: the card then reads as before. `gm` is the status's
+// morning.group_machines.
+function machineCountLine(g, c, gm){
+  if(!g || c === "unknown" || (g.safeties_up || []).length >= 2) return "";
+  const x = gm && gm[g.name];
+  if(!x || typeof x.machines !== "number") return "";
+  const locked = Math.max(0, Number(x.locked) || 0);
+  const m = Math.max(0, x.machines - locked);
+  const n = c === "armed" ? m : 0;
+  return "armed " + n + " of " + m + (m === 1 ? " machine" : " machines") + (locked ? ", " + locked + " locked out" : "");
+}
 // The no-show-file line (Jeff, 2026-10-26; review of #113, P2-a and b):
 // what works NOW without a show file, from the status, never a promise.
 // `su` is the engine's setup view, `st` the status. "" when a show file
@@ -2038,7 +2055,7 @@ function renderLamps(fl){
     el.querySelector(".why").textContent = c === "unknown" ? "" : reasonWords(g.reason);
     el.querySelector(".why").title = g.reason || "";
     el.querySelector("b").title = g.arm_value ? "Arms at " + g.arm_value + " on its safety slots" : "";
-    const sl = safetyLine(g, c), se = el.querySelector(".saf");
+    const sl = safetyLine(g, c) || machineCountLine(g, c, ST && ST.morning && ST.morning.group_machines), se = el.querySelector(".saf");
     se.hidden = !sl;
     se.textContent = sl;
     se.title = sl;

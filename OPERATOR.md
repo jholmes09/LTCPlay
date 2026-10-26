@@ -399,6 +399,14 @@ Hold to arm only says so. Lifting the finger that just armed a group never disar
 a new press does. ARM AGAIN reads "Disarm, then hold" on the button: press
 it once, then hold it. The Stream Deck says ARM AGAIN on the key too.
 
+Under each group's button a small line counts its machines: "armed 0 of 3
+machines" while it is off, "armed 3 of 3 machines" once flamesafe has armed
+it (every machine in a group arms together), with any machine locked out
+said apart ("1 locked out"; it is left out of the count and never fires).
+The wave flamer, with a safety per fixture, keeps its own count of safeties
+up. If the Startup page's machine list cannot be read the line is left
+off.
+
 The button under the groups is two-way. While every group is off it reads
 Hold to arm all flame groups, in green with a green outline: press and HOLD
 it for the full hold, and every group this screen can arm is held to arm at

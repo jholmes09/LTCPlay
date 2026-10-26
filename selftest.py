@@ -42318,7 +42318,13 @@ def _rack_status_pico(many=True):
     }
     if many:
         st["morning"] = {"locked_machines": ["wave flamer 3"],
-                         "locked_lasers": [], "flamesafe_confirmed": True}
+                         "locked_lasers": [], "flamesafe_confirmed": True,
+                         # Every card's "armed n of m machines" line drawn
+                         # too (2026-10-26).
+                         "group_machines": {
+                             "front row": {"machines": 3, "locked": 0},
+                             "cat-walk": {"machines": 3, "locked": 0},
+                             "wave flamer": {"machines": 3, "locked": 1}}}
         st["disk"] = {"text": ("The show PC's drive is 93 percent full: "
                                "clear space before the next show night so "
                                "the logs and the journal keep writing.")}
@@ -45003,6 +45009,87 @@ out.n = h.posts("lock").length;
              f"Startup page, Undo's 5 s: {m!r}"):
         check(m.get("ms") == 5000 and m["shown"] and m["gone"] and m["n"] == 1,
               f"Undo goes by itself after 5 s, nothing more sent: {m}")
+    print("  ok")
+
+
+def test_rack_screen_flame_group_machine_count():
+    section("rack screen (Jeff, 2026-10-26): every flame group's card says "
+            "'armed n of m machines', m the group's machines on the Startup "
+            "page's list that are not locked out (those said apart, 'k "
+            "locked out'), n how many flamesafe has armed (a one-safety "
+            "group: 0 of m or m of m); the wave flamer with several safeties "
+            "keeps its own count; the words and colours as before; nothing "
+            "new when the list is not known")
+    import types
+    from ltcplay import remote as RM
+    mk = lambda i, g: types.SimpleNamespace(id=i, group=g)
+    m = types.SimpleNamespace(
+        cfg=types.SimpleNamespace(machines=[mk("g1", "front row"),
+                                            mk("g2", "front row"),
+                                            mk("g3", "front row"),
+                                            mk("c1", "cat-walk"),
+                                            mk("f1", "fireball")]),
+        lockout=types.SimpleNamespace(machines={"g2": {}}))
+    check(RM.Remote.group_machines(m) == {
+        "front row": {"machines": 3, "locked": 1},
+        "cat-walk": {"machines": 1, "locked": 0},
+        "fireball": {"machines": 1, "locked": 0}},
+        f"the engine counts each group's machines and those locked out: "
+        f"{RM.Remote.group_machines(m)}")
+    check(RM.Remote.group_machines(types.SimpleNamespace()) is None,
+          "a list it cannot read: None, never raises")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    bad = _page_logic_in_node(page, r"""
+const gm = {"front row":{machines:3, locked:1}, "cat-walk":{machines:4, locked:0}, "fireball":{machines:1, locked:0}};
+t(machineCountLine({name:"front row"}, "armed", gm) === "armed 2 of 2 machines, 1 locked out", "armed: m of m, the locked one apart");
+t(machineCountLine({name:"cat-walk"}, "disarmed", gm) === "armed 0 of 4 machines", "off: 0 of m");
+t(machineCountLine({name:"cat-walk"}, "held", gm) === "armed 0 of 4 machines", "held back: 0 of m");
+t(machineCountLine({name:"fireball"}, "armed", gm) === "armed 1 of 1 machine", "one machine");
+t(machineCountLine({name:"wave flamer", safeties_up:[true, false]}, "held", gm) === "", "several safeties: their own count");
+t(machineCountLine({name:"cat-walk"}, "unknown", gm) === "", "a state not known: nothing");
+t(machineCountLine({name:"cat-walk"}, "armed", null) === "" && machineCountLine({name:"nope"}, "armed", gm) === "", "a list not known: nothing new");
+""")
+    if bad is not None:
+        check(bad == [], f"the machine count, in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_off()
+    st["flames"] = dict(st["flames"], groups=[
+        dict(st["flames"]["groups"][0], armed="armed"),
+        dict(st["flames"]["groups"][1]),
+        dict(st["flames"]["groups"][2], safeties_up=[True, False, True],
+             safeties_locked=[False, False, False])])
+    st["morning"] = {"locked_machines": ["front row 2"], "locked_lasers": [],
+                     "flamesafe_confirmed": True,
+                     "group_machines": {"front row": {"machines": 3,
+                                                      "locked": 1},
+                                        "cat-walk": {"machines": 3,
+                                                     "locked": 0},
+                                        "wave flamer": {"machines": 2,
+                                                        "locked": 0}}}
+    steps = r"""
+await h.sleep(400);
+out.cards = [0, 1, 2].map(i => { const lp = h.lamp(i).closest(".lamp"); const s = lp.querySelector(".saf");
+  return {word:h.lamp(i).querySelector(".word").textContent, saf:s.hidden ? null : s.textContent, cls:lp.className}; });
+"""
+    m = _rack_drive(chrome, page, st, steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"the cards, drawn: {m!r}"):
+        c = m["cards"]
+        check(c[0]["saf"] == "armed 2 of 2 machines, 1 locked out" and
+              c[0]["word"] == "Armed" and "armed" in c[0]["cls"],
+              f"front row armed: its word and colour, and the count: {c[0]}")
+        check(c[1]["saf"] == "armed 0 of 3 machines" and c[1]["word"] == "Off",
+              f"cat-walk off: {c[1]}")
+        check((c[2]["saf"] or "").startswith("wave flamer: 2 of 3 safeties "
+                                             "up"),
+              f"the wave flamer keeps its safety count: {c[2]}")
     print("  ok")
 
 
@@ -63685,6 +63772,7 @@ if __name__ == "__main__":
     test_rack_screen_nav_buttons_never_cut_off()
     test_rack_screen_one_laser_pill()
     test_startup_lock_is_one_tap_with_undo()
+    test_rack_screen_flame_group_machine_count()
     test_streamdeck_reports_rearm_wait_and_purge_refusal()
     test_rack_window_fits_the_work_area_above_the_taskbar()
     test_deck_chip_shows_live_truth()

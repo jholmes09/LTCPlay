@@ -12096,6 +12096,27 @@ def build():
   '  const warn = out.state === "warn" ? "; " + String(out.word || "check") : "";',
   '  const warn = "";'),
 
+ # Every flame group's "armed n of m machines" (Jeff, 2026-10-26).
+ ("rack screen: a group's machine count leaves out the locked-out ones",
+  "ltcplay/web/remote.html",
+  "  const m = Math.max(0, x.machines - locked);",
+  "  const m = x.machines;"),
+
+ ("rack screen: an armed group reads armed 0 of its machines",
+  "ltcplay/web/remote.html",
+  '  const n = c === "armed" ? m : 0;',
+  "  const n = 0;"),
+
+ ("rack screen: the machine count is never drawn",
+  "ltcplay/web/remote.html",
+  "    const sl = safetyLine(g, c) || machineCountLine(g, c, ST && ST.morning && ST.morning.group_machines), se",
+  "    const sl = safetyLine(g, c), se"),
+
+ ("remote: the group machine count never counts a lockout",
+  "ltcplay/remote.py",
+  "                if x.id in locked:\n                    g[\"locked\"] += 1",
+  "                if False:\n                    g[\"locked\"] += 1"),
+
  ("rack screen: the nav buttons are cut off at the right edge again",
   "ltcplay/web/remote.html",
   "nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;flex:0 1 auto;min-width:0;max-width:100%;",

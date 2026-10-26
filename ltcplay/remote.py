@@ -4338,8 +4338,28 @@ class Remote:
             except Exception as e:                   # noqa: BLE001
                 out["morning"] = {"error": f"{type(e).__name__}: {e}"}
             out["morning"]["purge_enabled"] = self.purge_enabled(ctx.local)
+            out["morning"]["group_machines"] = self.group_machines(m)
             out["laser_arm"] = self.rack_laser_view(m, ctx)
         return out
+
+    @staticmethod
+    def group_machines(m):
+        """Each flame group's machines from the Startup page's machine list,
+        for the show screen's "armed n of m machines" line (Jeff,
+        2026-10-26): {group: {"machines": n, "locked": k}}, k of them
+        locked out. Display only; None when the list cannot be read (the
+        page then shows what it showed before). Never raises."""
+        try:
+            locked = m.lockout.machines
+            out = {}
+            for x in m.cfg.machines:
+                g = out.setdefault(str(x.group), {"machines": 0, "locked": 0})
+                g["machines"] += 1
+                if x.id in locked:
+                    g["locked"] += 1
+            return out
+        except Exception:                        # noqa: BLE001
+            return None
 
     def rack_laser_view(self, m, ctx):
         """The show screen's LASERS strip (Jeff, 2026-10-22): every laser's
