@@ -54345,7 +54345,6 @@ def test_users_sign_out_after_the_last_show():
           "Nothing was saved" in h and "parseInt($(\"au-lastshow\")" not
           in h, "Save checks the minutes before it sends anything")
     import shutil as _sh2
-    import subprocess as _sp2
     import json as _json2
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function lastShowMinutes(" in logic, "lastShowMinutes is pure "
@@ -54358,8 +54357,9 @@ def test_users_sign_out_after_the_last_show():
                  ["1440", 1440]]
         js = logic + "console.log(JSON.stringify(" + _json2.dumps(cases) + \
             ".map(c => [c[0], lastShowMinutes(c[0]), c[1]])));"
-        r = _sp2.run([node, "-e", js], capture_output=True, text=True,
-                     timeout=60)
+        # Through a temporary file (_node_js): the logic block is over
+        # Windows' 32,767 character command line (WinError 206).
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
         try:
             got = _json2.loads(r.stdout)
         except ValueError:
