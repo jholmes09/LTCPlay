@@ -717,14 +717,29 @@ def check(w, recs, fs_lines, groups, arm_value, gap_ms=250.0, stall_s=2.0,
                 if st["latched"] and st_g["latched"]:
                     ep.add("WHILE ABORT LATCHED", slot, t,
                            f"{name} armed on the wire while an Abort stands")
+                if slot in locked and st["locked"]:
+                    # flamesafe holds a locked safety slot at zero under any
+                    # command (multi-safety, 2026-10-26).
+                    ep.add("LOCKED SLOT", slot, t,
+                           f"{name}: locked safety slot {slot} = {v}")
             elif slot in fire_of:
                 name = fire_of[slot]
                 fired = True
-                # Every safety slot of the group not locked out must carry
-                # the arm value (multi-safety: a locked one stays at zero).
-                down = [(s, values.get(s, 0)) for s in safety_slots[name]
-                        if s not in locked and values.get(s, 0) != arm_of[name]]
-                if down:
+                # Every safety slot of the group must carry the arm value.
+                # In a multi-safety group a locked one stays at zero and is
+                # left out, but not all of them: with every safety locked
+                # the group cannot arm. A one-safety group's safety always
+                # counts, locked or not (flamesafe ignores a lock on it).
+                sl = safety_slots[name]
+                need = [s for s in sl if s not in locked] if len(sl) > 1 \
+                    else sl
+                down = [(s, values.get(s, 0)) for s in need
+                        if values.get(s, 0) != arm_of[name]]
+                if not need:
+                    ep.add("FIRE WITHOUT ARM", slot, t,
+                           f"{name}: fire slot {slot} = {v} while every "
+                           f"safety slot of it is locked out")
+                elif down:
                     ep.add("FIRE WITHOUT ARM", slot, t,
                            f"{name}: fire slot {slot} = {v} while its safety "
                            f"slot {down[0][0]} = {down[0][1]}")

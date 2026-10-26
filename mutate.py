@@ -9273,8 +9273,57 @@ def build():
 
  ("multi-safety: a locked wave flamer machine does not lock its safety slot",
   "ltcplay/morning.py",
-  '''                                   bank=bank, safety=s))''',
-  '''                                   bank=bank))'''),
+  '''                                   pairs[s], bank=bank, safety=s))''',
+  '''                                   pairs[s], bank=bank))'''),
+
+ # Cold review of PR #107: P2-1, a multi-safety machine's safety is paired
+ # by the slot layout; P2-3, the witness checker's multi-safety rules.
+ ("multi-safety: wave flamer machines pair safety and fire by list order",
+  "ltcplay/morning.py",
+  '''            order = sorted(pairs, key=lambda s: pairs[s][0])''',
+  '''            order = list(pairs)'''),
+
+ ("multi-safety: a pairing that leaves a fire slot out is taken",
+  "ltcplay/morning.py",
+  '''    return out if seen == fire else None''',
+  '''    return out'''),
+
+ ("multi-safety: a whole-group machine does not lock the safety slots",
+  "ltcplay/morning.py",
+  '''                                   g["name"], list(g["fire"]), bank=bank,
+                                   safeties=saf))''',
+  '''                                   g["name"], list(g["fire"]), bank=bank))'''),
+
+ ("multi-safety: a wave flamer machine may leave out its safety slot",
+  "ltcplay/morning.py",
+  '''        if groups and len(saf_of[group]) > 1 and "safety" not in d:''',
+  '''        if False:'''),
+
+ ("multi-safety: a wave flamer machine may name another fixture's safety",
+  "ltcplay/morning.py",
+  '''                if other:
+                    owner = next(''',
+  '''                if False:
+                    owner = next('''),
+
+ ("witness: a locked safety slot carrying the arm value goes unflagged",
+  "tools/stress/witness/check_witness.py",
+  '''                    ep.add("LOCKED SLOT", slot, t,
+                           f"{name}: locked safety slot {slot} = {v}")''',
+  '''                    pass'''),
+
+ ("witness: fire with every safety locked is not fire without arm",
+  "tools/stress/witness/check_witness.py",
+  '''                if not need:
+                    ep.add("FIRE WITHOUT ARM", slot, t,''',
+  '''                if False:
+                    ep.add("FIRE WITHOUT ARM", slot, t,'''),
+
+ ("witness: a locked one-safety group's safety is left out of fire without arm",
+  "tools/stress/witness/check_witness.py",
+  '''                need = [s for s in sl if s not in locked] if len(sl) > 1 \\
+                    else sl''',
+  '''                need = [s for s in sl if s not in locked]'''),
 
  ("flamesafe: rubbish lock data locks nothing (T6)",
   "flamesafe/composer.py",

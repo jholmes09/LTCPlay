@@ -88,8 +88,11 @@ class WitnessRun:
     def logline(self, dt, kind, msg):
         self.log.write(f"{stamp(dt)}  {kind}: {msg}\n")
 
+    def files(self):
+        return (self.nz, self.gp, self.st, self.log)
+
     def close(self):
-        for fh in (self.nz, self.gp, self.st, self.log):
+        for fh in self.files():
             fh.close()
 
 
@@ -150,6 +153,34 @@ def run_check(folder, nights=True, fs=True, **kw):
     fsl = cw.load_flamesafe_log(os.path.join(folder, "flamesafe.log")) \
         if fs else []
     return cw.check(w, recs, fsl, GROUPS, 78, **kw)
+
+
+def open_files_in(path):
+    """Files this process still has open inside `path` (Linux, through
+    /proc/self/fd; empty elsewhere). Windows cannot delete an open file,
+    so a folder removed with one inside fails there (#111): this finds the
+    same leak on Linux before the folder goes."""
+    root = os.path.realpath(path) + os.sep
+    out = []
+    try:
+        fds = os.listdir("/proc/self/fd")
+    except OSError:
+        return out
+    for fd in fds:
+        try:
+            target = os.readlink(os.path.join("/proc/self/fd", fd))
+        except OSError:
+            continue
+        if target.startswith(root):
+            out.append(target)
+    return out
+
+
+def rmtree_closed(test, path):
+    """Remove `path`, failing `test` first if a file inside is still open."""
+    test.assertEqual(open_files_in(path), [],
+                     f"{test.id()}: files still open in {path}")
+    shutil.rmtree(path)
 
 
 def rules(res):
@@ -261,7 +292,11 @@ class TestChecker(unittest.TestCase):
         self.j = Journals(self.d)
 
     def tearDown(self):
-        shutil.rmtree(self.d, ignore_errors=True)
+        # Every file the synthetic run opened is closed before its folder
+        # goes: an open one (a test that never called close()) cannot be
+        # deleted on Windows and leaks the folder (#111, windows-latest).
+        self.w.close()
+        rmtree_closed(self, self.d)
 
     def good_show(self):
         """A show with a proper arm, fire in SHOW, Abort and Reset."""
@@ -355,6 +390,56 @@ class TestChecker(unittest.TestCase):
         res = run_check(self.d, locked_slots={411})
         self.assertNotIn("LOCKED SLOT", rules(res))
 
+    # flamesafe multi-safety (2026-10-26): the wave flamer, one arm group of
+    # three fixtures, each with its own safety slot.
+    WAVE_GROUPS = GROUPS + [{"name": "wave flamer", "safety": [6, 12, 18],
+                             "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11,
+                                      13, 14, 15, 16, 17],
+                             "arm_value": 78}]
+
+    def wave_check(self, locked):
+        w = cw.load_witness(os.path.join(self.d, "w"))
+        return cw.check(w, cw.load_nights(self.j.dir),
+                        cw.load_flamesafe_log(self.j.fs), self.WAVE_GROUPS,
+                        78, locked_slots=locked)
+
+    def test_multi_safety_locked_safety_carrying_the_arm_value(self):
+        self.good_show()
+        self.j.rec(T0 + timedelta(seconds=1), "lock",
+                   "Andy locked out wave flamer 1 (slots 1 to 6)")
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(6, 78), (12, 78), (18, 78), (7, 200)])
+        self.w.close()
+        res = self.wave_check({1, 2, 3, 4, 5, 6})
+        self.assertIn("LOCKED SLOT", rules(res))
+        self.assertTrue(any(e["rule"] == "LOCKED SLOT" and e["slot"] == 6
+                            for e in res["episodes"]), res["episodes"])
+
+    def test_multi_safety_one_locked_others_up_is_clean(self):
+        self.good_show()
+        self.j.rec(T0 + timedelta(seconds=1), "lock",
+                   "Andy locked out wave flamer 1 (slots 1 to 6)")
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(12, 78), (18, 78), (7, 200)])
+        self.w.close()
+        r = rules(self.wave_check({1, 2, 3, 4, 5, 6}))
+        self.assertNotIn("FIRE WITHOUT ARM", r)
+        self.assertNotIn("LOCKED SLOT", r)
+
+    def test_multi_safety_every_safety_locked_fire_is_fire_without_arm(self):
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4), [(7, 200)])
+        self.w.close()
+        self.assertIn("FIRE WITHOUT ARM",
+                      rules(self.wave_check({6, 12, 18})))
+
+    def test_one_safety_group_with_its_safety_locked_still_needs_it(self):
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4), [(411, 255)])
+        self.w.close()
+        self.assertIn("FIRE WITHOUT ARM",
+                      rules(run_check(self.d, locked_slots={401})))
+
     def test_gaps_stalls_and_left_on_the_wire(self):
         self.good_show()
         self.w.gap(T0 + timedelta(seconds=4), 300)
@@ -400,14 +485,18 @@ class TestChecker(unittest.TestCase):
         rc = cw.main(["--witness", self.w.dir, "--nights", self.j.dir,
                       "--flamesafe-log", self.j.fs])
         self.assertEqual(rc, 1)
-        text = open(os.path.join(self.w.dir, "check_report.txt")).read()
+        with open(os.path.join(self.w.dir, "check_report.txt")) as fh:
+            text = fh.read()
         self.assertIn("Verdict: FAIL", text)
         self.assertIn("FIRE WITHOUT ARM", text)
         self.assertNotIn(chr(0x2014), text)
         self.assertNotIn(chr(0x2013), text)
 
     def test_companion_run_is_marked(self):
-        shutil.rmtree(self.w.dir)
+        # setUp's run still has its files open: close them before the
+        # folder goes (Windows cannot delete an open file).
+        self.w.close()
+        rmtree_closed(self, self.w.dir)
         self.w = WitnessRun(self.w.dir, companion=True)
         self.w.logline(T0, "COMPANION", "ltcplay-soak.exe is running")
         self.w.close()

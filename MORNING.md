@@ -70,6 +70,8 @@ rule written there.
 | Purge arming at all | `ltcplay_remote.json` | `purge_arming` (default true) |
 | flamesafe's lockout file | `flamesafe.json` | `lockout_file` (left out: `ltcplay_lockout.json` beside flamesafe.json, which on the show PC is the engine's file; `false` switches it off) |
 
+A flame group with a safety slot for each fixture (flamesafe multi-safety, the wave flamer) has one machine per fixture, and locking one locks that fixture's safety slot with its fire slots. With no `machines` list the pairing comes from the slot layout, never the list order: a fixture's fire slots are the ones directly below its safety slot (channels 1 to 5 fire, channel 6 safety). If the layout does not say, the whole group is one machine and locking it locks every slot. In a `machines` list each machine of such a group must name its own `safety`, and its slots must be on that fixture.
+
 All of these live in the machine's settings folder (`%LOCALAPPDATA%\ltcplay`
 on the show PC). `ltcplay/ltcplay_morning.example.json` is the annotated
 example. Nothing here is in the show file.
