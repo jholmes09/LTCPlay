@@ -159,6 +159,7 @@ SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 MORNING_GET_ROUTES = ("morning", "checklist-pdf", "checklist-export")
 MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
                        "purge-stop", "purge-clear", "laser-test",
+                       "open-beyond",
                        "laser-arm", "lock",
                        "layout", "checklist-tick", "checklist-note",
                        "checklist-verify", "checklist-tally-retry")
@@ -239,6 +240,7 @@ ARMING_OFF = ("Arming from a screen is switched off on this show PC. To turn "
 USER_GET_ROUTES = ("users",)
 USER_POST_ROUTES = ("signin", "signout", "my-password", "users",
                     "role-matrix", "clear-lockouts", "idle-signout",
+                    "last-show-signout",
                     "audit-settings", "audit-upload-now", "audit-verify")
 
 # Any of these on a request means something forwarded it. A browser on the
@@ -1097,6 +1099,12 @@ class Remote:
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
         self.beyond_watch = None
+        # Open BEYOND on the Startup page (windowfront.py, Jeff,
+        # 2026-10-26): BEYOND's OSC host from the settings, set by
+        # web.serve (None: not set, BEYOND is looked for on this PC), and
+        # the call that brings its window forward (a fake in the selftest).
+        self.beyond_host = None
+        self.open_beyond_fn = None
         # madmapperwatch.MadMapperWatch, set by web.serve with MadMapper
         # configured, and its heartbeat Watchdog and HeartbeatConfig: the
         # Video lamp says whether MadMapper is running before a show plays.
@@ -1576,6 +1584,8 @@ class Remote:
                 text = u.clear_lockouts()
             elif name == "idle-signout":
                 text = u.set_idle(body.get("minutes"))
+            elif name == "last-show-signout":
+                text = u.set_last_show(body.get("minutes"))
             elif name == "audit-settings":
                 from . import auditsend
                 ch = {k: body[k] for k in ("enabled", "url", "token", "time",
@@ -2772,7 +2782,39 @@ class Remote:
                     {"Content-Disposition": f'attachment; filename="{fname}"'})
         return 404, {"error": "no such thing here"}
 
+    def open_beyond(self, body, ctx):
+        """POST open-beyond: BEYOND's window to the front of the show PC
+        (windowfront.py). The show machine itself only, no show live and
+        no Abort standing; signed in or not. Moves a window, nothing more:
+        nothing is ever sent to BEYOND."""
+        who, screen, _surface = self._actor(ctx, body)
+        if not ctx.local:
+            return 403, {"error": "Open BEYOND works on the show machine "
+                                  "itself, where BEYOND's window is. "
+                                  "Nothing was done."}
+        why = self.show_live_refusal()
+        if why:
+            return 409, {"error": f"Open BEYOND is not allowed now: {why}."}
+        fn = self.open_beyond_fn
+        if fn is None:
+            from . import windowfront
+            fn = windowfront.open_beyond
+        try:
+            ok, text = fn(self.beyond_host)
+        except Exception as e:                   # noqa: BLE001
+            ok, text = False, (f"BEYOND could not be brought forward "
+                               f"({type(e).__name__}). Open it from the "
+                               f"taskbar.")
+        self._journal(who, screen, "open-beyond",
+                      "done" if ok else "refused",
+                      f"Open BEYOND pressed by {who or 'someone'} on the "
+                      f"{screen or 'show machine'}: {text}")
+        return (200 if ok else 409), ({"ok": True, "text": text} if ok
+                                      else {"error": text})
+
     def morning_post(self, name, body, ctx):
+        if name == "open-beyond":
+            return self.open_beyond(body, ctx)
         m = self.morning
         if m is None:
             return 404, {"error": "The Startup page is not "
@@ -2876,6 +2918,33 @@ class Remote:
                f"{label} on the {screen}", who, screen)
         except Exception:                        # noqa: BLE001
             pass
+
+    def last_show_over(self):
+        """For users.Users.last_show (sign everyone out after the last
+        show, Jeff, 2026-10-26): {"night", "ended"} once tonight's last
+        show has ended, else None. None with no schedule, while a show is
+        live or paused, on Hold, while a show is still to come or waiting
+        after a Hold, while an Abort stands, while the show clock plays,
+        and on a night no show has ended. A show started by hand (Start
+        now) ends like any other. Plain reads, never a lock."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        if m is None:
+            return None
+        try:
+            if self.show_live_refusal():
+                return None
+            cond = getattr(svc, "conductor", None)
+            if getattr(m, "state", None) in ("SHOW", "PAUSED", "HOLD") or \
+                    getattr(cond, "_look", None) == "HELD" or \
+                    getattr(m, "running", 0) or m.waiting():
+                return None
+            end = getattr(m, "last_end", None)
+            if end is None:
+                return None
+            return {"night": str(m.date), "ended": end.timestamp()}
+        except Exception:                        # noqa: BLE001
+            return None
 
     def laser_arm_blockers(self):
         """Why no laser may be armed (nor BEYOND's laser output switched

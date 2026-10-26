@@ -47670,6 +47670,511 @@ def test_morning_default_wave_flamer_is_never_purged():
     print("  ok")
 
 
+def test_waver_head_settle_may_be_zero():
+    """Jeff, 2026-10-26: purge.waver.head_settle_s may be 0. Then the head
+    values and the fire value go out in the same frame, on the first
+    heartbeat on which the Waver is selected, unlocked and in an ARMED
+    group. Below 0 is refused, the default stays 1.5, every other purge
+    rule is unchanged."""
+    section("Morning: a Waver's head settle time may be 0 (head up and "
+            "fire in the same frame); below 0 is refused; the default "
+            "stays 1.5 s")
+    import json as _j
+    from ltcplay import morning as MO
+    check(MO.PURGE_DEFAULTS["waver"]["head_settle_s"] == 1.5 and
+          MO.MorningConfig.parse({}, "x", _MO_FLAMESAFE["groups"])
+          .purge["waver"]["head_settle_s"] == 1.5,
+          "the default head settle time stays 1.5 s")
+
+    def cfg_with(settle):
+        d = _j.loads(_j.dumps(_MO_CONFIG))
+        d["purge"]["waver"]["head_settle_s"] = settle
+        return MO.MorningConfig.parse(d, "x", _MO_FLAMESAFE["groups"])
+    for ok_v in (0, 0.0, 10):
+        try:
+            c = cfg_with(ok_v)
+            check(c.purge["waver"]["head_settle_s"] == float(ok_v),
+                  f"a head settle time of {ok_v} is accepted")
+        except MO.MorningConfigError as e:
+            check(False, f"a head settle time of {ok_v} was refused: {e}")
+    for bad_v in (-0.1, -1, 10.5, float("nan"), True, "0"):
+        try:
+            cfg_with(bad_v)
+            check(False, f"a head settle time of {bad_v!r} was accepted")
+        except MO.MorningConfigError as e:
+            check("0 to 10 seconds" in str(e) and "—" not in str(e) and
+                  "–" not in str(e) and "always goes up first" not in
+                  str(e), f"{bad_v!r} is refused in plain words: {e}")
+
+    class _Lock:
+        def __init__(self):
+            self.locked = set()
+
+        def is_locked(self, kind, mid):
+            return mid in self.locked
+
+    class _Link:
+        def __init__(self):
+            self.frames = []
+
+        def purge_set(self, vals):
+            self.frames.append(bytes(vals))
+            return True
+
+        def purge_clear(self):
+            pass
+    names = ["front row", "cat-walk", "wave flamer"]
+    cfg = cfg_with(0)
+    w = cfg.purge["waver"]
+    t = [100.0]
+    link, lock = _Link(), _Lock()
+    armed = {"wave flamer"}
+    fl = {"stale": False, "connected": True, "age_ms": 10,
+          "groups": [{"name": n, "armed": "armed" if n in armed else
+                      "disarmed"} for n in names]}
+    p = MO.Purge(lambda: cfg, lock, lambda: link, lambda: fl, lambda: "",
+                 lambda: names, clock=lambda: t[0])
+    p.selected = ["w1"]
+    p.owner = "Rack screen"
+    vals, firing, waiting = p.frame(t[0])
+    check(vals[431] == w["pan_up"] and vals[432] == w["tilt_up"] and
+          vals[430] == w["fire"] and firing == ["Waver 1"] and
+          waiting == [],
+          f"settle 0: head up AND fire in the very first frame: "
+          f"{firing} {waiting}")
+    code, out = p.fire_beat({"on": True}, "Rack screen", True)
+    f = link.frames[-1] if link.frames else bytes(MO.UNIVERSE_SIZE)
+    check(code == 200 and f[430] == w["fire"] and f[431] == w["pan_up"] and
+          f[432] == w["tilt_up"] and out["firing"] == ["Waver 1"],
+          f"settle 0: the first fire heartbeat carries the fire value: "
+          f"{code} {out}")
+    p.stop("test")
+    # Still only an ARMED group, an unlocked machine, a selected one.
+    fl["groups"][2]["armed"] = "disarmed"
+    vals, firing, waiting = p.frame(t[0])
+    check(vals == bytes(MO.UNIVERSE_SIZE) and firing == [] and
+          any("not armed" in x for x in waiting),
+          f"settle 0, group not armed: nothing at all, not even the head: "
+          f"{waiting}")
+    fl["groups"][2]["armed"] = "armed"
+    lock.locked.add("w1")
+    vals, firing, waiting = p.frame(t[0])
+    check(vals == bytes(MO.UNIVERSE_SIZE) and firing == [] and
+          waiting == ["Waver 1: locked out"],
+          f"settle 0, locked out: nothing at all: {waiting}")
+    lock.locked.clear()
+    p.selected = []
+    vals, firing, _w = p.frame(t[0])
+    check(vals == bytes(MO.UNIVERSE_SIZE) and firing == [],
+          "settle 0, not selected: nothing")
+    # The default still waits: the first frame is head only.
+    cfg15 = cfg_with(1.5)
+    p2 = MO.Purge(lambda: cfg15, _Lock(), lambda: _Link(), lambda: fl,
+                  lambda: "", lambda: names, clock=lambda: t[0])
+    p2.selected = ["w1"]
+    vals, firing, waiting = p2.frame(t[0])
+    check(vals[430] == 0 and vals[431] == w["pan_up"] and firing == [] and
+          waiting == ["Waver 1: head going up (1.5 s)"],
+          f"settle 1.5: the first frame is the head only: {waiting}")
+    print("  ok")
+
+
+def test_open_beyond_window_finder_and_front():
+    """Open BEYOND (windowfront.py, Jeff, 2026-10-26): BEYOND's window is
+    found by its process's program file (beyond*.exe, beyondwatch.py's
+    names), restored, put in front with the AttachThreadInput and Alt key
+    workaround, and its taskbar button flashed when Windows refuses. Every
+    refusal is plain. Nothing is ever sent to BEYOND."""
+    section("Open BEYOND: the window finder on a fake Windows, restore, "
+            "the foreground workaround, the flash when Windows refuses, "
+            "and the refusals (not Windows, another machine, not running)")
+    from ltcplay import windowfront as WF
+    from ltcplay import beyondwatch as BW
+    check(WF.IMAGES == BW.IMAGES, "the same program names as the BEYOND "
+                                  "watch")
+    for p, want in (("C:\\Program Files\\Pangolin\\BEYOND\\BEYOND.exe", True),
+                    ("beyond64.EXE", True), ("D:\\x\\Beyond Ultimate.exe",
+                                             True),
+                    ("C:\\x\\notbeyond.exe", False), ("beyond.dll", False),
+                    ("", False), (None, False),
+                    ("C:\\beyond.exe\\other.exe", False)):
+        check(WF.is_beyond_image(p) is want, f"{p!r} is "
+              f"{'' if want else 'not '}BEYOND's program")
+
+    class FakeWin:
+        """[(hwnd, visible, owner, pid, minimized)], {pid: image}. The
+        foreground follows set_foreground unless `refuse` is set."""
+
+        def __init__(self, wins, images, fg=1, refuse=False):
+            self.wins = wins
+            self.images = images
+            self.fg = fg
+            self.refuse = refuse
+            self.calls = []
+            self.attached = set()
+
+        def _w(self, h):
+            return [w for w in self.wins if w[0] == h][0]
+
+        def windows(self):
+            return [w[0] for w in self.wins]
+
+        def visible(self, h):
+            return self._w(h)[1]
+
+        def owner(self, h):
+            return self._w(h)[2]
+
+        def pid(self, h):
+            return self._w(h)[3]
+
+        def thread(self, h):
+            return 500 + h
+
+        def image(self, pid):
+            if pid == 666:
+                raise OSError("access denied")
+            return self.images.get(pid, "")
+
+        def minimized(self, h):
+            return self._w(h)[4]
+
+        def restore(self, h):
+            self.calls.append(("restore", h))
+
+        def foreground(self):
+            return self.fg
+
+        def current_thread(self):
+            return 42
+
+        def attach(self, me, other, on):
+            self.calls.append(("attach", me, other, on))
+            (self.attached.add if on else self.attached.discard)(other)
+            return True
+
+        def alt_tap(self):
+            self.calls.append(("alt",))
+
+        def set_foreground(self, h):
+            self.calls.append(("fg", h))
+            if not self.refuse:
+                self.fg = h
+            return not self.refuse
+
+        def bring_to_top(self, h):
+            self.calls.append(("top", h))
+
+        def flash(self, h):
+            self.calls.append(("flash", h))
+            return True
+    imgs = {10: "C:\\Windows\\explorer.exe", 20: "C:\\BEYOND\\BEYOND.exe",
+            30: "C:\\ltcplay\\ltcplay.exe"}
+    wins = [(1, True, 0, 30, False),      # the rack screen, in front
+            (2, False, 0, 20, False),     # BEYOND's hidden window
+            (3, True, 7, 20, False),      # a BEYOND dialog (owned)
+            (4, True, 0, 666, False),     # a process that cannot be read
+            (5, True, 0, 20, True),       # BEYOND's main window, minimized
+            (6, True, 0, 10, False)]
+    api = FakeWin(wins, imgs)
+    check(WF.find_beyond_window(api) == 5,
+          "the finder picks BEYOND's visible main window, not a hidden "
+          "one, not its dialog, not another program's")
+    check(WF.find_beyond_window(FakeWin([w for w in wins if w[0] != 5],
+                                        imgs)) == 3,
+          "with no main window, an owned BEYOND window is still found")
+    check(WF.find_beyond_window(FakeWin([wins[0], wins[5]], imgs)) is None,
+          "no BEYOND window: None")
+    ok, text = WF.open_beyond(None, windows=True, api=api)
+    check(ok and api.fg == 5 and ("restore", 5) in api.calls and
+          ("alt",) in api.calls and ("attach", 42, 501, True) in api.calls
+          and ("attach", 42, 501, False) in api.calls and not api.attached
+          and api.calls.index(("restore", 5)) < api.calls.index(("fg", 5))
+          and api.calls.index(("attach", 42, 501, True)) <
+          api.calls.index(("fg", 5)) and "in front" in text,
+          f"restored, the input attached and the Alt key tapped before "
+          f"SetForegroundWindow, the attach let go after: {ok} {text} "
+          f"{api.calls}")
+    api = FakeWin(wins, imgs, refuse=True)
+    ok, text = WF.open_beyond("127.0.0.2", windows=True, api=api)
+    check(not ok and ("flash", 5) in api.calls and "flashing" in text and
+          "taskbar" in text and not api.attached,
+          f"Windows refuses: the taskbar button flashes and it says so: "
+          f"{text}")
+    for t in (text,):
+        check("—" not in t and "–" not in t, "no dashes")
+    ok, text = WF.open_beyond(None, windows=False, api=FakeWin(wins, imgs))
+    check(not ok and "Windows show PC" in text,
+          f"not Windows: refused plainly: {text}")
+    ok, text = WF.open_beyond("10.20.0.30", windows=True,
+                              api=FakeWin(wins, imgs))
+    check(not ok and "another machine" in text and "10.20.0.30" in text,
+          f"BEYOND on another machine: refused plainly: {text}")
+    none = FakeWin([wins[0], wins[5]], imgs)
+    ok, text = WF.open_beyond(None, windows=True, api=none,
+                              probe=lambda: False)
+    check(not ok and "not running" in text and not none.calls,
+          f"BEYOND not running: said, nothing moved: {text}")
+    ok, text = WF.open_beyond(None, windows=True, api=none,
+                              probe=lambda: True)
+    check(not ok and "no window" in text, f"running, no window: {text}")
+    ok, text = WF.open_beyond(None, windows=True, api=none,
+                              probe=lambda: None)
+    check(not ok and "No BEYOND window" in text, f"cannot tell: {text}")
+
+    class Broken(FakeWin):
+        def windows(self):
+            raise OSError("boom")
+    ok, text = WF.open_beyond(None, windows=True,
+                              api=Broken(wins, imgs), probe=lambda: None)
+    check(not ok and "No BEYOND window" in text,
+          f"a failing window list never raises: {text}")
+    import ast
+    src = open(WF.__file__, encoding="utf-8").read()
+    mods = {n.names[0].name for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Import)} | {
+        n.module for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.ImportFrom) and n.module}
+    check(not ({"socket", "beyond", "lasertest", "laserarm"} & mods) and
+          "sendto" not in src and "socket" not in src and
+          "encode_osc" not in src,
+          f"windowfront sends nothing anywhere: imports {sorted(mods)}")
+    print("  ok")
+
+
+def test_calibrate_all_lasers_rules_and_order():
+    """Calibrate all lasers and Calibration off (lasertest.set_all, Jeff,
+    2026-10-26): every armed, unlocked laser in config order through the
+    one-laser rules; locked and unarmed lasers skipped and named; an
+    undecided laser refused in words saying what to configure; the show
+    state asked before each laser; off turns every test off."""
+    section("Calibrate all lasers: armed, unlocked lasers in turn; locked "
+            "and unarmed ones skipped and named; mechanism none says what "
+            "to configure; a show going live stops it; Calibration off")
+    from ltcplay import lasertest as LT
+    sent = []
+
+    class _Sock:
+        def sendto(self, pkt, addr):
+            sent.append((addr, pkt))
+
+        def close(self):
+            pass
+
+    def osc(i):
+        return {"id": f"l{i}", "name": f"Laser {i}", "mechanism": "osc",
+                "host": "127.0.0.2", "port": 8100,
+                "on": [["/beyond/general/startcue", i]],
+                "off": [["/beyond/general/stopcue", i]]}
+    lasers = LT.parse_lasers([osc(1), {"id": "l2", "name": "Laser 2"},
+                              osc(3), osc(4), osc(5)], "x")
+    locked, armed, lines = {"l4"}, {"l1", "l2", "l3", "l4"}, []
+    lt = LT.LaserTests(lasers, locked=lambda lid: lid in locked,
+                       journal=lambda t, **f: lines.append((t, f)),
+                       socket_factory=_Sock, sleep=lambda s: None,
+                       armed=lambda lid: lid in armed)
+    order = []
+    real = lt.set
+
+    def spy(lid, on, **kw):
+        order.append((lid, on))
+        return real(lid, on, **kw)
+    lt.set = spy
+    ok, text = lt.set_all(True, who="Andy", device="Rack screen")
+    check(ok and order == [("l1", True), ("l2", True), ("l3", True)] and
+          sorted(lt.on) == ["l1", "l3"],
+          f"armed, unlocked lasers in config order; locked l4 and unarmed "
+          f"l5 never asked: {order} {sorted(lt.on)}")
+    starts = [p for _a, p in sent if p.startswith(b"/beyond/general/startcue")]
+    check(len(starts) == 6 and starts[0][-1] == 1 and starts[-1][-1] == 3,
+          "each on list goes three times, Laser 1 first then Laser 3")
+    check("Laser 1, Laser 3" in text and "Laser 4 (locked out)" in text and
+          "Laser 5 (not armed)" in text and "Laser 2" in text and
+          '"l2"' in text and '"mechanism": "osc"' in text and
+          "MORNING.md" in text and "—" not in text and "–" not in text,
+          f"skipped lasers named, the undecided one says what to set: "
+          f"{text}")
+    check(lines and "Calibrate all lasers" in lines[-1][0],
+          f"journaled: {lines[-1] if lines else None}")
+    # Off: every laser, whatever it was.
+    del order[:]
+    del sent[:]
+    ok, text = lt.set_all(False, who="Andy")
+    check(ok and not lt.on and [o for o in order] ==
+          [(f"l{i}", False) for i in range(1, 6)] and
+          "every laser test is off" in text,
+          f"Calibration off turns every test off: {order} {text}")
+    # Nothing armed: nothing goes on, and it says why.
+    armed.clear()
+    ok, text = lt.set_all(True, who="Andy")
+    check(not ok and not lt.on and "No laser test went on" in text and
+          "Laser 1 (not armed)" in text, f"nothing armed: {text}")
+    # The show goes live part way: nothing after that goes on.
+    armed.update({"l1", "l3", "l5"})
+    asks = []
+
+    def still_ok():
+        asks.append(1)
+        return "" if len(asks) < 3 else "a scheduled show is live (SHOW)"
+    del order[:]
+    ok, text = lt.set_all(True, who="Andy", still_ok=still_ok)
+    check(ok and sorted(lt.on) == ["l1"] and ("l3", True) not in order and
+          "Stopped there" in text and "show is live" in text,
+          f"asked before each laser; once a show is live nothing more "
+          f"goes on: {order} {text}")
+    lt.set_all(False)
+    # The single-laser refusal names what to configure too.
+    lt2 = LT.LaserTests(lasers, socket_factory=_Sock, sleep=lambda s: None,
+                        armed=lambda lid: True)
+    ok, text = lt2.set("l2", True)
+    check(not ok and "placeholder" in text and '"l2"' in text and
+          '"on"' in text and '"off"' in text, f"one laser: {text}")
+    print("  ok")
+
+
+def test_calibrate_all_and_open_beyond_routes():
+    """The Startup page's Calibrate all lasers, Calibration off and Open
+    BEYOND through the engine's routes: every rule of a laser test ON
+    (no show live, no Abort, screen_arming from the network, Arrange mode,
+    the unlock row), and Open BEYOND only on the show machine, never while
+    a show is live or an Abort stands, signed in or not."""
+    section("Startup page: Calibrate all lasers and Open BEYOND through the "
+            "engine, with every rule")
+    S = _sched()
+    if S is None:
+        return
+    from dataclasses import replace as _rep
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    R = _morning_rig(S, config=_MO_CONFIG)
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    try:
+        R.m.tick()
+        check(U.classify("/api/remote/open-beyond", {}) is None and
+              U.classify("/api/remote/laser-test",
+                         {"all": True, "on": True}) == "unlock" and
+              U.classify("/api/remote/laser-test",
+                         {"all": True, "on": False}) == "safety",
+              "Open BEYOND is harmless; Calibrate all is a test ON; "
+              "Calibration off is safety")
+        check("open-beyond" in RM.MORNING_POST_ROUTES, "the route exists")
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": True}, client=loop)
+        check(st == 409 and "No laser test went on" in out["error"] and
+              not R.m.lasers.on, f"nothing armed: refused: {out}")
+        _mo_arm(R, "laser-1", "laser-3", "laser-4")
+        R.m.lockout.set(R.m.cfg, "laser", "laser-4", True, "Andy", "Rack")
+        R.m.tick()
+        _mo_arm(R, "laser-3")
+        del R.osc[:]
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": True}, client=loop)
+        check(st == 200 and sorted(R.m.lasers.on) == ["laser-3"] and
+              "Laser 4 (locked out)" in out["text"] and
+              "Laser 2 (not armed)" in out["text"] and
+              '"laser-1"' in out["text"] and R.osc,
+              f"armed Laser 3 goes on; locked Laser 4 and unarmed Laser 2 "
+              f"skipped; undecided Laser 1 says what to set: {out}")
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": True}, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"],
+              f"from the network it needs screen_arming: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": False}, client=ipad)
+        check(st == 200 and not R.m.lasers.on,
+              f"Calibration off goes from anywhere: {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        R.m.open_beat("Rack screen", arranging=True, inst="c", seq=1)
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": True}, client=loop)
+        check(st == 409 and "Arrange" in out["error"] and
+              not R.m.lasers.on, f"Arrange holds it back: {out}")
+        R.m.open_beat("Rack screen", arranging=False, inst="c", seq=2)
+        live = R.m._live_check
+        R.m._live_check = lambda: "a scheduled show is live (SHOW)"
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": True}, client=loop)
+        check(st == 409 and "not allowed now" in out["error"] and
+              not R.m.lasers.on, f"not while a show is live: {out}")
+        # The show goes live part way through: the engine asks again
+        # before each laser, so nothing after that goes on.
+        asks = []
+
+        def goes_live():
+            asks.append(1)
+            return "" if len(asks) < 3 else "a scheduled show is live (SHOW)"
+        R.m._live_check = goes_live
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"all": True, "on": True}, client=loop)
+        check(st == 409 and not R.m.lasers.on and "Stopped there" in
+              out["error"] and len(asks) == 3,
+              f"live part way: Laser 3 never goes on: {out} {len(asks)}")
+        R.m._live_check = live
+        # Open BEYOND.
+        calls = []
+
+        def fake(host):
+            calls.append(host)
+            return True, "BEYOND is in front on the show PC."
+        R.remote.open_beyond_fn = fake
+        R.remote.beyond_host = "127.0.0.2"
+        n_osc = len(R.osc)
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=ipad)
+        check(st == 403 and "show machine" in out["error"] and not calls,
+              f"Open BEYOND from the network: refused: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 200 and calls == ["127.0.0.2"] and
+              len(R.osc) == n_osc and "in front" in out["text"],
+              f"on the show machine: the window call, BEYOND's host, "
+              f"nothing sent: {out}")
+        check(any(r.get("action") == "open-beyond"
+                  for r in R.svc.journal), "journaled")
+        m0 = R.svc.machine
+        R.svc.machine = _rep(m0, abort_latched=True)
+        try:
+            st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                                client=loop)
+            check(st == 409 and "aborted" in out["error"] and
+                  len(calls) == 1, f"not while an Abort stands: {out}")
+        finally:
+            R.svc.machine = m0
+        R.remote.open_beyond_fn = lambda host: (False, "BEYOND is not "
+                                                "running on this PC.")
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "not running" in out["error"],
+              f"a refusal from the finder is said: {out}")
+        R.remote.open_beyond_fn = None
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        if sys.platform != "win32":
+            check(st == 409 and "Windows show PC" in out["error"],
+                  f"the real call off Windows refuses plainly: {out}")
+        _live_show(R)
+        R.remote.open_beyond_fn = fake
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "live" in out["error"] and len(calls) == 1,
+              f"not while a show is live: {out}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web", "remote.html"),
+            encoding="utf-8").read()
+        for need in ('moPress("laser-test", {all:true, on:true}, "mo-lmsg")',
+                     'moPress("laser-test", {all:true, on:false}, "mo-lmsg")',
+                     'moPress("open-beyond", {}, "mo-lmsg")',
+                     ">Calibrate all lasers<", ">Calibration off<",
+                     ">Open BEYOND<",
+                     '$("mo-beyond").hidden = !(ME && ME.local);'):
+            check(need in page, f"the Startup page has {need!r}")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_witness_checker_rules():
     """The stress witness checker's own rules (tools/stress/witness), run
     here so a change to them is caught per PR. Cold review of PR #107,
@@ -47794,8 +48299,8 @@ def test_morning_config_layout_and_lockout_file():
     bad("a purge key nobody has", with_(purge={"gflame": 1}))
     bad("a head settle time of a minute",
         with_(purge={"waver": {"head_settle_s": 60}}))
-    bad("a head settle time of 0 (the head always goes up first)",
-        with_(purge={"waver": {"head_settle_s": 0}}))
+    bad("a head settle time below 0",
+        with_(purge={"waver": {"head_settle_s": -0.1}}))
     bad("a laser mechanism nobody has",
         with_(lasers=[{"id": "l1", "mechanism": "magic"}]))
     bad("an osc laser with no messages",
@@ -50946,6 +51451,194 @@ def test_users_lockout_is_short_and_never_permanent():
             check(False, f"idle {bad!r} was accepted")
         except ValueError:
             pass
+
+
+def test_users_sign_out_after_the_last_show():
+    """Jeff, 2026-10-26: once the night's last show has ended, and N
+    minutes have passed (default 10, 0 is off), everyone signed in is
+    signed out, once for that night; a sign-in after that stays; never
+    while a show is live, held or an Abort stands; no schedule, never."""
+    section("users: everyone is signed out N minutes after the last show "
+            "of the night (default 10, 0 off), once a night; a later "
+            "sign-in stays; never while live, held or aborted")
+    import shutil
+    import types
+    from datetime import datetime, timezone
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    d = tempfile.mkdtemp()
+    try:
+        t, clock = _u_clock()
+        w = [1_800_000_000.0]
+        notes = []
+        us = U.Users(d, clock=clock, wall=lambda: w[0],
+                     hash_params=_U_FAST,
+                     audit=lambda **kw: notes.append(kw))
+        us.add("Jeff", "admin", "jeff-temp-1")
+        us.add("Andy", "admin", "andy-temp-1")
+        us.sign_in("Jeff", "jeff-temp-1", True, "Rack screen",
+                   new_password="right-pw-1")
+        us.sign_in("Andy", "andy-temp-1", False, "iPad",
+                   new_password="right-pw-2")
+        check(us.last_show_minutes() == 10 and
+              U.LAST_SHOW_SIGNOUT_DEFAULT_MIN == 10 and
+              us.view()["signout_after_last_show_min"] == 10 and
+              us.idle_minutes() == 0,
+              "on by default at 10 minutes; idle sign out stays off")
+        info = [None]
+        us.last_show = lambda: info[0]
+
+        def sin(name, pw, local=True, src="Rack screen"):
+            ok, why, tok, _n = us.sign_in(name, pw, local, src)
+            check(ok, f"setup: {name} signs in: {why}")
+            return tok
+        a = sin("Jeff", "right-pw-1")
+        b = sin("Andy", "right-pw-2", False, "iPad")
+        w[0] += 6 * 3600
+        t[0] += 6 * 3600
+        check(us.session(a) is not None and us.session(b) is not None,
+              "no last show over (None from the engine): nobody is "
+              "signed out, hours later")
+        ended = w[0]
+        info[0] = {"night": "2026-11-14", "ended": ended}
+        w[0] = ended + 9 * 60 + 59
+        check(us.session(a) is not None and us.machine_user() is not None,
+              "9:59 after the last show ended: still signed in")
+        c = sin("Andy", "right-pw-2", False, "iPad 2")   # inside the grace
+        w[0] = ended + 10 * 60
+        check(us.session(a) is None and us.session(b) is None and
+              us.session(c) is None and us.machine_user() is None,
+              "10 minutes after: every session is signed out, the one "
+              "signed in during the grace too, and the deck acts as nobody")
+        outs = [n for n in notes if n.get("action") == "sign-out" and
+                "after the last show" in n.get("reason", "")]
+        # Five sessions: the two first sign-ins (choosing a password), a,
+        # b and c.
+        check(len(outs) == 5 and {n["user"] for n in outs} ==
+              {"Jeff", "Andy"} and all("—" not in n["reason"] and "–" not in
+                                       n["reason"] for n in outs),
+              f"each one journaled as signed out after the last show: "
+              f"{outs}")
+        e = sin("Jeff", "right-pw-1")
+        w[0] += 3 * 3600
+        t[0] += 60
+        check(us.session(e) is not None,
+              "a sign-in after it is not signed out again that night")
+        us.after_last_show_tick()
+        check(us.session(e) is not None, "nor by the engine's own beat")
+        # An extra show (Start now) ends later the same night: the night
+        # was already signed out once, so the later sign-in stays.
+        info[0] = {"night": "2026-11-14", "ended": w[0]}
+        w[0] += 3600
+        us.after_last_show_tick()
+        check(us.session(e) is not None,
+              "a later show ending the same night signs nobody out again")
+        # A restart (a new Users, the same file) with a sign-in after the
+        # sign out: it is not signed out either.
+        us2 = U.Users(d, clock=clock, wall=lambda: w[0], hash_params=_U_FAST)
+        us2.last_show = lambda: info[0]
+        ok, _w, f, _n = us2.sign_in("Jeff", "right-pw-1", True, "Rack")
+        w[0] += 60
+        check(ok and us2.session(f) is not None,
+              "after a restart a later sign-in stays signed in")
+        # The next night: again, once. The Stream Deck's own read (who
+        # is signed in on this machine) finds it on its own.
+        info[0] = {"night": "2026-11-15", "ended": w[0]}
+        w[0] += 10 * 60
+        check(us.machine_user() is None, "the next night's last show: the "
+                                         "deck reads nobody signed in")
+        check(us.session(e) is None, "signed out again, once")
+        # Live, held, aborted: the engine says None; nothing happens.
+        g = sin("Jeff", "right-pw-1")
+        info[0] = None
+        w[0] += 24 * 3600
+        check(us.session(g) is not None, "while the engine says no: never")
+        # A broken answer from the engine never signs anyone out.
+        us.last_show = lambda: 1 / 0
+        check(us.session(g) is not None, "an engine error: nothing")
+        us.last_show = lambda: {"night": "2026-11-16"}
+        check(us.session(g) is not None, "a half answer: nothing")
+        # 0 is off.
+        us.last_show = lambda: info[0]
+        check("off" in us.set_last_show(0), "0 turns it off")
+        info[0] = {"night": "2026-11-17", "ended": w[0] - 3600}
+        check(us.session(g) is not None and us.last_show_minutes() == 0,
+              "off: never signed out")
+        check("30 min" in us.set_last_show(30) and
+              us.view()["signout_after_last_show_min"] == 30,
+              "an admin sets it in minutes")
+        check(us.session(g) is None, "and on again it applies")
+        for bad in (-1, 1441, True, "10", 2.5, None):
+            try:
+                us.set_last_show(bad)
+                check(False, f"{bad!r} accepted")
+            except ValueError as ex:
+                check("0 (off) to 1440" in str(ex), f"{bad!r} refused")
+        check(U.classify("/api/remote/last-show-signout", {}) == "settings"
+              and "last-show-signout" in RM.USER_POST_ROUTES,
+              "setting it is a Settings press, on the Users screen")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # The engine's side: when is the last show over?
+    utc = timezone.utc
+    end = datetime(2026, 11, 15, 4, 30, tzinfo=utc)
+
+    def machine(**kw):
+        base = dict(state="CLOSING", running=0, last_end=end,
+                    abort_latched=False, date="2026-11-14",
+                    pending=False)
+        base.update(kw)
+        m = types.SimpleNamespace(**base)
+        m.waiting = lambda: m.pending
+        return m
+
+    def engine(m, look=None, latched=False, playing=False):
+        svc = types.SimpleNamespace(
+            machine=m, conductor=types.SimpleNamespace(_look=look,
+                                                       latched=latched))
+        clk = types.SimpleNamespace(playing=playing)
+        r = types.SimpleNamespace(
+            schedule=svc, control=types.SimpleNamespace(
+                session=types.SimpleNamespace(clock=clk)))
+        r.show_live_refusal = lambda: RM.Remote.show_live_refusal(r)
+        return RM.Remote.last_show_over(r)
+    got = engine(machine())
+    check(got == {"night": "2026-11-14", "ended": end.timestamp()},
+          f"the last show ended: the night and when: {got}")
+    check(engine(machine(state="IDLE")) == got and
+          engine(machine(state="OFF")) == got,
+          "standing dark after the night closed still counts")
+    for why, eng in (
+            ("no schedule", lambda: RM.Remote.last_show_over(
+                types.SimpleNamespace(schedule=None))),
+            ("a show live", lambda: engine(machine(state="SHOW",
+                                                   running=3))),
+            ("paused", lambda: engine(machine(state="PAUSED", running=3))),
+            ("on Hold", lambda: engine(machine(state="HOLD"))),
+            ("the conductor holding", lambda: engine(machine(),
+                                                     look="HELD")),
+            ("a show still to come or delayed", lambda: engine(
+                machine(state="STANDBY", pending=True))),
+            ("an Abort standing", lambda: engine(machine(
+                abort_latched=True))),
+            ("the conductor latched", lambda: engine(machine(),
+                                                     latched=True)),
+            ("the show clock playing", lambda: engine(machine(),
+                                                      playing=True)),
+            ("no show ended tonight", lambda: engine(machine(
+                last_end=None)))):
+        check(eng() is None, f"{why}: not over, nobody is signed out")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "web.py"), encoding="utf-8").read()
+    check("r.users.last_show = r.last_show_over" in src,
+          "web.serve gives the users the engine's answer")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('post("/api/remote/last-show-signout"' in page and
+          'id="au-lastshow"' in page,
+          "the Users screen has the setting and saves it")
+    print("  ok")
 
 
 def test_users_role_matrix_never_restricts_a_safety_press():
@@ -63047,6 +63740,11 @@ if __name__ == "__main__":
     test_weather_is_display_only_and_off_the_show_path()
     test_weather_check_command()
     test_weather_block_on_the_rack_screen()
+    test_waver_head_settle_may_be_zero()
+    test_open_beyond_window_finder_and_front()
+    test_calibrate_all_lasers_rules_and_order()
+    test_calibrate_all_and_open_beyond_routes()
+    test_users_sign_out_after_the_last_show()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

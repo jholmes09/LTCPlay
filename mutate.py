@@ -8695,10 +8695,20 @@ def build():
   '''        elif os.path.realpath(p) != mine:''',
   '''        elif False:'''),
 
- ("morning: a Waver may be given no head-up time at all (T12)",
+ ("morning: a Waver head settle time below 0 is accepted (T12)",
   "ltcplay/morning.py",
-  '''HEAD_SETTLE_MIN_S = 0.5''',
-  '''HEAD_SETTLE_MIN_S = 0.0'''),
+  '''HEAD_SETTLE_MIN_S = 0.0''',
+  '''HEAD_SETTLE_MIN_S = -1.0'''),
+
+ ("morning: a Waver head settle time of 0 is refused again",
+  "ltcplay/morning.py",
+  '''HEAD_SETTLE_MIN_S = 0.0''',
+  '''HEAD_SETTLE_MIN_S = 0.5'''),
+
+ ("morning: a Waver with head settle 0 still waits a frame to fire",
+  "ltcplay/morning.py",
+  '''                    if now - since < w["head_settle_s"]:''',
+  '''                    if now - since <= w["head_settle_s"]:'''),
 
  ("morning: a purge goes while flamesafe has not confirmed the lock (T5)",
   "ltcplay/morning.py",
@@ -12411,6 +12421,150 @@ def build():
   "ltcplay/remote.py",
   "            return 200, (w.view() if w is not None\n",
   "            return 200, (w.view() if False\n"),
+
+ # Open BEYOND, Calibrate all lasers (windowfront.py, lasertest.py,
+ # morning.py, remote.py; Jeff, 2026-10-26).
+ ("open beyond: any program's window counts as BEYOND's",
+  "ltcplay/windowfront.py",
+  "    return bool(name) and any(fnmatch.fnmatch(name, p) for p in IMAGES)",
+  "    return bool(name)"),
+
+ ("open beyond: a BEYOND dialog is picked over its main window",
+  "ltcplay/windowfront.py",
+  "            if not api.owner(h):\n                return h",
+  "            if True:\n                return h"),
+
+ ("open beyond: a minimized BEYOND is not restored",
+  "ltcplay/windowfront.py",
+  "        if api.minimized(hwnd):\n            api.restore(hwnd)",
+  "        if False:\n            api.restore(hwnd)"),
+
+ ("open beyond: no Alt key tap before SetForegroundWindow",
+  "ltcplay/windowfront.py",
+  "        api.alt_tap()\n",
+  "        pass\n"),
+
+ ("open beyond: the input attach is never let go",
+  "ltcplay/windowfront.py",
+  "                api.attach(attached[0], attached[1], False)",
+  "                pass"),
+
+ ("open beyond: a refused foreground reads as done",
+  "ltcplay/windowfront.py",
+  "        if api.foreground() == hwnd:\n            return True, \"\"",
+  "        if True:\n            return True, \"\""),
+
+ ("open beyond: the taskbar button is not flashed when Windows refuses",
+  "ltcplay/windowfront.py",
+  "        flashed = bool(api.flash(hwnd))",
+  "        flashed = False"),
+
+ ("open beyond: BEYOND on another machine is looked for here",
+  "ltcplay/windowfront.py",
+  "    if host is not None and not beyondwatch.on_this_pc(host):",
+  "    if False:"),
+
+ ("open beyond: works from a device on the show network",
+  "ltcplay/remote.py",
+  "        if not ctx.local:\n            return 403, {\"error\": \"Open BEYOND works",
+  "        if False:\n            return 403, {\"error\": \"Open BEYOND works"),
+
+ ("open beyond: works while a show is live or an Abort stands",
+  "ltcplay/remote.py",
+  "        if why:\n            return 409, {\"error\": f\"Open BEYOND is not allowed",
+  "        if False:\n            return 409, {\"error\": f\"Open BEYOND is not allowed"),
+
+ ("calibrate all: a locked-out laser is not skipped and named",
+  "ltcplay/lasertest.py",
+  "            if locked:\n                skipped.append(",
+  "            if False:\n                skipped.append("),
+
+ ("calibrate all: a laser that is not armed is not skipped and named",
+  "ltcplay/lasertest.py",
+  "            if not self.is_armed(lid):\n                skipped.append(",
+  "            if False:\n                skipped.append("),
+
+ ("calibrate all: a show going live part way does not stop it",
+  "ltcplay/lasertest.py",
+  "                if why:\n                    stopped = why\n                    break",
+  "                if False:\n                    stopped = why\n                    break"),
+
+ ("calibrate all: Calibration off leaves tests on",
+  "ltcplay/lasertest.py",
+  "            for lid in self.order:\n                ok, _t = self.set(lid, False",
+  "            for lid in list(self.order)[:1]:\n                ok, _t = self.set(lid, False"),
+
+ ("calibrate all: the engine ignores the all press",
+  "ltcplay/morning.py",
+  "            if body.get(\"all\") is True:",
+  "            if False:"),
+
+ ("calibrate all: the engine does not ask the show state before each laser",
+  "ltcplay/morning.py",
+  "                    still_ok=self._live_or_broken if on else None)",
+  "                    still_ok=None)"),
+
+ ("calibrate all: the page's button sends nothing",
+  "ltcplay/web/remote.html",
+  "$(\"mo-cal-on\").addEventListener(\"click\", () => moPress(\"laser-test\", {all:true, on:true}, \"mo-lmsg\"));",
+  "$(\"mo-cal-on\").addEventListener(\"click\", () => {});"),
+
+ # Sign everyone out after the last show (users.py, remote.py; Jeff,
+ # 2026-10-26).
+ ("last show sign out: off by default",
+  "ltcplay/users.py",
+  "LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10",
+  "LAST_SHOW_SIGNOUT_DEFAULT_MIN = 0"),
+
+ ("last show sign out: no grace after the last show",
+  "ltcplay/users.py",
+  "            due = float(info[\"ended\"]) + mins * 60",
+  "            due = float(info[\"ended\"])"),
+
+ ("last show sign out: a later sign-in is signed out again that night",
+  "ltcplay/users.py",
+  "        if night == self._last_show_done or self._wall() < due:",
+  "        if self._wall() < due:"),
+
+ ("last show sign out: a sign-in after it is signed out after a restart",
+  "ltcplay/users.py",
+  "                if s.get(\"wall_at\", 0.0) < due]",
+  "                ]"),
+
+ ("last show sign out: never signs anyone out",
+  "ltcplay/users.py",
+  "            del self._sessions[t]\n            self._note(\"sign-out\", s[\"name\"],\n                       reason=f\"after the last show",
+  "            pass\n            self._note(\"sign-out\", s[\"name\"],\n                       reason=f\"after the last show"),
+
+ ("last show sign out: 0 does not turn it off",
+  "ltcplay/users.py",
+  "        if not mins or fn is None:\n            return\n        try:\n            info = fn()",
+  "        if fn is None:\n            return\n        try:\n            info = fn()"),
+
+ ("last show sign out: the deck's user is not checked",
+  "ltcplay/users.py",
+  "            self._drop_idle(now)\n            self._drop_after_last_show()\n            best = None",
+  "            self._drop_idle(now)\n            best = None"),
+
+ ("last show sign out: runs while a show is on Hold",
+  "ltcplay/remote.py",
+  "            if getattr(m, \"state\", None) in (\"SHOW\", \"PAUSED\", \"HOLD\") or \\",
+  "            if getattr(m, \"state\", None) in (\"SHOW\", \"PAUSED\") or \\"),
+
+ ("last show sign out: runs while a show is still to come",
+  "ltcplay/remote.py",
+  "                    getattr(m, \"running\", 0) or m.waiting():",
+  "                    getattr(m, \"running\", 0):"),
+
+ ("last show sign out: runs while an Abort stands",
+  "ltcplay/remote.py",
+  "            if self.show_live_refusal():\n                return None\n            cond = getattr(svc, \"conductor\", None)",
+  "            if False:\n                return None\n            cond = getattr(svc, \"conductor\", None)"),
+
+ ("last show sign out: the engine never tells the users",
+  "ltcplay/web.py",
+  "        r.users.last_show = r.last_show_over\n",
+  "        pass\n"),
 ]
 
 

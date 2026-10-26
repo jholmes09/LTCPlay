@@ -70,9 +70,11 @@ PURGE_DEFAULTS = {"gflame_fire": 255,
                             "head_settle_s": 1.5, "fire": 255},
                   "fireball": {"fire": 255}}
 HEAD_SETTLE_MAX_S = 10.0
-# Never 0: a Waver's head always goes up BEFORE it fires (review of PR #68,
-# P3-11); the shortest wait a config may ask for.
-HEAD_SETTLE_MIN_S = 0.5
+# The shortest wait a config may ask for. 0 is allowed (Jeff, 2026-10-26):
+# the head values and the fire value then go in the same frame, the first
+# heartbeat on which the Waver is selected, unlocked and in an ARMED group.
+# Never below 0 (review of PR #68, P3-11 asked for 0.5; Jeff's call).
+HEAD_SETTLE_MIN_S = 0.0
 
 
 class MorningConfigError(ValueError):
@@ -312,8 +314,9 @@ def parse_purge(doc, where):
                 not HEAD_SETTLE_MIN_S <= s <= HEAD_SETTLE_MAX_S:
             raise MorningConfigError(f"{where}: purge.waver.head_settle_s "
                                      f"has to be {HEAD_SETTLE_MIN_S:g} to "
-                                     f"{HEAD_SETTLE_MAX_S:g} seconds (the head "
-                                     f"always goes up first).")
+                                     f"{HEAD_SETTLE_MAX_S:g} seconds (0 sends "
+                                     f"the head up and fires in the same "
+                                     f"frame).")
         out["waver"]["head_settle_s"] = float(s)
     fb = doc.get("fireball", {})
     if not isinstance(fb, dict):
@@ -995,8 +998,9 @@ class Purge:
         head_settle_s of continuous heartbeats counted PER WAVER from the
         first beat on which it is both selected and armed, never from the
         press's start: a group that arms late in a press waits its full
-        settle time, review of PR #68, P1-1). Also the machines left out
-        and why, for the page."""
+        settle time, review of PR #68, P1-1). A settle time of 0 fires on
+        that same first beat, head and fire in one frame. Also the machines
+        left out and why, for the page."""
         cfg = self._cfg()
         vals = bytearray(UNIVERSE_SIZE)
         armed = self._armed_groups()
@@ -1886,6 +1890,16 @@ class Morning:
                 if why:
                     return 409, {"error": f"Laser tests are not allowed now: "
                                           f"{why}"}
+            if body.get("all") is True:
+                # Calibrate all lasers / Calibration off (Jeff,
+                # 2026-10-26): every armed, unlocked laser in turn, each
+                # through the one-laser rules; the show state is asked
+                # again before each one.
+                ok, text = self.lasers.set_all(
+                    on, who=who, device=device,
+                    still_ok=self._live_or_broken if on else None)
+                return (200 if ok else 409), ({"ok": True, "text": text}
+                                              if ok else {"error": text})
             ok, text = self.lasers.set(str(body.get("laser")), on,
                                        who=who, device=device)
             return (200 if ok else 409), ({"ok": True, "text": text} if ok
