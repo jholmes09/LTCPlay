@@ -507,7 +507,8 @@ class FlameMap:
                     v = net.attrib.get(k) or ""
                     if not v or (k == "ComPort" and not udp):
                         continue
-                    if v.upper() == "MULTICAST":
+                    if v.upper() == "MULTICAST" or v.lower() == "localhost":
+                        # localhost is loopback: never the Mac.
                         continue
                     if not _plain_ipv4(v):
                         bad.append(f"{v!r} ({a.get('Name', '?')})")
@@ -701,6 +702,17 @@ def find_map(folder, name, show_networks=None, explicit=None,
             f"live_flame.networks_xml in ltcplay_remote.json to the one "
             f"xLights uses.")
     maps = list(found.values())
+    if dest != LISTEN_IP and any(m.fingerprint != maps[0].fingerprint
+                                 for m in maps[1:]):
+        # Programming from a Mac (second review of #105): the bar's
+        # fingerprint must be the file the operator copies to the Mac.
+        raise FlameMapError(
+            "The show folder has more than one xlights_networks.xml and "
+            "they are not identical (map fingerprints "
+            f"{', '.join(sorted({m.fingerprint for m in maps}))}), so which "
+            "one to copy to the Mac cannot be told. Set "
+            "live_flame.networks_xml in ltcplay_remote.json to the one "
+            "xLights uses.")
     if any(m.key() != maps[0].key() for m in maps[1:]):
         raise FlameMapError(
             "The show folder has more than one xlights_networks.xml and "
@@ -773,7 +785,12 @@ def configured_ips(paths):
         elif isinstance(v, str):
             if _plain_ipv4(v):
                 out.setdefault(v, where)
-            elif quad.match(v) or (_address_key(key) and v != "localhost"):
+            elif quad.match(v) or (_address_key(key) and
+                                   v.lower() != "localhost" and
+                                   not (str(key).lower() == "address" and
+                                        v.startswith("/"))):
+                # An OSC path ("/float-1", madmapper.heartbeat.address) is
+                # not a network address: it starts with "/".
                 raise SettingsError(
                     f"{where} has {key or 'an address'} {v!r}, which is not "
                     f"one plain IPv4 address, so whether it is the Mac "

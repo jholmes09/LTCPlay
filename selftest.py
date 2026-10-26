@@ -57262,7 +57262,12 @@ def test_live_flame_from_a_mac():
             '<network NetworkType="E131" BaudRate="2" MaxChannels="512"/>'
             '</Controller>'))
         with open(big, encoding="utf-8") as fh:
-            txt = fh.read().replace('MaxChannels="212"', 'MaxChannels="400"')
+            txt = fh.read().replace(
+                '<network NetworkType="E131" BaudRate="101" '
+                'MaxChannels="212"/>',
+                '<network NetworkType="E131" BaudRate="101" '
+                'MaxChannels="400"/><network NetworkType="E131" '
+                'BaudRate="103" MaxChannels="10"/>')
         with open(big, "w", encoding="utf-8") as fh:
             fh.write(txt)
         mb = fp.FlameMap.from_networks(big, "Flame Node", _LF_PC)
@@ -57273,12 +57278,104 @@ def test_live_flame_from_a_mac():
         o = io.StringIO()
         with contextlib.redirect_stdout(o):
             tool.main(["x", big, "Flame Node"])
-        check("past 512 slots: not used" in o.getvalue(),
-              f"and the helper says which channels are past 512: "
-              f"{o.getvalue().strip()}")
+        said = o.getvalue()
+        check("universe 101, 400 channels (slots 301 to 512 used, the rest "
+              "not used)" in said and "universe 103, 10 channels (past 512 "
+              "slots: not used)" in said,
+              f"and the helper says which channels the engine uses, as it "
+              f"does (a row across 512 is used up to 512): {said.strip()}")
     finally:
         import shutil
         shutil.rmtree(dd, ignore_errors=True)
+    print("  ok")
+
+
+def test_live_flame_from_a_mac_round_two():
+    section("live flame programming from a Mac, second review of #105: an "
+            "OSC path in an address setting is not an address; localhost "
+            "is fine in xlights_networks.xml as in the configs; with "
+            "several layout files the Mac mode needs them identical, so the "
+            "bar's fingerprint is the file the operator copies")
+    import json as _j
+    from ltcplay import flameprog as fp
+    d = tempfile.mkdtemp()
+    try:
+        cfg = os.path.join(d, "ltcplay_fire_ice.json")
+        with open(cfg, "w") as fh:
+            _j.dump({"madmapper": {"host": "127.0.0.1", "heartbeat": {
+                "address": "/float-1", "every_s": 1}}}, fh)
+        check(fp.configured_ips([cfg]) == {"127.0.0.1":
+                                           "ltcplay_fire_ice.json"},
+              "madmapper.heartbeat.address, an OSC path, is not an address")
+        for bad in ({"heartbeat": {"address": "beyond-pc"}},
+                    {"x": "010.0.0.60"}, {"madmapper": {"host": "mm.local"}},
+                    {"beyond": {"timecode_ip": "/10.0.0.60"}},
+                    {"madmapper": {"host": "/float-1"}}):
+            with open(cfg, "w") as fh:
+                _j.dump(bad, fh)
+            try:
+                fp.configured_ips([cfg])
+                check(False, f"{bad} taken")
+            except fp.SettingsError as e:
+                check("plain IPv4" in str(e), f"{bad} still refused: {e}")
+        # localhost in xlights_networks.xml: fine, as the doc says.
+        x = _lf_xml(d, ip=_LF_PC, extra=(
+            '\n <Controller Name="local" IP="localhost" '
+            'ActiveState="Inactive"><network NetworkType="E131" '
+            'BaudRate="9" MaxChannels="3"/></Controller>'))
+        m = fp.FlameMap.from_networks(x, "Flame Node", _LF_PC)
+        check(m.bad_addrs == () and "localhost" not in m.ips,
+              f"localhost in the layout is not a bad address: "
+              f"{m.bad_addrs}")
+        x = _lf_xml(d, ip=_LF_PC, extra=(
+            '\n <Controller Name="named" IP="local.host" '
+            'ActiveState="Inactive"><network NetworkType="E131" '
+            'BaudRate="9" MaxChannels="3"/></Controller>'))
+        check(fp.FlameMap.from_networks(x, "Flame Node", _LF_PC).bad_addrs,
+              "another name still is")
+        doc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "LIVE_FLAME_PROGRAMMING.md"),
+                   encoding="utf-8").read()
+        check("`localhost` is fine" in doc and "Andy must accept" not in doc
+              and "must accept" not in doc,
+              "the doc says localhost is fine; no one is told to accept a "
+              "risk")
+        # Several layouts: the Mac mode needs them identical.
+        _lf_xml(d, ip=_LF_PC)
+        sub = os.path.join(d, "show2")
+        os.makedirs(sub)
+        other = _lf_xml(sub, ip=_LF_PC, extra=(
+            '\n <Controller Name="spare" IP="10.0.0.77" '
+            'ActiveState="Inactive"><network NetworkType="E131" '
+            'BaudRate="9" MaxChannels="3"/></Controller>'))
+        open(os.path.join(d, "show.json"), "w").write("{}")
+        try:
+            fp.find_map(d, "Flame Node", show_networks=lambda f: other,
+                        dest=_LF_PC)
+            check(False, "two different layout files taken in the Mac mode")
+        except fp.FlameMapError as e:
+            check("networks_xml" in str(e) and "fingerprint" in str(e),
+                  f"two layout files that differ: refused, named: {e}")
+        same = os.path.join(sub, "xlights_networks.xml")
+        _lf_xml(sub, ip=_LF_PC)
+        got = fp.find_map(d, "Flame Node", show_networks=lambda f: same,
+                          dest=_LF_PC)
+        check(got.fingerprint == fp.file_fingerprint(same),
+              "identical copies: fine")
+        _lf_xml(sub, extra=(
+            '\n <Controller Name="spare" IP="10.0.0.77" '
+            'ActiveState="Inactive"><network NetworkType="E131" '
+            'BaudRate="9" MaxChannels="3"/></Controller>'))
+        _lf_xml(d)
+        got = fp.find_map(d, "Flame Node", show_networks=lambda f: same)
+        check(got.rows[0][0] == 100, "the default mode is unchanged: the "
+              "same flame layout is enough")
+        ex = fp.find_map(d, "Flame Node", show_networks=lambda f: same,
+                         explicit=same)
+        check(ex.path == same, "networks_xml names the one file")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
     print("  ok")
 
 
@@ -57852,6 +57949,7 @@ if __name__ == "__main__":
     test_live_flame_end_to_end_armed_group_real_flamesafe()
     test_live_flame_review_round_two()
     test_live_flame_from_a_mac()
+    test_live_flame_from_a_mac_round_two()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
