@@ -141,12 +141,37 @@ def _bank_for(group_name, kind):
     return "Ground G-Flames"
 
 
+def fixture_pairing(group):
+    """{safety slot: [its fixture's fire slots]} for a flamesafe group with
+    a list of safety slots, worked out from the slot layout and never from
+    list order: a fixture's fire slots are the run of the group's fire
+    slots directly below its safety slot (the wave flamer: channels 1 to 5
+    fire, channel 6 safety). None when that does not account for every
+    fire slot exactly once with at least one per safety slot: the pairing
+    is then not known, and is never guessed."""
+    saf = list(group.get("safeties") or [])
+    fire = set(group.get("fire") or [])
+    if len(saf) < 2:
+        return None
+    out, seen = {}, set()
+    for s in saf:
+        run, x = [], s - 1
+        while x in fire:
+            run.append(x)
+            x -= 1
+        if not run:
+            return None
+        out[s] = sorted(run)
+        seen.update(run)
+    return out if seen == fire else None
+
+
 class Machine:
     __slots__ = ("id", "name", "kind", "group", "fire", "pan", "tilt",
-                 "bank", "notes", "safety")
+                 "bank", "notes", "safety", "safeties")
 
     def __init__(self, id, name, kind, group, fire, pan=None, tilt=None,
-                 bank=None, notes="", safety=None):
+                 bank=None, notes="", safety=None, safeties=None):
         self.id = id
         self.name = name
         self.kind = kind
@@ -160,13 +185,18 @@ class Machine:
         # group (2026-10-26): locking the machine puts it in the lockout
         # file, and flamesafe holds that safety at zero and arms the
         # group's other fixtures without it. None for every other machine.
+        # `safeties` is every safety slot it locks: its own, or for the
+        # one machine standing for a whole group whose fixtures cannot be
+        # told apart, every one of the group's.
         self.safety = safety
+        self.safeties = tuple(safeties) if safeties is not None else \
+            ((safety,) if safety is not None else ())
 
     def channels(self):
         """Every slot this machine owns: fire, a Waver's pan and tilt, and
         its own safety slot in a multi-safety group."""
-        out = set(self.fire)
-        for c in (self.pan, self.tilt, self.safety):
+        out = set(self.fire) | set(self.safeties)
+        for c in (self.pan, self.tilt):
             if c is not None:
                 out.add(c)
         return out
@@ -175,7 +205,8 @@ class Machine:
         return {"id": self.id, "name": self.name, "kind": self.kind,
                 "group": self.group, "fire": list(self.fire),
                 "pan": self.pan, "tilt": self.tilt, "bank": self.bank,
-                "notes": self.notes, "safety": self.safety}
+                "notes": self.notes, "safety": self.safety,
+                "safeties": list(self.safeties)}
 
 
 def default_machines(groups):
@@ -186,16 +217,24 @@ def default_machines(groups):
         kind = _kind_for(g["name"])
         bank = _bank_for(g["name"], kind)
         saf = g.get("safeties") or []
-        if len(saf) > 1 and len(g["fire"]) % len(saf) == 0:
+        if len(saf) > 1:
             # A multi-safety group (2026-10-26): one machine per fixture,
-            # the fire slots split evenly in order, each with its own
-            # safety slot, so locking one locks that fixture's safety too.
-            per = len(g["fire"]) // len(saf)
-            for n, s in enumerate(saf, 1):
+            # each with its own fire slots and its own safety slot, paired
+            # by the slot layout (fixture_pairing), never by list order,
+            # so locking one locks that fixture's safety with its fire.
+            pairs = fixture_pairing(g)
+            if pairs is None:
+                # The fixtures cannot be told apart: one machine for the
+                # whole group, and locking it locks every slot of it.
+                out.append(Machine(_slug(g["name"]), g["name"], kind,
+                                   g["name"], list(g["fire"]), bank=bank,
+                                   safeties=saf))
+                continue
+            order = sorted(pairs, key=lambda s: pairs[s][0])
+            for n, s in enumerate(order, 1):
                 out.append(Machine(f"{_slug(g['name'])}-{n}",
                                    f"{g['name']} {n}", kind, g["name"],
-                                   g["fire"][(n - 1) * per:n * per],
-                                   bank=bank, safety=s))
+                                   pairs[s], bank=bank, safety=s))
             continue
         for n, slot in enumerate(g["fire"], 1):
             many = len(g["fire"]) > 1
@@ -275,6 +314,7 @@ def parse_machines(doc, where, groups):
     by_group = {g["name"]: set(g["fire"]) for g in (groups or [])}
     saf_of = {g["name"]: list(g.get("safeties") or [])
               for g in (groups or [])}
+    pair_of = {g["name"]: fixture_pairing(g) for g in (groups or [])}
     out, ids, owned = [], set(), {}
     for i, d in enumerate(doc):
         w = f"{where}: machines[{i + 1}]"
@@ -326,6 +366,13 @@ def parse_machines(doc, where, groups):
         if not isinstance(notes, str):
             raise MorningConfigError(f"{w}: notes has to be text.")
         safety = None
+        if groups and len(saf_of[group]) > 1 and "safety" not in d:
+            raise MorningConfigError(
+                f"{w}: {group!r} has a safety slot for each fixture in "
+                f"flamesafe's config, so this machine has to name its own "
+                f"(safety, one of "
+                f"{', '.join(str(x) for x in saf_of[group])}). Locking it "
+                f"then locks that safety slot with its fire slots.")
         if "safety" in d:
             safety = _slot(d["safety"], f"{w}: safety")
             if groups and (len(saf_of[group]) < 2 or
@@ -334,6 +381,18 @@ def parse_machines(doc, where, groups):
                     f"{w}: safety {safety} is not one of {group!r}'s safety "
                     f"slots in flamesafe's config. Only a machine in a group "
                     f"with a list of safety slots names its own.")
+            pairs = pair_of.get(group) if groups else None
+            if pairs is not None:
+                mine = set(pairs[safety])
+                other = sorted(c for c in fire + [pan, tilt]
+                               if c is not None and c not in mine)
+                if other:
+                    owner = next((x for x, f in pairs.items()
+                                  if other[0] in f), None)
+                    raise MorningConfigError(
+                        f"{w}: slot {other[0]} is on the fixture whose "
+                        f"safety slot is {owner}, not {safety}. A machine "
+                        f"names its own fixture's safety slot.")
         m = Machine(mid, name.strip(), kind, group, fire, pan, tilt,
                     notes=notes, safety=safety)
         for c in m.channels():

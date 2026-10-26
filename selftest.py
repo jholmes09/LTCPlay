@@ -45929,6 +45929,85 @@ console.log(JSON.stringify(out));
         check(not bad, f"the card's safety line: {bad}")
 
 
+def test_morning_multi_safety_machines_pair_by_layout():
+    """flamesafe multi-safety (2026-10-26), cold review of PR #107, P2-1: a
+    wave flamer machine's safety slot is paired with its own fire slots by
+    the slot layout, never by list order, and locking a machine always
+    locks its own safety slot with its fire slots."""
+    section("morning: a multi-safety machine locks its own fixture's safety "
+            "slot, paired by the layout, whatever the list order")
+    from ltcplay import morning as MO
+    fire = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+    front = {"name": "front row", "safety": 401, "safeties": [401],
+             "fire": [411, 412]}
+    for saf in ([6, 12, 18], [18, 12, 6], [12, 18, 6]):
+        groups = [front, {"name": "wave flamer", "safety": saf,
+                          "safeties": saf, "fire": list(fire)}]
+        cfg = MO.MorningConfig.parse({}, "x", groups)
+        wm = [(m.id, m.fire, m.safety) for m in cfg.machines
+              if m.group == "wave flamer"]
+        check(wm == [("wave-flamer-1", [1, 2, 3, 4, 5], 6),
+                     ("wave-flamer-2", [7, 8, 9, 10, 11], 12),
+                     ("wave-flamer-3", [13, 14, 15, 16, 17], 18)],
+              f"safety {saf}: each machine has its own fixture's safety "
+              f"slot: {wm}")
+        check(cfg.by_id["wave-flamer-1"].channels() == {1, 2, 3, 4, 5, 6},
+              f"safety {saf}: locking wave flamer 1 locks slots 1 to 6")
+    # A layout the pairing cannot read: one machine for the whole group,
+    # and locking it locks every safety slot.
+    odd = [front, {"name": "wave flamer", "safety": [6, 12, 18],
+                   "safeties": [6, 12, 18], "fire": [1, 2, 3, 20, 21]}]
+    cfg = MO.MorningConfig.parse({}, "x", odd)
+    wm = [m for m in cfg.machines if m.group == "wave flamer"]
+    check(len(wm) == 1 and wm[0].channels() == {1, 2, 3, 20, 21, 6, 12, 18},
+          f"fixtures that cannot be told apart: one machine that locks "
+          f"every slot of the group: {[(m.id, sorted(m.channels())) for m in wm]}")
+    # Every safety has a run below it, but a fire slot belongs to none.
+    odd[1] = dict(odd[1], fire=fire + [30])
+    cfg = MO.MorningConfig.parse({}, "x", odd)
+    wm = [m for m in cfg.machines if m.group == "wave flamer"]
+    check(len(wm) == 1 and wm[0].channels() == set(fire + [30, 6, 12, 18]),
+          f"a fire slot on no fixture: one machine for the whole group: "
+          f"{[(m.id, sorted(m.channels())) for m in wm]}")
+    groups = [front, {"name": "wave flamer", "safety": [18, 12, 6],
+                      "safeties": [18, 12, 6], "fire": list(fire)}]
+    ok = MO.MorningConfig.parse({"machines": [
+        {"id": "w1", "kind": "gflame", "group": "wave flamer",
+         "fire": [1, 2, 3, 4, 5], "safety": 6}]}, "x", groups)
+    check(ok.by_id["w1"].channels() == {1, 2, 3, 4, 5, 6},
+          "a machine naming its own fixture's safety is taken")
+    for bad, says in (
+            ({"fire": [1, 2, 3, 4, 5]}, "has to name its own"),
+            ({"fire": [1, 2, 3, 4, 5], "safety": 18}, "fixture whose safety"),
+            ({"fire": [5, 7], "safety": 6}, "fixture whose safety")):
+        try:
+            MO.MorningConfig.parse({"machines": [dict(
+                bad, id="b1", kind="gflame", group="wave flamer")]},
+                "x", groups)
+            check(False, f"a wave flamer machine was taken: {bad}")
+        except MO.MorningConfigError as e:
+            check(says in str(e) and "—" not in str(e),
+                  f"refused in a sentence ({says!r}): {e}")
+
+
+def test_witness_checker_rules():
+    """The stress witness checker's own rules (tools/stress/witness), run
+    here so a change to them is caught per PR. Cold review of PR #107,
+    P2-3: a locked safety slot carrying the arm value is flagged; fire with
+    every safety of a multi-safety group locked is fire without arm; a
+    one-safety group's safety counts even when it is in the locked list."""
+    section("stress witness checker: its rules, multi-safety included")
+    import subprocess
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "tools", "stress", "witness")
+    r = subprocess.run([sys.executable, "-m", "unittest", "-q",
+                        "test_witness.TestChecker"], cwd=here,
+                       capture_output=True, text=True, timeout=120)
+    tail = (r.stdout + r.stderr).strip().splitlines()[-12:]
+    check(r.returncode == 0, "the witness checker's tests pass: "
+          + " | ".join(tail))
+
+
 def test_morning_config_layout_and_lockout_file():
     section("Morning and Shutdown: ltcplay_morning.json (machines, Jeff's four "
             "groups, placeholder purge values, lasers, checklists, names, "
@@ -58599,6 +58678,8 @@ if __name__ == "__main__":
     test_audio_interface_watch()
     test_morning_config_layout_and_lockout_file()
     test_flamesafe_multi_safety_ltcplay_side()
+    test_morning_multi_safety_machines_pair_by_layout()
+    test_witness_checker_rules()
     test_purge_frame_on_the_flame_link()
     test_purge_rules_at_the_engine()
     test_morning_deck_remap_and_purge_arming()

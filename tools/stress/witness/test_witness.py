@@ -355,6 +355,56 @@ class TestChecker(unittest.TestCase):
         res = run_check(self.d, locked_slots={411})
         self.assertNotIn("LOCKED SLOT", rules(res))
 
+    # flamesafe multi-safety (2026-10-26): the wave flamer, one arm group of
+    # three fixtures, each with its own safety slot.
+    WAVE_GROUPS = GROUPS + [{"name": "wave flamer", "safety": [6, 12, 18],
+                             "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11,
+                                      13, 14, 15, 16, 17],
+                             "arm_value": 78}]
+
+    def wave_check(self, locked):
+        w = cw.load_witness(os.path.join(self.d, "w"))
+        return cw.check(w, cw.load_nights(self.j.dir),
+                        cw.load_flamesafe_log(self.j.fs), self.WAVE_GROUPS,
+                        78, locked_slots=locked)
+
+    def test_multi_safety_locked_safety_carrying_the_arm_value(self):
+        self.good_show()
+        self.j.rec(T0 + timedelta(seconds=1), "lock",
+                   "Andy locked out wave flamer 1 (slots 1 to 6)")
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(6, 78), (12, 78), (18, 78), (7, 200)])
+        self.w.close()
+        res = self.wave_check({1, 2, 3, 4, 5, 6})
+        self.assertIn("LOCKED SLOT", rules(res))
+        self.assertTrue(any(e["rule"] == "LOCKED SLOT" and e["slot"] == 6
+                            for e in res["episodes"]), res["episodes"])
+
+    def test_multi_safety_one_locked_others_up_is_clean(self):
+        self.good_show()
+        self.j.rec(T0 + timedelta(seconds=1), "lock",
+                   "Andy locked out wave flamer 1 (slots 1 to 6)")
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(12, 78), (18, 78), (7, 200)])
+        self.w.close()
+        r = rules(self.wave_check({1, 2, 3, 4, 5, 6}))
+        self.assertNotIn("FIRE WITHOUT ARM", r)
+        self.assertNotIn("LOCKED SLOT", r)
+
+    def test_multi_safety_every_safety_locked_fire_is_fire_without_arm(self):
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4), [(7, 200)])
+        self.w.close()
+        self.assertIn("FIRE WITHOUT ARM",
+                      rules(self.wave_check({6, 12, 18})))
+
+    def test_one_safety_group_with_its_safety_locked_still_needs_it(self):
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4), [(411, 255)])
+        self.w.close()
+        self.assertIn("FIRE WITHOUT ARM",
+                      rules(run_check(self.d, locked_slots={401})))
+
     def test_gaps_stalls_and_left_on_the_wire(self):
         self.good_show()
         self.w.gap(T0 + timedelta(seconds=4), 300)
