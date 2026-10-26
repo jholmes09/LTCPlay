@@ -55240,8 +55240,11 @@ class _LfRig:
         return self.fp.build_e131(universe, bytes(values or bytes(300)),
                                   seq=seq, **kw)
 
-    def feed(self, data, host="127.0.0.1"):
-        return self.lf.feed(data, (host, 40000), self.t[0])
+    def feed(self, data, host="127.0.0.1", via=None):
+        if via is None and getattr(self, "auto_via", False):
+            # The socket a real packet from `host` arrives on.
+            via = "loopback" if host.startswith("127.") else "listen_ip"
+        return self.lf.feed(data, (host, 40000), self.t[0], via)
 
     def out(self):
         return self.link.values_now()[1]
@@ -56842,6 +56845,7 @@ def _lf_mac_rig(**kw):
                  "ltcplay_fire_ice.json"}
     R.lf._device_ips = lambda: R.devices
     R.lf._sock_factory = lambda: _LfSockMc(R.socks)
+    R.auto_via = True
     return R
 
 
@@ -56982,6 +56986,32 @@ def test_live_flame_from_a_mac():
             check(R.feed(R.pk(), host=second) == "ended" and not R.lf.on and
                   R.disarms, f"the same CID from {what} as well (one "
                   f"sender, one place): {R.lf.last_end}")
+        # The bar shows who actually holds the lock (review of #105, P2-1).
+        R.disarms.clear()
+        R.on()
+        check(R.lf.view()["sender"] is None, "no sender yet: none shown")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "remote.html"),
+                    encoding="utf-8").read()
+        check('"; source: " + ((lf.sender && lf.sender.from) ||' in page,
+              "the bar's source is the sender holding the lock")
+        R.feed(R.pk(), host="127.0.0.1")
+        check(R.lf.view()["sender"]["from"] == "this PC",
+              f"loopback holds it: the bar says this PC, not the Mac: "
+              f"{R.lf.view()['sender']}")
+        R.lf.end("next case", "Jeff", "Rack screen", system=False)
+        # The origin is tied to the socket (review of #105, P1-2).
+        for host, via in (("127.0.0.1", "listen_ip"), ("127.0.0.9",
+                          "listen_ip"), (_LF_MAC, "loopback"),
+                          (_LF_MAC, None), ("127.0.0.1", None),
+                          (_LF_MAC, "unknown")):
+            R.disarms.clear()
+            R.on()
+            check(R.feed(R.pk(), host=host, via=via or "") == "ended" if via
+                  else R.lf.feed(R.pk(), (host, 40000), R.t[0]) == "ended",
+                  f"{host} on the {via} socket ends it")
+            check(not R.lf.on and R.disarms and R.out() == bytes(512),
+                  f"zero and disarmed: {R.lf.last_end}")
         check(all(nodash(l[1]) for l in R.lines), "no dashes in the journal")
     finally:
         R.close()
@@ -57020,6 +57050,26 @@ def test_live_flame_from_a_mac():
             f'ActiveState="xLights Only"><network NetworkType="E131" '
             f'BaudRate="9" MaxChannels="3"/></Controller>'))
         refused("pc2")
+        _lf_xml(R.dir, ip=_LF_PC, extra=(
+            '\n <Controller Name="odd" IP="10.0.0.070" '
+            'ActiveState="Inactive"><network NetworkType="E131" '
+            'BaudRate="9" MaxChannels="3"/></Controller>'))
+        refused("10.0.0.070")
+        _lf_xml(R.dir, ip=_LF_PC, extra=(
+            '\n <Controller Name="named" IP="dmx.local" '
+            'ActiveState="Inactive"><network NetworkType="ArtNet" '
+            'BaudRate="9" MaxChannels="3"/></Controller>'))
+        refused("dmx.local")
+        _lf_xml(R.dir, ip=_LF_PC)
+        R.dest[0] = ("flamenode.local", 5568)
+        refused("flamenode.local")
+        R.dest[0] = ("10.9.9.9", 5568)
+        R.lf._device_ips = lambda: fp.configured_ips([R.badcfg])
+        R.badcfg = os.path.join(R.dir, "fi.json")
+        with open(R.badcfg, "w") as fh:
+            _j.dump({"beyond": {"host": "beyond-pc"}}, fh)
+        refused("beyond-pc")
+        R.lf._device_ips = lambda: R.devices
         _lf_xml(R.dir)          # the flame controller still on 127.0.0.1
         refused(f"unicast to {_LF_PC}")
         _lf_xml(R.dir, ip=_LF_MAC)
@@ -57061,6 +57111,20 @@ def test_live_flame_from_a_mac():
         check(got == {"10.0.0.60": "flamesafe.json",
                       "127.0.0.1": "flamesafe.json"},
               f"configured_ips: every address in the configs: {got}")
+        for bad in ({"x": "010.0.0.60"}, {"x": " 10.0.0.60"},
+                    {"dest": {"ip": "node.local"}}, {"madmapper_host": "mm"},
+                    {"l": [{"status_ip": "10.0.0.60 "}]}):
+            with open(a, "w") as fh:
+                _j.dump(bad, fh)
+            try:
+                fp.configured_ips([a])
+                check(False, f"{bad} taken as no device")
+            except fp.SettingsError as e:
+                check("plain IPv4" in str(e), f"{bad}: fails closed: {e}")
+        with open(a, "w") as fh:
+            _j.dump({"host": "localhost", "name": "Flame node 3"}, fh)
+        check(fp.configured_ips([a]) == {},
+              "localhost and ordinary words are fine")
         with open(a, "w") as fh:
             fh.write("{not json")
         try:
@@ -57074,25 +57138,23 @@ def test_live_flame_from_a_mac():
     # -- the real listener loop over two sockets ------------------------------
     R = _lf_mac_rig()
     try:
-        ports = []
-        for _i in range(2):
-            s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
-            s.bind(("127.0.0.1", 0))
-            ports.append(s.getsockname()[1])
-            s.close()
-        R.settings.port = ports[0]
+        ports = [None, None]
         real = []
 
         class _Remap:
-            # This PC's show address is played by a second loopback port.
+            # Both sockets on loopback ports the system picks (no port
+            # found free and then taken by another test: mutate shard 18
+            # of run 40265971112); this PC's show address is played by the
+            # second.
             def __init__(self):
                 self.s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
                 real.append(self.s)
 
             def bind(self, addr):
                 R.socks.append(("bind", addr))
-                self.s.bind(("127.0.0.1", ports[1]) if addr[0] == _LF_PC
-                            else addr)
+                self.s.bind(("127.0.0.1", 0))
+                ports[1 if addr[0] == _LF_PC else 0] = \
+                    self.s.getsockname()[1]
 
             def __getattr__(self, n):
                 return getattr(self.s, n)
@@ -57104,20 +57166,34 @@ def test_live_flame_from_a_mac():
         if R.on():
             tx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
             try:
-                for i, p in enumerate((ports[0], ports[1], ports[0])):
+                for i in range(2):
                     tx.sendto(fp.build_e131(100, bytes(300), seq=i + 1),
-                              ("127.0.0.1", p))
+                              ("127.0.0.1", ports[0]))
                     time.sleep(0.02)
                 deadline = time.time() + 3
-                while R.lf.counts.get("taken", 0) < 3 and \
+                while R.lf.counts.get("taken", 0) < 2 and \
                         time.time() < deadline:
                     time.sleep(0.02)
-                check(R.lf.counts.get("taken", 0) == 3 and R.lf.on,
-                      f"the listener reads both sockets: "
-                      f"{dict(R.lf.counts)}")
+                check(R.lf.counts.get("taken", 0) == 2 and R.lf.on,
+                      f"the loopback socket is read: {dict(R.lf.counts)}")
+                # A 127.x source arriving on the listen_ip socket (played by
+                # the second port) ends it (review of #105, P1-2).
+                tx.sendto(fp.build_e131(100, bytes(300), seq=3),
+                          ("127.0.0.1", ports[1]))
+                deadline = time.time() + 3
+                while R.lf.on and time.time() < deadline:
+                    time.sleep(0.02)
+                check(not R.lf.on and "listen_ip socket" in
+                      (R.lf.last_end or {}).get("reason", ""),
+                      f"the listen_ip socket is read too, and a loopback "
+                      f"source on it ends the mode: {R.lf.last_end}")
             finally:
                 tx.close()
             R.lf.end("test over", "Jeff", "Rack screen", system=False)
+            deadline = time.time() + 2
+            while any(s.fileno() != -1 for s in real) and \
+                    time.time() < deadline:
+                time.sleep(0.02)
             check(R.lf._sock is None and R.lf._socks == [] and
                   all(s.fileno() == -1 for s in real),
                   "off: both sockets are closed")
@@ -57142,17 +57218,64 @@ def test_live_flame_from_a_mac():
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = tool.main(["x", x, "Flame Node"])
-        check(rc == 0 and out.getvalue().startswith(
-            f"Flame Node: {m.fingerprint} "),
+        said = out.getvalue()
+        check(rc == 0 and said.startswith(
+            f"Map fingerprint: {m.fingerprint}\n"),
               f"the helper prints the rack screen's fingerprint: "
-              f"{out.getvalue().strip()} / {m.fingerprint}")
+              f"{said.strip()} / {m.fingerprint}")
+        check("state xLights Only" in said and f"E131 to {_LF_PC}" in said
+              and "universe 100, 300 channels" in said and nodash(said),
+              f"and says the flame controller's protocol, destination and "
+              f"state in plain words: {said.strip()}")
+
+        def tool_print(path):
+            o = io.StringIO()
+            with contextlib.redirect_stdout(o):
+                tool.main(["x", path])
+            return o.getvalue().splitlines()[0].split()[-1]
         x2 = _lf_xml(dd, ip=_LF_PC, u2=102)
         m2 = fp.FlameMap.from_networks(x2, "Flame Node", _LF_PC)
         check(m2.fingerprint != m.fingerprint,
               "another universe number: another fingerprint")
-        m3 = fp.FlameMap.from_networks(_lf_xml(dd), "Flame Node")
-        check(m3.fingerprint == m.fingerprint,
-              "the address is not in it: the same layout, the same print")
+        # A Mac copy that differs in anything that matters (review of
+        # #105, P1-1): the flame controller at the node, multicast or
+        # Active, another controller Active, a count: another print, in
+        # the engine and in the helper alike.
+        for what, kw in (("the node's address", dict(ip="10.0.0.60")),
+                         ("multicast", dict(ip="MULTICAST")),
+                         ("Active", dict(ip=_LF_PC, state="Active")),
+                         ("Art-Net", dict(ip=_LF_PC, proto="ArtNet")),
+                         ("loopback", dict(ip="127.0.0.1")),
+                         ("another controller Active", dict(
+                             ip=_LF_PC, extra='\n <Controller Name="x" '
+                             'IP="10.0.0.60" ActiveState="Active"><network '
+                             'NetworkType="E131" BaudRate="9" '
+                             'MaxChannels="3"/></Controller>'))):
+            mac_copy = _lf_xml(dd, **kw)
+            check(fp.file_fingerprint(mac_copy) != m.fingerprint and
+                  tool_print(mac_copy) == fp.file_fingerprint(mac_copy),
+                  f"a Mac copy with {what}: another print, the same in "
+                  f"both")
+        # Past 512 slots (P2-4): the same print in both.
+        big = _lf_xml(dd, ip=_LF_PC, extra=(
+            '\n <Controller Name="big" IP="10.0.0.5" ActiveState="Active">'
+            '<network NetworkType="E131" BaudRate="2" MaxChannels="512"/>'
+            '</Controller>'))
+        with open(big, encoding="utf-8") as fh:
+            txt = fh.read().replace('MaxChannels="212"', 'MaxChannels="400"')
+        with open(big, "w", encoding="utf-8") as fh:
+            fh.write(txt)
+        mb = fp.FlameMap.from_networks(big, "Flame Node", _LF_PC)
+        check(sum(c for _u, _f, c in mb.rows) == 512 and
+              mb.fingerprint == tool_print(big) != m.fingerprint,
+              f"past 512 slots: the engine uses 512 and both print the same "
+              f"{mb.fingerprint}")
+        o = io.StringIO()
+        with contextlib.redirect_stdout(o):
+            tool.main(["x", big, "Flame Node"])
+        check("past 512 slots: not used" in o.getvalue(),
+              f"and the helper says which channels are past 512: "
+              f"{o.getvalue().strip()}")
     finally:
         import shutil
         shutil.rmtree(dd, ignore_errors=True)

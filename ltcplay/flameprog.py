@@ -420,7 +420,7 @@ class FlameMap:
     (fire_ice.py), so live and rendered agree by construction."""
 
     def __init__(self, rows, path=None, stamp=None, dest=LISTEN_IP,
-                 raw=None, ips=None):
+                 raw=None, ips=None, print_=None, bad_addrs=()):
         self.rows = tuple(rows)       # (universe, first slot, count)
         self.path = path
         self.stamp = stamp
@@ -429,13 +429,24 @@ class FlameMap:
         self.raw = tuple(raw if raw is not None else
                          ((u, c) for u, _f, c in rows))
         self.ips = dict(ips or {})    # every controller's address -> name
+        # Addresses in the file that are not one plain IPv4 address (a
+        # name, leading zeros, spaces): the Mac mode refuses on any.
+        self.bad_addrs = tuple(bad_addrs)
+        self._print = print_
         self.by_universe = {u: (first, count) for u, first, count in rows}
 
     @property
     def fingerprint(self):
-        """A short hash of the flame controller's universe numbers and
-        channel counts, as tools/xlights_map_fingerprint.py prints it."""
-        return map_fingerprint(self.raw)
+        """A short hash of the whole xlights_networks.xml, canonicalized
+        (every controller's name, state, addresses, protocols, universes
+        and channel counts), as tools/xlights_map_fingerprint.py prints
+        it."""
+        if self._print is None and self.path:
+            try:
+                self._print = file_fingerprint(self.path)
+            except Exception:
+                self._print = "unreadable"
+        return self._print or ""
 
     @property
     def slots(self):
@@ -483,16 +494,25 @@ class FlameMap:
         rows = []
         raw = []
         ips = {}
+        bad = []
         seen = set()
         slot = 1
         others = []
         for c, _first, _span in ctrls:
             a = c.attrib
             for net in [c] + [n for n in c if n.tag == "network"]:
+                udp = net is c or netmap.UDP_PROTOCOLS.get(
+                    (net.attrib.get("NetworkType") or "").lower())
                 for k in ("IP", "ComPort"):
-                    v = (net.attrib.get(k) or "").strip()
-                    if v:
-                        ips.setdefault(v, a.get("Name", "?"))
+                    v = net.attrib.get(k) or ""
+                    if not v or (k == "ComPort" and not udp):
+                        continue
+                    if v.upper() == "MULTICAST":
+                        continue
+                    if not _plain_ipv4(v):
+                        bad.append(f"{v!r} ({a.get('Name', '?')})")
+                        continue
+                    ips.setdefault(v, a.get("Name", "?"))
             if a.get("Name", "") != name:
                 others.append(c)
                 continue
@@ -582,7 +602,11 @@ class FlameMap:
         if not rows:
             raise FlameMapError(f"The flame controller {name!r} has no "
                                 f"channels in {path}.")
-        return cls(rows, path, stamp, want, raw, ips)
+        try:
+            fp = file_fingerprint(path)
+        except Exception as e:
+            raise FlameMapError(f"{path} could not be read ({e}).")
+        return cls(rows, path, stamp, want, raw, ips, fp, bad)
 
     def changed(self):
         """True when xlights_networks.xml is not the file this map was
@@ -594,12 +618,34 @@ class FlameMap:
             return True
 
 
-def map_fingerprint(raw):
-    """8 hex digits from (universe, channel count) pairs in file order.
-    tools/xlights_map_fingerprint.py computes the same from any
-    xlights_networks.xml (the selftest holds them equal)."""
+def _plain_ipv4(v):
+    """True for one IPv4 address written plainly (no name, no spaces, no
+    leading zeros)."""
+    import ipaddress
+    try:
+        return isinstance(v, str) and str(ipaddress.IPv4Address(v)) == v
+    except ValueError:
+        return False
+
+
+def _canonical(el):
+    """An element as [tag, sorted attributes, children], text ignored
+    (xLights keeps everything here in attributes)."""
+    return [el.tag, sorted(el.attrib.items()), [_canonical(c) for c in el]]
+
+
+def file_fingerprint(path):
+    """8 hex digits from the whole xlights_networks.xml, canonicalized:
+    every element, every attribute (each controller's name, ActiveState,
+    IP, protocol, every network row's NetworkType, ComPort, universe and
+    MaxChannels, past 512 slots or not). Any difference in the file
+    changes it. tools/xlights_map_fingerprint.py computes the same from
+    any xlights_networks.xml (the selftest holds them equal)."""
     import hashlib
-    text = ";".join(f"{int(u)}:{int(c)}" for u, c in raw)
+    import xml.etree.ElementTree as ET
+    root = ET.parse(path).getroot()
+    text = json.dumps(_canonical(root), separators=(",", ":"),
+                      ensure_ascii=True)
     return hashlib.sha256(text.encode("ascii")).hexdigest()[:8]
 
 
@@ -695,27 +741,43 @@ def feedback_refusal(dest, settings):
     return ""
 
 
-def configured_ips(paths):
-    """{IPv4 address: file name} for every dotted quad anywhere in these
-    JSON files (ltcplay_fire_ice.json, flamesafe's config): the devices
-    the allowed Mac may not be. A missing path is skipped; a file that
-    cannot be read raises (the mode is then refused)."""
-    import ipaddress
-    out = {}
+ADDRESS_KEYS = ("ip", "host", "address", "addr", "dest", "destination")
 
-    def walk(v, where):
+
+def _address_key(k):
+    k = str(k).lower()
+    return k in ADDRESS_KEYS or k.endswith(("_ip", "_host", "_address"))
+
+
+def configured_ips(paths):
+    """{IPv4 address: file name} for every IPv4 address anywhere in these
+    JSON files (ltcplay_fire_ice.json, flamesafe's config): the devices
+    the allowed Mac may not be. A missing path is skipped. Raises
+    SettingsError (the mode is then refused) on a file that cannot be
+    read, on anything that looks like an IPv4 address but is not written
+    plainly (leading zeros, spaces), and on an address setting (ip, host,
+    *_ip, ...) that is not one plain IPv4 address ("localhost" is
+    loopback and allowed): a name cannot be compared, so it fails
+    closed."""
+    import re
+    out = {}
+    quad = re.compile(r"^\s*\d+\s*(\.\s*\d+\s*){3}$")
+
+    def walk(v, where, key=""):
         if isinstance(v, dict):
-            for x in v.values():
-                walk(x, where)
+            for k, x in v.items():
+                walk(x, where, k)
         elif isinstance(v, list):
             for x in v:
-                walk(x, where)
+                walk(x, where, key)
         elif isinstance(v, str):
-            try:
-                ipaddress.IPv4Address(v.strip())
-            except ValueError:
-                return
-            out.setdefault(v.strip(), where)
+            if _plain_ipv4(v):
+                out.setdefault(v, where)
+            elif quad.match(v) or (_address_key(key) and v != "localhost"):
+                raise SettingsError(
+                    f"{where} has {key or 'an address'} {v!r}, which is not "
+                    f"one plain IPv4 address, so whether it is the Mac "
+                    f"cannot be told. Write it like 10.0.0.60.")
     for path in paths:
         if not path or not os.path.exists(path):
             continue
@@ -788,6 +850,7 @@ class LiveFlame:
         self._gen = 0
         self._sock = None
         self._socks = []              # every bound socket (_sock first)
+        self._sock_kinds = []         # "loopback" or "listen_ip", by _socks
         self._thread = None
         self._watchdog = None
         self._thread_factory = threading.Thread   # the selftest's to swap
@@ -928,7 +991,15 @@ class LiveFlame:
         if self._is_local(mac):
             return (f"'allowed_source_ip' {mac} is an address of this PC "
                     f"itself, not the Mac's.")
+        bad = getattr(fmap, "bad_addrs", ())
+        if bad:
+            return (f"{fmap.path} has an address that is not one plain IPv4 "
+                    f"address: {bad[0]}. Whether it is the Mac cannot be "
+                    f"told; write it like 10.0.0.60 in xLights.")
         fs = self._fs_dest()
+        if fs is not None and not _plain_ipv4(fs[0]) and fs[0] != "localhost":
+            return (f"flamesafe's destination {fs[0]!r} is not one plain "
+                    f"IPv4 address, so whether it is the Mac cannot be told.")
         if fs is None or fs[0] == mac:
             return (f"'allowed_source_ip' {mac} is flamesafe's destination "
                     f"(the flame node), or that destination could not be "
@@ -937,7 +1008,10 @@ class LiveFlame:
             return (f"'allowed_source_ip' {mac} is the address of controller "
                     f"{fmap.ips[mac]!r} in {fmap.path}. The Mac must have its "
                     f"own address.")
-        devices = self._device_ips() or {}
+        try:
+            devices = self._device_ips() or {}
+        except SettingsError as e:
+            return str(e)
         if mac in devices:
             return (f"'allowed_source_ip' {mac} is a device's address in "
                     f"{devices[mac]}. The Mac must have its own address.")
@@ -1024,6 +1098,9 @@ class LiveFlame:
                 if self._cut_epoch != epoch:
                     raise _CutWhileStarting()
                 self._socks = socks
+                self._sock_kinds = [
+                    "loopback" if a == LISTEN_IP else "listen_ip"
+                    for a, _p in s.binds()]
                 self._sock = socks[0]
                 self._gen += 1
                 self.on = True
@@ -1167,6 +1244,7 @@ class LiveFlame:
                     if not self.on or self._gen != gen:
                         return
                     socks = list(self._socks)
+                    kinds = dict(zip(map(id, socks), self._sock_kinds))
                 got = []
                 try:
                     if len(socks) == 1:
@@ -1175,7 +1253,9 @@ class LiveFlame:
                         ready = select.select(socks, [], [], WATCH_S)[0]
                     for sock in ready:
                         try:
-                            got.append(sock.recvfrom(PACKET_MAX + 64))
+                            data, addr = sock.recvfrom(PACKET_MAX + 64)
+                            got.append((data, addr,
+                                        kinds.get(id(sock), "unknown")))
                         except socket.timeout:
                             pass
                 except OSError:
@@ -1184,8 +1264,8 @@ class LiveFlame:
                     time.sleep(WATCH_S)
                 now = self._clock()
                 self._beat = now
-                for data, addr in got:
-                    self.feed(data, addr, now)
+                for data, addr, via in got:
+                    self.feed(data, addr, now, via)
                 last = self._last_tick
                 if last is None or now - last >= WATCH_S or now < last:
                     self._last_tick = now
@@ -1222,9 +1302,11 @@ class LiveFlame:
         return why
 
     # -- one packet ----------------------------------------------------------
-    def feed(self, data, addr, now=None):
-        """One datagram from the socket. Returns what was done with it, a
-        word, for the selftest. Never raises."""
+    def feed(self, data, addr, now=None, via=None):
+        """One datagram from the socket `via` ("loopback": 127.0.0.1,
+        "listen_ip": this PC's show network address; None means loopback
+        when no Mac is allowed). Returns what was done with it, a word,
+        for the selftest. Never raises."""
         now = self._clock() if now is None else now
         with self._lock:
             if not self.on:
@@ -1246,10 +1328,19 @@ class LiveFlame:
         host = str(host)
         st = self.settings
         mac = getattr(st, "allowed_source_ip", None)
-        if host.startswith("127."):
+        if via is None and mac is None:
+            via = "loopback"
+        # Where it came from must match the socket it arrived on: loopback
+        # only on the 127.0.0.1 socket, the Mac only on listen_ip's.
+        if host.startswith("127.") and via == "loopback":
             origin = "this PC"
-        elif mac is not None and host == mac:
+        elif mac is not None and host == mac and via == "listen_ip":
             origin = f"Mac {mac}"
+        elif host.startswith("127.") or (mac is not None and host == mac):
+            self.end(f"a packet from {host} arrived on the "
+                     f"{via or 'unknown'} socket; this PC's packets are taken "
+                     f"on 127.0.0.1 only and the Mac's on listen_ip only")
+            return "ended"
         else:
             if mac is None:
                 self.end(f"a packet came from {host or 'an unknown address'}"

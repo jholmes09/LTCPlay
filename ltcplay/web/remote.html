@@ -2136,7 +2136,7 @@ function renderLiveFlame(){
   if(on){
     const map = (lf.map || []).map(m => "universe " + m.universe + " to slots " + m.slots).join(", ");
     const rx = lf.receiving ? "receiving xLights" : ("no xLights data for " + (lf.last_data_s || 0) + " s");
-    $("lf-banner-text").textContent = "xLights drives the flames through flamesafe. Only an armed group fires. " + rx + "; source: " + (lf.source || "this PC") + "; map fingerprint " + (lf.fingerprint || "?") + " (" + (map || "") + "). Turned on by " + (lf.who || "someone") + ".";
+    $("lf-banner-text").textContent = "xLights drives the flames through flamesafe. Only an armed group fires. " + rx + "; source: " + ((lf.sender && lf.sender.from) || ("none yet, allowed " + (lf.source || "this PC"))) + "; map fingerprint " + (lf.fingerprint || "?") + " (" + (map || "") + "). Turned on by " + (lf.who || "someone") + ".";
   }
   const le = lf.last_end;
   $("lf-now").textContent = !ST ? "" : on ? "ON" : (lf.available === false ? "Not available in this engine" : "OFF");
