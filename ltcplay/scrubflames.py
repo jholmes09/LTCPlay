@@ -238,8 +238,9 @@ class ScrubFlames:
 
     # -- every frame (the flame link's sender) --------------------------------
     def state(self):
-        """(the transport position as the flame link's timecode text, the
-        player's transport_moves), or None (zeros): off, another session
+        """(the transport position as the flame link's timecode text,
+        (the player's transport_moves, FlameCues' scrub_render_gen)), or
+        None (zeros): off, another session
         than the one it was turned on in, nothing running, no player, a
         Blackout, Preshow or look, not on a free run the transport started
         (a free run started by a lost timecode feed is not one: review of
@@ -261,10 +262,21 @@ class ScrubFlames:
                 return None
             if getattr(p, "freerun_by", None) != "operator":
                 return None
-            tc = tc_text(getattr(p, "tc_seconds", None))
+            # The position and its move count as the player's tick wrote
+            # them, together (review of #117, P1-A): a move the tick has
+            # not caught up with yet (the count ahead of the pair) is no
+            # position, so a landing is never recorded at the old place.
+            at = getattr(p, "transport_at", None)
+            moves = getattr(p, "transport_moves", 0)
+            if not at or at[1] != moves:
+                return None
+            tc = tc_text(at[0])
             if tc is None:
                 return None
-            return tc, getattr(p, "transport_moves", 0)
+            # A re-render of a cue's FSEQ is a landing too (review of
+            # #117, P2-1): FlameCues counts them.
+            c = self.cues()
+            return tc, (moves, getattr(c, "scrub_render_gen", 0))
         except Exception:
             return None
 

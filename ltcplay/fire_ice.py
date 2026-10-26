@@ -1100,6 +1100,12 @@ class FlameCues:
         # is a fault, for the banner; never in `fault` above.
         self.scrub_fault = ""
         self._scrub_why = ""
+        # Re-renders seen by at_transport (review of #117, P2-1): fseq path
+        # -> the render it last read for it, and a count bumped when that
+        # changes, which the scrub's position carries (scrubflames.py), so
+        # a render swapped under the playhead is a landing.
+        self._scrub_used = {}
+        self.scrub_render_gen = 0
         self._layout_mtime = None   # xlights_networks.xml's, at _locate
         self._open = {}     # fseq path -> (FSEQ, spans, its mtime, start)
         self.link = None    # the FlameLink (closing it closes the files)
@@ -1549,6 +1555,14 @@ class FlameCues:
                 f"xlights_networks.xml now, but at channel {checked_at} "
                 f"when this render was checked. Render the show again for "
                 f"this layout", fault=True)
+        ident = (id(fs), made)
+        was = self._scrub_used.get(path)
+        self._scrub_used[path] = ident
+        if was is not None and was != ident:
+            # A new render of this cue under the playhead: zero now, and
+            # the next position carries the new count, a landing.
+            self.scrub_render_gen += 1
+            return self._scrub_zero()
         rel = at - float(getattr(cue, "tc_seconds", 0.0) or 0.0)
         idx = int(rel * 1000.0 // fs.step_time_ms)
         if not 0 <= idx < fs.frame_count:

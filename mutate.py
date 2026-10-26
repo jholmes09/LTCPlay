@@ -12066,8 +12066,34 @@ def build():
 
  ("scrub flames: the position carries no move count",
   "ltcplay/scrubflames.py",
-  "            return tc, getattr(p, \"transport_moves\", 0)",
-  "            return tc, 0"),
+  "            return tc, (moves, getattr(c, \"scrub_render_gen\", 0))",
+  "            return tc, (0, getattr(c, \"scrub_render_gen\", 0))"),
+
+ ("scrub flames: the position carries no re-render count",
+  "ltcplay/scrubflames.py",
+  "            return tc, (moves, getattr(c, \"scrub_render_gen\", 0))",
+  "            return tc, (moves, 0)"),
+
+ ("scrub flames: a move the tick has not caught up with is a position",
+  "ltcplay/scrubflames.py",
+  "            if not at or at[1] != moves:",
+  "            if not at:"),
+
+ ("scrub flames: the landing frame clears channels",
+  "ltcplay/flamelink.py",
+  "        if not landing:\n",
+  "        if True:\n"),
+
+ ("scrub flames: a re-render under the playhead is no landing",
+  "ltcplay/fire_ice.py",
+  "        if was is not None and was != ident:",
+  "        if False:"),
+
+ ("scrub flames: the loop off and the marks go from a signed-out iPad",
+  "ltcplay/remote.py",
+  "    SCRUB_MOVES = (\"play-from\", \"jump\", \"continue\", \"loop\", \"mark-a\",\n"
+  "                   \"mark-b\")",
+  "    SCRUB_MOVES = (\"play-from\", \"jump\", \"continue\")"),
 
  ("scrub flames: a lost feed's free run is not marked",
   "ltcplay/player.py",
@@ -12081,8 +12107,8 @@ def build():
 
  ("scrub flames: a Jump is not a move",
   "ltcplay/player.py",
-  "        self.freerun_epoch = _now() - at\n        self.transport_moves += 1",
-  "        self.freerun_epoch = _now() - at"),
+  "            self.freerun_paused_at = at\n        self.transport_moves += 1",
+  "            self.freerun_paused_at = at"),
 
  ("scrub flames: at_transport reads a render checked at another channel",
   "ltcplay/fire_ice.py",

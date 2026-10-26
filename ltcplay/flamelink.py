@@ -1120,6 +1120,7 @@ class FlameLink:
                                                 f"({_exc_text(e)})")
             return None, zeros
         tok = None
+        landing = False
         if isinstance(tc, tuple) and len(tc) == 2:
             tc, tok = tc
         if not isinstance(tc, str) or not _TC.fullmatch(tc):
@@ -1136,6 +1137,7 @@ class FlameLink:
                     abs((secs - a[0]) - (now - a[1])) > REHEARSE_DRIFT_S:
                 self._seek_reset()
                 self._r_anchor = (secs, now, tok)
+                landing = True
         settled = self._seek_guard(tc, now)
         if tc is None:
             # Paused, stopped or not on the transport: zero, and whatever
@@ -1167,8 +1169,12 @@ class FlameLink:
             return tc, zeros
         self._cue_episode("", "")
         blocked = self._blocked
-        for i in [i for i in blocked if vals[i] == 0]:
-            blocked.discard(i)
+        if not landing:
+            # Never on the landing frame itself (review of #117, P1-A): a
+            # position read just before a move landed could clear a
+            # channel that is up where the move lands.
+            for i in [i for i in blocked if vals[i] == 0]:
+                blocked.discard(i)
         if not settled:
             return tc, zeros
         for i in blocked:

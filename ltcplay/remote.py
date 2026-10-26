@@ -184,7 +184,8 @@ SCRUB_FLAMES_ENABLES = (
     "fires while paused, and nothing for half a second after every jump, "
     "loop, Pause or Play from; a flame channel already up where you land "
     "stays off until it has gone to zero. While it is on, only the show PC "
-    "or an admin signed in can move the position. It turns itself off on "
+    "or an admin signed in can move the position, the loop or the marks. "
+    "It turns itself off on "
     "Off, Abort, Hold, Start now, Run, Stop or a show going live. Turning "
     "it off does not disarm: disarm on the Stream Deck when you are "
     "done.")
@@ -2551,25 +2552,26 @@ class Remote:
 
     # The transport presses that move the position and so decide when
     # flames fire while fire flames while scrubbing is on (Jeff's decision
-    # on review of #117, P1-2). Pause, Follow and the marks only stop or
-    # mark it.
-    SCRUB_MOVES = ("play-from", "jump", "continue")
+    # on review of #117, P1-2), and those that change what a later move
+    # plays (the loop either way, the marks: second review, P2-3). Pause
+    # and Follow only stop it.
+    SCRUB_MOVES = ("play-from", "jump", "continue", "loop", "mark-a",
+                   "mark-b")
     SCRUB_MOVE_REFUSED = ("Flames are live in rehearsal; move the position "
                           "from the show PC or sign in as an admin. "
                           "Nothing was changed.")
 
     def scrub_transport_refusal(self, name, body, ctx):
         """While fire flames while scrubbing is on, a press that moves the
-        position (Play from, Jump, Continue, the loop turned on) needs the
+        position or changes what plays (Play from, Jump, Continue, the
+        loop on or off, mark A, mark B) needs the
         show machine itself or someone signed in with the Settings
         permission; "" when it may go ahead. Never refuses while the mode
         is off. Fails closed."""
         sf = self.scrub_flames
         if sf is None or not getattr(sf, "on", False):
             return ""
-        moves = name in self.SCRUB_MOVES or (
-            name == "loop" and isinstance(body, dict)
-            and body.get("on") is True)
+        moves = name in self.SCRUB_MOVES
         if not moves or getattr(ctx, "local", False):
             return ""
         try:

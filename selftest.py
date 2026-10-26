@@ -59630,7 +59630,12 @@ def test_scrub_flames_read_the_fseq_at_the_transport():
                   f"{cues.scrub_fault!r}")
             rig.rerender(1534, 70)
             cues._folder = None
-            check(ask() == [70] * 512 and cues.scrub_fault == "",
+            g0 = cues.scrub_render_gen
+            check(ask() is None and cues.scrub_render_gen == g0 + 1,
+                  f"{mode}: a new render under the playhead: zero once, "
+                  f"and counted (the scrub's next position is a landing)")
+            check(ask() == [70] * 512 and cues.scrub_fault == "" and
+                  cues.scrub_render_gen == g0 + 1,
                   f"{mode}: rendered again: back, the fault cleared")
             if bg:
                 # The reader's age check has run, the layout it read has
@@ -59645,6 +59650,7 @@ def test_scrub_flames_read_the_fseq_at_the_transport():
                       f"{cues.scrub_fault!r}")
                 rig.rerender(1534, 70)
                 cues._folder = None
+                ask()
                 check(ask() == [70] * 512, f"{mode}: and back")
             # The flame controller moved, with the layout file dated older
             # than the render: the channel the render was checked at tells.
@@ -59674,7 +59680,8 @@ def _sf_engine(work):
     player = types.SimpleNamespace(override=None, freerun_epoch=1.0,
                                    freerun_paused_at=None, tc_seconds=2.5,
                                    on_lost="hold", freerun_by="operator",
-                                   transport_moves=3)
+                                   transport_moves=3,
+                                   transport_at=(2.5, 3))
     clock = types.SimpleNamespace(playing=False)
     sess = types.SimpleNamespace(running=True, player=player, clock=clock,
                                  no_output=False, tl=None)
@@ -59753,7 +59760,8 @@ def test_scrub_flames_the_mode_starts_off_and_ends_itself():
         v = r.scrub_flames_view()
         check(v["on"] and v["position"] == "00:00:02:15",
               f"the status says so, with the position: {v}")
-        check(sf.state() == ("00:00:02:15", 3),
+        r.flame_cues.scrub_render_gen = 2
+        check(sf.state() == ("00:00:02:15", (3, 2)),
               f"the position, playing, with the move count: {sf.state()}")
         e.player.freerun_by = "lost"
         check(sf.state() is None, "a free run a lost feed started: none")
@@ -60249,11 +60257,29 @@ def test_scrub_flames_review_of_117():
     got = play(link, 10.8, 11.6)
     check(not any(v[410] for _t, v in got),
           "a 75 ms Pause in the middle of A: it stays zero after")
-    # A new session while it is on is a landing (rehearse_begin's reset).
+    # A new session while it is on is a landing (rehearse_begin's reset),
+    # even carrying on from exactly where the old one was.
+    pos["moves"] += 1
+    got = play(link, 9.0, 11.0)
+    check(got[-1][1][410] == 200, "setup: A firing")
     link.rehearse_begin(scrub, cues)
-    got = play(link, 10.8, 11.5)
+    got = play(link, 11.0, 11.8)
     check(not any(v[410] for _t, v in got),
-          "a new session in the middle of A: it never fires")
+          "a new session in the middle of A, at the same place: it never "
+          "fires")
+    # The move count seen before the position caught up (review of #117,
+    # P1-A): a Jump 9.95 to 10.07 whose first frame carries the new count
+    # at the OLD position never fires A.
+    pos["moves"] += 1
+    play(link, 9.0, 9.95)
+    pos["moves"] += 1
+    pos["t"] = 9.95
+    frame(link)
+    clk[0] += 0.025
+    got = play(link, 10.07, 11.5)
+    check(not any(v[410] for _t, v in got),
+          "a Jump 9.95 to 10.07 with the count seen ahead of the position: "
+          "A never fires")
     # The show live, alone (no timecode with it): zeros.
     play(link, 9.0, 10.8)
     check(frame(link)[410] == 200, "setup: firing")
@@ -60328,8 +60354,29 @@ def test_scrub_flames_review_of_117():
     p.go(6.0)
     p._tick()
     st = sf.state()
-    check(st is not None and st[1] == p.transport_moves,
+    check(st is not None and st[1][0] == p.transport_moves,
           f"the transport's free run: the position and the moves: {st}")
+    # Every move, read before the player's next tick: no position (the
+    # count is ahead of the pair the tick wrote); after the tick, the new
+    # position with the new count (review of #117, P1-A).
+    for f, a in ((p.nudge, (0.1,)), (p.go_to_cue, (0,)), (p.go, (6.5,)),
+                 (p.set_loop, (6.0, 9.0)), (p.set_loop, (None, None))):
+        f(*a)
+        check(sf.state() is None,
+              f"{f.__name__}: before the next tick, no position")
+        p._tick()
+        st = sf.state()
+        check(st is not None and st[1][0] == p.transport_moves and
+              abs(SF.tc_text(p.tc_seconds) and
+                  p.transport_at[0] - p.tc_seconds) < 1e-9,
+              f"{f.__name__}: after the tick, the new place: {st}")
+    p.freerun_pause(True)
+    check(sf.state() is None, "paused: no position")
+    p._tick()
+    p.freerun_pause(False)
+    check(sf.state() is None, "continued: none before the next tick")
+    p._tick()
+    check(sf.state() is not None, "and the position after it")
     # Moves while it is on need the show PC or Settings.
     r = RM.Remote(types.SimpleNamespace(session=None, state=lambda: {}),
                   None, folder=tempfile.gettempdir())
@@ -60358,11 +60405,16 @@ def test_scrub_flames_review_of_117():
         check(("Flames are live" in str(out.get("error"))) != ok,
               f"jump from an iPad signed in as {role}: "
               f"{'allowed' if ok else 'refused'}: {out}")
-    for name, body in (("pause", {}), ("follow", {}),
-                       ("loop", {"on": False}), ("mark-a", {})):
+    for name, body in (("loop", {"on": False}), ("mark-a", {}),
+                       ("mark-b", {})):
+        code, out = r.press(name, dict(body, seen=time.time() * 1000), ipad)
+        check(code == 403 and "Flames are live" in str(out.get("error")),
+              f"{name} from a signed-out iPad: refused (it changes what "
+              f"plays): {out}")
+    for name, body in (("pause", {}), ("follow", {})):
         code, out = r.press(name, dict(body, seen=time.time() * 1000), ipad)
         check("Flames are live" not in str(out.get("error")),
-              f"{name} from an iPad still goes (it only stops or marks)")
+              f"{name} from an iPad still goes (it only stops it)")
     r.scrub_flames = types.SimpleNamespace(on=False)
     code, out = r.press("jump", {"seconds": 5, "seen": time.time() * 1000},
                         ipad)

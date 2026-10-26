@@ -223,14 +223,15 @@ Only when all of these are true:
 
 ### The seek rule (how a scrub cannot fire a burst)
 
-- Every press that moves the position is a landing, however small: Play from, every Jump, Continue, the loop turned on, and the loop jumping back to A. So is a position that is more than 0.15 s off the time that has passed since the last landing, however it got there.
+- Every press that moves the position is a landing, however small: Play from, every Jump, Pause, Continue, the loop, and the loop jumping back to A. LTC Player counts every move, and that count is the real guard. A position that is more than 0.15 s off the time that has passed since the last landing is a landing too; that is only a backstop.
+- A new render of the cue under the playhead (xLights saved it again while you scrub) is a landing too: zero at once, then the same half second.
 - After a landing, and after turning it on, every flame value is zero until the position has played on steadily for half a second.
 - This is decided channel by channel. A flame channel that is already up where you landed stays zero until it has gone to zero once. So a single long flame you jumped into the middle of never fires, and dragging or jumping through the show never fires anything on the way. A pulsing effect that is part way through where you land can fire again at its next pulse, after the half second.
 - A position that stops for a tenth of a second counts as stopped.
 
 ### Who can move the position while it is on
 
-While it is on, Play from, Jump, Continue and turning the loop on work only on the show PC itself, or for someone signed in with the Settings permission (admin). An iPad that is signed out, or signed in without Settings, is refused with: "Flames are live in rehearsal; move the position from the show PC or sign in as an admin." Pause, Follow timecode again, setting marks and turning it off still work from anywhere.
+While it is on, Play from, Jump, Continue, the loop (on or off) and setting mark A or B work only on the show PC itself, or for someone signed in with the Settings permission (admin). An iPad that is signed out, or signed in without Settings, is refused with: "Flames are live in rehearsal; move the position from the show PC or sign in as an admin." Pause, Follow timecode again and turning it off still work from anywhere.
 
 ### What turns it off by itself
 
