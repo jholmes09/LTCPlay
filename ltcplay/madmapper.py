@@ -925,6 +925,7 @@ class Watchdog:
         self._armed_at = None
         self._last_packet_at = None
         self._last_value = None
+        self._heard_at = None          # any packet, armed or not
         self._alarmed = False
         self.packets_in = 0
         self._ltcplay_pos = None       # (seconds, at) from note_position()
@@ -1022,6 +1023,9 @@ class Watchdog:
         drift_note = None
         skip_drift = False
         with self._lock:
+            # Heard at all, armed or not: the rack screen's Video lamp
+            # (madmapperwatch.py) only. Never counted, never a position.
+            self._heard_at = now
             if not self.armed:
                 return
             show_len_s = self.cfg.show_len_s
@@ -1133,6 +1137,14 @@ class Watchdog:
                 self.journal(text, **extra)
             except Exception:
                 pass
+
+    def heard_age_s(self):
+        """Seconds since any heartbeat packet arrived, armed or not, or
+        None if none has since this listener started. Display only (the
+        rack screen's Video lamp): it never arms, alarms or counts."""
+        with self._lock:
+            at = self._heard_at
+            return None if at is None else self._clock() - at
 
     def health(self):
         with self._lock:

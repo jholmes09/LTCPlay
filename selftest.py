@@ -57127,6 +57127,283 @@ def test_lasers_lamp_follows_the_beyond_link():
     print("  ok")
 
 
+def test_video_lamp_follows_the_madmapper_watch():
+    section("The Video lamp read 'not known' until a show sent something "
+            "(Jeff, 2026-10-26): the MadMapper watch says up, lost or "
+            "unknown before any show plays, from Windows' process list on "
+            "its own thread; MadMapper on another machine is said, never "
+            "guessed; the heartbeat speaks only when the show file has one "
+            "and a show is playing; a MadMapper that was running and exits "
+            "is an alert, once; the lamp is a link check, never a picture "
+            "check")
+    import shutil
+    import subprocess
+    import tempfile
+    import types
+    from ltcplay import madmapperwatch as MW, madmapper as MM, remote as RM
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    t = [100.0]
+    res = [True]
+    said = []
+    w = MW.MadMapperWatch(lambda: res[0], clock=lambda: t[0],
+                          on_change=lambda l, why: said.append(l))
+    check(w.state()["link"] == "unknown" and
+          "MadMapper has not been looked for yet" in w.state()["why"],
+          f"never looked: unknown: {w.state()}")
+    w.check_once()
+    check(w.state()["link"] == "up" and said == ["up"] and
+          w.state()["why"] == "MadMapper is running on this PC",
+          f"running: up: {w.state()}")
+    t[0] += MW.STALE_S + 0.1
+    check(w.state()["link"] == "unknown",
+          "a look older than STALE_S says nothing: unknown")
+    res[0] = False
+    w.check_once()
+    check(w.state()["link"] == "lost" and said == ["up", "lost"],
+          f"not running: lost, said once: {said}")
+    res[0] = None
+    w.check_once()
+    check(w.state()["link"] == "unknown", "cannot tell: unknown")
+
+    def boom():
+        raise OSError("x")
+    check(MW.MadMapperWatch(boom, clock=lambda: t[0]).check_once() is None,
+          "a probe that raises is unknown, never up")
+    # The Windows process list: MadMapper*.exe, the demo too (soak_apps).
+    run = lambda out: (lambda *a, **k: types.SimpleNamespace(stdout=out))
+    check(MW.windows_probe(run('"System","4","Services","0","1 K"\n'
+                               '"MadMapperDemo.exe","90","Console","1",'
+                               '"9 K"\n')) is True and
+          MW.windows_probe(run('"MadMapper.exe","90","Console","1","9 K"\n'))
+          is True and
+          MW.windows_probe(run('"BEYOND.exe","812","Console","1","9 K"\n'))
+          is False and MW.windows_probe(run("")) is None,
+          "MadMapper(Demo).exe in the list: True; BEYOND only: False; "
+          "nothing read: None")
+
+    def raises(*a, **k):
+        raise OSError("no tasklist")
+    check(MW.windows_probe(raises) is None, "tasklist missing: None")
+    sys.path.insert(0, os.path.join(HERE, "packaging", "windows"))
+    try:
+        import soak_apps
+        check(tuple(p.lower() for p in soak_apps.APPS["MadMapper"]["exe"])
+              == MW.IMAGES, "the image name is the soak's own")
+    finally:
+        sys.path.pop(0)
+    check(MW.probe_for("127.0.0.1", windows=True) is MW.windows_probe and
+          MW.probe_for("10.0.0.9", windows=True) is not MW.windows_probe
+          and MW.probe_for("10.0.0.9", windows=True)() is None and
+          MW.probe_for("127.0.0.1", windows=False)() is None,
+          "the process is looked for only on Windows, MadMapper on loopback")
+    far = MW.watch("10.0.0.9", windows=True, clock=lambda: t[0])
+    far.check_once()
+    check(far.state()["link"] == "unknown" and
+          far.state()["why"].startswith("unknown, MadMapper is on another "
+                                        "machine"),
+          f"MadMapper on another machine: said, not guessed: {far.state()}")
+    mac = MW.watch("127.0.0.1", windows=False, clock=lambda: t[0])
+    mac.check_once()
+    check(mac.state()["link"] == "unknown" and
+          "not the Windows show PC" in mac.state()["why"],
+          f"not Windows: said: {mac.state()}")
+    _no_dashes(far.state()["why"] + mac.state()["why"], "the watch's words")
+    # The heartbeat: the real watchdog hears a packet, armed or not, and
+    # nothing about arming, counting or alarming changes.
+    hb_t = [50.0]
+    dog = MM.Watchdog(MM.HeartbeatConfig(show_len_s=444.0),
+                      clock=lambda: hb_t[0])
+    check(dog.heard_age_s() is None, "nothing heard yet: None")
+    dog.on_packet(0.5)
+    hb_t[0] += 1.0
+    check(dog.heard_age_s() == 1.0 and dog.packets_in == 0 and
+          not dog.armed and dog.health()["state"] == "quiet",
+          f"heard while disarmed: an age, never counted or armed: "
+          f"{dog.heard_age_s()} {dog.health()}")
+    cfg = MM.HeartbeatConfig(show_len_s=444.0)
+    hv = MW.heartbeat_view
+    check(hv(dog, cfg, True)["heartbeat"] == "ok", "fresh: ok")
+    hb_t[0] += 10
+    check(hv(dog, cfg, True)["heartbeat"] == "silent" and
+          hv(dog, cfg, False)["heartbeat"] == "quiet",
+          "silent while a show plays: silent; between shows: quiet")
+    check(hv(dog, MM.HeartbeatConfig(), True) is None and
+          hv(None, cfg, True) is None,
+          "no heartbeat block, or no watchdog: never mentioned")
+    dog.bind_error = "The MadMapper heartbeat could not listen"
+    check(hv(dog, cfg, False)["heartbeat"] == "silent",
+          "a listener that could not open its port: silent")
+    dog.bind_error = None
+    # The lamp, through a Remote with a conductor.
+    snap = {"applied": {"video": "unknown", "lasers": "unknown"},
+            "look": "BETWEEN"}
+    cond = types.SimpleNamespace(
+        snapshot=lambda: snap,
+        devices=types.SimpleNamespace(beyond=types.SimpleNamespace(
+            fault="")), _ver={"lasers": 0, "video": 0})
+    sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+    r = RM.Remote(types.SimpleNamespace(session=None), sched,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+
+    def chip(cs=None):
+        got = [x for x in r.subsystems(cs or {}) if x["name"] == "Video"]
+        return got[0] if got else {}
+
+    def lamp(cs=None):
+        c = chip(cs)
+        return (c.get("state"), c.get("word"))
+    check(lamp() == ("off", "not sent yet") and
+          "not known" not in str(chip()).lower(),
+          f"no watch, nothing sent: grey 'not sent yet', never 'not "
+          f"known': {chip()}")
+    res[0] = True
+    r.madmapper_watch = MW.MadMapperWatch(
+        lambda: res[0], clock=lambda: t[0],
+        on_change=r.madmapper_link_changed)
+    r.madmapper_watch.check_once()
+    check(lamp() == ("ok", "MadMapper running"),
+          f"before any show: MadMapper running, green: {lamp()}")
+    title = chip().get("title", "")
+    check("MadMapper is running; whether the screens show the picture is "
+          "not something it can tell" in title and
+          "Nothing has been sent to MadMapper yet" in title,
+          f"the tooltip says it is a link check only: {title}")
+    _no_dashes(title, "the Video lamp's tooltip")
+    snap["applied"]["video"] = "lit"
+    cond._ver["video"] = 2
+    check(lamp() == ("ok", "MadMapper running, lit") and
+          "Last sent to MadMapper: lit." in chip()["title"],
+          f"after a command: the last sent detail stays: {chip()}")
+    snap["applied"]["video"] = "unknown"
+    check(lamp() == ("warn", "MadMapper running, last command not "
+                             "confirmed"),
+          f"a command sent and not confirmed: amber: {lamp()}")
+    snap["applied"]["video"] = "black"
+    # The heartbeat on the lamp.
+    r.madmapper_heartbeat, r.madmapper_heartbeat_cfg = dog, cfg
+    playing = {"running": True}
+    check(lamp(playing) == ("ok", "MadMapper running, black"),
+          f"silent between shows (look BETWEEN): no word on it: "
+          f"{lamp(playing)}")
+    snap["look"] = "PLAYING"
+    check(lamp(playing) == ("warn", "MadMapper running, no heartbeat") and
+          "heartbeat has not arrived" in chip(playing)["title"],
+          f"a show playing and no heartbeat: amber: {chip(playing)}")
+    dog.on_packet(0.1)
+    check(lamp(playing) == ("ok", "MadMapper running, heartbeat OK, black"),
+          f"heartbeat fresh: said: {lamp(playing)}")
+    hb_t[0] += 10
+    r.madmapper_heartbeat_cfg = MM.HeartbeatConfig()
+    check(lamp(playing) == ("ok", "MadMapper running, black"),
+          f"no heartbeat block: never an alarm: {lamp(playing)}")
+    snap["look"] = "BETWEEN"
+    # MadMapper exits: red, and one alert.
+    res[0] = False
+    r.madmapper_watch.check_once()
+    check(lamp() == ("bad", "MadMapper NOT RUNNING"),
+          f"MadMapper gone: NOT RUNNING, whatever was sent: {lamp()}")
+    al = [a for a in r.alerts.view() if a["kind"] == "video"]
+    check(len(al) == 1 and al[0]["severity"] == "fault" and
+          "MadMapper was running and is not any more" in al[0]["text"],
+          f"and an alert says so: {al}")
+    _no_dashes(al[0]["text"] if al else "", "the MadMapper alert")
+    t[0] += 3600
+    r.madmapper_watch.check_once()
+    check(lamp() == ("bad", "MadMapper NOT RUNNING") and
+          len([a for a in r.alerts.view() if a["kind"] == "video"]) == 1,
+          "hours later: still NOT RUNNING, one alert")
+    r.alerts.clear(kind="video", action="Acknowledge")
+    res[0] = True
+    r.madmapper_watch.check_once()
+    check(not [a for a in r.alerts.view() if a["kind"] == "video"],
+          "back: no alert")
+    res[0] = False
+    r.madmapper_watch.check_once()
+    check(len([a for a in r.alerts.view() if a["kind"] == "video"]) == 1,
+          "back, then gone again: a second loss is an alert again")
+    t[0] += MW.STALE_S + 1
+    check(lamp() == ("ok", "black") and
+          "was last looked for" in chip()["title"],
+          f"a watch that stopped looking: today's detail, never NOT "
+          f"RUNNING or running: {chip()}")
+    snap["applied"]["video"] = "unknown"
+    check(lamp() == ("warn", "last command not confirmed"),
+          f"unknown link, command unconfirmed: amber: {lamp()}")
+    # MadMapper on another machine: grey, and the tooltip says why.
+    r.madmapper_watch = MW.watch("10.0.0.9", windows=True,
+                                 clock=lambda: t[0])
+    r.madmapper_watch.check_once()
+    cond._ver["video"] = 0
+    check(lamp() == ("off", "not sent yet") and
+          "MadMapper is on another machine" in chip()["title"],
+          f"another machine: grey, and why: {chip()}")
+    # Not running from the start: the lamp, no alert; the page is told.
+    r2 = RM.Remote(types.SimpleNamespace(session=None), sched,
+                   folder=tempfile.gettempdir(), clock=lambda: t[0])
+    r2.madmapper_watch = MW.MadMapperWatch(
+        lambda: False, clock=lambda: t[0],
+        on_change=r2.madmapper_link_changed)
+    r2.madmapper_watch.check_once()
+    check([x["word"] for x in r2.subsystems({}) if x["name"] == "Video"]
+          == ["MadMapper NOT RUNNING"] and
+          not [a for a in r2.alerts.view() if a["kind"] == "video"],
+          "MadMapper not started yet: NOT RUNNING on the lamp, no alert")
+    st = r2.status(RM.Ctx(True, "127.0.0.1"))
+    check((st.get("madmapper_link") or {}).get("link") == "lost" and
+          [x["word"] for x in st["subsystems"] if x["name"] == "Video"] ==
+          ["MadMapper NOT RUNNING"],
+          f"the status JSON carries it: {st.get('madmapper_link')}")
+    check(RM.Remote(types.SimpleNamespace(session=None), sched,
+                    folder=tempfile.gettempdir()).status(
+        RM.Ctx(True, "127.0.0.1")).get("madmapper_link", 1) is None,
+          "no MadMapper watch: madmapper_link is null")
+    # web.serve starts it only with MadMapper configured, from its host.
+    with open(os.path.join(HERE, "ltcplay", "web.py"),
+              encoding="utf-8") as fh:
+        web_src = fh.read()
+    check("mmwatch_mod.watch(" in web_src and
+          "on_change=httpd.remote.madmapper_link_changed" in web_src and
+          "httpd.remote.madmapper_heartbeat = httpd.madmapper[1]" in web_src,
+          "web.serve starts the MadMapper watch and hands it the heartbeat")
+    # The page draws the chip and its tooltip exactly as the engine says.
+    with open(os.path.join(HERE, "ltcplay", "web", "remote.html"),
+              encoding="utf-8") as fh:
+        page = fh.read()
+    draw = _js_block(page, '$("subs").innerHTML = ', '\n\n')
+    check(draw.startswith('$("subs").innerHTML'),
+          "the page has its status strip drawing")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner, so the status "
+                         "strip cannot be run; install node in the workflow")
+        print("  note: node is not on this machine, so the strip was "
+              "checked by reading only (CI runs it)")
+        print("  ok")
+        return
+    js = ("const byId = {subs: {innerHTML: ''}};\n"
+          "const $ = id => byId[id];\n"
+          "const esc = (t) => String(t == null ? '' : t)"
+          ".replace(/&/g,'&amp;').replace(/</g,'&lt;')"
+          ".replace(/>/g,'&gt;').replace(/\"/g,'&quot;');\n"
+          "const s = " + json.dumps({"subsystems": st["subsystems"]}) +
+          ";\n" + draw + "\nconsole.log(byId.subs.innerHTML);\n")
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "strip.js")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write(js)
+        p = subprocess.run([node, f], capture_output=True, text=True,
+                           timeout=30)
+    html = p.stdout
+    check(p.returncode == 0 and
+          "Video <span>MadMapper NOT RUNNING</span>" in html and
+          'class="chip bad"' in html and
+          "whether the screens show the picture is not something it can "
+          "tell" in html,
+          f"the rack screen shows 'Video MadMapper NOT RUNNING' in red, "
+          f"with the tooltip: {p.stderr or html[:400]}")
+    print("  ok")
+
+
 def test_artnet_faults_only_for_the_show_in_use():
     section("Art-Net receivers (Jeff, 2026-10-23): an old unused show file "
             "in the folder (soak_show.json) is a quiet note once a show is "
@@ -61841,6 +62118,7 @@ if __name__ == "__main__":
     test_disarm_ids_survive_an_engine_restart()
     test_disarm_all_end_to_end_rearms_without_a_cycle()
     test_lasers_lamp_follows_the_beyond_link()
+    test_video_lamp_follows_the_madmapper_watch()
     test_artnet_faults_only_for_the_show_in_use()
     test_rack_screen_jeff_2026_10_23_page()
     test_schedule_time_zone_is_checked_by_the_engine()

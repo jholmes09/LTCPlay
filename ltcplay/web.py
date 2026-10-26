@@ -1986,6 +1986,35 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         except Exception as e:                       # noqa: BLE001
             print(f"The BEYOND watch could not start: "
                   f"{type(e).__name__}: {e}")
+    _mm_cfg = getattr(fire_ice, "madmapper", None) if fire_ice else None
+    if _mm_cfg is not None:
+        # Is MadMapper running (Jeff, 2026-10-26)? The BEYOND watch's
+        # twin, its own thread, display only: the Video lamp says so
+        # before any show plays, and an alert when it is gone. Its
+        # heartbeat, when the show file has a heartbeat block, is read
+        # from the watchdog web.serve already started; nothing new listens
+        # or sends.
+        from . import madmapperwatch as mmwatch_mod
+        try:
+            _mw = mmwatch_mod.watch(
+                getattr(_mm_cfg, "host", None),
+                on_change=httpd.remote.madmapper_link_changed).start()
+            httpd.remote.madmapper_watch = _mw
+            if isinstance(httpd.madmapper, tuple):
+                httpd.remote.madmapper_heartbeat = httpd.madmapper[1]
+            httpd.remote.madmapper_heartbeat_cfg = getattr(
+                _mm_cfg, "heartbeat", None)
+            _close_before_mw = httpd.server_close
+
+            def _close_mw():
+                try:
+                    _mw.stop()
+                finally:
+                    _close_before_mw()
+            httpd.server_close = _close_mw
+        except Exception as e:                       # noqa: BLE001
+            print(f"The MadMapper watch could not start: "
+                  f"{type(e).__name__}: {e}")
     if fire_ice is not None and fstatus is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         # flamesafe's status_mirror_port (PR #39): the remote page's copy of

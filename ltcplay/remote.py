@@ -136,6 +136,16 @@ BEYOND_LAMP_TITLE = ("Lit is what this program last sent. BEYOND never "
                      "answers, and the watch only sees that BEYOND's program "
                      "is running on this PC: a hung BEYOND, or one whose OSC "
                      "input is off, still reads as running.")
+# The Video lamp's tooltip (Jeff, 2026-10-26): what the MadMapper watch can
+# and cannot tell.
+MADMAPPER_LAMP_TITLE = ("MadMapper is running; whether the screens show the "
+                        "picture is not something it can tell. MadMapper "
+                        "never answers, and the watch only sees that its "
+                        "program is running on this PC.")
+# The same, while it is not seen running (or cannot be told).
+MADMAPPER_LINK_TITLE = ("This is a link check, never a picture check: "
+                        "MadMapper never answers, so whether the screens "
+                        "show the picture is not something it can tell.")
 # PLAIN_DECK_FRESH_S, and flamesafe must report every group off within
 # PLAIN_CONFIRM_S, else the flame link's disarm_all (the Abort's) goes.
 PLAIN_DECK_FRESH_S = 0.5
@@ -1087,6 +1097,12 @@ class Remote:
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
         self.beyond_watch = None
+        # madmapperwatch.MadMapperWatch, set by web.serve with MadMapper
+        # configured, and its heartbeat Watchdog and HeartbeatConfig: the
+        # Video lamp says whether MadMapper is running before a show plays.
+        self.madmapper_watch = None
+        self.madmapper_heartbeat = None
+        self.madmapper_heartbeat_cfg = None
         self.morning = None          # morning.Morning, set by web.serve
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         # scrubflames.ScrubFlames, set by web.serve (Fire & Ice with a flame
@@ -3438,6 +3454,120 @@ class Remote:
             return {"link": "unknown", "age_s": None,
                     "why": f"the BEYOND watch failed: {type(e).__name__}"}
 
+    def madmapper_link(self, playing=False):
+        """madmapperwatch.MadMapperWatch.state() while a MadMapper watch
+        runs in this engine (Fire & Ice with MadMapper configured), with
+        "heartbeat" and "heartbeat_why" added when the show file has a
+        heartbeat block (madmapperwatch.heartbeat_view), else None.
+        `playing`: a show's video should be moving. Display only; never
+        raises."""
+        w = self.madmapper_watch
+        if w is None:
+            return None
+        try:
+            st = dict(w.state())
+        except Exception as e:                   # noqa: BLE001
+            st = {"link": "unknown", "age_s": None,
+                  "why": f"the MadMapper watch failed: {type(e).__name__}"}
+        from . import madmapperwatch as mmw
+        hb = mmw.heartbeat_view(self.madmapper_heartbeat,
+                                self.madmapper_heartbeat_cfg, playing)
+        if hb is not None:
+            st["heartbeat"] = hb["heartbeat"]
+            st["heartbeat_why"] = hb["why"]
+        return st
+
+    @staticmethod
+    def _video_moving(cs, snap):
+        """A show is playing and the conductor's look is PLAYING: only then
+        is MadMapper's heartbeat expected (silence on Hold, between shows
+        and at intermission is normal: madmapper.py, bench B3)."""
+        return bool((cs or {}).get("running")) and \
+            (snap or {}).get("look") == "PLAYING"
+
+    def madmapper_link_changed(self, link, why):
+        """The MadMapper watch's word changed (its own thread): journaled,
+        and a lost link is an alert on every screen, once per loss, only
+        when MadMapper was seen running and then was not, exactly as
+        BEYOND's (beyond_link_changed). Not running from the start is the
+        lamp and a journal line, no alert."""
+        if link == "up":
+            self._madmapper_was_up = True
+        if link == "lost" and not getattr(self, "_madmapper_was_up", False):
+            self._journal("system", "engine", "video", "link lost",
+                          f"MadMapper: {why}. The Video lamp reads "
+                          f"MadMapper NOT RUNNING until it is running.",
+                          fault=True)
+        elif link == "lost":
+            self._madmapper_was_up = False
+            text = (f"MadMapper was running and is not any more ({why}). "
+                    f"Nothing sent to it lands, so the Video lamp reads "
+                    f"MadMapper NOT RUNNING until it is back. Start "
+                    f"MadMapper and its project again.")
+            try:
+                self.alerts.raise_("video", text)
+            except Exception:                    # noqa: BLE001
+                self._journal("system", "engine", "video", "link lost",
+                              text, fault=True)
+        elif link == "up" and \
+                getattr(self, "_madmapper_said", None) == "lost":
+            self._journal("system", "engine", "video", "link back",
+                          "MadMapper is running again on this PC.")
+        self._madmapper_said = link
+
+    def _video_lamp(self, add, out, cond, snap, cs):
+        """The Video lamp (Jeff, 2026-10-26): whether MadMapper is running,
+        before any show plays, from the MadMapper watch; what was last sent
+        to it once a command went through. A link check, never a picture
+        check. Display only."""
+        applied = (snap or {}).get("applied") or {}
+        v = applied.get("video")
+        mm = self.madmapper_link(self._video_moving(cs, snap))
+        try:
+            sent = int(getattr(cond, "_ver", {}).get("video") or 0) > 0
+        except Exception:                        # noqa: BLE001
+            sent = False
+        last = "" if v is None or str(v) == "unknown" else str(v).lower()
+        detail = f"Last sent to MadMapper: {last}. " if last else (
+            "Nothing has been sent to MadMapper yet. " if not sent else
+            "The last command to MadMapper is not confirmed yet. ")
+        why = ""
+        if cond is None or v is None:
+            add("Video", "off", "none")
+            return
+        if mm is not None and mm["link"] == "lost":
+            add("Video", "bad", "MadMapper NOT RUNNING")
+        elif mm is not None and mm["link"] == "up":
+            hb = mm.get("heartbeat")
+            if hb == "silent":
+                add("Video", "warn", "MadMapper running, no heartbeat")
+            elif not last and sent:
+                add("Video", "warn",
+                    "MadMapper running, last command not confirmed")
+            else:
+                word = "MadMapper running"
+                if hb == "ok":
+                    word += ", heartbeat OK"
+                if last:
+                    word += f", {last}"
+                add("Video", "ok", word)
+            if mm.get("heartbeat_why"):
+                why = mm["heartbeat_why"][0].upper() + \
+                    mm["heartbeat_why"][1:] + ". "
+        elif last:
+            add("Video", "ok", last)
+        elif sent:
+            add("Video", "warn", "last command not confirmed")
+        else:
+            add("Video", "off", "not sent yet")
+        link_why = ""
+        if mm is not None:
+            w = str(mm.get("why") or "")
+            link_why = (w[:1].upper() + w[1:] + ". ") if w else ""
+        up = mm is not None and mm["link"] == "up"
+        out[-1]["title"] = link_why + why + detail + (
+            MADMAPPER_LAMP_TITLE if up else MADMAPPER_LINK_TITLE)
+
     def _lasers_ver(self, cond):
         """The conductor's lasers record count (it moves on every laser
         command it records), or None. Display only."""
@@ -3992,9 +4122,11 @@ class Remote:
             except Exception:                    # noqa: BLE001
                 add("Audit", "warn", "not writing")
         applied = {}
+        snap = {}
         cond = getattr(self.schedule, "conductor", None)
         try:
-            applied = (cond.snapshot() or {}).get("applied") or {}
+            snap = cond.snapshot() or {}
+            applied = snap.get("applied") or {}
         except Exception:
             applied = {}
         laser_fault = self.laser_fault()
@@ -4013,7 +4145,8 @@ class Remote:
             except Exception:                    # noqa: BLE001
                 add("Laser arm", "bad", "not known")
         link = self.beyond_link()
-        for name, key in (("Video", "video"), ("Lasers", "lasers")):
+        self._video_lamp(add, out, cond, snap, cs)
+        for name, key in (("Lasers", "lasers"),):
             v = applied.get(key)
             if key == "lasers" and laser_fault:
                 # Never "ok" or "lit" while nothing can blank them.
@@ -4160,6 +4293,12 @@ class Remote:
         out["live_flame"] = self.live_flame_view()
         out["scrub_flames"] = self.scrub_flames_view()
         out["beyond_link"] = self.beyond_link()
+        try:
+            _snap = self.schedule.conductor.snapshot() or {}
+        except Exception:                        # noqa: BLE001
+            _snap = {}
+        out["madmapper_link"] = self.madmapper_link(
+            self._video_moving(out["show"], _snap))
         if ctx.local:
             out["selected_show"] = self._selected_show()
         out["show_folder"] = {"served": self._show_folder(),
