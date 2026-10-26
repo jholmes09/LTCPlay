@@ -12648,8 +12648,8 @@ def build():
 
  ("fuel: the Morning page refuses a fuel block",
   "ltcplay/morning.py",
-  "                      \"names\", \"tally\", \"notes\", \"laser_groups\", \"fuel\"))",
-  "                      \"names\", \"tally\", \"notes\", \"laser_groups\"))"),
+  "                      \"names\", \"tally\", \"notes\", \"laser_groups\", \"fuel\",\n",
+  "                      \"names\", \"tally\", \"notes\", \"laser_groups\",\n"),
 
  ("fuel: a viewer may log a refill",
   "ltcplay/fuel.py",
