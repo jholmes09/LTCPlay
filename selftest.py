@@ -26917,14 +26917,16 @@ def test_streamdeck_pure_logic():
           "letting go before the hold completes resets to nothing, exactly "
           "like the approved demo")
 
+    five = sd.Controller(_FakeArmSocket(5), _FakeStatusSocket(),
+                         ["a", "b", "c", "d", "e"])
+    check(five._key_group == {3: 0, 4: 1, 5: 2},
+          "five groups start (Jeff, 2026-10-26: a layout that does not fit "
+          "is said, never refused): the first three are keyed")
     try:
-        sd.Controller(_FakeArmSocket(5), _FakeStatusSocket(),
-                     ["a", "b", "c", "d", "e"])
-        check(False, "5 group names were accepted (the deck reaches 4: 3 "
-                     "on its arm keys, 1 from a screen)")
+        sd.Controller(_FakeArmSocket(0), _FakeStatusSocket(), [])
+        check(False, "no group names at all were accepted")
     except ValueError as e:
-        check("at most 4" in str(e) and "3 on its arm keys" in str(e),
-              str(e))
+        check("no flamesafe group" in str(e), str(e))
 
 
 class _FakeArmSocket:
@@ -34290,7 +34292,7 @@ def test_beyond_lasers_dark_when_the_engine_stops():
 def test_flame_groups_are_a_settings_change_only():
     section("fire & ice: the flame groups live in flamesafe's config only; "
             "renaming or regrouping there changes the deck's labels, and an "
-            "edit that cannot work (more than 4 groups, a channel in two "
+            "edit that cannot work (a channel in two "
             "groups, a head the layout does not have) is refused at start "
             "in a sentence")
     import json as _json
@@ -34336,14 +34338,9 @@ def test_flame_groups_are_a_settings_change_only():
               ["stage left", "stage right", "finale", "spare"],
               "the deck is given all four names, in config order")
         five = four + [{"name": "extra", "safety": 405, "fire": [451]}]
-        e = refusal(five)
-        check("5 flame groups" in e and "at most 4" in e, e)
-        try:
-            sd.load_flamesafe_link(fs)
-            check(False, "the deck accepted five groups")
-        except ValueError as e5:
-            check("5 flamesafe group(s)" in str(e5) and
-                  "at most 4" in str(e5), f"the deck refuses five: {e5}")
+        check(refusal(five) == "" and len(sd.load_flamesafe_link(fs)[5]) ==
+              5, "five groups pass too: the ones past the deck's keys are "
+                 "armed from a screen, said at the deck's start")
         twice = [good[0], dict(good[1], fire=[413, 411]), good[2]]
         e = refusal(twice)
         check("channel 411 is in both stage left and stage right" in e, e)
@@ -34354,7 +34351,7 @@ def test_flame_groups_are_a_settings_change_only():
         import contextlib
         import io
         from ltcplay import cli as _cli
-        write(five)
+        write(twice)
         with open(os.path.join(work, "ltcplay_fire_ice.json"), "w") as fh:
             _json.dump({"flamesafe_config": fs,
                         "flame_controller": "Flames"}, fh)
@@ -34364,11 +34361,11 @@ def test_flame_groups_are_a_settings_change_only():
             rc = _cli._cmd_serve(types.SimpleNamespace(
                 folder=show, schedule=os.path.join(
                     work, "ltcplay_schedule.json")))
-        check(rc and "at most 4" in out.getvalue(),
+        check(rc and "channel 411 is in both" in out.getvalue(),
               f"ltc serve refuses it in a sentence: {rc} {out.getvalue()!r}")
         same = [good[0], dict(good[1], name="stage left"), good[2]]
         check("both called 'stage left'" in refusal(same), "duplicate name")
-        for e in (refusal(five), refusal(twice), refusal(unknown)):
+        for e in (refusal(twice), refusal(unknown)):
             check("—" not in e and "–" not in e, f"no dashes: {e}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -44744,9 +44741,8 @@ def test_stream_deck_fourth_group_is_screen_only():
                       show_running_provider=lambda: True,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0], screen=scr)
-    check(sd.GROUP_KEY_LIMIT == 3 and sd.GROUP_LIMIT == 4 and
-          sd.GROUP_KEYS == (3, 4, 5),
-          "three arm keys, four groups at most")
+    check(sd.GROUP_KEY_LIMIT == 3 and sd.GROUP_KEYS == (3, 4, 5),
+          "three arm keys")
     said = [e for e in events if e[1].get("outcome") == "screen-only"]
     check(len(said) == 1 and "fireball has no key on the deck" in said[0][0]
           and "Rack screen" in said[0][0] and "Abort" in said[0][0] and
@@ -44896,6 +44892,164 @@ def test_stream_deck_fourth_group_is_screen_only():
           [n for _k, n in drawn if n] == names[:3] and
           "fireball" not in [n for _k, n in drawn],
           f"the three keys are drawn and the fireball is not: {drawn}")
+    print("  ok")
+
+
+def test_stream_deck_key_order_and_labels_come_from_config():
+    """Jeff (2026-10-26): the keys say Floor G, Cat-Walk G, Blue Flames and
+    Fireball by default (flamesafe's front row, cat-walk, wave flamer and
+    fireball), in that order whatever flamesafe's file order is; Jeff can
+    rename and reorder in ltcplay_deck.json. A layout that does not fit is
+    said in plain words and the deck still starts. The arm frame keeps
+    flamesafe's own names and order."""
+    section("Stream Deck: key order and labels come from ltcplay_deck.json "
+            "(default Floor G, Cat-Walk G, Blue Flames, Fireball); a layout "
+            "that does not fit is said, never refused")
+    import json as _json
+    import shutil
+    from ltcplay import streamdeck as sd
+    jeff = ["front row", "cat-walk", "wave flamer", "fireball"]
+    order, labels, notes = sd.deck_layout(jeff)
+    check(order == [0, 1, 2, 3] and
+          labels == ["Floor G", "Cat-Walk G", "Blue Flames", "Fireball"]
+          and notes == [],
+          f"the defaults: {order} {labels} {notes}")
+    # flamesafe's file order does not decide the keys.
+    shuffled = ["fireball", "wave flamer", "front row", "cat-walk"]
+    order, labels, notes = sd.deck_layout(shuffled)
+    check([shuffled[i] for i in order] == jeff and notes == [],
+          f"the default order, not the file's: {order}")
+    # An old install whose groups have other names: unchanged.
+    old = ["stage left", "stage right", "finale"]
+    check(sd.deck_layout(old) == ([0, 1, 2], old, []),
+          "groups with other names keep flamesafe's order and their names")
+    check(sd.deck_layout(jeff[:3])[1] == ["Floor G", "Cat-Walk G",
+                                          "Blue Flames"],
+          "Jeff's three groups today read Floor G, Cat-Walk G, Blue Flames")
+    # Jeff's own file: renamed, reordered.
+    doc = {"groups": [{"group": "fireball", "label": "Big Ball"},
+                      {"group": "front row"},
+                      {"group": "cat-walk", "label": "Catwalk"},
+                      {"group": "wave flamer", "label": "Blue"}]}
+    order, labels, notes = sd.deck_layout(jeff, doc)
+    check(order == [3, 0, 1, 2] and
+          labels == ["Floor G", "Catwalk", "Blue", "Big Ball"] and
+          notes == [], f"Jeff's own order and names: {order} {labels} {notes}")
+    # Mistakes: each said, none refused.
+    bad = {"groups": [{"group": "front row", "label": "A" * 13},
+                      {"group": "front row"}, {"group": "pump"},
+                      {"label": "x"}, "cat-walk",
+                      {"group": "fireball", "label": 7}]}
+    order, labels, notes = sd.deck_layout(jeff, bad, "deck.json")
+    text = " ".join(notes)
+    check(order == [0, 3, 1, 2] and labels[0] == "Floor G" and
+          labels[3] == "Fireball" and
+          "up to 12 letters" in text and "twice" in text and
+          "'pump', which is not a flame group" in text and
+          "no \"group\" name" in text and
+          "'cat-walk' is a flame group in flamesafe's config but not in "
+          "deck.json" in text and
+          not any(c in text for c in "—–"),
+          f"every mistake is said plainly and the rest carry on: "
+          f"{order} {labels} {notes}")
+    check(sd.deck_layout(jeff, ["not", "a", "dict"])[0] == [0, 1, 2, 3] and
+          "no \"groups\" list" in sd.deck_layout(jeff, [])[2][0],
+          "a file of the wrong shape: the defaults, said")
+    work = tempfile.mkdtemp()
+    try:
+        check(sd.load_deck_layout(jeff, work) == sd.deck_layout(jeff),
+              "no file: the defaults")
+        with open(os.path.join(work, sd.DECK_CONFIG_FILE), "w") as fh:
+            fh.write("{ not json")
+        order, labels, notes = sd.load_deck_layout(jeff, work)
+        check(order == [0, 1, 2, 3] and labels[2] == "Blue Flames" and
+              notes and "could not be read" in notes[0],
+              f"a file that cannot be read: the defaults, said: {notes}")
+        with open(os.path.join(work, sd.DECK_CONFIG_FILE), "w") as fh:
+            _json.dump(doc, fh)
+        check(sd.load_deck_layout(jeff, work)[0] == [3, 0, 1, 2],
+              "the file is read")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    check(sd._fit_name("Blue Flames") == "BLUE FLAMES" and
+          sd._fit_name("Cat-Walk G") == "CAT-WALK G",
+          "the default labels fit the key whole")
+    # The Controller: Jeff's order on the keys, flamesafe's on the wire.
+    order, labels, _n = sd.deck_layout(jeff, doc)
+    arm = _FakeArmSocket(4)
+    t = [100.0]
+    events = []
+    scr = _FakeScreen()
+    c = sd.Controller(arm, _FakeStatusSocket(), jeff,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0], screen=scr, key_order=order,
+                      labels=labels)
+    said = [e[0] for e in events if e[1].get("outcome") == "screen-only"]
+    check(len(said) == 1 and "Blue has no key" in said[0] and
+          "Big Ball, Floor G, Catwalk" in said[0],
+          f"the group with no key is named by its label: {said}")
+
+    def press(k):
+        down = [False] * 6
+        down[k] = True
+        c.run_once(down)
+        t[0] += sd.ARM_HOLD_S + 0.01
+        c.tick()
+        c.run_once([False] * 6)
+    press(3)
+    check(arm.wanted == [False, False, False, True],
+          f"key 3 arms the fireball (Jeff's first): {arm.wanted}")
+    press(4)
+    check(arm.wanted == [True, False, False, True],
+          f"key 4 arms the front row: {arm.wanted}")
+    press(3)
+    check(arm.wanted == [True, False, False, False],
+          f"a tap on key 3 disarms the fireball at once: {arm.wanted}")
+    t[0] += 0.1
+    press(3)
+    check(arm.wanted[3] is False, "and its 2 s re-arm wait holds")
+    # The wave flamer (no key here) arms from a screen hold only.
+    scr.h[2] = {"group": 2, "id": 1, "held_s": 0.0, "fresh": True,
+                "who": "Andy", "device": "Rack screen"}
+    c.screen_pass()
+    c.tick()
+    t[0] += sd.ARM_HOLD_S + 0.05
+    scr.h[2]["held_s"] = sd.SCREEN_HOLD_S
+    c.screen_pass()
+    c.tick()
+    check(arm.wanted[2] is True, f"the screen arms Blue: {arm.wanted}")
+    check(all(len(w) == 4 for w in arm.sends),
+          "every arm frame still carries flamesafe's four groups")
+    c._do_abort()
+    check(arm.wanted == [False] * 4, "Abort takes every group down")
+    check(sd.deck_key_name(3, [jeff[g] for g in order[:3]]) ==
+          "arm key fireball", "the audit log names key 3's real group")
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        print("  note: Pillow is not installed here, so the drawn labels "
+              "are not checked on this machine.")
+        print("  ok")
+        return
+    drawn = []
+    real = sd.arm_key_image
+    sd.arm_key_image = lambda fonts, d, box, name, look, blink: \
+        drawn.append((box, name, look[0]))
+    try:
+        fonts = sd.Fonts()
+        fonts.text_block = lambda *a, **kw: None
+        c._latched = False
+        c.draw(fonts, blink_on=True, chase=0)
+    finally:
+        sd.arm_key_image = real
+    check([(b, n) for b, n, _w in drawn] ==
+          [(sd.face_box(3), "Big Ball"), (sd.face_box(4), "Floor G"),
+           (sd.face_box(5), "Catwalk")] and
+          [w for _b, _n, w in drawn] == ["NO", "FLAME", "LINK"],
+          f"each key is drawn under its label, in key order, and NO / FLAME "
+          f"/ LINK still reads left to right: {drawn}")
     print("  ok")
 
 
@@ -61312,6 +61466,7 @@ if __name__ == "__main__":
     test_screen_arm_engine_rules()
     test_screen_arm_deck_rules()
     test_stream_deck_fourth_group_is_screen_only()
+    test_stream_deck_key_order_and_labels_come_from_config()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()

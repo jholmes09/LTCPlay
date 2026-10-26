@@ -7588,8 +7588,8 @@ def build():
 
  ('Reset design: the Hold key Resets while aborted',
   'ltcplay/streamdeck.py',
-  '                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i] or self._reported_armed(i):',
-  '                elif k == TOP_HOLD:\n                    self._do_reset()\n                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i] or self._reported_armed(i):'),
+  '                elif k in self._key_group:\n                    i = self._key_group[k]\n                    if self.arm.wanted[i] or self._reported_armed(i):',
+  '                elif k == TOP_HOLD:\n                    self._do_reset()\n                elif k in self._key_group:\n                    i = self._key_group[k]\n                    if self.arm.wanted[i] or self._reported_armed(i):'),
 
  ('fix round 2: a deck Abort waits in line behind other presses',
   'ltcplay/streamdeck.py',
@@ -7673,11 +7673,6 @@ def build():
   'ltcplay/onlyone.py',
   '        handle, existed = got\n        if existed:',
   '        handle, existed = got\n        if False:'),
-
- ("flame groups: more than 4 groups pass at start",
-  "ltcplay/fire_ice.py",
-  "    if len(groups) > FLAME_GROUP_LIMIT:",
-  "    if len(groups) > 99:"),
 
  ("flame groups: one channel in two groups passes at start",
   "ltcplay/fire_ice.py",
@@ -8307,7 +8302,7 @@ def build():
 
  ("deck states: the latched deck reads NO / NO / NO",
   "ltcplay/streamdeck.py",
-  "                look = group_look(st, fault=fault, slot=i)\n",
+  "                look = group_look(st, fault=fault, slot=slot)\n",
   "                look = group_look(st, fault=fault, slot=0)\n"),
 
  # The orange dot (Jeff, 2026-10-19): an unconfirmed config draws nothing
@@ -8316,9 +8311,9 @@ def build():
  ("deck: the amber corner mark comes back on an unconfirmed config",
   "ltcplay/streamdeck.py",
   "                    look = (\"PURGE\", \"ARMED\") + tuple(look[2:])\n"
-  "            arm_key_image(fonts, d, box, name, look, group_blink)\n",
+  "            arm_key_image(fonts, d, box, label, look, group_blink)\n",
   "                    look = (\"PURGE\", \"ARMED\") + tuple(look[2:])\n"
-  "            arm_key_image(fonts, d, box, name, look, group_blink)\n"
+  "            arm_key_image(fonts, d, box, label, look, group_blink)\n"
   "            if not _confirmed:\n"
   "                d.rectangle((box[2] - 9, box[3] - 9, box[2] - 2,\n"
   "                             box[3] - 2), fill=AMBER)\n"),
@@ -8564,20 +8559,40 @@ def build():
   '''  if(m.kind === "fireball") return''',
   '''  if(false) return'''),
 
- ("deck: five flame groups are accepted",
+ ("deck: the screen-only fourth group follows the first key",
   "ltcplay/streamdeck.py",
-  "        if not (1 <= len(group_names) <= GROUP_LIMIT):",
-  "        if not (1 <= len(group_names) <= 99):"),
-
- ("deck: the flamesafe config loader accepts five groups",
-  "ltcplay/streamdeck.py",
-  "    if not (1 <= len(names) <= GROUP_LIMIT):",
-  "    if not (1 <= len(names) <= 99):"),
-
- ("deck: the screen-only fourth group follows the front row key",
-  "ltcplay/streamdeck.py",
-  "        return i < len(GROUP_KEYS) and bool(self._prev_keys[GROUP_KEYS[i]])",
+  "        k = self._group_key.get(i)\n        return k is not None and bool(self._prev_keys[k])",
   "        return bool(self._prev_keys[GROUP_KEYS[i % len(GROUP_KEYS)]])"),
+
+ ("deck: the keys follow flamesafe's file order, not the deck's",
+  "ltcplay/streamdeck.py",
+  "        self._key_group = {GROUP_KEYS[j]: g for j, g in\n                           enumerate(self.key_order[:len(GROUP_KEYS)])}",
+  "        self._key_group = {GROUP_KEYS[j]: g for j, g in\n                           enumerate(range(len(self.names))[:len(GROUP_KEYS)])}"),
+
+ ("deck: the key order list is ignored",
+  "ltcplay/streamdeck.py",
+  "        i = names.index(g)\n        if i in order:",
+  "        i = names.index(g)\n        if True:"),
+
+ ("deck: a key's label is the flamesafe name, never the configured one",
+  "ltcplay/streamdeck.py",
+  "        labels[i] = lab.strip()\n",
+  "        pass\n"),
+
+ ("deck: the default labels are not Jeff's",
+  "ltcplay/streamdeck.py",
+  "        labels[i] = DECK_LABELS.get(n, n)\n",
+  "        labels[i] = n\n"),
+
+ ("deck: the keys are drawn under flamesafe's names, not their labels",
+  "ltcplay/streamdeck.py",
+  "            name, label = self.names[i], self.labels[i]\n",
+  "            name, label = self.names[i], self.names[i]\n"),
+
+ ("deck: an over-long label is drawn cut short",
+  "ltcplay/streamdeck.py",
+  "                len(lab.strip()) > LABEL_MAX:",
+  "                len(lab.strip()) > 99:"),
 
  ("deck: Abort leaves the screen-only fourth group armed",
   "ltcplay/streamdeck.py",
@@ -8598,9 +8613,9 @@ def build():
  ("deck: nobody is told which flame group has no key",
   "ltcplay/streamdeck.py",
   '''        if extra:
-            self._log(f"Stream Deck: {', '.join(extra)} "''',
+            keyed = [''',
   '''        if False:
-            self._log(f"Stream Deck: {', '.join(extra)} "'''),
+            keyed = ['''),
 
  ("morning: a fire heartbeat gap never ends the press (T2)",
   "ltcplay/morning.py",
@@ -9597,10 +9612,10 @@ def build():
  ("deck: the FIRE key keeps firing after it is released (T2)",
   "ltcplay/streamdeck.py",
   '''                self._fire_release("the key came up")
-            elif k in GROUP_KEYS:
+            elif k in self._key_group:
                 # Letting go before ARM_HOLD_S cancels the hold and sends''',
   '''                pass
-            elif k in GROUP_KEYS:
+            elif k in self._key_group:
                 # Letting go before ARM_HOLD_S cancels the hold and sends'''),
 
  ("deck: the FIRE heartbeats carry on after the engine refuses one (T3)",

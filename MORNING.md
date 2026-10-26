@@ -101,10 +101,23 @@ this on: a fireball purge needs its own design and safety review first.
 `purge.fireball` in `ltcplay_morning.json` is still accepted, so an older
 file loads, and it is not used.
 
-The Stream Deck has three arm keys and no free key, so a fourth flamesafe
-group (the fireball) has no key: it is armed from the Rack screen (Arming
-from a screen on), disarmed there, by Disarm all flame groups, or by any
-Abort, the deck's included. The first three groups keep their keys.
+The Stream Deck (a Mini: six keys, Start, Hold and Abort on top, three
+arm keys below) has no free key, so only three flame groups have a key.
+Which three, in which order, and what each key says come from
+`ltcplay_deck.json` in the settings folder (optional):
+
+```json
+{"groups": [{"group": "front row", "label": "Floor G"}, {"group": "cat-walk", "label": "Cat-Walk G"}, {"group": "wave flamer", "label": "Blue Flames"}, {"group": "fireball", "label": "Fireball"}]}
+```
+
+That is also the default with no file: Floor G, Cat-Walk G and Blue Flames
+on the keys left to right, the fireball after them. The order is this
+list's, never flamesafe's file order; a label is up to 12 letters, and a
+group with none says its own name. A group past the third has no key: it
+is armed from the Rack screen (Arming from a screen on), disarmed there,
+by Disarm all flame groups, or by any Abort, the deck's included. The
+deck says at start which group has no key, and says plainly anything in
+the file it could not use; it never refuses to start over the layout.
 
 **Show cues and the safety slot.** The show's flame values reach flamesafe
 on the flame link exactly as for the other groups: the flame controller's
