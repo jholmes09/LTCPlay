@@ -718,6 +718,13 @@ def _list(v):
     return v if isinstance(v, list) else []
 
 
+def _arm(v):
+    """A status arm value: a whole number 1..255, else None."""
+    if isinstance(v, bool) or not isinstance(v, int) or not 0 < v < 256:
+        return None
+    return v
+
+
 class FlameStatus:
     """flamesafe's status frames, read for display only. CONTRACT.md:
     there is no path from a status frame to flame output, and nothing read
@@ -794,7 +801,11 @@ class FlameStatus:
                                            _list(g.get("safeties_up"))],
                            "safeties_locked": [bool(x) for x in
                                                _list(g.get(
-                                                   "safeties_locked"))]})
+                                                   "safeties_locked"))],
+                           # The value this group arms at (2026-10-26, a
+                           # safety_profile may give it its own); None from
+                           # an older flamesafe that does not send it.
+                           "arm_value": _arm(g.get("arm_value"))})
         if not groups:
             groups = [{"name": n, "armed": "unknown", "wanted": False,
                        "reason": "", "dwell_s": 0} for n in self.names]

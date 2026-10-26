@@ -46184,6 +46184,18 @@ def test_flamesafe_multi_safety_ltcplay_side():
     g = fs.view()["groups"][0]
     check(g["safeties_up"] == [] and g["safeties_locked"] == [],
           "an older flamesafe without the lists: empty, no line")
+    # safety_profile (2026-10-26): each group's own arm value reaches the
+    # card's tooltip; an older flamesafe or a bad value gives none.
+    fs.last = {"groups": [dict(base, arm_value=178)]}
+    check(fs.view()["groups"][0]["arm_value"] == 178,
+          "the rack screen gets the group's arm value (178)")
+    for bad in (None, 0, 256, True, "178"):
+        fs.last = {"groups": [dict(base, arm_value=bad)]}
+        check(fs.view()["groups"][0]["arm_value"] is None,
+              f"an arm value of {bad!r} reaches the card as none")
+    fs.last = {"groups": [dict(base)]}
+    check(fs.view()["groups"][0]["arm_value"] is None,
+          "an older flamesafe without arm_value: none")
     page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
