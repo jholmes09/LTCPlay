@@ -49,8 +49,11 @@ def describe(c):
         except ValueError:
             count = 0
         over = ""
-        if count > 0 and slot + count - 1 > 512:
+        if count > 0 and slot > 512:
             over = " (past 512 slots: not used)"
+        elif count > 0 and slot + count - 1 > 512:
+            # The engine uses this row up to slot 512 (flameprog.FlameMap).
+            over = f" (slots {slot} to 512 used, the rest not used)"
         parts.append(f"{proto} {kind}, universe {n.get('BaudRate', '?')}, "
                      f"{count} channels{over}")
         slot += max(count, 0)
