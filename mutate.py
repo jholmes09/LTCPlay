@@ -8717,6 +8717,28 @@ def build():
             return
         fn = getattr(self.conductor, "stop_run", None)'''),
 
+ ("deck: STOP RUN goes on a single tap again",
+  "ltcplay/streamdeck.py",
+  "            self._stop_hold.press(now)",
+  "            self._do_stop()"),
+
+ ("deck: letting go of STOP RUN early still stops",
+  "ltcplay/streamdeck.py",
+  "                # Letting go of Stop before ABORT_HOLD_S sends nothing.\n"
+  "                self._stop_hold.release()",
+  "                # Letting go of Stop before ABORT_HOLD_S sends nothing.\n"
+  "                pass"),
+
+ ("deck: a Stop hold stops though the run ended during it",
+  "ltcplay/streamdeck.py",
+  "            if self.start_key_mode() == \"stop\":\n                self._do_stop()",
+  "            if True:\n                self._do_stop()"),
+
+ ("deck: a Stop hold never shows on the key",
+  "ltcplay/streamdeck.py",
+  "            elif stop_frac > 0:",
+  "            elif False:"),
+
  ("deck: Stop is not the Rack screen's Stop route",
   "ltcplay/streamdeck.py",
   '''        return self._press("stop", who, screen, path="/api/stop")''',
@@ -9750,11 +9772,9 @@ def build():
  ("deck: the FIRE key keeps firing after it is released (T2)",
   "ltcplay/streamdeck.py",
   '''                self._fire_release("the key came up")
-            elif k in self._key_group:
-                # Letting go before ARM_HOLD_S cancels the hold and sends''',
+                # Letting go of Stop before ABORT_HOLD_S sends nothing.''',
   '''                pass
-            elif k in self._key_group:
-                # Letting go before ARM_HOLD_S cancels the hold and sends'''),
+                # Letting go of Stop before ABORT_HOLD_S sends nothing.'''),
 
  ("deck: the FIRE heartbeats carry on after the engine refuses one (T3)",
   "ltcplay/streamdeck.py",

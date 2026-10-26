@@ -45,7 +45,11 @@ THE START/STOP KEY (Jeff, 2026-10-26): the top-left key is Start Now
 while nothing is running (unchanged: it journals a refusal, there is no
 start entry point) and Stop while Run has been pressed and playback is
 going (the Rack screen's Stop button, POST /api/stop: never behind the
-operator gate, refused by the engine while a scheduled show is live).
+operator gate, refused by the engine while a scheduled show is live). Stop
+is a HOLD of ABORT_HOLD_S, like Abort, never a tap (the Rack screen asks
+for a confirm); letting go early sends nothing, and the key ring fills
+while it is held. During a scheduled show the key keeps NOW PLAYING,
+PAUSED or AUDIO LOST and a press sends nothing.
 Hold and Abort are unchanged. See Controller.start_key_mode.
 
 NOT REAL unless this module is given a `conductor` (ltcplay.conductor.
@@ -2503,6 +2507,10 @@ class Controller:
         self._clock = clock
         self._sleep = sleep
         self._abort_hold = AbortHold()
+        # The Start/Stop key's Stop is a HOLD of ABORT_HOLD_S (Jeff,
+        # 2026-10-26: the Rack screen asks for a confirm, and a stray tap
+        # must never end a run); letting go early sends nothing.
+        self._stop_hold = AbortHold()
         self._reset_shown_since = None   # see RESET_SHOWN_S
         # The frames draw() composes, numbered (2026-10-21). With the keys
         # written on their own thread (DisplayWorker, run_forever's
@@ -2698,6 +2706,7 @@ class Controller:
         self._abort_hold.release()
         for h in self._arm_holds:
             h.release()
+        self._stop_hold.release()
         self._vholds.clear()
         self._vpressed.clear()
         self._vwho.clear()
@@ -2855,12 +2864,14 @@ class Controller:
             pass
         return "start"
 
-    def _do_start_or_stop(self):
+    def _do_start_or_stop(self, now):
         mode = self.start_key_mode()
         if mode == "start":
             self._do_start_now()
         elif mode == "stop":
-            self._do_stop()
+            # A hold, never a tap (Jeff, 2026-10-26): tick() sends Stop
+            # once the key has been held ABORT_HOLD_S.
+            self._stop_hold.press(now)
         else:
             self._log("Stream Deck Stop pressed while a scheduled show is "
                       "live: refused, as on the Rack screen. Only Hold, "
@@ -3300,6 +3311,7 @@ class Controller:
                     if self.arm.wanted[i] or self._reported_armed(i):
                         self._do_disarm(i)
             self._abort_hold.release()
+            self._stop_hold.release()
             for h in self._arm_holds:
                 h.release()
             self._fire_release("the rig is aborted")
@@ -3313,6 +3325,8 @@ class Controller:
                 # The FIRE key (Morning page): letting go ends the purge
                 # fire at once, whether or not the page is still open.
                 self._fire_release("the key came up")
+                # Letting go of Stop before ABORT_HOLD_S sends nothing.
+                self._stop_hold.release()
             elif k in self._key_group:
                 # Letting go before ARM_HOLD_S cancels the hold and sends
                 # nothing, exactly like letting go of Abort early.
@@ -3326,7 +3340,7 @@ class Controller:
                     self._fire_press(now)
                 else:
                     # Start and Stop are one key (Jeff, 2026-10-26).
-                    self._do_start_or_stop()
+                    self._do_start_or_stop(now)
             elif k == TOP_HOLD:
                 self._do_hold_or_resume(self._hold_press_resumes())
             elif k == TOP_ABORT:
@@ -3363,6 +3377,15 @@ class Controller:
             # hold; nothing here fires (Reset is a single press, handled
             # there).
             return
+        if self._prev_keys[TOP_START] and self._stop_hold.fired(now):
+            # Stop only if it is still a run to stop: a run that ended, or
+            # a scheduled show that went live, during the hold is not.
+            if self.start_key_mode() == "stop":
+                self._do_stop()
+            else:
+                self._log("Stream Deck Stop held, but by then no run was "
+                          "live to stop (or a scheduled show was). Nothing "
+                          "was sent.", action="stop", screen="Stream Deck")
         if self._prev_keys[TOP_ABORT] and self._abort_hold.fired(now):
             self._do_abort()
             # Item 3 (round 2 of the safety review): never ALSO complete an
@@ -3644,6 +3667,9 @@ class Controller:
             self._group_key[i]: f for i, f in
             enumerate(h.fraction(now) for h in self._arm_holds)
             if f > 0 and i in self._group_key}
+        stop_frac = 0.0 if latched else self._stop_hold.fraction(now)
+        if stop_frac > 0:
+            arm_fills[TOP_START] = stop_frac   # Stop's hold fills its ring
         draw_marquee(d, chase, abort_frac, arm_fills)
         live = abort_is_live(self._anything_armed_or_wanted(),
                              self.show_running_provider())
@@ -3714,9 +3740,13 @@ class Controller:
                 bg, text = PLAYING_ON if blink_on else PLAYING_OFF
                 fonts.show_key(d, b0, ["NOW", "PLAYING"], text, bg=bg,
                                kind="sans")
+            elif stop_frac > 0:
+                # Stop being held: the ring fills; let go early, nothing.
+                fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
+                               bg=BRONZE, kind="sans", max_size=16)
             elif self.start_key_mode() == "stop":
                 # Run pressed and playback going: this key is Stop (Jeff,
-                # 2026-10-26), the Rack screen's Stop.
+                # 2026-10-26), the Rack screen's Stop, held like Abort.
                 fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:

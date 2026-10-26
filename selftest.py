@@ -45807,12 +45807,14 @@ def test_stream_deck_start_stop_is_one_key():
     """Jeff (2026-10-26): Start and Stop are one key. Start when nothing is
     running (today's Start Now, unchanged), Stop while Run has been pressed
     and playback is going: the Rack screen's Stop button, POST /api/stop,
-    never behind the operator gate (it only takes outputs down). During a
-    scheduled show Stop is refused as on the Rack screen and the key keeps
-    saying what the show is doing. Hold and Abort are unchanged; no key is
+    never behind the operator gate (it only takes outputs down), and a
+    HOLD of ABORT_HOLD_S, never a tap (the Rack screen asks for a
+    confirm). During a scheduled show the key keeps saying what the show
+    is doing and sends nothing. Hold and Abort are unchanged; no key is
     freed (there was no Stop key on the deck)."""
-    section("Stream Deck: Start and Stop are one key; Stop is the Rack "
-            "screen's Stop, never gated; refused during a scheduled show")
+    section("Stream Deck: Start and Stop are one key; Stop is a hold of "
+            "Abort's length, never a tap, never gated; a scheduled show "
+            "reads NOW PLAYING and sends nothing")
     from ltcplay import streamdeck as sd
     posted = []
     eng = sd.EngineConductor("http://127.0.0.1:1",
@@ -45856,16 +45858,30 @@ def test_stream_deck_start_stop_is_one_key():
     e = _Eng()
     show, run = [False], [False]
     lines = []
+    t = [100.0]
     c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
                       ["front row", "cat-walk", "wave flamer"],
                       operator_provider=lambda: "",
                       show_running_provider=lambda: show[0],
                       run_live_provider=lambda: run[0], conductor=e,
-                      journal=lambda t_, **kw: lines.append((t_, kw)))
+                      journal=lambda t_, **kw: lines.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def down():
+        c.run_once([True] + [False] * 5)
+
+    def up():
+        c.run_once([False] * 6)
+
+    def wait(dt):
+        t[0] += dt
+        c.tick()
 
     def tap():
-        c.run_once([True] + [False] * 5)
-        c.run_once([False] * 6)
+        down()
+        wait(0.05)
+        up()
+        wait(0.05)
     check(c.start_key_mode() == "start", "nothing running: Start")
     tap()
     check(not e.calls and lines[-1][1].get("action") == "start",
@@ -45873,29 +45889,69 @@ def test_stream_deck_start_stop_is_one_key():
           f"{lines[-1]}")
     run[0] = True
     check(c.start_key_mode() == "stop", "Run pressed: Stop")
+    # A single tap never stops (Jeff, 2026-10-26: a stray tap must never
+    # end a run; the Rack screen asks for a confirm).
+    n = len(lines)
     tap()
+    wait(sd.ABORT_HOLD_S * 3)
+    check(not e.calls and len(lines) == n,
+          f"a single tap on STOP RUN sends nothing: {e.calls}")
+    # Let go early: nothing, however long after.
+    down()
+    wait(sd.ABORT_HOLD_S * 0.8)
+    check(c._stop_hold.fraction(t[0]) > 0.5, "the hold is filling")
+    up()
+    check(c._stop_hold.fraction(t[0]) == 0.0,
+          "letting go empties the hold at once (the key stops saying HOLD "
+          "TO STOP)")
+    wait(sd.ABORT_HOLD_S * 3)
+    check(not e.calls, "let go before the hold is done: nothing sent")
+    # A full hold, the same as Abort's: Stop, once.
+    down()
+    wait(sd.ABORT_HOLD_S - 0.01)
+    check(not e.calls, "not yet at the hold time")
+    wait(0.02)
     check(e.calls == [("stop", "", "Stream Deck")] and
           "Stream Deck Stop: Stopped." in lines[-1][0],
-          f"Stop goes to the engine with no operator chosen (it only takes "
-          f"outputs down): {e.calls} {lines[-1]}")
+          f"held ABORT_HOLD_S: Stop goes to the engine, with no operator "
+          f"chosen (it only takes outputs down): {e.calls} {lines[-1]}")
+    wait(sd.ABORT_HOLD_S * 3)
+    up()
+    check(len(e.calls) == 1, "still held: it does not send twice")
+    # The run ends during the hold: nothing sent.
+    down()
+    run[0] = False
+    wait(sd.ABORT_HOLD_S + 0.05)
+    up()
+    check(len(e.calls) == 1 and "Nothing was sent" in lines[-1][0],
+          f"the run ended mid hold: nothing sent: {lines[-1]}")
+    run[0] = True
+    # A scheduled show: nothing is sent, held or tapped.
     show[0] = True
     check(c.start_key_mode() == "show", "a scheduled show live: show")
-    tap()
+    down()
+    wait(sd.ABORT_HOLD_S * 3)
+    up()
     check(len(e.calls) == 1 and "Nothing was stopped" in lines[-1][0],
           "during a scheduled show Stop is refused as on the Rack screen")
     show[0] = False
     e.latched = True
-    tap()
+    down()
+    wait(sd.ABORT_HOLD_S * 3)
+    up()
     check(len(e.calls) == 1, "aborted: the key does nothing, as before")
     e.latched = False
     check(sd.deck_key_name(sd.TOP_START, []) == "Start/Stop",
           "the audit calls it Start/Stop")
+    t2 = [0.0]
     c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
                        ["front row", "cat-walk", "wave flamer"],
                        show_running_provider=lambda: False,
-                       run_live_provider=lambda: True,
+                       run_live_provider=lambda: True, clock=lambda: t2[0],
                        journal=lambda t_, **kw: lines.append((t_, kw)))
     c2.run_once([True] + [False] * 5)
+    t2[0] += sd.ABORT_HOLD_S + 0.01
+    c2.tick()
     check("no engine is connected" in lines[-1][0] and
           lines[-1][1].get("fault"),
           "Stop with no engine wired: said, as a fault")
@@ -45909,6 +45965,17 @@ def test_stream_deck_start_stop_is_one_key():
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[0][0] == ["STOP", "RUN"],
               f"Run live: the key reads STOP RUN: {faces[0]}")
+        down()
+        wait(sd.ABORT_HOLD_S / 2)
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["HOLD TO", "STOP"],
+              f"while held the key says so (its ring fills): {faces[0]}")
+        up()
+        show[0] = True
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["NOW", "PLAYING"],
+              f"a scheduled show: NOW PLAYING, never STOP: {faces[0]}")
+        show[0] = False
         run[0] = False
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[0][0] != ["STOP", "RUN"],
