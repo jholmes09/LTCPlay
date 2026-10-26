@@ -41360,8 +41360,8 @@ def test_remote_abort_and_start_need_the_confirm():
         page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "web", "remote.html"),
                     encoding="utf-8").read()
-        check('const step = abortTapStep(ABORT_TAP, Date.now(), '
-              'abortTapKind(e));' in page and
+        check('const step = abortTapStep(ABORT_TAP, monoNow(), kind, '
+              '$("abortbar").classList.contains("tap1"));' in page and
               'press("abort", {confirmed:true})' in page and
               'id="abortbar"' in page and "position:fixed" in page,
               "the page asks for a second tap before Abort, and the Abort "
