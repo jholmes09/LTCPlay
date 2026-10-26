@@ -10323,6 +10323,12 @@ def test_schedule_state_machine_every_state_every_event():
         (E(S.ABORT, "operator"), {}),                  # not confirmed
         (E(S.ABORT, "operator", confirmed=True),
          {SH: (SB, STOPPED), P: (SB, STOPPED)}),
+        # Stop during a show (the Stream Deck's Stop held; Jeff,
+        # 2026-10-26): faded like an Abort, and the latch is the service's
+        # (only an Abort's conductor call sets it), never Stop's.
+        (E(S.STOP_SHOW, "operator"), {}),              # not confirmed
+        (E(S.STOP_SHOW, "operator", confirmed=True),
+         {SH: (SB, STOPPED), P: (SB, STOPPED)}),
         (E(S.END_NIGHT, "operator"), {}),              # not confirmed
         (E(S.END_NIGHT, "operator", confirmed=True),
          {k: (C, CLOSE) for k in (I, SB, H, HD, SD)}),
@@ -27102,13 +27108,16 @@ def test_streamdeck_controller_with_fakes():
           "a hold again")
     release(sd.GROUP_KEYS[0])
 
-    # Start/Stop: no conductor connected, journaled, nothing done. A show
-    # is running here, so the key is Stop, refused as on the Rack screen
-    # (Jeff, 2026-10-26).
+    # Start/Stop: a show is running here, so the key is Stop, a complete
+    # halt (Jeff, 2026-10-26), and so a hold: a tap journals nothing and
+    # sends nothing.
+    n = len(events)
     press(sd.TOP_START)
-    check("Stop pressed while a scheduled show is live" in events[-1][0]
-          and "Nothing was stopped" in events[-1][0], events[-1])
+    check(c._stop_hold._down_at is not None and len(events) == n,
+          f"a press during a show starts a Stop hold: {events[n:]}")
     release(sd.TOP_START)
+    check(len(events) == n and c._stop_hold.fraction(t[0]) == 0.0,
+          f"a tap during a show sends nothing: {events[n:]}")
 
     # The deck has no Hold and no Abort key (Jeff, 2026-10-26): keys 1 to
     # 4 are arm keys, key 5 is spare and does nothing.
@@ -27558,15 +27567,16 @@ def test_streamdeck_start_key_during_a_show():
                       show_running_provider=lambda: running[0],
                       conductor=eng, clock=lambda: t[0],
                       journal=lambda text, **kw: lines.append((text, kw)))
-    # Pressing the Start/Stop key during the show: it is Stop, refused as
-    # on the Rack screen (only Hold, Resume and Abort during a show), in
-    # the journal; nothing asked of the engine. NOW PLAYING is honest.
+    # Pressing the Start/Stop key during the show: it is Stop, a complete
+    # halt (Jeff, 2026-10-26: the show ends), and so a HOLD: a tap sends
+    # nothing and asks nothing of the engine. NOW PLAYING is honest.
     c.run_once([True, False, False, False, False, False])
+    check(c._stop_hold._down_at is not None,
+          "a press during the show starts a Stop hold")
     c.run_once([False] * 6)
-    check(len(lines) == 1 and "Nothing was stopped" in lines[0][0]
-          and lines[0][1].get("action") == "stop" and not eng.calls,
-          f"Start/Stop during a show journals a refusal and does nothing: "
-          f"{lines}")
+    check(not lines and not eng.calls and
+          c._stop_hold.fraction(t[0]) == 0.0,
+          f"a tap on Start/Stop during a show sends nothing: {lines}")
     fonts, faces, restore = _deck_face_recorder(sd)
     if fonts is None:
         print("  note: Pillow is not installed here, so the Start key's "
@@ -27587,6 +27597,16 @@ def test_streamdeck_start_key_during_a_show():
         check(sd.PLAYING_ON == ((50, 205, 95), (4, 28, 10))
               and sd.PLAYING_OFF == ((8, 40, 16), (60, 200, 100)),
               "the green is the approved demo's")
+        # Held during the show: Stop's hold fills, HOLD TO STOP (Jeff,
+        # 2026-10-26: Stop is a complete halt, the show ends).
+        c.run_once([True, False, False, False, False, False])
+        t[0] += sd.STOP_HOLD_S / 2
+        c.tick()
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["HOLD TO", "STOP"],
+              f"held during a show: HOLD TO STOP: {faces[0]}")
+        c.run_once([False] * 6)
+        check(not eng.calls, "let go early: nothing")
         eng.look = "HELD"
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
@@ -46792,6 +46812,81 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               f"a live show: Stop refused, and no cut, scrub end or flame "
               f"disarm sent: {st} {out} {sent}")
         check(R.svc.machine.state == S.SHOW, "the show plays on")
+        # The same from the show network with "halt": still refused.
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"who": "Andy", "screen": "Stream Deck",
+                            "halt": True}, client=("10.20.0.44", 50000))
+        check(st in (403, 409) and sent == [] and
+              R.svc.machine.state == S.SHOW,
+              f"a halt from the show network is not taken: {st} {out}")
+        # The Stream Deck's Stop is a complete halt (Jeff, 2026-10-26):
+        # "halt" from this machine, taken during a scheduled show. Every
+        # flame group and laser disarmed, the show ended through the
+        # scheduler's Stop (faded like an Abort), playback stopped, and
+        # nothing latched anywhere.
+        order = []
+        R.remote._flame_disarm = lambda reason: (order.append("disarm"),
+                                                 type("_R", (), {
+                                                     "ok": True,
+                                                     "sentence": "sent"})())[1]
+        R.remote.live_flame_cut = lambda *a, **kw: order.append("cut")
+        R.remote.scrub_flames_end = lambda *a, **kw: order.append("scrub")
+
+        class _Lasers:
+            def lasers_disarm_now(self, why, who="", screen=""):
+                order.append(("lasers", why, who, screen))
+                return True, "Every laser disarmed."
+        R.remote.morning = _Lasers()
+        presses = []
+        real_press = R.svc.operator_press
+        R.svc.operator_press = lambda what, *a, **kw: (
+            presses.append((what, R.svc.machine.state)),
+            order.append("show"), real_press(what, *a, **kw))[2]
+        real_stop = R.httpd.control.stop
+        R.httpd.control.stop = lambda: (order.append("stop"),
+                                        real_stop())[1]
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"who": "", "screen": "Stream Deck",
+                            "halt": True}, client=("127.0.0.1", 50000))
+        kinds = [o if isinstance(o, str) else o[0] for o in order]
+        check(st == 200 and kinds == ["cut", "scrub", "disarm", "lasers",
+                                      "show", "stop"],
+              f"the deck's halt during a show: flames, lasers, the show, "
+              f"then playback, in that order: {st} {out} {order}")
+        check(out.get("show", {}).get("ok") is True and
+              out.get("lasers", {}).get("disarmed") is True and
+              out.get("flames", {}).get("disarmed") is True,
+              f"and the answer says each went: {out}")
+        check(presses == [("stop-show", S.SHOW)] and
+              "abort" not in [p_[0] for p_ in presses],
+              f"the scheduler's Stop, never its Abort: {presses}")
+        R.settle()
+        m = R.svc.machine
+        slot = [x for x in m.slots if x.n == 1][0] if hasattr(m, "slots") \
+            else m.slot(1)
+        check(m.state == S.STANDBY and m.running == 0 and
+              slot.reason == "STOPPED (operator Stop)" and
+              not m.abort_latched,
+              f"the show ended, the scheduler is in STANDBY, nothing "
+              f"latched: {m.state} {slot.status} {slot.reason} "
+              f"{m.abort_latched}")
+        check(R.c is None or not R.c.snapshot().get("latched"),
+              "and the conductor is not latched: no Reset is needed")
+        said = [r for r in R.svc.journal
+                if r.get("action") == S.STOP_SHOW]
+        check(said and "Stop" in said[-1].get("text", "") and
+              "Nothing is latched" in said[-1].get("text", ""),
+              f"the journal says the show was stopped, with no latch: "
+              f"{said[-1:]}")
+        # A halt with no show live: the lasers too, and no show to end.
+        del order[:]
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 200 and "show" not in out and
+              "lasers" in [o if isinstance(o, str) else o[0]
+                           for o in order],
+              f"a halt between shows disarms the lasers too: {out} {order}")
     finally:
         R.close()
     print("  ok")
@@ -46841,6 +46936,40 @@ def test_stop_says_when_its_flame_disarm_failed():
     e._post_one("hold", {"who": "Andy"})
     check(tuple(e.fault_face) == ("ENGINE", "FAULT"),
           "only Stop's answer is read for its flames")
+    # The deck's Stop is a complete halt (Jeff, 2026-10-26): a show the
+    # scheduler did not end, or lasers not disarmed, is a fault too.
+    answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
+                     "show": {"ok": False, "text": "No show is running."}}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check("did NOT end the show" in e.fault and "Abort" in e.fault and
+          tuple(e.fault_face) == ("ENGINE", "FAULT"),
+          f"a show the scheduler did not end is the deck's fault: "
+          f"{e.fault!r}")
+    answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
+                     "lasers": {"disarmed": False, "text": "x"}}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check("laser disarm FAILED" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED"),
+          f"a failed laser disarm: DISARM FAILED: {e.fault!r}")
+    answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
+                     "lasers": {"disarmed": True}, "show": {"ok": True}}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check(e.fault == "", "a halt that all went: no fault")
+    # And the deck's Stop asks the engine for the halt.
+    import threading as _th
+    got, seen = [], _th.Event()
+    e3 = sd.EngineConductor(
+        "http://127.0.0.1:1", fetcher=lambda path: None,
+        poster=lambda path, body: (got.append((path, dict(body))),
+                                   seen.set(), (True, "done", {}))[2])
+    e3.start()
+    try:
+        e3.stop_run("Andy")
+        seen.wait(3)
+    finally:
+        e3.stop()
+    check(got and got[0][0] == "/api/stop" and got[0][1].get("halt") is True,
+          f"the deck's Stop posts /api/stop with halt: {got}")
     if not _pillow_missing("the deck's DISARM FAILED key"):
         src = open(sd.__file__, encoding="utf-8").read()
         check('getattr(self.conductor, "fault_face", None)' in src,
@@ -46884,13 +47013,14 @@ def test_stream_deck_start_stop_is_one_key():
     of STOP_HOLD_S, never a tap (the Rack screen asks for a confirm). A
     completed Stop first disarms every flame group on the arm link, never
     setting the Abort latch, and is reachable while an Abort is latched,
-    as on the Rack screen. During a scheduled show, or while the scheduler
-    cannot be read, the key never reads STOP RUN and sends nothing. The
-    deck has no Hold or Abort key since 2026-10-26."""
+    as on the Rack screen. During a scheduled show the same hold is a
+    complete halt and the show ends (Jeff, 2026-10-26); while the
+    scheduler cannot be read, the key never reads STOP RUN and sends
+    nothing. The deck has no Hold or Abort key since 2026-10-26."""
     section("Stream Deck: Start and Stop are one key; Stop is a 0.5 s hold, "
             "never a tap, never gated; it disarms every flame group and "
-            "never latches; reachable while aborted; never during a "
-            "scheduled show or with the scheduler unknown")
+            "never latches; reachable while aborted and during a scheduled "
+            "show (a complete halt); never with the scheduler unknown")
     from ltcplay import streamdeck as sd
     posted = []
     eng = sd.EngineConductor("http://127.0.0.1:1",
@@ -47021,14 +47151,39 @@ def test_stream_deck_start_stop_is_one_key():
     check(len(e.calls) == 1 and "Nothing was sent" in lines[-1][0],
           f"the run ended mid hold: nothing sent: {lines[-1]}")
     run[0] = True
-    # A scheduled show: nothing is sent, held or tapped.
+    # A scheduled show (Jeff, 2026-10-26): Stop is a complete halt of
+    # everything and the show ends. A tap or an early let go sends
+    # nothing; a full hold disarms every group first, then Stop.
     show[0] = True
     check(c.start_key_mode() == "show", "a scheduled show live: show")
-    down()
+    arm.set_group(0, True)
+    tap()
     wait(sd.STOP_HOLD_S * 3)
+    check(len(e.calls) == 1 and arm.wanted[0],
+          "during a scheduled show a tap sends nothing")
+    down()
+    wait(sd.STOP_HOLD_S * 0.5)
     up()
-    check(len(e.calls) == 1 and "Nothing was stopped" in lines[-1][0],
-          "during a scheduled show Stop is refused as on the Rack screen")
+    wait(sd.STOP_HOLD_S * 3)
+    check(len(e.calls) == 1, "during a show an early let go sends nothing")
+    e.seen = None
+    down()
+    wait(sd.STOP_HOLD_S + 0.01)
+    check(len(e.calls) == 2 and e.calls[-1] == ("stop", "", "Stream Deck")
+          and arm.wanted == [False, False, False] and
+          e.seen == [False, False, False] and not c._latched_now(),
+          f"during a scheduled show a full hold disarms every group, then "
+          f"Stop, with no latch: {e.calls} {arm.wanted} {e.seen}")
+    up()
+    # A show that ended during the hold, and no run going: nothing sent.
+    down()
+    show[0] = False
+    run[0] = False
+    wait(sd.STOP_HOLD_S + 0.05)
+    up()
+    check(len(e.calls) == 2 and "Nothing was sent" in lines[-1][0],
+          f"the show ended mid hold: nothing sent: {lines[-1]}")
+    run[0] = True
     # The scheduler cannot be read (review of PR #120, P2-4): never Stop.
     show[0] = None
     check(c.start_key_mode() == "start",
@@ -47036,7 +47191,7 @@ def test_stream_deck_start_stop_is_one_key():
     down()
     wait(sd.STOP_HOLD_S * 3)
     up()
-    check(len(e.calls) == 1, "and a hold sends nothing")
+    check(len(e.calls) == 2, "and a hold sends nothing")
     show[0] = False
     # Aborted from a screen: Stop is still reachable (Jeff, 2026-10-26, as
     # on the Rack screen), and the latch stands.
@@ -47044,11 +47199,11 @@ def test_stream_deck_start_stop_is_one_key():
     arm.set_group(1, True)
     tap()
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 1, "aborted: a tap still sends nothing")
+    check(len(e.calls) == 2, "aborted: a tap still sends nothing")
     down()
     wait(sd.STOP_HOLD_S + 0.01)
     up()
-    check(len(e.calls) == 2 and arm.wanted == [False, False, False] and
+    check(len(e.calls) == 3 and arm.wanted == [False, False, False] and
           c._latched_now(),
           f"aborted: a full Stop hold disarms and stops, the latch stays: "
           f"{e.calls} {arm.wanted}")
@@ -47078,13 +47233,13 @@ def test_stream_deck_start_stop_is_one_key():
     check(c._stop_hold.fraction(t[0]) == 0.0,
           "aborted: letting go empties the hold")
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 2, "aborted: an early let go sends nothing")
+    check(len(e.calls) == 3, "aborted: an early let go sends nothing")
     e.latched = False
     # The key's own state is read on every tick (review of PR #120,
     # P2-3): a hold timer with the key up never sends Stop.
     c._stop_hold.press(t[0])
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 2,
+    check(len(e.calls) == 3,
           "a Stop hold timer running with the key up sends nothing")
     c._stop_hold.release()
     check(sd.deck_key_name(sd.TOP_START, []) == "Start now",

@@ -2901,7 +2901,10 @@ class Service:
     # with who and which screen, the Abort latch saved before the conductor
     # is asked (see _apply). Reset is reset_conductor, under its own name.
     PRESSES = {"start-now": sch.START_NOW, "hold": sch.HOLD_ON,
-               "resume": sch.RESUME, "abort": sch.ABORT}
+               "resume": sch.RESUME, "abort": sch.ABORT,
+               # The engine's own Stop during a show (web.py, the Stream
+               # Deck's Stop held; Jeff, 2026-10-26): never a remote route.
+               "stop-show": sch.STOP_SHOW}
     # The states in which a refused Hold or Resume found nothing to do:
     # nothing can start by itself (on hold, paused, the night over), or
     # nothing is held. BOOT is not among them: there the scheduler has not

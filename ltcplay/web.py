@@ -786,6 +786,70 @@ class Handler(BaseHTTPRequestHandler):
             self._ctx_cache = ctx
         return ctx
 
+    def _halt_asked(self):
+        """The Stream Deck's Stop (Jeff, 2026-10-26): a complete halt of
+        everything, taken during a scheduled show too. Only a POST from
+        this machine with "halt": true (the deck process, over loopback);
+        the Rack screen's own Stop button does not ask for it and is still
+        refused during a show."""
+        try:
+            body = self._body()
+        except Exception:                        # noqa: BLE001
+            return False
+        return self._local() and isinstance(body, dict) and \
+            body.get("halt") is True
+
+    def _who_where(self, body):
+        """(who, screen) for a Stop's journal and audit lines."""
+        body = body if isinstance(body, dict) else {}
+        try:
+            ctx = self._ctx()
+            who = str(body.get("who") or getattr(ctx, "user", "") or "")
+            screen = str(body.get("screen") or getattr(ctx, "screen", "")
+                         or "Rack screen")
+        except Exception:                        # noqa: BLE001
+            who, screen = "", "Rack screen"
+        return who, screen
+
+    def _stop_lasers(self, body):
+        """A halt's lasers (Jeff, 2026-10-26: Stop disarms everything):
+        every laser disarmed at once, as an Abort or Hold does
+        (morning.Morning.lasers_disarm_now). {"disarmed": True/False,
+        "text"}, or None with no Morning page (no laser arm) in this
+        engine. Never raises."""
+        rm = getattr(self.server, "remote", None)
+        m = getattr(rm, "morning", None) if rm is not None else None
+        fn = getattr(m, "lasers_disarm_now", None)
+        if fn is None:
+            return None
+        who, screen = self._who_where(body)
+        try:
+            r = fn(f"Stop pressed by {who or 'an unnamed operator'} on the "
+                   f"{screen}", who, screen)
+        except Exception as e:                   # noqa: BLE001
+            return {"disarmed": False, "text": f"{type(e).__name__}: {e}"}
+        if isinstance(r, tuple) and len(r) == 2:
+            ok, said = r
+        else:
+            ok, said = getattr(r, "ok", True), getattr(r, "sentence", "")
+        return {"disarmed": bool(ok),
+                "text": str(said or "Every laser: a disarm was sent.")}
+
+    def _stop_show(self, body):
+        """A halt during a scheduled show (Jeff, 2026-10-26: the show
+        ends): the scheduler's Stop (STOP_SHOW), which fades the show to
+        dark like an Abort but latches nothing. {"ok", "text"}, or None
+        when no scheduled show is live. Never raises."""
+        if not self._scheduled_show_live():
+            return None
+        svc = getattr(self.server, "schedule", None)
+        who, screen = self._who_where(body)
+        try:
+            r = svc.operator_press("stop-show", who, screen, confirmed=True)
+        except Exception as e:                   # noqa: BLE001
+            return {"ok": False, "text": f"{type(e).__name__}: {e}"}
+        return {"ok": bool(r.get("ok")), "text": str(r.get("text") or "")}
+
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
         cut, fire while scrubbing ended, then the flame link's disarm_all
@@ -1282,7 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, {"error": f"{type(e).__name__}: {e}"})
             return self._send(code, out, headers=headers)
-        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live():
+        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live() and \
+                not (route == "/api/stop" and self._halt_asked()):
             return self._send(409, {"error": LIVE_SHOW_REFUSAL})
         c = self.server.control
         # An operator action (Start, Stop, GO, autoreload, override, ...) must
@@ -1380,10 +1445,21 @@ class Handler(BaseHTTPRequestHandler):
                 # (the cues zeroed, a zero frame, the keyed disarm and its
                 # repeats: the flame half of an Abort), WITHOUT the Abort
                 # latch, which is the Abort's alone. Then playback stops.
+                # The Stream Deck's Stop is a complete halt (Jeff,
+                # 2026-10-26, "halt"): the lasers are disarmed too, and a
+                # scheduled show that is live ends (STOP_SHOW, no latch)
+                # before playback stops.
+                halt = self._halt_asked()
                 flames = self._stop_flames(body)
+                lasers = self._stop_lasers(body) if halt else None
+                show = self._stop_show(body) if halt else None
                 out = {"stopped": c.stop()}
                 if flames is not None:
                     out["flames"] = flames
+                if lasers is not None:
+                    out["lasers"] = lasers
+                if show is not None:
+                    out["show"] = show
                 return self._send(200, out)
         except USER_ERRORS as e:
             c.last_error = str(e)

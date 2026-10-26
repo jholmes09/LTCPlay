@@ -446,9 +446,14 @@ relabel them), key 5 is spare. The deck has no Hold and no Abort key: those
 are the Rack screen's. STOP RUN (while a run is going, and only when the
 scheduler is known to have no show live) is a half second hold: every
 flame group is turned off on the arm link at once, then the Rack screen's
-Stop is asked, which ends live flame programming, sends the flame link's
-disarm_all (the flame half of an Abort) and stops playback; nothing
-latches the rig. After an Abort from any screen
+Stop route is asked with "halt", which ends live flame programming, sends
+the flame link's disarm_all (the flame half of an Abort), disarms every
+laser and stops playback; nothing latches the rig. During a scheduled show
+the key keeps saying NOW PLAYING, PAUSED or AUDIO LOST, and the same hold
+is a complete halt (Jeff, 2026-10-26): all of the above, and the show
+ends through the scheduler's Stop (faded like an Abort, no latch, no
+Reset). The Rack screen's own Stop button is still refused during a show.
+After an Abort from any screen
 the deck border stays solid red and every key with nothing to do is
 greyed; a group that flamesafe still reports armed keeps showing ARMED (and
 a fault or a lost link still shows), and a tap on it turns it off. STOP RUN

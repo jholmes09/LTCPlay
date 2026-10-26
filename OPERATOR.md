@@ -118,10 +118,18 @@ then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
 (the flame half of an Abort, so each group needs a fresh arm), playback
 stops, the outputs go dark, and no show starts until Run is pressed again.
-Unlike Abort it does not latch the rig: nothing needs a Reset. A tap does nothing; let go before
-the ring fills and nothing is sent. During a scheduled show the key keeps
-saying NOW PLAYING, PAUSED or AUDIO LOST and Stop does nothing (use Hold or
-Abort on the Rack screen). After an Abort the deck's border goes red and
+The deck's Stop is a complete halt: every laser is disarmed too.
+Unlike Abort it does not latch the rig: nothing needs a Reset. A tap does
+nothing; let go before the ring fills and nothing is sent.
+
+**Stop during a scheduled show** (Jeff, 2026-10-26). The key keeps saying
+NOW PLAYING, PAUSED or AUDIO LOST, but holding it half a second still
+stops everything: every flame group and laser is disarmed, the show ends
+(faded to dark as an Abort is, but with no latch and no Reset needed),
+playback stops, and no show starts until Run is pressed again. To disarm
+just one group during a show, tap its key on the deck, or use the Rack
+screen. The Rack screen's own Stop button is still refused during a show
+(use Hold or Abort there). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
 the Rack screen. If Stop stopped playback but could not send the flame
 groups off, the Rack screen says "Stopped, but the flame disarm FAILED"
