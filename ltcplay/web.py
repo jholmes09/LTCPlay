@@ -1767,6 +1767,28 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         httpd.remote.alert_pixels = rs.get("alert_pixels")
     except ValueError as e:
         print(f"The booth speaker is off: {e}")
+    # The rack screen's Weather block (weather.py, WEATHER.md): its own
+    # thread, display only, never anything the show waits on. On by
+    # default for Fire & Ice (Thanksgiving Point); any other engine only
+    # with a "weather" block in ltcplay_remote.json. A failure here leaves
+    # the block saying so; the engine carries on.
+    try:
+        from . import weather as weather_mod
+        _wx = weather_mod.start_for(
+            remote_folder or remote_mod.settings_folder(),
+            default_on=fire_ice is not None)
+        httpd.remote.weather = _wx
+        if _wx is not None:
+            _close_before_wx = httpd.server_close
+
+            def _close_wx():
+                try:
+                    _wx.stop()
+                finally:
+                    _close_before_wx()
+            httpd.server_close = _close_wx
+    except Exception as e:                           # noqa: BLE001
+        print(f"The weather block could not start: {type(e).__name__}: {e}")
     httpd.audio_watch = None
     if fire_ice is not None and not os.environ.get("LTCPLAY_BENCH_FAKE_AUDIO"):
         # Fire & Ice: is the show's audio interface attached, before anyone

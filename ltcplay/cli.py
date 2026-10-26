@@ -1837,6 +1837,19 @@ def cmd_checklist_verify(args):
     return 1
 
 
+def cmd_weather(args):
+    """`ltc weather --check`: the Weather block's self check (weather.py,
+    WEATHER.md). Fetches each source once, prints what came back and says
+    pass or fail. Exit 0 when every check passed."""
+    from . import remote as remote_mod
+    from . import weather as weather_mod
+    if not args.check:
+        print("ltc weather --check fetches each weather source once and "
+              "says pass or fail (WEATHER.md).")
+        return 0
+    return weather_mod.run_check(args.folder or remote_mod.settings_folder())
+
+
 def cmd_deck(args):
     from . import streamdeck
     return streamdeck.main(["--flamesafe-config", args.flamesafe_config,
@@ -2131,6 +2144,16 @@ def main(argv=None):
                     help="the checklists folder (default: this machine's "
                          "logs/checklists)")
     cv.set_defaults(func=cmd_checklist_verify)
+    wx = sub.add_parser("weather", help="the rack screen's Weather block: "
+                        "--check fetches each source once and says pass or "
+                        "fail")
+    wx.add_argument("--check", action="store_true",
+                    help="fetch each weather source once and print what "
+                         "came back")
+    wx.add_argument("--folder", default=None,
+                    help="the settings folder holding ltcplay_remote.json "
+                         "(default: this machine's)")
+    wx.set_defaults(func=cmd_weather)
 
     args = ap.parse_args(argv)
     try:
