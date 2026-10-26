@@ -50,6 +50,22 @@
 
   "names": ["Andy", "Jeff"],
 
+  "fuel": {
+    "notes": "The Fuel page (FUEL.md). Every key is optional. start_shows_per_tank is your starting guess of shows per tank (null: none), used only until the page has learned the real number from your refills. count_purge: a G-Flame purges from its own tank (true), a Showven from separate purge fuel (false). fire_at is the lowest fire value that makes flame.",
+    "kinds": {
+      "gflame": {"label": "100 lb propane", "fire_at": 229, "count_purge": true, "start_shows_per_tank": null},
+      "waver": {"label": "15 gal", "fire_at": 254, "count_purge": false, "start_shows_per_tank": null}
+    },
+    "learn_refills": 5,
+    "outlier_ratio": 2.0,
+    "recent_shows": 10,
+    "min_shows": 3,
+    "min_show_s": 30,
+    "amber_below_percent": 35,
+    "red_below_percent": 15,
+    "refill_soon_shows": 3
+  },
+
   "tally": {
     "enabled": false,
     "url": "",
