@@ -58,7 +58,8 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 # "fuel" is the Fuel page's own block (fuel.py), checked there: a mistake
 # in it shows on the Fuel page and never stops this page.
 TOP_KEYS = frozenset(("machines", "groups", "purge", "lasers", "checklists",
-                      "names", "tally", "notes", "laser_groups", "fuel"))
+                      "names", "tally", "notes", "laser_groups", "fuel",
+                      "fireball_groups"))
 MACHINE_KEYS = frozenset(("id", "name", "kind", "group", "fire", "pan",
                           "tilt", "notes", "safety"))
 PURGE_KEYS = frozenset(("gflame_fire", "waver", "fireball"))
@@ -175,6 +176,13 @@ def fixture_pairing(group):
 # the lamps still work. The reason, word for word, is on the page.
 NO_PURGE_MAP = ("no pan, tilt and fire map yet (set it in "
                 "ltcplay_morning.json machines)")
+# A fireball (Jeff, 2026-10-26: fuel charge, air charge, valve open and
+# ignite) is never purged and never armed for one: its channels are a
+# sequence, and writing one purge value to all of them at once is not one
+# (it could open the valve and ignite on a fuel charge nobody asked for).
+# No config can turn this on: a fireball purge needs its own design and
+# review first (MORNING.md). purge.fireball in the config is not used.
+NO_FIREBALL_PURGE = "a fireball has no purge sequence yet"
 
 
 class Machine:
@@ -205,7 +213,10 @@ class Machine:
 
     def purge_refusal(self):
         """Why this machine is never purged, or "": a waver needs its pan
-        and tilt slots (the head goes straight up first) and a fire map."""
+        and tilt slots (the head goes straight up first) and a fire map; a
+        fireball is never purged (NO_FIREBALL_PURGE)."""
+        if self.kind == "fireball":
+            return NO_FIREBALL_PURGE
         if self.kind == "waver" and (self.pan is None or self.tilt is None
                                      or not self.fire):
             return NO_PURGE_MAP
@@ -228,16 +239,20 @@ class Machine:
                 "safeties": list(self.safeties)}
 
 
-def default_machines(groups):
+def default_machines(groups, fireball_groups=()):
     """One machine per fire slot of flamesafe's groups: a sensible default
     until Andy's own list is written into ltcplay_morning.json. A waver
     built here has no pan and no tilt slot, so it is never purged
-    (Machine.purge_refusal) and its notes say so on the page."""
+    (Machine.purge_refusal) and its notes say so on the page. A group in
+    `fireball_groups` is one fireball machine, whatever its name."""
     out = []
     for g in groups:
-        kind = _kind_for(g["name"])
+        kind = "fireball" if g["name"] in fireball_groups else \
+            _kind_for(g["name"])
         bank = _bank_for(g["name"], kind)
-        notes = f"Never purged: {NO_PURGE_MAP}." if kind == "waver" else ""
+        notes = f"Never purged: {NO_PURGE_MAP}." if kind == "waver" else \
+            f"Never purged: {NO_FIREBALL_PURGE}." if kind == "fireball" \
+            else ""
         saf = g.get("safeties") or []
         if len(saf) > 1:
             # A multi-safety group (2026-10-26): one machine per fixture,
@@ -258,6 +273,13 @@ def default_machines(groups):
                                    f"{g['name']} {n}", kind, g["name"],
                                    pairs[s], bank=bank, notes=notes,
                                    safety=s))
+            continue
+        if kind == "fireball":
+            # One fireball is one machine: its fire slots (fuel, air,
+            # valve, ignite) are one fixture, so locking it locks them all.
+            out.append(Machine(_slug(g["name"]), g["name"], kind,
+                               g["name"], list(g["fire"]), bank=bank,
+                               notes=notes))
             continue
         for n, slot in enumerate(g["fire"], 1):
             many = len(g["fire"]) > 1
@@ -328,13 +350,19 @@ def parse_purge(doc, where):
     return out
 
 
-def parse_machines(doc, where, groups):
+def parse_machines(doc, where, groups, fireball_groups=()):
     """The "machines" list, checked against flamesafe's groups when they
     are known: every slot a machine owns must be one of its group's fire
-    slots, or flamesafe would zero it on every packet."""
+    slots, or flamesafe would zero it on every packet. Every machine in a
+    fireball group (`fireball_groups`, or any group one machine says is a
+    fireball) has to say kind "fireball": a fireball is never purged, and
+    a machine of another kind there would be (review of PR #120, P1)."""
     if not isinstance(doc, list) or not doc:
         raise MorningConfigError(f"{where}: machines has to be a list with "
                                  f"at least one machine, or be left out.")
+    fireball_groups = set(fireball_groups) | {
+        d.get("group") for d in doc if isinstance(d, dict) and
+        d.get("kind") == "fireball" and isinstance(d.get("group"), str)}
     by_group = {g["name"]: set(g["fire"]) for g in (groups or [])}
     saf_of = {g["name"]: list(g.get("safeties") or [])
               for g in (groups or [])}
@@ -386,6 +414,11 @@ def parse_machines(doc, where, groups):
                                          f"have to be different slots.")
         elif "pan" in d or "tilt" in d:
             raise MorningConfigError(f"{w}: only a waver has pan and tilt.")
+        if group in fireball_groups and kind != "fireball":
+            raise MorningConfigError(
+                f"{w}: {group!r} is a fireball group, so this machine has to "
+                f"say \"kind\": \"fireball\" (a fireball is never purged). "
+                f"It says {kind!r}{'' if 'kind' in d else ' (left out)'}.")
         notes = d.get("notes", "")
         if not isinstance(notes, str):
             raise MorningConfigError(f"{w}: notes has to be text.")
@@ -470,6 +503,30 @@ def parse_banks(doc, where, machines):
     return banks
 
 
+def parse_fireball_groups(doc, where, groups):
+    """The "fireball_groups" list: flamesafe group names that are fireballs
+    (Jeff, 2026-10-26), plus every flamesafe group whose name says fireball
+    or ball (_kind_for). A fireball group is never purged; every machine in
+    it has to be kind "fireball"."""
+    out = set()
+    if doc is not None:
+        if not isinstance(doc, list) or \
+                not all(isinstance(x, str) and x.strip() for x in doc):
+            raise MorningConfigError(f"{where}: fireball_groups has to be a "
+                                     f"list of flamesafe group names.")
+        known = {g["name"] for g in (groups or [])}
+        for x in doc:
+            if groups and x not in known:
+                raise MorningConfigError(
+                    f"{where}: fireball_groups names {x!r}, which is not a "
+                    f"flamesafe group ({', '.join(sorted(known))}).")
+            out.add(x)
+    for g in groups or []:
+        if _kind_for(g["name"]) == "fireball":
+            out.add(g["name"])
+    return frozenset(out)
+
+
 class MorningConfig:
     """ltcplay_morning.json, validated. Everything is optional: with no
     file at all the page shows one machine per flamesafe fire slot, Jeff's
@@ -477,8 +534,14 @@ class MorningConfig:
     checklists, no names and the tally off."""
 
     def __init__(self, machines, banks, purge, lasers, checklists, names,
-                 tally, path=None, notes="", laser_groups=None):
+                 tally, path=None, notes="", laser_groups=None,
+                 fireball_groups=None):
         self.machines = machines
+        # The flamesafe groups that are fireballs: never purged, never
+        # armed for one, whatever any machine in them says (review of PR
+        # #120, P1). Declared ones, and every group with a fireball machine.
+        self.fireball_groups = frozenset(fireball_groups or ()) | \
+            frozenset(m.group for m in machines if m.kind == "fireball")
         # The laser groups for arming (Jeff, 2026-10-22; laserarm.py): a
         # fast multi-select, nothing saved. PLACEHOLDER until Jeff and Andy
         # name them: left out, one group, "All lasers".
@@ -502,10 +565,13 @@ class MorningConfig:
             raise MorningConfigError(f"{where}: it has to be one JSON "
                                      f"object.")
         _only(doc, TOP_KEYS, f"{where}")
+        fireballs = parse_fireball_groups(doc.get("fireball_groups"), where,
+                                          groups)
         if "machines" in doc:
-            machines = parse_machines(doc["machines"], where, groups)
+            machines = parse_machines(doc["machines"], where, groups,
+                                      fireballs)
         else:
-            machines = default_machines(groups or [])
+            machines = default_machines(groups or [], fireballs)
         banks = parse_banks(doc.get("groups"), where, machines)
         purge = parse_purge(doc.get("purge"), where)
         if "lasers" in doc:
@@ -535,7 +601,15 @@ class MorningConfig:
             raise MorningConfigError(str(e)) from None
         return cls(machines, banks, purge, lasers, checklists, names, tally,
                    path=where if where != CONFIG_FILE else None, notes=notes,
-                   laser_groups=laser_groups)
+                   laser_groups=laser_groups, fireball_groups=fireballs)
+
+    def purge_refusal(self, m):
+        """Why machine `m` is never purged, or "": by its flamesafe group
+        first (a fireball group, whatever the machine's kind), then by the
+        machine itself (Machine.purge_refusal)."""
+        if m.group in self.fireball_groups or m.kind == "fireball":
+            return NO_FIREBALL_PURGE
+        return m.purge_refusal()
 
     @classmethod
     def load(cls, path, groups=None, laser_host=None, laser_port=None):
@@ -936,6 +1010,11 @@ class Purge:
                        action="purge", outcome="deselected", screen=device)
             return 200, {"ok": True, "text": f"{m.name} off the purge.",
                          "selected": list(self.selected)}
+        if cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
+            # Never armed for a purge at all: its group is not asked for.
+            return 409, {"error": f"{m.name} is never purged: "
+                                  f"{NO_FIREBALL_PURGE}. Nothing was "
+                                  f"armed."}
         why = self._refusal(device, seen_ok)
         if why:
             return 409, {"error": why}
@@ -969,7 +1048,8 @@ class Purge:
 
     def groups_wanted(self):
         """flamesafe group indices the selection needs armed, for the deck.
-        A locked machine, or one in a fully locked group, never counts."""
+        A locked machine, or one in a fully locked group, never counts,
+        and neither does a fireball (never purged, never armed for one)."""
         cfg = self._cfg()
         names = list(self._names() or [])
         want = set()
@@ -978,6 +1058,9 @@ class Purge:
         for mid in sel:
             m = cfg.by_id.get(mid)
             if m is None or self._lockout.is_locked("machine", mid):
+                continue
+            if m.group in cfg.fireball_groups or \
+                    cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
                 continue
             if m.group in names:
                 want.add(names.index(m.group))
@@ -1011,7 +1094,7 @@ class Purge:
                 m = cfg.by_id.get(mid)
                 if m is None:
                     continue
-                no_map = m.purge_refusal()
+                no_map = cfg.purge_refusal(m)
                 if no_map:
                     # Never purged and never raises: nothing at all is
                     # written for it, and the page says why.
@@ -1042,7 +1125,10 @@ class Purge:
                         continue
                     fire = w["fire"]
                 elif m.kind == "fireball":
-                    fire = p["fireball"]["fire"]
+                    # Belt (purge_refusal above is the rule): one value on
+                    # every slot of a fireball is never written.
+                    waiting.append(f"{m.name}: {NO_FIREBALL_PURGE}")
+                    continue
                 else:
                     fire = p["gflame_fire"]
                 for slot in m.fire:
@@ -1074,9 +1160,9 @@ class Purge:
             cfg = self._cfg()
             ms = [cfg.by_id.get(mid) for mid in sel]
             ms = [m for m in ms if m is not None]
-            if ms and all(m.purge_refusal() for m in ms):
+            if ms and all(cfg.purge_refusal(m) for m in ms):
                 why = ("Nothing selected can be purged: " +
-                       "; ".join(f"{m.name}: {m.purge_refusal()}"
+                       "; ".join(f"{m.name}: {cfg.purge_refusal(m)}"
                                  for m in ms) + ".")
         if not why and not deck and owner != device:
             why = (f"{owner} has the purge selection; only that device or "

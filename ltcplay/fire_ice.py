@@ -718,20 +718,15 @@ def refuse_alert_pixels_on_flame_channels(show_file, name, pixels):
             f"that is not the flame controller's.")
 
 
-# The Stream Deck's arm keys (streamdeck.GROUP_KEY_LIMIT; not imported, so
-# this module never loads the deck).
-FLAME_GROUP_LIMIT = 3
-
-
 def check_flame_groups(folder, cfg):
     """At `ltc serve` startup: the flame groups in flamesafe's config, the
     one place they are decided (Jeff: a settings change at tech, never a
     code change). The deck's and the pages' labels are read from the same
     file. Raises FireIceConfigError, in a sentence, for an edit that would
-    not work on the night: more than FLAME_GROUP_LIMIT groups, a group with
-    no name or one name twice, one channel (safety or fire) in two groups,
-    or a channel the flame controller in a show's layout does not have (a
-    head that does not exist)."""
+    not work on the night: a group with no name or one name twice, one
+    channel (safety or fire) in two groups, or a channel the flame
+    controller in a show's layout does not have (a head that does not
+    exist)."""
     if not cfg.flamesafe_config:
         return
     path = cfg.flamesafe_config
@@ -742,11 +737,9 @@ def check_flame_groups(folder, cfg):
         raise FireIceConfigError(f"{path}: could not be read: {e}")
     if not isinstance(groups, list) or not groups:
         raise FireIceConfigError(f"{path}: it lists no flame groups.")
-    if len(groups) > FLAME_GROUP_LIMIT:
-        raise FireIceConfigError(
-            f"{path} lists {len(groups)} flame groups; the Stream Deck has "
-            f"{FLAME_GROUP_LIMIT} arm keys. Put the heads into at most "
-            f"{FLAME_GROUP_LIMIT} groups.")
+    # Any number of groups: the Stream Deck keys three (ltcplay_deck.json
+    # says which) and the rest are armed from a screen (Jeff, 2026-10-26:
+    # a layout that does not fit is said, never refused).
     owner, names = {}, set()
     for i, g in enumerate(groups):
         name = g.get("name") if isinstance(g, dict) else None

@@ -41,6 +41,17 @@ REAL, unconditionally, the moment this runs against the real hardware:
     below). ABORT and disarming a group are NEVER gated on this: a press
     that only reduces risk must never wait on a picker.
 
+THE START/STOP KEY (Jeff, 2026-10-26): the top-left key is Start Now
+while nothing is running (unchanged: it journals a refusal, there is no
+start entry point) and Stop while Run has been pressed and playback is
+going (the Rack screen's Stop button, POST /api/stop: never behind the
+operator gate, refused by the engine while a scheduled show is live). Stop
+is a HOLD of ABORT_HOLD_S, like Abort, never a tap (the Rack screen asks
+for a confirm); letting go early sends nothing, and the key ring fills
+while it is held. During a scheduled show the key keeps NOW PLAYING,
+PAUSED or AUDIO LOST and a press sends nothing.
+Hold and Abort are unchanged. See Controller.start_key_mode.
+
 NOT REAL unless this module is given a `conductor` (ltcplay.conductor.
 Conductor, or anything shaped like it) by whoever starts it:
   - START NOW, HOLD and RESUME do nothing but journal a refusal. There is
@@ -140,14 +151,28 @@ FAILURE MODES, assumptions made here (flag these in the safety review):
      matching how conductor.py's own generation counter and
      composer.assert_arm already resolve "two requests at once" for every
      other input this show has.
-  5. More than 3 flamesafe groups configured. The deck has exactly 3
-     bottom-row keys. This module refuses to start (loud error, not a
-     silent partial mapping) if given more than 3 group names: deciding
-     which real groups share a key, or which groups the deck simply cannot
-     reach, is a decision for Jeff and Andy, not a default this module
-     should guess at. flamesafe.example.json ships with 6 groups today;
-     a real deployment of this deck needs that trimmed to 3, or the deck
-     extended, before showtime.
+  5. More than 3 flamesafe groups configured. The deck (a Stream Deck
+     Mini, 6 keys) has exactly 3 bottom-row keys and no free key: the top
+     row is Start, Hold and Abort. A 4th group (Jeff's fireball,
+     2026-10-26) gets NO key and shares none: the first 3 groups in the
+     deck's key order (below) get keys 3, 4 and 5, and a group after them
+     is a SCREEN-ONLY group. It is armed only by a screen hold (the rack
+     screen or a listed device, through this process: screen_pass, with
+     every rule a key has: the hold, the re-arm refractory window, the
+     latch, the operator gate), never by a Morning page purge click
+     (purge_pass refuses it, review of PR #120, P1), and disarmed by a
+     screen disarm, Disarm all flame groups, or Abort on any surface (the
+     deck's Abort sends every group false, this one included). With
+     screen arming off (the default) it cannot be armed at all. Its state
+     is on the screens, never on the deck; a spoof mismatch on it still
+     flashes ALARM on every deck group key. No key changes meaning, no
+     page or shift key hides a group (Jeff's two-page layout, Start, Hold,
+     Abort, a Page key and four group keys on page 1, needs 8 keys; the
+     Mini has 6).
+     Which group sits on which key, and the key's label, come from
+     ltcplay_deck.json (deck_layout; Jeff, 2026-10-26: Floor G, Cat-Walk
+     G, Blue Flames, Fireball by default); every group past the third in
+     that order is screen-only, said plainly at start, never refused.
   6. A second local process spoofing arm frames. arminput.SocketArmInput
      now locks onto the first sender it accepts, exactly like the
      flame-frame link, so a rogue frame is rejected once this deck is
@@ -304,6 +329,128 @@ RECONNECT_GRACE_S = 1.0
 
 TOP_START, TOP_HOLD, TOP_ABORT = 0, 1, 2
 GROUP_KEYS = (3, 4, 5)
+
+# Which flame group sits on which key, and what the key calls it (Jeff,
+# 2026-10-26): ltcplay_deck.json in the settings folder, optional.
+#   {"groups": [{"group": "front row", "label": "Floor G"}, ...]}
+# The list's order is the key order (keys 3, 4, 5 left to right), never
+# flamesafe's file order; `label` is what the key says (the group's own
+# name when left out and not one of DECK_LABELS). A group past the three
+# keys is screen-only (module docstring 5). Nothing here changes what is
+# sent: the arm frame keeps flamesafe's names in flamesafe's order.
+DECK_CONFIG_FILE = "ltcplay_deck.json"
+DECK_LABELS = {"front row": "Floor G", "cat-walk": "Cat-Walk G",
+               "wave flamer": "Blue Flames", "fireball": "Fireball"}
+DECK_ORDER = ("front row", "cat-walk", "wave flamer", "fireball")
+LABEL_MAX = 12          # the key's name bar fits this many letters
+
+
+def _default_layout(names):
+    """(order, labels) with no ltcplay_deck.json: DECK_ORDER's groups first,
+    in that order, then the rest in flamesafe's order; DECK_LABELS' words,
+    else the group's own name."""
+    order = [names.index(n) for n in DECK_ORDER if n in names]
+    order += [i for i in range(len(names)) if i not in order]
+    return order, [DECK_LABELS.get(n, n) for n in names]
+
+
+def _keys_text(order, labels, names):
+    """The key map in words: "key 1 Floor G (front row), ...; no key:
+    Fireball (fireball)"."""
+    keyed = [f"key {j + 1} {labels[g]} ({names[g]})"
+             for j, g in enumerate(order[:GROUP_KEY_LIMIT])]
+    rest = [f"{labels[g]} ({names[g]})" for g in order[GROUP_KEY_LIMIT:]]
+    return ", ".join(keyed) + (f"; no key: {', '.join(rest)}" if rest else "")
+
+
+def deck_layout(names, doc=None, where=DECK_CONFIG_FILE):
+    """(order, labels, notes, ok) for flamesafe's group `names` (its file
+    order). `order`: group indices in key order, every group once; the
+    first GROUP_KEY_LIMIT get keys 3, 4 and 5, the rest are screen-only.
+    `labels`: one per group index. `notes`: plain sentences for the
+    journal. `ok`: False when `doc` (ltcplay_deck.json, parsed; None for no
+    file) had anything wrong with it: then the WHOLE default layout is used,
+    never a partly applied file, so no key moves because of a typo (review
+    of PR #120, P2-1), and the notes say why. A label that is another
+    group's name or label is wrong (P2-2): a key must never read like
+    another group's. Never raises: the deck still starts (Jeff,
+    2026-10-26)."""
+    names = list(names)
+    d_order, d_labels = _default_layout(names)
+    if doc is None:
+        notes = []
+        if d_order != list(range(len(names))):
+            notes.append(f"There is no {where}, so the keys follow the "
+                         f"deck's default order, not the order of "
+                         f"flamesafe's file: "
+                         f"{_keys_text(d_order, d_labels, names)}.")
+        return d_order, d_labels, notes, True
+    problems = []
+    lst = doc.get("groups") if isinstance(doc, dict) else None
+    order, labels = [], list(d_labels)
+    if not isinstance(lst, list):
+        problems.append(f"{where} has no \"groups\" list.")
+        lst = []
+    for e in lst:
+        g = e.get("group") if isinstance(e, dict) else None
+        if not isinstance(g, str) or not g.strip():
+            problems.append(f"{where} has an entry with no \"group\" name.")
+            continue
+        if g not in names:
+            problems.append(f"{where} lists {g!r}, which is not a flame "
+                            f"group in flamesafe's config "
+                            f"({', '.join(names)}).")
+            continue
+        i = names.index(g)
+        if i in order:
+            problems.append(f"{where} lists {g!r} twice.")
+            continue
+        order.append(i)
+        lab = e.get("label")
+        if lab is None:
+            continue
+        if not isinstance(lab, str) or not lab.strip() or \
+                len(lab.strip()) > LABEL_MAX:
+            problems.append(f"{where}: the label for {g!r} has to be words, "
+                            f"up to {LABEL_MAX} letters.")
+            continue
+        labels[i] = lab.strip()
+    missing = [n for i, n in enumerate(names) if i not in order]
+    if lst and missing:
+        problems.append(f"{where} does not list {', '.join(map(repr, missing))}"
+                        f", a flame group in flamesafe's config.")
+    for i in order:
+        mine = labels[i].strip().lower()
+        for j, other in enumerate(names):
+            if j != i and mine in (other.lower(), d_labels[j].lower(),
+                                   labels[j].strip().lower()):
+                problems.append(f"{where}: the label {labels[i]!r} for "
+                                f"{names[i]!r} reads like {other!r}'s. A "
+                                f"key must never read like another group.")
+                break
+    if problems:
+        return d_order, d_labels, problems + [
+            f"So the deck ignores {where} and uses its default layout: "
+            f"{_keys_text(d_order, d_labels, names)}."], False
+    return order, labels, [], True
+
+
+def load_deck_layout(names, folder):
+    """deck_layout() for ltcplay_deck.json in `folder`. A missing file is
+    the defaults; one that cannot be read is said, and the defaults used."""
+    path = os.path.join(folder, DECK_CONFIG_FILE) if folder else None
+    doc = None
+    if path and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as e:
+            order, labels = _default_layout(list(names))
+            return order, labels, [
+                f"{path} could not be read ({e}), so the deck uses its "
+                f"default layout: {_keys_text(order, labels, list(names))}."
+            ], False
+    return deck_layout(names, doc, path or DECK_CONFIG_FILE)
 
 
 def _first_font(paths):
@@ -744,7 +891,7 @@ def role_gate(user, action):
 def deck_key_name(k, names, latched=False, morning=False, ack=False):
     """What the audit log calls a deck key (audit.py)."""
     if k == TOP_START:
-        return "ACK" if ack else ("FIRE" if morning else "Start now")
+        return "ACK" if ack else ("FIRE" if morning else "Start/Stop")
     if k == TOP_HOLD:
         return "Hold/Resume"
     if k == TOP_ABORT:
@@ -906,7 +1053,12 @@ class LocalSchedule:
     def _poll_once(self):
         op = self._fetch("/api/schedule/operator")
         running = self._fetch("/api/schedule/state")
+        # Whether Run has been pressed and playback is going (the page's
+        # own /api/state "running"), for the Start/Stop key (2026-10-26).
+        play = self._fetch("/api/state")
         with self._lock:
+            self._run_live = (bool(play.get("running"))
+                              if isinstance(play, dict) else None)
             if isinstance(op, dict):
                 self._operator = str(op.get("current_operator") or "")
             else:
@@ -943,6 +1095,13 @@ class LocalSchedule:
         Never touches the network: see the class docstring."""
         with self._lock:
             return self._operator
+
+    def run_live(self):
+        """True while Run has been pressed and playback is going (ltc
+        serve's /api/state "running"), False when stopped, None if
+        unreachable or before the first poll. Never touches the network."""
+        with self._lock:
+            return getattr(self, "_run_live", None)
 
     def show_running(self):
         """True while the scheduler's own state says a show is playing or
@@ -1081,7 +1240,17 @@ class EngineConductor:
             self._local = (False, self._clock())
         return self._press("reset", who, screen)
 
-    def _press(self, name, who, screen, **extra):
+    def stop_run(self, who="", screen="Stream Deck"):
+        """The Start/Stop key's Stop (Jeff, 2026-10-26): exactly the Rack
+        screen's Stop button, POST /api/stop on ltc serve. The engine's own
+        rules decide, as for that button: refused while a scheduled show
+        is live (SHOW or PAUSED; only Hold, Resume and Abort then), taken
+        while aborted, never behind a role ("safety", users.WEB_ROUTES).
+        It stops playback and blacks the outputs out; no show starts until
+        Run is pressed again. On the queue, like Hold."""
+        return self._press("stop", who, screen, path="/api/stop")
+
+    def _press(self, name, who, screen, path=None, **extra):
         body = {"who": who, "screen": screen or "Stream Deck",
                 "seen": int(self._wall() * 1000)}
         body.update(extra)
@@ -1097,7 +1266,8 @@ class EngineConductor:
                                       "conductor at once; the engine's "
                                       "journal says what it did.")
         try:
-            self._q.put_nowait((name, body))
+            self._q.put_nowait((name, body) if path is None
+                               else (name, body, path))
         except queue.Full:
             self.dropped += 1
             return EngineResult(False, f"{name} could NOT be sent to the "
@@ -1114,12 +1284,13 @@ class EngineConductor:
                 return
             self._post_one(*item)
 
-    def _post_one(self, name, body):
+    def _post_one(self, name, body, path=None):
         """One press to the engine; its answer journaled, and kept as
-        the deck's engine fault when the engine did not take it."""
+        the deck's engine fault when the engine did not take it. `path`:
+        a route of its own (Stop's /api/stop), else /api/remote/<name>."""
         doc = {}
         try:
-            got = self._poster("/api/remote/" + name, body)
+            got = self._poster(path or "/api/remote/" + name, body)
             ok, text = got[0], got[1]
             if len(got) > 2 and isinstance(got[2], dict):
                 doc = got[2]
@@ -1318,6 +1489,9 @@ class ScreenKeys:
         # re-arm refractory window) and prefused (a purge arm refused for
         # it), for the rack screen's words (2026-10-26). Display only.
         self.report_rearm = None
+        # () -> True when ltcplay_deck.json could not be used and the keys
+        # are in the default layout: said as layout=default (Deck chip).
+        self.report_layout_default = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
         # Screen holds this deck would not take: hold id -> (code, clock),
@@ -1431,6 +1605,13 @@ class ScreenKeys:
                           if isinstance(i, int) and str(c).isalpha())
         except Exception:                        # noqa: BLE001
             pr = ""
+        try:
+            dflt = bool(self.report_layout_default()) \
+                if self.report_layout_default is not None else False
+        except Exception:                        # noqa: BLE001
+            dflt = False
+        if dflt:
+            path += ("&" if "?" in path else "?") + "layout=default"
         if rearm:
             path += ("&" if "?" in path else "?") + f"rearm={rearm}"
         if pr:
@@ -2129,7 +2310,7 @@ def _fit_name(name):
     just not in full -- the full name is always in the journal and the
     status frame, never only on the key."""
     name = name.upper()
-    return name if len(name) <= 10 else name[:9] + "…"
+    return name if len(name) <= LABEL_MAX else name[:LABEL_MAX - 1] + "…"
 
 
 def draw_group_hold(fonts, d, box, name, frac):
@@ -2266,9 +2447,12 @@ class Deck:
 # constructs the real hardware and real sockets.
 # --------------------------------------------------------------------------
 class Controller:
-    """One Stream Deck. `group_names` must be 1 to GROUP_KEY_LIMIT names,
-    in flamesafe's own config order -- see module docstring, failure mode
-    5, for why this refuses more than that instead of guessing a mapping.
+    """One Stream Deck. `group_names`: flamesafe's group names, in its own
+    config order (the arm frame's order). `key_order`: group indices in
+    key order (deck_layout; None: flamesafe's order); the first
+    GROUP_KEY_LIMIT get keys 3, 4 and 5 and any after them are screen-only
+    (module docstring, failure mode 5). `labels`: what each group's key
+    says, per group index (None: the group names).
 
     `conductor` is optional and duck-typed: .hold(who, screen),
     .resume(who, screen), .abort(who, screen), .snapshot() (for `latched`).
@@ -2293,18 +2477,28 @@ class Controller:
                 operator_provider=lambda: "", show_running_provider=lambda: None,
                 conductor=None, journal=None, clock=time.monotonic,
                 sleep=time.sleep, screen=None, user_provider=None,
-                audit=None, held_provider=None):
-        if not (1 <= len(group_names) <= GROUP_KEY_LIMIT):
-            raise ValueError(
-                f"the Stream Deck has {GROUP_KEY_LIMIT} arm keys; it was "
-                f"given {len(group_names)} flamesafe group names "
-                f"({', '.join(group_names) or 'none'}). Trim flamesafe's "
-                f"config to {GROUP_KEY_LIMIT} groups for deck control, or "
-                f"decide how more than {GROUP_KEY_LIMIT} should share a "
-                f"key before wiring this up -- this module will not guess.")
+                audit=None, held_provider=None, key_order=None,
+                labels=None, run_live_provider=None):
+        if not group_names:
+            raise ValueError("the Stream Deck was given no flamesafe group "
+                             "names, so it has nothing to arm.")
         self.arm = arm_socket
         self.status = status_socket
         self.names = list(group_names)
+        n = len(self.names)
+        self.key_order = list(range(n)) if key_order is None else \
+            list(key_order)
+        if sorted(self.key_order) != list(range(n)):
+            raise ValueError(f"key_order {self.key_order!r} is not every one "
+                             f"of the {n} groups once.")
+        self.labels = list(group_names) if labels is None else \
+            [str(x) for x in labels]
+        if len(self.labels) != n:
+            raise ValueError("one label per flamesafe group, please.")
+        # Key -> group index, and back, for the groups that have a key.
+        self._key_group = {GROUP_KEYS[j]: g for j, g in
+                           enumerate(self.key_order[:len(GROUP_KEYS)])}
+        self._group_key = {g: k for k, g in self._key_group.items()}
         self.deck_factory = deck_factory
         self.operator_provider = operator_provider
         self.show_running_provider = show_running_provider
@@ -2313,6 +2507,10 @@ class Controller:
         self._clock = clock
         self._sleep = sleep
         self._abort_hold = AbortHold()
+        # The Start/Stop key's Stop is a HOLD of ABORT_HOLD_S (Jeff,
+        # 2026-10-26: the Rack screen asks for a confirm, and a stray tap
+        # must never end a run); letting go early sends nothing.
+        self._stop_hold = AbortHold()
         self._reset_shown_since = None   # see RESET_SHOWN_S
         # The frames draw() composes, numbered (2026-10-21). With the keys
         # written on their own thread (DisplayWorker, run_forever's
@@ -2341,6 +2539,10 @@ class Controller:
         # chip (ScreenKeys, hw=). Display only: never read by arming.
         self.deck_present = False
         self.held_provider = held_provider or (lambda: None)
+        # () -> True while Run has been pressed and playback is going
+        # (LocalSchedule.run_live): the Start key is then Stop (Jeff,
+        # 2026-10-26). None: not known, the key stays Start.
+        self.run_live_provider = run_live_provider or (lambda: None)
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -2403,6 +2605,25 @@ class Controller:
         self._audit = audit
         self._user_seen = ("?",)
         self._user_toast_until = 0.0
+        # Module docstring 5: a group past the bottom row's keys is
+        # screen-only. Said once at start, so nobody looks for its key.
+        extra = [self.labels[g] for g in self.key_order[GROUP_KEY_LIMIT:]]
+        if extra:
+            keyed = [self.labels[g] for g in self.key_order[:GROUP_KEY_LIMIT]]
+            self._log(f"Stream Deck: {', '.join(extra)} "
+                      f"{'has' if len(extra) == 1 else 'have'} no key on the "
+                      f"deck (it has {GROUP_KEY_LIMIT} arm keys, for "
+                      f"{', '.join(keyed)}). Arm and disarm "
+                      f"{'it' if len(extra) == 1 else 'them'} from the Rack "
+                      f"screen (Arming from a screen must be on). Abort on "
+                      f"the deck disarms every group.", action="config",
+                      outcome="screen-only")
+
+    def _key_down(self, i):
+        """Whether group `i`'s own deck key is down. Always False for a
+        screen-only group (module docstring 5): it has no key."""
+        k = self._group_key.get(i)
+        return k is not None and bool(self._prev_keys[k])
 
     def _user(self):
         try:
@@ -2437,8 +2658,9 @@ class Controller:
                         [(k, "key-release") for k in
                          releases(self._prev_keys, down)]):
             self._audit_event(what, deck_key_name(
-                k, self.names, latched=latched, morning=morning,
-                ack=bool(pending)))
+                k, [self.names[g] for g in
+                    self.key_order[:len(GROUP_KEYS)]], latched=latched,
+                morning=morning, ack=bool(pending)))
 
     def _log(self, text, **kw):
         try:
@@ -2484,6 +2706,7 @@ class Controller:
         self._abort_hold.release()
         for h in self._arm_holds:
             h.release()
+        self._stop_hold.release()
         self._vholds.clear()
         self._vpressed.clear()
         self._vwho.clear()
@@ -2622,6 +2845,56 @@ class Controller:
                   f"({kinds}): Acknowledge. {r.sentence}", fault=not r.ok,
                   action="alert", who=who, screen="Stream Deck")
 
+    def start_key_mode(self):
+        """What the Start/Stop key is right now (Jeff, 2026-10-26: Start
+        and Stop are one key): "show" while a scheduled show is live (Stop
+        is refused then, as on the Rack screen: only Hold, Resume and Abort
+        work during a show; the key keeps saying what the show is doing),
+        "stop" while Run has been pressed and playback is going, else
+        "start"."""
+        try:
+            if self.show_running_provider() is True:
+                return "show"
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            if self.run_live_provider() is True:
+                return "stop"
+        except Exception:                        # noqa: BLE001
+            pass
+        return "start"
+
+    def _do_start_or_stop(self, now):
+        mode = self.start_key_mode()
+        if mode == "start":
+            self._do_start_now()
+        elif mode == "stop":
+            # A hold, never a tap (Jeff, 2026-10-26): tick() sends Stop
+            # once the key has been held ABORT_HOLD_S.
+            self._stop_hold.press(now)
+        else:
+            self._log("Stream Deck Stop pressed while a scheduled show is "
+                      "live: refused, as on the Rack screen. Only Hold, "
+                      "Resume and Abort work during a show. Nothing was "
+                      "stopped.", action="stop",
+                      who=self.operator_provider() or "",
+                      screen="Stream Deck")
+
+    def _do_stop(self):
+        """Stop: the Rack screen's Stop button, from the deck (Jeff,
+        2026-10-26). Never behind the operator gate or a role: it only
+        takes the show's outputs down ("safety" in users.WEB_ROUTES)."""
+        who = self.operator_provider() or ""
+        fn = getattr(self.conductor, "stop_run", None)
+        if fn is None:
+            self._log("Stream Deck Stop pressed: no engine is connected in "
+                      "this build. Nothing was stopped.", fault=True,
+                      action="stop", who=who, screen="Stream Deck")
+            return
+        r = fn(who=who, screen="Stream Deck")
+        self._log(f"Stream Deck Stop: {r.sentence}", fault=not r.ok,
+                  action="stop", who=who, screen="Stream Deck")
+
     def _do_start_now(self):
         who = self.operator_provider() or ""
         refusal = operator_gate(who, "start")
@@ -2740,7 +3013,7 @@ class Controller:
             who = str(h.get("who") or "")
             device = str(h.get("device") or "screen")
             self._vwho[i] = (who, device)
-            if self.arm.wanted[i] or self._prev_keys[GROUP_KEYS[i]]:
+            if self.arm.wanted[i] or self._key_down(i):
                 if not self.arm.wanted[i]:
                     self._report_refused(h.get("id"), "key")
                 continue            # already wanted, or the key itself is down
@@ -2810,6 +3083,17 @@ class Controller:
         for i in sorted(entered):
             if self.arm.wanted[i]:
                 continue             # already armed by the operator
+            if i not in self._group_key:
+                # A screen-only group (module docstring 5) is armed by a
+                # screen HOLD only, never by a purge click (review of PR
+                # #120, P1): no key, so no click may stand in for one.
+                self._purge_refused[i] = "screenonly"   # reporting only
+                self._log(f"Stream Deck: {self.labels[i]} ({self.names[i]}) "
+                          f"was not armed for a purge: it has no key on the "
+                          f"deck, so it is armed only by holding its Hold to "
+                          f"arm button on the Rack screen.",
+                          action="arm-refused", screen="Morning page")
+                continue
             # The same guards as a completed hold, in the same code
             # (_do_arm_fire, review of PR #68, P2-6): the latch and the
             # refractory window re-checked at the moment of arming, and the
@@ -2881,7 +3165,7 @@ class Controller:
         self._vheld.pop(i, None)
         if i in self._vpressed:
             self._vpressed.discard(i)
-            if not self._prev_keys[GROUP_KEYS[i]]:
+            if not self._key_down(i):
                 self._arm_holds[i].release()
 
     def _on_group_press(self, i, now):
@@ -3022,11 +3306,12 @@ class Controller:
                         self._do_reset()
                     else:
                         self._do_abort(again=True)
-                elif k in GROUP_KEYS:
-                    i = k - GROUP_KEYS[0]
+                elif k in self._key_group:
+                    i = self._key_group[k]
                     if self.arm.wanted[i] or self._reported_armed(i):
                         self._do_disarm(i)
             self._abort_hold.release()
+            self._stop_hold.release()
             for h in self._arm_holds:
                 h.release()
             self._fire_release("the rig is aborted")
@@ -3040,10 +3325,12 @@ class Controller:
                 # The FIRE key (Morning page): letting go ends the purge
                 # fire at once, whether or not the page is still open.
                 self._fire_release("the key came up")
-            elif k in GROUP_KEYS:
+                # Letting go of Stop before ABORT_HOLD_S sends nothing.
+                self._stop_hold.release()
+            elif k in self._key_group:
                 # Letting go before ARM_HOLD_S cancels the hold and sends
                 # nothing, exactly like letting go of Abort early.
-                self._arm_holds[k - GROUP_KEYS[0]].release()
+                self._arm_holds[self._key_group[k]].release()
         for k in edges(self._prev_keys, down):
             if k == TOP_START:
                 if pending:
@@ -3052,7 +3339,8 @@ class Controller:
                     # Re-mapped while the Morning page is open: FIRE.
                     self._fire_press(now)
                 else:
-                    self._do_start_now()
+                    # Start and Stop are one key (Jeff, 2026-10-26).
+                    self._do_start_or_stop(now)
             elif k == TOP_HOLD:
                 self._do_hold_or_resume(self._hold_press_resumes())
             elif k == TOP_ABORT:
@@ -3065,8 +3353,8 @@ class Controller:
                     self._log("Stream Deck: Abort pressed with nothing "
                               "armed or wanted and no show running; "
                               "refused (nothing to do).", action="abort")
-            elif k in GROUP_KEYS:
-                self._on_group_press(k - GROUP_KEYS[0], now)
+            elif k in self._key_group:
+                self._on_group_press(self._key_group[k], now)
         self._prev_keys = list(down)
 
     def tick(self):
@@ -3089,6 +3377,15 @@ class Controller:
             # hold; nothing here fires (Reset is a single press, handled
             # there).
             return
+        if self._prev_keys[TOP_START] and self._stop_hold.fired(now):
+            # Stop only if it is still a run to stop: a run that ended, or
+            # a scheduled show that went live, during the hold is not.
+            if self.start_key_mode() == "stop":
+                self._do_stop()
+            else:
+                self._log("Stream Deck Stop held, but by then no run was "
+                          "live to stop (or a scheduled show was). Nothing "
+                          "was sent.", action="stop", screen="Stream Deck")
         if self._prev_keys[TOP_ABORT] and self._abort_hold.fired(now):
             self._do_abort()
             # Item 3 (round 2 of the safety review): never ALSO complete an
@@ -3107,8 +3404,7 @@ class Controller:
         # key's release as read, on a read or write that raises, or on the
         # input loop stopping; see DECK_STALL_RULING below.
         for i in range(len(self.names)):
-            gk = GROUP_KEYS[i]
-            if self._prev_keys[gk]:
+            if self._key_down(i):
                 if self._arm_holds[i].fired(now):
                     self._do_arm_fire(i, now)
             elif i in self._vpressed:
@@ -3368,8 +3664,12 @@ class Controller:
         self._note_frame(latched, now)
         abort_frac = 1.0 if latched else self._abort_hold.fraction(now)
         arm_fills = {} if latched else {
-            GROUP_KEYS[i]: f for i, f in
-            enumerate(h.fraction(now) for h in self._arm_holds) if f > 0}
+            self._group_key[i]: f for i, f in
+            enumerate(h.fraction(now) for h in self._arm_holds)
+            if f > 0 and i in self._group_key}
+        stop_frac = 0.0 if latched else self._stop_hold.fraction(now)
+        if stop_frac > 0:
+            arm_fills[TOP_START] = stop_frac   # Stop's hold fills its ring
         draw_marquee(d, chase, abort_frac, arm_fills)
         live = abort_is_live(self._anything_armed_or_wanted(),
                              self.show_running_provider())
@@ -3433,12 +3733,21 @@ class Controller:
                 fonts.show_key(d, b0, ["AUDIO", "LOST"], text, bg=bg,
                                kind="sans")
             elif running:
-                # Start Now does nothing during a show (_do_start_now
-                # journals and starts nothing), so the key says what the
-                # show is doing: NOW PLAYING, flashing green on the
-                # engine's own answers like every other top-row flash.
+                # Stop is refused during a scheduled show (only Hold,
+                # Resume and Abort), so the key says what the show is
+                # doing: NOW PLAYING, flashing green on the engine's own
+                # answers like every other top-row flash.
                 bg, text = PLAYING_ON if blink_on else PLAYING_OFF
                 fonts.show_key(d, b0, ["NOW", "PLAYING"], text, bg=bg,
+                               kind="sans")
+            elif stop_frac > 0:
+                # Stop being held: the ring fills; let go early, nothing.
+                fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
+                               bg=BRONZE, kind="sans", max_size=16)
+            elif self.start_key_mode() == "stop":
+                # Run pressed and playback going: this key is Stop (Jeff,
+                # 2026-10-26), the Rack screen's Stop, held like Abort.
+                fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:
                 # The demo's idle hold: START NOW dims while held.
@@ -3471,8 +3780,15 @@ class Controller:
         else:
             fonts.show_key(d, b2, ["ABORT"], RED if live else DIM_TEXT)
         fault, _confirmed = self._top_fault_confirmed()
-        for i, name in enumerate(self.names):
-            box = face_box(GROUP_KEYS[i])
+        # Only the groups with a key are drawn, in key order, each under
+        # its label: a screen-only group (module docstring 5) has none.
+        # `slot` is the key's place in the row (NO / FLAME / LINK).
+        for k in GROUP_KEYS:
+            if k not in self._key_group:
+                continue
+            i, slot = self._key_group[k], k - GROUP_KEYS[0]
+            name, label = self.names[i], self.labels[i]
+            box = face_box(k)
             if self._spoof_alarm and group_blink:
                 # Item 1's visible alarm: while it is active, every group
                 # key shows it, flashing -- the deck itself no longer
@@ -3481,7 +3797,7 @@ class Controller:
                 # now runs even while latched (round 2 of the safety
                 # review): a latch must never hide a real spoof/divergence
                 # alarm either.
-                arm_key_image(fonts, d, box, name,
+                arm_key_image(fonts, d, box, label,
                              ("ALARM", None, RED, CHAMPAGNE, False),
                              group_blink)
                 continue
@@ -3504,17 +3820,17 @@ class Controller:
                 # link keeps its real look. Only a group that is really off
                 # (disarmed or held) greys out.
                 st = self.status_for(name)
-                look = group_look(st, fault=fault, slot=i)
+                look = group_look(st, fault=fault, slot=slot)
                 if st is not None and not fault and \
                         st.get("armed") != "armed":
                     look = (look[0], look[1], LATCHED_GREY, DIM_TEXT, False)
-                arm_key_image(fonts, d, box, name, look, group_blink)
+                arm_key_image(fonts, d, box, label, look, group_blink)
                 continue
             hold_frac = self._arm_holds[i].fraction(now)
             if hold_frac > 0:
-                draw_group_hold(fonts, d, box, name, hold_frac)
+                draw_group_hold(fonts, d, box, label, hold_frac)
                 continue
-            look = group_look(self.status_for(name), fault=fault, slot=i)
+            look = group_look(self.status_for(name), fault=fault, slot=slot)
             mv = self.morning_view()
             if mv and mv.get("open") is True:
                 # The Morning page's re-map: a group every machine of which
@@ -3526,7 +3842,7 @@ class Controller:
                     look = ("LOCKED", None, LATCHED_GREY, DIM_TEXT, False)
                 elif i in self._purge_armed and look[0] == "ARMED":
                     look = ("PURGE", "ARMED") + tuple(look[2:])
-            arm_key_image(fonts, d, box, name, look, group_blink)
+            arm_key_image(fonts, d, box, label, look, group_blink)
         if self.status.stale(self._clock) or self.status.last is None:
             # Fewer than three groups: the rest of NO / FLAME / LINK still
             # reads whole, on the keys that have no group.
@@ -4541,7 +4857,7 @@ def load_flamesafe_link(path):
     plain JSON (never flamesafe.config: this module must not import
     flamesafe). Returns (arm_ip, arm_port, status_ip, status_port, key,
     group_names). Raises ValueError with a plain sentence on anything
-    wrong, including more than GROUP_KEY_LIMIT groups or no arm link
+    wrong, including no groups at all or no arm link
     configured at all."""
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
@@ -4554,16 +4870,44 @@ def load_flamesafe_link(path):
     names = [g.get("name") for g in (doc.get("groups") or [])]
     if not all(isinstance(n, str) for n in names):
         raise ValueError(f"{path}: every group needs a name.")
-    if not (1 <= len(names) <= GROUP_KEY_LIMIT):
-        raise ValueError(
-            f"{path} configures {len(names)} flamesafe group(s) "
-            f"({', '.join(names) or 'none'}); the Stream Deck has "
-            f"{GROUP_KEY_LIMIT} arm keys. Trim the config to "
-            f"{GROUP_KEY_LIMIT} groups for deck control, or decide how "
-            f"more should share a key before wiring this up.")
+    if not names:
+        raise ValueError(f"{path} configures no flamesafe groups, so the "
+                         f"Stream Deck has nothing to arm.")
     return (link.get("arm_ip", link.get("listen_ip", "127.0.0.1")),
             int(link["arm_port"]), link.get("status_ip", "127.0.0.1"),
             int(link["status_port"]), link["key"], names)
+
+
+def deck_layout_at_start(names, folder, journal, settings_folder=None):
+    """(key_order, labels, ok) for `ltc deck` at start: ltcplay_deck.json in
+    `folder` (None: the settings folder), and every note about it, the
+    settings folder not found, and the key map itself, journaled (review
+    of PR #120, P2). `ok` False: the default layout stands in for a file
+    that could not be used, which the Deck chip says too."""
+    notes = []
+    if not folder:
+        try:
+            if settings_folder is None:
+                from . import remote as remote_mod
+                settings_folder = remote_mod.settings_folder
+            folder = settings_folder()
+        except Exception as e:                   # noqa: BLE001
+            notes.append(f"the settings folder could not be found "
+                         f"({type(e).__name__}: {e}), so {DECK_CONFIG_FILE} "
+                         f"was not read and the deck uses its default "
+                         f"layout.")
+    order, labels, more, ok = load_deck_layout(names, folder)
+    notes += more
+    ok = ok and bool(folder)
+    notes.append(f"the keys are {_keys_text(order, labels, list(names))}. "
+                 f"Start/Stop, Hold and Abort are on the top row.")
+    for note in notes:
+        try:
+            journal(f"Stream Deck: {note}", action="config",
+                    outcome="layout" if ok else "layout-default")
+        except Exception:                        # noqa: BLE001
+            pass
+    return order, labels, ok
 
 
 def main(argv=None):
@@ -4583,6 +4927,10 @@ def main(argv=None):
                     "the port `ltc serve` or any launcher actually runs "
                     "on, so the operator gate and journal routing silently "
                     "never reached the real server by default)")
+    ap.add_argument("--deck-folder", default=None,
+                    help="where ltcplay_deck.json (which flame group is on "
+                    "which key, and its label) is read from; default the "
+                    "settings folder")
     ap.add_argument("--audit-folder", default=None,
                     help="where this deck's audit day files go (audit.py); "
                     "default logs/audit in the settings folder")
@@ -4650,14 +4998,21 @@ def _main(args):
                 remote_mod.settings_folder()), "deck").start()
     except Exception as e:                       # noqa: BLE001
         print(f"Stream Deck: the audit log is off: {type(e).__name__}: {e}")
-    controller = Controller(arm, status, names,
+    # Which group is on which key, and what each key says (Jeff,
+    # 2026-10-26; ltcplay_deck.json, DECK_CONFIG_FILE). Whatever does not
+    # fit is said here and in the journal; the deck still starts.
+    key_order, labels, layout_ok = deck_layout_at_start(
+        names, getattr(args, "deck_folder", None), journal)
+    controller = Controller(arm, status, names, key_order=key_order,
+                            labels=labels,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,
                             conductor=engine, journal=journal,
                             screen=screen,
                             audit=(audit_log.event if audit_log is not None
                                    else None),
-                            held_provider=sched.held)
+                            held_provider=sched.held,
+                            run_live_provider=sched.run_live)
     # The deck's worst USB key image write rides along on every deck-input
     # read, for the rack screen's Deck chip (2026-10-21). Display only.
     controller.usb = UsbMeter(journal)
@@ -4670,6 +5025,9 @@ def _main(args):
     # And each group's re-arm wait and any purge arm refused for it, so the
     # rack screen counts the wait down in words (2026-10-26). Display only.
     screen.report_rearm = controller.rearm_report
+    # And whether ltcplay_deck.json was set aside for the default layout,
+    # for the Deck chip (review of PR #120, P2-1). Display only.
+    screen.report_layout_default = lambda: not layout_ok
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.

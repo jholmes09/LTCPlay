@@ -92,6 +92,22 @@ blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels
 blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
 
+**The Stream Deck's Start / Stop key.** The top left key is START NOW while
+nothing is running. Once Run has been pressed and playback is going it
+reads STOP RUN: hold it for half a second, as long as Abort, to Stop (the
+same as the Rack screen's Stop: playback stops, the outputs go dark, no
+show starts until Run is pressed again). A tap does nothing; let go before
+the ring fills and nothing is sent. During a scheduled show the key keeps
+saying NOW PLAYING, PAUSED or AUDIO LOST, and Stop does nothing then (use
+Hold or Abort). Hold and Abort are where they always were.
+
+**A flame group with no key.** The deck has three arm keys (Floor G,
+Cat-Walk G and Blue Flames unless ltcplay_deck.json says otherwise). A
+fourth group, such as the Fireball, has no key: arm it by holding its Hold
+to arm button on the Rack screen, disarm it there, or with Disarm all flame
+groups or any Abort. A purge click on the Morning page never arms it, and a
+Fireball is never purged at all.
+
 **LASERS on the show screen (Fire & Ice).** Under the flame lamps and
 the Disarm all flame groups button is a violet LASERS strip, apart from
 everything for the flames. Disarm all lasers (right) is one click, no

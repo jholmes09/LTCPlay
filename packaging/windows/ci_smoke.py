@@ -277,7 +277,9 @@ def write_settings(shows):
     with open(os.path.join(REPO, "flamesafe", "flamesafe.example.json"),
               encoding="utf-8") as fh:
         cfg = json.load(fh)
-    cfg["groups"] = cfg["groups"][:3]        # the deck has three arm keys
+    # Four groups (2026-10-26): three on the deck's arm keys, the fourth
+    # (pump, in the example) screen-only, so that path runs here too.
+    cfg["groups"] = cfg["groups"][:4]
     cfg["destination"] = {"ip": "127.0.0.1", "port": SACN_PORT}
     fs = os.path.join(LOCAL, "flamesafe.json")
     with open(fs, "w", encoding="utf-8") as fh:
