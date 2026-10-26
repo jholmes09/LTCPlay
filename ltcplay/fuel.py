@@ -13,6 +13,10 @@ on every pass, so a changed list is followed: a new unit starts with no
 refill logged, and a unit that left the list keeps its record in fuel.json
 but is not shown.
 
+IT ERRS TOWARD EMPTY SOONER (review of #123): wherever it cannot know,
+it counts more flame, learns a smaller tank, or says "not sure" and is
+never green. It never errs toward "plenty".
+
 How fuel use is measured
 ========================
 
@@ -20,17 +24,22 @@ At the flame link, per unit, as SECONDS OF FLAME: the time a frame that
 actually went out to flamesafe carried a value at or above that kind's
 fire value (fire_at: 229 for a G-Flame, flamesafe/rules.py
 GFLAME_FIRE_AT; 254 for a Showven, rules.SHOWVEN_CF2_FIRE_AT) on any of
-the unit's fire slots, while flamesafe's last status said the unit's group
-was ARMED and the unit was not locked out. flamesafe holds a disarmed
-group's fire slots at zero, so a frame for a disarmed group burns nothing.
+the unit's fire slots, unless flamesafe's status says the unit's group is
+NOT armed or the unit is locked out (flamesafe holds those fire slots at
+zero). When flamesafe's armed state is not known (no status mirror, or a
+stale one) the flame is COUNTED anyway: that can only count too much. A
+Showven firing from its CH5 preset sequence is NOT counted (only its fire
+slot at fire_at); set fire_at per kind if a show uses another channel.
 
 Each frame is put in one of three piles:
 
   show    a performance: the show audio clock playing a cue (the flame
           link's own show timecode), not a programming session, and not
-          scrubbing. Counted as a show once its timecode has run for
-          min_show_s, whether it ran to its end or was aborted, started by
-          the schedule or by hand. Shorter (a start that failed) or a
+          scrubbing. Counted as a show once its timecode has ADVANCED for
+          min_show_s (a Hold's frozen frame adds nothing), whether it ran to
+          its end or was aborted, started by the schedule or by hand. It
+          ends when the timecode has been gone EPISODE_JOIN_S; back sooner
+          and carrying on, it is the same show. Shorter (a start that failed) or a
           programming session: its burn goes to "other", never a show.
   purge   the Morning page's purge frame. Counted for a kind only when its
           count_purge is true: true for G-Flames (they purge from their own
@@ -54,18 +63,27 @@ How it learns
 
 Learning is per kind (every G-Flame tank is the same 100 lb tank): the
 burn seconds between two refills of one unit is one tank's worth (a
-"cycle"). A kind's tank is the median of its last learn_refills cycles;
-with three or more, a cycle under 1/outlier_ratio or over outlier_ratio
-times the median is left out first (a refill logged by mistake, a tank
-swapped half full). Until a kind has a cycle the page says "Learning", with
-the burn and shows since the refill; Jeff may give a starting estimate in
-shows per tank (start_shows_per_tank).
+"cycle"). With fewer than LEARN_MIN_CYCLES (3) cycles a kind's tank is the
+SMALLEST cycle and the page says it is still learning (a forgotten
+Refilled press makes one cycle span two tanks: only a small one is
+trusted). From three on it is the median of the last learn_refills, any
+cycle under 1/outlier_ratio or over outlier_ratio times it left out first.
+A cycle more than SUSPECT_RATIO times the others is named on the page.
+Until a kind has a cycle the page says "Learning"; Jeff may give a starting
+estimate in shows per tank (start_shows_per_tank), shown as rough and
+never green when it is only a count of shows.
 
 Shows left = what is left of the tank / that unit's average burn per show
 (its last recent_shows shows; at least min_shows of them, else the page
 says how many more it needs). The health bar is the fraction left; green,
 amber and red by amber_below_percent and red_below_percent, and "Refill
-soon" at refill_soon_shows shows left or fewer.
+soon" at refill_soon_shows shows left or fewer. Percent and shows left
+are rounded DOWN.
+
+Flame that may have gone uncounted (frames dropped because this thread fell
+behind, the last SAVE_EVERY_S before a crash, frames lost to an error) is a
+"gap": the page says so at the top, and every unit with a gap since its
+refill reads "Not sure" and is never green.
 
 What is kept, and where
 =======================
@@ -99,8 +117,21 @@ SAVE_EVERY_S = 30.0         # at least this often while anything changed
 DRAIN_S = 0.25              # the tracker's own pass
 MAX_FRAME_DT_S = 0.1        # one frame never counts for more than this
 QUEUE_MAX = 4000            # frames waiting (100 s at 40 a second)
-EPISODE_END_S = 2.0         # no show timecode this long ends a performance
-ARMED_KEEP_S = 5.0          # a stale armed list is used this long
+# A performance ends once its show timecode has been gone this long. If the
+# timecode comes back sooner, carrying on from where it was, it is the same
+# performance (a short gap never splits one show into two).
+EPISODE_JOIN_S = 30.0
+# Show length is the time the show timecode actually ADVANCES: each change
+# counts the time since the last change, at most this much, so a Hold's
+# frozen frame adds nothing to a show's length.
+TC_STEP_MAX_S = 0.5
+TC_FPS = 30.0               # the show audio's timecode (clock.MASTER_FPS)
+# Until a kind has this many tanks between refills, its tank is the
+# SMALLEST one seen (one forgotten Refilled press can only make a tank look
+# bigger) and the page says it is still learning.
+LEARN_MIN_CYCLES = 3
+SUSPECT_RATIO = 1.6         # a tank this much longer than the others: say so
+CLOSE_TIMEOUT_S = 2.0       # close() never waits longer than this on disk
 REFILLS_KEPT = 60           # per unit, in fuel.json
 SHOW_BURNS_KEPT = 50        # per unit
 RECENT_BATCHES = 8          # refills an admin can undo from the page
@@ -280,19 +311,38 @@ def median(xs):
 
 
 def learned_tank(cycles, n, ratio):
-    """(seconds of flame per tank, how many cycles it used) from `cycles`
-    (oldest first): the median of the last `n`, with three or more first
-    leaving out any under median/ratio or over median*ratio. (None, 0)
-    with no cycle."""
+    """(seconds of flame per tank, how many cycles it used, firm) from
+    `cycles` (oldest first), erring toward EMPTY SOONER:
+
+      fewer than LEARN_MIN_CYCLES: the SMALLEST cycle, not firm (a
+      forgotten Refilled press makes a cycle span two tanks, so only a
+      small one can be trusted);
+      LEARN_MIN_CYCLES or more: the median of the last `n`, any cycle
+      under median/ratio or over median*ratio left out first; firm.
+
+    (None, 0, False) with no cycle."""
     last = [c for c in cycles if c > 0][-n:]
     if not last:
-        return None, 0
-    if len(last) >= 3:
-        m = median(last)
-        kept = [c for c in last if m / ratio <= c <= m * ratio]
-        if kept:
-            last = kept
-    return median(last), len(last)
+        return None, 0, False
+    if len(last) < LEARN_MIN_CYCLES:
+        return min(last), len(last), False
+    m = median(last)
+    kept = [c for c in last if m / ratio <= c <= m * ratio]
+    if kept:
+        last = kept
+    return median(last), len(last), True
+
+
+def suspect_cycles(cycles, n):
+    """The cycles among the last `n` more than SUSPECT_RATIO times the
+    median of the others: likely a Refilled press that was missed."""
+    last = [c for c in cycles if c > 0][-n:]
+    out = []
+    for i, c in enumerate(last):
+        others = last[:i] + last[i + 1:]
+        if others and c > SUSPECT_RATIO * median(others):
+            out.append(c)
+    return out
 
 
 def burn_words(s):
@@ -309,11 +359,115 @@ def _plural(n, one, many=None):
 def _new_unit(m):
     return {"kind": m.kind, "name": m.name,
             "burn": {s: 0.0 for s in SOURCES}, "shows": 0,
-            "show_burns": [], "refills": []}
+            "show_burns": [], "refills": [], "unsure_s": 0.0}
 
 
 def _total(burn):
     return sum(float(burn.get(s, 0.0) or 0.0) for s in SOURCES)
+
+
+def tc_seconds(tc):
+    """"HH:MM:SS:FF" (or ;FF) as seconds at TC_FPS, or None."""
+    try:
+        h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return h * 3600 + m * 60 + s + f / TC_FPS
+
+
+# ------------------------------------------------- reading fuel.json back --
+
+def _num(v, what, lo=0.0):
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or \
+            not math.isfinite(v) or v < lo:
+        raise ValueError(f"{what} is not a number of {lo:g} or more: "
+                         f"{v!r}")
+    return float(v)
+
+
+def _count(v, what, lo=0):
+    if not _is_int(v) or v < lo:
+        raise ValueError(f"{what} is not a whole number of {lo} or more: "
+                         f"{v!r}")
+    return v
+
+
+def _burn(d, what):
+    if not isinstance(d, dict):
+        raise ValueError(f"{what} is not an object")
+    return {s: _num(d.get(s, 0.0), f"{what}.{s}") for s in SOURCES}
+
+
+def _read_refill(r, what):
+    if not isinstance(r, dict):
+        raise ValueError(f"{what} is not an object")
+    und = r.get("undone")
+    if und is not None:
+        if not isinstance(und, dict) or not isinstance(und.get("who"), str):
+            raise ValueError(f"{what}.undone is not who undid it")
+        und = {"who": und["who"], "at": _num(und.get("at", 0.0),
+                                             f"{what}.undone.at")}
+    if not isinstance(r.get("who"), str):
+        raise ValueError(f"{what}.who is not a name")
+    return {"id": _count(r.get("id"), f"{what}.id", 1),
+            "at": _num(r.get("at"), f"{what}.at"),
+            "who": r["who"], "role": str(r.get("role") or ""),
+            "burn": _burn(r.get("burn"), f"{what}.burn"),
+            "total": _num(r.get("total"), f"{what}.total"),
+            "shows": _count(r.get("shows"), f"{what}.shows"),
+            "unsure_s": _num(r.get("unsure_s", 0.0), f"{what}.unsure_s"),
+            "gaps": _count(r.get("gaps", 0), f"{what}.gaps"),
+            "undone": und}
+
+
+def read_record(doc):
+    """fuel.json's content, every field checked; ValueError (with what is
+    wrong) for anything this program would not count with."""
+    if not isinstance(doc, dict) or doc.get("fuel_format") != FUEL_FORMAT:
+        raise ValueError("it is not a fuel record this program can read")
+    units = doc.get("units")
+    if not isinstance(units, dict):
+        raise ValueError("it has no units")
+    out = {}
+    for mid, u in units.items():
+        w = f"unit {mid!r}"
+        if not isinstance(mid, str) or not mid or not isinstance(u, dict):
+            raise ValueError(f"{w} is not an object")
+        if u.get("kind") not in TRACKED_KINDS:
+            raise ValueError(f"{w} has kind {u.get('kind')!r}")
+        refills = u.get("refills", [])
+        sb = u.get("show_burns", [])
+        if not isinstance(refills, list) or not isinstance(sb, list):
+            raise ValueError(f"{w}: refills and show_burns are lists")
+        out[mid] = {
+            "kind": u["kind"], "name": str(u.get("name") or mid),
+            "burn": _burn(u.get("burn"), f"{w}.burn"),
+            "shows": _count(u.get("shows", 0), f"{w}.shows"),
+            "show_burns": [_num(x, f"{w}.show_burns") for x in sb],
+            "refills": [_read_refill(r, f"{w}.refills[{i}]")
+                        for i, r in enumerate(refills)],
+            "unsure_s": _num(u.get("unsure_s", 0.0), f"{w}.unsure_s")}
+    ep = doc.get("episode")
+    if ep is not None:
+        if not isinstance(ep, dict) or not isinstance(ep.get("burn"), dict):
+            raise ValueError("the performance under way is not readable")
+        last = ep.get("last_tc")
+        ep = {"started": _num(ep.get("started", 0.0), "episode.started"),
+              "tc_s": _num(ep.get("tc_s", 0.0), "episode.tc_s"),
+              "rehearsal": ep.get("rehearsal") is True,
+              "last_tc": None if last is None else
+              _num(last, "episode.last_tc"),
+              "burn": {str(k): _num(v, f"episode.burn[{k!r}]")
+                       for k, v in ep["burn"].items()}}
+    ids = [r["id"] for u in out.values() for r in u["refills"]]
+    nid = _count(doc.get("next_id", 1), "next_id", 1)
+    return {"units": out, "episode": ep,
+            "next_id": max([nid] + [i + 1 for i in ids]),
+            "shows_total": _count(doc.get("shows_total", 0), "shows_total"),
+            "gaps": _count(doc.get("gaps", 0), "gaps"),
+            "clean": doc.get("clean", True) is not False,
+            "saved_at": doc.get("saved_at")
+            if isinstance(doc.get("saved_at"), (int, float)) else None}
 
 
 # ------------------------------------------------------------ the tracker --
@@ -325,7 +479,8 @@ class FuelTracker:
     machines_get   () -> the Morning config's machines (morning.Machine)
     config_path    ltcplay_morning.json, read again when it changes
     armed_get      () -> set of flamesafe group names ARMED now, or None
-                   when flamesafe's state is not known
+                   when flamesafe's state is not known (no status, or a
+                   stale one): flame is then COUNTED, never skipped
     locked_get     (machine id) -> True while it is locked out
     rehearsal_get  () -> True in a programming session (remote.programming)
     journal        (text, fault=False) -> anything; failures ignored
@@ -346,31 +501,40 @@ class FuelTracker:
         self._clock = clock
         self._wall = wall
         self._lock = threading.RLock()       # the record
-        self._save_lock = threading.Lock()   # the file
+        self._save_lock = threading.Lock()   # the file: one writer at once
         # The frames the flame link sent, appended by the sender thread
         # (observe) and taken by this module's own thread (pump). A deque's
         # append and popleft need no lock; maxlen bounds the memory if this
-        # thread ever stops taking them.
+        # thread ever stops taking them (and `dropped` counts what fell off).
         self._q = collections.deque(maxlen=QUEUE_MAX)
         self.observed = 0
+        self.dropped = 0
+        self._dropped_seen = 0
         self._link = None
         self.cfg, self.config_error = parse_config(None), ""
         self._cfg_stamp = None
         self.units = {}
         self.next_id = 1
         self.episode = None          # a performance under way
-        self.uncounted_s = 0.0       # flame not counted: armed state unknown
+        self._ep_last_tc = None      # clock when its show timecode was seen
+        self._ep_moved_at = None     # clock when its timecode last advanced
         self.shows_total = 0
+        # Times some flame may not have been counted (frames dropped, a
+        # crash before the last save, frames lost to a failure). A refill
+        # remembers the number; a unit with more since its refill is "not
+        # sure" on the page, never green.
+        self.gaps = 0
+        self.gap_notes = []
+        self.armed_unknown = False   # flamesafe's armed state, last pass
         self.load_error = ""
         self.save_error = ""
         self.run_error = ""
         self.saved_at = None         # wall clock of the last good save
+        self._clean = False          # written True only by close()
         self._dirty = False
         self._last_save = clock()
         self._last_t = None
         self._last_purges = None
-        self._ep_last_tc = None
-        self._armed = (None, None)   # (set, clock it was read)
         self._stop = threading.Event()
         self._thread = None
         self._reload_config()
@@ -388,6 +552,15 @@ class FuelTracker:
             self._journal(text, fault=fault)
         except Exception:
             pass
+
+    def _gap(self, why):
+        """Some flame may not have been counted: every unit is "not sure"
+        until its next refill, and the page says why."""
+        with self._lock:
+            self.gaps += 1
+            self.gap_notes = (self.gap_notes + [why])[-5:]
+            self._dirty = True
+        self._note(f"Fuel: {why}", fault=True)
 
     def _reload_config(self):
         """The fuel block, read again whenever the file's size or time
@@ -442,12 +615,16 @@ class FuelTracker:
 
     def observe(self, tc, values, ok):
         """Called on the flame link's sender thread after each frame went
-        out. One deque append and nothing else: no lock, no disk."""
+        out. Reads a monotonic clock and three plain attributes and appends
+        one tuple: no lock, no disk, no journal, no sleep (selftest)."""
+        q = self._q
+        if len(q) >= QUEUE_MAX:
+            self.dropped += 1
         link = self._link
-        self._q.append((self._clock(), tc is not None,
-                        bool(getattr(link, "rehearse_on", False)),
-                        bool(getattr(link, "program_on", False)),
-                        getattr(link, "purges_sent", 0), values, ok))
+        q.append((self._clock(), tc,
+                  bool(getattr(link, "rehearse_on", False)),
+                  bool(getattr(link, "program_on", False)),
+                  getattr(link, "purges_sent", 0), values, ok))
         self.observed += 1
 
     # -- this module's thread -------------------------------------------------
@@ -477,24 +654,17 @@ class FuelTracker:
             self.run_error = why
 
     def _armed_now(self):
-        """The armed group names, or None when flamesafe's word is not known
-        (a stale answer is used for ARMED_KEEP_S)."""
-        now = self._clock()
+        """The armed group names flamesafe reports right now, or None when
+        that is not known. Never raises."""
         try:
             got = self._armed_get()
         except Exception:
             got = None
-        if got is not None:
-            self._armed = (set(got), now)
-            return self._armed[0]
-        s, at = self._armed
-        if s is not None and now - at <= ARMED_KEEP_S:
-            return s
-        return None
+        return None if got is None else set(got)
 
     def pump(self):
         """Count every frame waiting. Then a performance whose show
-        timecode has been gone for EPISODE_END_S ends, frames or not."""
+        timecode has been gone for EPISODE_JOIN_S ends, frames or not."""
         frames = []
         q = self._q
         while True:
@@ -502,44 +672,51 @@ class FuelTracker:
                 frames.append(q.popleft())
             except IndexError:
                 break
+        if self.dropped != self._dropped_seen:
+            n = self.dropped - self._dropped_seen
+            self._dropped_seen = self.dropped
+            self._gap(f"{n} flame frame(s) could not be counted (this "
+                      f"tracker fell behind), so every tank may be emptier "
+                      f"than it shows until its next refill.")
         machines = self._machines()
         armed = self._armed_now() if frames else None
         rehearsal = None
         with self._lock:
-            if self.episode is not None or any(f[1] and not f[2]
-                                               for f in frames):
+            if frames:
+                self.armed_unknown = armed is None
+            if self.episode is not None or any(
+                    f[1] is not None and not f[2] for f in frames):
                 try:
                     rehearsal = bool(self._rehearsal_get())
                 except Exception:
                     rehearsal = None
-            for f in frames:
-                self._frame(f, machines, armed, rehearsal)
+            try:
+                for f in frames:
+                    self._frame(f, machines, armed, rehearsal)
+            except Exception:
+                self.gaps += 1
+                self.gap_notes = (self.gap_notes + [
+                    "Some flame frames were lost to an error in the "
+                    "tracker, so every tank may be emptier than it shows "
+                    "until its next refill."])[-5:]
+                self._dirty = True
+                raise
             ep = self.episode
             if ep is not None and self._ep_last_tc is not None and \
-                    self._clock() - self._ep_last_tc > EPISODE_END_S:
+                    self._clock() - self._ep_last_tc > EPISODE_JOIN_S:
                 self._end_episode(machines, "its show timecode stopped")
 
     def _frame(self, f, machines, armed, rehearsal):
-        t, has_tc, rehearse, program, purges, values, ok = f
+        t, tc, rehearse, program, purges, values, ok = f
         dt = 0.0 if self._last_t is None else \
             min(max(t - self._last_t, 0.0), MAX_FRAME_DT_S)
         self._last_t = t
         purge = self._last_purges is not None and purges != self._last_purges
         self._last_purges = purges
-        show_tc = has_tc and not rehearse
+        secs = tc_seconds(tc) if tc is not None and not rehearse else None
+        show_tc = secs is not None
         if show_tc:
-            if self.episode is None:
-                self.episode = {"started": self._wall(), "tc_s": 0.0,
-                                "rehearsal": False, "burn": {}}
-                self._dirty = True
-            else:
-                self.episode["tc_s"] += dt
-            self._ep_last_tc = t
-            if rehearsal:
-                self.episode["rehearsal"] = True
-        elif self.episode is not None and self._ep_last_tc is not None and \
-                t - self._ep_last_tc > EPISODE_END_S:
-            self._end_episode(machines, "its show timecode stopped")
+            self._show_tc(t, secs, machines, rehearsal)
         if not ok or not values or dt <= 0 or not any(values):
             return
         if rehearse or program:
@@ -560,12 +737,15 @@ class FuelTracker:
                 continue
             if self._locked(m.id):
                 continue
-            if armed is None:
-                self.uncounted_s += dt
-                continue
-            if m.group not in armed:
+            if armed is not None and m.group not in armed:
+                # flamesafe says this group is not armed: it holds the
+                # group's fire slots at zero, so nothing burned.
                 continue
             u = self._unit(m)
+            if armed is None:
+                # Not known: counted anyway. flamesafe zeroes a disarmed
+                # group, so this can only count too much (empty sooner).
+                u["unsure_s"] = u.get("unsure_s", 0.0) + dt
             if source == "show":
                 b = self.episode["burn"]
                 b[m.id] = b.get(m.id, 0.0) + dt
@@ -573,12 +753,38 @@ class FuelTracker:
                 u["burn"][source] = u["burn"].get(source, 0.0) + dt
             self._dirty = True
 
+    def _show_tc(self, t, secs, machines, rehearsal):
+        """A frame with the show's timecode. A performance starts, carries
+        on, or (the timecode back from the start after a gap) a new one
+        starts. Only the timecode advancing adds to its length."""
+        ep = self.episode
+        if ep is not None and ep.get("last_tc") is not None and \
+                secs < ep["last_tc"] - 1.0:
+            self._end_episode(machines, "a new performance started")
+            ep = None
+        if ep is None:
+            ep = self.episode = {"started": self._wall(), "tc_s": 0.0,
+                                 "rehearsal": False, "burn": {},
+                                 "last_tc": secs}
+            self._ep_moved_at = t
+            self._dirty = True
+        elif secs != ep.get("last_tc"):
+            if secs > (ep.get("last_tc") or 0.0) and \
+                    self._ep_moved_at is not None:
+                ep["tc_s"] += min(max(t - self._ep_moved_at, 0.0),
+                                  TC_STEP_MAX_S)
+            ep["last_tc"] = secs
+            self._ep_moved_at = t
+        self._ep_last_tc = t
+        if rehearsal:
+            ep["rehearsal"] = True
+
     def _end_episode(self, machines, how):
         """A performance is over: a show for every tracked unit not locked
         out if it ran min_show_s and was not a programming session; else
         its burn is "other"."""
         ep, self.episode = self.episode, None
-        self._ep_last_tc = None
+        self._ep_last_tc = self._ep_moved_at = None
         if ep is None:
             return
         self._dirty = True
@@ -608,18 +814,20 @@ class FuelTracker:
     def _doc(self):
         return {"fuel_format": FUEL_FORMAT, "next_id": self.next_id,
                 "units": self.units, "episode": self.episode,
-                "uncounted_s": round(self.uncounted_s, 3),
-                "shows_total": self.shows_total, "saved_at": self._wall()}
+                "shows_total": self.shows_total, "gaps": self.gaps,
+                "clean": self._clean, "saved_at": self._wall()}
 
     def save(self):
         """Write fuel.json atomically now. True when it is on disk. Never
-        raises: a failure is kept for the page and journaled once."""
-        with self._lock:
-            text = json.dumps(self._doc(), indent=1, sort_keys=True)
-            self._dirty = False
-            self._last_save = self._clock()
-        try:
-            with self._save_lock:
+        raises: a failure is kept for the page and journaled once. The text
+        is made inside the file lock, so an older one is never written
+        after a newer one."""
+        with self._save_lock:
+            with self._lock:
+                text = json.dumps(self._doc(), indent=1, sort_keys=True)
+                self._dirty = False
+                self._last_save = self._clock()
+            try:
                 tmp = f"{self.path}.{os.getpid()}.tmp"
                 with open(tmp, "w", encoding="utf-8") as fh:
                     fh.write(text)
@@ -627,17 +835,18 @@ class FuelTracker:
                     fh.flush()
                     os.fsync(fh.fileno())
                 os.replace(tmp, self.path)
-        except Exception as e:                    # noqa: BLE001
-            why = f"{type(e).__name__}: {e}"
-            with self._lock:
-                self._dirty = True
-                if not self.save_error:
-                    self._note(f"Fuel: {self.path} could not be written "
-                               f"({why}). The record is kept in memory and "
-                               f"tried again every {SAVE_EVERY_S:g} s. The "
-                               f"flames are not affected.", fault=True)
-                self.save_error = why
-            return False
+            except Exception as e:                    # noqa: BLE001
+                why = f"{type(e).__name__}: {e}"
+                with self._lock:
+                    self._dirty = True
+                    if not self.save_error:
+                        self._note(f"Fuel: {self.path} could not be written "
+                                   f"({why}). The record is kept in memory "
+                                   f"and tried again every "
+                                   f"{SAVE_EVERY_S:g} s. The flames are not "
+                                   f"affected.", fault=True)
+                    self.save_error = why
+                return False
         with self._lock:
             if self.save_error:
                 self._note("Fuel: fuel.json is being written again.")
@@ -645,72 +854,57 @@ class FuelTracker:
             self.saved_at = self._wall()
         return True
 
+    def _set_aside(self, why):
+        """A fuel.json that cannot be used is never written over: it is
+        kept beside it under another name and the page says so."""
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self._wall()))
+        kept = f"{self.path}.unreadable-{stamp}"
+        n = 2
+        while os.path.exists(kept):
+            kept = f"{self.path}.unreadable-{stamp}-{n}"
+            n += 1
+        try:
+            os.replace(self.path, kept)
+            where = f"It was kept as {os.path.basename(kept)}"
+        except OSError as e2:
+            where = f"It could not be moved aside either ({e2})"
+        self.load_error = (f"fuel.json could not be read ({why}). {where}, "
+                           f"and the fuel record started again: log a refill "
+                           f"for each unit when its tank is next full.")
+        self._note(f"Fuel: {self.load_error}", fault=True)
+
     def _load(self):
-        """fuel.json, if there is one. A file that cannot be read is never
-        written over: it is kept beside it under another name, the page
-        says so, and the record starts again."""
+        """fuel.json, if there is one, every field checked (read_record).
+        A file that is not readable, or holds a value this program would
+        not count with, is set aside and the record starts again."""
         try:
             with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
-            if not isinstance(doc, dict) or \
-                    doc.get("fuel_format") != FUEL_FORMAT or \
-                    not isinstance(doc.get("units"), dict):
-                raise ValueError("it is not a fuel record this program "
-                                 "can read")
-            units = {}
-            for mid, u in doc["units"].items():
-                if not isinstance(u, dict):
-                    raise ValueError(f"unit {mid!r} is not an object")
-                burn = u.get("burn") or {}
-                units[str(mid)] = {
-                    "kind": str(u.get("kind") or ""),
-                    "name": str(u.get("name") or mid),
-                    "burn": {s: float(burn.get(s, 0.0) or 0.0)
-                             for s in SOURCES},
-                    "shows": int(u.get("shows") or 0),
-                    "show_burns": [float(x) for x in
-                                   u.get("show_burns") or []],
-                    "refills": [dict(r) for r in u.get("refills") or []
-                                if isinstance(r, dict)]}
-            nid = int(doc.get("next_id") or 1)
-            ep = doc.get("episode")
+                rec = read_record(json.load(fh))
         except FileNotFoundError:
             return
         except Exception as e:                    # noqa: BLE001
-            stamp = time.strftime("%Y%m%d-%H%M%S",
-                                  time.localtime(self._wall()))
-            kept = f"{self.path}.unreadable-{stamp}"
-            n = 2
-            while os.path.exists(kept):
-                kept = f"{self.path}.unreadable-{stamp}-{n}"
-                n += 1
-            try:
-                os.replace(self.path, kept)
-                where = f"It was kept as {os.path.basename(kept)}"
-            except OSError as e2:
-                kept = None
-                where = f"It could not be moved aside either ({e2})"
-            self.load_error = (f"fuel.json could not be read "
-                               f"({type(e).__name__}: {e}). {where}, and the "
-                               f"fuel record started again: log a refill for "
-                               f"each unit when its tank is next full.")
-            self._note(f"Fuel: {self.load_error}", fault=True)
+            self._set_aside(f"{type(e).__name__}: {e}")
             return
         with self._lock:
-            self.units = units
-            self.next_id = max(nid, 1 + max(
-                [int(r.get("id") or 0) for u in units.values()
-                 for r in u["refills"]] + [0]))
-            self.uncounted_s = float(doc.get("uncounted_s") or 0.0)
-            self.shows_total = int(doc.get("shows_total") or 0)
-            self.saved_at = doc.get("saved_at")
-            if isinstance(ep, dict):
+            self.units = rec["units"]
+            self.next_id = rec["next_id"]
+            self.shows_total = rec["shows_total"]
+            self.gaps = rec["gaps"]
+            self.saved_at = rec["saved_at"]
+            if not rec["clean"]:
+                when = ("" if self.saved_at is None else time.strftime(
+                    " (last saved %Y-%m-%d %H:%M:%S)",
+                    time.localtime(self.saved_at)))
+                self.gaps += 1
+                self.gap_notes.append(
+                    f"LTC Player stopped without closing{when}; up to "
+                    f"{SAVE_EVERY_S:g} s of flame before that may not be "
+                    f"counted, so every tank may be emptier than it shows "
+                    f"until its next refill.")
+                self._dirty = True
+            if rec["episode"] is not None:
                 # The engine stopped during a performance: it is over.
-                self.episode = {"started": ep.get("started"),
-                                "tc_s": float(ep.get("tc_s") or 0.0),
-                                "rehearsal": bool(ep.get("rehearsal")),
-                                "burn": {str(k): float(v) for k, v in
-                                         (ep.get("burn") or {}).items()}}
+                self.episode = rec["episode"]
                 self._end_episode(self._machines(),
                                   "the engine stopped during it")
                 self._dirty = True
@@ -721,17 +915,24 @@ class FuelTracker:
         if self.episode is not None:
             burn["show"] += float(self.episode["burn"].get(mid, 0.0))
         return {"burn": {s: round(burn[s], 3) for s in SOURCES},
-                "total": round(_total(burn), 3), "shows": u["shows"]}
+                "total": round(_total(burn), 3), "shows": u["shows"],
+                "unsure_s": round(u.get("unsure_s", 0.0), 3),
+                "gaps": self.gaps}
 
-    def refill(self, which, who, role=""):
+    def refill(self, which, who, role="", expect=None):
         """Log a refill: `which` is a machine id or "all". (ok, sentence).
-        Saved to disk before it answers; if the disk refuses, the refill
-        is still kept (and saved as soon as it can be) and the sentence
-        says so."""
+        For "all", `expect` is the ids the page showed: refused if the
+        machine list has changed since. Saved to disk before it answers;
+        if the disk refuses, the refill is still kept (and saved as soon
+        as it can be) and the sentence says so."""
         machines = self._machines()
         by_id = {m.id: m for m in machines}
         if which == "all":
             pick = machines
+            if expect is not None and sorted(expect) != sorted(by_id):
+                return False, ("The machine list changed since this page was "
+                               "drawn. Look at the units again, then press "
+                               "Refill all again. Nothing was logged.")
         elif which in by_id:
             pick = [by_id[which]]
         else:
@@ -808,18 +1009,20 @@ class FuelTracker:
                             float(a.get("total", 0.0))))
         return [c for _i, c in sorted(out)]
 
-    def _unit_view(self, m, cfg, tank):
+    def _unit_view(self, m, cfg, kind):
         u = self.units.get(m.id) or _new_unit(m)
         kc = cfg["kinds"][m.kind]
         cur = self._snapshot(m.id, u)
         rs = self._live_refills(u)
         last = rs[-1] if rs else None
         base = last or {"burn": {s: 0.0 for s in SOURCES}, "total": 0.0,
-                        "shows": 0}
+                        "shows": 0, "unsure_s": 0.0, "gaps": 0}
         since = {s: round(max(0.0, cur["burn"][s] - float(
             base["burn"].get(s, 0.0))), 1) for s in SOURCES}
         burned = max(0.0, cur["total"] - float(base.get("total", 0.0)))
         shows = max(0, cur["shows"] - int(base.get("shows", 0)))
+        unsure = max(0.0, cur["unsure_s"] - float(base.get("unsure_s", 0.0)))
+        gaps = (self.gaps - int(base.get("gaps", 0))) if last else 0
         recent = u["show_burns"][-cfg["recent_shows"]:]
         avg = (sum(recent) / len(recent)
                if len(recent) >= cfg["min_shows"] else None)
@@ -829,6 +1032,7 @@ class FuelTracker:
              "since": since, "burn_s": round(burned, 1),
              "shows_since": shows, "show_samples": len(recent),
              "avg_show_s": None if avg is None else round(avg, 1),
+             "unsure_s": round(unsure, 1), "not_sure": gaps > 0,
              "last_refill": None if last is None else {
                  "id": last.get("id"), "who": last.get("who"),
                  "at_ms": int(float(last.get("at") or 0) * 1000)},
@@ -836,42 +1040,70 @@ class FuelTracker:
              "refill_soon": False, "status": "never", "words": ""}
         burn_line = (f"{burn_words(burned)} and "
                      f"{_plural(shows, 'show')}")
+
+        def done(v):
+            # Every path ends here: what it cannot vouch for is said.
+            if v["not_sure"] and v["status"] != "not_counting":
+                v["words"] = ("Not sure: some flame since the refill could "
+                              "not be counted (see the note at the top), so "
+                              "the tank may be emptier than this. " +
+                              v["words"])
+            if v["refill_soon"]:
+                v["words"] = "Refill soon. " + v["words"]
+            if unsure > 0:
+                v["words"] += (f" Includes {burn_words(unsure)} counted "
+                               f"while flamesafe's armed state was not "
+                               f"known, so it may read low.")
+            return v
+        if self._link is None:
+            v["status"] = "not_counting"
+            v["not_sure"] = True
+            v["words"] = ("Not counting: this engine has no flame link, so "
+                          "no flame is being measured. The level is not "
+                          "known.")
+            return v
         if last is None:
             v["words"] = (f"No refill logged yet: {burn_line} since "
                           f"tracking began. Press Refilled the next time "
                           f"its tank is full.")
-            return v
+            return done(v)
         est = kc["start_shows_per_tank"]
-        cap = tank
-        how = "learned"
+        tank, firm = kind["tank_s"], kind["firm"]
+        cap, how = tank, ("learned" if firm else "learning")
         if cap is None and est is not None and avg:
             cap, how = est * avg, "estimate"
+        rough = False
         if cap is None and est is not None:
-            # Only a count of shows to go on: the starting estimate.
+            # Only a count of shows to go on, and purges and other flame
+            # are not in it: rough, and it may read high.
             left = max(0, est - shows)
+            rough = True
             v.update(status="estimate", shows_left=left,
-                     percent=int(round(100.0 * left / est)))
-            v["words"] = (f"Estimate from your starting number "
-                          f"({est} shows a tank): about "
-                          f"{_plural(left, 'show')} left. {burn_line} since "
-                          f"the refill. Learning the real number.")
+                     percent=int(math.floor(100.0 * left / est)))
+            v["words"] = (f"Rough estimate, may be high: about "
+                          f"{_plural(left, 'show')} left from your starting "
+                          f"number ({est} shows a tank), not counting purges "
+                          f"or other flame. {burn_line} since the refill.")
         elif cap is None:
             v["status"] = "learning"
             v["words"] = (f"Learning: {burn_line} since the refill. It "
                           f"knows how long a {kc['label']} tank lasts once "
                           f"one {KIND_WORDS[m.kind]} has been refilled "
                           f"twice.")
-            return v
+            return done(v)
         else:
             left_s = max(0.0, cap - burned)
             frac = left_s / cap if cap > 0 else 0.0
-            v.update(status="ok" if how == "learned" else "estimate",
-                     percent=int(round(100.0 * frac)))
+            v.update(status={"learned": "ok"}.get(how, how),
+                     percent=int(math.floor(100.0 * frac)))
             if avg is not None and avg > 0:
                 v["shows_left"] = int(math.floor(left_s / avg))
-            pre = ("" if how == "learned" else
-                   f"Estimate from your starting number ({est} shows a "
-                   f"tank). ")
+            pre = {"learned": "",
+                   "learning": (f"Still learning the tank size (from "
+                                f"{_plural(kind['cycles'], 'tank')}), so "
+                                f"this reads on the low side. "),
+                   "estimate": (f"Estimate from your starting number "
+                                f"({est} shows a tank). ")}[how]
             if v["shows_left"] is not None:
                 v["words"] = (f"{pre}About {_plural(v['shows_left'], 'show')}"
                               f" left ({v['percent']} percent).")
@@ -886,13 +1118,14 @@ class FuelTracker:
         p = v["percent"]
         v["color"] = ("red" if p < cfg["red_below_percent"] else
                       "amber" if p < cfg["amber_below_percent"] else "green")
+        if v["color"] == "green" and (rough or v["not_sure"]):
+            # Never green on a level it cannot vouch for.
+            v["color"] = "amber"
         sl = v["shows_left"]
         v["refill_soon"] = bool(v["color"] == "red" or
                                 (sl is not None and
                                  sl <= cfg["refill_soon_shows"]))
-        if v["refill_soon"]:
-            v["words"] = "Refill soon. " + v["words"]
-        return v
+        return done(v)
 
     def view(self):
         """The Fuel page's view. Never raises."""
@@ -902,20 +1135,22 @@ class FuelTracker:
                 cfg = self.cfg
                 kinds = {}
                 for k in TRACKED_KINDS:
-                    tank, used = learned_tank(self._cycles(k),
-                                              cfg["learn_refills"],
-                                              cfg["outlier_ratio"])
+                    cyc = self._cycles(k)
+                    tank, used, firm = learned_tank(
+                        cyc, cfg["learn_refills"], cfg["outlier_ratio"])
+                    sus = suspect_cycles(cyc, cfg["learn_refills"])
                     kc = cfg["kinds"][k]
                     kinds[k] = {"label": kc["label"],
                                 "words": KIND_WORDS[k],
                                 "tank_s": None if tank is None
                                 else round(tank, 1),
-                                "cycles": used,
+                                "cycles": used, "firm": firm,
+                                "suspect": [round(c, 1) for c in sus],
                                 "count_purge": kc["count_purge"],
                                 "fire_at": kc["fire_at"],
                                 "start_shows_per_tank":
                                     kc["start_shows_per_tank"]}
-                units = [self._unit_view(m, cfg, kinds[m.kind]["tank_s"])
+                units = [self._unit_view(m, cfg, kinds[m.kind])
                          for m in machines]
                 gone = sorted(set(self.units) - {m.id for m in machines})
                 batches = {}
@@ -929,16 +1164,35 @@ class FuelTracker:
                 recent = sorted(batches.values(),
                                 key=lambda b: -(b["id"] or 0))[
                     :RECENT_BATCHES]
+                notes = list(self.gap_notes)
+                if self._link is None:
+                    notes.insert(0, "No flame link in this engine, so no "
+                                    "flame is being counted.")
+                if self.armed_unknown:
+                    notes.append("flamesafe's armed state is not known right "
+                                 "now, so every flame frame is counted as "
+                                 "if its group were armed. Tanks may read "
+                                 "lower than they are, never higher.")
+                for k, d in kinds.items():
+                    if d["suspect"]:
+                        notes.append(
+                            f"A {d['words']} tank lasted much longer than "
+                            f"the others ({burn_words(max(d['suspect']))}): "
+                            f"a Refilled press may have been missed. Check "
+                            f"Recent refills.")
                 ep = self.episode
                 return {
                     "units": units, "kinds": kinds,
+                    "unit_ids": [m.id for m in machines],
                     "refill_soon": [u["name"] for u in units
                                     if u["refill_soon"]],
+                    "not_sure": [u["name"] for u in units
+                                 if u["not_sure"]],
+                    "notes": notes,
                     "not_listed": len(gone),
                     "recent_refills": recent,
                     "show_running": ep is not None,
                     "shows_total": self.shows_total,
-                    "uncounted_s": round(self.uncounted_s, 1),
                     "watching": self._link is not None,
                     "config_error": self.config_error,
                     "fault": " ".join(x for x in (
@@ -955,6 +1209,7 @@ class FuelTracker:
                         "red_below_percent", "refill_soon_shows")}}
         except Exception as e:                    # noqa: BLE001
             return {"units": [], "kinds": {}, "refill_soon": [],
+                    "not_sure": [], "notes": [],
                     "fault": f"The fuel view could not be built "
                              f"({type(e).__name__}: {e})."}
 
@@ -962,29 +1217,46 @@ class FuelTracker:
         """For the status every screen polls: the nav button's colour."""
         v = self.view()
         return {"refill_soon": len(v.get("refill_soon") or []),
-                "fault": bool(v.get("fault") or v.get("config_error"))}
+                "fault": bool(v.get("fault") or v.get("config_error")
+                              or v.get("not_sure"))}
 
-    def close(self):
-        """Stop the thread, count what is waiting, end a performance (the
-        engine is stopping), save."""
+    def close(self, timeout=CLOSE_TIMEOUT_S):
+        """Stop the thread, then on a thread of its own: count what is
+        waiting, end a performance (the engine is stopping), save, marked
+        a clean stop. Waits at most `timeout` for that (web.serve calls
+        this AFTER the flame link and the conductor have stopped), and
+        never raises."""
         self._stop.set()
         t = self._thread
         if t is not None and t is not threading.current_thread():
-            t.join(2.0)
+            t.join(timeout)
         self._thread = None
         link = self._link
         if link is not None and getattr(link, "observer", None) == \
                 self.observe:
             link.observer = None
-        try:
-            self.pump()
-            with self._lock:
-                if self.episode is not None:
-                    self._end_episode(self._machines(),
-                                      "the engine was stopped during it")
-        except Exception:                         # noqa: BLE001
-            pass
-        self.save()
+
+        def finish():
+            try:
+                self.pump()
+                with self._lock:
+                    if self.episode is not None:
+                        self._end_episode(self._machines(),
+                                          "the engine was stopped during it")
+                    self._clean = True
+            except Exception:                     # noqa: BLE001
+                pass
+            self.save()
+        th = threading.Thread(target=finish, daemon=True,
+                              name="ltcplay-fuel-close")
+        th.start()
+        th.join(timeout)
+        if th.is_alive():
+            self._note(f"Fuel: saving fuel.json took longer than "
+                       f"{timeout:g} s at close; the engine did not wait "
+                       f"for it.", fault=True)
+            return False
+        return True
 
 
 # ------------------------------------------------------- who may do what --
@@ -1065,7 +1337,15 @@ def route_post(tracker, name, body, ctx, users):
             if body.get("confirm") is not True:
                 return 400, {"error": "Refill all needs its confirm. "
                                       "Nothing was logged."}
-            done, text = tracker.refill("all", who, role)
+            shown = body.get("units")
+            if not isinstance(shown, list) or \
+                    not all(isinstance(x, str) for x in shown):
+                return 400, {"error": "Refill all has to say which units "
+                                      "the page showed. Nothing was "
+                                      "logged."}
+            done, text = tracker.refill("all", who, role, expect=shown)
+            if not done:
+                return 409, {"error": text}
         else:
             unit = body.get("unit")
             if not isinstance(unit, str) or not unit:

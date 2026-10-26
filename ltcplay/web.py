@@ -1626,10 +1626,13 @@ def _attach_fuel(httpd):
     _close_before = httpd.server_close
 
     def _close_fuel():
+        # Last: the flame link, the conductor and everything closed before
+        # this was built go first, and its save never waits more than
+        # fuel.CLOSE_TIMEOUT_S, so its disk can never hold up a safety step.
         try:
-            remote.fuel.close()
-        finally:
             _close_before()
+        finally:
+            remote.fuel.close()
     httpd.server_close = _close_fuel
 
 

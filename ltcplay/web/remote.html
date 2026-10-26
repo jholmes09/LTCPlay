@@ -3461,15 +3461,14 @@ function fuWhen(ms){
 function fuSecs(s){ s = Number(s) || 0; return s < 90 ? Math.round(s) + " s" : (s / 60).toFixed(1) + " min"; }
 function renderFuel(){
   const f = FU; if(!f) return;
-  const warn = [f.config_error, f.fault].filter(Boolean).join(" ");
+  const warn = [f.config_error, f.fault].concat(f.notes || []).filter(Boolean).join(" ");
   $("fu-warn").hidden = !warn; $("fu-warn").textContent = warn;
   $("fu-kinds").innerHTML = Object.keys(f.kinds || {}).map(k => {
     const d = f.kinds[k];
-    const t = d.tank_s ? `a ${esc(d.label)} tank lasts about ${fuSecs(d.tank_s)} of flame (from ${d.cycles} refill${d.cycles === 1 ? "" : "s"}).`
+    const t = d.tank_s ? `a ${esc(d.label)} tank lasts about ${fuSecs(d.tank_s)} of flame (from ${d.cycles} tank${d.cycles === 1 ? "" : "s"}${d.firm ? "" : ", still learning: the smallest so far"}).`
                        : `learning how long a ${esc(d.label)} tank lasts.`;
     return `<div><b>${esc(d.words)}:</b> ${t} ${d.count_purge ? "Purges count." : "Purges do not count (separate purge fuel)."}</div>`;
-  }).join("") + (f.uncounted_s > 0 ? `<div>${fuSecs(f.uncounted_s)} of flame was not counted because flamesafe's armed state was not known.</div>` : "") +
-    (f.watching === false ? "<div>No flame link in this engine, so nothing is being counted.</div>" : "");
+  }).join("");
   const units = f.units || [];
   $("fu-all").disabled = !f.may_refill || !units.length;
   $("fu-all").title = f.may_refill ? "" : (f.refill_why || "");
@@ -3485,6 +3484,7 @@ function renderFuel(){
       <div class="top"><b>${esc(u.name)}</b><span class="dim">${esc(u.kind_words)}, ${esc(u.label)}</span></div>
       ${u.locked ? '<div class="fu-tag">Locked out: still tracked, burns nothing</div>' : ""}
       ${u.refill_soon ? '<div class="fu-tag">Refill soon</div>' : ""}
+      ${u.not_sure ? '<div class="fu-tag">Not sure: may be emptier</div>' : ""}
       <div class="fu-bar" title="${u.percent == null ? "not known yet" : u.percent + " percent left"}"><i style="width:${pct}%"></i></div>
       <div class="fu-left">${esc(big)}</div>
       <div class="fu-words">${esc(u.words)}</div>
@@ -3511,7 +3511,7 @@ $("fu-units").addEventListener("click", async (ev) => {
 $("fu-all").addEventListener("click", async () => {
   const n = ((FU && FU.units) || []).length;
   if(await confirmBox(`Refill all ${n} units?`, "Log a full tank for every G-Flame and Showven at once. Only if every tank really was filled.", "Yes, refill all", "go"))
-    fuPress("fuel-refill", {all:true, confirm:true});
+    fuPress("fuel-refill", {all:true, confirm:true, units:(FU && FU.unit_ids) || []});
 });
 $("fu-recent").addEventListener("click", async (ev) => {
   const b = ev.target.closest("[data-undo]"); if(!b) return;
