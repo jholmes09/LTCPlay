@@ -56815,6 +56815,350 @@ def test_live_flame_review_round_two():
 
 
 
+_LF_PC = "10.0.0.10"      # the show PC's own show network address
+_LF_MAC = "10.0.0.20"     # Jeff's Mac
+
+
+class _LfSockMc(_LfSock):
+    """_LfSock that also records every socket option (a multicast join
+    would show here)."""
+
+    def setsockopt(self, *a):
+        self.log.append(("setsockopt",) + a)
+
+
+def _lf_mac_rig(**kw):
+    """An _LfRig in the Mac mode: the flame controller E1.31 unicast to
+    this PC's show network address, the Mac allowed, 10.0.0.10 an address
+    of this PC and 10.0.0.20 not."""
+    from ltcplay import flameprog as fp
+    R = _LfRig(settings=fp.Settings(listen_ip=_LF_PC,
+                                    allowed_source_ip=_LF_MAC), **kw)
+    R.xml = _lf_xml(R.dir, ip=_LF_PC)
+    R.lf._map_get = lambda: fp.FlameMap.from_networks(R.xml, "Flame Node",
+                                                     _LF_PC)
+    R.lf._is_local = lambda ip: ip == _LF_PC or ip.startswith("127.")
+    R.devices = {"10.0.0.60": "flamesafe.json", "10.0.0.70":
+                 "ltcplay_fire_ice.json"}
+    R.lf._device_ips = lambda: R.devices
+    R.lf._sock_factory = lambda: _LfSockMc(R.socks)
+    return R
+
+
+def test_live_flame_from_a_mac():
+    section("live flame programming from a Mac: off by default (loopback "
+            "only, a show network source ends it); one allowed private "
+            "IPv4 Mac address; the listener binds this PC's listen_ip and "
+            "127.0.0.1 only, never 0.0.0.0, never a multicast group; any "
+            "other source ends it with every group disarmed and zero; one "
+            "sender across the Mac and loopback; bad addresses refused; the "
+            "values reach flamesafe only through the flame link's program "
+            "slot; the map fingerprint matches the Mac's helper")
+    import importlib.util as _ilu
+    import json as _j
+    import socket as _so
+    import uuid
+    from ltcplay import flameprog as fp
+    nodash = lambda t: "\u2014" not in t and "\u2013" not in t
+    # -- the setting --------------------------------------------------------
+    d = fp.Settings.parse({})
+    check(d.allowed_source_ip is None and d.binds() ==
+          [("127.0.0.1", 5568)] and d.source() == "this PC",
+          f"default: no Mac, 127.0.0.1 only: {d.binds()}")
+    check(fp.Settings.parse({"allowed_source_ip": None}).binds() ==
+          [("127.0.0.1", 5568)], "allowed_source_ip null: loopback only")
+    ok = fp.Settings.parse({"allowed_source_ip": _LF_MAC,
+                            "listen_ip": _LF_PC})
+    check(ok.binds() == [("127.0.0.1", 5568), (_LF_PC, 5568)] and
+          ok.source() == f"Mac {_LF_MAC}",
+          f"with the Mac: this PC's listen_ip and 127.0.0.1: {ok.binds()}")
+    for bad_mac in ("127.0.0.1", "127.0.0.5", "239.255.0.100",
+                    "224.0.0.1", "8.8.8.8", "100.64.0.1", "169.254.1.2",
+                    "0.0.0.0", "255.255.255.255", "10.0.0.255", "10.0.0.0",
+                    "localhost", "jeffs-mac.local", "010.0.0.20",
+                    " 10.0.0.20", "10.0.0.20/24", "::1", "", 167772180,
+                    True, ["10.0.0.20"]):
+        try:
+            fp.Settings.parse({"allowed_source_ip": bad_mac,
+                               "listen_ip": _LF_PC})
+            check(False, f"allowed_source_ip {bad_mac!r} accepted")
+        except fp.SettingsError as e:
+            check(nodash(str(e)) and "allowed_source_ip" in str(e),
+                  f"allowed_source_ip {bad_mac!r} refused: {e}")
+    for bad_listen in ("0.0.0.0", "127.0.0.1", "", "8.8.8.8", _LF_MAC,
+                       "239.255.0.1", "showpc.local"):
+        try:
+            fp.Settings.parse({"allowed_source_ip": _LF_MAC,
+                               "listen_ip": bad_listen})
+            check(False, f"listen_ip {bad_listen!r} accepted with a Mac")
+        except fp.SettingsError as e:
+            check("listen_ip" in str(e), f"listen_ip {bad_listen!r} "
+                  f"refused: {e}")
+    try:
+        fp.Settings.parse({"allowed_source_ip": _LF_MAC})
+        check(False, "a Mac without listen_ip accepted")
+    except fp.SettingsError as e:
+        check("listen_ip" in str(e), f"a Mac needs listen_ip: {e}")
+    try:
+        fp.Settings.parse({"listen_ip": _LF_PC})
+        check(False, "a show network listen_ip with no Mac accepted")
+    except fp.SettingsError as e:
+        check("127.0.0.1" in str(e), f"no Mac: loopback only: {e}")
+    # -- default mode: a show network source still ends it -------------------
+    R = _LfRig()
+    try:
+        R.on()
+        check(R.socks == [("bind", ("127.0.0.1", 5568))],
+              f"default: one socket, 127.0.0.1: {R.socks}")
+        check(R.feed(R.pk(), host=_LF_MAC) == "ended" and not R.lf.on and
+              "not from this PC" in R.lf.last_end["reason"] and
+              R.disarms, f"default: the Mac's packet ends it: "
+              f"{R.lf.last_end}")
+    finally:
+        R.close()
+    # -- the Mac mode ---------------------------------------------------------
+    R = _lf_mac_rig()
+    try:
+        R.armed[0] = ["front row"]
+        R.on()
+        binds = [s[1] for s in R.socks if s[0] == "bind"]
+        check(binds == [("127.0.0.1", 5568), (_LF_PC, 5568)],
+              f"on: bound to 127.0.0.1 and {_LF_PC} only: {binds}")
+        check(not any(b[0] in ("", "0.0.0.0") for b in binds),
+              "never the any address")
+        joins = [s for s in R.socks if s[0] == "setsockopt" and
+                 s[2] in (getattr(_so, "IP_ADD_MEMBERSHIP", -1),
+                          getattr(_so, "IP_MULTICAST_IF", -2))]
+        check(joins == [], f"no multicast group is joined: {joins}")
+        v = R.lf.view()
+        check(v["source"] == f"Mac {_LF_MAC}" and
+              v["fingerprint"] == R.lf.map.fingerprint and
+              len(v["fingerprint"]) == 8 and _LF_PC in v["listen"],
+              f"the page: source and map fingerprint: {v['source']}, "
+              f"{v['fingerprint']}, {v['listen']}")
+        hot = bytes([0] * 10 + [200] + [0] * 289)
+        check(R.feed(R.pk(values=bytes(300)), host=_LF_MAC) == "taken" and
+              R.feed(R.pk(values=hot), host=_LF_MAC) == "taken",
+              "the allowed Mac's packets are taken")
+        check(R.out()[10] == 200 and R.link.program_on,
+              f"and reach the flame link's program slot: {R.out()[10]}")
+        R.link.send_frame()
+        got = _j.loads(R.sent[-1])
+        check(got["t"] == "flame" and got["values"][10] == 200,
+              "only as the link's own keyed flame frame to flamesafe")
+        before = list(R.socks)
+        R.feed(R.pk(values=hot), host=_LF_MAC)
+        check(not any(s[0] == "sendto" for s in R.socks) and
+              R.socks == before, "the listener sends nothing, to anyone")
+        check(R.feed(R.pk(values=hot), host="10.0.0.21") == "ended" and
+              not R.lf.on and R.out() == bytes(512) and
+              not R.link.program_on and R.disarms and
+              "10.0.0.21" in R.lf.last_end["reason"] and
+              _LF_MAC in R.lf.last_end["reason"],
+              f"another show network address ends it, zero, every group "
+              f"disarmed, named: {R.lf.last_end}")
+        R.disarms.clear()
+        R.socks.clear()
+        R.on()
+        check(R.feed(R.pk(values=hot), host=_LF_PC) == "ended" and
+              not R.lf.on and R.disarms,
+              f"a packet from this PC's own show network address (not the "
+              f"Mac) ends it: {R.lf.last_end}")
+        # One sender across the Mac and loopback.
+        for first, second, what in ((_LF_MAC, "127.0.0.1", "loopback"),
+                                    ("127.0.0.1", _LF_MAC, "the Mac")):
+            R.disarms.clear()
+            R.on()
+            check(R.feed(R.pk(), host=first) == "taken",
+                  f"the first sender from {first}")
+            other = uuid.uuid4().bytes
+            check(R.feed(R.pk(cid=other), host=second) == "ended" and
+                  not R.lf.on and R.out() == bytes(512) and R.disarms and
+                  "second E1.31 source" in R.lf.last_end["reason"],
+                  f"a second CID from {what} ends it: {R.lf.last_end}")
+            R.disarms.clear()
+            R.on()
+            R.feed(R.pk(), host=first)
+            check(R.feed(R.pk(), host=second) == "ended" and not R.lf.on and
+                  R.disarms, f"the same CID from {what} as well (one "
+                  f"sender, one place): {R.lf.last_end}")
+        check(all(nodash(l[1]) for l in R.lines), "no dashes in the journal")
+    finally:
+        R.close()
+    # -- entry refusals in the Mac mode ---------------------------------------
+    R = _lf_mac_rig()
+    try:
+        def refused(why_in):
+            ok, text = R.lf.begin("Jeff", "Rack screen")
+            check(not ok and not R.lf.on and why_in in text and
+                  not R.link.program_on and
+                  not any(s[0] == "bind" for s in R.socks) and nodash(text),
+                  f"refused naming {why_in!r}: {text}")
+        R.lf._is_local = lambda ip: ip.startswith("127.")
+        refused("is not an address of this PC")
+        R.lf._is_local = lambda ip: True
+        refused("an address of this PC itself")
+        R.lf._is_local = lambda ip: ip == _LF_PC or ip.startswith("127.")
+        R.dest[0] = (_LF_MAC, 5568)
+        refused("flamesafe's destination")
+        R.dest[0] = (_LF_PC, 5568)
+        refused("come back in")
+        R.dest[0] = ("10.9.9.9", 5568)
+        R.devices[_LF_MAC] = "ltcplay_fire_ice.json"
+        refused("ltcplay_fire_ice.json")
+        del R.devices[_LF_MAC]
+        R.lf._device_ips = lambda: 1 / 0
+        refused("could not be checked")
+        R.lf._device_ips = lambda: R.devices
+        _lf_xml(R.dir, ip=_LF_PC, extra=(
+            f'\n <Controller Name="old mac" IP="{_LF_MAC}" '
+            f'ActiveState="Inactive"><network NetworkType="E131" '
+            f'BaudRate="9" MaxChannels="3"/></Controller>'))
+        refused("old mac")
+        _lf_xml(R.dir, ip=_LF_PC, extra=(
+            f'\n <Controller Name="pc2" IP="{_LF_PC}" '
+            f'ActiveState="xLights Only"><network NetworkType="E131" '
+            f'BaudRate="9" MaxChannels="3"/></Controller>'))
+        refused("pc2")
+        _lf_xml(R.dir)          # the flame controller still on 127.0.0.1
+        refused(f"unicast to {_LF_PC}")
+        _lf_xml(R.dir, ip=_LF_MAC)
+        refused(f"unicast to {_LF_PC}")
+        _lf_xml(R.dir, ip="MULTICAST")
+        refused("multicast")
+        _lf_xml(R.dir, ip=_LF_PC)
+        keep = R.lf._map_get
+        R.lf._map_get = lambda: fp.FlameMap(((100, 1, 300),), R.xml, None,
+                                            "127.0.0.1")
+        refused("but the listener is")
+        R.lf._map_get = keep
+        R.settings.listen_ip = "0.0.0.0"
+        refused("0.0.0.0")
+        R.settings.listen_ip = _LF_PC
+        check(R.on(), "with nothing in the way it turns on")
+    finally:
+        R.close()
+    # The default mode with the flame controller at this PC's show address
+    # is refused (it must be 127.0.0.1 then).
+    R = _LfRig()
+    try:
+        R.xml = _lf_xml(R.dir, ip=_LF_PC)
+        ok, text = R.lf.begin("Jeff", "Rack screen")
+        check(not ok and "127.0.0.1" in text, f"default: {text}")
+    finally:
+        R.close()
+    # -- addresses of this PC and the configs' devices ------------------------
+    check(fp.is_this_pc("127.0.0.1") and not fp.is_this_pc("192.0.2.77"),
+          "is_this_pc: loopback is, a TEST-NET address is not")
+    dd = tempfile.mkdtemp()
+    try:
+        a = os.path.join(dd, "flamesafe.json")
+        with open(a, "w") as fh:
+            _j.dump({"destination": {"ip": "10.0.0.60", "port": 5568},
+                     "link": {"listen": ["127.0.0.1", 5571]},
+                     "name": "not an address"}, fh)
+        got = fp.configured_ips([a, os.path.join(dd, "missing.json"), None])
+        check(got == {"10.0.0.60": "flamesafe.json",
+                      "127.0.0.1": "flamesafe.json"},
+              f"configured_ips: every address in the configs: {got}")
+        with open(a, "w") as fh:
+            fh.write("{not json")
+        try:
+            fp.configured_ips([a])
+            check(False, "an unreadable config was taken as no devices")
+        except Exception:
+            pass
+    finally:
+        import shutil
+        shutil.rmtree(dd, ignore_errors=True)
+    # -- the real listener loop over two sockets ------------------------------
+    R = _lf_mac_rig()
+    try:
+        ports = []
+        for _i in range(2):
+            s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+            s.bind(("127.0.0.1", 0))
+            ports.append(s.getsockname()[1])
+            s.close()
+        R.settings.port = ports[0]
+        real = []
+
+        class _Remap:
+            # This PC's show address is played by a second loopback port.
+            def __init__(self):
+                self.s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+                real.append(self.s)
+
+            def bind(self, addr):
+                R.socks.append(("bind", addr))
+                self.s.bind(("127.0.0.1", ports[1]) if addr[0] == _LF_PC
+                            else addr)
+
+            def __getattr__(self, n):
+                return getattr(self.s, n)
+        R.lf._sock_factory = _Remap
+        R.lf._threaded = True
+        R.lf._clock = time.monotonic
+        R.lf._wall = time.time
+        R.t[0] = time.monotonic()
+        if R.on():
+            tx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+            try:
+                for i, p in enumerate((ports[0], ports[1], ports[0])):
+                    tx.sendto(fp.build_e131(100, bytes(300), seq=i + 1),
+                              ("127.0.0.1", p))
+                    time.sleep(0.02)
+                deadline = time.time() + 3
+                while R.lf.counts.get("taken", 0) < 3 and \
+                        time.time() < deadline:
+                    time.sleep(0.02)
+                check(R.lf.counts.get("taken", 0) == 3 and R.lf.on,
+                      f"the listener reads both sockets: "
+                      f"{dict(R.lf.counts)}")
+            finally:
+                tx.close()
+            R.lf.end("test over", "Jeff", "Rack screen", system=False)
+            check(R.lf._sock is None and R.lf._socks == [] and
+                  all(s.fileno() == -1 for s in real),
+                  "off: both sockets are closed")
+    finally:
+        R.close()
+    # -- the map fingerprint, here and on the Mac -----------------------------
+    spec = _ilu.spec_from_file_location(
+        "xlights_map_fingerprint",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools",
+                     "xlights_map_fingerprint.py"))
+    tool = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    src = open(spec.origin, encoding="utf-8").read()
+    check("import ltcplay" not in src and "from ltcplay" not in src and
+          nodash(src), "the helper stands alone (stdlib only), no dashes")
+    dd = tempfile.mkdtemp()
+    try:
+        x = _lf_xml(dd, ip=_LF_PC)
+        m = fp.FlameMap.from_networks(x, "Flame Node", _LF_PC)
+        import io
+        import contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = tool.main(["x", x, "Flame Node"])
+        check(rc == 0 and out.getvalue().startswith(
+            f"Flame Node: {m.fingerprint} "),
+              f"the helper prints the rack screen's fingerprint: "
+              f"{out.getvalue().strip()} / {m.fingerprint}")
+        x2 = _lf_xml(dd, ip=_LF_PC, u2=102)
+        m2 = fp.FlameMap.from_networks(x2, "Flame Node", _LF_PC)
+        check(m2.fingerprint != m.fingerprint,
+              "another universe number: another fingerprint")
+        m3 = fp.FlameMap.from_networks(_lf_xml(dd), "Flame Node")
+        check(m3.fingerprint == m.fingerprint,
+              "the address is not in it: the same layout, the same print")
+    finally:
+        import shutil
+        shutil.rmtree(dd, ignore_errors=True)
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -57384,6 +57728,7 @@ if __name__ == "__main__":
     test_live_flame_review_round_one()
     test_live_flame_end_to_end_armed_group_real_flamesafe()
     test_live_flame_review_round_two()
+    test_live_flame_from_a_mac()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

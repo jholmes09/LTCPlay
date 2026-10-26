@@ -2126,7 +2126,7 @@ $("sa-off").addEventListener("click", async () => {
 // Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md). The
 // engine decides everything; remote.py LIVE_FLAME_ENABLES says the same
 // words as the confirm box below.
-const LIVE_FLAME_ENABLES = "On, LTC Player listens for xLights on this PC only (E1.31 to 127.0.0.1) and passes the flame controller's channels to flamesafe through its own flame link. flamesafe still fires only a group that is armed (hold to arm on the Stream Deck), and still applies lockouts and Abort. One flame group may be armed at a time. It turns itself off, and disarms every flame group, on Off, Abort, Hold, Start now, Run, a show starting, a second sender, no xLights data for a while, or the session limit. Never use xLights' test tools while a group is armed.";
+const LIVE_FLAME_ENABLES = "On, LTC Player listens for xLights on this PC only (E1.31 to 127.0.0.1), or also from the one Mac named in its settings, and passes the flame controller's channels to flamesafe through its own flame link. flamesafe still fires only a group that is armed (hold to arm on the Stream Deck), and still applies lockouts and Abort. One flame group may be armed at a time. It turns itself off, and disarms every flame group, on Off, Abort, Hold, Start now, Run, a show starting, a second sender, no xLights data for a while, or the session limit. Never use xLights' test tools while a group is armed.";
 $("lf-what").textContent = LIVE_FLAME_ENABLES;
 function renderLiveFlame(){
   const lf = (ST && ST.live_flame) || {};
@@ -2136,7 +2136,7 @@ function renderLiveFlame(){
   if(on){
     const map = (lf.map || []).map(m => "universe " + m.universe + " to slots " + m.slots).join(", ");
     const rx = lf.receiving ? "receiving xLights" : ("no xLights data for " + (lf.last_data_s || 0) + " s");
-    $("lf-banner-text").textContent = "xLights drives the flames through flamesafe. Only an armed group fires. " + rx + "; " + (map || "") + ". Turned on by " + (lf.who || "someone") + ".";
+    $("lf-banner-text").textContent = "xLights drives the flames through flamesafe. Only an armed group fires. " + rx + "; source: " + (lf.source || "this PC") + "; map fingerprint " + (lf.fingerprint || "?") + " (" + (map || "") + "). Turned on by " + (lf.who || "someone") + ".";
   }
   const le = lf.last_end;
   $("lf-now").textContent = !ST ? "" : on ? "ON" : (lf.available === false ? "Not available in this engine" : "OFF");
