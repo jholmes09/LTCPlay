@@ -779,6 +779,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <h2>Lasers: arm and calibration tests</h2>
         <div class="mo-larm" id="mo-larm"><div class="st" id="mo-larm-st">Lasers: not known yet.</div></div>
         <div class="mo-lasers" id="mo-lasers"></div>
+        <div class="mo-larm" id="mo-calib"><button id="mo-cal-on" title="Turns the calibration test on for every armed laser that is not locked out, one after another">Calibrate all lasers</button><button class="ghost" id="mo-cal-off" title="Turns every laser's calibration test off">Calibration off</button><button class="ghost" id="mo-beyond" title="Brings the BEYOND window to the front of this show PC. Sends nothing to BEYOND.">Open BEYOND</button></div>
         <div class="toast" id="mo-lmsg"></div>
       </section>
       <section class="card">
@@ -887,6 +888,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
           <div><label for="au-keep">Keep days here</label><input id="au-keep" type="number" min="90"></div>
           <div><label for="au-idle">Idle sign out, minutes (0 is off)</label><input id="au-idle" type="number" min="0"></div>
         </div>
+        <div><label for="au-lastshow">Sign everyone out this many minutes after the last show of the night (0 is off)</label><input id="au-lastshow" type="number" min="0" max="1440"></div>
         <div class="row" style="margin-top:8px"><button id="au-save">Save</button><button class="ghost" id="au-now">Send now</button></div>
       </div>
       <div class="toast" id="au-msg"></div>
@@ -3016,6 +3018,8 @@ function renderMorning(){
     const btn = el.querySelector(".arm");
     if(btn) btn.textContent = a.armed ? "Disarm" : (l.locked ? "Locked" : "Arm");
   });
+  // Open BEYOND works on the show PC itself only: hidden elsewhere.
+  $("mo-beyond").hidden = !(ME && ME.local);
   renderChecklists(mo.checklists || {});
   renderEngineChecks(mo.checks || []);
 }
@@ -3293,6 +3297,13 @@ function fireStop(why){
 // The morning list is called Startup on screen (Jeff, 2026-10-23); its id
 // and the settings file keep "morning".
 function listTitle(l){ return (l.id === "morning" && /^morning$/i.test(l.title || "")) ? "Startup" : (l.title || l.id); }
+// Calibrate all lasers, Calibration off and Open BEYOND (Jeff,
+// 2026-10-26). Calibrate all is a laser test ON for every armed, unlocked
+// laser, so Arrange mode holds it back like any test ON; Calibration off
+// only darkens. Open BEYOND moves a window on the show PC and nothing else.
+$("mo-cal-on").addEventListener("click", () => moPress("laser-test", {all:true, on:true}, "mo-lmsg"));
+$("mo-cal-off").addEventListener("click", () => moPress("laser-test", {all:true, on:false}, "mo-lmsg"));
+$("mo-beyond").addEventListener("click", () => moPress("open-beyond", {}, "mo-lmsg"));
 $("mo-shut-go").addEventListener("click", () => {
   const lists = (MO && MO.checklists && MO.checklists.checklists) || [];
   const sh = lists.find(l => l.id === "shutdown");
@@ -3430,6 +3441,7 @@ function renderAudit(){
     $("au-time").value = u.time || "03:30";
     $("au-keep").value = u.keep_days || 90;
     $("au-idle").value = UV.idle_signout_min || 0;
+    $("au-lastshow").value = UV.signout_after_last_show_min == null ? 10 : UV.signout_after_last_show_min;
     $("au-tok").placeholder = u.token_set ? "saved (type to replace)" : "not set";
   }
   const may = !!UV.may_settings;
@@ -3491,6 +3503,7 @@ $("au-save").addEventListener("click", async () => {
   try{
     const r = await post("/api/remote/audit-settings", body);
     await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
+    await post("/api/remote/last-show-signout", {minutes:parseInt($("au-lastshow").value, 10) || 0});
     uMsg("au-msg", r.text);
   }catch(e){ uMsg("au-msg", e.message, true); }
   $("au-tok").value = "";

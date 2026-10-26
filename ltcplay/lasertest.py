@@ -277,6 +277,17 @@ class _Socket:
                 pass
 
 
+def not_set_up(laser):
+    """The refusal for a laser whose calibration cue is not set up, naming
+    what to put where (MORNING.md, How to set up the laser calibration
+    cue)."""
+    return (f"{laser.name}: how the test is sent to BEYOND is not set yet "
+            f"(a placeholder). In ltcplay_morning.json, under lasers, give "
+            f"\"{laser.id}\" \"mechanism\": \"osc\" and its \"on\" and "
+            f"\"off\" OSC messages (MORNING.md, How to set up the laser "
+            f"calibration cue). Nothing was sent.")
+
+
 class LaserTests:
     """The four (or however many) laser test toggles. `locked` is a
     callable(laser_id) -> bool, the engine's lockout; `armed` a
@@ -358,10 +369,7 @@ class LaserTests:
                                f"page). Nothing was sent.")
             if laser.mechanism == "none" or not laser.on:
                 self.last_result[laser.id] = "refused"
-                return False, (f"{laser.name}: how the test is sent to BEYOND "
-                               f"is not set yet (a placeholder in "
-                               f"ltcplay_morning.json, lasers). Nothing was "
-                               f"sent.")
+                return False, not_set_up(laser)
             # Recorded ON before the send, so a disarm landing during it
             # sees the test and turns it off; and asked again after it, so
             # a disarm that came first is never outlived by the grid
@@ -402,6 +410,83 @@ class LaserTests:
         return ok, (f"{laser.name} test off." if ok else
                     f"{laser.name} test off was sent but did NOT get out "
                     f"({self._osc.last_error}).")
+
+    def set_all(self, on, who="", device="", still_ok=None):
+        """Calibrate all lasers (on) or Calibration off (off), from the
+        Startup page (Jeff, 2026-10-26). (ok, sentence).
+
+        ON goes through the lasers in their config order, one at a time,
+        through set() itself, so every rule of a single test holds: a
+        locked-out laser is skipped and named, a laser that is not armed is
+        skipped and named, a laser whose cue is not set up is refused in
+        words saying what to configure. `still_ok()` is asked before each
+        laser (the engine's "a show is live, an Abort stands"): once it
+        says why not, nothing more goes on. ok is True when at least one
+        test went on.
+
+        OFF turns every laser's test off, whatever it was (it only
+        darkens). ok is True when every off got out."""
+        label = who or device or "someone"
+        if not on:
+            bad = []
+            for lid in self.order:
+                ok, _t = self.set(lid, False, who=who, device=device)
+                if not ok:
+                    bad.append(self.lasers[lid].name)
+            self._note(f"{label} pressed Calibration off: every laser test "
+                       f"off{'' if not bad else ' (NOT sent for ' + ', '.join(bad) + ')'}.",
+                       action="laser-test", outcome="all_off" if not bad
+                       else "failed", fault=bool(bad))
+            if bad:
+                return False, (f"Calibration off: the off message did NOT "
+                               f"get out for {', '.join(bad)} "
+                               f"({self._osc.last_error}).")
+            return True, "Calibration off: every laser test is off."
+        went, skipped, refused, failed = [], [], [], []
+        stopped = ""
+        for lid in self.order:
+            laser = self.lasers[lid]
+            if still_ok is not None:
+                try:
+                    why = still_ok() or ""
+                except Exception as e:           # noqa: BLE001
+                    why = f"the show state could not be read ({e})"
+                if why:
+                    stopped = why
+                    break
+            try:
+                locked = bool(self._locked(lid))
+            except Exception:                    # noqa: BLE001
+                locked = True
+            if locked:
+                skipped.append(f"{laser.name} (locked out)")
+                continue
+            if not self.is_armed(lid):
+                skipped.append(f"{laser.name} (not armed)")
+                continue
+            ok, text = self.set(lid, True, who=who, device=device)
+            if ok:
+                went.append(laser.name)
+            elif laser.mechanism == "none" or not laser.on:
+                refused.append(text)
+            else:
+                failed.append(text)
+        parts = []
+        if went:
+            parts.append(f"Calibration on for {', '.join(went)}: alignment "
+                         f"grid at low power until Calibration off.")
+        else:
+            parts.append("No laser test went on.")
+        if skipped:
+            parts.append(f"Skipped: {', '.join(skipped)}.")
+        parts.extend(refused)
+        parts.extend(failed)
+        if stopped:
+            parts.append(f"Stopped there: {stopped}")
+        self._note(f"{label} pressed Calibrate all lasers: "
+                   f"{' '.join(parts)}", action="laser-test",
+                   outcome="all_on" if went else "refused")
+        return bool(went), " ".join(parts)
 
     def all_off(self, why):
         """Every test that is on, off: a show starting, an Abort, the engine
