@@ -157,7 +157,8 @@ GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
-    "network", "screen-arming", "alert", "live-flame") + MORNING_POST_ROUTES
+    "network", "screen-arming", "alert", "live-flame",
+    "scrub-flames") + MORNING_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -171,6 +172,23 @@ LIVE_FLAME_ENABLES = (
     "Run, a show starting, a second sender, no xLights data for a while, "
     "or the session limit. Never use xLights' test tools while a group is "
     "armed.")
+# Fire flames while scrubbing (scrubflames.py, LIVE_FLAME_PROGRAMMING.md,
+# Jeff 2026-10-26): the same permission and show machine rule as live flame
+# programming; OFF from any surface, signed in or not. The page's card and
+# confirm box say these same words (selftest).
+SCRUB_FLAMES_ENABLES = (
+    "On, in this programming session the show's own flame cues go to "
+    "flamesafe at the Programming screen's position while it is playing "
+    "(Play from, Jump, Continue, the loop). flamesafe still fires only a "
+    "group that is armed, and still applies lockouts and Abort. Nothing "
+    "fires while paused, and nothing for half a second after every jump, "
+    "loop, Pause or Play from; a flame channel already up where you land "
+    "stays off until it has gone to zero. While it is on, only the show PC "
+    "or an admin signed in can move the position, the loop or the marks. "
+    "It turns itself off on "
+    "Off, Abort, Hold, Start now, Run, Stop or a show going live. Turning "
+    "it off does not disarm: disarm on the Stream Deck when you are "
+    "done.")
 # screen-arming (2026-10-22): the switch for arming from a screen, set on
 # the show machine itself, never from the network.
 LOCAL_ONLY = frozenset(("network", "screen-arming"))
@@ -1071,6 +1089,9 @@ class Remote:
         self.beyond_watch = None
         self.morning = None          # morning.Morning, set by web.serve
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
+        # scrubflames.ScrubFlames, set by web.serve (Fire & Ice with a flame
+        # link and a flame controller). Always off at start.
+        self.scrub_flames = None
         self.clock = clock
         self.wall = wall
         self._log = log
@@ -1298,6 +1319,8 @@ class Remote:
             return (*self.set_screen_arming(body, ctx),) + ({},)
         if name == "live-flame":
             return (*self.live_flame_post(body, ctx),) + ({},)
+        if name == "scrub-flames":
+            return (*self.scrub_flames_post(body, ctx),) + ({},)
         if name in USER_POST_ROUTES:
             return self.users_post(name, body, ctx)
         if name in MORNING_POST_ROUTES:
@@ -1685,6 +1708,10 @@ class Remote:
             # on a thread of their own, after the lasers below.
             self.live_flame_cut(f"{who or 'someone'} pressed {name} on the "
                                 f"{screen}", who, screen)
+            # Fire flames while scrubbing too, the same way: the link's
+            # slot shut here, the rest of ending it off this thread.
+            self.scrub_flames_cut(f"{who or 'someone'} pressed {name} on "
+                                  f"the {screen}", who, screen)
         if name in ("abort", "hold"):
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
@@ -1743,6 +1770,12 @@ class Remote:
         if name == "abort":
             return self.abort(who, screen, flames, lasers, pressed)
         if name in TRANSPORT_ROUTES:
+            why = self.scrub_transport_refusal(name, body, ctx)
+            if why:
+                self._journal(who, screen, name, "refused",
+                              f"{who or 'Someone'}'s {name} on the {screen} "
+                              f"was refused. {why}")
+                return 403, {"error": why}
             return self.transport(name, body, who, screen)
         svc = self.schedule
         if svc is None:
@@ -2302,6 +2335,11 @@ class Remote:
         why = self.show_live_refusal()
         if why:
             return why
+        sf = self.scrub_flames
+        if sf is not None and sf.on:
+            return ("fire flames while scrubbing is on. Turn it off first "
+                    "(Programming screen): only one of the two can be on at "
+                    "a time")
         svc = self.schedule
         m = getattr(svc, "machine", None)
         state = getattr(m, "state", None)
@@ -2463,6 +2501,181 @@ class Remote:
             return 409, {"error": text}
         return 200, {"ok": True, "on": True, "text": text}
 
+    # -- fire flames while scrubbing (scrubflames.py) -----------------------
+    def scrub_flames_blockers(self):
+        """Why the engine forbids fire flames while scrubbing right now
+        (entry and every watch pass), in a sentence, or "": not a
+        programming session (or a scheduled show live), a Hold or an Abort
+        standing, the show clock playing a cue, live flame programming on,
+        the flame link not sending or alarmed, a purge selected or
+        firing."""
+        ok, why = self.programming()
+        if not ok:
+            return why
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        if getattr(m, "state", None) in ("HOLD", "PAUSED"):
+            return "a Hold is standing; Resume or Reset first."
+        cond = getattr(svc, "conductor", None)
+        if getattr(m, "abort_latched", False) or \
+                getattr(cond, "latched", False):
+            return "the show is aborted; press Reset first."
+        s = getattr(self.control, "session", None)
+        clk = getattr(s, "clock", None) if s is not None else None
+        if clk is not None and getattr(clk, "playing", False):
+            return ("the show clock is playing a cue (a show is live or "
+                    "starting).")
+        lf = self.live_flame
+        if lf is not None and lf.on:
+            return ("live flame programming is on. Turn it off first: only "
+                    "one of the two can be on at a time.")
+        sf = self.scrub_flames
+        link = sf.link() if sf is not None else None
+        if link is not None:
+            try:
+                sender = link.sender_state()
+            except Exception:                    # noqa: BLE001
+                sender = "unknown"
+            if sender != "running":
+                return (f"the flame link to flamesafe is not sending "
+                        f"({sender}).")
+            if getattr(link, "lock_alarm", ""):
+                return f"the flame link has an alarm: {link.lock_alarm}"
+            if link.purge_active():
+                return "a purge is firing on the Morning and Shutdown page."
+        mo = self.morning
+        pg = getattr(mo, "purge", None) if mo is not None else None
+        if pg is not None and bool(pg.selected):
+            return ("machines are selected for a purge on the Morning and "
+                    "Shutdown page; clear the purge selection first.")
+        return ""
+
+    # The transport presses that move the position and so decide when
+    # flames fire while fire flames while scrubbing is on (Jeff's decision
+    # on review of #117, P1-2), and those that change what a later move
+    # plays (the loop either way, the marks: second review, P2-3). Pause
+    # and Follow only stop it.
+    SCRUB_MOVES = ("play-from", "jump", "continue", "loop", "mark-a",
+                   "mark-b")
+    SCRUB_MOVE_REFUSED = ("Flames are live in rehearsal; move the position "
+                          "from the show PC or sign in as an admin. "
+                          "Nothing was changed.")
+
+    def scrub_transport_refusal(self, name, body, ctx):
+        """While fire flames while scrubbing is on, a press that moves the
+        position or changes what plays (Play from, Jump, Continue, the
+        loop on or off, mark A, mark B) needs the
+        show machine itself or someone signed in with the Settings
+        permission; "" when it may go ahead. Never refuses while the mode
+        is off. Fails closed."""
+        sf = self.scrub_flames
+        if sf is None or not getattr(sf, "on", False):
+            return ""
+        moves = name in self.SCRUB_MOVES
+        if not moves or getattr(ctx, "local", False):
+            return ""
+        try:
+            from . import users as users_mod
+            u = self.users
+            role = (getattr(ctx, "session", None) or {}).get("role")
+            if u is not None and u.active() and role is not None and \
+                    users_mod.allowed(u.matrix(), role, "settings"):
+                return ""
+        except Exception:                        # noqa: BLE001
+            pass
+        return self.SCRUB_MOVE_REFUSED
+
+    def scrub_flames_cut(self, reason, who="", screen=""):
+        """At an Abort, Hold or Start now press: the flame link's slot shut
+        now (ScrubFlames.cut), the journal and audit lines on a thread of
+        their own. Never raises, never waits."""
+        sf = self.scrub_flames
+        if sf is None:
+            return False
+        try:
+            if not sf.cut(reason):
+                return False
+            threading.Thread(target=sf.end, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who},
+                             daemon=True,
+                             name="ltcplay-scrub-flames-end").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def scrub_flames_end(self, reason, who="", screen=""):
+        """End fire flames while scrubbing now, if it is on. Never
+        raises."""
+        sf = self.scrub_flames
+        if sf is None:
+            return False
+        try:
+            return sf.end(reason, who=who, screen=screen, system=not who)
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def scrub_flames_view(self):
+        sf = self.scrub_flames
+        if sf is None:
+            return {"available": False, "on": False,
+                    "why": "Fire flames while scrubbing needs the Fire & Ice "
+                           "engine with a flame link and a flame "
+                           "controller."}
+        try:
+            return sf.view()
+        except Exception as e:                   # noqa: BLE001
+            return {"available": True, "on": False,
+                    "error": f"{type(e).__name__}: {e}"}
+
+    def scrub_flames_post(self, body, ctx):
+        """POST scrub-flames {"on": true, "confirmed": true} or {"on":
+        false}. ON: the show machine itself only, confirmed, and every
+        engine check (scrubflames.ScrubFlames.begin); the role matrix's
+        Settings row is checked by web.py before this (users.classify), as
+        for live flame programming. Anything but the JSON word true is
+        OFF, from any surface, signed in or not."""
+        who = ctx.user or ""
+        screen = ctx.screen if ctx.local else ctx.device
+        sf = self.scrub_flames
+        if body.get("on") is not True:
+            if sf is None or not sf.on:
+                return 200, {"ok": True, "on": False,
+                             "text": "Fire flames while scrubbing is off."}
+            sf.end(f"{who or 'someone signed out'} turned it off on the "
+                   f"{screen}", who=who or "unsigned", screen=screen,
+                   system=False)
+            return 200, {"ok": True, "on": False,
+                         "text": "Fire flames while scrubbing is OFF. Every "
+                                 "flame value from the scrub is zero. No "
+                                 "group was disarmed."}
+        if sf is None:
+            return 409, {"error": "Fire flames while scrubbing needs the "
+                                  "Fire & Ice engine with a flame link and "
+                                  "a flame controller. Nothing was "
+                                  "changed."}
+        if not ctx.local:
+            self._journal(who or ctx.device, ctx.device, "scrub flames",
+                          "refused",
+                          f"Fire flames while scrubbing ON from "
+                          f"{ctx.device} was refused: only on the show "
+                          f"machine itself.")
+            return 403, {"error": "Fire flames while scrubbing is turned on "
+                                  "on the show machine itself, not from "
+                                  "here. Nothing was changed."}
+        if body.get("confirmed") is not True:
+            return 400, {"error": "Confirm it on the page first. Nothing "
+                                  "was changed."}
+        # A confirm box left open across an engine restart must not turn
+        # it on in the new engine (review of #117, P2-4).
+        stale = self._stale(body)
+        if stale:
+            return 409, {"error": stale, "stale": True}
+        ok, text = sf.begin(who or "unsigned", screen)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "on": True, "text": text}
+
     def morning_live_refusal(self):
         """The Morning page's live_check: show_live_refusal, and while live
         flame programming is on nothing fires from that page (one source
@@ -2474,6 +2687,10 @@ class Remote:
         if lf is not None and lf.on:
             return ("live flame programming is on; nothing fires from this "
                     "page until it is off")
+        sf = self.scrub_flames
+        if sf is not None and sf.on:
+            return ("fire flames while scrubbing is on; nothing fires from "
+                    "this page until it is off")
         return ""
 
     def show_live_refusal(self):
@@ -3941,6 +4158,7 @@ class Remote:
         out["flames"]["cues_fault"] = self.cues_fault()
         out["laser_fault"] = self.laser_fault()
         out["live_flame"] = self.live_flame_view()
+        out["scrub_flames"] = self.scrub_flames_view()
         out["beyond_link"] = self.beyond_link()
         if ctx.local:
             out["selected_show"] = self._selected_show()

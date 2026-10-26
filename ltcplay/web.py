@@ -1296,6 +1296,12 @@ class Handler(BaseHTTPRequestHandler):
                     _rm.live_flame_end("Run was pressed",
                                        self._ctx().user or "unsigned",
                                        self._ctx().screen)
+                # And fire flames while scrubbing (scrubflames.py): a new
+                # show file never inherits it.
+                if _rm is not None and hasattr(_rm, "scrub_flames_end"):
+                    _rm.scrub_flames_end("Run was pressed",
+                                         self._ctx().user or "unsigned",
+                                         self._ctx().screen)
                 s = c.start(body.get("timeline", ""),
                             no_output=bool(body.get("no_output")),
                             on_lost=body.get("on_lost"),
@@ -1568,6 +1574,37 @@ def _attach_live_flame(httpd, fire_ice, flamesafe_config):
         finally:
             _close_before()
     httpd.server_close = _close_live_flame
+
+def _attach_scrub_flames(httpd):
+    """Fire flames while scrubbing (scrubflames.py, LIVE_FLAME_PROGRAMMING.md):
+    built for the Fire & Ice engine with a flame link and a flame
+    controller. Always OFF at start. A failure to build it leaves it
+    unavailable and is said once; the show is never held back."""
+    from . import scrubflames
+    remote = httpd.remote
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "scrub flames", outcome, text, fault=fault)
+        remote.scrub_flames = scrubflames.ScrubFlames(
+            link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
+            cues_get=lambda: remote.flame_cues,
+            control=remote.control,
+            blockers=remote.scrub_flames_blockers,
+            journal=_journal, audit=getattr(remote, "audit", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"Fire flames while scrubbing could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_scrub_flames():
+        try:
+            remote.scrub_flames_end("the engine is closing")
+        finally:
+            _close_before()
+    httpd.server_close = _close_scrub_flames
+
 
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
@@ -1927,6 +1964,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):
         _attach_live_flame(httpd, fire_ice, flamesafe_config)
+        _attach_scrub_flames(httpd)
     _bey_cfg = getattr(fire_ice, "beyond", None) if fire_ice else None
     if _bey_cfg is not None:
         # Is BEYOND still running (2026-10-23)? Its own thread, display

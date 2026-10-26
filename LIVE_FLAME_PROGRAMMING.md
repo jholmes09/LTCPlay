@@ -6,7 +6,7 @@ Program flame effects in xLights and see them on the real flames, while LTC Play
 - **The path:** xLights sends on this PC only. LTC Player passes the flame channels to flamesafe on its usual link. flamesafe stays the only program that talks to the flame node.
 - **What flamesafe still does:** it fires only a group that is armed. It still applies lockouts, Abort and its own cutoffs.
 - **A group with several safety channels arms as one.** The wave flamer is three fixtures, each with its own safety channel, in one flame group: one key, one hold to arm, one disarm. Live programming treats it as one group, and xLights can never set a safety channel. A fixture locked out for the night stays off; the group's other fixtures still arm.
-- **The name:** this is not the Programming screen. It is also not a programming session (Rehearse and the scrub buttons). Those play a show file. This one listens to xLights.
+- **The name:** this is not the Programming screen. It is also not a programming session (Rehearse and the scrub buttons). Those play a show file. This one listens to xLights. To fire the show file's own flame cues while you scrub, see "Fire flames while scrubbing" at the end.
 
 **Before it goes near real flames:** a cold safety review, and a first test with Andy with the gas off.
 
@@ -201,3 +201,55 @@ flamesafe is not changed:
 - **A spoofed Mac.** With `allowed_source_ip` set, a device on the show network that sends from the Mac's address is taken as the Mac until a second sender identity appears (T16). It is limited to an armed group, one group at a time, behind flamesafe and the key switch. The show network must be closed to outside devices. Leaving `allowed_source_ip` off removes this risk.
 - **The Mac's own output.** The engine cannot see what the Mac's xLights sends, or where (T17). Only the Mac's file being a copy of the PC's, with matching fingerprints, covers it.
 - **Equal priority.** A multicast or node-addressed flame controller that someone sets Active outside this mode would still merge at equal priority on the node. That risk exists today, and this mode refuses to start while it is set.
+
+## Fire flames while scrubbing
+
+A different switch from live flame programming. It plays the flame cues that are already in the show's render, at the place you are scrubbing to on the Programming screen. xLights is not involved.
+
+- **Where:** Programming screen, "Fire flames while scrubbing". The same rule as live flame programming: someone with the Settings permission (admin) turns it on, confirmed, on the show PC itself, never from an iPad. Anyone can turn it off, on any screen, signed in or not.
+- **Off every start.** LTC Player always starts with it off.
+- **Only one of the two.** It will not turn on while live flame programming is on, and live flame programming will not turn on while it is on. Each says why.
+- **What you see:** a red FLAMES LIVE IN REHEARSAL bar on every screen (the rack screen and Programming) while it is on, with where the scrub is and a Turn off button.
+- **The path:** the same as a show. LTC Player reads the flame channels from the show's render at the scrub position and sends them to flamesafe on its usual flame link. flamesafe is not changed. It fires only a group that is armed, and its lockouts, Abort, hold to arm and cutoffs all apply. A disarmed or locked out group never fires.
+
+### When a flame value goes out
+
+Only when all of these are true:
+
+1. A show file is running in Programming (Run with Programming chosen), and no scheduled show is live.
+2. The Programming screen's transport is playing: after Play from, a Jump, Continue, or the loop. Not paused, not following timecode, and no Blackout or Preshow look on the pixels. A free run that LTC Player started by itself because timecode was lost does not count: nothing fires from it.
+3. The show's music clock is not playing a cue.
+4. The render passes the same checks as in a show: not older than `xlights_networks.xml`, the right number of channels, and the flame controller where it was when the render was checked. Between cues and past the end of a render the flames are zero.
+
+### The seek rule (how a scrub cannot fire a burst)
+
+- Every press that moves the position is a landing, however small: Play from, every Jump, Pause, Continue, the loop, and the loop jumping back to A. LTC Player counts every move, and that count is the real guard. A position that is more than 0.15 s off the time that has passed since the last landing is a landing too; that is only a backstop.
+- A new render of the cue under the playhead (xLights saved it again while you scrub) is a landing too: zero at once, then the same half second.
+- After a landing, and after turning it on, every flame value is zero until the position has played on steadily for half a second.
+- This is decided channel by channel. A flame channel that is already up where you landed stays zero until it has gone to zero once. So a single long flame you jumped into the middle of never fires, and dragging or jumping through the show never fires anything on the way. A pulsing effect that is part way through where you land can fire again at its next pulse, after the half second.
+- A position that stops for a tenth of a second counts as stopped.
+
+### Who can move the position while it is on
+
+While it is on, Play from, Jump, Continue, the loop (on or off) and setting mark A or B work only on the show PC itself, or for someone signed in with the Settings permission (admin). An iPad that is signed out, or signed in without Settings, is refused with: "Flames are live in rehearsal; move the position from the show PC or sign in as an admin." Pause, Follow timecode again and turning it off still work from anywhere.
+
+### What turns it off by itself
+
+Each of these turns it off, sets every flame value to zero at once, and writes the reason in the journal and the audit log:
+
+- Turn off (the switch or the red bar).
+- Abort, Hold, Start now, Run, or Stop.
+- A show going live: a scheduled show starting, or the show's music clock playing a cue.
+- Anything that zeroes the show's flame cues (a Hold, an Abort, the end of a show).
+- Live flame programming starting.
+- The session no longer being Programming. (A standing Abort or Hold also stops it, but in Programming the scheduler rarely has one; flamesafe's own Abort latch and hold to arm are what keep a group from firing after an Abort.)
+- A purge selected or firing on the Morning page, or the flame link to flamesafe not sending.
+
+**Turning it off does not disarm.** The groups you armed for the session stay armed, as after a show. Disarm them on the Stream Deck when you are done.
+
+### Also
+
+- While it is on, the Morning page fires nothing and a purge selection stops it from turning on.
+- A live show's own flame cues are not affected: this has its own path, and it is never on during a show.
+- The Stream Deck is unchanged. It shows armed groups as always; the red bar on the screens is where this switch shows.
+- **First test:** gas off and key switch off, as for live flame programming. Arm one group, play into a flame cue, and check: the cue fires only after half a second of steady play; Pause zeroes it; a Jump into the middle of a cue does not fire it; a disarmed group stays at zero; Abort zeroes everything and turns it off.
