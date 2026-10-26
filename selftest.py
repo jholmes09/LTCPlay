@@ -43086,6 +43086,25 @@ def test_rack_screen_says_the_rearm_wait():
           f"the deck's read carries rearm and prefused: {p}")
     sk.report_rearm = lambda: 1 / 0
     check("rearm" not in sk._path(), "a report that raises says nothing")
+
+    class _Bad(dict):
+        def keys(self):
+            raise RuntimeError("changed size during iteration")
+
+        def __iter__(self):
+            raise RuntimeError("changed size during iteration")
+
+        def items(self):
+            raise RuntimeError("changed size during iteration")
+    sk.report_rearm = lambda: ({0: 1500}, _Bad({1: "refractory"}))
+    p = sk._path()
+    check("rearm=0.1500" in p and "prefused" not in p,
+          f"review of #115, P2-1: a refusal copy that fails never drops the "
+          f"waits: {p}")
+    sk.report_rearm = lambda: (_Bad({0: 1500}), {1: "refractory"})
+    p = sk._path()
+    check("prefused=1.refractory" in p and "rearm=" not in p,
+          f"nor the other way round: {p}")
     # The page's pure words.
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     for f in ("function rearmLeftMs", "function rearmText",

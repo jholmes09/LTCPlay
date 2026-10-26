@@ -1414,14 +1414,23 @@ class ScreenKeys:
             path += "&" if "?" in path else "?"
             path += f"arm_ms={age}"
         try:
-            left, pref = self.report_rearm() \
+            got = self.report_rearm() \
                 if self.report_rearm is not None else ({}, {})
-            rearm = ",".join(f"{i}.{int(ms)}" for i, ms in sorted(left.items())
+        except Exception:                        # noqa: BLE001
+            got = ({}, {})
+        # Each copied on its own (review of #115, P2-1): one that fails
+        # never drops the other.
+        try:
+            rearm = ",".join(f"{i}.{int(ms)}"
+                             for i, ms in sorted(dict(got[0]).items())
                              if isinstance(i, int) and int(ms) > 0)
-            pr = ",".join(f"{i}.{c}" for i, c in sorted(pref.items())
+        except Exception:                        # noqa: BLE001
+            rearm = ""
+        try:
+            pr = ",".join(f"{i}.{c}" for i, c in sorted(dict(got[1]).items())
                           if isinstance(i, int) and str(c).isalpha())
         except Exception:                        # noqa: BLE001
-            rearm = pr = ""
+            pr = ""
         if rearm:
             path += ("&" if "?" in path else "?") + f"rearm={rearm}"
         if pr:
@@ -2647,11 +2656,20 @@ class Controller:
         2026-10-26). Only groups with something to say. Reporting only."""
         now = self._clock()
         left = {}
-        for i in range(len(self.names)):
-            ms = int(self._in_rearm_refractory(i, now) * 1000)
-            if ms > 0:
-                left[i] = ms
-        return left, dict(self._purge_refused)
+        try:
+            for i in range(len(self.names)):
+                ms = int(self._in_rearm_refractory(i, now) * 1000)
+                if ms > 0:
+                    left[i] = ms
+        except Exception:                        # noqa: BLE001
+            left = {}
+        try:
+            # Read from the deck-input thread while the main loop may
+            # change it: a copy that fails says nothing, the waits still go.
+            refused = dict(self._purge_refused)
+        except Exception:                        # noqa: BLE001
+            refused = {}
+        return left, refused
 
     def _in_rearm_refractory(self, i, now):
         at = self._disarmed_at[i]
