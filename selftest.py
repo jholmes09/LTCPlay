@@ -24,6 +24,10 @@ from ltcplay import (output, netmap, timeline, tc as tcmod,
 from ltcplay.player import (Player, LOCKED, FREEWHEEL, LOST, PARKED,
                             SHOW, IDLE, HOLD, BLACK, _now)
 
+# No engine this suite starts ever reaches the internet for the Weather
+# block (weather.py); its own tests hand it canned answers.
+os.environ.setdefault("LTCPLAY_WEATHER_OFFLINE", "1")
+
 FAILS = []
 # Things wrong with the SHOW rather than with the program: a trigger channel
 # that does not match the boxes, renders that are not the ones the scenes
@@ -57870,6 +57874,283 @@ def test_lasers_lamp_follows_the_beyond_link():
     print("  ok")
 
 
+def test_video_lamp_follows_the_madmapper_watch():
+    section("The Video lamp read 'not known' until a show sent something "
+            "(Jeff, 2026-10-26): the MadMapper watch says up, lost or "
+            "unknown before any show plays, from Windows' process list on "
+            "its own thread; MadMapper on another machine is said, never "
+            "guessed; the heartbeat speaks only when the show file has one "
+            "and a show is playing; a MadMapper that was running and exits "
+            "is an alert, once; the lamp is a link check, never a picture "
+            "check")
+    import shutil
+    import subprocess
+    import tempfile
+    import types
+    from ltcplay import madmapperwatch as MW, madmapper as MM, remote as RM
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    t = [100.0]
+    res = [True]
+    said = []
+    w = MW.MadMapperWatch(lambda: res[0], clock=lambda: t[0],
+                          on_change=lambda l, why: said.append(l))
+    check(w.state()["link"] == "unknown" and
+          "MadMapper has not been looked for yet" in w.state()["why"],
+          f"never looked: unknown: {w.state()}")
+    w.check_once()
+    check(w.state()["link"] == "up" and said == ["up"] and
+          w.state()["why"] == "MadMapper is running on this PC",
+          f"running: up: {w.state()}")
+    t[0] += MW.STALE_S + 0.1
+    check(w.state()["link"] == "unknown",
+          "a look older than STALE_S says nothing: unknown")
+    res[0] = False
+    w.check_once()
+    check(w.state()["link"] == "lost" and said == ["up", "lost"],
+          f"not running: lost, said once: {said}")
+    res[0] = None
+    w.check_once()
+    check(w.state()["link"] == "unknown", "cannot tell: unknown")
+
+    def boom():
+        raise OSError("x")
+    check(MW.MadMapperWatch(boom, clock=lambda: t[0]).check_once() is None,
+          "a probe that raises is unknown, never up")
+    # The Windows process list: MadMapper*.exe, the demo too (soak_apps).
+    run = lambda out: (lambda *a, **k: types.SimpleNamespace(stdout=out))
+    check(MW.windows_probe(run('"System","4","Services","0","1 K"\n'
+                               '"MadMapperDemo.exe","90","Console","1",'
+                               '"9 K"\n')) is True and
+          MW.windows_probe(run('"MadMapper.exe","90","Console","1","9 K"\n'))
+          is True and
+          MW.windows_probe(run('"BEYOND.exe","812","Console","1","9 K"\n'))
+          is False and MW.windows_probe(run("")) is None,
+          "MadMapper(Demo).exe in the list: True; BEYOND only: False; "
+          "nothing read: None")
+
+    def raises(*a, **k):
+        raise OSError("no tasklist")
+    check(MW.windows_probe(raises) is None, "tasklist missing: None")
+    sys.path.insert(0, os.path.join(HERE, "packaging", "windows"))
+    try:
+        import soak_apps
+        check(tuple(p.lower() for p in soak_apps.APPS["MadMapper"]["exe"])
+              == MW.IMAGES, "the image name is the soak's own")
+    finally:
+        sys.path.pop(0)
+    check(MW.probe_for("127.0.0.1", windows=True) is MW.windows_probe and
+          MW.probe_for("10.0.0.9", windows=True) is not MW.windows_probe
+          and MW.probe_for("10.0.0.9", windows=True)() is None and
+          MW.probe_for("127.0.0.1", windows=False)() is None,
+          "the process is looked for only on Windows, MadMapper on loopback")
+    far = MW.watch("10.0.0.9", windows=True, clock=lambda: t[0])
+    far.check_once()
+    check(far.state()["link"] == "unknown" and
+          far.state()["why"].startswith("unknown, MadMapper is on another "
+                                        "machine"),
+          f"MadMapper on another machine: said, not guessed: {far.state()}")
+    mac = MW.watch("127.0.0.1", windows=False, clock=lambda: t[0])
+    mac.check_once()
+    check(mac.state()["link"] == "unknown" and
+          "not the Windows show PC" in mac.state()["why"],
+          f"not Windows: said: {mac.state()}")
+    _no_dashes(far.state()["why"] + mac.state()["why"], "the watch's words")
+    # The heartbeat: the real watchdog hears a packet, armed or not, and
+    # nothing about arming, counting or alarming changes.
+    hb_t = [50.0]
+    dog = MM.Watchdog(MM.HeartbeatConfig(show_len_s=444.0),
+                      clock=lambda: hb_t[0])
+    check(dog.heard_age_s() is None, "nothing heard yet: None")
+    dog.on_packet(0.5)
+    hb_t[0] += 1.0
+    check(dog.heard_age_s() == 1.0 and dog.packets_in == 0 and
+          not dog.armed and dog.health()["state"] == "quiet",
+          f"heard while disarmed: an age, never counted or armed: "
+          f"{dog.heard_age_s()} {dog.health()}")
+    cfg = MM.HeartbeatConfig(show_len_s=444.0)
+    hv = MW.heartbeat_view
+    check(hv(dog, cfg, True)["heartbeat"] == "ok", "fresh: ok")
+    hb_t[0] += 10
+    check(hv(dog, cfg, True)["heartbeat"] == "silent" and
+          hv(dog, cfg, False)["heartbeat"] == "quiet",
+          "silent while a show plays: silent; between shows: quiet")
+    check(hv(dog, MM.HeartbeatConfig(), True) is None and
+          hv(None, cfg, True) is None,
+          "no heartbeat block, or no watchdog: never mentioned")
+    dog.bind_error = "The MadMapper heartbeat could not listen"
+    check(hv(dog, cfg, False)["heartbeat"] == "silent",
+          "a listener that could not open its port: silent")
+    dog.bind_error = None
+    # The lamp, through a Remote with a conductor.
+    snap = {"applied": {"video": "unknown", "lasers": "unknown"},
+            "look": "BETWEEN"}
+    cond = types.SimpleNamespace(
+        snapshot=lambda: snap,
+        devices=types.SimpleNamespace(beyond=types.SimpleNamespace(
+            fault="")), _ver={"lasers": 0, "video": 0})
+    sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+    r = RM.Remote(types.SimpleNamespace(session=None), sched,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+
+    def chip(cs=None):
+        got = [x for x in r.subsystems(cs or {}) if x["name"] == "Video"]
+        return got[0] if got else {}
+
+    def lamp(cs=None):
+        c = chip(cs)
+        return (c.get("state"), c.get("word"))
+    check(lamp() == ("off", "not sent yet") and
+          "not known" not in str(chip()).lower(),
+          f"no watch, nothing sent: grey 'not sent yet', never 'not "
+          f"known': {chip()}")
+    res[0] = True
+    r.madmapper_watch = MW.MadMapperWatch(
+        lambda: res[0], clock=lambda: t[0],
+        on_change=r.madmapper_link_changed)
+    r.madmapper_watch.check_once()
+    check(lamp() == ("ok", "MadMapper running"),
+          f"before any show: MadMapper running, green: {lamp()}")
+    title = chip().get("title", "")
+    check("MadMapper is running; whether the screens show the picture is "
+          "not something it can tell" in title and
+          "Nothing has been sent to MadMapper yet" in title,
+          f"the tooltip says it is a link check only: {title}")
+    _no_dashes(title, "the Video lamp's tooltip")
+    snap["applied"]["video"] = "lit"
+    cond._ver["video"] = 2
+    check(lamp() == ("ok", "MadMapper running, lit") and
+          "Last sent to MadMapper: lit." in chip()["title"],
+          f"after a command: the last sent detail stays: {chip()}")
+    snap["applied"]["video"] = "unknown"
+    check(lamp() == ("warn", "MadMapper running, last command not "
+                             "confirmed"),
+          f"a command sent and not confirmed: amber: {lamp()}")
+    snap["applied"]["video"] = "black"
+    # The heartbeat on the lamp.
+    r.madmapper_heartbeat, r.madmapper_heartbeat_cfg = dog, cfg
+    playing = {"running": True}
+    check(lamp(playing) == ("ok", "MadMapper running, black"),
+          f"silent between shows (look BETWEEN): no word on it: "
+          f"{lamp(playing)}")
+    snap["look"] = "PLAYING"
+    check(lamp(playing) == ("warn", "MadMapper running, no heartbeat") and
+          "heartbeat has not arrived" in chip(playing)["title"],
+          f"a show playing and no heartbeat: amber: {chip(playing)}")
+    dog.on_packet(0.1)
+    check(lamp(playing) == ("ok", "MadMapper running, heartbeat OK, black"),
+          f"heartbeat fresh: said: {lamp(playing)}")
+    hb_t[0] += 10
+    r.madmapper_heartbeat_cfg = MM.HeartbeatConfig()
+    check(lamp(playing) == ("ok", "MadMapper running, black"),
+          f"no heartbeat block: never an alarm: {lamp(playing)}")
+    snap["look"] = "BETWEEN"
+    # MadMapper exits: red, and one alert.
+    res[0] = False
+    r.madmapper_watch.check_once()
+    check(lamp() == ("bad", "MadMapper NOT RUNNING"),
+          f"MadMapper gone: NOT RUNNING, whatever was sent: {lamp()}")
+    al = [a for a in r.alerts.view() if a["kind"] == "video"]
+    check(len(al) == 1 and al[0]["severity"] == "fault" and
+          "MadMapper was running and is not any more" in al[0]["text"],
+          f"and an alert says so: {al}")
+    _no_dashes(al[0]["text"] if al else "", "the MadMapper alert")
+    t[0] += 3600
+    r.madmapper_watch.check_once()
+    check(lamp() == ("bad", "MadMapper NOT RUNNING") and
+          len([a for a in r.alerts.view() if a["kind"] == "video"]) == 1,
+          "hours later: still NOT RUNNING, one alert")
+    r.alerts.clear(kind="video", action="Acknowledge")
+    res[0] = True
+    r.madmapper_watch.check_once()
+    check(not [a for a in r.alerts.view() if a["kind"] == "video"],
+          "back: no alert")
+    res[0] = False
+    r.madmapper_watch.check_once()
+    check(len([a for a in r.alerts.view() if a["kind"] == "video"]) == 1,
+          "back, then gone again: a second loss is an alert again")
+    t[0] += MW.STALE_S + 1
+    check(lamp() == ("ok", "black") and
+          "was last looked for" in chip()["title"],
+          f"a watch that stopped looking: today's detail, never NOT "
+          f"RUNNING or running: {chip()}")
+    snap["applied"]["video"] = "unknown"
+    check(lamp() == ("warn", "last command not confirmed"),
+          f"unknown link, command unconfirmed: amber: {lamp()}")
+    # MadMapper on another machine: grey, and the tooltip says why.
+    r.madmapper_watch = MW.watch("10.0.0.9", windows=True,
+                                 clock=lambda: t[0])
+    r.madmapper_watch.check_once()
+    cond._ver["video"] = 0
+    check(lamp() == ("off", "not sent yet") and
+          "MadMapper is on another machine" in chip()["title"],
+          f"another machine: grey, and why: {chip()}")
+    # Not running from the start: the lamp, no alert; the page is told.
+    r2 = RM.Remote(types.SimpleNamespace(session=None), sched,
+                   folder=tempfile.gettempdir(), clock=lambda: t[0])
+    r2.madmapper_watch = MW.MadMapperWatch(
+        lambda: False, clock=lambda: t[0],
+        on_change=r2.madmapper_link_changed)
+    r2.madmapper_watch.check_once()
+    check([x["word"] for x in r2.subsystems({}) if x["name"] == "Video"]
+          == ["MadMapper NOT RUNNING"] and
+          not [a for a in r2.alerts.view() if a["kind"] == "video"],
+          "MadMapper not started yet: NOT RUNNING on the lamp, no alert")
+    st = r2.status(RM.Ctx(True, "127.0.0.1"))
+    check((st.get("madmapper_link") or {}).get("link") == "lost" and
+          [x["word"] for x in st["subsystems"] if x["name"] == "Video"] ==
+          ["MadMapper NOT RUNNING"],
+          f"the status JSON carries it: {st.get('madmapper_link')}")
+    check(RM.Remote(types.SimpleNamespace(session=None), sched,
+                    folder=tempfile.gettempdir()).status(
+        RM.Ctx(True, "127.0.0.1")).get("madmapper_link", 1) is None,
+          "no MadMapper watch: madmapper_link is null")
+    # web.serve starts it only with MadMapper configured, from its host.
+    with open(os.path.join(HERE, "ltcplay", "web.py"),
+              encoding="utf-8") as fh:
+        web_src = fh.read()
+    check("mmwatch_mod.watch(" in web_src and
+          "on_change=httpd.remote.madmapper_link_changed" in web_src and
+          "httpd.remote.madmapper_heartbeat = httpd.madmapper[1]" in web_src,
+          "web.serve starts the MadMapper watch and hands it the heartbeat")
+    # The page draws the chip and its tooltip exactly as the engine says.
+    with open(os.path.join(HERE, "ltcplay", "web", "remote.html"),
+              encoding="utf-8") as fh:
+        page = fh.read()
+    draw = _js_block(page, '$("subs").innerHTML = ', '\n\n')
+    check(draw.startswith('$("subs").innerHTML'),
+          "the page has its status strip drawing")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner, so the status "
+                         "strip cannot be run; install node in the workflow")
+        print("  note: node is not on this machine, so the strip was "
+              "checked by reading only (CI runs it)")
+        print("  ok")
+        return
+    js = ("const byId = {subs: {innerHTML: ''}};\n"
+          "const $ = id => byId[id];\n"
+          "const esc = (t) => String(t == null ? '' : t)"
+          ".replace(/&/g,'&amp;').replace(/</g,'&lt;')"
+          ".replace(/>/g,'&gt;').replace(/\"/g,'&quot;');\n"
+          "const s = " + json.dumps({"subsystems": st["subsystems"]}) +
+          ";\n" + draw + "\nconsole.log(byId.subs.innerHTML);\n")
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "strip.js")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write(js)
+        p = subprocess.run([node, f], capture_output=True, text=True,
+                           timeout=30)
+    html = p.stdout
+    check(p.returncode == 0 and
+          "Video <span>MadMapper NOT RUNNING</span>" in html and
+          'class="chip bad"' in html and
+          "whether the screens show the picture is not something it can "
+          "tell" in html,
+          f"the rack screen shows 'Video MadMapper NOT RUNNING' in red, "
+          f"with the tooltip: {p.stderr or html[:400]}")
+    print("  ok")
+
+
 def test_artnet_faults_only_for_the_show_in_use():
     section("Art-Net receivers (Jeff, 2026-10-23): an old unused show file "
             "in the folder (soak_show.json) is a quiet note once a show is "
@@ -62013,6 +62294,898 @@ def test_scrub_flames_seqlock():
 
 
 
+
+# -- the Weather block (weather.py, WEATHER.md; Jeff, 2026-10-26) -----------
+# Wind at Thanksgiving Point on the rack screen's main page: a measured
+# station (UTALP through the Iowa State mesonet) and the NWS forecast for
+# the spot, each with its age, and the NWS wind and fire alerts. The canned
+# answers below follow each service's documented shape: the mesonet's
+# from its own source (iemws currents.py: data[], sknt and gust in knots,
+# drct, utc_valid), the NWS ones from real api.weather.gov answers kept as
+# test fixtures by the pynws project. None of it was fetched live from
+# this machine (no route to those hosts); `ltc weather --check` on the
+# show PC is the live check.
+
+# 2026-10-26 18:00:00 UTC, noon in Lehi.
+WX_NOW = 1793037600.0
+
+
+def _wx_mesonet(valid="2026-10-26T17:55:00Z", sknt=10.4, gust=18.2,
+                drct=340.0, station="UTALP"):
+    return {"schema": {"fields": [{"name": "index"}, {"name": "station"}],
+                       "primaryKey": ["index"], "pandas_version": "1.4.0"},
+            "data": [{"index": 0, "station": station,
+                      "name": "I-15 @ POINT OF THE MOUNTAIN",
+                      "county": "Utah", "state": "UT", "network": "UT_RWIS",
+                      "local_date": "2026-10-26", "utc_valid": valid,
+                      "local_valid": "2026-10-26T11:55:00", "tmpf": 54.0,
+                      "sknt": sknt, "drct": drct, "gust": gust,
+                      "max_sknt": 14.0, "max_gust": 22.0,
+                      "lon": -111.9117, "lat": 40.4498}]}
+
+
+def _wx_points():
+    base = "https://api.weather.gov/gridpoints/SLC/96,152"
+    return {"type": "Feature", "properties": {
+        "@id": "https://api.weather.gov/points/40.4263,-111.8875",
+        "cwa": "SLC", "gridId": "SLC", "gridX": 96, "gridY": 152,
+        "forecast": base + "/forecast",
+        "forecastHourly": base + "/forecast/hourly",
+        "forecastGridData": base,
+        "observationStations": base + "/stations"}}
+
+
+def _wx_grid(update="2026-10-26T17:15:41+00:00", kmh=16.668, gust=29.632,
+             deg=170):
+    return {"type": "Feature", "properties": {
+        "updateTime": update, "validTimes": "2026-10-26T12:00:00+00:00/P7D",
+        "windSpeed": {"uom": "wmoUnit:km_h-1", "values": [
+            {"validTime": "2026-10-26T15:00:00+00:00/PT2H", "value": 5.5},
+            {"validTime": "2026-10-26T17:00:00+00:00/PT2H", "value": kmh},
+            {"validTime": "2026-10-26T19:00:00+00:00/P1DT2H",
+             "value": 9.26}]},
+        "windGust": {"uom": "wmoUnit:km_h-1", "values": [
+            {"validTime": "2026-10-26T17:00:00+00:00/PT1H", "value": gust},
+            {"validTime": "2026-10-26T18:00:00+00:00/PT3H",
+             "value": gust}]},
+        "windDirection": {"uom": "wmoUnit:degree_(angle)", "values": [
+            {"validTime": "2026-10-26T16:00:00+00:00/PT6H",
+             "value": deg}]}}}
+
+
+def _wx_hourly(update="2026-10-26T17:16:24+00:00"):
+    return {"type": "Feature", "properties": {
+        "updated": update, "units": "us",
+        "forecastGenerator": "HourlyForecastGenerator",
+        "generatedAt": "2026-10-26T17:40:54+00:00", "updateTime": update,
+        "periods": [
+            {"number": 1, "startTime": "2026-10-26T11:00:00-06:00",
+             "endTime": "2026-10-26T12:00:00-06:00", "windSpeed": "5 mph",
+             "windDirection": "S"},
+            {"number": 2, "startTime": "2026-10-26T12:00:00-06:00",
+             "endTime": "2026-10-26T13:00:00-06:00",
+             "windSpeed": "10 to 15 mph", "windDirection": "NNW",
+             "shortForecast": "Sunny"}]}}
+
+
+def _wx_alerts(*events, status="Actual"):
+    feats = []
+    for i, ev in enumerate(events):
+        feats.append({"id": f"urn:{i}", "type": "Feature", "properties": {
+            "event": ev, "status": status, "messageType": "Alert",
+            "headline": f"{ev} issued October 26 by NWS Salt Lake City UT",
+            "onset": "2026-10-26T15:00:00+00:00",
+            "ends": "2026-10-27T00:00:00+00:00",
+            "expires": "2026-10-26T23:00:00+00:00"}})
+    return {"type": "FeatureCollection", "features": feats,
+            "title": "Current watches, warnings, and advisories",
+            "updated": "2026-10-26T17:50:00+00:00"}
+
+
+def _wx_obs(update="2026-10-26T17:53:00+00:00"):
+    return {"type": "Feature", "properties": {
+        "station": "https://api.weather.gov/stations/KU42",
+        "timestamp": update,
+        "windDirection": {"unitCode": "wmoUnit:degree_(angle)",
+                          "value": 20, "qualityControl": "V"},
+        "windSpeed": {"unitCode": "wmoUnit:km_h-1", "value": 7.56,
+                      "qualityControl": "V"},
+        "windGust": {"unitCode": "wmoUnit:km_h-1", "value": None,
+                     "qualityControl": "Z"}}}
+
+
+class _WxNet:
+    """Canned answers by URL for weather.Weather(get=...): a dict value is
+    JSON, an int an HTTP status, an exception is raised. Counts calls."""
+
+    def __init__(self, answers):
+        self.answers = dict(answers)
+        self.calls = []
+
+    def __call__(self, url, headers, timeout):
+        self.calls.append((url, dict(headers), timeout))
+        for k, v in self.answers.items():
+            if url.startswith(k):
+                if isinstance(v, BaseException):
+                    raise v
+                if isinstance(v, int):
+                    return v, b"{}"
+                return 200, json.dumps(v).encode("utf-8")
+        from ltcplay import weather as W
+        raise W.FetchError("could not connect: no canned answer",
+                           offline=True)
+
+
+def _wx_all_good():
+    from ltcplay import weather as W
+    base = "https://api.weather.gov/gridpoints/SLC/96,152"
+    return {W.IEM + "/api/1/currents.json": _wx_mesonet(),
+            W.NWS + "/points/": _wx_points(),
+            base + "/forecast/hourly": _wx_hourly(),
+            base + "/stations": {"features": []},
+            base: _wx_grid(),
+            W.NWS + "/alerts/active": _wx_alerts("Wind Advisory"),
+            W.NWS + "/stations/": _wx_obs()}
+
+
+def _wx_service(folder, answers, cfg=None, now=None):
+    """A Weather with canned answers, its clocks in the test's hands."""
+    from ltcplay import weather as W
+    t = {"wall": WX_NOW if now is None else now, "mono": 1000.0}
+    net = _WxNet(answers)
+    w = W.Weather(folder, W.check_config(cfg), "", get=net,
+                  wall=lambda: t["wall"], clock=lambda: t["mono"],
+                  log=lambda *_a: None)
+    w.offline_for_tests = False
+    return w, net, t
+
+
+def test_weather_parsers_read_each_source():
+    section("weather (Jeff, 2026-10-26): each source's answer is read: "
+            "knots and km/h become mph, degrees and compass points both "
+            "ways, times with their zones, the forecast hour that covers "
+            "now, wind and fire alerts only")
+    from ltcplay import weather as W
+    m = W.parse_mesonet(_wx_mesonet(), "UTALP")
+    check(abs(m["speed_mph"] - 10.4 * 1.150779448) < 1e-6 and
+          abs(m["gust_mph"] - 18.2 * 1.150779448) < 1e-6 and
+          m["dir_deg"] == 340.0 and m["valid"] == WX_NOW - 300,
+          f"the mesonet's knots are mph, its time UTC: {m}")
+    m = W.parse_mesonet(_wx_mesonet(gust=None, drct=None), "UTALP")
+    check(m["gust_mph"] is None and m["dir_deg"] is None,
+          f"no gust and no direction are said as none, never zero: {m}")
+    for bad, why in ((_wx_mesonet(station="UTPOM"), "another station"),
+                     (_wx_mesonet(sknt=None), "no speed"),
+                     (_wx_mesonet(valid=""), "no time"),
+                     ({"data": "x"}, "no data list"), ([], "not an object")):
+        try:
+            W.parse_mesonet(bad, "UTALP")
+            check(False, f"a mesonet answer with {why} was read")
+        except ValueError as e:
+            _no_dashes(str(e), "a mesonet refusal")
+    check(W.compass(0) == "N" and W.compass(11.2) == "N" and
+          W.compass(11.3) == "NNE" and W.compass(337.5) == "NNW" and
+          W.compass(359) == "N" and W.compass(180) == "S" and
+          W.compass(-22.5) == "NNW" and W.compass(None) == "",
+          "degrees to the 16 point compass")
+    check(W.compass_deg("NNW") == 337.5 and W.compass_deg("e") == 90 and
+          W.compass_deg("VRB") is None and W.compass_deg("") is None,
+          "the 16 point compass to degrees")
+    for d in range(0, 360, 5):
+        check(abs(((W.compass_deg(W.compass(d)) - d + 180) % 360) - 180)
+              <= 11.25, f"{d} degrees round trips within half a point")
+    check(abs(W.to_mph(10, "wmoUnit:km_h-1") - 6.21371192) < 1e-6 and
+          abs(W.to_mph(10, "wmoUnit:m_s-1") - 22.36936292) < 1e-6 and
+          abs(W.to_mph(10, "unit:kn") - 11.50779448) < 1e-6 and
+          W.to_mph(None, "wmoUnit:km_h-1") is None,
+          "km/h, m/s and knots to mph")
+    try:
+        W.to_mph(3, "wmoUnit:furlong")
+        check(False, "a speed in an unknown unit was taken")
+    except ValueError:
+        pass
+    g = W.parse_grid(_wx_grid(), WX_NOW)
+    check(g["issued"] == W.parse_time("2026-10-26T17:15:41Z") and
+          abs(W.at(g["speed"], WX_NOW) - 16.668 * 0.621371192) < 0.01 and
+          abs(W.at(g["gust"], WX_NOW) - 29.632 * 0.621371192) < 0.01 and
+          W.at(g["dir"], WX_NOW) == 170,
+          f"the gridpoint data: this hour's speed, gust, direction: {g}")
+    check(W.at(g["speed"], WX_NOW + 2 * 3600) is not None and
+          abs(W.at(g["speed"], WX_NOW + 2 * 3600) - 9.26 * 0.621371192)
+          < 0.01, "a P1DT2H span is a day and two hours")
+    check(W.parse_interval("2026-10-26T15:00:00+00:00/PT2H") ==
+          (WX_NOW - 3 * 3600, WX_NOW - 3600), "a PT2H span")
+    h = W.parse_hourly(_wx_hourly(), WX_NOW)
+    check(W.at(h["speed"], WX_NOW) == 15 and
+          W.at(h["dir"], WX_NOW) == 337.5 and W.at(h["gust"], WX_NOW)
+          is None, f"the hourly forecast: '10 to 15 mph' is 15, NNW, "
+                   f"Mountain time read as such: {h}")
+    a = W.parse_alerts(_wx_alerts("Wind Advisory", "High Wind Warning",
+                                  "Red Flag Warning", "Wind Chill Warning",
+                                  "Winter Storm Watch", "Wind Advisory"))
+    check([x["event"] for x in a] ==
+          ["Wind Advisory", "High Wind Warning", "Red Flag Warning"] and
+          a[0]["ends"] == W.parse_time("2026-10-27T00:00:00Z"),
+          f"the wind and fire alerts, once each, never Wind Chill: {a}")
+    check(W.parse_alerts(_wx_alerts("High Wind Warning", status="Test"))
+          == [], "a test message is not an alert")
+    o = W.parse_nws_observation(_wx_obs())
+    check(abs(o["speed_mph"] - 7.56 * 0.621371192) < 1e-6 and
+          o["gust_mph"] is None and o["dir_deg"] == 20,
+          f"an NWS observation: {o}")
+    p = W.parse_points(_wx_points())
+    check(p["forecastGridData"].endswith("/SLC/96,152") and
+          p["forecastHourly"].endswith("/forecast/hourly"),
+          f"the point lookup names this spot's grid: {p}")
+    try:
+        W.parse_points({"properties": {"forecastGridData":
+                                       "https://evil.example/x"}})
+        check(False, "a point lookup naming another host was followed")
+    except ValueError:
+        pass
+    check(W.wind_text(12.4, 21.0, 337.5) ==
+          "12 mph, gusts 21 mph, from NNW (338°)" and
+          W.wind_text(0, None, None) == "0 mph, gusts not reported, calm"
+          and W.wind_text(5, None, None).endswith("direction not reported"),
+          "the words for a wind")
+    print("  ok")
+
+
+def test_weather_rules_age_stale_no_data_disagree_alerts():
+    section("weather: every number with its age; measured over 20 min is "
+            "amber STALE, over 45 min grey NO CURRENT DATA with no number; "
+            "the forecast stale after 3 h; sources 10 mph apart disagree; "
+            "wind alerts are a banner; no internet is said plainly")
+    from ltcplay import weather as W
+    work = tempfile.mkdtemp()
+    w, net, t = _wx_service(work, _wx_all_good())
+    check(sorted(w.poll_once()) == ["alerts", "forecast", "mesonet"],
+          "the first poll tries every source")
+    v = w.view()
+    meas, fc = v["lines"][0], v["lines"][1]
+    check(v["state"] == "ok" and meas["level"] == "ok" and
+          fc["level"] == "ok", f"all fresh: {v}")
+    check(meas["text"] == "Measured, I-15 Point of the Mountain (UTALP): "
+          "12 mph, gusts 21 mph, from NNW (340°). 5 min old.",
+          f"the measured line: {meas['text']!r}")
+    check(fc["text"] == "Forecast for this spot (NWS): 10 mph, gusts 18 "
+          "mph, from S (170°). Issued 44 min ago.",
+          f"the forecast line: {fc['text']!r}")
+    check(v["banner"] and v["banner"][0].startswith(
+          "NWS WIND ADVISORY in effect until ") and "Checked under 1 min "
+          "ago." in v["banner"][0], f"the Wind Advisory banner: "
+                                    f"{v['banner']}")
+    check(v["disagree"] == "" and v["internet"] == "",
+          "2 mph apart: no disagreement")
+    check(v["advisory"].startswith("Advisory only"), "advisory only")
+    num = re.compile(r"\d+ mph")
+    for when, lv in ((15 * 60, "ok"), (20 * 60 + 1, "stale"),
+                     (45 * 60, "stale"), (45 * 60 + 1, "none"),
+                     (5 * 3600, "none")):
+        t["wall"] = WX_NOW - 300 + when
+        ln = w.view()["lines"][0]
+        check(ln["level"] == lv, f"measured {when} s old reads {lv}: {ln}")
+        if lv == "none":
+            check(W.NO_DATA in ln["text"] and not num.search(ln["text"]),
+                  f"no current data shows no number: {ln['text']!r}")
+        else:
+            check(re.search(r"\d+ min old\.", ln["text"]),
+                  f"a number shown carries its age: {ln['text']!r}")
+    # The forecast: stale after 3 h of its issue time, grey after 6 h or
+    # when the saved hours do not reach now.
+    w.src["mesonet"]["data"]["valid"] = WX_NOW
+    issued = w.src["forecast"]["data"]["issued"]
+    for age, lv in ((3 * 3600, "ok"), (3 * 3600 + 60, "stale"),
+                    (6 * 3600 + 60, "none")):
+        t["wall"] = issued + age
+        w.src["forecast"]["data"]["speed"] = [[0, 4e9, 8.0]]
+        ln = w.view()["lines"][1]
+        check(ln["level"] == lv, f"forecast {age} s old reads {lv}: {ln}")
+    t["wall"] = WX_NOW
+    w.src["forecast"]["data"]["speed"] = [[0, WX_NOW - 1, 8.0]]
+    ln = w.view()["lines"][1]
+    check(ln["level"] == "none" and "does not reach this hour" in ln["text"],
+          f"a saved forecast that ends before now: {ln}")
+    # Sources disagree: more than 10 mph apart, both current.
+    w.src["forecast"]["data"]["speed"] = [[0, 4e9, 23.0]]
+    w.src["mesonet"]["data"]["speed_mph"] = 12.0
+    v = w.view()
+    check(v["disagree"].startswith("Sources disagree, verify on site:") and
+          "measured 12 mph" in v["disagree"] and
+          "forecast 23 mph" in v["disagree"],
+          f"11 mph apart: they disagree: {v['disagree']!r}")
+    w.src["forecast"]["data"]["speed"] = [[0, 4e9, 22.0]]
+    check(w.view()["disagree"] == "", "exactly 10 mph apart: not more")
+    w.src["forecast"]["data"]["speed"] = [[0, 4e9, 40.0]]
+    t["wall"] = WX_NOW + 50 * 60
+    check(w.view()["disagree"] == "",
+          "a grey measured line is never compared")
+    t["wall"] = WX_NOW
+    # The settings move the thresholds.
+    w.cfg = W.check_config({"disagree_mph": 30, "stale_min": 5,
+                            "no_data_min": 10})
+    v = w.view()
+    check(v["disagree"] == "" and v["lines"][0]["level"] == "ok",
+          "disagree_mph from the settings")
+    t["wall"] = WX_NOW + 6 * 60
+    check(w.view()["lines"][0]["level"] == "stale", "stale_min from the "
+          "settings")
+    t["wall"] = WX_NOW
+    w.cfg = W.check_config(None)
+    # An alert that has ended is not shown; alerts not checked for 45 min
+    # say so.
+    w.src["alerts"]["data"]["alerts"][0]["ends"] = WX_NOW - 1
+    v = w.view()
+    check(v["banner"] == [] and "none" in v["alerts_line"]["text"],
+          f"an ended alert is gone: {v['alerts_line']}")
+    w.src["alerts"]["data"]["checked"] = WX_NOW - 46 * 60
+    check(w.view()["alerts_line"]["level"] == "none",
+          "alerts not checked for 46 min: said")
+    # A reading timed in the future: the PC's clock is wrong.
+    w.src["mesonet"]["data"]["valid"] = WX_NOW + 3600
+    ln = w.view()["lines"][0]
+    check(ln["level"] == "none" and "clock" in ln["text"],
+          f"a reading an hour in the future: {ln}")
+    # No internet: every source's last try could not reach its server.
+    w2, _n, t2 = _wx_service(tempfile.mkdtemp(), {})
+    w2.poll_once()
+    v = w2.view()
+    check(v["internet"].startswith("No internet: this PC cannot reach the "
+                                   "weather services") and
+          v["state"] == "none" and
+          all(ln["level"] == "none" for ln in v["lines"]),
+          f"no internet, nothing saved: {v}")
+    # An HTTP error is not 'no internet'.
+    w3, _n, _t = _wx_service(tempfile.mkdtemp(), {
+        W.IEM: 503, W.NWS: 500})
+    w3.poll_once()
+    v = w3.view()
+    check(v["internet"] == "" and "HTTP 503" in v["lines"][0]["text"],
+          f"a server error is said as that: {v['lines'][0]}")
+    # Every sentence the block can say: no em or en dash.
+    for vv in (w.view(), w2.view(), w3.view()):
+        _no_dashes(json.dumps(vv, ensure_ascii=False), "the weather view")
+    print("  ok")
+
+
+def test_weather_failure_backoff_and_disk_cache():
+    section("weather: a failed source is tried again after 1, 2, 4 min, "
+            "never later than its normal interval; the last good values "
+            "are saved to disk and a restart shows them with their true "
+            "age; a broken or foreign cache is ignored")
+    from ltcplay import weather as W
+    work = tempfile.mkdtemp()
+    ans = _wx_all_good()
+    w, net, t = _wx_service(work, ans)
+    w.poll_once()
+    check(w.src["mesonet"]["due"] == 1000 + 300 and
+          w.src["forecast"]["due"] == 1000 + 900,
+          "measured every 5 min, forecast every 15 min")
+    t["mono"] += 299
+    check(w.poll_once() == [], "nothing is fetched before it is due")
+    t["mono"] += 1
+    check(sorted(w.poll_once()) == ["alerts", "mesonet"],
+          "the measured station and the alerts at 5 min")
+    ans[W.IEM + "/api/1/currents.json"] = W.FetchError("no answer in 8 s",
+                                                       offline=True)
+    net.answers = ans
+    waits = []
+    for _i in range(6):
+        t["mono"] = w.src["mesonet"]["due"]
+        before = t["mono"]
+        check("mesonet" in w.poll_once(), "a due retry is tried")
+        waits.append(w.src["mesonet"]["due"] - before)
+    check(waits == [60, 120, 240, 300, 300, 300],
+          f"retries after 1, 2, 4 min, then every 5: {waits}")
+    check(w.src["mesonet"]["data"] is not None and
+          "no answer in 8 s" in w.view()["lines"][0]["text"],
+          "a failure keeps the last good value and says the try failed")
+    ans[W.IEM + "/api/1/currents.json"] = _wx_mesonet()
+    t["mono"] = w.src["mesonet"]["due"]
+    w.poll_once()
+    check(w.src["mesonet"]["fails"] == 0 and
+          w.src["mesonet"]["due"] == t["mono"] + 300,
+          "a success puts it back on its 5 min beat")
+    # Every request: the 8 s limit and a User-Agent naming the app.
+    check(all(c[2] == 8.0 for c in net.calls), "every fetch has 8 s")
+    ua = net.calls[0][1].get("User-Agent", "")
+    check(ua.startswith("LTCPlay-ShowControl/1.0 (") and
+          W.CONTACT_DEFAULT in ua, f"the NWS User-Agent: {ua!r}")
+    w5, net5, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
+                               cfg={"contact": "ops@example.com"})
+    w5.poll_once()
+    check("ops@example.com" in net5.calls[0][1]["User-Agent"],
+          "the contact from the settings goes in the User-Agent")
+    # The point lookup is kept for a day, not fetched every 15 min.
+    pts = [c for c in net.calls if "/points/" in c[0]]
+    check(len(pts) == 1, f"the point lookup once: {len(pts)}")
+    # The grid failing: the plain hourly forecast stands in.
+    base = "https://api.weather.gov/gridpoints/SLC/96,152"
+    ans2 = _wx_all_good()
+    ans2 = {base + "/forecast/hourly": ans2.pop(base + "/forecast/hourly"),
+            **{k: (503 if k == base else v) for k, v in ans2.items()}}
+    w6, _n, _t = _wx_service(tempfile.mkdtemp(), ans2)
+    w6.poll_once()
+    d = w6.src["forecast"]["data"]
+    check(d is not None and d["from"] == "hourly" and
+          w6.view()["lines"][1]["text"].startswith(
+              "Forecast for this spot (NWS): 15 mph, gusts not reported, "
+              "from NNW"), f"the hourly forecast stands in: "
+                           f"{w6.view()['lines'][1]}")
+    # The disk cache: a restart shows the saved values with their TRUE age.
+    path = os.path.join(work, W.CACHE_FILE)
+    check(os.path.isfile(path), "the good values are saved")
+    w7, net7, t7 = _wx_service(work, {}, now=WX_NOW + 30 * 60)
+    v = w7.view()
+    check(v["lines"][0]["level"] == "stale" and
+          "35 min old" in v["lines"][0]["text"],
+          f"after a restart, half an hour later, the saved reading is "
+          f"35 min old and amber: {v['lines'][0]}")
+    check(v["lines"][1]["level"] == "ok" and net7.calls == [],
+          "the saved forecast is shown before any fetch")
+    check(v["banner"] and "Checked 30 min ago" in v["banner"][0],
+          f"the saved alert check keeps its age: {v['banner']}")
+    # Another station's saved reading is not this one's.
+    w8, _n, _t = _wx_service(work, {}, cfg={"mesonet_station": "UTPOM"})
+    check(w8.src["mesonet"]["data"] is None,
+          "a reading saved for another station is not shown")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    said = []
+    w9 = W.Weather(work, W.check_config(None), "", get=_WxNet({}),
+                   log=said.append)
+    check(all(s["data"] is None for s in w9.src.values()) and said,
+          "a broken cache is said once and ignored")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"version": 1, "sources": {"mesonet": {
+            "key": "UT_RWIS/UTALP", "data": {"speed_mph": "fast",
+                                             "valid": 1}}}}, fh)
+    w10 = W.Weather(work, W.check_config(None), "", get=_WxNet({}),
+                    log=lambda *_a: None)
+    check(w10.src["mesonet"]["data"] is None, "a cache entry of the wrong "
+                                              "shape is ignored")
+    print("  ok")
+
+
+def test_weather_settings_are_checked():
+    section("weather: the settings (ltcplay_remote.json, weather) are "
+            "optional; with none the block works; an unknown key or a bad "
+            "value is refused with a plain sentence and weather stays off, "
+            "the rest of the settings untouched")
+    from ltcplay import weather as W
+    from ltcplay import remote as R
+    work = tempfile.mkdtemp()
+    cfg, err = W.load_config(work)
+    check(err == "" and cfg == W.DEFAULTS and cfg["enabled"] is True and
+          cfg["lat"] == 40.4263 and cfg["lon"] == -111.8875 and
+          cfg["mesonet_station"] == "UTALP",
+          f"no file: the defaults, on: {cfg}")
+    path = os.path.join(work, W.SETTINGS_FILE)
+
+    def put(doc):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+    put({"screen_arming": False})
+    check(W.load_config(work) == (W.DEFAULTS, ""), "no weather block: on")
+    put({"weather": {"enabled": False, "nws_station": "ku42",
+                     "stale_min": 15, "contact": " ops@example.com "}})
+    cfg, err = W.load_config(work)
+    check(err == "" and cfg["enabled"] is False and
+          cfg["nws_station"] == "KU42" and cfg["stale_min"] == 15 and
+          cfg["contact"] == "ops@example.com",
+          f"a good block is taken: {cfg} {err}")
+    for block, words in (
+            ({"speed_limit": 5}, "'speed_limit' is not a weather setting"),
+            ({"enabled": "yes"}, "enabled has to be true or false"),
+            ({"lat": 140}, "lat has to be from -90 to 90"),
+            ({"lat": "40.4"}, "lat has to be a number"),
+            ({"observation_every_min": 1}, "observation_every_min has to "
+                                           "be from 2 to 60"),
+            ({"mesonet_station": "UT ALP"}, "is not a station name"),
+            ({"mesonet_station": ""}, "cannot be empty"),
+            ({"stale_min": 50}, "no_data_min (45) has to be more than "
+                                "stale_min (50)"),
+            ({"disagree_mph": True}, "disagree_mph has to be a number"),
+            ([1], "has to be a block in curly brackets")):
+        put({"weather": block, "screen_arming": True})
+        cfg, err = W.load_config(work)
+        check(words in err and err.endswith("Weather is off until this is "
+                                            "fixed.") and
+              err.startswith("ltcplay_remote.json, weather"),
+              f"{block!r} is refused saying {words!r}: {err!r}")
+        _no_dashes(err, "a weather settings refusal")
+        # The rest of ltcplay_remote.json is not held back by it.
+        check(R.load_settings(work)["screen_arming"] is True,
+              "a bad weather block never stops the other settings loading")
+        w = W.Weather(work, cfg, err, get=_WxNet({}), log=lambda *_a: None)
+        w.start()
+        v = w.view()
+        check(w._thread is None and v["state"] == "error" and
+              v["error"] == err, "a refused block: no thread, the "
+                                 "sentence on the block")
+    put({"weather": {"enabled": False}})
+    w = W.start_for(work, log=lambda *_a: None)
+    check(w._thread is None and w.view()["state"] == "off",
+          "switched off: no thread, the block is hidden")
+    # Not the Thanksgiving Point engine (default_on False): nothing,
+    # unless the file asks for it.
+    other = tempfile.mkdtemp()
+    check(W.start_for(other, default_on=False, log=lambda *_a: None) is None,
+          "another venue's engine, no weather block: no weather at all")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("{broken")
+    cfg, err = W.load_config(work)
+    check("could not be read" in err, f"a broken file is said: {err!r}")
+    print("  ok")
+
+
+def test_weather_is_display_only_and_off_the_show_path():
+    section("weather: display only and never on the show's path. "
+            "weather.py imports nothing that arms, fires, disarms, "
+            "schedules or plays; only the remote route, web.serve and the "
+            "ltc command use it; fetches run on its own thread with the "
+            "whole answer limited to 8 s, and the page's read never waits "
+            "on a fetch")
+    import ast as _ast
+    from ltcplay import weather as W
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "weather.py"),
+               encoding="utf-8").read()
+    mods = set()
+    for node in _ast.walk(_ast.parse(src)):
+        if isinstance(node, _ast.Import):
+            mods |= {a.name for a in node.names}
+        elif isinstance(node, _ast.ImportFrom):
+            mods.add(("." * node.level) + (node.module or "") + ":" +
+                     ",".join(a.name for a in node.names))
+    allowed = {"json", "math", "os", "re", "socket", "threading", "time",
+               "urllib.error", "urllib.request",
+               "datetime:datetime,timezone"}
+    check(mods <= allowed, f"weather.py imports only the standard library "
+                           f"it needs: {sorted(mods - allowed)}")
+    users = []
+    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if name.endswith(".py") and name != "weather.py":
+            text = open(os.path.join(here, "ltcplay", name),
+                        encoding="utf-8").read()
+            if re.search(r"\bweather\b", text) and \
+                    re.search(r"import weather|weather as weather_mod", text):
+                users.append(name)
+    check(users == ["cli.py", "remote.py", "web.py"],
+          f"only the remote route, web.serve and the ltc command use "
+          f"weather: {users}")
+    fs = os.path.join(here, "flamesafe")
+    if os.path.isdir(fs):
+        hits = [n for n in os.listdir(fs) if n.endswith(".py") and
+                "weather" in open(os.path.join(fs, n),
+                                  encoding="utf-8").read()]
+        check(not hits, f"flamesafe knows nothing of weather: {hits}")
+    code = "\n".join(l for l in src.splitlines()
+                     if not l.strip().startswith("#"))
+    code = re.sub(r'"""[\s\S]*?"""', "", code)
+    for bad in ("flamesafe", "flamelink", "conductor", "schedule",
+                "laserarm", "streamdeck", "arm", "disarm", "fire_ice"):
+        check(not re.search(rf"\b{bad}\b", code),
+              f"weather.py's code reaches {bad}")
+    # The thread: a fetch that hangs never holds up view(), and stop()
+    # ends it.
+    gate = threading.Event()
+
+    def slow(url, headers, timeout):
+        gate.wait(5)
+        raise W.FetchError("no answer", offline=True)
+    w = W.Weather(tempfile.mkdtemp(), W.check_config(None), "", get=slow,
+                  log=lambda *_a: None)
+    w.offline_for_tests = False
+    w.start()
+    check(w._thread is not None and w._thread.daemon and
+          w._thread.name == "ltcplay-weather", "its own daemon thread")
+    time.sleep(0.1)
+    t0 = time.perf_counter()
+    v = w.view()
+    took = time.perf_counter() - t0
+    check(took < 0.05 and v["state"] == "none",
+          f"view() while a fetch hangs takes {took * 1000:.1f} ms")
+    gate.set()
+    w.stop()
+    check(not w._thread.is_alive(), "stop() ends the thread")
+    # Under the selftest (LTCPLAY_WEATHER_OFFLINE) nothing is fetched.
+    calls = []
+    w = W.Weather(tempfile.mkdtemp(), W.check_config(None), "",
+                  get=lambda *a: calls.append(a), log=lambda *_a: None)
+    check(w.offline_for_tests, "the self test runs offline")
+    w.poll_once()
+    check(calls == [] and "self test" in w.view()["internet"],
+          "offline for the self test: no fetch at all")
+    # http_get: the WHOLE answer within the limit, a slow drip included.
+    import http.server
+
+    class Drip(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "100000")
+            self.end_headers()
+            try:
+                for _i in range(100):
+                    self.wfile.write(b" " * 1000)
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        old = os.environ.pop("NO_PROXY", None), os.environ.get("no_proxy")
+        os.environ["no_proxy"] = "127.0.0.1,localhost"
+        t0 = time.monotonic()
+        try:
+            W.http_get(f"http://127.0.0.1:{srv.server_address[1]}/", {},
+                       timeout=0.6)
+            check(False, "a slow drip answer was waited out")
+        except W.FetchError as e:
+            check("no full answer in 0.6 s" in str(e) and e.offline,
+                  f"a slow drip is cut at the limit: {e}")
+        check(time.monotonic() - t0 < 2.0, "and promptly")
+        try:
+            W.http_get("http://127.0.0.1:9/", {}, timeout=1)
+            check(False, "a closed port answered")
+        except W.FetchError as e:
+            check(e.offline, f"nothing listening is no connection: {e}")
+    finally:
+        if old[0] is not None:
+            os.environ["NO_PROXY"] = old[0]
+        if old[1] is None:
+            os.environ.pop("no_proxy", None)
+        else:
+            os.environ["no_proxy"] = old[1]
+        srv.shutdown()
+        srv.server_close()
+    # The engine's route: what the thread stored, and a plain answer
+    # when there is no weather service.
+    from ltcplay import remote as R
+    r = R.Remote(None, folder=tempfile.mkdtemp())
+    ctx = R.Ctx(True, "127.0.0.1")
+    code, body = r.get("/api/remote/weather", ctx)
+    check(code == 200 and body["state"] == "off" and
+          body["enabled"] is False, f"no weather service: {body}")
+    w, _n, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good())
+    w.poll_once()
+    r.weather = w
+    code, body = r.get("/api/remote/weather", R.Ctx(False, "10.20.0.7"))
+    check(code == 200 and body["state"] == "ok" and len(body["lines"]) == 2,
+          f"the route answers the stored view, iPad included: {body}")
+    print("  ok")
+
+
+def test_weather_check_command():
+    section("weather: `ltc weather --check` prints each source's raw "
+            "answer and a plain pass or fail, lists the NWS stations near "
+            "the spot, and says what to open in the firewall when nothing "
+            "connects")
+    from ltcplay import weather as W
+    from ltcplay import cli as C
+    work = tempfile.mkdtemp()
+    good = _wx_all_good()
+    good["https://api.weather.gov/gridpoints/SLC/96,152/stations"] = {
+        "features": [
+            {"geometry": {"coordinates": [-111.7233, 40.2192]},
+             "properties": {"stationIdentifier": "KPVU",
+                            "name": "Provo Municipal Airport"}},
+            {"geometry": {"coordinates": [-111.9300, 40.4400]},
+             "properties": {"stationIdentifier": "UTALP",
+                            "name": "I-15 Point of the Mountain"}}]}
+    lines = []
+    rc = W.run_check(work, get=_WxNet(good), out=lines.append,
+                     wall=lambda: WX_NOW)
+    text = "\n".join(lines)
+    check(rc == 0 and "RESULT: PASS" in text and
+          text.count("PASS  ") == 5 and '"sknt": 10.4' in text and
+          "HTTP 200" in text, f"all good: pass, raw shown:\n{text[-1500:]}")
+    check("UTALP" in text and "KPVU" in text and
+          "(airport, not this spot)" in text and
+          text.index("UTALP     ") < text.index("KPVU   "),
+          "the nearby stations, nearest first, the airport marked")
+    _no_dashes(text, "the weather check")
+    lines = []
+    rc = W.run_check(work, get=_WxNet({}), out=lines.append)
+    text = "\n".join(lines)
+    check(rc == 1 and "RESULT: FAIL" in text and
+          "this PC cannot reach it" in text and
+          "TCP 443) to api.weather.gov and mesonet.agron.iastate.edu" in text,
+          f"nothing connects: fail, and the firewall named:\n{text[-800:]}")
+    with open(os.path.join(work, W.SETTINGS_FILE), "w") as fh:
+        json.dump({"weather": {"bogus": 1}}, fh)
+    lines = []
+    check(W.run_check(work, get=_WxNet(good), out=lines.append) == 1 and
+          any("'bogus' is not a weather setting" in l for l in lines),
+          "a bad settings block fails the check with its sentence")
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = C.main(["weather"])
+    check(rc == 0 and "--check" in buf.getvalue(),
+          f"`ltc weather` alone says what --check does: {buf.getvalue()!r}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "WEATHER.md"), encoding="utf-8").read()
+    for need in ("api.weather.gov", "mesonet.agron.iastate.edu", "443",
+                 "UNVERIFIED", "ltc weather --check", "STALE",
+                 "NO CURRENT DATA"):
+        check(need in doc, f"WEATHER.md says {need!r}")
+    _no_dashes(doc, "WEATHER.md")
+    print("  ok")
+
+
+def _wx_page_view():
+    """A full Weather view, as the engine serves it, for the page tests."""
+    from ltcplay import weather as W
+    w, _n, t = _wx_service(tempfile.mkdtemp(), _wx_all_good())
+    w.poll_once()
+    w.src["forecast"]["data"]["speed"] = [[0, 4e9, 40.0]]
+    t["wall"] = WX_NOW + 22 * 60
+    return w.view()
+
+
+_WX_MEASURE_JS = r"""
+<script>
+(function(){
+function go(){
+  const box = document.getElementById("wx");
+  if(!box || !document.querySelector("#wx-lines div") || !document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 100);
+  setTimeout(() => {
+    const r = box.getBoundingClientRect();
+    const fl = document.querySelector(".flames").getBoundingClientRect();
+    const out = {cls:box.className, hidden:box.hidden, h:r.height, top:r.top + scrollY,
+      flames_bottom:fl.bottom + scrollY, right:r.right, vw:innerWidth,
+      cut:[...document.querySelectorAll("#wx-lines div")].filter(d => d.scrollWidth > d.clientWidth + 1).map(d => d.textContent),
+      lines:[...document.querySelectorAll("#wx-lines div")].map(d => [d.className, d.textContent, getComputedStyle(d).color]),
+      foot:document.getElementById("wx-foot").textContent,
+      where:document.getElementById("wx-where").textContent,
+      buttons:box.querySelectorAll("button,input,a").length,
+      sw:document.scrollingElement.scrollWidth};
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify([out]);
+    document.body.appendChild(pre);
+  }, 400);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_weather_block_on_the_rack_screen():
+    section("weather: the Weather block on the rack screen's main page, "
+            "under the lasers: its logic in node (grey when the engine "
+            "goes quiet, STALE in amber, alerts and disagreement as "
+            "banners), and drawn in a real browser beside five banners "
+            "without moving or squeezing a flame control")
+    import shutil as _sh
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.find('<section id="v-show"')
+    b = page.find("</section>", page.find('id="lz-msg"'))
+    check(a < page.find('id="lz"') < page.find('id="wx"') < b,
+          "the block sits on the main page, under the lasers")
+    blk = page[page.find('<div class="wx none" id="wx"'):b]
+    check("<button" not in blk and "<input" not in blk,
+          "the block has nothing to press")
+    for need in ('getJSON("/api/remote/weather", 4000)',
+                 "setInterval(wxPoll, 15000);",
+                 "setInterval(renderWx, 5000);",
+                 '$("wx").hidden = v.cls === "off";'):
+        check(need in page, f"the page wires {need!r}")
+    _no_dashes(blk, "the Weather block")
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function wxBlock(" in logic, "wxBlock is pure page logic")
+    view = _wx_page_view()
+    node = _sh.which("node")
+    if node:
+        js = logic + "const V = " + json.dumps(view) + ";\n" + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+let b = wxBlock(V, 3);
+t(b.cls === "stale", "a stale line makes the block amber: " + b.cls);
+t(b.lines[0].cls === "alert" && /^NWS WIND ADVISORY in effect/.test(b.lines[0].text), "the alert leads: " + JSON.stringify(b.lines[0]));
+t(b.lines[1].cls === "alert" && /^Sources disagree, verify on site/.test(b.lines[1].text), "then the disagreement");
+t(b.lines[2].cls === "stale" && /^STALE\. Measured/.test(b.lines[2].text) && / 27 min old\./.test(b.lines[2].text), "the measured line, amber, its age: " + b.lines[2].text);
+t(b.lines[3].cls === "ok" && /^Forecast for this spot \(NWS\): 40 mph/.test(b.lines[3].text), "the forecast line: " + b.lines[3].text);
+t(/^Advisory only/.test(b.foot), "advisory only, in the foot");
+b = wxBlock(V, 61);
+t(b.cls === "none" && b.lines.length === 1 && /^NO CURRENT DATA, use on-site wind check/.test(b.lines[0].text) && !/mph/.test(JSON.stringify(b)), "61 s without the engine: grey, no number: " + JSON.stringify(b));
+t(wxBlock(V, null).cls === "none" && wxBlock(null, 1).cls === "none", "never heard: grey");
+t(wxBlock({}, 1).cls === "none" && /not said yet/.test(wxBlock({}, 1).lines[0].text), "an empty answer: grey");
+t(wxBlock({enabled:false, state:"off"}, 1).cls === "off", "switched off: off (hidden)");
+t(wxBlock({enabled:false, state:"error", error:"bad key."}, 1).lines[0].text === "Weather is off: bad key.", "a settings error is said");
+const N = Object.assign({}, V, {internet:"No internet: this PC cannot reach the weather services.", banner:[], disagree:""});
+b = wxBlock(N, 1);
+t(b.lines[0].cls === "net" && /^No internet/.test(b.lines[0].text), "no internet leads");
+t(wxBlock(Object.assign({}, V, {lines:[{level:"weird", text:"x"}]}), 1).lines.some(l => l.cls === "none" && l.text === "x"), "an unknown level is grey");
+console.log(JSON.stringify(out));
+"""
+        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"wxBlock, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: the Weather block "
+              "could not be drawn")
+        print("  note: no Chromium here, so the Weather block was not drawn")
+        print("  ok")
+        return
+    routes = {"/api/remote/weather": view}
+    sizes = ((1920, 1080), (1366, 768), (768, 1024))
+    got = _rack_screen_in_chromium(chrome, page, _rack_status_pico(), sizes,
+                                   measure_js=_WX_MEASURE_JS, routes=routes)
+    for (w, h), res in got.items():
+        m = res[0] if isinstance(res, list) and res else None
+        if not check(isinstance(m, dict), f"{w}x{h}: the block was drawn: "
+                                          f"{res!r}"):
+            continue
+        texts = [x[1] for x in m["lines"]]
+        check(not m["hidden"] and "stale" in m["cls"].split() and
+              texts[0].startswith("NWS WIND ADVISORY") and
+              texts[1].startswith("Sources disagree, verify on site") and
+              texts[2].startswith("STALE. Measured, I-15 Point of the "
+                                  "Mountain (UTALP)") and
+              m["foot"].startswith("Advisory only") and
+              m["where"].startswith("Thanksgiving Point area"),
+              f"{w}x{h}: the block reads right: {m}")
+        check(m["lines"][2][2] == "rgb(245, 160, 30)",
+              f"{w}x{h}: STALE is amber: {m['lines'][2]}")
+        check(m["top"] >= m["flames_bottom"] - 0.5 and m["buttons"] == 0 and
+              m["right"] <= m["vw"] + 0.5 and not m["cut"],
+              f"{w}x{h}: under the flames, nothing to press, inside the "
+              f"window, no line cut off: {m}")
+        check(m["h"] <= (130 if w >= 1366 else 260),
+              f"{w}x{h}: the block stays compact: {m['h']:.0f} px")
+    # The flame controls with the full block: the rack screen's own
+    # measurements, every one, as without it.
+    with_wx = _rack_screen_in_chromium(chrome, page, _rack_status_pico(),
+                                       ((1920, 1080), (1366, 768)),
+                                       routes=routes)
+    without = _rack_screen_in_chromium(chrome, page, _rack_status_pico(),
+                                       ((1920, 1080), (1366, 768)),
+                                       routes={"/api/remote/weather": {
+                                           "enabled": False,
+                                           "state": "off"}})
+    for size in ((1920, 1080), (1366, 768)):
+        a1, a0 = with_wx.get(size), without.get(size)
+        if not check(isinstance(a1, list) and isinstance(a0, list),
+                     f"{size}: drawn both ways: {a1!r} {a0!r}"):
+            continue
+        for m1, m0 in zip(a1, a0):
+            check(not m1["problems"], f"{size} with the Weather block "
+                                      f"({m1['tag']}): {m1['problems']}")
+            check(m1["flames_visible_at_load"] == m0["flames_visible_at_load"]
+                  and m1["flames_clear_of_abort"] ==
+                  m0["flames_clear_of_abort"],
+                  f"{size} ({m1['tag']}): the flame groups are seen at load "
+                  f"and clear of the Abort bar as without it")
+            # The block takes its room from the lamps' stretch, as the
+            # lasers strip does, never from their buttons: every group's
+            # button stays at least 44 px (and is checked above).
+            check(all(l.get("arm", 0) >= 44 for l in m1["lamps"]) and
+                  len(m1["lamps"]) == 3,
+                  f"{size} ({m1['tag']}): every flame button is 44 px or "
+                  f"more: {m1['lamps']}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -62586,6 +63759,7 @@ if __name__ == "__main__":
     test_disarm_ids_survive_an_engine_restart()
     test_disarm_all_end_to_end_rearms_without_a_cycle()
     test_lasers_lamp_follows_the_beyond_link()
+    test_video_lamp_follows_the_madmapper_watch()
     test_artnet_faults_only_for_the_show_in_use()
     test_rack_screen_jeff_2026_10_23_page()
     test_schedule_time_zone_is_checked_by_the_engine()
@@ -62611,6 +63785,13 @@ if __name__ == "__main__":
     test_scrub_flames_end_to_end_real_flamesafe()
     test_scrub_flames_review_of_117()
     test_scrub_flames_seqlock()
+    test_weather_parsers_read_each_source()
+    test_weather_rules_age_stale_no_data_disagree_alerts()
+    test_weather_failure_backoff_and_disk_cache()
+    test_weather_settings_are_checked()
+    test_weather_is_display_only_and_off_the_show_path()
+    test_weather_check_command()
+    test_weather_block_on_the_rack_screen()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

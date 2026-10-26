@@ -304,6 +304,27 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   letter-spacing:.04em;background:var(--laser-deep);border:2px solid var(--laser);color:var(--laser-ink)}
 .lz .toast{grid-column:1 / -1;margin-top:-2px}
 .lz .toast:empty{display:none}
+/* WEATHER (weather.py, WEATHER.md): wind at the venue, under the lasers,
+   display only. Amber is STALE, grey is NO CURRENT DATA. It never takes
+   room from the flames: its own height, at the bottom of the show screen. */
+.wx{--wx-grey:#8E8574;flex:0 0 auto;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 12px;
+  align-items:start;min-width:0;border:1px solid var(--hair);border-radius:8px;padding:4px 10px;background:var(--wash)}
+.wx.none{border-color:var(--wx-grey)}
+.wx-head{display:flex;flex-direction:column;min-width:0}
+.wx-head b{font:800 clamp(13px,1.9vh,19px)/1.1 var(--caps);letter-spacing:.2em;color:var(--gold)}
+.wx-head small{font:400 12px/1.2 var(--sans);color:var(--muted);max-width:14em}
+/* Side by side where there is room (the measured line, the forecast, the
+   alerts check), so the block stays two or three rows tall; a banner (an
+   NWS alert, sources disagree, no internet) takes the whole width. */
+.wx-lines{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,24em),1fr));gap:2px 16px;min-width:0}
+.wx-lines div{min-width:0;font:600 clamp(12px,1.5vh,15px)/1.25 var(--sans);color:var(--cream);overflow-wrap:anywhere}
+.wx-lines .alert,.wx-lines .net{grid-column:1 / -1}
+.wx-lines .stale{color:var(--amber)}
+.wx-lines .none,.wx-lines .net{color:var(--wx-grey)}
+.wx-lines .net{font-weight:800}
+.wx-lines .dim{color:var(--muted);font-weight:400}
+.wx-lines .alert{background:var(--amber);color:var(--amber-ink);border-radius:4px;padding:0 6px;font-weight:800}
+.wx-foot{grid-column:1 / -1;font:400 11px/1.2 var(--sans);color:var(--muted)}
 
 /* ---- Tonight: one screen, two columns, detail behind a tap ---- */
 #v-tonight{display:flex;flex-direction:column;gap:8px}
@@ -719,6 +740,14 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
       <div class="lz-chips" id="lz-chips"></div>
       <button class="lzdis" id="lz-disarm">Disarm all lasers</button>
       <div class="toast" id="lz-msg"></div>
+    </div>
+    <!-- WEATHER (weather.py, WEATHER.md): wind at the venue from a
+         measured station and the NWS forecast, each with its age.
+         Display only: no button, nothing here reaches the show. -->
+    <div class="wx none" id="wx" aria-label="Wind">
+      <div class="wx-head"><b>Wind</b><small id="wx-where"></small></div>
+      <div class="wx-lines" id="wx-lines"></div>
+      <div class="wx-foot" id="wx-foot"></div>
     </div>
   </section>
 
@@ -1470,6 +1499,32 @@ function laserPill(subs, la, bl){
   const rest = subs.filter(x => x !== arm && x !== out);
   rest.splice(i, 0, pill);
   return rest;
+}
+// WEATHER (weather.py, WEATHER.md): what the Weather block draws, from the
+// engine's /api/remote/weather (`w`) and how many seconds ago this page
+// last heard it. The engine writes each line, its age included; a reply
+// older than w.page_dead_s greys the whole block, so no number is ever
+// shown with an age that is not true any more.
+const WX_ADVISORY = "Advisory only. The on-site wind check decides, not this screen.";
+function wxBlock(w, heardAgoS){
+  const foot = (w && w.advisory) || WX_ADVISORY;
+  const dead = (w && Number(w.page_dead_s)) || 60;
+  const one = (cls, text) => ({cls:cls, lines:[{cls:"none", text:text}], foot:foot});
+  if(!w || heardAgoS === null || heardAgoS === undefined) return one("none", "Wind: not heard from the engine yet.");
+  if(heardAgoS > dead) return one("none", "NO CURRENT DATA, use on-site wind check. This screen has not heard from the engine for " + Math.round(heardAgoS) + " s.");
+  if(w.state === "error") return one("none", "Weather is off: " + (w.error || "its settings are wrong."));
+  if(w.state === "off" || w.enabled === false) return one("off", w.text || "Weather is switched off in ltcplay_remote.json.");
+  if(!w.state || !Array.isArray(w.lines)) return one("none", "Wind: the engine has not said yet.");
+  const L = [];
+  if(w.internet) L.push({cls:"net", text:w.internet});
+  (w.banner || []).forEach(t => L.push({cls:"alert", text:t}));
+  if(w.disagree) L.push({cls:"alert", text:w.disagree});
+  w.lines.forEach(l => {
+    const lv = l.level === "ok" || l.level === "stale" ? l.level : "none";
+    L.push({cls:lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
+  });
+  if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
+  return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L, foot:foot};
 }
 // LOGIC END
 </script>
@@ -3597,6 +3652,28 @@ $("au-save").addEventListener("click", async () => {
 $("au-now").addEventListener("click", async () => {
   try{ const r = await post("/api/remote/audit-upload-now", {}); uMsg("au-msg", r.text); }catch(e){ uMsg("au-msg", e.message, true); }
 });
+
+// WEATHER (weather.py, WEATHER.md): its own slow poll, display only. A
+// reply that does not come leaves the block to grey itself (wxBlock).
+let WX = null, WX_AT = null, WX_HTML = "";
+function renderWx(){
+  const v = wxBlock(WX, WX_AT === null ? null : (monoNow() - WX_AT) / 1000);
+  // Not running in this engine, or switched off: no block at all.
+  $("wx").hidden = v.cls === "off";
+  $("wx").className = "wx " + v.cls;
+  $("wx-where").textContent = (WX && WX.where) || "";
+  const html = v.lines.map(l => `<div class="${esc(l.cls)}">${esc(l.text)}</div>`).join("");
+  if(html !== WX_HTML){ $("wx-lines").innerHTML = html; WX_HTML = html; }
+  $("wx-foot").textContent = v.foot;
+}
+async function wxPoll(){
+  try{ WX = await getJSON("/api/remote/weather", 4000); WX_AT = monoNow(); }
+  catch(e){ /* greyed by wxBlock once page_dead_s has passed */ }
+  renderWx();
+}
+wxPoll();
+setInterval(wxPoll, 15000);
+setInterval(renderWx, 5000);
 
 // The show's name and where it plays come from the settings, so a new
 // show is a settings change. The page reads fine without them.

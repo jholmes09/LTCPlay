@@ -347,6 +347,21 @@ lasers were sent lit and BEYOND is running; it cannot prove the beams are
 on. Off the show PC, or with BEYOND on another machine, the pill's details
 say "lit? link unknown".
 
+The video chip says whether MadMapper is ready before any show plays. On
+the show PC it reads "MadMapper running" (green) while the MadMapper
+program is running, and "MadMapper NOT RUNNING" (red) when it is not; if
+MadMapper was running and stops, an alert says so, once each time. Once
+the show has sent the video something, what was last sent is added
+("MadMapper running, lit" or "black"). This only checks that the program
+is running: MadMapper never answers back, so it cannot tell whether the
+screens show the picture. If the show file has a MadMapper heartbeat, a
+playing show also reads "heartbeat OK", or "MadMapper running, no
+heartbeat" (amber) when MadMapper's heartbeat stops arriving; between
+shows and on Hold a silent heartbeat is normal and nothing is said. Off
+the show PC, or with MadMapper on another machine, it cannot be told:
+the chip reads "not sent yet" (grey) until a show sends something, and
+its tooltip says why.
+
 "Left in this show" counts down the show that is playing. On Hold it stands
 still, because the show's own clock is stopped. Between shows the next
 show's countdown is shown instead. If the show's length is not known,
