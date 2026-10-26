@@ -13437,10 +13437,146 @@ def build():
   "        if api.minimized(hwnd):\n            api.restore(hwnd)",
   "        if False:\n            api.restore(hwnd)"),
 
- ("open beyond: no Alt key tap before SetForegroundWindow",
+ ("open beyond: no input attach before SetForegroundWindow",
   "ltcplay/windowfront.py",
-  "        api.alt_tap()\n",
+  "        if other and other != me and api.attach(me, other, True):",
+  "        if False:"),
+
+ # Review of PR #125 (2026-10-26), fixed forward.
+ ("open beyond: a key is pressed again to take the foreground (P2-1)",
+  "ltcplay/windowfront.py",
+  "        api.set_foreground(hwnd)\n        api.raise_async(hwnd)",
+  "        api.alt_tap()\n        api.set_foreground(hwnd)\n"
+  "        api.raise_async(hwnd)"),
+
+ ("open beyond: a hung BEYOND's window is moved anyway (P2-2)",
+  "ltcplay/windowfront.py",
+  "    if hung:\n        return False, NOT_RESPONDING",
+  "    if False:\n        return False, NOT_RESPONDING"),
+
+ ("open beyond: the restore waits on BEYOND's thread (P2-2)",
+  "ltcplay/windowfront.py",
+  "        self.u.ShowWindowAsync(hwnd, SW_RESTORE)",
+  "        self.u.ShowWindow(hwnd, SW_RESTORE)"),
+
+ ("open beyond: a press waits on a hung BEYOND for ever (P2-2)",
+  "ltcplay/windowfront.py",
+  "        t.join(self.timeout_s)",
+  "        t.join()"),
+
+ ("open beyond: presses pile up threads on a hung BEYOND (P2-2)",
+  "ltcplay/windowfront.py",
+  "            if self._busy:\n                return False, BUSY",
+  "            if False:\n                return False, BUSY"),
+
+ ("open beyond: the press calls the window code with no time limit (P2-2)",
+  "ltcplay/remote.py",
+  "            fn = windowfront.OPENER",
+  "            fn = windowfront.open_beyond"),
+
+ ("open beyond: allowed on Hold or between shows (P2-3)",
+  "ltcplay/remote.py",
+  "        why = self.show_live_refusal() or self._open_beyond_state() or \\",
+  "        why = self.show_live_refusal() or \\"),
+
+ ("open beyond: allowed while a purge, a laser test or a hold is on (P2-3)",
+  "ltcplay/remote.py",
+  "        why = self.show_live_refusal() or self._open_beyond_state() or \\\n"
+  "            self.rig_busy()",
+  "        why = self.show_live_refusal() or self._open_beyond_state() or \\\n"
+  "            ''"),
+
+ ("open beyond: refused while the calibration test is on",
+  "ltcplay/remote.py",
+  "                if armed and m.lasers.on:",
+  "                if m.lasers.on:"),
+
+ ("last show sign out: a laser test on does not hold it back (P2-5)",
+  "ltcplay/remote.py",
+  "                if armed and m.lasers.on:",
+  "                if False:"),
+
+ ("open beyond: a screen's hold to arm does not count as busy (P2-3)",
+  "ltcplay/remote.py",
+  "                if self._holds:\n                    return \"a hold to arm",
+  "                if False:\n                    return \"a hold to arm"),
+
+ ("calibrate all: a show-state check that fails lets it carry on (P2-4)",
+  "ltcplay/lasertest.py",
+  "                    why = f\"the show state could not be read ({e})\"",
+  "                    why = \"\""),
+
+ ("calibrate all: a lockout that cannot be read counts as unlocked (P2-4)",
+  "ltcplay/lasertest.py",
+  "            except Exception:                    # noqa: BLE001\n"
+  "                locked = True\n            if locked:\n"
+  "                skipped.append(",
+  "            except Exception:                    # noqa: BLE001\n"
+  "                locked = False\n            if locked:\n"
+  "                skipped.append("),
+
+ ("last show sign out: runs while a laser or flame group is armed (P2-5)",
+  "ltcplay/remote.py",
+  "            if self.rig_busy(armed=True):\n                return None",
+  "            if self.rig_busy(armed=False):\n                return None"),
+
+ ("last show sign out: an armed laser does not hold it back (P2-5)",
+  "ltcplay/remote.py",
+  "                if armed and m.laser_arm.armed_ids():",
+  "                if False:"),
+
+ ("last show sign out: an armed or wanted flame group does not hold it back (P2-5)",
+  "ltcplay/remote.py",
+  "                        if g.get(\"armed\") == \"armed\" or g.get(\"wanted\"):",
+  "                        if False:"),
+
+ ("last show sign out: a rig state that cannot be read lets it go (P2-5)",
+  "ltcplay/remote.py",
+  "            return f\"the rig's state could not be read ({type(e).__name__})\"",
+  "            return \"\""),
+
+ ("last show sign out: the users' own beat never starts (P2-6)",
+  "ltcplay/web.py",
+  "        r.users.start()\n",
   "        pass\n"),
+
+ ("last show sign out: the beat checks nothing (P2-6)",
+  "ltcplay/users.py",
+  "            while not self._beat_stop.wait(every_s):\n"
+  "                self.after_last_show_tick()",
+  "            while not self._beat_stop.wait(every_s):\n"
+  "                pass"),
+
+ ("last show sign out: a blank minutes box is saved as off (P2-7)",
+  "ltcplay/web/remote.html",
+  "  if(!/^[0-9]{1,4}$/.test(t)) return null;",
+  "  if(!/^[0-9]{1,4}$/.test(t)) return 0;"),
+
+ ("last show sign out: Save sends minutes it could not read (P2-7)",
+  "ltcplay/web/remote.html",
+  "  if(lastShow === null){",
+  "  if(false){"),
+
+ ("last show sign out: a night closed at its reset loses its sign-out (P2-8)",
+  "ltcplay/remote.py",
+  "            if seen is not None and seen[\"night\"] != str(m.date):",
+  "            if False:"),
+
+ ("last show sign out: a Start now on an unscheduled night counts (P2-8)",
+  "ltcplay/remote.py",
+  "            if ends and scheduled:",
+  "            if ends:"),
+
+ ("last show sign out: a restart's assumed end counts as a show (P2-8)",
+  "ltcplay/remote.py",
+  "            ends = [s.ended_at for s in slots\n"
+  "                    if getattr(s, \"ended_at\", None) is not None]",
+  "            ends = [m.last_end] if m.last_end is not None else []"),
+
+ ("open beyond: ltc serve never hands on BEYOND's host (P2-9)",
+  "ltcplay/web.py",
+  "        httpd.remote.beyond_host = getattr(_bey_cfg, \"host\", None)",
+  "        pass"),
 
  ("open beyond: the input attach is never let go",
   "ltcplay/windowfront.py",
@@ -13524,9 +13660,14 @@ def build():
   "        if night == self._last_show_done or self._wall() < due:",
   "        if self._wall() < due:"),
 
+ ("last show sign out: a sign-in after the show ended is signed out (P2-5)",
+  "ltcplay/users.py",
+  "                if s.get(\"wall_at\", 0.0) < ended]",
+  "                if s.get(\"wall_at\", 0.0) < due]"),
+
  ("last show sign out: a sign-in after it is signed out after a restart",
   "ltcplay/users.py",
-  "                if s.get(\"wall_at\", 0.0) < due]",
+  "                if s.get(\"wall_at\", 0.0) < ended]",
   "                ]"),
 
  ("last show sign out: never signs anyone out",
@@ -13551,8 +13692,8 @@ def build():
 
  ("last show sign out: runs while a show is still to come",
   "ltcplay/remote.py",
-  "                    getattr(m, \"running\", 0) or m.waiting():",
-  "                    getattr(m, \"running\", 0):"),
+  "                if not m.waiting():\n                    return dict(self._last_show_seen)",
+  "                if True:\n                    return dict(self._last_show_seen)"),
 
  ("last show sign out: runs while an Abort stands",
   "ltcplay/remote.py",

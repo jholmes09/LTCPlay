@@ -1476,6 +1476,7 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
         r.users = users_mod.Users(r.folder, audit=_note)
         # Sign everyone out after the night's last show (Jeff, 2026-10-26).
         r.users.last_show = r.last_show_over
+        r.users.start()
         r.users.seed(users_mod.SEED_USERS if users_seed is None
                      else users_seed)
         r.uploader = auditsend.Uploader(
@@ -1490,6 +1491,7 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
         def _close():
             try:
                 r.audit_watch.stop()
+                r.users.stop()
                 r.uploader.stop()
                 log.event(user=audit_mod.SYSTEM, surface="engine",
                           action="engine-stop")

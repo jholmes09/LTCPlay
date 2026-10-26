@@ -139,9 +139,12 @@ in `lasers` in ltcplay_morning.json); Calibrate all lasers (the test on
 for every armed laser that is not locked out, one after another; it names
 any it skipped and why) and Calibration off (every test off, always
 works); Open BEYOND (on the show PC only: brings the BEYOND window to the
-front so you can check the grid there; it sends nothing to BEYOND; if
-Windows will not let it come forward, BEYOND's button on the taskbar
-flashes, click it); the purge (click a machine or a group
+front, any time no show is live, with the calibration tests on or off,
+so you can adjust there; it is refused while a purge or a hold to arm is
+going on, on Hold and between shows; come back to the rack screen (click
+it, or its taskbar button) for Calibration off; it sends nothing to
+BEYOND; if Windows will not let it come
+forward, BEYOND's button on the taskbar flashes, click it); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
 let go and it stops; nothing fires while a show is live or an Abort
 stands); lock out of any one machine or laser (the L button on it: one tap
@@ -326,9 +329,13 @@ Wi-Fi that can reach that address can use the page, so keep the show Wi-Fi
 to the crew.
 
 After the last show of the night, everyone is signed out on their own:
-10 minutes after the last show ends (once nothing is live, on Hold or
-aborted), every screen that was signed in is signed out, once. Anyone who
-signs in after that stays signed in for the rest of the night. An admin
+10 minutes after the last show ends, every screen that was signed in
+before it ended is signed out, once. It waits while a show is live, on
+Hold or aborted, and while anything is armed or going on at the rig (a
+hold to arm, a purge, a laser test, an armed laser or flame group), and
+goes as soon as that is clear. Anyone who signs in after the last show
+ended stays signed in for the rest of the night. It only happens on a
+night with a show on the schedule. An admin
 can change the minutes, or turn it off with 0, on the Users screen
 (USERS.md).
 

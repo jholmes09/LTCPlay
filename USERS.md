@@ -45,11 +45,17 @@ screen with no scrolling.
 - Idle sign out is OFF on the show PC. An admin can turn it on (minutes,
   on the Users screen); 0 means off.
 - Sign out after the last show is ON: 10 minutes after the last show of
-  the night has ended, everyone signed in is signed out, once. It waits
-  while a show is live, on Hold, or after an Abort until Reset. A show
-  started by hand with Start now counts as a show. Someone who signs in
-  after that stays signed in for the rest of the night. Without a
-  schedule it never happens. An admin can change the minutes on the
+  the night has ended, everyone who was signed in before it ended is
+  signed out, once. It waits while a show is live, on Hold, or after an
+  Abort until Reset, and while anything is armed or going on at the rig
+  (a hold to arm, a purge, a laser test, an armed laser or flame group),
+  then goes as soon as that is clear. A show started by hand with Start
+  now counts as a show, on a night that has a show on the schedule; on a
+  night with no show on the schedule it never happens. Someone who signs
+  in after the last show ended stays signed in for the rest of the
+  night. The night is the schedule's own, up to its 2 AM reset, so a show
+  ending just before the reset still gets its sign-out. A blank or wrong
+  number in the box is refused and nothing is saved. An admin can change the minutes on the
   Users screen ("Sign everyone out this many minutes after the last show
   of the night"); 0 means off. The audit log says "after the last show"
   for each one.

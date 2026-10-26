@@ -12,13 +12,22 @@ and the same lower-case file name match as beyondwatch.py). A window
 owned by another window (a dialog, a tool window) is passed over when a
 main window is there.
 
-How it is brought forward: restored if it was minimized, then
-SetForegroundWindow. Windows does not let a background program take the
-foreground, so the usual workaround goes first: this thread is attached to
-the input of the window that has the foreground now (AttachThreadInput)
-and the Alt key is tapped, which releases Windows' foreground lock for the
-next call. If Windows still refuses, BEYOND's taskbar button is flashed
-(FlashWindowEx) and the answer says so plainly: click it.
+How it is brought forward: a window that is not responding (IsHungAppWindow)
+is left alone and said. Otherwise it is restored if it was minimized
+(ShowWindowAsync, which never waits on BEYOND), then SetForegroundWindow,
+then raised with SetWindowPos and SWP_ASYNCWINDOWPOS (never waits either).
+Windows does not let a background program take the foreground, so this
+thread is attached to the input of the window that has the foreground now
+(AttachThreadInput) for that one call, and always let go again. No key is
+ever pressed for it (review of PR #125, P2-1: the old Alt key tap reached
+whatever window had the keyboard). If Windows still refuses, BEYOND's
+taskbar button is flashed (FlashWindowEx) and the answer says so plainly:
+click it.
+
+The whole look runs on a worker thread (`Opener`): a press that has not
+finished within OPEN_TIMEOUT_S answers that BEYOND is not responding, and
+a second press while one is still going is refused, so a hung BEYOND never
+holds a request or piles up threads (review of PR #125, P2-2).
 
 The Win32 calls are behind a small object (`Win32` here, a fake in the
 selftest), so every rule is tested on any machine.
@@ -26,6 +35,7 @@ selftest), so every rule is tested on any machine.
 import fnmatch
 import ntpath
 import sys
+import threading
 
 # BEYOND's program names, the same as beyondwatch.IMAGES (the selftest
 # holds them equal). Written here, and beyondwatch is imported only when
@@ -34,9 +44,12 @@ import sys
 IMAGES = ("beyond*.exe",)
 
 SW_RESTORE = 9
-VK_MENU = 0x12
-KEYEVENTF_KEYUP = 0x0002
 GW_OWNER = 4
+HWND_TOP = 0
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_ASYNCWINDOWPOS = 0x4000
+OPEN_TIMEOUT_S = 3.0
 FLASHW_ALL = 0x3
 FLASHW_TIMERNOFG = 0xC
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -73,12 +86,15 @@ class Win32:
                 (self.u.GetWindowThreadProcessId, W.DWORD,
                  [W.HWND, ctypes.POINTER(W.DWORD)]),
                 (self.u.IsIconic, W.BOOL, [W.HWND]),
-                (self.u.ShowWindow, W.BOOL, [W.HWND, ctypes.c_int]),
+                (self.u.ShowWindowAsync, W.BOOL, [W.HWND, ctypes.c_int]),
+                (self.u.IsHungAppWindow, W.BOOL, [W.HWND]),
+                (self.u.SetWindowPos, W.BOOL,
+                 [W.HWND, W.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                  ctypes.c_int, W.UINT]),
                 (self.u.GetForegroundWindow, W.HWND, []),
                 (self.u.AttachThreadInput, W.BOOL,
                  [W.DWORD, W.DWORD, W.BOOL]),
                 (self.u.SetForegroundWindow, W.BOOL, [W.HWND]),
-                (self.u.BringWindowToTop, W.BOOL, [W.HWND]),
                 (self.k.OpenProcess, W.HANDLE, [W.DWORD, W.BOOL, W.DWORD]),
                 (self.k.QueryFullProcessImageNameW, W.BOOL,
                  [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]),
@@ -136,8 +152,12 @@ class Win32:
     def minimized(self, hwnd):
         return bool(self.u.IsIconic(hwnd))
 
+    def hung(self, hwnd):
+        return bool(self.u.IsHungAppWindow(hwnd))
+
     def restore(self, hwnd):
-        self.u.ShowWindow(hwnd, SW_RESTORE)
+        # Async: never waits on BEYOND's window thread.
+        self.u.ShowWindowAsync(hwnd, SW_RESTORE)
 
     def foreground(self):
         return int(self.u.GetForegroundWindow() or 0)
@@ -148,15 +168,13 @@ class Win32:
     def attach(self, me, other, on):
         return bool(self.u.AttachThreadInput(me, other, bool(on)))
 
-    def alt_tap(self):
-        self.u.keybd_event(VK_MENU, 0, 0, 0)
-        self.u.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-
     def set_foreground(self, hwnd):
         return bool(self.u.SetForegroundWindow(hwnd))
 
-    def bring_to_top(self, hwnd):
-        self.u.BringWindowToTop(hwnd)
+    def raise_async(self, hwnd):
+        # SWP_ASYNCWINDOWPOS: posted to BEYOND's thread, never waited on.
+        self.u.SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS)
 
     def flash(self, hwnd):
         class FLASHWINFO(self._c.Structure):
@@ -200,8 +218,9 @@ def find_beyond_window(api):
 
 def bring_to_front(api, hwnd):
     """(True, "") when `hwnd` is the foreground window afterwards, else
-    (False, why). Restores a minimized window first. Always lets go of an
-    input attach it made. Never raises."""
+    (False, why). Restores a minimized window first, never waiting on it.
+    Presses no key. Always lets go of an input attach it made. Never
+    raises."""
     try:
         if api.minimized(hwnd):
             api.restore(hwnd)
@@ -214,9 +233,8 @@ def bring_to_front(api, hwnd):
         other = api.thread(fg) if fg else 0
         if other and other != me and api.attach(me, other, True):
             attached = (me, other)
-        api.alt_tap()
         api.set_foreground(hwnd)
-        api.bring_to_top(hwnd)
+        api.raise_async(hwnd)
     except Exception as e:                       # noqa: BLE001
         return False, f"{type(e).__name__}: {e}"
     finally:
@@ -270,6 +288,12 @@ def open_beyond(host=None, windows=None, api=None, probe=None):
                            "BEYOND first, then press Open BEYOND again.")
         return False, ("No BEYOND window was found on this PC. If BEYOND "
                        "is running, open it from the taskbar.")
+    try:
+        hung = bool(api.hung(hwnd))
+    except Exception:                            # noqa: BLE001
+        hung = False
+    if hung:
+        return False, NOT_RESPONDING
     ok, why = bring_to_front(api, hwnd)
     if ok:
         return True, "BEYOND is in front on the show PC."
@@ -282,3 +306,56 @@ def open_beyond(host=None, windows=None, api=None, probe=None):
         return False, (f"{why}, so BEYOND's button on the taskbar is "
                        f"flashing. Click it to open BEYOND.")
     return False, (f"{why}. Click BEYOND on the taskbar to open it.")
+
+
+NOT_RESPONDING = ("BEYOND is not responding, so its window was not moved. "
+                  "Wait for it, or open it from the taskbar.")
+BUSY = ("Open BEYOND is still waiting on BEYOND from the last press. "
+        "BEYOND may not be responding; open it from the taskbar.")
+
+
+class Opener:
+    """open_beyond on a worker thread, waited on for at most `timeout_s`
+    (review of PR #125, P2-2). A press that does not finish in time
+    answers NOT_RESPONDING, and while that worker is still out every
+    further press answers BUSY instead of starting another: at most one
+    worker thread is ever waiting on BEYOND. `fn` is open_beyond (a fake
+    in the selftest)."""
+
+    def __init__(self, fn=None, timeout_s=OPEN_TIMEOUT_S):
+        self._fn = fn or open_beyond
+        self.timeout_s = timeout_s
+        self._lock = threading.Lock()
+        self._busy = False
+
+    def busy(self):
+        with self._lock:
+            return self._busy
+
+    def __call__(self, host=None):
+        with self._lock:
+            if self._busy:
+                return False, BUSY
+            self._busy = True
+        box = {}
+
+        def work():
+            try:
+                box["r"] = self._fn(host)
+            except Exception as e:               # noqa: BLE001
+                box["r"] = (False, f"BEYOND could not be brought forward "
+                                   f"({type(e).__name__}). Open it from "
+                                   f"the taskbar.")
+            finally:
+                with self._lock:
+                    self._busy = False
+        t = threading.Thread(target=work, daemon=True,
+                             name="ltcplay-open-beyond")
+        t.start()
+        t.join(self.timeout_s)
+        if t.is_alive() or "r" not in box:
+            return False, NOT_RESPONDING
+        return box["r"]
+
+
+OPENER = Opener()
