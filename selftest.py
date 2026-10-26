@@ -48229,8 +48229,17 @@ def test_morning_fireball_is_never_purged():
     # The flamesafe group and the machine, exactly as MORNING.md gives them.
     here = os.path.dirname(os.path.abspath(__file__))
     doc = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
-    blocks = [_json.loads(b) for b in
-              _re.findall(r"```json\n(.*?)\n```", doc, _re.S)]
+    # Every json block that is one whole object; a fragment (a key and its
+    # value, shown for reading, like MORNING.md's "lasers") is not one and
+    # is left out, never a crash.
+    blocks = []
+    for blk in _re.findall(r"```json\n(.*?)\n```", doc, _re.S):
+        try:
+            v = _json.loads(blk)
+        except ValueError:
+            continue
+        if isinstance(v, dict):
+            blocks.append(v)
     fs_group = [b for b in blocks if b.get("name") == "fireball"
                 and "safety" in b]
     machine = [b for b in blocks if b.get("kind") == "fireball"]
