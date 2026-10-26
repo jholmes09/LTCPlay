@@ -27,6 +27,18 @@ from .journal import Journal
 from .service import Service
 
 
+def profile_line(g):
+    """The start line for a group with a safety_profile."""
+    p = g.profile
+    window = ("" if p["enable_lo"] is None else
+              f", enable window {p['enable_lo']} to {p['enable_hi']}")
+    guard = ("it has no fire guard (no fire_at in its safety_profile)"
+             if p["fire_at"] is None else
+             f"fire guard: below {p['fire_at']}, every single-bit flip too")
+    return (f"{g.name}: arms at {g.arm_value} from its safety_profile"
+            f"{window}; {guard}")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if len(argv) != 1:
@@ -43,6 +55,11 @@ def main(argv=None):
                                 "group map and the arm value in this config "
                                 "have not been confirmed by Andy. "
                                 + (cfg.note or ""))
+    # safety_profile (2026-10-26): one plain line per group that arms at a
+    # value of its own, and whether that value has a fire guard.
+    for g in cfg.groups:
+        if g.profile is not None:
+            journal.event("config", profile_line(g))
     if cfg.link_arm_port is not None:
         arm_input = SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
                                    cfg.link_key, cfg.n, log=journal,

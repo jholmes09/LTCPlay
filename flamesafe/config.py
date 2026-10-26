@@ -27,7 +27,11 @@ TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
 DESTINATION_KEYS = {"ip", "port"}
 LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key",
              "arm_ip", "arm_port", "status_mirror_port"}
-GROUP_KEYS = {"name", "safety", "fire", "arm_value"}
+GROUP_KEYS = {"name", "safety", "fire", "arm_value", "safety_profile"}
+# A group's safety_profile (Jeff, 2026-10-26, the wave flamer): arm_value is
+# required, the rest are optional guards.  Nothing else is allowed.  See
+# _safety_profile.
+PROFILE_KEYS = ("arm_value", "enable_lo", "enable_hi", "fire_at")
 
 
 def _only_known(d, allowed, where):
@@ -72,9 +76,10 @@ class Group:
     writes or checks a safety slot uses `safeties`.
     """
 
-    __slots__ = ("name", "safety", "safeties", "fire", "arm_value")
+    __slots__ = ("name", "safety", "safeties", "fire", "arm_value",
+                 "profile")
 
-    def __init__(self, name, safety, fire, arm_value):
+    def __init__(self, name, safety, fire, arm_value, profile=None):
         self.name = str(name)
         if isinstance(safety, (list, tuple)):
             self.safeties = [int(s) for s in safety]
@@ -85,6 +90,9 @@ class Group:
         self.safety = self.safeties[0]
         self.fire = [int(f) for f in fire]
         self.arm_value = int(arm_value)
+        # The validated safety_profile, or None for a G-Flame/Showven group.
+        # The composer reads only arm_value; this is kept for the report.
+        self.profile = dict(profile) if profile else None
 
     @property
     def multi_safety(self):
@@ -219,6 +227,73 @@ def _validate_arm_value(arm_value, gflame_range, accept_unsourced_risk, who):
         raise ConfigError(
             f"{who}: arm value {arm_value} is not the validated value "
             f"{derived} for the G-Flame range {gflame_range}.")
+
+
+def _safety_profile(g, name):
+    """A group's safety_profile (Jeff, 2026-10-26): the arm value for a
+    fixture that is neither a G-Flame nor a Showven (the wave flamer), which
+    Jeff tunes in the file.  For that group only it REPLACES the G-Flame and
+    Showven checks in _validate_arm_value; every other group, and the
+    file's own arm_value, is checked exactly as before.
+
+    Every number is Jeff's.  The profile is the deliberate statement, so it
+    does not need accept_unsourced_risk and does not read it (that flag is
+    file-wide and would also let 157 through on every G-Flame group).  The
+    optional keys are guards that compare only the numbers written here:
+
+      arm_value (required): a whole number 1..255.  0 is the disarm value.
+      enable_lo, enable_hi (optional, both or neither): the fixture's enable
+        window.  enable_lo is at least 1, so the disarm value 0 reads as not
+        enabled, and the arm value lies inside the window.
+      fire_at (optional): the lowest safety value that fires the fixture.
+        The arm value is below it and no single-bit flip of the arm value
+        reaches it (the guard rule 1 keeps against the G-Flame threshold,
+        kept here against this number only).  Left out, there is no fire
+        guard; flamesafe says so in one line at start.
+    """
+    p = g["safety_profile"]
+    if not isinstance(p, dict):
+        raise ConfigError(f"{name}: safety_profile must be an object with at "
+                          f"least arm_value.")
+    _only_known(p, set(PROFILE_KEYS), f"{name}: safety_profile")
+    if "arm_value" not in p:
+        raise ConfigError(f"{name}: safety_profile has no arm_value; it is "
+                          f"the one number a profile must give.")
+    arm = _int(p, "arm_value", rules.DISARM_VALUE + 1, 255,
+               f"{name}: safety_profile arm_value")
+    lo = hi = None
+    if ("enable_lo" in p) != ("enable_hi" in p):
+        raise ConfigError(f"{name}: safety_profile has one of enable_lo and "
+                          f"enable_hi; give both or neither.")
+    if "enable_lo" in p:
+        lo = _int(p, "enable_lo", 0, 255, f"{name}: safety_profile enable_lo")
+        hi = _int(p, "enable_hi", 0, 255, f"{name}: safety_profile enable_hi")
+        if lo <= rules.DISARM_VALUE:
+            raise ConfigError(f"{name}: safety_profile enable_lo is {lo}; the "
+                              f"disarm value {rules.DISARM_VALUE} would read "
+                              f"as enabled, so it must be at least "
+                              f"{rules.DISARM_VALUE + 1}.")
+        if not (lo <= arm <= hi):
+            raise ConfigError(f"{name}: safety_profile arm_value {arm} is "
+                              f"outside the enable window {lo}-{hi}; the "
+                              f"fixture would never arm.")
+    fire_at = None
+    if p.get("fire_at") is not None:
+        fire_at = _int(p, "fire_at", 0, 255,
+                       f"{name}: safety_profile fire_at")
+        if arm >= fire_at:
+            raise ConfigError(f"{name}: safety_profile arm_value {arm} is at "
+                              f"or above fire_at {fire_at}; arming would "
+                              f"fire the fixture.")
+        for bit in range(8):
+            neighbour = arm ^ (1 << bit)
+            if neighbour >= fire_at:
+                raise ConfigError(
+                    f"{name}: a single-bit flip of the safety_profile "
+                    f"arm_value ({arm} -> {neighbour}, bit {bit}) reaches "
+                    f"fire_at {fire_at}.")
+    return {"arm_value": arm, "enable_lo": lo, "enable_hi": hi,
+            "fire_at": fire_at}
 
 
 def _safeties(g, name):
@@ -447,11 +522,26 @@ def from_dict(d, source="config"):
         if len(set(fire)) != len(fire):
             raise ConfigError(f"{name}: a fire slot is listed twice.")
         arm_value = c.arm_value
-        if "arm_value" in g:
+        profile = None
+        if "safety_profile" in g:
+            # The profile replaces the G-Flame/Showven checks for this group
+            # only.  A group arm_value beside it is refused unless it says
+            # the same number: two different arm values for one group is a
+            # config nobody can read the intent of.
+            profile = _safety_profile(g, name)
+            arm_value = profile["arm_value"]
+            if "arm_value" in g:
+                other = _int(g, "arm_value", 0, 255, f"{name}: arm_value")
+                if other != arm_value:
+                    raise ConfigError(
+                        f"{name}: arm_value {other} and safety_profile "
+                        f"arm_value {arm_value} disagree; give the arm value "
+                        f"once, in the safety_profile.")
+        elif "arm_value" in g:
             arm_value = _int(g, "arm_value", 0, 255, f"{name}: arm_value")
             _validate_arm_value(arm_value, c.gflame_range,
                                 c.accept_unsourced_risk, name)
-        c.groups.append(Group(name, safeties, fire, arm_value))
+        c.groups.append(Group(name, safeties, fire, arm_value, profile))
 
     names = {}
     seen = {}
