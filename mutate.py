@@ -8736,8 +8736,8 @@ def build():
 
  ("deck: the key order list is ignored",
   "ltcplay/streamdeck.py",
-  "        i = known.index(_known(g))\n        if i in order:",
-  "        i = known.index(_known(g))\n        if True:"),
+  "        if i in order:\n            problems.append(f\"{where} lists {g!r} twice.\")",
+  "        if True:\n            problems.append(f\"{where} lists {g!r} twice.\")"),
 
  ("deck: Jeff's four are not keyed by name (review of #126, P1)",
   "ltcplay/streamdeck.py",
@@ -8746,7 +8746,7 @@ def build():
 
  ("deck: the default labels are not Jeff's",
   "ltcplay/streamdeck.py",
-  "    return order, [DECK_LABELS.get(_known(n), n) for n in names]",
+  "    return order, [DECK_LABELS.get(k, n) if known.index(k) == i else n\n                   for i, (n, k) in enumerate(zip(names, known))]",
   "    return order, list(names)"),
 
  ("deck: a ltcplay_deck.json must list every group again (review of #126, P1)",
@@ -8786,23 +8786,23 @@ def build():
 
  ("morning: every default-built group counts as G-Flames (review of #126, P2-3)",
   "ltcplay/morning.py",
-  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES and \\\n                len(g.get(\"safeties\") or []) <= 1:\n            continue",
   "        if True:\n            continue"),
 
  ("morning: Jeff's front row and cat-walk are never purged",
   "ltcplay/morning.py",
-  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES and \\\n                len(g.get(\"safeties\") or []) <= 1:\n            continue",
   "        if False:\n            continue"),
 
  ("morning: a row is any name with row, cat or walk in it again",
   "ltcplay/morning.py",
-  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
-  "        if any(w in name.lower() for w in (\"row\", \"cat\", \"walk\")):\n            continue"),
+  "        if name.strip().lower() in GFLAME_ROW_NAMES and \\\n                len(g.get(\"safeties\") or []) <= 1:\n            continue",
+  "        if any(w in name.lower() for w in (\"row\", \"cat\", \"walk\")) and \\\n                len(g.get(\"safeties\") or []) <= 1:\n            continue"),
 
  ("morning: a one-slot group nothing declares is purged",
   "ltcplay/morning.py",
-  "        if len(g.get(\"safeties\") or []) > 1:\n            continue\n        if name in fireball_groups or name in gflame_groups:",
-  "        if len(g.get(\"safeties\") or []) > 1 or len(g.get(\"fire\") or []) < 2:\n            continue\n        if name in fireball_groups or name in gflame_groups:"),
+  "    for g in groups or []:\n        name = g[\"name\"]\n        if name in fireball_groups or name in gflame_groups:",
+  "    for g in groups or []:\n        name = g[\"name\"]\n        if len(g.get(\"fire\") or []) < 2 and len(g.get(\"safeties\") or []) <= 1:\n            continue\n        if name in fireball_groups or name in gflame_groups:"),
 
  ("Stop: the engine's Stop sends no flame disarm (review of #126, P2-1)",
   "ltcplay/web.py",
@@ -13764,6 +13764,108 @@ def build():
   "ltcplay/web.py",
   "        r.users.last_show = r.last_show_over\n",
   "        pass\n"),
+
+ # Third review of #126 (deck-followup).
+ ("morning: an undeclared multi-safety group is purged again (third review of #126, P2-1)",
+  "ltcplay/morning.py",
+  "        if name in fireball_groups or name in gflame_groups:\n            continue\n        if _kind_for(name) != \"gflame\":",
+  "        if len(g.get(\"safeties\") or []) > 1:\n            continue\n        if name in fireball_groups or name in gflame_groups:\n            continue\n        if _kind_for(name) != \"gflame\":"),
+
+ ("morning: a row name alone makes a multi-safety group purgeable",
+  "ltcplay/morning.py",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES and \\\n                len(g.get(\"safeties\") or []) <= 1:",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES:"),
+
+ ("Rack screen: a failed Stop disarm still says Stopped. (third review of #126, P2-2)",
+  "ltcplay/web/remote.html",
+  "  if(f && f.disarmed === false) return STOP_DISARM_FAILED;\n",
+  ""),
+
+ ("Rack screen: Stop's answer is not read",
+  "ltcplay/web/remote.html",
+  "$(\"run-msg\").textContent = stopWords(j); }",
+  "$(\"run-msg\").textContent = \"Stopped.\"; }"),
+
+ ("Rack screen: the Stop confirm does not say it disarms the flames",
+  "ltcplay/web/remote.html",
+  "\"Stop playback and disarm every flame group. No show starts",
+  "\"Stop playback. No show starts"),
+
+ ("deck: a failed Stop disarm is a quiet done",
+  "ltcplay/streamdeck.py",
+  "        disarm_failed = (name == \"stop\" and ok and isinstance(flames, dict)",
+  "        disarm_failed = (False and isinstance(flames, dict)"),
+
+ ("deck: a failed Stop disarm reads ENGINE FAULT, not DISARM FAILED",
+  "ltcplay/streamdeck.py",
+  "            self.fault_face = (\"DISARM\", \"FAILED\") if disarm_failed else \\",
+  "            self.fault_face = (\"ENGINE\", \"FAULT\") if disarm_failed else \\"),
+
+ ("deck: key 0 never draws the fault face",
+  "ltcplay/streamdeck.py",
+  "            face = list(getattr(self.conductor, \"fault_face\", None) or\n",
+  "            face = list(None or\n"),
+
+ ("deck: cat walk and catwalk are not the cat-walk (third review of #126, P2-3)",
+  "ltcplay/streamdeck.py",
+  "DECK_ALIASES = {\"cat walk\": \"cat-walk\", \"catwalk\": \"cat-walk\"}",
+  "DECK_ALIASES = {}"),
+
+ ("deck: two groups differing only by case both get Jeff's label",
+  "ltcplay/streamdeck.py",
+  "    return order, [DECK_LABELS.get(k, n) if known.index(k) == i else n\n",
+  "    return order, [DECK_LABELS.get(k, n) if True else n\n"),
+
+ ("deck: a json name written exactly is not preferred over a case twin",
+  "ltcplay/streamdeck.py",
+  "        if g.strip() in stripped:\n            i = stripped.index(g.strip())",
+  "        if False:\n            i = stripped.index(g.strip())"),
+
+ ("deck: a json name that could be either case twin is taken as the first",
+  "ltcplay/streamdeck.py",
+  "        elif known.count(_known(g)) > 1:",
+  "        elif False:"),
+
+ ("deck: a case twin's own name reads as a look-alike",
+  "ltcplay/streamdeck.py",
+  "            if j != i and _known(other) == _known(names[i]) and \\",
+  "            if False and _known(other) == _known(names[i]) and \\"),
+
+ ("deck: case twins are not journaled",
+  "ltcplay/streamdeck.py",
+  "    for t in _case_twins(list(names)):\n",
+  "    for t in []:\n"),
+
+ ("deck: the no-key list is off by one (third review of #126)",
+  "ltcplay/streamdeck.py",
+  "        return list(self.key_order[GROUP_KEY_LIMIT:])",
+  "        return list(self.key_order[GROUP_KEY_LIMIT + 1:])"),
+
+ ("deck: ltcplay_deck.json names must match flamesafe's case exactly",
+  "ltcplay/streamdeck.py",
+  "        if _known(g) not in known:\n",
+  "        if g not in names:\n"),
+
+ ("deck: groups ltcplay_deck.json does not list follow flamesafe's order",
+  "ltcplay/streamdeck.py",
+  "    order += [i for i in d_order if i not in order]\n",
+  "    order += [i for i in range(len(names)) if i not in order]\n"),
+
+ ("Stop: the engine's Stop presses the scheduler's Abort (third review of #126)",
+  "ltcplay/web.py",
+  "        reason = f\"{who or 'Someone'} pressed Stop on the {screen}\"\n",
+  "        reason = f\"{who or 'Someone'} pressed Stop on the {screen}\"\n        _s = getattr(self.server, \"schedule\", None)\n        if _s is not None:\n            _s.operator_press(\"abort\", who, screen, confirmed=True)\n"),
+
+ ("Stop: fire while scrubbing is not ended by Stop",
+  "ltcplay/web.py",
+  "        for name in (\"live_flame_cut\", \"scrub_flames_end\"):",
+  "        for name in (\"live_flame_cut\",):"),
+
+ ("Stop: a refused live-show Stop sends its flame half first",
+  "ltcplay/web.py",
+  "        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live():\n            return self._send(409, {\"error\": LIVE_SHOW_REFUSAL})\n",
+  "        if route == \"/api/stop\":\n            self._stop_flames(body if isinstance(body, dict) else {})\n        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live():\n            return self._send(409, {\"error\": LIVE_SHOW_REFUSAL})\n"),
+
 ]
 
 

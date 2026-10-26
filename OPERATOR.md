@@ -104,9 +104,12 @@ Abort and Reset are on the Rack screen (and the hardware e-stop is where it
 always was). The four flame keys arm and disarm Floor G (front row),
 Cat-Walk G (cat-walk), Blue Flames (wave flamer) and Fireball (fireball):
 hold a key to arm its group, tap it to disarm. With no ltcplay_deck.json
-those four go on keys 1 to 4 by their names, wherever flamesafe's config
-lists them, and any other group follows with no key. The deck writes its
-key map to the journal every time it starts.
+those four go on keys 1 to 4 by their names (any case; cat walk and
+catwalk count as cat-walk), wherever flamesafe's config lists them. Every
+other group follows in flamesafe's order on the keys left over: if one of
+the four names is missing, the next group takes its key, and a group past
+key 4 has no key. So check the labels when flamesafe's groups change. The
+deck writes its key map to the journal every time it starts.
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
 Run has been pressed and playback is going it reads STOP RUN: hold it for
@@ -120,9 +123,12 @@ the ring fills and nothing is sent. During a scheduled show the key keeps
 saying NOW PLAYING, PAUSED or AUDIO LOST and Stop does nothing (use Hold or
 Abort on the Rack screen). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
-the Rack screen.
+the Rack screen. If Stop stopped playback but could not send the flame
+groups off, the Rack screen says "Stopped, but the flame disarm FAILED"
+and the deck's key flashes DISARM FAILED: press Disarm all flame groups,
+or use the hardware e-stop.
 
-**A flame group with no key.** A fifth flame group has no key: arm it by
+**A flame group with no key.** A group past key 4 has no key: arm it by
 holding its Hold to arm button on the Rack screen, disarm it there, with
 Disarm all flame groups, a Stop on the deck or any Abort. Its name on the
 Rack screen's flame card says "(no Stream Deck key)". A purge click on

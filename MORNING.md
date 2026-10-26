@@ -111,7 +111,9 @@ be a fireball under another name ("FB", "Boom", "Poofer", "Crowd
 Poofers", "Arrow"). Only Jeff's own rows are G-Flames by name, and only by
 their whole name in any case: front row, cat-walk (or cat walk, catwalk).
 A name that says fireball or ball is a fireball and one that says wave is
-a waver. Every other group's machines are built (so locking and the lamps
+a waver. A group with more than one safety slot (several fixtures) is
+purged only as a waver or when `gflame_groups` lists it, never by a row
+name alone (third review of #126). Every other group's machines are built (so locking and the lamps
 work) but none is purged or armed for a purge until the group is
 declared. The tile says "Never purged: unknown flame group, declare it in
 fireball_groups (or gflame_groups for G-Flames) in ltcplay_morning.json",
