@@ -1496,7 +1496,8 @@ class FlameLink:
             self._note(f"Flame link: {why}: the disarm could NOT be sent to "
                        f"flamesafe (abort {aid}; it is retried every frame "
                        f"for {repeat_s:g} s). Flame cues are zero. Disarm "
-                       f"with the Stream Deck's Abort or its group keys.",
+                       f"with the Stream Deck's group keys or Stop, or the "
+                       f"hardware e-stop.",
                        fault=True, action="flame_link",
                        outcome="disarm_failed")
         return ok

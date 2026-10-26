@@ -24,7 +24,7 @@ WHAT = {
     "LTCPLAY_BENCH_FAKE_AUDIO": "the show audio plays to a fake device, so "
                                 "the show would be silent",
     "LTCPLAY_BENCH_VIRTUAL_DECK": "the Stream Deck program ignores the real "
-                                  "deck, so its Abort key does nothing",
+                                  "deck, so its keys do nothing",
     "LTCPLAY_BENCH_STALLS": "a test probe adds load to the engine",
     "LTCPLAY_BENCH_SENDGAPS": "a test probe adds load to the engine",
     "LTC_TRACEMALLOC": "a memory diagnostic adds load to the engine",

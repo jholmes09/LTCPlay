@@ -59,7 +59,7 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 # in it shows on the Fuel page and never stops this page.
 TOP_KEYS = frozenset(("machines", "groups", "purge", "lasers", "checklists",
                       "names", "tally", "notes", "laser_groups", "fuel",
-                      "fireball_groups"))
+                      "fireball_groups", "gflame_groups"))
 MACHINE_KEYS = frozenset(("id", "name", "kind", "group", "fire", "pan",
                           "tilt", "notes", "safety"))
 PURGE_KEYS = frozenset(("gflame_fire", "waver", "fireball"))
@@ -183,6 +183,23 @@ NO_PURGE_MAP = ("no pan, tilt and fire map yet (set it in "
 # No config can turn this on: a fireball purge needs its own design and
 # review first (MORNING.md). purge.fireball in the config is not used.
 NO_FIREBALL_PURGE = "a fireball has no purge sequence yet"
+# A flamesafe group with several fire slots and one safety that nothing
+# says is a row of G-Flames (review of PR #120, P2-1: "FB", "Boom" or
+# "Poofer" with a 4 slot fire list could be a fireball by another name).
+# With no machines list its machines are built, so locking and the lamps
+# work, but none is purged or armed for a purge until the group is
+# declared: fireball_groups (never purged) or gflame_groups (a row of
+# G-Flames, purged one by one). A name that says row, cat, walk, scaffold,
+# ground or g-flame is a row (GFLAME_ROW_WORDS: Jeff's front row and
+# cat-walk), as a name that says fireball or ball is a fireball.
+NO_UNKNOWN_PURGE = ("unknown multi-channel group, declare it in "
+                    "fireball_groups (or gflame_groups for a row of "
+                    "G-Flames) in ltcplay_morning.json")
+GFLAME_ROW_WORDS = ("row", "cat", "walk", "scaffold", "ground", "gflame",
+                    "g-flame", "g flame")
+# The refusals that keep a machine out of the purge selection altogether,
+# so its group is never armed for a purge.
+NEVER_SELECTED = (NO_FIREBALL_PURGE, NO_UNKNOWN_PURGE)
 
 
 class Machine:
@@ -239,7 +256,7 @@ class Machine:
                 "safeties": list(self.safeties)}
 
 
-def default_machines(groups, fireball_groups=()):
+def default_machines(groups, fireball_groups=(), unknown_groups=()):
     """One machine per fire slot of flamesafe's groups: a sensible default
     until Andy's own list is written into ltcplay_morning.json. A waver
     built here has no pan and no tilt slot, so it is never purged
@@ -252,7 +269,8 @@ def default_machines(groups, fireball_groups=()):
         bank = _bank_for(g["name"], kind)
         notes = f"Never purged: {NO_PURGE_MAP}." if kind == "waver" else \
             f"Never purged: {NO_FIREBALL_PURGE}." if kind == "fireball" \
-            else ""
+            else f"Never purged: {NO_UNKNOWN_PURGE}." \
+            if g["name"] in unknown_groups else ""
         saf = g.get("safeties") or []
         if len(saf) > 1:
             # A multi-safety group (2026-10-26): one machine per fixture,
@@ -503,6 +521,52 @@ def parse_banks(doc, where, machines):
     return banks
 
 
+def parse_gflame_groups(doc, where, groups, fireball_groups):
+    """The "gflame_groups" list: flamesafe group names that are rows of
+    G-Flames, one G-Flame per fire slot (review of PR #120, P2-1), for a
+    name GFLAME_ROW_WORDS does not already say. Never a fireball group."""
+    out = set()
+    if doc is None:
+        return frozenset()
+    if not isinstance(doc, list) or \
+            not all(isinstance(x, str) and x.strip() for x in doc):
+        raise MorningConfigError(f"{where}: gflame_groups has to be a list "
+                                 f"of flamesafe group names.")
+    known = {g["name"] for g in (groups or [])}
+    for x in doc:
+        if groups and x not in known:
+            raise MorningConfigError(
+                f"{where}: gflame_groups names {x!r}, which is not a "
+                f"flamesafe group ({', '.join(sorted(known))}).")
+        if x in fireball_groups:
+            raise MorningConfigError(
+                f"{where}: {x!r} is a fireball group, so it cannot also be a "
+                f"row of G-Flames (gflame_groups).")
+        out.add(x)
+    return frozenset(out)
+
+
+def unknown_multi_groups(groups, fireball_groups, gflame_groups):
+    """The flamesafe groups whose default machines are never purged:
+    several fire slots, one safety slot (or none), not a waver, not
+    declared (fireball_groups, gflame_groups) and not a row by name
+    (GFLAME_ROW_WORDS). A multi-safety group is fixtures paired by slot
+    layout, so it is not one of these."""
+    out = set()
+    for g in groups or []:
+        name = g["name"]
+        if len(g.get("fire") or []) < 2 or len(g.get("safeties") or []) > 1:
+            continue
+        if name in fireball_groups or name in gflame_groups:
+            continue
+        if _kind_for(name) != "gflame":
+            continue
+        if any(w in name.lower() for w in GFLAME_ROW_WORDS):
+            continue
+        out.add(name)
+    return frozenset(out)
+
+
 def parse_fireball_groups(doc, where, groups):
     """The "fireball_groups" list: flamesafe group names that are fireballs
     (Jeff, 2026-10-26), plus every flamesafe group whose name says fireball
@@ -535,8 +599,11 @@ class MorningConfig:
 
     def __init__(self, machines, banks, purge, lasers, checklists, names,
                  tally, path=None, notes="", laser_groups=None,
-                 fireball_groups=None):
+                 fireball_groups=None, unknown_groups=None):
         self.machines = machines
+        # Groups whose default machines are never purged until declared
+        # (unknown_multi_groups; review of PR #120, P2-1).
+        self.unknown_groups = frozenset(unknown_groups or ())
         # The flamesafe groups that are fireballs: never purged, never
         # armed for one, whatever any machine in them says (review of PR
         # #120, P1). Declared ones, and every group with a fireball machine.
@@ -567,11 +634,17 @@ class MorningConfig:
         _only(doc, TOP_KEYS, f"{where}")
         fireballs = parse_fireball_groups(doc.get("fireball_groups"), where,
                                           groups)
+        rows = parse_gflame_groups(doc.get("gflame_groups"), where, groups,
+                                   fireballs)
+        unknown = frozenset()
         if "machines" in doc:
+            # Andy's own list says what each machine is: trusted as written
+            # (a fireball group still has to be all kind fireball).
             machines = parse_machines(doc["machines"], where, groups,
                                       fireballs)
         else:
-            machines = default_machines(groups or [], fireballs)
+            unknown = unknown_multi_groups(groups, fireballs, rows)
+            machines = default_machines(groups or [], fireballs, unknown)
         banks = parse_banks(doc.get("groups"), where, machines)
         purge = parse_purge(doc.get("purge"), where)
         if "lasers" in doc:
@@ -601,7 +674,8 @@ class MorningConfig:
             raise MorningConfigError(str(e)) from None
         return cls(machines, banks, purge, lasers, checklists, names, tally,
                    path=where if where != CONFIG_FILE else None, notes=notes,
-                   laser_groups=laser_groups, fireball_groups=fireballs)
+                   laser_groups=laser_groups, fireball_groups=fireballs,
+                   unknown_groups=unknown)
 
     def purge_refusal(self, m):
         """Why machine `m` is never purged, or "": by its flamesafe group
@@ -609,7 +683,18 @@ class MorningConfig:
         machine itself (Machine.purge_refusal)."""
         if m.group in self.fireball_groups or m.kind == "fireball":
             return NO_FIREBALL_PURGE
+        if m.group in self.unknown_groups:
+            return NO_UNKNOWN_PURGE
         return m.purge_refusal()
+
+    def journal_lines(self):
+        """What this config says that a person should read once, in the
+        journal: each unknown multi-channel group (review of PR #120,
+        P2-1)."""
+        return [f"Morning page: the flame group {g!r} has several fire "
+                f"slots and one safety, and nothing says what it is, so its "
+                f"machines are never purged: {NO_UNKNOWN_PURGE}."
+                for g in sorted(self.unknown_groups)]
 
     @classmethod
     def load(cls, path, groups=None, laser_host=None, laser_port=None):
@@ -623,7 +708,11 @@ class MorningConfig:
         return cls.parse(doc, path, groups, laser_host, laser_port)
 
     def view(self):
-        return {"machines": [m.view() for m in self.machines],
+        # never_purged: the engine's own reason a machine is never purged,
+        # or "", for the Startup page's tile (review of PR #120, P2-1).
+        return {"machines": [dict(m.view(),
+                                  never_purged=self.purge_refusal(m))
+                             for m in self.machines],
                 "groups": {k: list(v) for k, v in self.banks.items()},
                 "purge": self.purge,
                 "checklist_names": list(self.names),
@@ -1010,11 +1099,11 @@ class Purge:
                        action="purge", outcome="deselected", screen=device)
             return 200, {"ok": True, "text": f"{m.name} off the purge.",
                          "selected": list(self.selected)}
-        if cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
+        never = cfg.purge_refusal(m)
+        if never in NEVER_SELECTED:
             # Never armed for a purge at all: its group is not asked for.
-            return 409, {"error": f"{m.name} is never purged: "
-                                  f"{NO_FIREBALL_PURGE}. Nothing was "
-                                  f"armed."}
+            return 409, {"error": f"{m.name} is never purged: {never}. "
+                                  f"Nothing was armed."}
         why = self._refusal(device, seen_ok)
         if why:
             return 409, {"error": why}
@@ -1060,7 +1149,7 @@ class Purge:
             if m is None or self._lockout.is_locked("machine", mid):
                 continue
             if m.group in cfg.fireball_groups or \
-                    cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
+                    cfg.purge_refusal(m) in NEVER_SELECTED:
                 continue
             if m.group in names:
                 want.add(names.index(m.group))
@@ -1329,6 +1418,12 @@ class Morning:
             self.config_error = str(e)
             self.cfg = MorningConfig.parse({}, CONFIG_FILE, groups,
                                            laser_host, laser_port)
+        for line in self.cfg.journal_lines():
+            if journal is not None:
+                try:
+                    journal(line, action="config", outcome="never-purged")
+                except Exception:                # noqa: BLE001
+                    pass
         self.layout = Layout(os.path.join(folder, LAYOUT_FILE))
         self.lockout = Lockout(os.path.join(folder, LOCKOUT_FILE),
                                journal=journal, wall=wall)

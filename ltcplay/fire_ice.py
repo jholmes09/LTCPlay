@@ -515,7 +515,8 @@ class FireIceShow(C.ShowOutputs):
             return C.done(f"{reason}: {DISARM_SENT}") if ok is True else \
                 C.failed(f"{reason}: the disarm could NOT be sent to "
                          f"flamesafe (it is retried every frame). Disarm "
-                         f"with the Stream Deck's Abort or its group keys.")
+                         f"with the Stream Deck's group keys or Stop, or the "
+                         f"hardware e-stop.")
         z = self.flames_zero()
         tail = "" if z.ok else f" Zeroing the cues also failed: {z.sentence}"
         return C.failed(f"{reason}: {NO_DISARM}{tail}")

@@ -26807,21 +26807,22 @@ def test_streamdeck_pure_logic():
     # constant itself would otherwise sail through every test unnoticed
     # (round 3 of the safety review, item 4: a hand-mutation proved this).
     # This is the one place that pins down the actual numbers.
-    check(sd.ABORT_HOLD_S == 0.5,
-          f"Abort's hold is unchanged from the approved bench demo: "
-          f"{sd.ABORT_HOLD_S}")
+    check(sd.STOP_HOLD_S == 0.5,
+          f"Stop's hold is the old Abort key's, from the approved bench "
+          f"demo: {sd.STOP_HOLD_S}")
     check(sd.ARM_HOLD_S == 0.6,
-          f"arming requires a hold a little longer than Abort's own, "
+          f"arming requires a hold a little longer than Stop's own, "
           f"short enough to still read as 'hold this key': "
           f"{sd.ARM_HOLD_S}")
     check(sd.REARM_REFRACTORY_S == 2.0,
           f"a key refuses to even start a new arm-hold for this long "
           f"after its own disarm or an Abort: {sd.REARM_REFRACTORY_S}")
 
-    check([sd.group_look(None, slot=i) for i in range(3)] ==
-          [(w, None, sd.RED, sd.CHAMPAGNE, False) for w in ("NO", "FLAME", "LINK")],
+    check([sd.group_look(None, slot=i) for i in range(4)] ==
+          [(w, None, sd.RED, sd.CHAMPAGNE, False) for w in ("NO", "FLAME", "LINK")]
+          + [("NO", "LINK", sd.RED, sd.CHAMPAGNE, False)],
           "no status ever received (or stale): NO / FLAME / LINK, one red "
-          "word per key, steady, never a guess")
+          "word per key, and NO LINK on the fourth, steady, never a guess")
     check(sd.group_look({"armed": "armed"})[0] == "ARMED",
           "a real 'armed' status reads ARMED")
     check(sd.group_look({"armed": "disarmed"})[0] == "OFF",
@@ -26874,23 +26875,6 @@ def test_streamdeck_pure_logic():
           "fault='' (the default) changes nothing: every existing caller "
           "keeps working")
 
-    # Item 2: Abort's own gate takes (any_group_active, show_running); the
-    # old single-arg meaning ("is the show running") is GONE -- the first
-    # arg is now "is there anything to abort", as the deck itself knows
-    # it, and show_running is only ever an ADDITIONAL reason to light up.
-    check((sd.abort_is_live(True), sd.abort_is_live(False),
-          sd.abort_is_live(None)) == (True, False, False),
-          "any_group_active alone decides it when show_running is omitted")
-    check(sd.abort_is_live(False, True) is True,
-          "show_running=True lights the key even with nothing armed (a "
-          "wired conductor's own lasers/video/pixels/music cascade)")
-    check(sd.abort_is_live(True, False) is True,
-          "REVIEW ITEM 2, the proven bug: something armed must light the "
-          "key even while the scheduler says no show is running")
-    check(sd.abort_is_live(False, None) is False,
-          "nothing armed and an unreachable scheduler: dim, the safe "
-          "default")
-
     check(sd.operator_gate("", "arm") and sd.operator_gate("", "start")
           and sd.operator_gate("", "hold"),
           "arm, start and hold are refused with no operator chosen")
@@ -26923,9 +26907,12 @@ def test_streamdeck_pure_logic():
 
     five = sd.Controller(_FakeArmSocket(5), _FakeStatusSocket(),
                          ["a", "b", "c", "d", "e"])
-    check(five._key_group == {3: 0, 4: 1, 5: 2},
+    check(five._key_group == {1: 0, 2: 1, 3: 2, 4: 3} and
+          sd.GROUP_KEYS == (1, 2, 3, 4) and sd.GROUP_KEY_LIMIT == 4 and
+          sd.TOP_START == 0 and sd.SPARE_KEY == 5,
           "five groups start (Jeff, 2026-10-26: a layout that does not fit "
-          "is said, never refused): the first three are keyed")
+          "is said, never refused): keys 1 to 4 are the first four, key 0 "
+          "Start/Stop, key 5 spare")
     try:
         sd.Controller(_FakeArmSocket(0), _FakeStatusSocket(), [])
         check(False, "no group names at all were accepted")
@@ -27115,145 +27102,105 @@ def test_streamdeck_controller_with_fakes():
           "a hold again")
     release(sd.GROUP_KEYS[0])
 
-    # Start/Stop and Hold: no conductor connected, journaled, nothing
-    # done. A show is running here, so the key is Stop, refused as on the
-    # Rack screen (Jeff, 2026-10-26).
+    # Start/Stop: no conductor connected, journaled, nothing done. A show
+    # is running here, so the key is Stop, refused as on the Rack screen
+    # (Jeff, 2026-10-26).
     press(sd.TOP_START)
     check("Stop pressed while a scheduled show is live" in events[-1][0]
           and "Nothing was stopped" in events[-1][0], events[-1])
     release(sd.TOP_START)
-    press(sd.TOP_HOLD)
-    check("no show conductor is connected" in events[-1][0], events[-1])
-    release(sd.TOP_HOLD)
 
-    # Item 2: Abort must respond whenever anything is armed or wanted,
-    # REGARDLESS of what the scheduler reports -- tested here with
-    # show_running explicitly False/None, the exact case the review found
-    # broken.
+    # The deck has no Hold and no Abort key (Jeff, 2026-10-26): keys 1 to
+    # 4 are arm keys, key 5 is spare and does nothing.
+    check(sd.GROUP_KEYS == (1, 2, 3, 4) and not hasattr(sd, "TOP_HOLD")
+          and not hasattr(sd, "TOP_ABORT"),
+          "keys 1 to 4 arm groups; no Hold or Abort key on the deck")
+    n = len(events)
+    press(sd.SPARE_KEY)
+    release(sd.SPARE_KEY)
+    check(len(events) == n and arm.wanted == [False, False, False],
+          "the spare key does nothing")
+
+    # Stop: a STOP_HOLD_S hold while a run is going, every group disarmed
+    # on the arm link first, whether or not an engine is connected; never
+    # the Abort latch.
     arm2 = _FakeArmSocket(3)
     events2 = []
-    c_noshow = sd.Controller(arm2, status, names,
-                             operator_provider=lambda: "Andy",
-                             show_running_provider=lambda: False,
-                             journal=lambda t_, **kw: events2.append(
-                                 (t_, kw)), clock=lambda: t[0])
-    down_noabort = [False] * 6
-    down_noabort[sd.TOP_ABORT] = True
-    c_noshow.run_once(down_noabort)
-    check(events2 and "nothing armed or wanted" in events2[-1][0],
-          f"nothing armed or wanted, and no show running: Abort's hold "
-          f"does not even start, and the refusal is journaled at once, "
-          f"never a silent no-op: {events2}")
-    c_noshow.run_once([False] * 6)
-    arm2.set_group(0, True)   # a group armed before any show starts
-    events2.clear()
-    c_noshow.run_once(down_noabort)
-    t[0] += sd.ABORT_HOLD_S + 0.1
-    c_noshow.run_once(down_noabort)
-    c_noshow.tick()                 # item 2: hold completion is tick()'s job
-    check(arm2.wanted == [False, False, False],
-          f"Abort fires with a group armed, even though the scheduler "
-          f"says no show is running (review item 2, PR #31): {arm2.wanted}")
-
-    # Abort: a 0.5 s hold, real disarm-all sent regardless of the conductor.
-    arm.set_group(0, True)
-    down2 = [False] * 6
-    down2[sd.TOP_ABORT] = True
-    c2 = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
-                       show_running_provider=lambda: True,
-                       journal=lambda t_, **kw: events.append((t_, kw)),
+    run = [True]
+    c2 = sd.Controller(arm2, status, names, operator_provider=lambda: "",
+                       show_running_provider=lambda: False,
+                       run_live_provider=lambda: run[0],
+                       journal=lambda t_, **kw: events2.append((t_, kw)),
                        clock=lambda: t[0])
-    c2.run_once(down2)             # press (edge)
+    arm2.set_group(0, True)
+    arm2.set_group(2, True)
+    stop = [False] * 6
+    stop[sd.TOP_START] = True
+    c2.run_once(stop)
     t[0] += 0.2
-    c2.run_once(down2)             # still held, not yet fired
-    c2.tick()                      # item 2: hold completion is tick()'s job
-    check(arm.wanted == [True, False, False],
-          "held for only 0.2 s of the 0.5 s: nothing fired yet")
+    c2.run_once(stop)
+    c2.tick()
+    check(arm2.wanted == [True, False, True],
+          "held for only 0.2 s of Stop's 0.5 s: nothing yet")
     t[0] += 0.4
-    c2.run_once(down2)             # held past 0.5 s
-    c2.tick()                      # tick() fires the now-completed hold
-    check(arm.wanted == [False, False, False],
-          f"Abort disarms every group over the arm link: {arm.wanted}")
-    check(c2._latched_now() is True, "Abort latches (no conductor: locally)")
-    check(all(f > 0 for f in
-              (c2._in_rearm_refractory(i, t[0]) for i in range(3))),
-          "Abort also starts every group's own re-arm refractory window "
-          "(item 8): a panicked re-press right after Reset cannot quietly "
-          "re-arm either")
-    down3 = [False] * 6
-    c2.run_once(down3)
-    press_reset = list(down3)
-    press_reset[sd.GROUP_KEYS[1]] = True
-    c2.run_once(press_reset)
-    check(arm.wanted == [False, False, False],
-          "a group key does nothing while latched")
+    c2.tick()
+    check(arm2.wanted == [False, False, False] and
+          arm2.sends[-1] == [False, False, False],
+          f"Stop disarms every group on the arm link, no operator needed: "
+          f"{arm2.wanted}")
+    check(c2._latched_now() is False,
+          "Stop never sets the Abort latch")
+    check(all(c2._in_rearm_refractory(i, t[0]) > 0 for i in range(3)),
+          "Stop starts every group's re-arm refractory window, as Abort "
+          "did: a panicked re-press cannot quietly re-arm")
+    check(any("no engine is connected" in e[0] for e in events2),
+          "no engine wired: the /api/stop half is said, as a fault")
+    c2.run_once([False] * 6)
 
-    # With a real (fake) conductor: Hold/Resume/Abort/Reset all reach it,
-    # and the flame disarm still happens regardless.
-    cond = _FakeConductor()
+    # With a real (fake) conductor latched by an Abort from a screen.
+    class _Cond(_FakeConductor):
+        def stop_run(self, who, screen):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    cond = _Cond()
     arm3 = _FakeArmSocket(3)
     c3 = sd.Controller(arm3, status, names, operator_provider=lambda: "Andy",
-                       show_running_provider=lambda: True, conductor=cond,
+                       show_running_provider=lambda: False,
+                       run_live_provider=lambda: run[0], conductor=cond,
                        journal=lambda t_, **kw: None, clock=lambda: t[0])
-    down4 = [False] * 6
-    down4[sd.TOP_HOLD] = True
-    c3.run_once(down4)
-    check(cond.calls[-1] == ("hold", "Andy", "Stream Deck"),
-          f"Hold reaches the real conductor, named Stream Deck: {cond.calls}")
-    down5 = [False] * 6
-    down5[sd.TOP_HOLD] = True
-    c3.run_once([False] * 6)
-    c3.run_once(down5)
-    check(cond.calls[-1] == ("resume", "Andy", "Stream Deck"),
-          f"pressing Hold again while held calls resume: {cond.calls}")
-    t[0] = 200.0
-    down6 = [False] * 6
-    down6[sd.TOP_ABORT] = True
-    c3.run_once(down6)
-    t[0] = 200.6
-    c3.run_once(down6)
-    c3.tick()                       # item 2: hold completion is tick()'s job
-    check(arm3.wanted == [False, False, False]
-          and cond.calls[-1] == ("abort", "Andy", "Stream Deck"),
-          f"Abort disarms the real arm link AND reaches the conductor: "
-          f"{arm3.wanted} {cond.calls}")
+    cond._latched = True
     check(c3._latched_now() is True,
-          "latched is read from the real conductor's own snapshot, not a "
-          "local flag, once one is connected")
-    down7 = [False] * 6
-    c3.run_once(down7)
-    down8 = [False] * 6
-    down8[sd.TOP_ABORT] = True
-    c3.run_once(down8)
-    check(cond.calls[-1] == ("abort", "Andy", "Stream Deck")
-          and ("reset", "Andy", "Stream Deck") not in cond.calls,
-          f"the Abort key pressed while latched, before the deck has shown "
-          f"RESET, never Resets: {cond.calls}")
-    c3.run_once(down7)
-    down9 = [False] * 6
-    down9[sd.TOP_HOLD] = True
-    c3.run_once(down9)
-    c3.run_once(down7)
-    check(("reset", "Andy", "Stream Deck") not in cond.calls
-          and cond.calls[-1] == ("abort", "Andy", "Stream Deck"),
-          f"the Hold key is greyed and does nothing while latched: "
-          f"{cond.calls}")
-    c3._track_reset_face(True, t[0])      # the deck draws RESET (draw())
-    t[0] += sd.RESET_SHOWN_S - 0.1
-    c3.run_once(down8)
-    c3.run_once(down7)
-    check(("reset", "Andy", "Stream Deck") not in cond.calls,
-          f"a press before RESET has shown {sd.RESET_SHOWN_S:g} s is an "
-          f"Abort again, not a Reset: {cond.calls}")
-    t[0] += 0.1
-    c3.run_once(down8)
-    check(cond.calls[-1] == ("reset", "Andy", "Stream Deck"),
-          f"once RESET has shown {sd.RESET_SHOWN_S:g} s, one press of the "
-          f"Abort key is Reset and reaches the real conductor: {cond.calls}")
-    c3._track_reset_face(c3._latched_now(), t[0])
-    check(c3._latched_now() is False and c3._reset_shown_since is None,
-          "after Reset the RESET clock is forgotten, so the next Abort "
-          "starts it afresh")
+          "latched is read from the real conductor's own snapshot")
+    arm3.set_group(1, True)
+    tap = [False] * 6
+    tap[sd.GROUP_KEYS[1]] = True
+    c3.run_once(tap)
+    c3.run_once([False] * 6)
+    check(arm3.wanted == [False, False, False],
+          "latched: a tap on an armed group's key disarms it")
+    t[0] = 300.0
+    tap0 = [False] * 6
+    tap0[sd.GROUP_KEYS[0]] = True
+    c3.run_once(tap0)
+    t[0] += sd.ARM_HOLD_S + 0.1
+    c3.run_once(tap0)
+    c3.tick()
+    c3.run_once([False] * 6)
+    check(arm3.wanted == [False, False, False],
+          "latched: nothing can be armed from a key")
+    arm3.set_group(2, True)
+    c3.run_once(stop)
+    t[0] += sd.STOP_HOLD_S + 0.01
+    c3.tick()
+    c3.run_once([False] * 6)
+    check(arm3.wanted == [False, False, False] and
+          cond.calls[-1] == ("stop", "Andy", "Stream Deck") and
+          not any(c[0] in ("abort", "reset", "hold", "resume")
+                  for c in cond.calls),
+          f"latched, Stop is reachable as on the Rack screen: every group "
+          f"disarmed and /api/stop asked; the deck never Aborts, Resets, "
+          f"Holds or Resumes: {cond.calls}")
+    check(c3._latched_now() is True, "and the latch stands")
 
 
 class _FakeStatus:
@@ -27321,7 +27268,7 @@ def test_streamdeck_look_a_marquee():
     from ltcplay import streamdeck as sd
     check((sd.DOT_INSET, sd.DOT_SPACING, sd.DOT_R) == (6, 11.0, 2.6)
           and sd.RUN_FRACTION == 0.16 and sd.CHASE_STEP_S == 0.06
-          and sd.FACE_MARGIN == 12 and sd.ABORT_HOLD_S == 0.5,
+          and sd.FACE_MARGIN == 12 and sd.STOP_HOLD_S == 0.5,
           "look A's geometry and pace are the demo's own numbers")
     check(sd.face_box(4) == (92, 92, 148, 148),
           f"faces sit 12 px inside each key: {sd.face_box(4)}")
@@ -27633,18 +27580,17 @@ def test_streamdeck_start_key_during_a_show():
             check(faces[0] == (["NOW", "PLAYING"], text, bg),
                   f"show playing, flash phase {on}: NOW PLAYING in the "
                   f"demo's green: {faces[0]}")
-            check(faces[1] == (["HOLD"], sd.CHAMPAGNE, None)
-                  and faces[2] == (["ABORT"], sd.RED, None),
-                  f"Hold and Abort are live: {faces[1]}, {faces[2]}")
+            check(sd.SPARE_KEY not in faces and
+                  all(k == 0 or k in sd.GROUP_KEYS for k in faces),
+                  f"no Hold or Abort face on the deck, the spare key blank: "
+                  f"{sorted(faces)}")
         check(sd.PLAYING_ON == ((50, 205, 95), (4, 28, 10))
               and sd.PLAYING_OFF == ((8, 40, 16), (60, 200, 100)),
               "the green is the approved demo's")
         eng.look = "HELD"
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG)
-              and faces[1] == (["RESUME"], sd.BLACK, sd.GOLD),
-              f"held: PAUSED on the Start key, RESUME on Hold: "
-              f"{faces[0]}, {faces[1]}")
+        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
+              f"held: PAUSED on the Start key: {faces[0]}")
         eng.lost = True
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
@@ -27663,8 +27609,8 @@ def test_streamdeck_start_key_during_a_show():
                   f"amber: {faces[0]}")
             check({k: v for k, v in faces.items() if k} ==
                   {k: v for k, v in calm.items() if k},
-                  f"only the Start key changed: Hold, Abort and the arm "
-                  f"keys read exactly as before: {faces}")
+                  f"only the Start key changed: the arm keys read exactly "
+                  f"as before: {faces}")
         check(sd.AUDIO_LOST_ON == (sd.AMBER, (40, 20, 0))
               and sd.AUDIO_LOST_OFF == (sd.AMBER_DIM, sd.AMBER),
               "AUDIO LOST flashes amber like CYCLE ARM")
@@ -27727,18 +27673,20 @@ def test_streamdeck_no_flame_link_words():
         print("  ok")
         return
     words = [(w, None, sd.RED, sd.CHAMPAGNE, False)
-             for w in ("NO", "FLAME", "LINK")]
+             for w in ("NO", "FLAME", "LINK")] + [
+                 ("NO", "LINK", sd.RED, sd.CHAMPAGNE, False)]
+    want = list(zip(names + [""], words))
     try:
         for blink in (True, False):
             c.draw(fonts, blink_on=blink, chase=0, group_blink=blink)
-            check([faces[k] for k in sd.GROUP_KEYS] ==
-                  list(zip(names, words)),
-                  f"no link, flash phase {blink}: the three arm keys read "
-                  f"NO / FLAME / LINK in red, steady, each over its own "
-                  f"group's name: {[faces[k] for k in sd.GROUP_KEYS]}")
+            check([faces[k] for k in sd.GROUP_KEYS] == want,
+                  f"no link, flash phase {blink}: the arm keys read NO / "
+                  f"FLAME / LINK in red, steady, each over its own group's "
+                  f"name, and the fourth (no group) NO LINK: "
+                  f"{[faces[k] for k in sd.GROUP_KEYS]}")
         c._latched = True
         c.draw(fonts, blink_on=True, chase=0)
-        check([faces[k] for k in sd.GROUP_KEYS] == list(zip(names, words)),
+        check([faces[k] for k in sd.GROUP_KEYS] == want,
               f"latched: the missing link still shows, never greyed over: "
               f"{[faces[k] for k in sd.GROUP_KEYS]}")
         c._latched = False
@@ -27751,8 +27699,9 @@ def test_streamdeck_no_flame_link_words():
                             clock=lambda: t[0])
         one.draw(fonts, blink_on=True, chase=0)
         check([faces[k] for k in sd.GROUP_KEYS] ==
-              [("front row", words[0]), ("", words[1]), ("", words[2])],
-              f"one group: the message still reads whole across the three "
+              [("front row", words[0]), ("", words[1]), ("", words[2]),
+               ("", words[3])],
+              f"one group: the message still reads whole across the four "
               f"keys: {[faces[k] for k in sd.GROUP_KEYS]}")
         faces.clear()
         st = _FakeStatus()
@@ -27772,7 +27721,7 @@ def test_streamdeck_no_flame_link_words():
 
 
 def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
-    section("Stream Deck: tick() advances the abort-hold and every group's "
+    section("Stream Deck: tick() advances the Stop hold and every group's "
             "arm-hold on EVERY main-loop pass, even when keys_down() "
             "reports a key's state only on CHANGE and hands back nothing "
             "while it is held (item 2, round 2 of the safety review). "
@@ -27793,14 +27742,15 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     events = []
     t = [0.0]
     c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
-                      show_running_provider=lambda: True,
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: True,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0])
     # 2 s holds for this test, independent of the real ARM_HOLD_S /
-    # ABORT_HOLD_S constants: what is under test is the tick() mechanism
+    # STOP_HOLD_S constants: what is under test is the tick() mechanism
     # itself (does a hold complete without a new snapshot), not any
     # particular duration.
-    c._abort_hold = sd.AbortHold(hold_s=2.0)
+    c._stop_hold = sd.AbortHold(hold_s=2.0)
     c._arm_holds = [sd.AbortHold(hold_s=2.0) for _ in names]
 
     class _StopTest(BaseException):
@@ -27813,7 +27763,7 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     press_group0 = list(down_all_false)
     press_group0[sd.GROUP_KEYS[0]] = True
     press_abort = list(down_all_false)
-    press_abort[sd.TOP_ABORT] = True
+    press_abort[sd.TOP_START] = True        # Stop, held
     results = {}
 
     class _ChangeOnlyDeck:
@@ -27842,7 +27792,7 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
                 results["armed_from_tick_alone"] = list(arm.wanted)
                 return [list(down_all_false)]    # release
             if i == 51:
-                return [press_abort]             # start the abort-hold
+                return [press_abort]             # start the Stop hold
             if i == 101:                         # another 50 passes
                 results["disarmed_from_tick_alone"] = list(arm.wanted)
                 return [list(down_all_false)]    # release
@@ -27874,7 +27824,7 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
           f"anything after the initial press: "
           f"{results.get('armed_from_tick_alone')}")
     check(results.get("disarmed_from_tick_alone") == [False, False, False],
-          f"a 2 s Abort-hold ALSO completes from tick() alone, inside the "
+          f"a 2 s Stop hold ALSO completes from tick() alone, inside the "
           f"REAL run_forever() loop, under the same condition: "
           f"{results.get('disarmed_from_tick_alone')}")
 
@@ -27987,9 +27937,10 @@ def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
 
 
 def test_streamdeck_abort_same_pass_as_arm_hold_completion():
-    section("Stream Deck: an Abort firing in the SAME main-loop pass an "
-            "arm-hold completes in must never also arm the group Abort "
-            "just disarmed (item 3, round 2 of the safety review)")
+    section("Stream Deck: a Stop firing in the SAME main-loop pass an "
+            "arm-hold completes in must never also arm the group Stop just "
+            "disarmed (item 3, round 2 of the safety review; the deck's "
+            "Abort key had the rule until it went, 2026-10-26)")
     from ltcplay import streamdeck as sd
 
     names = ["front row", "cat-walk", "wave flamer"]
@@ -27998,57 +27949,52 @@ def test_streamdeck_abort_same_pass_as_arm_hold_completion():
     events = []
     t = [0.0]
     c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
-                      show_running_provider=lambda: True,
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: True,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0])
 
-    # Start an arm-hold on front row, and (independently) an Abort hold,
+    # Start an arm-hold on front row, and (independently) a Stop hold,
     # timed so BOTH reach their own fired() threshold in the same tick().
     down = [False] * 6
     down[sd.GROUP_KEYS[0]] = True
     c.run_once(down)                         # front row hold starts at t=0
     t[0] = 0.1
     down2 = list(down)
-    down2[sd.TOP_ABORT] = True
-    c.run_once(down2)                        # Abort hold starts at t=0.1
-    # Abort's hold is shorter (ABORT_HOLD_S) than the arm-hold's remaining
-    # time only by construction of the real constants; force the exact
-    # same-pass race directly by calling tick() once at a time past BOTH
-    # thresholds.
-    t[0] = 0.1 + sd.ABORT_HOLD_S + 0.01
-    check(c._abort_hold.fraction(t[0]) >= 1.0
+    down2[sd.TOP_START] = True
+    c.run_once(down2)                        # Stop hold starts at t=0.1
+    t[0] = 0.1 + sd.STOP_HOLD_S + 0.01
+    check(c._stop_hold.fraction(t[0]) >= 1.0
           and c._arm_holds[0].fraction(t[0]) >= 1.0,
           "both holds have reached completion by this instant: a real "
-          "race between an Abort and an in-progress arm-hold")
+          "race between a Stop and an in-progress arm-hold")
     c.tick()
     check(arm.wanted == [False, False, False],
-          f"Abort fired, and front row was NOT also armed in the same "
+          f"Stop fired, and front row was NOT also armed in the same "
           f"pass: {arm.wanted}")
     check(not any(e for e in events if e[1].get("action") == "arm"
                   and "front row" in e[0] and "refused" not in e[0]),
           f"no successful arm line was journaled for front row: {events}")
 
-    # Round 3 of the safety review, item 4: the two guards are meant to be
-    # INDEPENDENT, but the checks above only prove the combination holds --
-    # _do_arm_fire's own latched/refractory refusal (set by _do_abort)
-    # masks a missing ordering fix completely. Prove the ordering fix (the
-    # `return` right after _do_abort() in tick()) on its own: in the pass
-    # Abort fires, _do_arm_fire must never even be reached.
+    # The two guards are meant to be INDEPENDENT: prove the ordering fix
+    # (the `return` right after _do_stop() in tick()) on its own: in the
+    # pass Stop fires, _do_arm_fire must never even be reached.
     arm2 = _FakeArmSocket(3)
     t2 = [0.0]
     c2 = sd.Controller(arm2, _FakeStatusSocket(), names,
                        operator_provider=lambda: "Andy",
-                       show_running_provider=lambda: True,
+                       show_running_provider=lambda: False,
+                       run_live_provider=lambda: True,
                        clock=lambda: t2[0])
     reached = []
     c2._do_arm_fire = lambda i, now: reached.append(i)
     c2.run_once(down)
     t2[0] = 0.1
     c2.run_once(down2)
-    t2[0] = 0.1 + sd.ABORT_HOLD_S + 0.01
+    t2[0] = 0.1 + sd.STOP_HOLD_S + 0.01
     c2.tick()
     check(arm2.wanted == [False, False, False] and not reached,
-          f"in the pass Abort fires, tick() returns before ANY arm-hold "
+          f"in the pass Stop fires, tick() returns before ANY arm-hold "
           f"completion is even attempted -- the ordering guard on its own, "
           f"not relying on _do_arm_fire's own refusal: reached={reached}")
 
@@ -28088,10 +28034,12 @@ def test_streamdeck_arm_fire_refuses_latched_and_refractory():
 
 
 def test_streamdeck_refractory_also_starts_at_reset():
-    section("Stream Deck: the re-arm refractory window also starts at "
-            "Reset, not only at Abort's own timestamp (item 9, round 2 of "
-            "the safety review: with Reset delayed past the window, a "
-            "re-press right after Reset was NOT refused)")
+    section("Stream Deck: the re-arm refractory window starts when the "
+            "deck sees an Abort latch AND when it sees the Reset, both now "
+            "from a screen (item 9, round 2 of the safety review: with "
+            "Reset delayed past the window, a re-press right after Reset "
+            "was NOT refused; the deck's own Abort and Reset keys went "
+            "2026-10-26)")
     from ltcplay import streamdeck as sd
 
     names = ["front row", "cat-walk", "wave flamer"]
@@ -28101,38 +28049,31 @@ def test_streamdeck_refractory_also_starts_at_reset():
     t = [0.0]
     cond = _FakeConductor()
     c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
-                      show_running_provider=lambda: True, conductor=cond,
+                      show_running_provider=lambda: False, conductor=cond,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0])
-
-    down_abort = [False] * 6
-    down_abort[sd.TOP_ABORT] = True
-    c.run_once(down_abort)
-    t[0] += sd.ABORT_HOLD_S + 0.01
     c.tick()
-    check(c._latched_now() is True, "Abort latched the rig")
-
-    # Reset is delayed well past REARM_REFRACTORY_S after Abort -- the
-    # exact gap the review found NOT refused, because only Abort's own
-    # timestamp started the window.
+    check(all(c._in_rearm_refractory(i, t[0]) == 0 for i in range(3)),
+          "nothing latched: no wait")
+    cond._latched = True                 # an Abort on the Rack screen
+    t[0] += 1.0
+    c.tick()
+    check(all(c._in_rearm_refractory(i, t[0]) > 0 for i in range(3)),
+          "the deck seeing the Abort latch starts every group's wait")
+    # Reset is delayed well past REARM_REFRACTORY_S after the Abort.
     t[0] += sd.REARM_REFRACTORY_S + 5.0
-    down_reset = [False] * 6
-    c.run_once(down_reset)              # release
-    c._track_reset_face(True, t[0] - sd.RESET_SHOWN_S)   # RESET shown
-    down_reset[sd.TOP_ABORT] = True
-    c.run_once(down_reset)              # Reset: one press of RESET
+    cond._latched = False                # Reset on the Rack screen
+    c.tick()
     check(c._latched_now() is False, "Reset cleared the latch")
-    c.run_once([False] * 6)
-
-    # A press right immediately after THIS Reset -- long after Abort's own
-    # timestamp would have expired -- must still be refused.
+    # A press right after THIS Reset, long after the Abort's own wait
+    # expired, must still be refused.
     down_group = [False] * 6
     down_group[sd.GROUP_KEYS[0]] = True
     c.run_once(down_group)
     check(arm.wanted == [False, False, False]
           and c._arm_holds[0].fraction(t[0]) == 0.0,
           "a re-press right after Reset is refused before the hold can "
-          "even start, even though Abort's own timestamp is long expired")
+          "even start, even though the Abort's own wait is long expired")
     check(any("refractory" in e[0] for e in events[-3:]), events[-3:])
 
 
@@ -28240,8 +28181,6 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
           f"front row, still really armed, shows GREEN on the key even "
           f"while latched, not the old flat dim OFF: "
           f"{set(body_pixels)}")
-    check(c._reset_shown_since is not None,
-          "drawing the latched deck starts the RESET_SHOWN_S clock")
     box1 = sd.face_box(sd.GROUP_KEYS[1])
     body1 = {canvas.getpixel((x, y)) for x in range(box1[0], box1[2], 3)
              for y in range(box1[1] + 18, box1[3], 3)}
@@ -28262,10 +28201,8 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
         b = sd.face_box(key)
         return {cv.getpixel((x, y)) for x in range(b[0], b[2], 3)
                 for y in range(b[1], b[3], 3)}
-    check(sd.RED in key_px(canvas, sd.TOP_ABORT) and
-          sd.GOLD not in key_px(canvas, sd.TOP_HOLD),
-          "latched: the Abort key flashes red (RESET), the Hold key is "
-          "greyed, not a gold RESET key")
+    check(key_px(canvas, sd.SPARE_KEY) <= {sd.BLACK, sd.RED},
+          "latched: the spare key stays blank inside the red border")
 
     # The spoof alarm must also stay visible while latched.
     c._spoof_alarm = "flamesafe reports a mismatch"
@@ -29860,10 +29797,10 @@ def test_streamdeck_ack_key_while_an_alert_is_open():
             check(faces[0] == (["ACK", "ALERT"], text, bg),
                   f"alert open, flash phase {on}: the Start key reads ACK / "
                   f"ALERT in the ACK look: {faces[0]}")
-            check(faces[1] == (["HOLD"], sd.CHAMPAGNE, None)
-                  and faces[2] == (["ABORT"], sd.DIM_TEXT, None),
-                  f"Hold and Abort keep their own faces: {faces[1]} "
-                  f"{faces[2]}")
+            check(sd.SPARE_KEY not in faces and
+                  faces[sd.GROUP_KEYS[0]][0] == "front row",
+                  f"the arm keys keep their own faces, the spare stays "
+                  f"blank: {faces}")
         # A fault face outranks ACK (review of PR #59): a refused press or
         # zeroed cues is never hidden behind a waiting alert.
         c.conductor.fault = "Hold: the engine did not take it"
@@ -29899,14 +29836,13 @@ def test_streamdeck_ack_key_while_an_alert_is_open():
               and not any("Nothing was started" in t_ for t_, _ in lines),
               f"journaled as an acknowledge, not as a Start Now refusal: "
               f"{lines}")
-        # Hold pressed with the alert still open: acknowledge AND hold.
+        # The spare key pressed with the alert still open: acknowledge, and
+        # nothing else (it has no job of its own).
         del calls[:]
-        c.run_once([False, True, False, False, False, False])
+        c.run_once([False, False, False, False, False, True])
         c.run_once([False] * 6)
-        check(calls == [("acknowledge", "Andy", "Stream Deck"),
-                        ("hold", "Andy", "Stream Deck")],
-              f"any other key acknowledges first and then does its own "
-              f"job: {calls}")
+        check(calls == [("acknowledge", "Andy", "Stream Deck")],
+              f"any key acknowledges, the spare one too: {calls}")
         # A group key: acknowledge, and the hold starts as always.
         del calls[:]
         down = [False] * 6
@@ -30031,10 +29967,10 @@ def test_streamdeck_round4_unplug_keeps_one_real_source_port():
 
 
 def test_streamdeck_round4_reconnect_releases_every_hold():
-    section("Stream Deck: reset_on_reconnect releases the Abort hold, EVERY "
+    section("Stream Deck: reset_on_reconnect releases the Stop hold, EVERY "
             "group's arm hold and the key snapshot, each on its own (round "
-            "4: the review's hand mutations that skipped only the Abort "
-            "hold, or only the arm holds, survived the whole suite)")
+            "4: hand mutations that skipped only one survived the whole "
+            "suite; review of PR #120, P2-3, for the Stop hold)")
     from ltcplay import streamdeck as sd
 
     names = ["front row", "cat-walk", "wave flamer"]
@@ -30045,32 +29981,28 @@ def test_streamdeck_round4_reconnect_releases_every_hold():
     c = sd.Controller(arm, _FakeStatusSocket(), names,
                       operator_provider=lambda: "Andy",
                       show_running_provider=lambda: False,
+                      run_live_provider=lambda: True,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0])
     c._prev_keys = [True] * 6
-    c._abort_hold.press(0.0)
+    c._stop_hold.press(0.0)
     for h in c._arm_holds:
         h.press(0.0)
     c.reset_on_reconnect()
     t[0] = 10.0
     check(c._prev_keys == [False] * 6, "every key reads released")
-    check(c._abort_hold.fraction(t[0]) == 0.0,
-          "the Abort hold is released (no fill drawn, nothing to fire)")
+    check(c._stop_hold.fraction(t[0]) == 0.0,
+          "the Stop hold is released (no fill drawn, nothing to fire)")
     check(all(h.fraction(t[0]) == 0.0 for h in c._arm_holds),
           f"every arm hold is released: "
           f"{[h.fraction(t[0]) for h in c._arm_holds]}")
-
-    # What a stale Abort hold would do: after the reconnect nothing is
-    # armed, so a press of Abort is refused (it never starts a hold)...
-    down = [False] * 6
-    down[sd.TOP_ABORT] = True
-    c.run_once(down)
+    # Stop held on a live run, the deck unplugged, the key let go while it
+    # was away, the deck back: the first tick sends nothing.
     c.tick()
-    check(not c._latched and not any(kw.get("action") == "abort"
-                                     and "every flame group" in t_
-                                     for t_, kw in events),
-          f"...and a refused press must never fire an Abort off a hold "
-          f"timer left over from before the gap: latched={c._latched}")
+    check(not arm.sends and not any(kw.get("action") in ("stop", "disarm")
+                                    for _t, kw in events),
+          f"no Stop off a hold left over from before the gap: "
+          f"{arm.sends} {events}")
 
 
 def test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves():
@@ -40690,52 +40622,25 @@ def test_api_conductor_reports_audio_loss():
 
 
 def test_deck_fix_round_2_abort_reset_and_disarm():
-    section("Stream Deck (PR #43 fix round 2, C to E): the arm link goes "
-            "false before the engine is asked to Abort; while aborted the "
-            "Abort key Resets only once it has shown RESET for half a "
-            "second, a group key still disarms; a deck Abort never waits behind another "
-            "press; an engine that did not take a press shows on the deck")
+    section("Stream Deck (PR #43 fix round 2, C to E, without the deck's "
+            "own Abort key since 2026-10-26): while aborted from a screen "
+            "a group key still disarms and nothing arms; the engine "
+            "conductor's Abort never waits behind another press; an engine "
+            "that did not take a press shows on the deck")
     import threading
     from ltcplay import streamdeck as sd
     names = ["front row", "cat-walk", "wave flamer"]
     arm = _FakeArmSocket(3)
     t = [100.0]
     events = []
-
-    class Cond(_FakeConductor):
-        def abort(self, who, screen):
-            # R2-H5: what the arm link said when the engine was asked.
-            if not hasattr(self, "seen"):
-                self.seen = (list(arm.wanted), len(arm.sends))
-            return super().abort(who, screen)
-    cond = Cond()
+    cond = _FakeConductor()
     c = sd.Controller(arm, _FakeStatusSocket(), names,
                       operator_provider=lambda: "Andy",
                       show_running_provider=lambda: True, conductor=cond,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0])
-    arm.set_group(0, True)
-    down = [False] * 6
-    down[sd.TOP_ABORT] = True
-    c.run_once(down)
-    t[0] += sd.ABORT_HOLD_S + 0.01
-    c.tick()
-    check(cond.seen == ([False, False, False], 1),
-          f"the deck's own disarm went out before the engine was asked to "
-          f"Abort (R2-H5): {cond.seen}")
-    c.run_once([False] * 6)
-    # An Abort from another screen: the deck reads latched.
-    del cond.calls[:]
-    arm.set_group(1, True)          # say the deck still wants cat-walk
-    sends0 = len(arm.sends)
-    down = [False] * 6
-    down[sd.TOP_ABORT] = True
-    c.run_once(down)                # a reflexive "make sure" tap
-    c.run_once([False] * 6)
-    check(not any(x[0] == "reset" for x in cond.calls) and cond._latched,
-          f"while aborted, the Abort key never Resets: {cond.calls}")
-    check(arm.wanted == [False, False, False] and len(arm.sends) > sends0,
-          f"it sends every group false again: {arm.wanted}")
+    # An Abort from a screen: the deck reads latched.
+    cond._latched = True
     arm.set_group(2, True)
     down = [False] * 6
     down[sd.GROUP_KEYS[2]] = True
@@ -40752,23 +40657,9 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
     c.run_once([False] * 6)
     check(arm.wanted == [False, False, False],
           "and nothing can be armed while aborted")
-    # Reset: one press of the Abort key once it has shown RESET for
-    # RESET_SHOWN_S (Jeff's approved design, 2026-09-26).
-    check(cond._latched and not any(x[0] == "reset" for x in cond.calls),
-          "setup: nothing above Reset")
-    down = [False] * 6
-    down[sd.TOP_HOLD] = True
-    c.run_once(down)
-    c.run_once([False] * 6)
-    check(cond._latched, "the greyed Hold key does not Reset")
-    c._track_reset_face(True, t[0])
-    t[0] += sd.RESET_SHOWN_S
-    down = [False] * 6
-    down[sd.TOP_ABORT] = True
-    c.run_once(down)
-    check(not cond._latched and cond.calls[-1][0] == "reset",
-          f"one press of RESET is Reset: {cond.calls}")
-    c.run_once([False] * 6)
+    check(not any(x[0] in ("reset", "abort", "hold", "resume")
+                  for x in cond.calls),
+          f"the deck never Aborts, Resets, Holds or Resumes: {cond.calls}")
 
     # D: a deck Abort never waits behind a slow press.
     started = {}
@@ -41986,6 +41877,10 @@ const fbm = {id:"fb", name:"Fireball", kind:"fireball", group:"front row", pan:n
 t(machineLook(fbm, mo, fl, {selected:["fb"], firing:true}).word === "Never purged: a fireball has no purge sequence yet", "a fireball: never purged, never FIRING");
 t(machineLook(fbm, mo, fl, {selected:[], firing:false}).word.indexOf("Never purged") === 0, "and says so when not selected");
 t(machineLook(fbm, {lockout:{machines:{fb:{}}}}, fl, null).cls === "locked", "a locked fireball reads locked");
+// Anything else the engine never purges says so in the engine's words (review of #120, P2-1).
+const unk = {id:"fb-1", name:"FB 1", kind:"gflame", group:"front row", never_purged:"unknown multi-channel group, declare it in fireball_groups"};
+t(machineLook(unk, mo, fl, {selected:[], firing:false}).word === "Never purged: unknown multi-channel group, declare it in fireball_groups", "an unknown multi-channel group's machine says why it is never purged");
+t(machineLook(Object.assign({}, unk, {never_purged:""}), mo, fl, {selected:[], firing:false}).word === "Off", "a machine the engine purges reads as before");
 // The laser arm's one line (Jeff, 2026-10-22): never "on" unless the engine says every laser is armed.
 const L1 = {id:"l1", name:"Laser 1", armed:false}, L2 = {id:"l2", name:"Laser 2", armed:false};
 t(laserArmLine({lasers:[L1, L2]}).indexOf("DISARMED, every laser") >= 0, "none armed: DISARMED");
@@ -45305,42 +45200,43 @@ class _FakeScreen:
 
 
 def test_stream_deck_fourth_group_is_screen_only():
-    """Jeff's fireball (2026-10-26): a fourth flamesafe group. The deck is
-    a Stream Deck Mini with no free key, so the fourth group gets NO key:
-    keys 3, 4 and 5 stay the first three groups exactly as before, and the
-    fourth is armed only by a screen hold (with every rule a key has) and
-    disarmed by a screen disarm or any Abort. Five or more groups start too
-    (said, never refused: test_stream_deck_key_order_and_labels_come_from_
-    config)."""
-    section("Stream Deck: a fourth flame group (the fireball) has no key; "
-            "the three keys are unchanged; it arms from a screen only, with "
-            "the hold, the refractory window, the latch and the operator "
-            "gate; Abort and a screen disarm take it down")
+    """A flame group past the deck's arm keys (Jeff, 2026-10-26: keys 1 to
+    4 are the first four groups) gets NO key: it is armed only by a screen
+    hold, with every rule a key has, and disarmed by a screen disarm, a
+    Stop on the deck or an Abort from any screen. Five or more groups start
+    (said, never refused). The name is from #120, when the fourth group was
+    the screen-only one; it is the fifth now."""
+    section("Stream Deck: a fifth flame group has no key; keys 1 to 4 are "
+            "the first four; it arms from a screen only, with the hold, the "
+            "refractory window, the latch and the operator gate; Stop and a "
+            "screen disarm take it down")
     from ltcplay import streamdeck as sd
-    names = ["front row", "cat-walk", "wave flamer", "fireball"]
-    arm = _FakeArmSocket(4)
+    names = ["front row", "cat-walk", "wave flamer", "fireball", "pump"]
+    P = 4                                   # the screen-only group
+    arm = _FakeArmSocket(5)
     status = _FakeStatusSocket()
     events = []
     t = [100.0]
     op = ["Andy"]
     scr = _FakeScreen()
     c = sd.Controller(arm, status, names, operator_provider=lambda: op[0],
-                      show_running_provider=lambda: True,
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: True,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0], screen=scr)
-    check(sd.GROUP_KEY_LIMIT == 3 and sd.GROUP_KEYS == (3, 4, 5),
-          "three arm keys")
+    check(sd.GROUP_KEY_LIMIT == 4 and sd.GROUP_KEYS == (1, 2, 3, 4),
+          "four arm keys, keys 1 to 4")
     said = [e for e in events if e[1].get("outcome") == "screen-only"]
-    check(len(said) == 1 and "fireball has no key on the deck" in said[0][0]
-          and "Rack screen" in said[0][0] and "Abort" in said[0][0] and
+    check(len(said) == 1 and "pump has no key on the deck" in said[0][0]
+          and "Rack screen" in said[0][0] and "Stop" in said[0][0] and
           "—" not in said[0][0] and "–" not in said[0][0],
           f"the deck says at start which group has no key: {said}")
-    three = sd.Controller(_FakeArmSocket(3), status, names[:3],
-                          journal=lambda t_, **kw: events.append((t_, kw)))
+    four = sd.Controller(_FakeArmSocket(4), status, names[:4],
+                         journal=lambda t_, **kw: events.append((t_, kw)))
     check(not [e for e in events[len(said):]
                if e[1].get("outcome") == "screen-only"] and
-          three.names == names[:3],
-          "three groups: nothing is said, nothing changes")
+          four.names == names[:4],
+          "four groups: every one has a key, nothing is said")
 
     def keys(*down):
         k = [False] * 6
@@ -45348,7 +45244,7 @@ def test_stream_deck_fourth_group_is_screen_only():
             k[d] = True
         return k
 
-    def step(dt, held=None, group=3, hid=1, who="Andy", dev="Rack screen"):
+    def step(dt, held=None, group=P, hid=1, who="Andy", dev="Rack screen"):
         t[0] += dt
         if held is None:
             scr.h.pop(group, None)
@@ -45358,50 +45254,52 @@ def test_stream_deck_fourth_group_is_screen_only():
         c.screen_pass()
         c.tick()
 
-    # Each key still arms its own group, never the fireball.
+    # Each key arms its own group, never the pump.
     for gi, k in enumerate(sd.GROUP_KEYS):
         c.run_once(keys(k))
         t[0] += sd.ARM_HOLD_S + 0.01
         c.tick()
         c.run_once(keys())
-        check(arm.wanted[gi] is True and arm.wanted[3] is False,
+        check(arm.wanted[gi] is True and arm.wanted[P] is False,
               f"key {k} arms {names[gi]} and only it: {arm.wanted}")
-    check(arm.sends and all(len(w) == 4 for w in arm.sends),
-          "every arm frame carries all four groups")
-    c._do_abort()
-    check(arm.wanted == [False] * 4,
-          f"the deck's Abort sends all four false: {arm.wanted}")
-    c._latched = False
+    check(arm.sends and all(len(w) == 5 for w in arm.sends),
+          "every arm frame carries all five groups")
+    # Stop (held) disarms every group, the screen-only one included.
+    arm.set_group(P, True)
+    c.run_once(keys(sd.TOP_START))
+    t[0] += sd.STOP_HOLD_S + 0.01
+    c.tick()
+    c.run_once(keys())
+    check(arm.wanted == [False] * 5,
+          f"the deck's Stop sends all five false: {arm.wanted}")
     step(sd.REARM_REFRACTORY_S + 0.1)
-    # A screen hold on the fireball: both clocks, then it arms.
+    # A screen hold on the pump: both clocks, then it arms.
     step(0.0, 0.0, hid=1)
-    check(c._arm_holds[3]._down_at is not None,
-          "a screen hold starts the fireball's own hold timer")
+    check(c._arm_holds[P]._down_at is not None,
+          "a screen hold starts the pump's own hold timer")
     step(sd.ARM_HOLD_S + 0.05, 0.7, hid=1)
-    check(arm.wanted[3] is False,
+    check(arm.wanted[P] is False,
           "the deck's hold has run but only 0.7 s of heartbeats: no arm")
     step(0.1, sd.SCREEN_HOLD_S, hid=1)
-    check(arm.wanted == [False, False, False, True],
-          f"both clocks done: the fireball, and only it, armed: "
-          f"{arm.wanted}")
-    check("fireball arm pressed" in events[-1][0] and
+    check(arm.wanted == [False, False, False, False, True],
+          f"both clocks done: the pump, and only it, armed: {arm.wanted}")
+    check("pump arm pressed" in events[-1][0] and
           events[-1][1].get("screen") == "Rack screen",
           f"journaled with the surface: {events[-1]}")
-    # No deck key touches it: pressing every key of the bottom row only
-    # disarms nothing (they are off) and starts their own holds.
-    c.run_once(keys(3, 4, 5))
+    # No deck key touches it.
+    c.run_once(keys(1, 2, 3, 4))
     c.run_once(keys())
-    check(arm.wanted[3] is True, "no deck key disarms or arms the fireball")
+    check(arm.wanted[P] is True, "no deck key disarms or arms the pump")
     # A screen disarm is an instant tap.
     step(0.05, None)
-    scr.d.append({"id": 1, "group": 3, "who": "Jeff", "device": "Phone"})
+    scr.d.append({"id": 1, "group": P, "who": "Jeff", "device": "Phone"})
     step(0.01)
-    check(arm.wanted[3] is False and
-          "fireball disarm pressed on the Phone by Jeff" in events[-1][0],
-          f"a screen disarm takes the fireball down at once: {events[-1]}")
+    check(arm.wanted[P] is False and
+          "pump disarm pressed on the Phone by Jeff" in events[-1][0],
+          f"a screen disarm takes the pump down at once: {events[-1]}")
     # The re-arm refractory window refuses a new hold.
     step(0.1, 0.0, hid=2)
-    check(c._arm_holds[3]._down_at is None and
+    check(c._arm_holds[P]._down_at is None and
           "refractory" in events[-1][0],
           f"a hold inside the refractory window is refused: {events[-1]}")
     step(0.05, None)
@@ -45410,48 +45308,34 @@ def test_stream_deck_fourth_group_is_screen_only():
     op[0] = ""
     step(0.0, 0.0, hid=3, who="")
     step(sd.ARM_HOLD_S + 0.1, 1.5, hid=3, who="")
-    check(arm.wanted[3] is False, "no operator: the fireball never arms")
+    check(arm.wanted[P] is False, "no operator: the pump never arms")
     step(0.05, None)
     op[0] = "Andy"
-    # Latched: no hold even starts.
+    # Latched (an Abort from a screen): no hold even starts.
     c._latched = True
     step(0.0, 0.0, hid=4)
     step(sd.ARM_HOLD_S + 0.1, 1.5, hid=4)
-    check(arm.wanted[3] is False and c._arm_holds[3]._down_at is None,
-          "while latched the fireball cannot be armed")
+    check(arm.wanted[P] is False and c._arm_holds[P]._down_at is None,
+          "while latched the pump cannot be armed")
     c._latched = False
     step(0.05, None)
-    # Armed from a screen, then the deck's own Abort key (a 0.5 s hold).
-    step(0.0, 0.0, hid=5)
-    step(sd.ARM_HOLD_S + 0.05, 1.2, hid=5)
-    check(arm.wanted[3] is True, "armed again from the screen")
-    step(0.05, None)
-    c.run_once(keys(sd.TOP_ABORT))
-    t[0] += sd.ABORT_HOLD_S + 0.01
-    c.tick()
-    c.run_once(keys())
-    check(arm.wanted == [False] * 4,
-          f"the deck's Abort key disarms the screen-only fireball too: "
-          f"{arm.wanted}")
-    c._latched = False
-    # A screen hold on the fireball while the front row's key is held: the
-    # key's hold arms the front row; the fireball still waits for its full
+    # A screen hold on the pump while the front row's key is held: the
+    # key's hold arms the front row; the pump still waits for its full
     # screen hold (no key of the deck stands in for it).
     step(sd.REARM_REFRACTORY_S + 0.1)
     step(0.0, 0.0, hid=7)
     c.run_once(keys(sd.GROUP_KEYS[0]))
     step(sd.ARM_HOLD_S + 0.05, 0.5, hid=7)
-    check(arm.wanted[0] is True and arm.wanted[3] is False,
-          f"the front row key's hold arms the front row, never the "
-          f"fireball's half-done screen hold: {arm.wanted}")
+    check(arm.wanted[0] is True and arm.wanted[P] is False,
+          f"the front row key's hold arms the front row, never the pump's "
+          f"half-done screen hold: {arm.wanted}")
     c.run_once(keys())
     step(0.05, None)
-    c._do_abort()
-    c._latched = False
-    check(c.rearm_report()[0].get(3, 0) > 0,
-          "the fireball's re-arm wait is reported for the rack screen")
-    # Drawing four groups: only the three keys are drawn, a screen hold on
-    # the fireball draws nothing on any key, and nothing raises.
+    c._disarm_all_groups("test: Stop")
+    check(c.rearm_report()[0].get(P, 0) > 0,
+          "the pump's re-arm wait is reported for the rack screen")
+    # Drawing five groups: only the four keys are drawn, a screen hold on
+    # the pump draws nothing on any key, and nothing raises.
     try:
         import PIL.Image  # noqa: F401
     except Exception:                     # noqa: BLE001
@@ -45462,7 +45346,7 @@ def test_stream_deck_fourth_group_is_screen_only():
     step(sd.REARM_REFRACTORY_S + 0.1)
     step(0.0, 0.0, hid=6)
     step(0.2, 0.2, hid=6)
-    check(c._arm_holds[3].fraction(t[0]) > 0, "a fireball hold in progress")
+    check(c._arm_holds[P].fraction(t[0]) > 0, "a pump hold in progress")
     drawn = []
     real_arm, real_hold = sd.arm_key_image, sd.draw_group_hold
     sd.arm_key_image = lambda fonts, d, box, name, *a, **kw: \
@@ -45476,9 +45360,9 @@ def test_stream_deck_fourth_group_is_screen_only():
     finally:
         sd.arm_key_image, sd.draw_group_hold = real_arm, real_hold
     check(img is not None and
-          [n for _k, n in drawn if n] == names[:3] and
-          "fireball" not in [n for _k, n in drawn],
-          f"the three keys are drawn and the fireball is not: {drawn}")
+          [n for _k, n in drawn if n] == names[:4] and
+          "pump" not in [n for _k, n in drawn],
+          f"the four keys are drawn and the pump is not: {drawn}")
     print("  ok")
 
 
@@ -45501,16 +45385,15 @@ def test_stream_deck_key_order_and_labels_come_from_config():
     dflt = ["Floor G", "Cat-Walk G", "Blue Flames", "Fireball"]
     check(sd.deck_layout(jeff) == ([0, 1, 2, 3], dflt, [], True),
           f"the defaults: {sd.deck_layout(jeff)}")
-    # flamesafe's file order does not decide the keys, and with no file
-    # that is said.
-    shuffled = ["fireball", "wave flamer", "front row", "cat-walk"]
-    order, labels, notes, ok = sd.deck_layout(shuffled)
-    check([shuffled[i] for i in order] == jeff and ok and len(notes) == 1
-          and "not the order of flamesafe's file" in notes[0] and
-          "key 1 Floor G (front row), key 2 Cat-Walk G (cat-walk), key 3 "
-          "Blue Flames (wave flamer); no key: Fireball (fireball)" in notes[0],
-          f"the default order, not the file's, said with the key map: "
-          f"{order} {notes}")
+    # With no file the keys keep flamesafe's own order (review of PR #120,
+    # P2-5: an install's keys do not move), and the labels match whatever
+    # the case.
+    shuffled = ["fireball", "wave flamer", "Front Row", "CAT-WALK"]
+    check(sd.deck_layout(shuffled) ==
+          ([0, 1, 2, 3], ["Fireball", "Blue Flames", "Floor G",
+                          "Cat-Walk G"], [], True),
+          f"flamesafe's own order, Jeff's labels whatever the case: "
+          f"{sd.deck_layout(shuffled)}")
     # An old install whose groups have other names: unchanged, nothing said.
     old = ["stage left", "stage right", "finale"]
     check(sd.deck_layout(old) == ([0, 1, 2], old, [], True),
@@ -45577,21 +45460,25 @@ def test_stream_deck_key_order_and_labels_come_from_config():
     check(sd._fit_name("Blue Flames") == "BLUE FLAMES" and
           sd._fit_name("Cat-Walk G") == "CAT-WALK G",
           "the default labels fit the key whole")
-    # The Controller: Jeff's order on the keys, flamesafe's on the wire.
-    order, labels, _n, _ok = sd.deck_layout(jeff, doc)
-    arm = _FakeArmSocket(4)
+    # The Controller: Jeff's order on the keys, flamesafe's on the wire;
+    # a fifth group (pump) has no key.
+    jeff5 = jeff + ["pump"]
+    doc5 = {"groups": doc["groups"] + [{"group": "pump", "label": "Pump"}]}
+    order, labels, _n, _ok = sd.deck_layout(jeff5, doc5)
+    check(order == [3, 0, 1, 2, 4] and _ok, f"setup: {order} {_n}")
+    arm = _FakeArmSocket(5)
     t = [100.0]
     events = []
     scr = _FakeScreen()
-    c = sd.Controller(arm, _FakeStatusSocket(), jeff,
+    c = sd.Controller(arm, _FakeStatusSocket(), jeff5,
                       operator_provider=lambda: "Andy",
                       show_running_provider=lambda: True,
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0], screen=scr, key_order=order,
                       labels=labels)
     said = [e[0] for e in events if e[1].get("outcome") == "screen-only"]
-    check(len(said) == 1 and "Blue has no key" in said[0] and
-          "Big Ball, Floor G, Catwalk" in said[0],
+    check(len(said) == 1 and "Pump has no key" in said[0] and
+          "Big Ball, Floor G, Catwalk, Blue" in said[0],
           f"the group with no key is named by its label: {said}")
 
     def press(k):
@@ -45601,34 +45488,34 @@ def test_stream_deck_key_order_and_labels_come_from_config():
         t[0] += sd.ARM_HOLD_S + 0.01
         c.tick()
         c.run_once([False] * 6)
-    press(3)
-    check(arm.wanted == [False, False, False, True],
-          f"key 3 arms the fireball (Jeff's first): {arm.wanted}")
-    press(4)
-    check(arm.wanted == [True, False, False, True],
-          f"key 4 arms the front row: {arm.wanted}")
-    press(3)
-    check(arm.wanted == [True, False, False, False],
-          f"a tap on key 3 disarms the fireball at once: {arm.wanted}")
+    press(1)
+    check(arm.wanted == [False, False, False, True, False],
+          f"key 1 arms the fireball (Jeff's first): {arm.wanted}")
+    press(2)
+    check(arm.wanted == [True, False, False, True, False],
+          f"key 2 arms the front row: {arm.wanted}")
+    press(1)
+    check(arm.wanted == [True, False, False, False, False],
+          f"a tap on key 1 disarms the fireball at once: {arm.wanted}")
     t[0] += 0.1
-    press(3)
+    press(1)
     check(arm.wanted[3] is False, "and its 2 s re-arm wait holds")
-    # The wave flamer (no key here) arms from a screen hold only.
-    scr.h[2] = {"group": 2, "id": 1, "held_s": 0.0, "fresh": True,
+    # The pump (no key here) arms from a screen hold only.
+    scr.h[4] = {"group": 4, "id": 1, "held_s": 0.0, "fresh": True,
                 "who": "Andy", "device": "Rack screen"}
     c.screen_pass()
     c.tick()
     t[0] += sd.ARM_HOLD_S + 0.05
-    scr.h[2]["held_s"] = sd.SCREEN_HOLD_S
+    scr.h[4]["held_s"] = sd.SCREEN_HOLD_S
     c.screen_pass()
     c.tick()
-    check(arm.wanted[2] is True, f"the screen arms Blue: {arm.wanted}")
-    check(all(len(w) == 4 for w in arm.sends),
-          "every arm frame still carries flamesafe's four groups")
-    c._do_abort()
-    check(arm.wanted == [False] * 4, "Abort takes every group down")
-    check(sd.deck_key_name(3, [jeff[g] for g in order[:3]]) ==
-          "arm key fireball", "the audit log names key 3's real group")
+    check(arm.wanted[4] is True, f"the screen arms the pump: {arm.wanted}")
+    check(all(len(w) == 5 for w in arm.sends),
+          "every arm frame still carries flamesafe's five groups")
+    c._disarm_all_groups("test: Stop")
+    check(arm.wanted == [False] * 5, "Stop takes every group down")
+    check(sd.deck_key_name(1, [jeff5[g] for g in order[:4]]) ==
+          "arm key fireball", "the audit log names key 1's real group")
     try:
         import PIL.Image  # noqa: F401
     except Exception:                     # noqa: BLE001
@@ -45648,9 +45535,9 @@ def test_stream_deck_key_order_and_labels_come_from_config():
     finally:
         sd.arm_key_image = real
     check([(b, n) for b, n, _w in drawn] ==
-          [(sd.face_box(3), "Big Ball"), (sd.face_box(4), "Floor G"),
-           (sd.face_box(5), "Catwalk")] and
-          [w for _b, _n, w in drawn] == ["NO", "FLAME", "LINK"],
+          [(sd.face_box(1), "Big Ball"), (sd.face_box(2), "Floor G"),
+           (sd.face_box(3), "Catwalk"), (sd.face_box(4), "Blue")] and
+          [w for _b, _n, w in drawn] == ["NO", "FLAME", "LINK", "NO"],
           f"each key is drawn under its label, in key order, and NO / FLAME "
           f"/ LINK still reads left to right: {drawn}")
     print("  ok")
@@ -45667,11 +45554,12 @@ def test_stream_deck_review_of_120():
             "with no key; every key path follows the key's own group; the "
             "layout and key map are journaled at start")
     from ltcplay import streamdeck as sd
-    jeff = ["front row", "cat-walk", "wave flamer", "fireball"]
-    # Keys: fireball, front row, cat-walk; wave flamer has no key.
-    order = [3, 0, 1, 2]
-    labels = ["Floor G", "Catwalk", "Blue", "Big Ball"]
-    arm = _FakeArmSocket(4)
+    jeff = ["front row", "cat-walk", "wave flamer", "fireball", "pump"]
+    # Keys 1 to 4: fireball, front row, cat-walk, wave flamer; the pump
+    # has no key.
+    order = [3, 0, 1, 2, 4]
+    labels = ["Floor G", "Catwalk", "Blue", "Big Ball", "Pump"]
+    arm = _FakeArmSocket(5)
     t = [100.0]
     events = []
     audits = []
@@ -45695,21 +45583,21 @@ def test_stream_deck_review_of_120():
         c.screen_pass()
         c.tick()
 
-    # The Morning page asks for the wave flamer (no key) and the fireball
-    # (key 3): the keyed one arms on the click, the screen-only one never.
+    # The Morning page asks for the pump (no key) and the fireball (key
+    # 1): the keyed one arms on the click, the screen-only one never.
     scr.mo = {"open": True, "purge_enabled": True,
-              "purge": {"wanted_groups": [2, 3], "selected": 2,
+              "purge": {"wanted_groups": [4, 3], "selected": 2,
                         "firing": False},
               "locks": {"groups_fully_locked": []}}
     step()
     step()
-    check(arm.wanted == [False, False, False, True],
+    check(arm.wanted == [False, False, False, True, False],
           f"a purge click arms the keyed group only, never the one with no "
           f"key: {arm.wanted}")
-    check(c.rearm_report()[1] == {2: "screenonly"},
+    check(c.rearm_report()[1] == {4: "screenonly"},
           f"the refusal is reported for the page: {c.rearm_report()}")
     said = [e[0] for e in events if "was not armed for a purge" in e[0]]
-    check(len(said) == 1 and "Blue (wave flamer)" in said[0] and
+    check(len(said) == 1 and "Pump (pump)" in said[0] and
           "Hold to arm" in said[0],
           f"said once, in words: {said}")
     from ltcplay import remote as RM
@@ -45717,43 +45605,43 @@ def test_stream_deck_review_of_120():
           "the engine takes the code")
     scr.mo = None
     step()
-    check(arm.wanted == [False] * 4, "the page closed: the purge arm is gone")
+    check(arm.wanted == [False] * 5, "the page closed: the purge arm is gone")
     step(sd.REARM_REFRACTORY_S + 0.1)
-    # An early let go of key 3 cancels the FIREBALL's hold (the key's own
+    # An early let go of key 1 cancels the FIREBALL's hold (the key's own
     # group), never the front row's.
-    c.run_once(keys(3))
+    c.run_once(keys(1))
     check(c._arm_holds[3]._down_at is not None and
           c._arm_holds[0]._down_at is None,
-          "key 3 starts the fireball's hold")
+          "key 1 starts the fireball's hold")
     t[0] += 0.1
     c.run_once(keys())
     check(c._arm_holds[3]._down_at is None,
-          "letting go of key 3 early cancels the fireball's hold")
+          "letting go of key 1 early cancels the fireball's hold")
     t[0] += sd.ARM_HOLD_S
     c.tick()
-    check(arm.wanted == [False] * 4, "and nothing arms")
+    check(arm.wanted == [False] * 5, "and nothing arms")
     check(any(a.get("action") == "key-press" and
               a.get("target") == "arm key fireball" for a in audits),
-          f"the audit names key 3's own group: "
+          f"the audit names key 1's own group: "
           f"{[a.get('target') for a in audits][-3:]}")
-    # Arm key 4 (front row), then latch: a tap on key 4 disarms the front
+    # Arm key 2 (front row), then latch: a tap on key 2 disarms the front
     # row, the key's own group.
-    c.run_once(keys(4))
+    c.run_once(keys(2))
     t[0] += sd.ARM_HOLD_S + 0.01
     c.tick()
     c.run_once(keys())
-    check(arm.wanted == [True, False, False, False], f"{arm.wanted}")
+    check(arm.wanted == [True, False, False, False, False], f"{arm.wanted}")
     c._latched = True
-    arm.set_group(2, True)          # as if the screen had armed it
-    c.run_once(keys(4))
+    arm.set_group(4, True)          # as if the screen had armed it
+    c.run_once(keys(2))
     c.run_once(keys())
-    check(arm.wanted == [False, False, True, False],
-          f"latched: a tap on key 4 disarms its own group (front row), "
+    check(arm.wanted == [False, False, False, False, True],
+          f"latched: a tap on key 2 disarms its own group (front row), "
           f"nothing else: {arm.wanted}")
     # A screen-only group's arm is refused at fire time while latched.
-    arm.set_group(2, False)
-    check(c._do_arm_fire(2, t[0] + 10, who="Andy", screen="Rack screen")
-          == "latched" and arm.wanted[2] is False,
+    arm.set_group(4, False)
+    check(c._do_arm_fire(4, t[0] + 10, who="Andy", screen="Rack screen")
+          == "latched" and arm.wanted[4] is False,
           "a screen-only group never arms while latched")
     c._latched = False
     # At start: the key map, and any note, journaled.
@@ -45761,21 +45649,25 @@ def test_stream_deck_review_of_120():
     work = tempfile.mkdtemp()
     try:
         o, l, ok = sd.deck_layout_at_start(
-            ["fireball", "front row", "cat-walk", "wave flamer"], work,
-            lambda t_, **kw: lines.append((t_, kw)))
-        check(ok and o == [1, 2, 3, 0] and len(lines) == 2 and
-              "not the order of flamesafe's file" in lines[0][0] and
-              lines[-1][0].startswith("Stream Deck: the keys are key 1 Floor "
-                                      "G (front row)") and
+            ["fireball", "front row", "cat-walk", "wave flamer", "pump"],
+            work, lambda t_, **kw: lines.append((t_, kw)))
+        check(ok and o == [0, 1, 2, 3, 4] and len(lines) == 1 and
+              lines[0][0].startswith(
+                  "Stream Deck: the keys are key 0 Start/Stop, key 1 "
+                  "Fireball (fireball), key 2 Floor G (front row), key 3 "
+                  "Cat-Walk G (cat-walk), key 4 Blue Flames (wave flamer); "
+                  "no key: pump (pump); key 5 is spare.") and
+              "no Hold or Abort key" in lines[0][0] and
               all(kw.get("action") == "config" for _t, kw in lines),
-              f"the reorder note and the key map are journaled: {lines}")
+              f"flamesafe's own order, and the key map journaled in "
+              f"plain words: {lines}")
         with open(os.path.join(work, sd.DECK_CONFIG_FILE), "w") as fh:
             fh.write('{"groups": [{"group": "cat walk"}]}')
         lines[:] = []
         o, l, ok = sd.deck_layout_at_start(jeff, work,
                                            lambda t_, **kw: lines.append(
                                                (t_, kw)))
-        check(not ok and o == [0, 1, 2, 3] and
+        check(not ok and o == [0, 1, 2, 3, 4] and
               any("'cat walk'" in t_ for t_, _k in lines) and
               all(kw.get("outcome") == "layout-default" for _t, kw in lines),
               f"a file set aside: said, and the Deck chip told: {lines}")
@@ -45789,7 +45681,7 @@ def test_stream_deck_review_of_120():
     o, l, ok = sd.deck_layout_at_start(jeff, None, lambda t_, **kw:
                                        lines.append((t_, kw)),
                                        settings_folder=boom)
-    check(not ok and o == [0, 1, 2, 3] and
+    check(not ok and o == [0, 1, 2, 3, 4] and
           "settings folder could not be found" in lines[0][0],
           f"no settings folder: said, the defaults used: {lines}")
     # The Deck chip hears it.
@@ -45807,14 +45699,17 @@ def test_stream_deck_start_stop_is_one_key():
     """Jeff (2026-10-26): Start and Stop are one key. Start when nothing is
     running (today's Start Now, unchanged), Stop while Run has been pressed
     and playback is going: the Rack screen's Stop button, POST /api/stop,
-    never behind the operator gate (it only takes outputs down), and a
-    HOLD of ABORT_HOLD_S, never a tap (the Rack screen asks for a
-    confirm). During a scheduled show the key keeps saying what the show
-    is doing and sends nothing. Hold and Abort are unchanged; no key is
-    freed (there was no Stop key on the deck)."""
-    section("Stream Deck: Start and Stop are one key; Stop is a hold of "
-            "Abort's length, never a tap, never gated; a scheduled show "
-            "reads NOW PLAYING and sends nothing")
+    never behind the operator gate (it only takes risk away), and a HOLD
+    of STOP_HOLD_S, never a tap (the Rack screen asks for a confirm). A
+    completed Stop first disarms every flame group on the arm link, never
+    setting the Abort latch, and is reachable while an Abort is latched,
+    as on the Rack screen. During a scheduled show, or while the scheduler
+    cannot be read, the key never reads STOP RUN and sends nothing. The
+    deck has no Hold or Abort key since 2026-10-26."""
+    section("Stream Deck: Start and Stop are one key; Stop is a 0.5 s hold, "
+            "never a tap, never gated; it disarms every flame group and "
+            "never latches; reachable while aborted; never during a "
+            "scheduled show or with the scheduler unknown")
     from ltcplay import streamdeck as sd
     posted = []
     eng = sd.EngineConductor("http://127.0.0.1:1",
@@ -45859,7 +45754,8 @@ def test_stream_deck_start_stop_is_one_key():
     show, run = [False], [False]
     lines = []
     t = [100.0]
-    c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+    arm = _FakeArmSocket(3)
+    c = sd.Controller(arm, _FakeStatusSocket(),
                       ["front row", "cat-walk", "wave flamer"],
                       operator_provider=lambda: "",
                       show_running_provider=lambda: show[0],
@@ -45893,35 +45789,44 @@ def test_stream_deck_start_stop_is_one_key():
     # end a run; the Rack screen asks for a confirm).
     n = len(lines)
     tap()
-    wait(sd.ABORT_HOLD_S * 3)
+    wait(sd.STOP_HOLD_S * 3)
     check(not e.calls and len(lines) == n,
           f"a single tap on STOP RUN sends nothing: {e.calls}")
     # Let go early: nothing, however long after.
     down()
-    wait(sd.ABORT_HOLD_S * 0.8)
+    wait(sd.STOP_HOLD_S * 0.8)
     check(c._stop_hold.fraction(t[0]) > 0.5, "the hold is filling")
     up()
     check(c._stop_hold.fraction(t[0]) == 0.0,
           "letting go empties the hold at once (the key stops saying HOLD "
           "TO STOP)")
-    wait(sd.ABORT_HOLD_S * 3)
+    wait(sd.STOP_HOLD_S * 3)
     check(not e.calls, "let go before the hold is done: nothing sent")
-    # A full hold, the same as Abort's: Stop, once.
+    # A full hold: every group disarmed on the arm link first, then Stop,
+    # once.
+    arm.set_group(0, True)
+    arm.set_group(2, True)
     down()
-    wait(sd.ABORT_HOLD_S - 0.01)
-    check(not e.calls, "not yet at the hold time")
+    wait(sd.STOP_HOLD_S - 0.01)
+    check(not e.calls and arm.wanted == [True, False, True],
+          "not yet at the hold time")
     wait(0.02)
     check(e.calls == [("stop", "", "Stream Deck")] and
           "Stream Deck Stop: Stopped." in lines[-1][0],
-          f"held ABORT_HOLD_S: Stop goes to the engine, with no operator "
-          f"chosen (it only takes outputs down): {e.calls} {lines[-1]}")
-    wait(sd.ABORT_HOLD_S * 3)
+          f"held STOP_HOLD_S: Stop goes to the engine, with no operator "
+          f"chosen (it only takes risk away): {e.calls} {lines[-1]}")
+    check(arm.wanted == [False, False, False] and
+          any("every flame group's wanted state was sent false" in l[0]
+              and "Nothing was latched" in l[0] for l in lines),
+          f"and every flame group was disarmed first: {arm.wanted}")
+    check(not c._latched_now(), "Stop never latches the rig")
+    wait(sd.STOP_HOLD_S * 3)
     up()
     check(len(e.calls) == 1, "still held: it does not send twice")
     # The run ends during the hold: nothing sent.
     down()
     run[0] = False
-    wait(sd.ABORT_HOLD_S + 0.05)
+    wait(sd.STOP_HOLD_S + 0.05)
     up()
     check(len(e.calls) == 1 and "Nothing was sent" in lines[-1][0],
           f"the run ended mid hold: nothing sent: {lines[-1]}")
@@ -45930,19 +45835,53 @@ def test_stream_deck_start_stop_is_one_key():
     show[0] = True
     check(c.start_key_mode() == "show", "a scheduled show live: show")
     down()
-    wait(sd.ABORT_HOLD_S * 3)
+    wait(sd.STOP_HOLD_S * 3)
     up()
     check(len(e.calls) == 1 and "Nothing was stopped" in lines[-1][0],
           "during a scheduled show Stop is refused as on the Rack screen")
-    show[0] = False
-    e.latched = True
+    # The scheduler cannot be read (review of PR #120, P2-4): never Stop.
+    show[0] = None
+    check(c.start_key_mode() == "start",
+          "the scheduler not known: the key is not STOP RUN")
     down()
-    wait(sd.ABORT_HOLD_S * 3)
+    wait(sd.STOP_HOLD_S * 3)
     up()
-    check(len(e.calls) == 1, "aborted: the key does nothing, as before")
+    check(len(e.calls) == 1, "and a hold sends nothing")
+    show[0] = False
+    # Aborted from a screen: Stop is still reachable (Jeff, 2026-10-26, as
+    # on the Rack screen), and the latch stands.
+    e.latched = True
+    arm.set_group(1, True)
+    tap()
+    wait(sd.STOP_HOLD_S * 3)
+    check(len(e.calls) == 1, "aborted: a tap still sends nothing")
+    down()
+    wait(sd.STOP_HOLD_S + 0.01)
+    up()
+    check(len(e.calls) == 2 and arm.wanted == [False, False, False] and
+          c._latched_now(),
+          f"aborted: a full Stop hold disarms and stops, the latch stays: "
+          f"{e.calls} {arm.wanted}")
+    # Let go early while aborted: nothing (the latched branch takes the
+    # release too, review of PR #120, P2-3).
+    down()
+    wait(sd.STOP_HOLD_S * 0.5)
+    up()
+    check(c._stop_hold.fraction(t[0]) == 0.0,
+          "aborted: letting go empties the hold")
+    wait(sd.STOP_HOLD_S * 3)
+    check(len(e.calls) == 2, "aborted: an early let go sends nothing")
     e.latched = False
-    check(sd.deck_key_name(sd.TOP_START, []) == "Start/Stop",
-          "the audit calls it Start/Stop")
+    # The key's own state is read on every tick (review of PR #120,
+    # P2-3): a hold timer with the key up never sends Stop.
+    c._stop_hold.press(t[0])
+    wait(sd.STOP_HOLD_S * 3)
+    check(len(e.calls) == 2,
+          "a Stop hold timer running with the key up sends nothing")
+    c._stop_hold.release()
+    check(sd.deck_key_name(sd.TOP_START, []) == "Start now",
+          "the audit name of the key is unchanged (review of PR #120, "
+          "P2-6)")
     t2 = [0.0]
     c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
                        ["front row", "cat-walk", "wave flamer"],
@@ -45950,7 +45889,7 @@ def test_stream_deck_start_stop_is_one_key():
                        run_live_provider=lambda: True, clock=lambda: t2[0],
                        journal=lambda t_, **kw: lines.append((t_, kw)))
     c2.run_once([True] + [False] * 5)
-    t2[0] += sd.ABORT_HOLD_S + 0.01
+    t2[0] += sd.STOP_HOLD_S + 0.01
     c2.tick()
     check("no engine is connected" in lines[-1][0] and
           lines[-1][1].get("fault"),
@@ -45966,7 +45905,7 @@ def test_stream_deck_start_stop_is_one_key():
         check(faces[0][0] == ["STOP", "RUN"],
               f"Run live: the key reads STOP RUN: {faces[0]}")
         down()
-        wait(sd.ABORT_HOLD_S / 2)
+        wait(sd.STOP_HOLD_S / 2)
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[0][0] == ["HOLD TO", "STOP"],
               f"while held the key says so (its ring fills): {faces[0]}")
@@ -45980,8 +45919,19 @@ def test_stream_deck_start_stop_is_one_key():
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[0][0] != ["STOP", "RUN"],
               f"stopped: the key reads Start again: {faces[0]}")
-        check(faces[1][0] == ["HOLD"] and faces[2][0] == ["ABORT"],
-              f"Hold and Abort unchanged: {faces[1]} {faces[2]}")
+        show[0] = None
+        run[0] = True
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] != ["STOP", "RUN"],
+              f"the scheduler not known: never STOP RUN: {faces[0]}")
+        show[0] = False
+        e.latched = True
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["STOP", "RUN"],
+              f"aborted with a run going: STOP RUN, reachable: {faces[0]}")
+        e.latched = False
+        check(sd.SPARE_KEY not in faces,
+              f"no Hold or Abort face, the spare key blank: {sorted(faces)}")
     finally:
         restore()
     print("  ok")
@@ -46070,10 +46020,12 @@ def test_screen_arm_deck_rules():
     scr.d.append({"id": 2, "group": 0, "who": "Andy", "device": "iPad"})
     step(0.05)
     step(sd.REARM_REFRACTORY_S + 0.1)
-    # An Abort on the deck during a screen hold.
+    # An Abort (from a screen; the deck has no Abort key) during a screen
+    # hold: the deck latched, and Stop's disarm-all, at once.
     step(0.0, 0.0, group=1, hid=7)
     step(0.3, 0.3, group=1, hid=7)
-    c._do_abort()
+    c._disarm_all_groups("test: an Abort")
+    c._latched = True
     for k in range(10):
         step(0.1, 0.4 + 0.1 * k, group=1, hid=7)
     check(arm.wanted[1] is False,
@@ -46100,11 +46052,10 @@ def test_screen_arm_deck_rules():
     step(0.1, 0.1, group=2, hid=10)
     check(arm.wanted[2] is True, "holding an armed group does not disarm it")
     step(0.05, None, group=2)
-    # The deck's own Abort clears a group the screen armed: one latch.
-    c._do_abort()
+    # The deck's Stop disarm clears a group the screen armed.
+    c._disarm_all_groups("test: Stop")
     check(arm.wanted == [False, False, False],
-          "the deck's Abort disarms a screen-armed group too")
-    c._latched = False
+          "the deck's Stop disarms a screen-armed group too")
     # ScreenKeys: unreachable or stale reads as let go.
     clk = [50.0]
     answers = [{"enabled": True, "holds": [{"group": 0, "id": 1,
@@ -48476,6 +48427,136 @@ def test_morning_fireball_group_is_never_purged():
     print("  ok")
 
 
+def test_morning_unknown_multi_channel_group_is_never_purged():
+    """Review of PR #120, P2-1: a flamesafe group with several fire slots
+    and one safety that nothing declares (named "FB", "Boom", "Poofer")
+    could be a fireball by another name. With no machines list its
+    machines are built (one per fire slot, so locking and the lamps
+    work) but none is purged or armed for a purge until it is declared in
+    fireball_groups or gflame_groups; the journal and the Startup page say
+    so. Jeff's front row and cat-walk rows stay purgeable by name."""
+    section("morning: an unknown multi-channel group is never purged until "
+            "declared (fireball_groups or gflame_groups); rows named row or "
+            "cat-walk stay purgeable; journaled and on the tile")
+    from ltcplay import morning as MO
+    reason = MO.NO_UNKNOWN_PURGE
+    check(reason.startswith("unknown multi-channel group, declare it in "
+                            "fireball_groups") and
+          not any(c in reason for c in "—–"), f"the words: {reason}")
+    front = {"name": "front row", "safety": 401, "safeties": [401],
+             "fire": [411, 412, 413]}
+    cat = {"name": "cat-walk", "safety": 402, "safeties": [402],
+           "fire": [421, 422]}
+    one = {"name": "pump", "safety": 404, "safeties": [404], "fire": [441]}
+    for name in ("FB", "Boom", "Poofer"):
+        fb = {"name": name, "safety": 99, "safeties": [99],
+              "fire": [55, 56, 57, 58]}
+        groups = [front, cat, one, fb]
+        cfg = MO.MorningConfig.parse({}, "x", groups)
+        ms = [m for m in cfg.machines if m.group == name]
+        check(cfg.unknown_groups == {name} and len(ms) == 4 and
+              all(cfg.purge_refusal(m) == reason for m in ms) and
+              all(m.notes == f"Never purged: {reason}." for m in ms),
+              f"{name!r}: four machines, none purged, the notes say why: "
+              f"{[m.view() for m in ms]}")
+        check(all(cfg.purge_refusal(m) == "" for m in cfg.machines
+                  if m.group in ("front row", "cat-walk", "pump")),
+              "front row and cat-walk (rows by name) and a one-slot group "
+              "stay purgeable")
+        view = {m["id"]: m for m in cfg.view()["machines"]}
+        check(view[ms[0].id]["never_purged"] == reason and
+              view["front-row-1"]["never_purged"] == "",
+              "the page's view carries the engine's reason per machine")
+        check(cfg.journal_lines() and name in cfg.journal_lines()[0] and
+              reason in cfg.journal_lines()[0],
+              f"one journal line names it: {cfg.journal_lines()}")
+        # Declared a fireball: one never-purged fireball machine.
+        c2 = MO.MorningConfig.parse({"fireball_groups": [name]}, "x", groups)
+        check(not c2.unknown_groups and
+              [m.kind for m in c2.machines if m.group == name] ==
+              ["fireball"], f"{name!r} declared a fireball")
+        # Declared a row of G-Flames: purgeable, one by one.
+        c3 = MO.MorningConfig.parse({"gflame_groups": [name]}, "x", groups)
+        check(not c3.unknown_groups and
+              all(c3.purge_refusal(m) == "" for m in c3.machines
+                  if m.group == name), f"{name!r} declared a row")
+    try:
+        MO.MorningConfig.parse({"gflame_groups": ["FB"],
+                                "fireball_groups": ["FB"]}, "x",
+                               [front, dict(one, name="FB")])
+        check(False, "a group both a fireball and a row was accepted")
+    except MO.MorningConfigError as e:
+        check("cannot also be a row" in str(e), str(e))
+    try:
+        MO.MorningConfig.parse({"gflame_groups": ["nope"]}, "x", [front])
+        check(False, "an unknown gflame group was accepted")
+    except MO.MorningConfigError as e:
+        check("'nope', which is not a flamesafe group" in str(e), str(e))
+    # A machines list is Andy's own word: trusted as written.
+    fb = {"name": "FB", "safety": 99, "safeties": [99],
+          "fire": [55, 56, 57, 58]}
+    c4 = MO.MorningConfig.parse({"machines": [
+        {"id": "fb1", "group": "FB", "fire": [55, 56, 57, 58]}]}, "x",
+        [front, fb])
+    check(not c4.unknown_groups, "a machines list is trusted as written")
+    # The purge refuses the click and never asks the deck.
+    cfg = MO.MorningConfig.parse({}, "x", [front, fb])
+
+    class _Lock:
+        def is_locked(self, kind, mid):
+            return False
+
+    class _Link:
+        frames = []
+
+        def purge_set(self, vals):
+            self.frames.append(bytes(vals))
+            return True
+
+        def purge_clear(self):
+            pass
+    names = ["front row", "FB"]
+    fl = {"stale": False, "connected": True, "age_ms": 10,
+          "groups": [{"name": n, "armed": "armed"} for n in names]}
+    p = MO.Purge(lambda: cfg, _Lock(), lambda: _Link(), lambda: fl,
+                 lambda: "", lambda: names, clock=lambda: 100.0)
+    code, out = p.select("fb-4", True, "Rack screen", True)
+    check(code == 409 and reason in out["error"] and p.selected == [],
+          f"a click on it is refused and arms nothing: {code} {out}")
+    p.selected = ["fb-4", "front-row-1"]
+    check(p.groups_wanted() == [0], "its group is never asked of the deck")
+    vals, firing, waiting = p.frame(100.0)
+    check(all(vals[s - 1] == 0 for s in (55, 56, 57, 58)) and
+          firing == ["front row 1"],
+          f"the frame never writes its slots: {firing} {waiting}")
+    # The engine journals it once at start.
+    work = tempfile.mkdtemp()
+    try:
+        import json as _json
+        fs = os.path.join(work, "fs.json")
+        with open(fs, "w", encoding="utf-8") as fh:
+            _json.dump({"groups": [
+                {"name": "front row", "safety": 401, "fire": [411, 412]},
+                {"name": "FB", "safety": 99, "fire": [55, 56, 57, 58]}]},
+                fh)
+        lines = []
+        m = MO.Morning(work, flamesafe_config=fs,
+                       journal=lambda t_, **kw: lines.append((t_, kw)),
+                       threaded=False)
+        said = [t_ for t_, kw in lines if kw.get("outcome") ==
+                "never-purged"]
+        check(len(said) == 1 and "'FB'" in said[0],
+              f"the engine journals the unknown group once: {said}")
+        try:
+            m.close()
+        except Exception:                        # noqa: BLE001
+            pass
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_morning_default_wave_flamer_is_never_purged():
     """A default wave flamer machine (built from flamesafe's groups, with
     no pan and no tilt slot) is never purged and never raises: the purge
@@ -49658,9 +49739,13 @@ def test_morning_deck_remap_and_purge_arming():
           f"latched: nothing arms for a purge, and no arm value went out "
           f"on the arm link even for one pass: {arm.sends[n_sends:]}")
     cond._latched = False
+    # The Reset starts every group's re-arm wait (the deck sees the latch
+    # go, 2026-10-26); let it run out.
+    mo(True, [])
+    step()
+    t[0] += sd.REARM_REFRACTORY_S
     # No operator chosen on the deck: a purge arm is refused like any arm
     # (review of PR #68, P2-6: the same guards as a completed hold).
-    mo(True, [])
     step()
     c.operator_provider = lambda: ""
     mo(True, [1])
@@ -52232,17 +52317,17 @@ def test_audit_logs_one_line_per_press_on_every_surface():
     down[sd.GROUP_KEYS[0]] = False
     ctl.run_once(list(down))
     user[0] = None
-    down[sd.TOP_ABORT] = True
+    down[sd.TOP_START] = True
     ctl.run_once(list(down))
-    down[sd.TOP_ABORT] = False
+    down[sd.TOP_START] = False
     ctl.run_once(list(down))
     lines = _audit_lines(d)
     keys = [(l["action"], l["target"], l["user"]) for l in lines
             if l["action"].startswith("key-")]
     check(keys == [("key-press", "arm key Left", "Jeff"),
                    ("key-release", "arm key Left", "Jeff"),
-                   ("key-press", "Abort", "unsigned"),
-                   ("key-release", "Abort", "unsigned")],
+                   ("key-press", "Start now", "unsigned"),
+                   ("key-release", "Start now", "unsigned")],
           f"every deck key press and release, as the signed-in user or "
           f"unsigned: {keys}")
     check(any(l["action"] == "arm" and l["result"] == "accepted" and
@@ -52811,7 +52896,7 @@ def test_deck_usb_stall_never_starves_the_arm_link():
             "cadence on its own thread so flamesafe never sees it go stale; "
             "the keys are still read and a hold the deck reports arms "
             "through the stuck write (Jeff's ruling), a release cancels it "
-            "at once, a tap disarms and Abort fires; the deck "
+            "at once, a tap disarms and a Stop hold fires; the deck "
             "unplugged keeps the link steady; a frozen input loop still "
             "goes silent; and the old single loop, under the same stall, "
             "does not")
@@ -52822,7 +52907,8 @@ def test_deck_usb_stall_never_starves_the_arm_link():
     journal = []
     c = sd.Controller(arm, _FakeStatusSocket(), names,
                       operator_provider=lambda: "Andy",
-                      show_running_provider=lambda: True,
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: True,
                       journal=lambda t_, **kw: journal.append((t_, kw)))
     deck = _StallDeck()
     decks = [deck]
@@ -52920,7 +53006,7 @@ def test_deck_usb_stall_never_starves_the_arm_link():
         time.sleep(0.2)
         check(all(f[2][0] for f in list(frames) if f[0] > armed_at + 0.05),
               "group 0 stays armed once let go and once the writes catch up")
-        # A second stall, 7 s long: a disarm tap and an Abort hold, both
+        # A second stall, 7 s long: a disarm tap and a Stop hold, both
         # with the write stuck the whole time.
         deck.release.clear()
         deck.stalled.clear()
@@ -52937,7 +53023,7 @@ def test_deck_usb_stall_never_starves_the_arm_link():
         time.sleep(0.3)
         check(all(not f[2][0] for f in list(frames) if f[0] > tapped + 0.1),
               "group 0 stayed off after its disarm tap")
-        # Group 2 armed through the stall, then Abort held.
+        # Group 2 armed through the stall, then Stop held.
         t_g2 = time.monotonic()
         deck.press(sd.GROUP_KEYS[2])
         check(_wait(lambda: any(f[2][2] for f in list(frames)
@@ -52946,11 +53032,11 @@ def test_deck_usb_stall_never_starves_the_arm_link():
         deck.press()
         time.sleep(0.1)
         t_ab = time.monotonic()
-        deck.press(sd.TOP_ABORT)
+        deck.press(sd.TOP_START)
         check(_wait(lambda: any(f[0] > t_ab and not any(f[2])
                                 for f in list(frames)),
-                    sd.ABORT_HOLD_S + 0.4),
-              "an Abort hold during the stall sends every group off")
+                    sd.STOP_HOLD_S + 0.4),
+              "a Stop hold during the stall sends every group off")
         deck.press()
         time.sleep(max(0.0, 7.0 - (time.monotonic() - t_stall2)))
         check(deck.stalled.is_set() and deck.writes == w1,
@@ -52963,13 +53049,7 @@ def test_deck_usb_stall_never_starves_the_arm_link():
         deck.stall.clear()
         deck.release.set()
         _wait(lambda: deck.writes > w1, 2)
-        # Clear the Abort latch for what follows: RESET is one press once
-        # the deck shows it.
-        time.sleep(sd.RESET_SHOWN_S + 0.3)
-        deck.press(sd.TOP_ABORT)
-        deck.press()
-        check(_wait(lambda: not c._latched_now(), 2),
-              "setup: the Abort latch is reset")
+        check(not c._latched_now(), "Stop never latched the rig")
         reset_at = time.monotonic()
         seqs = [f[1] for f in list(frames)]
         check(seqs == sorted(seqs) and len(set(seqs)) == len(seqs),
@@ -53171,8 +53251,8 @@ def test_deck_display_worker_latest_wins_and_errors_come_back():
     section("Stream Deck key images on their own thread (2026-10-21): only "
             "the newest frame waits (latest wins), a write error comes back "
             "to the input loop as an unplug, the deck is closed on the "
-            "worker's own thread, and the RESET_SHOWN_S clock starts when "
-            "the deck has been written RESET, not when it was composed")
+            "worker's own thread, and the controller keeps the newest frame "
+            "the deck was written")
     from ltcplay import streamdeck as sd
     t = [10.0]
 
@@ -53246,38 +53326,16 @@ def test_deck_display_worker_latest_wins_and_errors_come_back():
     gate.set()
     check(_wait(lambda: s.closed == 1, 2),
           "the deck is closed on the worker once the write is done")
-    # RESET is counted from the frame the deck was written, in the
-    # threaded loop (display_confirms).
-    cond = _FakeConductor()
+    # The controller keeps the newest frame the deck was written (the
+    # deck's RESET and Hold faces no longer depend on it: those keys went
+    # 2026-10-26).
     c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), ["a", "b", "c"],
-                      operator_provider=lambda: "Andy",
-                      show_running_provider=lambda: True, conductor=cond,
                       clock=lambda: t[0])
-    c.display_confirms = True
-    c._note_frame(False, t[0])            # an unlatched frame, shown later
-    old = c.frame_id
-    cond._latched = True
-    c._note_frame(True, t[0])             # RESET composed, not yet written
-    c.frame_shown((old, t[0]))
-    t[0] += sd.RESET_SHOWN_S + 1.0
-    down = [False] * 6
-    down[sd.TOP_ABORT] = True
-    c.run_once(down)
-    c.run_once([False] * 6)
-    check(cond._latched and not any(x[0] == "reset" for x in cond.calls),
-          f"RESET composed but the deck still showing ABORT: a press is an "
-          f"Abort again, never Reset: {cond.calls}")
+    c._note_frame(False, t[0])
     c.frame_shown((c.frame_id, t[0]))
-    t[0] += sd.RESET_SHOWN_S - 0.1
-    c.run_once(down)
-    c.run_once([False] * 6)
-    check(cond._latched, "written, but not yet for RESET_SHOWN_S: Abort again")
-    t[0] += 0.15
-    c.run_once(down)
-    c.run_once([False] * 6)
-    check(not cond._latched and cond.calls[-1][0] == "reset",
-          f"once the deck has shown RESET for RESET_SHOWN_S: Reset: "
-          f"{cond.calls}")
+    check(c.last_shown == (c.frame_id, t[0]), "the shown frame is kept")
+    c.frame_shown(None)
+    check(c.last_shown == (c.frame_id, t[0]), "a None leaves it as it was")
     print("  ok")
 
 
@@ -53406,9 +53464,9 @@ def test_deck_usb_meter_fault_line_and_rack_screen_chip():
 def test_deck_hold_between_shows_is_not_an_engine_fault():
     section("Stream Deck Hold (2026-10-21, the show PC: ENGINE FAULT after a "
             "Hold that worked): between shows a Hold is the scheduler's "
-            "alone and never reaches the conductor, so the deck reads the "
-            "scheduler's HOLD for its Hold or Resume key, and an answer "
-            "that the rig is already as asked is not a fault")
+            "alone and never reaches the conductor, the deck process reads "
+            "the scheduler's HOLD, and an answer that the rig is already as "
+            "asked is not a fault (the deck's own Hold key went 2026-10-26)")
     import threading
     from ltcplay import streamdeck as sd
     S = _sched()
@@ -53501,26 +53559,8 @@ def test_deck_hold_between_shows_is_not_an_engine_fault():
     st["v"] = None
     sched._poll_once()
     check(sched.held() is None, "unreachable: not known")
-    cond = _FakeConductor()
-    cond._look = "BETWEEN"
-    held = {"v": True}
-    c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), ["a", "b", "c"],
-                      operator_provider=lambda: "Jeff",
-                      show_running_provider=lambda: False, conductor=cond,
-                      held_provider=lambda: held["v"])
-    down = [False] * 6
-    down[sd.TOP_HOLD] = True
-    c.run_once(down)
-    c.run_once([False] * 6)
-    check(cond.calls[-1][0] == "resume",
-          f"the scheduler on hold, the conductor BETWEEN: the Hold key "
-          f"sends Resume: {cond.calls}")
-    held["v"] = None
-    c.run_once(down)
-    c.run_once([False] * 6)
-    check(cond.calls[-1][0] == "hold",
-          f"the scheduler not known and the conductor BETWEEN: Hold: "
-          f"{cond.calls}")
+    # The deck itself has no Hold key since 2026-10-26: Hold is the Rack
+    # screen's, which the engine checks above.
     print("  ok")
 
 
@@ -55463,62 +55503,6 @@ def _deck_chip_in_chromium(chrome, page, status, cut_off=False, after=None):
         srv.shutdown()
         srv.server_close()
         shutil.rmtree(prof, ignore_errors=True)
-
-
-def test_deck_hold_key_does_what_the_deck_showed():
-    section("Stream Deck Hold key (review of PR #79, P2-2): with the keys "
-            "written on their own thread, a press of the Hold key does what "
-            "the deck last SHOWED: an operator who sees HOLD sends Hold, "
-            "never a Resume that was only composed")
-    from ltcplay import streamdeck as sd
-    if _pillow_missing("the Stream Deck's Hold key face"):
-        print("  ok")
-        return
-    t = [10.0]
-    cond = _FakeConductor()
-    c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), ["a", "b", "c"],
-                      operator_provider=lambda: "Jeff",
-                      show_running_provider=lambda: True, conductor=cond,
-                      clock=lambda: t[0])
-    c.display_confirms = True
-    fonts = sd.Fonts()
-    fonts.text_block = lambda *a, **kw: None
-    down = [False] * 6
-    down[sd.TOP_HOLD] = True
-
-    def press():
-        c.run_once(down)
-        c.run_once([False] * 6)
-        return cond.calls[-1][0]
-    c.draw(fonts, True, 0)
-    c.frame_shown((c.frame_id, t[0]))           # HOLD shown
-    cond._look = "HELD"                          # paused from another screen
-    c.draw(fonts, True, 0)                       # RESUME composed, not shown
-    check(press() == "hold",
-          f"the deck still shows HOLD: the press is a Hold, not a Resume: "
-          f"{cond.calls}")
-    cond._look = "HELD"
-    c.draw(fonts, True, 0)
-    c.frame_shown((c.frame_id, t[0]))           # RESUME shown
-    check(press() == "resume", f"RESUME shown: Resume: {cond.calls}")
-    cond._look = "PLAYING"
-    c.draw(fonts, True, 0)                       # HOLD composed, not shown
-    check(press() == "resume",
-          "the face the operator saw decides, both ways (the engine answers "
-          "an unneeded Resume with nothing to do)")
-    c.frame_shown((c.frame_id, t[0]))
-    check(press() == "hold", "HOLD shown again: Hold")
-    c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), ["a"],
-                       operator_provider=lambda: "Jeff",
-                       show_running_provider=lambda: True,
-                       conductor=_FakeConductor())
-    c2.display_confirms = True
-    c2.conductor._look = "HELD"
-    c2.run_once(down)
-    c2.run_once([False] * 6)
-    check(c2.conductor.calls[-1][0] == "hold",
-          "before any frame has been shown a press is a Hold, the safe one")
-    print("  ok")
 
 
 def test_deck_arm_journal_never_holds_the_arm_lock():
@@ -65232,7 +65216,6 @@ if __name__ == "__main__":
     test_deck_purge_fire_stops_when_its_loop_is_not_alive()
     test_deck_purge_fire_stop_never_waits_on_a_post()
     test_deck_key_write_the_deck_did_not_take()
-    test_deck_hold_key_does_what_the_deck_showed()
     test_deck_arm_journal_never_holds_the_arm_lock()
     test_api_conductor_reports_audio_loss()
     test_live_show_refuses_the_page_transport()
@@ -65299,6 +65282,7 @@ if __name__ == "__main__":
     test_morning_default_wave_flamer_is_never_purged()
     test_morning_fireball_is_never_purged()
     test_morning_fireball_group_is_never_purged()
+    test_morning_unknown_multi_channel_group_is_never_purged()
     test_witness_checker_rules()
     test_purge_frame_on_the_flame_link()
     test_purge_rules_at_the_engine()
