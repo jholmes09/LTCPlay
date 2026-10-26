@@ -1045,6 +1045,9 @@ function machineLook(m, mo, flames, purge){
   // purged by the engine; its notes say why, in one line.
   if(m.kind === "waver" && (m.pan == null || m.tilt == null))
     return {cls:sel ? "sel" : "", word:"Never purged: no pan, tilt and fire map yet"};
+  // A fireball is never purged (its channels are a sequence); the engine
+  // refuses a click on it.
+  if(m.kind === "fireball") return {cls:"", word:"Never purged: a fireball has no purge sequence yet"};
   if(!sel) return {cls:"", word:"Off"};
   const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
   const armed = !!(g && g.armed === "armed" && flames && !flames.stale);

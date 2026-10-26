@@ -7674,7 +7674,7 @@ def build():
   '        handle, existed = got\n        if existed:',
   '        handle, existed = got\n        if False:'),
 
- ("flame groups: more than 3 groups pass at start",
+ ("flame groups: more than 4 groups pass at start",
   "ltcplay/fire_ice.py",
   "    if len(groups) > FLAME_GROUP_LIMIT:",
   "    if len(groups) > 99:"),
@@ -8529,6 +8529,78 @@ def build():
   "ltcplay/morning.py",
   '''            if ms and all(m.purge_refusal() for m in ms):''',
   '''            if False:'''),
+
+ ("morning: a fireball is purged with one value on every slot (fuel, air, "
+  "valve and ignite at once)",
+  "ltcplay/morning.py",
+  '''        if self.kind == "fireball":
+            return NO_FIREBALL_PURGE
+''',
+  ''''''),
+
+ ("morning: a click on a fireball arms its group for a purge",
+  "ltcplay/morning.py",
+  '''        if m.purge_refusal() == NO_FIREBALL_PURGE:
+            # Never armed for a purge at all''',
+  '''        if False:
+            # Never armed for a purge at all'''),
+
+ ("morning: a fireball in the purge selection asks the deck to arm its group",
+  "ltcplay/morning.py",
+  '''            if m.purge_refusal() == NO_FIREBALL_PURGE:
+                continue''',
+  '''            if False:
+                continue'''),
+
+ ("morning: the default fireball is split into one machine per channel",
+  "ltcplay/morning.py",
+  '''        if kind == "fireball":
+            # One fireball is one machine''',
+  '''        if False:
+            # One fireball is one machine'''),
+
+ ("morning page: a fireball tile reads like a G-Flame (Off, FIRING)",
+  "ltcplay/web/remote.html",
+  '''  if(m.kind === "fireball") return''',
+  '''  if(false) return'''),
+
+ ("deck: five flame groups are accepted",
+  "ltcplay/streamdeck.py",
+  "        if not (1 <= len(group_names) <= GROUP_LIMIT):",
+  "        if not (1 <= len(group_names) <= 99):"),
+
+ ("deck: the flamesafe config loader accepts five groups",
+  "ltcplay/streamdeck.py",
+  "    if not (1 <= len(names) <= GROUP_LIMIT):",
+  "    if not (1 <= len(names) <= 99):"),
+
+ ("deck: the screen-only fourth group follows the front row key",
+  "ltcplay/streamdeck.py",
+  "        return i < len(GROUP_KEYS) and bool(self._prev_keys[GROUP_KEYS[i]])",
+  "        return bool(self._prev_keys[GROUP_KEYS[i % len(GROUP_KEYS)]])"),
+
+ ("deck: Abort leaves the screen-only fourth group armed",
+  "ltcplay/streamdeck.py",
+  '''        self.arm.set_all(False)
+        self.arm.send(self.names)
+        now = self._clock()
+        self._disarmed_at = [now] * len(self.names)
+        who = self.operator_provider() or ""
+        if again:''',
+  '''        for _g in range(min(len(self.names), len(GROUP_KEYS))):
+            self.arm.set_group(_g, False)
+        self.arm.send(self.names)
+        now = self._clock()
+        self._disarmed_at = [now] * len(self.names)
+        who = self.operator_provider() or ""
+        if again:'''),
+
+ ("deck: nobody is told which flame group has no key",
+  "ltcplay/streamdeck.py",
+  '''        if extra:
+            self._log(f"Stream Deck: {', '.join(extra)} "''',
+  '''        if False:
+            self._log(f"Stream Deck: {', '.join(extra)} "'''),
 
  ("morning: a fire heartbeat gap never ends the press (T2)",
   "ltcplay/morning.py",
@@ -9849,27 +9921,23 @@ def build():
  ('deck stall: a stuck key image write drops an arm hold again',
   'ltcplay/streamdeck.py',
   '        for i in range(len(self.names)):\n'
-  '            gk = GROUP_KEYS[i]\n'
-  '            if self._prev_keys[gk]:\n'
+  '            if self._key_down(i):\n'
   '                if self._arm_holds[i].fired(now):',
   '        for i in range(len(self.names)):\n'
-  '            gk = GROUP_KEYS[i]\n'
   '            if self.usb is not None and self.usb.worst_s(now) > 0.25:\n'
   '                self._arm_holds[i].release()\n'
-  '            if self._prev_keys[gk]:\n'
+  '            if self._key_down(i):\n'
   '                if self._arm_holds[i].fired(now):'),
 
  ('deck stall: a stuck key image write releases a held FIRE again',
   'ltcplay/streamdeck.py',
   '        for i in range(len(self.names)):\n'
-  '            gk = GROUP_KEYS[i]\n'
-  '            if self._prev_keys[gk]:\n'
+  '            if self._key_down(i):\n'
   '                if self._arm_holds[i].fired(now):',
   '        if self.usb is not None and self.usb.worst_s(now) > 0.25:\n'
   '            self._fire_release("a key image write is stuck")\n'
   '        for i in range(len(self.names)):\n'
-  '            gk = GROUP_KEYS[i]\n'
-  '            if self._prev_keys[gk]:\n'
+  '            if self._key_down(i):\n'
   '                if self._arm_holds[i].fired(now):'),
 
  ('deck stall: FIRE heartbeats ignore a frozen input loop',

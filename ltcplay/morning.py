@@ -173,6 +173,13 @@ def fixture_pairing(group):
 # the lamps still work. The reason, word for word, is on the page.
 NO_PURGE_MAP = ("no pan, tilt and fire map yet (set it in "
                 "ltcplay_morning.json machines)")
+# A fireball (Jeff, 2026-10-26: fuel charge, air charge, valve open and
+# ignite) is never purged and never armed for one: its channels are a
+# sequence, and writing one purge value to all of them at once is not one
+# (it could open the valve and ignite on a fuel charge nobody asked for).
+# No config can turn this on: a fireball purge needs its own design and
+# review first (MORNING.md). purge.fireball in the config is not used.
+NO_FIREBALL_PURGE = "a fireball has no purge sequence yet"
 
 
 class Machine:
@@ -203,7 +210,10 @@ class Machine:
 
     def purge_refusal(self):
         """Why this machine is never purged, or "": a waver needs its pan
-        and tilt slots (the head goes straight up first) and a fire map."""
+        and tilt slots (the head goes straight up first) and a fire map; a
+        fireball is never purged (NO_FIREBALL_PURGE)."""
+        if self.kind == "fireball":
+            return NO_FIREBALL_PURGE
         if self.kind == "waver" and (self.pan is None or self.tilt is None
                                      or not self.fire):
             return NO_PURGE_MAP
@@ -235,7 +245,9 @@ def default_machines(groups):
     for g in groups:
         kind = _kind_for(g["name"])
         bank = _bank_for(g["name"], kind)
-        notes = f"Never purged: {NO_PURGE_MAP}." if kind == "waver" else ""
+        notes = f"Never purged: {NO_PURGE_MAP}." if kind == "waver" else \
+            f"Never purged: {NO_FIREBALL_PURGE}." if kind == "fireball" \
+            else ""
         saf = g.get("safeties") or []
         if len(saf) > 1:
             # A multi-safety group (2026-10-26): one machine per fixture,
@@ -256,6 +268,13 @@ def default_machines(groups):
                                    f"{g['name']} {n}", kind, g["name"],
                                    pairs[s], bank=bank, notes=notes,
                                    safety=s))
+            continue
+        if kind == "fireball":
+            # One fireball is one machine: its fire slots (fuel, air,
+            # valve, ignite) are one fixture, so locking it locks them all.
+            out.append(Machine(_slug(g["name"]), g["name"], kind,
+                               g["name"], list(g["fire"]), bank=bank,
+                               notes=notes))
             continue
         for n, slot in enumerate(g["fire"], 1):
             many = len(g["fire"]) > 1
@@ -934,6 +953,11 @@ class Purge:
                        action="purge", outcome="deselected", screen=device)
             return 200, {"ok": True, "text": f"{m.name} off the purge.",
                          "selected": list(self.selected)}
+        if m.purge_refusal() == NO_FIREBALL_PURGE:
+            # Never armed for a purge at all: its group is not asked for.
+            return 409, {"error": f"{m.name} is never purged: "
+                                  f"{NO_FIREBALL_PURGE}. Nothing was "
+                                  f"armed."}
         why = self._refusal(device, seen_ok)
         if why:
             return 409, {"error": why}
@@ -967,7 +991,8 @@ class Purge:
 
     def groups_wanted(self):
         """flamesafe group indices the selection needs armed, for the deck.
-        A locked machine, or one in a fully locked group, never counts."""
+        A locked machine, or one in a fully locked group, never counts,
+        and neither does a fireball (never purged, never armed for one)."""
         cfg = self._cfg()
         names = list(self._names() or [])
         want = set()
@@ -976,6 +1001,8 @@ class Purge:
         for mid in sel:
             m = cfg.by_id.get(mid)
             if m is None or self._lockout.is_locked("machine", mid):
+                continue
+            if m.purge_refusal() == NO_FIREBALL_PURGE:
                 continue
             if m.group in names:
                 want.add(names.index(m.group))
@@ -1040,7 +1067,10 @@ class Purge:
                         continue
                     fire = w["fire"]
                 elif m.kind == "fireball":
-                    fire = p["fireball"]["fire"]
+                    # Belt (purge_refusal above is the rule): one value on
+                    # every slot of a fireball is never written.
+                    waiting.append(f"{m.name}: {NO_FIREBALL_PURGE}")
+                    continue
                 else:
                     fire = p["gflame_fire"]
                 for slot in m.fire:

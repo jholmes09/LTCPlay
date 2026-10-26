@@ -718,9 +718,10 @@ def refuse_alert_pixels_on_flame_channels(show_file, name, pixels):
             f"that is not the flame controller's.")
 
 
-# The Stream Deck's arm keys (streamdeck.GROUP_KEY_LIMIT; not imported, so
-# this module never loads the deck).
-FLAME_GROUP_LIMIT = 3
+# The flame groups the Stream Deck reaches (streamdeck.GROUP_LIMIT: three
+# on its arm keys, a fourth from a screen only; not imported, so this
+# module never loads the deck).
+FLAME_GROUP_LIMIT = 4
 
 
 def check_flame_groups(folder, cfg):
@@ -744,8 +745,9 @@ def check_flame_groups(folder, cfg):
         raise FireIceConfigError(f"{path}: it lists no flame groups.")
     if len(groups) > FLAME_GROUP_LIMIT:
         raise FireIceConfigError(
-            f"{path} lists {len(groups)} flame groups; the Stream Deck has "
-            f"{FLAME_GROUP_LIMIT} arm keys. Put the heads into at most "
+            f"{path} lists {len(groups)} flame groups; the Stream Deck "
+            f"reaches at most {FLAME_GROUP_LIMIT} (three on its arm keys, "
+            f"the fourth from a screen only). Put the heads into at most "
             f"{FLAME_GROUP_LIMIT} groups.")
     owner, names = {}, set()
     for i, g in enumerate(groups):

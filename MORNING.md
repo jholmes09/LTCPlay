@@ -22,8 +22,8 @@ rule written there.
    `fire_hold_ms` and `frame_stale_ms` cutoffs stand behind that. No time
    limit on a purge (Jeff). Fire is the same fire value a G-Flame cue
    carries; a Waver's head goes straight up first (placeholder pan and
-   tilt values, a placeholder settle time); the Fireball has placeholder
-   values. Every value is in `ltcplay_morning.json` (`purge`).
+   tilt values, a placeholder settle time). A Fireball is never purged
+   (below). Every value is in `ltcplay_morning.json` (`purge`).
 3. **Groups**, with Jeff's exact names: Ground G-Flames, Scaffold G-Flames,
    Scaffold Wavers, Fireball. A group button is a fast multi-select
    (nothing saved); every machine can also be clicked on its own; any
@@ -69,6 +69,51 @@ rule written there.
 | Purge arming from a network device | `ltcplay_remote.json` | `screen_arming` (the existing switch) |
 | Purge arming at all | `ltcplay_remote.json` | `purge_arming` (default true) |
 | flamesafe's lockout file | `flamesafe.json` | `lockout_file` (left out: `ltcplay_lockout.json` beside flamesafe.json, which on the show PC is the engine's file; `false` switches it off) |
+
+### The fireball (Jeff, 2026-10-26)
+
+A fireball has four channels in universe 300: Fuel Charge 55, Air Charge
+56, Valve Open 57, Ignite 58, and its safety on 99. In flamesafe it is one
+more group, with one safety slot like a G-Flame group; its arm value comes
+from a `safety_profile` Jeff gives it:
+
+```json
+{"name": "fireball", "safety": 99, "fire": [55, 56, 57, 58]}
+```
+
+On this page it is one machine of kind `fireball` in that group. It names
+no `safety` (the group has one safety slot, so locking the machine locks
+its four fire slots and flamesafe holds the group disarmed):
+
+```json
+{"id": "fireball", "name": "Fireball", "kind": "fireball", "group": "fireball", "fire": [55, 56, 57, 58]}
+```
+
+With no `machines` list the page builds exactly that one machine from
+flamesafe's group (one machine per fireball, never one per channel).
+
+**A fireball is never purged.** Its channels are a sequence (charge, then
+open, then ignite), and the purge writes one value to every slot at once,
+which is not a valid sequence and could be dangerous. The tile says "Never
+purged: a fireball has no purge sequence yet"; a click on it is refused and
+arms nothing; a fire press never writes a value to it. No setting turns
+this on: a fireball purge needs its own design and safety review first.
+`purge.fireball` in `ltcplay_morning.json` is still accepted, so an older
+file loads, and it is not used.
+
+The Stream Deck has three arm keys and no free key, so a fourth flamesafe
+group (the fireball) has no key: it is armed from the Rack screen (Arming
+from a screen on), disarmed there, by Disarm all flame groups, or by any
+Abort, the deck's included. The first three groups keep their keys.
+
+**Show cues and the safety slot.** The show's flame values reach flamesafe
+on the flame link exactly as for the other groups: the flame controller's
+channels 1 to 512 from the FSEQ are slots 1 to 512, so 55 to 58 are carried
+when the flame controller in `xlights_networks.xml` has at least 58
+channels. flamesafe writes slot 99 itself, from its arm state only: a value
+the FSEQ or xLights has on channel 99 is never sent (CONTRACT.md, "What the
+wire carries"). The flame controller's span must still reach 99: `ltc serve`
+refuses at start a group whose safety or fire slot is past it.
 
 A flame group with a safety slot for each fixture (flamesafe multi-safety, the wave flamer) has one machine per fixture, and locking one locks that fixture's safety slot with its fire slots. With no `machines` list the pairing comes from the slot layout, never the list order: a fixture's fire slots are the ones directly below its safety slot (channels 1 to 5 fire, channel 6 safety). If the layout does not say, the whole group is one machine and locking it locks every slot. In a `machines` list each machine of such a group must name its own `safety`, and its slots must be on that fixture.
 
@@ -259,6 +304,7 @@ the page shows queued, sent and the last error.
 | T11 | The deck stays re-mapped after the page closes (FIRE where START was) | the deck's morning mode follows the engine's `morning_open` flag, which the engine clears 2 s after the last page beat from a device that may purge (a view-only device's beats do not count); a stale `deck-input` (0.3 s) also ends it |
 | T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0.5 s at least) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
 | T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
+| T16 | A purge writes one value to every channel of a fireball (fuel, air, valve and ignite at once) | `Machine.purge_refusal` refuses every fireball; `purge-select` refuses it (its group is never armed for a purge); `groups_wanted` never lists it; the purge frame writes nothing for it, twice over; a fire press on nothing else is a clean refusal |
 | T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |
 | T15 | A laser lights while disarmed or locked out, or after an Abort or Hold | default disarmed at every start (DisableLaserOutput sent); EnableLaserOutput and the unblank only with every laser armed and none locked out (the laser gate, and again before every unblank packet); Abort and Hold disarm at the press on every surface and the conductor; Resume and Reset never re-arm; the night closing and the engine stopping disarm; a disarm cuts an enable or a restore short; the allow-list in beyond.py holds exactly brightness 0/100 and the two output switches with no argument |
 
@@ -324,7 +370,9 @@ still hold.
 - The laser mechanism and each laser's addresses or cues, and the low
   power level (`lasers` in `ltcplay_morning.json`).
 - The real machine list and channel map (Andy), the Waver head-up pan and
-  tilt values and settle time, the Fireball values (`machines`, `purge`).
+  tilt values and settle time (`machines`, `purge`).
+- The fireball's arm value (its `safety_profile` in flamesafe's config),
+  and whether a fireball should ever be purged, and if so its sequence.
 - Whether a purge should be allowed from an iPad on the show network
   (today: only with `screen_arming` true).
 - Andy's checklist steps and the list of names (`checklists`, `names`).

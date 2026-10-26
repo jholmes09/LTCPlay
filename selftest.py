@@ -26918,11 +26918,13 @@ def test_streamdeck_pure_logic():
           "like the approved demo")
 
     try:
-        sd.Controller(_FakeArmSocket(4), _FakeStatusSocket(),
-                     ["a", "b", "c", "d"])
-        check(False, "4 group names were accepted (the deck has 3 arm keys)")
+        sd.Controller(_FakeArmSocket(5), _FakeStatusSocket(),
+                     ["a", "b", "c", "d", "e"])
+        check(False, "5 group names were accepted (the deck reaches 4: 3 "
+                     "on its arm keys, 1 from a screen)")
     except ValueError as e:
-        check("3" in str(e) or "arm key" in str(e), str(e))
+        check("at most 4" in str(e) and "3 on its arm keys" in str(e),
+              str(e))
 
 
 class _FakeArmSocket:
@@ -34288,7 +34290,7 @@ def test_beyond_lasers_dark_when_the_engine_stops():
 def test_flame_groups_are_a_settings_change_only():
     section("fire & ice: the flame groups live in flamesafe's config only; "
             "renaming or regrouping there changes the deck's labels, and an "
-            "edit that cannot work (more than 3 groups, a channel in two "
+            "edit that cannot work (more than 4 groups, a channel in two "
             "groups, a head the layout does not have) is refused at start "
             "in a sentence")
     import json as _json
@@ -34327,8 +34329,21 @@ def test_flame_groups_are_a_settings_change_only():
                  dict(good[1], fire=[413, 414, 421]), good[2]]
         check(refusal(moved) == "", "a head moved to another group passes")
         four = good + [{"name": "spare", "safety": 404, "fire": [441]}]
-        e = refusal(four)
-        check("4 flame groups" in e and "3 arm keys" in e, e)
+        check(refusal(four) == "",
+              "a fourth group passes (the fireball, 2026-10-26: the deck "
+              "reaches it from a screen only)")
+        check(sd.load_flamesafe_link(fs)[5] ==
+              ["stage left", "stage right", "finale", "spare"],
+              "the deck is given all four names, in config order")
+        five = four + [{"name": "extra", "safety": 405, "fire": [451]}]
+        e = refusal(five)
+        check("5 flame groups" in e and "at most 4" in e, e)
+        try:
+            sd.load_flamesafe_link(fs)
+            check(False, "the deck accepted five groups")
+        except ValueError as e5:
+            check("5 flamesafe group(s)" in str(e5) and
+                  "at most 4" in str(e5), f"the deck refuses five: {e5}")
         twice = [good[0], dict(good[1], fire=[413, 411]), good[2]]
         e = refusal(twice)
         check("channel 411 is in both stage left and stage right" in e, e)
@@ -34339,7 +34354,7 @@ def test_flame_groups_are_a_settings_change_only():
         import contextlib
         import io
         from ltcplay import cli as _cli
-        write(four)
+        write(five)
         with open(os.path.join(work, "ltcplay_fire_ice.json"), "w") as fh:
             _json.dump({"flamesafe_config": fs,
                         "flame_controller": "Flames"}, fh)
@@ -34349,11 +34364,11 @@ def test_flame_groups_are_a_settings_change_only():
             rc = _cli._cmd_serve(types.SimpleNamespace(
                 folder=show, schedule=os.path.join(
                     work, "ltcplay_schedule.json")))
-        check(rc and "3 arm keys" in out.getvalue(),
+        check(rc and "at most 4" in out.getvalue(),
               f"ltc serve refuses it in a sentence: {rc} {out.getvalue()!r}")
         same = [good[0], dict(good[1], name="stage left"), good[2]]
         check("both called 'stage left'" in refusal(same), "duplicate name")
-        for e in (refusal(four), refusal(twice), refusal(unknown)):
+        for e in (refusal(five), refusal(twice), refusal(unknown)):
             check("—" not in e and "–" not in e, f"no dashes: {e}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -41961,6 +41976,11 @@ t(machineLook(wv, mo, fl, {selected:["w9"], firing:true}).word === "Never purged
 t(machineLook(wv, mo, fl, {selected:[], firing:false}).word.indexOf("Never purged") === 0, "and says so when not selected");
 t(machineLook(Object.assign({}, wv, {pan:432, tilt:433}), mo, fl, {selected:["w9"], firing:true}).cls === "firing", "a waver with pan and tilt reads as before");
 t(machineLook(wv, {lockout:{machines:{w9:{}}}}, fl, null).cls === "locked", "locked still beats it");
+// A fireball is never purged: the tile says so, never FIRING, locked still beats it.
+const fbm = {id:"fb", name:"Fireball", kind:"fireball", group:"front row", pan:null, tilt:null};
+t(machineLook(fbm, mo, fl, {selected:["fb"], firing:true}).word === "Never purged: a fireball has no purge sequence yet", "a fireball: never purged, never FIRING");
+t(machineLook(fbm, mo, fl, {selected:[], firing:false}).word.indexOf("Never purged") === 0, "and says so when not selected");
+t(machineLook(fbm, {lockout:{machines:{fb:{}}}}, fl, null).cls === "locked", "a locked fireball reads locked");
 // The laser arm's one line (Jeff, 2026-10-22): never "on" unless the engine says every laser is armed.
 const L1 = {id:"l1", name:"Laser 1", armed:false}, L2 = {id:"l2", name:"Laser 2", armed:false};
 t(laserArmLine({lasers:[L1, L2]}).indexOf("DISARMED, every laser") >= 0, "none armed: DISARMED");
@@ -44702,6 +44722,183 @@ class _FakeScreen:
         return out
 
 
+def test_stream_deck_fourth_group_is_screen_only():
+    """Jeff's fireball (2026-10-26): a fourth flamesafe group. The deck is
+    a Stream Deck Mini with no free key, so the fourth group gets NO key:
+    keys 3, 4 and 5 stay the first three groups exactly as before, and the
+    fourth is armed only by a screen hold (with every rule a key has) and
+    disarmed by a screen disarm or any Abort. Five groups are refused."""
+    section("Stream Deck: a fourth flame group (the fireball) has no key; "
+            "the three keys are unchanged; it arms from a screen only, with "
+            "the hold, the refractory window, the latch and the operator "
+            "gate; Abort and a screen disarm take it down")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer", "fireball"]
+    arm = _FakeArmSocket(4)
+    status = _FakeStatusSocket()
+    events = []
+    t = [100.0]
+    op = ["Andy"]
+    scr = _FakeScreen()
+    c = sd.Controller(arm, status, names, operator_provider=lambda: op[0],
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0], screen=scr)
+    check(sd.GROUP_KEY_LIMIT == 3 and sd.GROUP_LIMIT == 4 and
+          sd.GROUP_KEYS == (3, 4, 5),
+          "three arm keys, four groups at most")
+    said = [e for e in events if e[1].get("outcome") == "screen-only"]
+    check(len(said) == 1 and "fireball has no key on the deck" in said[0][0]
+          and "Rack screen" in said[0][0] and "Abort" in said[0][0] and
+          "—" not in said[0][0] and "–" not in said[0][0],
+          f"the deck says at start which group has no key: {said}")
+    three = sd.Controller(_FakeArmSocket(3), status, names[:3],
+                          journal=lambda t_, **kw: events.append((t_, kw)))
+    check(not [e for e in events[len(said):]
+               if e[1].get("outcome") == "screen-only"] and
+          three.names == names[:3],
+          "three groups: nothing is said, nothing changes")
+
+    def keys(*down):
+        k = [False] * 6
+        for d in down:
+            k[d] = True
+        return k
+
+    def step(dt, held=None, group=3, hid=1, who="Andy", dev="Rack screen"):
+        t[0] += dt
+        if held is None:
+            scr.h.pop(group, None)
+        else:
+            scr.h[group] = {"group": group, "id": hid, "held_s": held,
+                            "fresh": True, "who": who, "device": dev}
+        c.screen_pass()
+        c.tick()
+
+    # Each key still arms its own group, never the fireball.
+    for gi, k in enumerate(sd.GROUP_KEYS):
+        c.run_once(keys(k))
+        t[0] += sd.ARM_HOLD_S + 0.01
+        c.tick()
+        c.run_once(keys())
+        check(arm.wanted[gi] is True and arm.wanted[3] is False,
+              f"key {k} arms {names[gi]} and only it: {arm.wanted}")
+    check(arm.sends and all(len(w) == 4 for w in arm.sends),
+          "every arm frame carries all four groups")
+    c._do_abort()
+    check(arm.wanted == [False] * 4,
+          f"the deck's Abort sends all four false: {arm.wanted}")
+    c._latched = False
+    step(sd.REARM_REFRACTORY_S + 0.1)
+    # A screen hold on the fireball: both clocks, then it arms.
+    step(0.0, 0.0, hid=1)
+    check(c._arm_holds[3]._down_at is not None,
+          "a screen hold starts the fireball's own hold timer")
+    step(sd.ARM_HOLD_S + 0.05, 0.7, hid=1)
+    check(arm.wanted[3] is False,
+          "the deck's hold has run but only 0.7 s of heartbeats: no arm")
+    step(0.1, sd.SCREEN_HOLD_S, hid=1)
+    check(arm.wanted == [False, False, False, True],
+          f"both clocks done: the fireball, and only it, armed: "
+          f"{arm.wanted}")
+    check("fireball arm pressed" in events[-1][0] and
+          events[-1][1].get("screen") == "Rack screen",
+          f"journaled with the surface: {events[-1]}")
+    # No deck key touches it: pressing every key of the bottom row only
+    # disarms nothing (they are off) and starts their own holds.
+    c.run_once(keys(3, 4, 5))
+    c.run_once(keys())
+    check(arm.wanted[3] is True, "no deck key disarms or arms the fireball")
+    # A screen disarm is an instant tap.
+    step(0.05, None)
+    scr.d.append({"id": 1, "group": 3, "who": "Jeff", "device": "Phone"})
+    step(0.01)
+    check(arm.wanted[3] is False and
+          "fireball disarm pressed on the Phone by Jeff" in events[-1][0],
+          f"a screen disarm takes the fireball down at once: {events[-1]}")
+    # The re-arm refractory window refuses a new hold.
+    step(0.1, 0.0, hid=2)
+    check(c._arm_holds[3]._down_at is None and
+          "refractory" in events[-1][0],
+          f"a hold inside the refractory window is refused: {events[-1]}")
+    step(0.05, None)
+    step(sd.REARM_REFRACTORY_S)
+    # No operator named: refused.
+    op[0] = ""
+    step(0.0, 0.0, hid=3, who="")
+    step(sd.ARM_HOLD_S + 0.1, 1.5, hid=3, who="")
+    check(arm.wanted[3] is False, "no operator: the fireball never arms")
+    step(0.05, None)
+    op[0] = "Andy"
+    # Latched: no hold even starts.
+    c._latched = True
+    step(0.0, 0.0, hid=4)
+    step(sd.ARM_HOLD_S + 0.1, 1.5, hid=4)
+    check(arm.wanted[3] is False and c._arm_holds[3]._down_at is None,
+          "while latched the fireball cannot be armed")
+    c._latched = False
+    step(0.05, None)
+    # Armed from a screen, then the deck's own Abort key (a 0.5 s hold).
+    step(0.0, 0.0, hid=5)
+    step(sd.ARM_HOLD_S + 0.05, 1.2, hid=5)
+    check(arm.wanted[3] is True, "armed again from the screen")
+    step(0.05, None)
+    c.run_once(keys(sd.TOP_ABORT))
+    t[0] += sd.ABORT_HOLD_S + 0.01
+    c.tick()
+    c.run_once(keys())
+    check(arm.wanted == [False] * 4,
+          f"the deck's Abort key disarms the screen-only fireball too: "
+          f"{arm.wanted}")
+    c._latched = False
+    # A screen hold on the fireball while the front row's key is held: the
+    # key's hold arms the front row; the fireball still waits for its full
+    # screen hold (no key of the deck stands in for it).
+    step(sd.REARM_REFRACTORY_S + 0.1)
+    step(0.0, 0.0, hid=7)
+    c.run_once(keys(sd.GROUP_KEYS[0]))
+    step(sd.ARM_HOLD_S + 0.05, 0.5, hid=7)
+    check(arm.wanted[0] is True and arm.wanted[3] is False,
+          f"the front row key's hold arms the front row, never the "
+          f"fireball's half-done screen hold: {arm.wanted}")
+    c.run_once(keys())
+    step(0.05, None)
+    c._do_abort()
+    c._latched = False
+    check(c.rearm_report()[0].get(3, 0) > 0,
+          "the fireball's re-arm wait is reported for the rack screen")
+    # Drawing four groups: only the three keys are drawn, a screen hold on
+    # the fireball draws nothing on any key, and nothing raises.
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        print("  note: Pillow is not installed here, so the drawing is not "
+              "checked on this machine.")
+        print("  ok")
+        return
+    step(sd.REARM_REFRACTORY_S + 0.1)
+    step(0.0, 0.0, hid=6)
+    step(0.2, 0.2, hid=6)
+    check(c._arm_holds[3].fraction(t[0]) > 0, "a fireball hold in progress")
+    drawn = []
+    real_arm, real_hold = sd.arm_key_image, sd.draw_group_hold
+    sd.arm_key_image = lambda fonts, d, box, name, *a, **kw: \
+        drawn.append(("look", name))
+    sd.draw_group_hold = lambda fonts, d, box, name, frac: \
+        drawn.append(("hold", name))
+    try:
+        fonts = sd.Fonts()
+        fonts.text_block = lambda *a, **kw: None
+        img = c.draw(fonts, blink_on=True, chase=0)
+    finally:
+        sd.arm_key_image, sd.draw_group_hold = real_arm, real_hold
+    check(img is not None and
+          [n for _k, n in drawn if n] == names[:3] and
+          "fireball" not in [n for _k, n in drawn],
+          f"the three keys are drawn and the fireball is not: {drawn}")
+    print("  ok")
+
+
 def test_screen_arm_deck_rules():
     section("screen arming, the Stream Deck: a screen hold is a press of the "
             "group key; it fires only after the deck's own hold AND 1 s of "
@@ -46945,6 +47142,134 @@ def test_morning_multi_safety_machines_pair_by_layout():
         except MO.MorningConfigError as e:
             check(says in str(e) and "—" not in str(e),
                   f"refused in a sentence ({says!r}): {e}")
+
+
+def test_morning_fireball_is_never_purged():
+    """Jeff's fireball (2026-10-26): Fuel Charge 55, Air Charge 56, Valve
+    Open 57, Ignite 58, safety 99. The purge writes one value to every
+    fire slot at once, which is not a fireball sequence and could be
+    dangerous, so a fireball is never purged: refused on a click (its
+    group is never armed for a purge), never listed for the deck, never
+    given a value in the frame, and the page says why. The MORNING.md
+    example parses against a flamesafe group list with the fireball."""
+    section("morning: a fireball is never purged and never armed for one; "
+            "the MORNING.md fireball machine parses against flamesafe's "
+            "four groups")
+    import json as _json
+    import re as _re
+    from ltcplay import morning as MO
+    UNI = MO.UNIVERSE_SIZE
+    reason = "a fireball has no purge sequence yet"
+    check(MO.NO_FIREBALL_PURGE == reason, "the reason, word for word")
+
+    class _Lock:
+        def is_locked(self, kind, mid):
+            return False
+
+    class _Link:
+        def __init__(self):
+            self.frames = []
+
+        def purge_set(self, vals):
+            self.frames.append(bytes(vals))
+            return True
+
+        def purge_clear(self):
+            pass
+
+    groups = [{"name": "front row", "safety": 401, "safeties": [401],
+               "fire": [411, 412]},
+              {"name": "cat-walk", "safety": 402, "safeties": [402],
+               "fire": [421]},
+              {"name": "wave flamer", "safety": [6, 12, 18],
+               "safeties": [6, 12, 18],
+               "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]},
+              {"name": "fireball", "safety": 99, "safeties": [99],
+               "fire": [55, 56, 57, 58]}]
+    names = [g["name"] for g in groups]
+    # The flamesafe group and the machine, exactly as MORNING.md gives them.
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
+    blocks = [_json.loads(b) for b in
+              _re.findall(r"```json\n(.*?)\n```", doc, _re.S)]
+    fs_group = [b for b in blocks if b.get("name") == "fireball"
+                and "safety" in b]
+    machine = [b for b in blocks if b.get("kind") == "fireball"]
+    check(fs_group == [{"name": "fireball", "safety": 99,
+                        "fire": [55, 56, 57, 58]}] and len(machine) == 1,
+          f"MORNING.md carries the fireball group and machine: {blocks}")
+    machines = MO.parse_machines(machine, "MORNING.md", groups)
+    m = machines[0]
+    check(m.kind == "fireball" and m.group == "fireball" and
+          m.fire == [55, 56, 57, 58] and m.safety is None and
+          m.channels() == {55, 56, 57, 58},
+          f"parse_machines accepts it against the four groups: {m.view()}")
+    cfg = MO.MorningConfig.parse({"machines": [
+        {"id": "g1", "name": "Ground 1", "kind": "gflame",
+         "group": "front row", "fire": [411]}] + machine,
+        "purge": {"fireball": {"fire": 200}}}, "x", groups)
+    check(cfg.banks["Fireball"] == ["fireball"] and
+          cfg.purge["fireball"]["fire"] == 200,
+          "it sits in the Fireball group; an old purge.fireball still loads")
+    for bad, why in (([55, 56, 57, 58, 99], "its safety slot as fire"),
+                     ([55, 56, 57, 59], "a slot that is not the group's")):
+        try:
+            MO.parse_machines([dict(machine[0], fire=bad)], "x", groups)
+            check(False, f"parse_machines accepted {why}")
+        except MO.MorningConfigError as e:
+            check("is not one of 'fireball''s fire slots" in str(e),
+                  f"{why} is refused: {e}")
+    # With no machines list: ONE machine for the whole fireball.
+    dflt = MO.MorningConfig.parse({}, "x", groups)
+    fb = [x for x in dflt.machines if x.group == "fireball"]
+    check(len(fb) == 1 and fb[0].id == "fireball" and
+          fb[0].fire == [55, 56, 57, 58] and fb[0].kind == "fireball" and
+          fb[0].notes == f"Never purged: {reason}." and
+          dflt.banks["Fireball"] == ["fireball"],
+          f"the default is one fireball machine, its notes say why: "
+          f"{[x.view() for x in fb]}")
+    check(m.purge_refusal() == reason and
+          cfg.by_id["g1"].purge_refusal() == "",
+          "a fireball is purge-refused; a G-Flame is not")
+    t = [100.0]
+    link = _Link()
+    fl = {"stale": False, "connected": True, "age_ms": 10,
+          "groups": [{"name": n, "armed": "armed"} for n in names]}
+    p = MO.Purge(lambda: cfg, _Lock(), lambda: link, lambda: fl,
+                 lambda: "", lambda: names, clock=lambda: t[0])
+    code, out = p.select("fireball", True, "Rack screen", True)
+    check(code == 409 and reason in out.get("error", "") and
+          p.selected == [] and p.groups_wanted() == [],
+          f"a click on the fireball is refused and arms nothing: "
+          f"{code} {out}")
+    check("—" not in out["error"] and "–" not in out["error"],
+          "no em or en dash")
+    # Even if it were in the selection (a config edited under it), its
+    # group is never asked for and no value is ever written to it.
+    p.selected = ["fireball"]
+    p.owner = "Rack screen"
+    check(p.groups_wanted() == [],
+          "a fireball in the selection never asks the deck to arm")
+    vals, firing, waiting = p.frame(t[0])
+    check(vals == bytes(UNI) and firing == [] and
+          waiting == [f"Fireball: {reason}"],
+          f"the frame writes nothing for it, with the reason: {waiting}")
+    code, out = p.fire_beat({"on": True}, "Rack screen", True)
+    check(code == 409 and reason in out.get("error", "") and
+          link.frames == [],
+          f"a fire press on only the fireball is refused cleanly: "
+          f"{code} {out}")
+    # A G-Flame beside it fires as before; the fireball's slots stay 0.
+    p.selected = ["g1", "fireball"]
+    check(p.groups_wanted() == [0], "only the G-Flame's group is asked for")
+    code, out = p.fire_beat({"on": True}, "Rack screen", True)
+    v = link.frames[-1] if link.frames else b""
+    check(code == 200 and out["firing"] == ["Ground 1"] and
+          v[410] == cfg.purge["gflame_fire"] and
+          all(v[s - 1] == 0 for s in (55, 56, 57, 58, 99)),
+          f"the G-Flame fires, every fireball slot stays zero: {code} {out}")
+    p.stop("test")
+    print("  ok")
 
 
 def test_morning_default_wave_flamer_is_never_purged():
@@ -60986,6 +61311,7 @@ if __name__ == "__main__":
     test_screen_arming_is_off_unless_switched_on()
     test_screen_arm_engine_rules()
     test_screen_arm_deck_rules()
+    test_stream_deck_fourth_group_is_screen_only()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()
@@ -61003,6 +61329,7 @@ if __name__ == "__main__":
     test_flamesafe_multi_safety_ltcplay_side()
     test_morning_multi_safety_machines_pair_by_layout()
     test_morning_default_wave_flamer_is_never_purged()
+    test_morning_fireball_is_never_purged()
     test_witness_checker_rules()
     test_purge_frame_on_the_flame_link()
     test_purge_rules_at_the_engine()

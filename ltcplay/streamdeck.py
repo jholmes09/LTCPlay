@@ -140,14 +140,24 @@ FAILURE MODES, assumptions made here (flag these in the safety review):
      matching how conductor.py's own generation counter and
      composer.assert_arm already resolve "two requests at once" for every
      other input this show has.
-  5. More than 3 flamesafe groups configured. The deck has exactly 3
-     bottom-row keys. This module refuses to start (loud error, not a
-     silent partial mapping) if given more than 3 group names: deciding
-     which real groups share a key, or which groups the deck simply cannot
-     reach, is a decision for Jeff and Andy, not a default this module
-     should guess at. flamesafe.example.json ships with 6 groups today;
-     a real deployment of this deck needs that trimmed to 3, or the deck
-     extended, before showtime.
+  5. More than 3 flamesafe groups configured. The deck (a Stream Deck
+     Mini, 6 keys) has exactly 3 bottom-row keys and no free key: the top
+     row is Start, Hold and Abort. A 4th group (Jeff's fireball,
+     2026-10-26) gets NO key and shares none: the first 3 groups in
+     flamesafe's config order keep keys 3, 4 and 5 exactly as before, and
+     a group after them is a SCREEN-ONLY group. It is armed only by a
+     screen hold (the rack screen or a listed device, through this
+     process: screen_pass, with every rule a key has: the hold, the re-arm
+     refractory window, the latch, the operator gate) and disarmed by a
+     screen disarm, Disarm all flame groups, or Abort on any surface (the
+     deck's Abort sends every group false, this one included). With
+     screen arming off (the default) it cannot be armed at all. Its state
+     is on the screens, never on the deck; a spoof mismatch on it still
+     flashes ALARM on every deck group key. No key changes meaning, no
+     page or shift key hides a group, and a 3-group config is unchanged.
+     More than GROUP_LIMIT (4) groups is still refused at start (a loud
+     error, not a silent partial mapping): which further groups the deck
+     cannot reach is a decision for Jeff and Andy.
   6. A second local process spoofing arm frames. arminput.SocketArmInput
      now locks onto the first sender it accepts, exactly like the
      flame-frame link, so a rogue frame is rejected once this deck is
@@ -249,6 +259,8 @@ ARM_SEND_HZ = 20.0          # >= the arm link's 10 Hz floor (CONTRACT.md)
 STATUS_STALE_S = 1.0        # CONTRACT.md: "ltcplay shows red for the safety
                             # program" past this
 GROUP_KEY_LIMIT = 3         # the deck's bottom row. See module docstring 5.
+GROUP_LIMIT = 4             # flame groups in all: any past the third is
+                            # screen-only (no key). See module docstring 5.
 
 # Item 8 (Jeff, 2026-10-01, safety review of PR #31): arming is now a
 # hold, like Abort; disarm stays an instant tap. ARM_HOLD_S is a little
@@ -2266,9 +2278,10 @@ class Deck:
 # constructs the real hardware and real sockets.
 # --------------------------------------------------------------------------
 class Controller:
-    """One Stream Deck. `group_names` must be 1 to GROUP_KEY_LIMIT names,
-    in flamesafe's own config order -- see module docstring, failure mode
-    5, for why this refuses more than that instead of guessing a mapping.
+    """One Stream Deck. `group_names` must be 1 to GROUP_LIMIT names, in
+    flamesafe's own config order. The first GROUP_KEY_LIMIT have keys; any
+    after them are screen-only (no key) -- see module docstring, failure
+    mode 5, for why, and why more than GROUP_LIMIT is refused.
 
     `conductor` is optional and duck-typed: .hold(who, screen),
     .resume(who, screen), .abort(who, screen), .snapshot() (for `latched`).
@@ -2294,14 +2307,15 @@ class Controller:
                 conductor=None, journal=None, clock=time.monotonic,
                 sleep=time.sleep, screen=None, user_provider=None,
                 audit=None, held_provider=None):
-        if not (1 <= len(group_names) <= GROUP_KEY_LIMIT):
+        if not (1 <= len(group_names) <= GROUP_LIMIT):
             raise ValueError(
-                f"the Stream Deck has {GROUP_KEY_LIMIT} arm keys; it was "
-                f"given {len(group_names)} flamesafe group names "
-                f"({', '.join(group_names) or 'none'}). Trim flamesafe's "
-                f"config to {GROUP_KEY_LIMIT} groups for deck control, or "
-                f"decide how more than {GROUP_KEY_LIMIT} should share a "
-                f"key before wiring this up -- this module will not guess.")
+                f"the Stream Deck reaches at most {GROUP_LIMIT} flame groups "
+                f"({GROUP_KEY_LIMIT} on its arm keys, the rest from a "
+                f"screen only); it was given {len(group_names)} flamesafe "
+                f"group names ({', '.join(group_names) or 'none'}). Trim "
+                f"flamesafe's config to {GROUP_LIMIT} groups, or decide how "
+                f"more should be reached before wiring this up. This "
+                f"program will not guess.")
         self.arm = arm_socket
         self.status = status_socket
         self.names = list(group_names)
@@ -2403,6 +2417,22 @@ class Controller:
         self._audit = audit
         self._user_seen = ("?",)
         self._user_toast_until = 0.0
+        # Module docstring 5: a group past the bottom row's keys is
+        # screen-only. Said once at start, so nobody looks for its key.
+        extra = self.names[GROUP_KEY_LIMIT:]
+        if extra:
+            self._log(f"Stream Deck: {', '.join(extra)} "
+                      f"{'has' if len(extra) == 1 else 'have'} no key on the "
+                      f"deck (it has {GROUP_KEY_LIMIT} arm keys, for "
+                      f"{', '.join(self.names[:GROUP_KEY_LIMIT])}). Arm and "
+                      f"disarm it from the Rack screen (Arming from a screen "
+                      f"must be on). Abort on the deck disarms it with every "
+                      f"other group.", action="config", outcome="screen-only")
+
+    def _key_down(self, i):
+        """Whether group `i`'s own deck key is down. Always False for a
+        screen-only group (module docstring 5): it has no key."""
+        return i < len(GROUP_KEYS) and bool(self._prev_keys[GROUP_KEYS[i]])
 
     def _user(self):
         try:
@@ -2740,7 +2770,7 @@ class Controller:
             who = str(h.get("who") or "")
             device = str(h.get("device") or "screen")
             self._vwho[i] = (who, device)
-            if self.arm.wanted[i] or self._prev_keys[GROUP_KEYS[i]]:
+            if self.arm.wanted[i] or self._key_down(i):
                 if not self.arm.wanted[i]:
                     self._report_refused(h.get("id"), "key")
                 continue            # already wanted, or the key itself is down
@@ -2881,7 +2911,7 @@ class Controller:
         self._vheld.pop(i, None)
         if i in self._vpressed:
             self._vpressed.discard(i)
-            if not self._prev_keys[GROUP_KEYS[i]]:
+            if not self._key_down(i):
                 self._arm_holds[i].release()
 
     def _on_group_press(self, i, now):
@@ -3107,8 +3137,7 @@ class Controller:
         # key's release as read, on a read or write that raises, or on the
         # input loop stopping; see DECK_STALL_RULING below.
         for i in range(len(self.names)):
-            gk = GROUP_KEYS[i]
-            if self._prev_keys[gk]:
+            if self._key_down(i):
                 if self._arm_holds[i].fired(now):
                     self._do_arm_fire(i, now)
             elif i in self._vpressed:
@@ -3369,7 +3398,8 @@ class Controller:
         abort_frac = 1.0 if latched else self._abort_hold.fraction(now)
         arm_fills = {} if latched else {
             GROUP_KEYS[i]: f for i, f in
-            enumerate(h.fraction(now) for h in self._arm_holds) if f > 0}
+            enumerate(h.fraction(now) for h in
+                      self._arm_holds[:len(GROUP_KEYS)]) if f > 0}
         draw_marquee(d, chase, abort_frac, arm_fills)
         live = abort_is_live(self._anything_armed_or_wanted(),
                              self.show_running_provider())
@@ -3471,7 +3501,9 @@ class Controller:
         else:
             fonts.show_key(d, b2, ["ABORT"], RED if live else DIM_TEXT)
         fault, _confirmed = self._top_fault_confirmed()
-        for i, name in enumerate(self.names):
+        # Only the groups with a key are drawn: a screen-only group
+        # (module docstring 5) has none.
+        for i, name in enumerate(self.names[:len(GROUP_KEYS)]):
             box = face_box(GROUP_KEYS[i])
             if self._spoof_alarm and group_blink:
                 # Item 1's visible alarm: while it is active, every group
@@ -4541,7 +4573,7 @@ def load_flamesafe_link(path):
     plain JSON (never flamesafe.config: this module must not import
     flamesafe). Returns (arm_ip, arm_port, status_ip, status_port, key,
     group_names). Raises ValueError with a plain sentence on anything
-    wrong, including more than GROUP_KEY_LIMIT groups or no arm link
+    wrong, including more than GROUP_LIMIT groups or no arm link
     configured at all."""
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
@@ -4554,13 +4586,14 @@ def load_flamesafe_link(path):
     names = [g.get("name") for g in (doc.get("groups") or [])]
     if not all(isinstance(n, str) for n in names):
         raise ValueError(f"{path}: every group needs a name.")
-    if not (1 <= len(names) <= GROUP_KEY_LIMIT):
+    if not (1 <= len(names) <= GROUP_LIMIT):
         raise ValueError(
             f"{path} configures {len(names)} flamesafe group(s) "
-            f"({', '.join(names) or 'none'}); the Stream Deck has "
-            f"{GROUP_KEY_LIMIT} arm keys. Trim the config to "
-            f"{GROUP_KEY_LIMIT} groups for deck control, or decide how "
-            f"more should share a key before wiring this up.")
+            f"({', '.join(names) or 'none'}); the Stream Deck reaches at "
+            f"most {GROUP_LIMIT}: {GROUP_KEY_LIMIT} on its arm keys and the "
+            f"rest from a screen only. Trim the config to {GROUP_LIMIT} "
+            f"groups, or decide how more should be reached before wiring "
+            f"this up.")
     return (link.get("arm_ip", link.get("listen_ip", "127.0.0.1")),
             int(link["arm_port"]), link.get("status_ip", "127.0.0.1"),
             int(link["status_port"]), link["key"], names)
