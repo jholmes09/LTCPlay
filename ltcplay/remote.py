@@ -1144,6 +1144,9 @@ class Remote:
         self._deck_refused = {}
         self._version = None         # version_line(), once asked
         self.audio_watch = None      # audiowatch.AudioInterfaceWatch, F&I
+        # The rack screen's Weather block (weather.py, WEATHER.md), set by
+        # web.serve. Display only; None: the block says it is not running.
+        self.weather = None
         # The Windows supervisor's word on the disk (housekeeping.py writes
         # disk-low.txt in the settings folder while it is low or critical,
         # and removes it when it is fine again). Read at most every 30 s.
@@ -1290,6 +1293,12 @@ class Remote:
             return 200, self.deck_input(query)
         if name == "status":
             return 200, self.status(ctx)
+        if name == "weather":
+            # Display only: what the weather thread last stored.
+            from . import weather as weather_mod
+            w = self.weather
+            return 200, (w.view() if w is not None
+                         else weather_mod.view_when_missing())
         if name == "network":
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}

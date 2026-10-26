@@ -12142,6 +12142,103 @@ def build():
   "            return 409, {\"error\": stale, \"stale\": True}\n",
   ""),
 
+ # The Weather block (weather.py, WEATHER.md; 2026-10-26). Display only;
+ # each is a way the wind readout could mislead an operator.
+ ("weather: the mesonet's knots are shown as mph",
+  "ltcplay/weather.py",
+  "    return {\"speed_mph\": speed * KNOT_MPH,",
+  "    return {\"speed_mph\": speed,"),
+
+ ("weather: km/h from the NWS are shown as mph",
+  "ltcplay/weather.py",
+  "    if u in (\"km_h-1\", \"km/h\", \"kmh\"):\n        return v * KMH_MPH",
+  "    if u in (\"km_h-1\", \"km/h\", \"kmh\"):\n        return v"),
+
+ ("weather: degrees round down to the compass point",
+  "ltcplay/weather.py",
+  "    return COMPASS[int(math.floor((float(deg) % 360) / 22.5 + 0.5)) % 16]",
+  "    return COMPASS[int(math.floor((float(deg) % 360) / 22.5)) % 16]"),
+
+ ("weather: a measured reading over 45 min old still shows its number",
+  "ltcplay/weather.py",
+  "        elif age is None or age > dead_s:",
+  "        elif age is None:"),
+
+ ("weather: a measured reading over 20 min old is not STALE",
+  "ltcplay/weather.py",
+  "            line.update(level=\"stale\" if age > stale_s else \"ok\",",
+  "            line.update(level=\"ok\","),
+
+ ("weather: a forecast over 3 h old is not STALE",
+  "ltcplay/weather.py",
+  "        line.update(level=\"stale\" if age > fstale_s else \"ok\",",
+  "        line.update(level=\"ok\","),
+
+ ("weather: sources 30 mph apart do not disagree",
+  "ltcplay/weather.py",
+  "        if hi[1] - lo[1] > cfg[\"disagree_mph\"]:",
+  "        if False:"),
+
+ ("weather: a Wind Chill Warning shows as a wind alert",
+  "ltcplay/weather.py",
+  "    return (\"wind\" in n and \"chill\" not in n) or n in FIRE_EVENTS",
+  "    return (\"wind\" in n) or n in FIRE_EVENTS"),
+
+ ("weather: an alert that has ended is still shown",
+  "ltcplay/weather.py",
+  "                if a.get(\"ends\") is None or a[\"ends\"] > now]",
+  "                ]"),
+
+ ("weather: no internet is never said",
+  "ltcplay/weather.py",
+  "    if tried and all(x.get(\"error\") and x.get(\"offline\") for x in tried):",
+  "    if False:"),
+
+ ("weather: a failed source is hammered every minute",
+  "ltcplay/weather.py",
+  "        return min(self.every[name], RETRY_FIRST_S * 2 ** max(0, fails - 1))",
+  "        return RETRY_FIRST_S"),
+
+ ("weather: a restart forgets the saved values",
+  "ltcplay/weather.py",
+  "                s[\"data\"] = ent[\"data\"]",
+  "                pass"),
+
+ ("weather: another station's saved reading is shown as this one's",
+  "ltcplay/weather.py",
+  "            if isinstance(ent, dict) and ent.get(\"key\") == self._key(name) \\",
+  "            if isinstance(ent, dict) \\"),
+
+ ("weather: a slow drip answer is waited out",
+  "ltcplay/weather.py",
+  "                if clock() > deadline:",
+  "                if False:"),
+
+ ("weather: an unknown setting is quietly ignored",
+  "ltcplay/weather.py",
+  "    for k in block:\n        if k not in DEFAULTS:\n            raise",
+  "    block = {k: v for k, v in block.items() if k in DEFAULTS}\n"
+  "    for k in block:\n        if k not in DEFAULTS:\n            raise"),
+
+ ("weather: another venue's engine shows Lehi's wind",
+  "ltcplay/weather.py",
+  "    if not default_on and not has_block(folder):\n        return None",
+  "    if False:\n        return None"),
+
+ ("weather: the page keeps old numbers when the engine goes quiet",
+  "ltcplay/web/remote.html",
+  "  if(heardAgoS > dead) return one(",
+  "  if(false) return one("),
+
+ ("weather: the page drops the STALE word",
+  "ltcplay/web/remote.html",
+  "(lv === \"stale\" ? \"STALE. \" : \"\")",
+  "\"\""),
+
+ ("weather: the engine's route answers no weather",
+  "ltcplay/remote.py",
+  "            return 200, (w.view() if w is not None\n",
+  "            return 200, (w.view() if False\n"),
 ]
 
 
