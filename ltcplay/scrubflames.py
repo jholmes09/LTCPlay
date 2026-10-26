@@ -28,7 +28,8 @@ The rules, in one place:
     zero.
   - The seek guard, always (flamelink.SEEK_SETTLE_S, REHEARSE_DRIFT_S):
     every transport command is a landing however small (the player's
-    transport_moves), and so is a position off the time that passed by
+    transport_moves, a seqlock: transport_at is a position paired with
+    the count read before it, written only between moves), and so is a position off the time that passed by
     more than 0.15 s. After a landing, and after turning it on, every flame
     value is zero until the position has run steadily for 0.5 s, and each
     channel already up where it landed stays zero until it has been seen
