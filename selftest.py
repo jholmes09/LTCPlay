@@ -49049,15 +49049,19 @@ def test_calibrate_all_lasers_rules_and_order():
     check(not ok and not lt3.on and not sent and
           "Laser 1 (locked out)" in text and "Laser 5 (locked out)" in text,
           f"a lockout that raises: every laser skipped as locked: {text}")
-    # MORNING.md's example lasers entry is valid JSON and a valid laser.
+    # MORNING.md's example lasers entry is valid JSON (inside {}) and a
+    # valid laser.
     import re as _re
     import json as _json
     md = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "MORNING.md"), encoding="utf-8").read()
     sec = md[md.find("### How to set up the laser calibration cue"):]
-    ex = _re.findall(r"```json\n(.*?)\n```", sec, _re.S)
+    # A plain block (not ```json: the fireball test reads every json
+    # block of the file as a whole document), a fragment of the file.
+    ex = _re.findall(r"```\n(.*?)\n```", sec, _re.S)
     try:
-        got = LT.parse_lasers(_json.loads(ex[0])["lasers"], "MORNING.md")
+        got = LT.parse_lasers(_json.loads("{" + ex[0] + "}")["lasers"],
+                              "MORNING.md")
         ok_ex = got[0].mechanism == "osc" and got[0].on and got[0].off
     except Exception as e:                       # noqa: BLE001
         ok_ex = f"{type(e).__name__}: {e}"
