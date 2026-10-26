@@ -42373,6 +42373,10 @@ function measure(tag){
   // At 1920x1080 and a laptop's 1366x768 the operator sees every group's
   // buttons without scrolling.
   out.flames_visible_at_load = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= innerHeight);
+  // And clear of the sticky Abort bar, which covers the window's bottom.
+  const abTop = document.getElementById("abortbar").getBoundingClientRect().top;
+  out.flames_clear_of_abort = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= abTop + 0.5);
+  out.setup_folded = !!document.querySelector("#setup.folded");
   const ctl = {"Abort": "b-abort", "Hold": "b-hold", "Disarm all flame groups": "b-disarm", "Disarm all lasers": "lz-disarm"};
   for(const k in ctl){
     const el = document.getElementById(ctl[k]);
@@ -42538,7 +42542,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                     {"local": True, "device": "this PC (rack screen)",
                      "fresh_s": 2.0}))
             if p == "/api/remote/status":
-                st = dict(status)
+                # A callable status changes from one poll to the next.
+                st = dict(status() if callable(status) else status)
                 st["served_at"] = int(time.time() * 1000)
                 return self._out(200, json.dumps(st))
             if p in routes:
@@ -42696,8 +42701,11 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
     check(bar.get("position") == "sticky" and bar.get("bottom") == "0" and
           bar.get("background") == "var(--bg)",
           f"the Abort bar stays on the bottom edge, opaque: {bar}")
-    check((_css_rule(rules, ".view:not(#v-show)") or {}).get("contain") ==
-          "size", "the other screens keep their own inner scrolling")
+    # Startup sets the page's height too (Jeff, 2026-10-26: it shrank its
+    # text to 9 px at 1280x800 instead of scrolling).
+    check((_css_rule(rules, ".view:not(#v-show):not(#v-morning)") or {}
+           ).get("contain") == "size",
+          "the other screens keep their own inner scrolling")
     for need in ('<div class="alsum" id="al-sum" hidden>',
                  '<button class="ghost" id="al-more" aria-expanded="false">',
                  '<div id="al-body"><div id="al-list"></div>',
@@ -42857,8 +42865,10 @@ def _rack_status_no_show_file():
     return st
 
 
-NO_SHOW_FILE_LINE = ("No show file yet. Arming, disarming and programming "
-                     "flames still work; playing a show needs one.")
+NO_SHOW_FILE_LINE = ("No show file yet. Arming and disarming flames still "
+                     "work. Live flame programming needs "
+                     "xlights_networks.xml in the show folder; playing a "
+                     "show needs a show file.")
 
 
 def test_rack_screen_flame_controls_need_no_show_file():
@@ -42873,9 +42883,44 @@ def test_rack_screen_flame_controls_need_no_show_file():
                 encoding="utf-8").read()
     check(".flames{display:none}" not in page.replace(" ", ""),
           "no rule hides the flame groups")
-    check(NO_SHOW_FILE_LINE in page, "the page has the no-show-file line")
-    check("\u2014" not in NO_SHOW_FILE_LINE and
-          "\u2013" not in NO_SHOW_FILE_LINE, "no dashes")
+    import shutil as _sh
+    import subprocess as _sp
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function noFileLine" in logic, "noFileLine is pure page logic")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const su = {show_files:0, show_file_errors:[]};
+const live = {flames:{connected:true, stale:false, groups:[{name:"a"}]}, arming:{enabled:true}};
+const nominal = noFileLine(su, live);
+console.log(JSON.stringify({nominal}));
+t(noFileLine({show_files:1}, live) === "", "a show file: nothing");
+t(noFileLine(null, live) === "", "no setup view (an iPad): nothing");
+const off = noFileLine(su, {flames:live.flames, arming:{enabled:false}});
+t(/arming from this screen is switched off/.test(off) && /Disarming flames still works/.test(off) && !/Arming and disarming/.test(off), "screen arming off: says so: " + off);
+const stale = noFileLine(su, {flames:{connected:true, stale:true, groups:[{name:"a"}]}, arming:{enabled:true}});
+t(/flamesafe is not reporting/.test(stale) && /Disarm all and Abort still work/.test(stale) && !/Arming and disarming/.test(stale), "flamesafe stale: says so: " + stale);
+const bad = noFileLine({show_files:0, show_file_errors:["night.json: no cues"]}, live);
+t(/^No show file loads yet \(night\.json: no cues\)\./.test(bad), "a show file that does not load: says why: " + bad);
+t(!/[\u2013\u2014]/.test(nominal + off + stale + bad), "no dashes");
+console.log(JSON.stringify(out));
+"""
+        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        lines = r.stdout.strip().splitlines()
+        try:
+            nominal = json.loads(lines[0])["nominal"]
+            bad = json.loads(lines[-1])
+        except (ValueError, IndexError, KeyError):
+            nominal, bad = None, None
+        check(r.returncode == 0 and bad == [],
+              f"noFileLine, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
+        check(nominal == NO_SHOW_FILE_LINE,
+              f"flamesafe live and screen arming on: {nominal!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -42904,6 +42949,48 @@ def test_rack_screen_flame_controls_need_no_show_file():
               f"above the groups")
         check(m.get("nofile") == NO_SHOW_FILE_LINE,
               f"{w}x{h}: the no-show-file line is said: {m.get('nofile')!r}")
+        # Review of #113, P2-d: with the card capped, every group's Hold
+        # to arm and Disarm is on the screen without scrolling.
+        check(m.get("flames_visible_at_load") and
+              m.get("flames_clear_of_abort"),
+              f"{w}x{h}: every group's buttons on the screen at load and "
+              f"clear of the Abort bar, the getting-started card (folded to "
+              f"one line) above them: {m['lamps']}")
+        check(m.get("setup_folded") is True,
+              f"{w}x{h}: flamesafe reports groups: the card is folded")
+    # Review of #113, P2-d: no show file and flamesafe stale, or screen
+    # arming off: the groups are still drawn, Hold to arm is off and says
+    # why, the line says what is missing, Abort and Disarm all pressable.
+    for name, change, small, line in (
+            ("flamesafe stale", {"flames": "stale"}, "",
+             "flamesafe is not reporting"),
+            ("screen arming off", {"arming": "off"}, "arming off",
+             "arming from this screen is switched off")):
+        st = _rack_status_no_show_file()
+        if change.get("flames") == "stale":
+            st["flames"] = dict(st["flames"], stale=True, age_ms=None,
+                                groups=[dict(g, armed="unknown")
+                                        for g in st["flames"]["groups"]])
+        if change.get("arming") == "off":
+            st["arming"] = dict(st["arming"], enabled=False)
+        got = _rack_screen_in_chromium(chrome, page, st, ((1366, 768),),
+                                       measure_js=_LAMP_WORDS_JS)
+        res = got[(1366, 768)]
+        if not check(isinstance(res, list) and res,
+                     f"{name}: drawn: {res!r}"):
+            continue
+        m = res[-1]
+        check(len(m["lamps"]) == 3 and all(
+            l["shown"] and l["disabled"] and small in l["small"] and l["title"]
+            for l in m["lamps"]),
+            f"no show file, {name}: three groups drawn, Hold to arm shown "
+            f"but off, saying why: {m['lamps']}")
+        check(line in (m.get("nofile") or ""),
+              f"no show file, {name}: the line says what is missing: "
+              f"{m.get('nofile')!r}")
+        check(not m["problems"],
+              f"no show file, {name}: Abort and Disarm all pressable: "
+              f"{m['problems']}")
     # A show file present: the line is gone.
     st = _rack_status_no_show_file()
     st["setup"] = dict(st["setup"], show_files=1, ready=True)
@@ -42914,6 +43001,506 @@ def test_rack_screen_flame_controls_need_no_show_file():
               f"a show file: no line, the groups as before: "
               f"{res[0].get('nofile')!r} {res[0]['problems'][:4]}")
     print("  ok")
+
+
+# Each flame group's Hold to arm: shown, off, its small line and its
+# tooltip, sampled every 200 ms for 3 s (a re-arm wait counting down).
+_LAMP_WORDS_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function hits(el){
+  el.scrollIntoView({block:"center", inline:"nearest"});
+  const r = el.getBoundingClientRect(), bad = [];
+  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  if(!at || !(el === at || el.contains(at))) bad.push("covered by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
+  return bad;
+}
+function snap(t){
+  const out = {t:t, lamps:[], problems:[], note:(document.getElementById("arm-note") || {}).textContent || "",
+    nofile:shown(document.getElementById("nofile")) ? document.getElementById("nofile").textContent : null};
+  document.querySelectorAll("#fl-lamps .lamp").forEach(lp => {
+    const b = lp.querySelector("[data-arm]");
+    out.lamps.push({name:(lp.querySelector("b") || {}).textContent, shown:shown(b), disabled:!!(b && b.disabled),
+      small:b ? b.querySelector("small").textContent : "", title:b ? b.title : "",
+      why:(lp.querySelector(".why") || {}).textContent || "", word:b ? b.querySelector(".word").textContent : ""});
+  });
+  for(const id of ["b-abort", "b-disarm"]){
+    const el = document.getElementById(id);
+    if(!shown(el)) out.problems.push(id + " not shown"); else for(const b of hits(el)) out.problems.push(id + " " + b);
+  }
+  scrollTo(0, 0);
+  return out;
+}
+function go(){
+  if(!document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 50);
+  const res = [], t0 = Date.now();
+  const tick = () => {
+    res.push(snap(Date.now() - t0));
+    if(Date.now() - t0 < 3000) return setTimeout(tick, 200);
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify(res);
+    document.body.appendChild(pre);
+  };
+  setTimeout(tick, 400);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_rack_screen_says_the_rearm_wait():
+    section("rack screen and Startup page (Jeff, 2026-10-26, the Pico): a "
+            "quick re-arm after a Disarm says 'Re-arm in 1.5 s' counting "
+            "down from the Stream Deck's refractory window and flamesafe's "
+            "dwell_s (aged by the status), keeps Hold to arm off meanwhile, "
+            "then says 'ready: hold to arm'; a hold or a purge click the "
+            "wait refused says so plainly. Words only: nothing arms by "
+            "itself")
+    import shutil as _sh
+    import subprocess as _sp
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as SD
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    # The engine: the deck's words, parsed and aged; display only.
+    check(RM.deck_rearm("usb_ms=3&rearm=0.1500,2.300&prefused=1.refractory,"
+                        "2.bogus,x.refractory") ==
+          ({0: 1500, 2: 300}, {1: "refractory"}),
+          "deck_rearm reads rearm and prefused, known codes only")
+    check(RM.deck_rearm("rearm=0.99999999") == ({0: RM.DECK_REARM_MAX_MS}, {})
+          and RM.deck_rearm("rearm=a.b,&prefused=") == ({}, {}) and
+          RM.deck_rearm(None) == ({}, {}), "deck_rearm never raises, capped")
+
+    class _E:
+        pass
+    e = _E()
+    clock = [100.0]
+    e.clock = lambda: clock[0]
+    e._deck_rearm = ({0: 1500}, {2: "refractory"}, 100.0)
+    fl = {"groups": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}
+    clock[0] = 100.4
+    RM.Remote._rearm_words(e, fl)
+    check([g["rearm_ms"] for g in fl["groups"]] == [1100, 0, 0] and
+          [g["purge_refused"] for g in fl["groups"]] == ["", "", "refractory"],
+          f"the status carries each group's wait, aged, and the refusal: "
+          f"{fl['groups']}")
+    clock[0] = 100.0 + RM.DECK_REARM_FRESH_S + 0.1
+    RM.Remote._rearm_words(e, fl)
+    check(all(g["rearm_ms"] == 0 and g["purge_refused"] == ""
+              for g in fl["groups"]),
+          "a deck gone quiet: nothing is said")
+    # The deck: its refractory window and a refused purge arm, reported.
+    sk = SD.ScreenKeys("http://127.0.0.1:1")
+    sk.report_rearm = lambda: ({0: 1500, 2: 300}, {1: "refractory"})
+    p = sk._path()
+    check("rearm=0.1500,2.300" in p and "prefused=1.refractory" in p,
+          f"the deck's read carries rearm and prefused: {p}")
+    sk.report_rearm = lambda: 1 / 0
+    check("rearm" not in sk._path(), "a report that raises says nothing")
+
+    class _Bad(dict):
+        def keys(self):
+            raise RuntimeError("changed size during iteration")
+
+        def __iter__(self):
+            raise RuntimeError("changed size during iteration")
+
+        def items(self):
+            raise RuntimeError("changed size during iteration")
+    sk.report_rearm = lambda: ({0: 1500}, _Bad({1: "refractory"}))
+    p = sk._path()
+    check("rearm=0.1500" in p and "prefused" not in p,
+          f"review of #115, P2-1: a refusal copy that fails never drops the "
+          f"waits: {p}")
+    sk.report_rearm = lambda: (_Bad({0: 1500}), {1: "refractory"})
+    p = sk._path()
+    check("prefused=1.refractory" in p and "rearm=" not in p,
+          f"nor the other way round: {p}")
+    # The page's pure words.
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    for f in ("function rearmLeftMs", "function rearmText",
+              "function machineWait"):
+        check(f in logic, f"{f} is pure page logic")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(rearmText(1500) === "Re-arm in 1.5 s" && rearmText(1401) === "Re-arm in 1.5 s" && rearmText(50) === "Re-arm in 0.1 s", "rounded UP to a tenth: " + rearmText(1401));
+t(rearmLeftMs({armed:"disarmed", rearm_ms:1500}, 0, 0) === 1500, "the deck's window");
+t(rearmLeftMs({armed:"disarmed", rearm_ms:1500}, 400, 0) === 1100, "aged by the status's age on the page");
+t(rearmLeftMs({armed:"held", reason:"re-arm dwell", dwell_s:1}, 200, 100) === 700, "flamesafe's dwell, aged by its frame and the status");
+t(rearmLeftMs({armed:"held", dwell_s:1, rearm_ms:1800}, 0, 0) === 1800, "the longer of the two");
+t(rearmLeftMs({armed:"armed", rearm_ms:1500}, 0, 0) === 0, "armed: no wait");
+t(rearmLeftMs({armed:"disarmed", rearm_ms:300}, 900, 0) === 0, "over: 0, never negative");
+t(rearmLeftMs(null, 0, 0) === 0, "no group: 0");
+const m = {id:"m1", group:"front row"}, purge = {selected:["m1"]};
+const fl = g => ({stale:false, age_ms:0, groups:[Object.assign({name:"front row", armed:"disarmed"}, g)]});
+t(machineWait(m, fl({rearm_ms:1500}), purge, 0) === "Re-arm in 1.5 s", "a selected tile counts the wait down");
+t(machineWait(m, fl({purge_refused:"refractory"}), purge, 0) === REARM_REFUSED_PURGE, "a refused purge arm says so");
+t(/Press Clear, then click it again/.test(REARM_REFUSED_PURGE), "and how to try again");
+t(machineWait(m, fl({rearm_ms:1500}), {selected:[]}, 0) === "", "not selected: nothing");
+t(machineWait({id:"m1", group:"front row", kind:"waver"}, fl({rearm_ms:1500}), purge, 0, true) === "", "a default wave flamer is never purged (#116): no wait words");
+t(machineWait(m, fl({armed:"armed", rearm_ms:1500}), purge, 0) === "", "armed: nothing");
+t(machineWait(m, Object.assign(fl({rearm_ms:1500}), {stale:true}), purge, 0) === "", "flamesafe stale: nothing");
+t(REARM_REFUSED === "Refused: the re-arm wait was not over. Hold again." && REARM_READY === "ready: hold to arm", "the words");
+// Review of #115, P1-a: an Abort standing never counts down, never "ready".
+t(armWaitWords(2000, true, true, true) === "Press Reset first" && armWaitWords(0, true, true, true) === "Press Reset first", "Abort standing: Press Reset first, no countdown, never ready");
+t(armWaitWords(1500, false, true, true) === "Re-arm in 1.5 s", "a wait: counted down");
+t(armWaitWords(0, false, true, true) === REARM_READY && armWaitWords(0, false, true, false) === null && armWaitWords(0, false, false, true) === null, "ready only after a wait and when arming is possible");
+t(machineWait(m, fl({rearm_ms:1500}), purge, 0, true) === "Press Reset first", "a tile while an Abort stands: Press Reset first");
+// P1-b: a latched refusal never says "wait".
+t(holdRefusalWords("latched", 1500, false) === REFUSED_LATCHED && !/wait/.test(REFUSED_LATCHED), "latched: Press Reset, never the wait: " + REFUSED_LATCHED);
+t(holdRefusalWords("refractory", 0, true) === REFUSED_LATCHED, "an Abort standing wins over the wait");
+t(holdRefusalWords("refractory", 0, false) === REARM_REFUSED && holdRefusalWords("", 900, false) === REARM_REFUSED, "the wait: its code, or no code while a wait runs");
+t(holdRefusalWords("operator", 900, false) === null && holdRefusalWords("", 0, false) === null, "anything else: the engine's own sentence");
+console.log(JSON.stringify(out));
+"""
+        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"the re-arm words, in node: {r.stdout[-800:]!r} "
+              f"{r.stderr[-400:]!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    for f in ("function armWaitWords", "function holdRefusalWords"):
+        check(f in logic, f"{f} is pure page logic")
+    for need in ('const said = holdRefusalWords(e.code, rearmLeftMs(',
+                 'armSay(said, 2);',
+                 'const w = armWaitWords(left, aborted, ',
+                 'if(!(HOLD && HOLD.group === i)) ab.disabled = true;'):
+        check(need in page, f"the page has {need!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    # The show screen: front row was just disarmed (the deck's window,
+    # 1.5 s) for the first few polls, then the wait is over.
+    polls = [0]
+
+    def status():
+        polls[0] += 1
+        st = _rack_status_pico(many=False)
+        st["alerts"] = []
+        gs = [dict(g, rearm_ms=0, purge_refused="")
+              for g in st["flames"]["groups"]]
+        if polls[0] <= 3:
+            gs[0]["rearm_ms"] = 1500
+        st["flames"] = dict(st["flames"], groups=gs)
+        return st
+    got = _rack_screen_in_chromium(chrome, page, status, ((1366, 768),),
+                                   measure_js=_LAMP_WORDS_JS)
+    res = got[(1366, 768)]
+    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
+        first, last = res[0]["lamps"][0], res[-1]["lamps"][0]
+        check(first["disabled"] and
+              _re_match(r"^Re-arm in 1\.[0-5] s$", first["small"]),
+              f"during the wait: Hold to arm off, counting down: {first}")
+        check(not last["disabled"] and last["small"] == "ready: hold to arm",
+              f"after it: on, and says it is ready: {last}")
+        check(all(not l["disabled"] and l["small"] == "hold to arm"
+                  for l in res[0]["lamps"][1:]),
+              f"the other groups are untouched: {res[0]['lamps'][1:]}")
+        seen = [s["lamps"][0]["small"] for s in res]
+        check(any(x.startswith("Re-arm in") for x in seen) and
+              seen[-1] == "ready: hold to arm",
+              f"the countdown, as drawn: {seen}")
+    # Review of #115, P1-a: an Abort from the deck's key starts every
+    # group's 2 s window and stands until Reset: no countdown, never ready.
+    polls2 = [0]
+
+    def aborted():
+        polls2[0] += 1
+        st = status()
+        st["schedule"] = dict(st["schedule"], aborted=True, state="ABORTED")
+        st["flames"] = dict(st["flames"], groups=[
+            dict(g, rearm_ms=2000 if polls2[0] <= 3 else 0)
+            for g in st["flames"]["groups"]])
+        return st
+    got = _rack_screen_in_chromium(chrome, page, aborted, ((1366, 768),),
+                                   measure_js=_LAMP_WORDS_JS)
+    res = got[(1366, 768)]
+    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
+        seen = sorted({l["small"] for snap in res for l in snap["lamps"]})
+        check(seen == ["Press Reset first"],
+              f"an Abort standing through a re-arm wait and after it: every "
+              f"lamp says Press Reset first, never a countdown or ready: "
+              f"{seen}")
+    # The Startup page: m1 and m2 (front row) selected, the deck refused
+    # their purge arm; m4 (cat-walk) selected, its wait running.
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    gs = [dict(g, rearm_ms=0, purge_refused="")
+          for g in st["flames"]["groups"]]
+    gs[0]["purge_refused"] = "refractory"
+    gs[1]["rearm_ms"] = 60000
+    st["flames"] = dict(st["flames"], groups=gs)
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True}
+    mo = _morning_view_pico(selected=["m1", "m4"])
+    got = _rack_screen_in_chromium(
+        chrome, page, st, ((1280, 800),), measure_js=_STARTUP_MEASURE_JS,
+        frag="#morning", routes={"/api/remote/morning": mo})
+    res = got[(1280, 800)]
+    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
+        tiles = {t["id"]: t for t in res[0]["tiles"]}
+        check(tiles["m1"]["wait"].startswith("Refused: the re-arm wait was "
+                                             "not over."),
+              f"a refused purge arm says so on its tile: {tiles['m1']}")
+        check(_re_match(r"^Re-arm in [0-9]+\.[0-9] s$", tiles["m4"]["wait"]),
+              f"a running wait counts down on its tile: {tiles['m4']}")
+        check(tiles["m7"]["wait"] == "", f"an unselected tile: nothing: "
+                                         f"{tiles['m7']}")
+        check(not res[0]["problems"] and not res[0]["small"],
+              f"still readable, nothing overlapping: {res[0]['problems']} "
+              f"{res[0]['small'][:4]}")
+    print("  ok")
+
+
+def test_streamdeck_reports_rearm_wait_and_purge_refusal():
+    section("Stream Deck (Jeff, 2026-10-26): each group's re-arm "
+            "refractory window and a purge arm refused for it are reported "
+            "for the rack screen's words; arming is decided exactly as "
+            "before (a refused purge group arms only when it enters the "
+            "list again)")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    t = [0.0]
+    view = {"open": True, "purge_enabled": True,
+            "purge": {"wanted_groups": [0]}}
+
+    class Scr:
+        def morning(self):
+            return view
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      clock=lambda: t[0], screen=Scr())
+    c._disarmed_at[0] = 0.0
+    t[0] = 0.5
+    c.purge_pass(t[0])
+    check(arm.wanted == [False, False, False],
+          "a purge arm inside the refractory window is refused, as before")
+    check(c.rearm_report() == ({0: 1500}, {0: "refractory"}),
+          f"and reported: the wait left and the refusal: {c.rearm_report()}")
+    t[0] = 3.0
+    c.purge_pass(t[0])
+    check(arm.wanted == [False, False, False] and
+          c.rearm_report() == ({}, {0: "refractory"}),
+          f"the wait over, the group still listed: not armed (it arms only "
+          f"on entering the list, unchanged), still reported refused: "
+          f"{arm.wanted} {c.rearm_report()}")
+    view["purge"] = {"wanted_groups": []}
+    c.purge_pass(t[0])
+    check(c.rearm_report() == ({}, {}), "out of the list: nothing reported")
+    view["purge"] = {"wanted_groups": [0]}
+    c.purge_pass(t[0])
+    check(arm.wanted == [True, False, False] and c.rearm_report() == ({}, {}),
+          f"clicked again after the wait: armed, nothing refused: "
+          f"{arm.wanted} {c.rearm_report()}")
+    print("  ok")
+
+
+_ABORT_EDGE_JS = r"""
+<script>
+(function(){
+function go(){
+  if(!document.querySelector("#fl-lamps .lamp") && !document.querySelector("#mo-field .mach")) return setTimeout(go, 100);
+  setTimeout(() => {
+    const ab = document.getElementById("b-abort"), out = {vh:innerHeight, pad:getComputedStyle(document.documentElement).getPropertyValue("--pad-bottom").trim(), at:[]};
+    for(const y of [0, 1e6]){
+      scrollTo(0, y);
+      const r = ab.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      out.at.push({scroll:y, top:Math.round(r.top), bottom:Math.round(r.bottom), h:Math.round(r.height), hit:!!hit && (hit === ab || ab.contains(hit))});
+    }
+    scrollTo(0, 0);
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify([out]);
+    document.body.appendChild(pre);
+  }, 800);
+}
+go();
+})();
+</script>
+"""
+
+
+def _taskbar_js(over):
+    """The Pico's screen as the page sees it: a window `over` CSS px taller
+    than the work area above the taskbar (2026-10-26). Always set: headless
+    Chromium reports an 800x600 screen whatever the window's size."""
+    return ("<script>(function(){const h = innerHeight || 800;"
+            "Object.defineProperty(window, 'outerHeight', {get: () => h});"
+            "Object.defineProperty(window, 'screenY', {get: () => 0});"
+            "Object.defineProperty(screen, 'availTop', {get: () => 0});"
+            "Object.defineProperty(screen, 'height', {get: () => h});"
+            f"Object.defineProperty(screen, 'availHeight', {{get: () => h - {over}}});"
+            "})();</script>")
+
+
+def test_rack_window_fits_the_work_area_above_the_taskbar():
+    section("rack screen window (Jeff, 2026-10-26, the Pico: 2560x1600 at "
+            "200 percent, the window -13,-13 to 2573,1613 ran 96 px under "
+            "the always-on-top taskbar and cut ABORT in half): the "
+            "supervisor sizes the Edge window to the show monitor's WORK "
+            "AREA in Edge's 96 dpi pixels; the page keeps the Abort bar "
+            "clear of any part of the window still under the taskbar")
+    W, SUP, gone = _winpkg()
+    try:
+        check(SUP.dip_rect((0, 0, 2560, 1504), 192) == (0, 0, 1280, 752) and
+              SUP.dip_rect((0, 0, 2560, 1504), 96) == (0, 0, 2560, 1504) and
+              SUP.dip_rect((2560, 0, 4480, 1040), 144) ==
+              (1707, 0, 2986, 693) and
+              SUP.dip_rect((0, 0, 1920, 1040), None) == (0, 0, 1920, 1040) and
+              SUP.dip_rect((0, 0, 1920, 1040), 0) == (0, 0, 1920, 1040),
+              "dip_rect: real pixels to Edge's 96 dpi pixels, rounded "
+              "inward; an odd dpi is 96")
+        check(SUP.work_area((0, 0, 2560, 1600), (0, 0, 2560, 1504)) ==
+              (0, 0, 2560, 1504) and
+              SUP.work_area((0, 0, 2560, 1600), (0, 0, 0, 0)) ==
+              (0, 0, 2560, 1600) and
+              SUP.work_area((0, 0, 1920, 1080), (0, 0, 1920, 1200)) ==
+              (0, 0, 1920, 1080) and
+              SUP.work_area((0, 0, 1920, 1080), (0, 40, 1920, 1080)) ==
+              (0, 40, 1920, 1080),
+              "work_area: the display less the taskbar (any edge); an empty "
+              "or odd work area is the display")
+        before = SUP.rack_page_command(7878, 1, [(0, 0, 1280, 800)], "e", "p")
+        after = SUP.rack_page_command(7878, 1, [(0, 0, 2560, 1504, 192)],
+                                      "e", "p")
+        check("--window-size=1280,800" in before,
+              f"before: the whole display (1280x800 at 200 percent): {before}")
+        check("--window-size=1280,752" in after and
+              after[-1] == "--window-position=0,0" and
+              "--start-maximized" in after,
+              f"the Pico: the work area above the 96 px taskbar, 1280x752 "
+              f"in Edge's pixels (2560x1504 real): {after}")
+        two = SUP.rack_page_command(7878, 2, [(0, 0, 2560, 1504, 192),
+                                              (2560, 0, 4480, 1040, 96)],
+                                    "e", "p")
+        check("--window-size=1920,1040" in two and
+              two[-1] == "--window-position=2560,0",
+              f"a second display, its own work area and dpi: {two}")
+        check(SUP.rack_page_command(7878, 1, [], "e", "p", bottom_pad=1000
+                                    )[1].endswith("?pad_bottom=160") and
+              SUP.PAGE_BOTTOM_PAD_MAX == 160,
+              "review of #115, P2-2: page_bottom_pad is capped at 160")
+        mixed = SUP.rack_page_command(7878, 2, [(0, 0, 2560, 1504, 192),
+                                                (2560, 0, 5440, 1560, 144)],
+                                      "e", "p")
+        check("--window-size=1920,1040" in mixed and
+              mixed[-1] == "--window-position=2560,0",
+              f"review of #115, P2-3: a 150 percent display beside a 200 "
+              f"percent one: its size in Edge's pixels, its place its own "
+              f"real corner (never a scaled one that could land on the "
+              f"other display): {mixed}")
+        pad = SUP.rack_page_command(7878, 1, [], "e", "p", bottom_pad=48)
+        check(pad[1] == "--app=http://127.0.0.1:7878/remote?pad_bottom=48" and
+              SUP.rack_page_command(7878, 1, [], "e", "p",
+                                    bottom_pad="x")[1].endswith("/remote") and
+              SUP.rack_page_command(0, 1, [], "e", "p", url="file:///r.html",
+                                    bottom_pad=48)[1] == "--app=file:///r.html",
+              f"page_bottom_pad goes to the page as pad_bottom: {pad}")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "packaging", "windows", "supervisor.py"),
+                   encoding="utf-8").read()
+        for need in ("mi.rcWork", "SetThreadDpiAwarenessContext",
+                     "GetDpiForMonitor", '"page_bottom_pad": 0,',
+                     'bottom_pad=cfg.get("page_bottom_pad", 0))'):
+            check(need in src, f"the supervisor has {need!r}")
+    finally:
+        gone()
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    import shutil as _sh
+    import subprocess as _sp
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function bottomPad" in logic, "bottomPad is pure page logic")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(bottomPad({availTop:0, availHeight:704, height:800}, {screenY:0, outerHeight:800}, 0) === 96, "96 px under the taskbar: 96");
+t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:-7, outerHeight:820}, 0) === 61, "the Pico: the whole display and its border, 61 CSS px under the taskbar's 48");
+t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:-8, outerHeight:768}, 0) === 0, "a maximized window's own 8 px border: 0");
+t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:752}, 0) === 0, "a window that fits: 0");
+t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:752}, 30) === 30, "the supervisor's pad_bottom is the floor");
+t(bottomPad({availTop:0, availHeight:600, height:600}, {screenY:0, outerHeight:1080}, 0) === 0, "a screen smaller than the window with no taskbar band (headless): 0");
+t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:1400}, 0) === 0, "far past the taskbar's band: not a taskbar, 0");
+t(bottomPad({availTop:0, availHeight:100, height:400}, {screenY:0, outerHeight:400}, 0) === 160, "never more than 160 (review of #115, P2-2)");
+t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:752}, 1000) === 160 && PAD_MAX === 160, "nor the supervisor's pad_bottom");
+t(bottomPad({}, {}, 0) === 0 && bottomPad(null, null, 12) === 12, "nothing known: the floor");
+console.log(JSON.stringify(out));
+"""
+        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"bottomPad, in node: {r.stdout[-600:]!r} {r.stderr[-300:]!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": False,
+                     "purge_enabled": True, "open": True}
+    said = []
+    for frag, what in (("", "show screen"), ("#morning", "Startup page")):
+        for over in (0, 96):
+            got = _rack_screen_in_chromium(
+                chrome, page, st, ((1280, 800),), measure_js=_ABORT_EDGE_JS,
+                head_js=_taskbar_js(over), frag=frag,
+                routes={"/api/remote/morning": _morning_view_pico()})
+            res = got[(1280, 800)]
+            if not check(isinstance(res, list) and res,
+                         f"{what}, {over} px under the taskbar: drawn: "
+                         f"{res!r}"):
+                continue
+            m = res[0]
+            said.append(f"{what} overlap {over}: ABORT bottom "
+                        f"{max(a['bottom'] for a in m['at'])} of {m['vh']}")
+            for a in m["at"]:
+                check(a["bottom"] <= m["vh"] - over and a["top"] >= 0 and
+                      a["h"] >= 44 and a["hit"],
+                      f"{what}, {over} px of the window under the taskbar, "
+                      f"scrolled {a['scroll']}: the whole ABORT button is "
+                      f"above it and pressable: {a} (window {m['vh']}, pad "
+                      f"{m['pad']})")
+            if not over:
+                check(m["pad"] == "0px" and all(
+                    a["bottom"] >= m["vh"] - 20 for a in m["at"]),
+                    f"{what}, a window that fits: no extra room, ABORT on "
+                    f"the bottom edge: {m}")
+    print("  measured: " + "; ".join(said))
+    print("  ok")
+
+
+def _re_match(pat, s):
+    import re as _re
+    return bool(_re.match(pat, s or ""))
 
 
 def _morning_view_pico(selected=(), firing=False):
@@ -43011,7 +43598,8 @@ function measure(){
   document.querySelectorAll("#mo-field .mach").forEach(el => {
     const b = el.querySelector("b"); const px = parseFloat(getComputedStyle(b).fontSize);
     out.tile_px = Math.min(out.tile_px, px);
-    out.tiles.push({id:el.dataset.id, px:px, w:Math.round(el.getBoundingClientRect().width), word:el.querySelector(".w").textContent});
+    out.tiles.push({id:el.dataset.id, px:px, w:Math.round(el.getBoundingClientRect().width), word:el.querySelector(".w").textContent,
+      wait:(el.querySelector(".wait") || {}).textContent || ""});
   });
   // The panels never overlap each other.
   const panels = ["mo-groups", "mo-field", "mo-firebar", "mo-shut"].map(id => document.getElementById(id))
@@ -43038,6 +43626,9 @@ function measure(){
   scrollTo(0, 0);
   for(const b of hits(ab)) out.problems.push("Abort: " + b);
   scrollTo(0, 0);
+  // A drop-down has the keyboard: Space is its own (review of #113, P2-c).
+  const nm = document.getElementById("mo-name"), fn = document.getElementById("mo-focus");
+  if(nm){ nm.focus(); out.focus_select = shown(fn) ? fn.textContent : null; nm.blur(); }
   return out;
 }
 function go(){
@@ -43102,6 +43693,68 @@ def test_startup_page_says_hold_space_and_this_page_selected():
                   f"{m['focus']!r}")
         check(m["nofile"] == NO_SHOW_FILE_LINE,
               f"the no-show-file line on the Startup page: {m['nofile']!r}")
+        if has:
+            check(m.get("focus_select") == "Space does nothing in a text "
+                  "box: click the machine map, then hold Space",
+                  f"a drop-down has the keyboard: it says Space is its own: "
+                  f"{m.get('focus_select')!r}")
+    # Review of #113, P2-c: purge arming off, or not allowed now: no line
+    # about Space at all, focus or not.
+    for name, change in (("purge arming off", {"purge_enabled": False}),
+                         ("not allowed now", {"live_refusal": "a show is "
+                                                              "running"})):
+        mo2 = dict(mo, **change)
+        got = _rack_screen_in_chromium(
+            chrome, page, st, ((1280, 800),), measure_js=_STARTUP_MEASURE_JS,
+            head_js=_NO_FOCUS_JS, frag="#morning",
+            routes={"/api/remote/morning": mo2})
+        res = got[(1280, 800)]
+        if check(isinstance(res, list) and res, f"{name}: drawn: {res!r}"):
+            check(res[0]["focus"] is None and res[0].get("focus_select") is None,
+                  f"{name}: no Space line: {res[0]['focus']!r}")
+    print("  ok")
+
+
+def test_startup_page_readable_at_the_show_pc_sizes():
+    section("Startup page (Jeff, 2026-10-26, the Pico at 1280x800): the "
+            "machine map, lasers, engine checks, checklists and Shutdown "
+            "never shrink text under 14 px or a machine tile's label under "
+            "16 px; panels stack and the page scrolls instead; nothing "
+            "overlaps; the Abort bar stays on the window. Drawn in a real "
+            "browser at 1280x800, 1366x768 and 1920x1080")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True}
+    mo = _morning_view_pico(selected=["m1", "m2"])
+    got = _rack_screen_in_chromium(
+        chrome, page, st, ((1280, 800), (1366, 768), (1920, 1080)),
+        measure_js=_STARTUP_MEASURE_JS, frag="#morning",
+        routes={"/api/remote/morning": mo})
+    said = []
+    for (w, h), res in got.items():
+        if not check(isinstance(res, list) and res,
+                     f"{w}x{h}: drawn and measured: {res!r}"):
+            continue
+        m = res[0]
+        said.append(f"{w}x{h} text {m['min_px']:g} px, tiles "
+                    f"{m['tile_px']:g} px")
+        check(not m["small"], f"{w}x{h}: no text under 14 px: "
+                              f"{m['small'][:6]} ({len(m['small'])} in all)")
+        check(m["tile_px"] >= 16 and len(m["tiles"]) == 8,
+              f"{w}x{h}: every machine tile's label 16 px or more: "
+              f"{m['tile_px']} {m['tiles'][:2]}")
+        check(not m["problems"], f"{w}x{h}: {m['problems'][:6]}")
+    print("  measured: " + "; ".join(said))
     print("  ok")
 
 
@@ -44981,6 +45634,7 @@ def test_screen_arming_switch_and_refusals():
             st, _h, out = hold(R, hold_id=hid)
             check(st == 409 and out.get("error", "").startswith(
                 "The Stream Deck refused it") and words in out["error"] and
+                  out.get("code") == code and
                   out.get("let_go") and R.remote.deck_input()["holds"] == [],
                   f"the deck's {code}: said by name, and let go: {st} {out}")
         # Anything else in `refused` is not a reason, and a report for a
@@ -59942,6 +60596,10 @@ if __name__ == "__main__":
     test_rack_screen_browser_check_retries_only_a_timeout()
     test_rack_screen_flame_controls_need_no_show_file()
     test_startup_page_says_hold_space_and_this_page_selected()
+    test_startup_page_readable_at_the_show_pc_sizes()
+    test_rack_screen_says_the_rearm_wait()
+    test_streamdeck_reports_rearm_wait_and_purge_refusal()
+    test_rack_window_fits_the_work_area_above_the_taskbar()
     test_deck_chip_shows_live_truth()
     test_pixels_chip_shows_live_truth()
     test_deck_chip_red_when_the_deck_loop_hangs()
