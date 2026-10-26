@@ -12180,8 +12180,8 @@ def build():
 
  ("scrub flames: a Jump is not a move",
   "ltcplay/player.py",
-  "            self.freerun_paused_at = at\n        self.transport_moves += 1",
-  "            self.freerun_paused_at = at"),
+  "            self.freerun_paused_at = at\n        self._move_mark()\n",
+  "            self.freerun_paused_at = at\n"),
 
  ("scrub flames: at_transport reads a render checked at another channel",
   "ltcplay/fire_ice.py",
@@ -12475,6 +12475,46 @@ def build():
   "ltcplay/web/remote.html",
   "  $(\"nav-fuel\").classList.toggle(\"soon\", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));",
   ""),
+
+ # Third review of #117: the move count is a seqlock.
+ ("scrub flames: GO writes the position before it marks the move",
+  "ltcplay/player.py",
+  "        self._move_mark()\n        self.freerun_epoch = _now() - tc_seconds",
+  "        self.freerun_epoch = _now() - tc_seconds"),
+
+ ("scrub flames: a Jump writes the position before it marks the move",
+  "ltcplay/player.py",
+  "        self._move_mark()\n        at = max(0.0, here + float(seconds))",
+  "        at = max(0.0, here + float(seconds))"),
+
+ ("scrub flames: a cue skip writes the position before it marks the move",
+  "ltcplay/player.py",
+  "        self._move_mark()\n        self.freerun_epoch = _now() - target.tc_seconds",
+  "        self.freerun_epoch = _now() - target.tc_seconds"),
+
+ ("scrub flames: a tick in the middle of a move writes a pair",
+  "ltcplay/player.py",
+  "                                 if after == moves and moves % 2 == 0",
+  "                                 if after == moves"),
+
+ ("scrub flames: a tick a move overtook writes a pair",
+  "ltcplay/player.py",
+  "                                 if after == moves and moves % 2 == 0",
+  "                                 if moves % 2 == 0"),
+
+ ("scrub flames: the pair takes the count at write time",
+  "ltcplay/player.py",
+  "            self.transport_at = ((self.tc_seconds, moves)",
+  "            self.transport_at = ((self.tc_seconds, self.transport_moves)"),
+
+ ("scrub flames: a loop wrap is not marked as a move",
+  "ltcplay/player.py",
+  "                    self._move_mark()\n"
+  "                    self.freerun_epoch = now - loop[0]\n"
+  "                    self.tc_seconds = loop[0]\n"
+  "                    self._move_mark()\n",
+  "                    self.freerun_epoch = now - loop[0]\n"
+  "                    self.tc_seconds = loop[0]\n"),
 
 ]
 

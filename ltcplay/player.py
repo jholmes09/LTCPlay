@@ -174,12 +174,16 @@ class Player:
         # command, a loop wrap, a release), so the flame link can treat
         # each one as a landing however small the move.
         self.freerun_by = None
+        # A seqlock (third review of #117): every move bumps the count
+        # BEFORE it writes the position and again AFTER (_move_mark), so
+        # the count is odd while a move is under way and changes across
+        # every move. The tick writes (position, count) as ONE value only
+        # when the count it read before the position is even and the same
+        # after it; else None. scrubflames.py takes the pair only while its
+        # count is the current one, so a position is never paired with a
+        # count from before the move that put it there.
         self.transport_moves = 0
-        # (position, transport_moves) as ONE value, written by the output
-        # thread's tick on a free run (review of #117, P1-A): the count is
-        # read BEFORE the position, and every move changes the position
-        # BEFORE it bumps the count, so a pair whose count is the current
-        # one always holds a position from after that move.
+        self._moves_lock = threading.Lock()
         self.transport_at = None
         # The FEED's own state while a free run is on; the show's
         # state is FREERUN. Kept apart so the display can tell the
@@ -522,11 +526,12 @@ class Player:
             self._park_since = None
             self._hard_parked = False
             self._last_tc_value = None
+            self._move_mark()
             self.freerun_epoch = None
             self.freerun_paused_at = None
             self.loop = None
             self.freerun_by = None
-            self.transport_moves += 1
+            self._move_mark()
         self._event("clock", "the show clock stopped; back to the idle look")
 
     def _now_tc(self):
@@ -728,10 +733,14 @@ class Player:
                     # The loop wraps: back to A on the same clock. A jump
                     # like any other locate, so the flame link sees it as
                     # one (flamelink's seek guard).
+                    self._move_mark()
                     self.freerun_epoch = now - loop[0]
                     self.tc_seconds = loop[0]
-                    self.transport_moves += 1
-            self.transport_at = (self.tc_seconds, moves)
+                    self._move_mark()
+            after = self.transport_moves
+            self.transport_at = ((self.tc_seconds, moves)
+                                 if after == moves and moves % 2 == 0
+                                 else None)
             return self._play_at(self.tc_seconds, prev_state, prev_cue,
                                  prev_source)
 
@@ -796,9 +805,10 @@ class Player:
                     and self.freerun_epoch is None:
                 # Start from where the feed actually was, not from now: the
                 # hold window has already elapsed, and the music did not wait.
+                self._move_mark()
                 self.freerun_epoch = last - self.last_ltc_seconds
                 self.freerun_by = "lost"
-                self.transport_moves += 1
+                self._move_mark()
                 self._event("freerun",
                             f"timecode lost; running the rest of the set on "
                             f"this Mac's clock from "
@@ -904,6 +914,12 @@ class Player:
         return self.timeline.next_cue(seen)
 
     # -- free run ---------------------------------------------------------
+    def _move_mark(self):
+        """One half of a move's seqlock: called once before a move writes
+        the position and once after (see transport_moves)."""
+        with self._moves_lock:
+            self.transport_moves += 1
+
     def go(self, tc_seconds):
         """Run the show from this point on our own clock. GO.
 
@@ -913,10 +929,11 @@ class Player:
         if tc_seconds is None or tc_seconds < 0:
             raise ValueError("a free run has to start somewhere on the "
                              "show clock")
+        self._move_mark()
         self.freerun_epoch = _now() - tc_seconds
         self.freerun_paused_at = None
         self.freerun_by = "operator"
-        self.transport_moves += 1
+        self._move_mark()
         self.override = None
         self._event("freerun", f"GO from {tc_seconds:.3f}s on this machine's "
                                f"own clock; the timecode feed is being "
@@ -937,11 +954,12 @@ class Player:
                              "run: press GO first.")
         here = (self.freerun_paused_at if self.freerun_paused_at is not None
                 else _now() - self.freerun_epoch)
+        self._move_mark()
         at = max(0.0, here + float(seconds))
         self.freerun_epoch = _now() - at
         if self.freerun_paused_at is not None:
             self.freerun_paused_at = at
-        self.transport_moves += 1
+        self._move_mark()
         self._event("freerun", f"skipped {float(seconds):+.1f}s to {at:.3f}s")
         return at
 
@@ -949,25 +967,27 @@ class Player:
         """Pause a free run on the frame it is at, or carry on from it.
         Programming sessions only (the remote page refuses it otherwise).
         Returns the show time it paused or continued at. Every call is a
-        move, counted after the position changes."""
+        move (the seqlock: transport_moves)."""
         if self.freerun_epoch is None:
             raise ValueError("The show is following timecode, so this Mac "
                              "cannot pause it. Pause only applies to a free "
                              "run: play from a timecode first.")
-        if on:
-            if self.freerun_paused_at is None:
-                self.freerun_paused_at = max(0.0, _now() - self.freerun_epoch)
-                self._event("freerun", f"paused at "
-                                       f"{self.freerun_paused_at:.3f}s")
-            self.transport_moves += 1
-            return self.freerun_paused_at
-        at = self.freerun_paused_at
-        if at is None:
-            self.transport_moves += 1
-            return _now() - self.freerun_epoch
-        self.freerun_epoch = _now() - at
-        self.freerun_paused_at = None
-        self.transport_moves += 1
+        self._move_mark()
+        try:
+            if on:
+                if self.freerun_paused_at is None:
+                    self.freerun_paused_at = max(
+                        0.0, _now() - self.freerun_epoch)
+                    self._event("freerun", f"paused at "
+                                           f"{self.freerun_paused_at:.3f}s")
+                return self.freerun_paused_at
+            at = self.freerun_paused_at
+            if at is None:
+                return _now() - self.freerun_epoch
+            self.freerun_epoch = _now() - at
+            self.freerun_paused_at = None
+        finally:
+            self._move_mark()
         self._event("freerun", f"continued from {at:.3f}s")
         return at
 
@@ -975,8 +995,9 @@ class Player:
         """Loop the free run between show times a and b (b after a), or
         clear the loop with a = b = None."""
         if a is None and b is None:
+            self._move_mark()
             self.loop = None
-            self.transport_moves += 1
+            self._move_mark()
             self._event("freerun", "loop off")
             return None
         a, b = float(a), float(b)
@@ -984,8 +1005,9 @@ class Player:
             raise ValueError("A loop needs mark B after mark A.")
         if b - a < 1.0:
             raise ValueError("A loop has to be at least 1 second long.")
+        self._move_mark()
         self.loop = (a, b)
-        self.transport_moves += 1
+        self._move_mark()
         self._event("freerun", f"looping {a:.3f}s to {b:.3f}s")
         return self.loop
 
@@ -1020,10 +1042,11 @@ class Player:
         else:
             i = min(len(cues) - 1, (here + 1) if here >= 0 else 0)
         target = cues[i]
+        self._move_mark()
         self.freerun_epoch = _now() - target.tc_seconds
         if self.freerun_paused_at is not None:
             self.freerun_paused_at = target.tc_seconds
-        self.transport_moves += 1
+        self._move_mark()
         self._event("freerun", f"skipped to {target.name} at "
                                f"{target.tc_text}")
         return target
@@ -1032,12 +1055,13 @@ class Player:
         """Hand the show back to the timecode."""
         if self.freerun_epoch is None:
             return False
+        self._move_mark()
         self.freerun_epoch = None
         self.freerun_paused_at = None
         self.loop = None
         live = self.feed_state == LOCKED
         self.freerun_by = None
-        self.transport_moves += 1
+        self._move_mark()
         self._event("freerun", "released; the show is following timecode "
                                "again" if live else
                                "released while NO timecode was arriving, so "
