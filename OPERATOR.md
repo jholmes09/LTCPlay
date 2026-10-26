@@ -297,11 +297,13 @@ straight to the show screen. Everything you need during a show is on that
 one screen, with no scrolling: the show state, the timecode, the current
 show and how long is left in it, the next show, Start now, Hold, Resume,
 Reset, the flame groups and the status strip along the top (deck,
-flamesafe, audio, video, lasers, pixels). The big red ABORT bar is always at
-the bottom, on every screen; it asks once. Start now asks once too. Hold,
-Resume and Reset are one press. Disarm all flame groups is one press and
-never asks. It is a plain disarm: every group goes off, and a group is armed
-again by holding its Arm, with no Reset. Abort is different: it stops the
+flamesafe, audio, video, lasers, pixels). ABORT is a red stop sign in the
+bottom right corner, on every screen, always in sight (it stays there while
+the page scrolls; there is no gesture to find it). One press, then it asks
+once, as before. Start now asks once too. Hold, Resume and Reset are one
+press. Disarm all flame groups is one press and never asks. It is a plain
+disarm: every group goes off, and a group is armed again by holding its
+button, with no Reset. Abort is different: it stops the
 show, and every group then needs Arm again (let go, then hold) after Reset.
 If the Stream Deck program is not running, or flamesafe does not report
 every group off within a second, Disarm all flame groups disarms them the
@@ -340,11 +342,24 @@ The time zone on the schedule card is a list of plain names (for example
 Mountain Time (Denver)); the show's local time is shown under it. The
 engine checks the zone again when the schedule is saved.
 
-Each flame group's Arm button shows its state in colour and words: ARMED
-(green), OFF (bronze), ARM AGAIN (amber, flashing: re-arm needed after an
-Abort, a fault or a lost link; press Disarm, then hold Arm), WAIT (the
-re-arm wait). Holding it still arms; Disarm is the button beside it. The
-Stream Deck says ARM AGAIN on the key too.
+Each flame group has ONE button, and its colour is the group's state:
+green armed, bronze off, amber held back (flashing: re-arm needed after an
+Abort, a fault or a lost link), WAIT (the re-arm wait). While the group is
+off the button is Hold to arm: press and hold it, as before. While the group
+is armed or asked for, the same button reads DISARM: one press disarms that
+group at once. Lifting the finger that just armed a group never disarms it;
+a new press does. ARM AGAIN reads "Disarm, then hold" on the button: press
+it once, then hold it. The Stream Deck says ARM AGAIN on the key too.
+
+The button under the groups is two-way. While every group is off it reads
+Arm all flame groups: press and HOLD it, and every group this screen can arm
+is held to arm at once, each by exactly the same rules as its own button. A
+group that is locked out, still in its re-arm wait or refused stays out, and
+the line beside it names each one and why. While live flame programming is
+on with one group at a time, Arm all arms nothing and says so. While any
+group is armed or asked for (one or several), or the lamps are not known, it
+reads Disarm all flame groups: one press, as before. With arming from a
+screen switched off it always reads Disarm all flame groups.
 
 If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
 The show carries on by itself and a Hold stays held. Start now, Resume, Reset
@@ -354,13 +369,13 @@ Arming from the iPad or the rack screen (when screen arming is switched on;
 it is off until someone turns it on at the show machine: Programming,
 "Arming from a screen", Turn on; while it is off the button reads "Arming
 off"): press and HOLD a group's "Hold to arm" button until the bar fills and
-the lamp goes green. If it is refused, the line beside "Disarm every flame
-group" and the controls' message line say why. Lift early and nothing happens. One hold at a time per
+the lamp goes green. If it is refused, the line beside Disarm all flame
+groups and the controls' message line say why. Lift early and nothing happens. One hold at a time per
 group. The Stream Deck does the arming for you, with all of its own rules,
 so it has to be plugged in and running, and an operator has to be chosen
 for it (Programming, Stream Deck operator). If the page loses the engine,
-or the lamps are not live, the button goes grey and a hold stops. Disarm on
-the page is one press. The journal says which screen or iPad did it. The
+or the lamps are not live, a hold stops and the button cannot arm; it still
+disarms with one press. Disarm on the page is one press. The journal says which screen or iPad did it. The
 physical key switch on the flame system is still the master: off means
 nothing fires.
 
