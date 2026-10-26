@@ -27,9 +27,11 @@ import fnmatch
 import ntpath
 import sys
 
-from . import beyondwatch
-
-IMAGES = beyondwatch.IMAGES
+# BEYOND's program names, the same as beyondwatch.IMAGES (the selftest
+# holds them equal). Written here, and beyondwatch is imported only when
+# Open BEYOND is pressed, so loading this module on a show with no BEYOND
+# never loads a BEYOND module.
+IMAGES = ("beyond*.exe",)
 
 SW_RESTORE = 9
 VK_MENU = 0x12
@@ -239,6 +241,7 @@ def open_beyond(host=None, windows=None, api=None, probe=None):
     `probe` says whether BEYOND is running at all, for the sentence when
     no window is found (default: beyondwatch.windows_probe). Sends nothing
     to BEYOND, ever. Never raises."""
+    from . import beyondwatch
     if windows is None:
         windows = sys.platform == "win32"
     if not windows:
