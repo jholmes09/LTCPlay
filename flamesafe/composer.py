@@ -1241,6 +1241,9 @@ class Composer:
                 # the arm).  One entry for a one-safety group, never
                 # locked.  `armed` stays the one state of the whole group.
                 "safety_slots": list(g.safeties),
+                # The value this group raises its safety slots to: the
+                # file's arm_value, or its safety_profile's (2026-10-26).
+                "arm_value": g.arm_value,
                 "safeties_up": list(ups[i]),
                 "safeties_locked": list(locks[i]),
                 "fire_slots": list(g.fire),
