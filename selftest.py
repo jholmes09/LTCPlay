@@ -48017,8 +48017,8 @@ def test_flamesafe_multi_safety_ltcplay_side():
         fs3 = fs_with(three)
         got = sd.load_flamesafe_link(fs3)
         check(got[5] == ["front row", "cat-walk", "wave flamer"] and
-              sd.GROUP_KEY_LIMIT == 3 and sd.GROUP_KEYS == (3, 4, 5),
-              f"the Stream Deck: three arm keys, one per group, the wave "
+              sd.GROUP_KEY_LIMIT == 4 and sd.GROUP_KEYS == (1, 2, 3, 4),
+              f"the Stream Deck: four arm keys, one per group, the wave "
               f"flamer one key: {got[5]}")
         base = {"name": "wave flamer", "armed": "armed", "wanted": True,
                 "reason": "", "amber": "", "dwell_s": 0}
