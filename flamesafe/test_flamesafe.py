@@ -32,6 +32,7 @@ if ROOT not in sys.path:
 from flamesafe import rules, config, composer, link, sacn, arminput  # noqa: E402
 from flamesafe.composer import Composer  # noqa: E402
 from flamesafe.service import Service  # noqa: E402
+from flamesafe import __main__ as fsmain  # noqa: E402
 
 FAILS = []
 RAN = set()
@@ -70,6 +71,9 @@ N_GROUPS = 6
 WAVE = 2
 WAVE_SAFETIES = [6, 12, 18]
 WAVE_FIRE = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+# The wave flamer is not a G-Flame: its safety_profile (2026-10-26) arms it
+# at 178, the value its channel 6 takes, not at the file's 78.
+WAVE_ARM = 178
 KEY = example_dict()["link"]["key"]
 NAMES = [g["name"] for g in example_dict()["groups"]]
 SENDER = ("127.0.0.1", 40001)
@@ -3629,7 +3633,8 @@ def test_link_loss_disarms_every_group():
     r.step()
     r.inp.set_all(True)
     r.wait(1.25)
-    check(all(r.safety(i) == ARM for i in range(N_GROUPS)),
+    check(all(r.safety(i) == r.cfg.groups[i].arm_value
+              for i in range(N_GROUPS)),
           "a cycle with the show program answering arms every group asked")
 
 
@@ -3933,7 +3938,7 @@ def test_disarm_all_dwell_and_pending_edges():
     r.wait(1.1)
     r.inp.set(2)
     r.step(n=2)
-    check(r.safety(2) == ARM,
+    check(r.safety(2) == r.cfg.groups[2].arm_value,
           f"a press after the window arms as usual: {r.group(2)}")
     # Fix round 2 of PR #34, item 3: every repeat copy of an Abort restarts
     # the window (ltcplay repeats one Abort after every frame for
@@ -5030,7 +5035,7 @@ def armed_wave(**over):
     r.prove_alive()
     r.inp.set(WAVE)
     r.step()
-    assert safeties_on_wire(r) == [ARM] * 3, "the fixture could not arm"
+    assert safeties_on_wire(r) == [WAVE_ARM] * 3, "the fixture could not arm"
     return r
 
 
@@ -5133,16 +5138,18 @@ def test_multi_safety_arms_and_disarms_as_one():
     check([pre.universe[s - 1] for s in WAVE_SAFETIES] == [0, 0, 0],
           "before the cycle every safety is zero")
     r.step()
-    check(safeties_on_wire(r) == [ARM, ARM, ARM],
+    check(safeties_on_wire(r) == [WAVE_ARM, WAVE_ARM, WAVE_ARM],
           f"every safety slot rises on the one tick: {safeties_on_wire(r)}")
     g = r.group(WAVE)
     check(g["armed"] == "armed" and g["safeties_up"] == [True] * 3
-          and g["safety_slots"] == WAVE_SAFETIES and g["sent_safety"] == ARM
+          and g["safety_slots"] == WAVE_SAFETIES
+          and g["sent_safety"] == WAVE_ARM and g["arm_value"] == WAVE_ARM
           and g["safety_slot"] == WAVE_SAFETIES[0],
           f"one state, armed, every safety up: {g}")
     cue = {f: 200 for f in WAVE_FIRE}
     r.run(rules.EDGE_QUIET_FRAMES + 2, cue)
-    check(r.fire(WAVE) == [200] * 15 and safeties_on_wire(r) == [ARM] * 3,
+    check(r.fire(WAVE) == [200] * 15
+          and safeties_on_wire(r) == [WAVE_ARM] * 3,
           f"fire reaches all 15 fire slots while armed: {r.fire(WAVE)}")
     r.inp.set(WAVE, on=False)
     r.step()
@@ -5182,7 +5189,7 @@ def test_multi_safety_show_data_never_writes_a_safety():
           f"{safeties_on_wire(r)}")
     r.inp.set(WAVE)
     r.run(rules.EDGE_QUIET_FRAMES + 3, loud)
-    check(safeties_on_wire(r) == [ARM] * 3,
+    check(safeties_on_wire(r) == [WAVE_ARM] * 3,
           f"armed: every safety carries the arm value and nothing else: "
           f"{safeties_on_wire(r)}")
     check(r.safety(0) == 0 and r.safety(1) == 0,
@@ -5199,7 +5206,7 @@ def test_multi_safety_a_locked_safety_is_left_out():
     r.prove_alive()
     r.inp.set(WAVE)
     r.step()
-    check(safeties_on_wire(r) == [ARM, 0, ARM],
+    check(safeties_on_wire(r) == [WAVE_ARM, 0, WAVE_ARM],
           f"one safety locked: the other two rise, the locked one stays "
           f"zero: {safeties_on_wire(r)}")
     g = r.group(WAVE)
@@ -5229,7 +5236,7 @@ def test_multi_safety_a_locked_safety_is_left_out():
     check(r.c.stats["safety_lock_blocks"] >= 1, "the block is counted")
     r.c.note_locked_slots({6, 18})
     r.run(2, {})
-    check(safeties_on_wire(r) == [0, ARM, 0],
+    check(safeties_on_wire(r) == [0, WAVE_ARM, 0],
           f"one unlocked: the group rises on it alone: {safeties_on_wire(r)}")
     # A lock landing on an armed, firing group: that safety drops to zero,
     # the rest stay up and keep firing.
@@ -5237,7 +5244,7 @@ def test_multi_safety_a_locked_safety_is_left_out():
     r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
     r.c.note_locked_slots({18, 13, 14, 15, 16, 17})
     r.step()
-    check(safeties_on_wire(r) == [ARM, ARM, 0]
+    check(safeties_on_wire(r) == [WAVE_ARM, WAVE_ARM, 0]
           and r.fire(WAVE) == [200] * 10 + [0] * 5
           and r.group(WAVE)["armed"] == "armed",
           f"a machine locked on an armed group: its safety and fire slots "
@@ -5308,7 +5315,7 @@ def test_multi_safety_a_dropped_safety_disarms_the_group():
     r.step(n=int(r.cfg.min_arm_dwell_ms / 1000.0 / r.period) + 2)
     r.inp.set(WAVE)
     r.step()
-    check(safeties_on_wire(r) == [ARM] * 3,
+    check(safeties_on_wire(r) == [WAVE_ARM] * 3,
           f"a fresh cycle arms it again: {safeties_on_wire(r)}")
     # With one safety locked, an UNLOCKED one dropping still takes the
     # group down.
@@ -5317,13 +5324,257 @@ def test_multi_safety_a_dropped_safety_disarms_the_group():
     r.prove_alive()
     r.inp.set(WAVE)
     r.step()
-    check(safeties_on_wire(r) == [0, ARM, ARM], "setup: armed on two")
+    check(safeties_on_wire(r) == [0, WAVE_ARM, WAVE_ARM],
+          "setup: armed on two")
     r.cfg.groups[5].fire = [18]
     r.step()
     check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
           and r.group(WAVE)["armed"] != "armed",
           f"an unlocked safety overwritten with one locked: the group "
           f"disarms: {safeties_on_wire(r)}")
+
+
+# =========================================================================
+# safety_profile (Jeff, 2026-10-26): the wave flamer arms at 178
+# =========================================================================
+
+def _profile(**prof):
+    """The example with the wave flamer's safety_profile replaced by
+    exactly `prof` (arm_value 178 unless given)."""
+    d = example_dict()
+    d["groups"][WAVE]["safety_profile"] = dict({"arm_value": 178}, **prof)
+    return d
+
+
+def _loads(msg, d):
+    try:
+        c = config.from_dict(d)
+    except config.ConfigError as e:
+        check(False, f"{msg}: refused: {e}")
+        return None
+    check(True, msg)
+    return c
+
+
+def _plain(**over):
+    """The example with no safety_profile anywhere (as before 2026-10-26)."""
+    d = example_dict()
+    d["groups"][WAVE].pop("safety_profile")
+    d["groups"][WAVE].update(over)
+    return d
+
+
+def test_safety_profile_config():
+    section("safety_profile (2026-10-26): a group may arm at Jeff's own "
+            "number; 178 loads for the wave flamer, every optional guard "
+            "refuses only against his numbers, every other group is checked "
+            "as before")
+    c = config.load(os.path.join(HERE, "flamesafe.example.json"))
+    check([g.arm_value for g in c.groups] == [78, 78, 178, 78, 78, 78]
+          and c.arm_value == 78 and not c.accept_unsourced_risk,
+          f"the example loads: the wave flamer arms at 178 from its "
+          f"profile, every other group at the file's 78, no "
+          f"accept_unsourced_risk: {[g.arm_value for g in c.groups]}")
+    check(c.groups[WAVE].profile == {"arm_value": 178, "enable_lo": None,
+                                     "enable_hi": None, "fire_at": None}
+          and all(g.profile is None for i, g in enumerate(c.groups)
+                  if i != WAVE),
+          f"only the wave flamer carries a profile, arm_value alone: "
+          f"{c.groups[WAVE].profile}")
+    check(fsmain.profile_line(c.groups[WAVE]) ==
+          "wave flamer: arms at 178 from its safety_profile; it has no fire "
+          "guard (no fire_at in its safety_profile)",
+          f"the one start line says there is no fire guard: "
+          f"{fsmain.profile_line(c.groups[WAVE])}")
+    _loads("arm_value 178 and no other key loads", _profile())
+    _loads("fire_at null is the same as no fire_at", _profile(fire_at=None))
+    c = _loads("255 loads (Jeff's call)", _profile(arm_value=255))
+    check(c and c.groups[WAVE].arm_value == 255, "and arms at 255")
+    _loads("1 loads", _profile(arm_value=1))
+
+    # arm_value itself.
+    _refused("arm_value 0, the disarm value", _profile(arm_value=0),
+             "between 1 and 255")
+    _refused("arm_value 300", _profile(arm_value=300), "between 1 and 255")
+    _refused("arm_value -1", _profile(arm_value=-1), "between 1 and 255")
+    _refused("arm_value as text", _profile(arm_value="178"), "whole number")
+    _refused("arm_value 178.0", _profile(arm_value=178.0), "whole number")
+    _refused("arm_value true", _profile(arm_value=True), "whole number")
+    d = _profile()
+    del d["groups"][WAVE]["safety_profile"]["arm_value"]
+    d["groups"][WAVE]["safety_profile"]["fire_at"] = 243
+    _refused("a profile without arm_value", d, "no arm_value")
+    d = example_dict()
+    d["groups"][WAVE]["safety_profile"] = 178
+    _refused("a profile that is not an object", d, "must be an object")
+    _refused("an unknown key in the profile", _profile(fire_below=229),
+             "does not know")
+
+    # The enable window: optional, both or neither.
+    c = _loads("178 in the window 153..204 loads",
+               _profile(enable_lo=153, enable_hi=204))
+    check(c and c.groups[WAVE].profile["enable_lo"] == 153
+          and c.groups[WAVE].profile["enable_hi"] == 204, "the window is kept")
+    _refused("enable_lo 0: a disarm would read as enabled",
+             _profile(enable_lo=0, enable_hi=204), "disarm value 0")
+    _loads("enable_lo 1 loads", _profile(enable_lo=1, enable_hi=204))
+    _refused("arm below the window", _profile(enable_lo=179, enable_hi=204),
+             "outside the enable window")
+    _refused("arm above the window", _profile(enable_lo=153, enable_hi=177),
+             "outside the enable window")
+    _loads("arm on both edges of the window loads",
+           _profile(enable_lo=178, enable_hi=178))
+    _refused("a window written upside down",
+             _profile(enable_lo=204, enable_hi=153),
+             "outside the enable window")
+    _refused("enable_lo without enable_hi", _profile(enable_lo=153),
+             "both or neither")
+    _refused("enable_hi without enable_lo", _profile(enable_hi=204),
+             "both or neither")
+    _refused("enable_hi 256", _profile(enable_lo=153, enable_hi=256),
+             "between 0 and 255")
+
+    # fire_at, and the single-bit-flip guard against it alone.  178 is
+    # 1011 0010; its neighbours are computed here, not typed in.
+    flips = sorted(178 ^ (1 << b) for b in range(8))
+    top = flips[-1]
+    check(top == 242 and 178 ^ 64 == 242,
+          f"the highest single-bit neighbour of 178 is 178 ^ 64 = {top}: "
+          f"{flips}")
+    _refused("window 153..204 with fire_at 229: 178 -> 242 reaches it",
+             _profile(enable_lo=153, enable_hi=204, fire_at=229),
+             "(178 -> 242, bit 6) reaches fire_at 229")
+    _refused("fire_at 242: 178 -> 242 reaches it exactly",
+             _profile(fire_at=top), "(178 -> 242, bit 6) reaches fire_at 242")
+    c = _loads("fire_at 243: no single-bit flip of 178 reaches it",
+               _profile(fire_at=top + 1))
+    check(c and c.groups[WAVE].profile["fire_at"] == 243,
+          "fire_at 243 is kept")
+    c = _loads("the window 153..204 with fire_at 243 loads",
+               _profile(enable_lo=153, enable_hi=204, fire_at=243))
+    check(c and fsmain.profile_line(c.groups[WAVE]) ==
+          "wave flamer: arms at 178 from its safety_profile, enable window "
+          "153 to 204; fire guard: below 243, every single-bit flip too",
+          f"the start line names the guard: "
+          f"{c and fsmain.profile_line(c.groups[WAVE])}")
+    # A value whose top neighbour is its bit 7 flip, both sides: 100 ->
+    # 228.
+    check(max(100 ^ (1 << b) for b in range(8)) == 228, "100 -> 228")
+    _refused("100 with fire_at 228: 100 -> 228 reaches it",
+             _profile(arm_value=100, fire_at=228), "(100 -> 228, bit 7)")
+    _loads("100 with fire_at 229 loads", _profile(arm_value=100, fire_at=229))
+    # 255 has no neighbour above it: only arm < fire_at refuses it.
+    _refused("arm equal to fire_at", _profile(arm_value=255, fire_at=255),
+             "at or above fire_at")
+    _refused("arm above fire_at", _profile(fire_at=170),
+             "at or above fire_at")
+    _refused("fire_at as text", _profile(fire_at="243"), "whole number")
+    _refused("fire_at 256", _profile(fire_at=256), "between 0 and 255")
+
+    # The group's legacy arm_value beside a profile.
+    d = _profile()
+    d["groups"][WAVE]["arm_value"] = 78
+    _refused("a group arm_value that differs from its profile's", d,
+             "disagree")
+    d = _profile()
+    d["groups"][WAVE]["arm_value"] = 178
+    c = _loads("a group arm_value equal to its profile's loads", d)
+    check(c and c.groups[WAVE].arm_value == 178, "and arms at 178")
+
+    # A group without a profile: exactly as before.
+    c = _loads("without a profile the wave flamer is checked as before",
+               _plain())
+    check(c and c.groups[WAVE].arm_value == 78
+          and c.groups[WAVE].profile is None, "at the file's 78")
+    _loads("78 on the group loads", _plain(arm_value=78))
+    _refused("178 on a group without a profile", _plain(arm_value=178),
+             "outside the G-Flame")
+    d = _plain(arm_value=178)
+    d.update(gflame_range="60-80%", arm_value=157,
+             accept_unsourced_risk=True)
+    _refused("178 on a group without a profile, under 60-80% with the "
+             "risk acknowledged", d, "single-bit flip")
+    d = _plain()
+    d.update(gflame_range="60-80%", arm_value=157)
+    _refused("157 without a profile needs accept_unsourced_risk", d,
+             "accept_unsourced_risk")
+    d["accept_unsourced_risk"] = True
+    c = _loads("157 with the risk acknowledged loads", d)
+    check(c and c.groups[WAVE].arm_value == 157, "at 157")
+    d = _profile()
+    d["arm_value"] = 178
+    _refused("178 as the file's arm_value is still refused", d,
+             "outside the G-Flame")
+
+    # Other groups in a config with a profile keep the file's rules.
+    d = _profile()
+    d["groups"][0]["arm_value"] = 178
+    _refused("another group's 178 is refused beside the profile", d,
+             "front row")
+    d = _profile()
+    d["groups"][1]["arm_value"] = 157
+    _refused("another group's 157 without the risk acknowledged", d,
+             "cat-walk")
+    d = _profile()
+    d.update(gflame_range="60-80%", arm_value=157)
+    _refused("a profile does not stand in for accept_unsourced_risk on the "
+             "file's 157", d, "accept_unsourced_risk")
+    d["accept_unsourced_risk"] = True
+    c = _loads("a profile under 60-80% with the risk acknowledged", d)
+    check(c and [g.arm_value for g in c.groups] == [157, 157, 178, 157,
+                                                     157, 157],
+          f"every other group follows the file, the wave flamer its "
+          f"profile: {c and [g.arm_value for g in c.groups]}")
+
+
+def test_safety_profile_composes():
+    section("safety_profile: the composer raises every safety slot of the "
+            "group to the profile's value, 0 on a disarm and an Abort, every "
+            "other group at the file's value, and the gates are unchanged")
+    for prof in ({}, {"enable_lo": 153, "enable_hi": 204, "fire_at": 243}):
+        fire_at = prof.get("fire_at")
+        d = _profile(**prof)
+        r = Rig(groups=d["groups"])
+        r.prove_alive()
+        r.inp.set(0, WAVE)
+        r.step()
+        check(safeties_on_wire(r) == [178, 178, 178]
+              and r.safety(0) == ARM
+              and r.group(WAVE)["armed"] == "armed"
+              and r.group(WAVE)["arm_value"] == 178
+              and r.group(WAVE)["sent_safety"] == 178
+              and r.group(0)["arm_value"] == ARM,
+              f"fire_at {fire_at}: 178 on slots 6, 12 and 18, 78 on the "
+              f"front row, the status says each: {safeties_on_wire(r)} "
+              f"{r.safety(0)}")
+        r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+        check(r.fire(WAVE) == [200] * 15
+              and safeties_on_wire(r) == [178] * 3,
+              f"fire_at {fire_at}: fire passes while armed at 178")
+        r.inp.set(WAVE, on=False)
+        r.step()
+        check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+              and r.safety(0) == ARM,
+              f"fire_at {fire_at}: a disarm writes 0 on every safety slot "
+              f"and fire, the other group stays up: {safeties_on_wire(r)}")
+    r = armed_wave()
+    r.step(n=rules.EDGE_QUIET_FRAMES + 1)
+    check(_disarm(r) == "", "setup: the Abort is accepted")
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0]
+          and r.group(WAVE)["reason"] == composer.ABORT_DISARMED,
+          f"the Abort lowers the profile group to 0: {r.group(WAVE)}")
+    # The edge gate is the same for a profile group: a fire slot high on
+    # the rising edge holds the arm.
+    r = Rig()
+    r.prove_alive()
+    r.run(2, {1: 200})
+    r.inp.set(WAVE)
+    r.run(3, {1: 200})
+    check(safeties_on_wire(r) == [0, 0, 0]
+          and r.group(WAVE)["armed"] == "held",
+          f"a fire slot high on the edge still holds the profile group: "
+          f"{r.group(WAVE)}")
 
 
 if __name__ == "__main__":
@@ -5413,6 +5664,8 @@ if __name__ == "__main__":
     test_multi_safety_a_locked_safety_is_left_out()
     test_multi_safety_a_locked_safety_never_rises()
     test_multi_safety_a_dropped_safety_disarms_the_group()
+    test_safety_profile_config()
+    test_safety_profile_composes()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}
