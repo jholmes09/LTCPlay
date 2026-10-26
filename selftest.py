@@ -55073,8 +55073,15 @@ def test_disarm_all_end_to_end_rearms_without_a_cycle():
         return p
     node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
     node.bind(("127.0.0.1", 0))
-    listen, armp, statusp, mirror = (free_port(), free_port(), free_port(),
-                                     free_port())
+    # Four ports that are really four: a port closed by free_port() can
+    # come straight back from the next call, and flamesafe refuses a link
+    # port that is another link port (it would be talking to itself).
+    ports = []
+    while len(ports) < 4:
+        p_ = free_port()
+        if p_ not in ports and p_ != node.getsockname()[1]:
+            ports.append(p_)
+    listen, armp, statusp, mirror = ports
     work = tempfile.mkdtemp()
     cfg_path = os.path.join(work, "flamesafe.json")
     _j.dump({
@@ -55095,7 +55102,9 @@ def test_disarm_all_end_to_end_rearms_without_a_cycle():
                              cfg_path], cwd=here, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     stop = threading.Event()
-    threading.Thread(target=lambda: [None for _l in proc.stdout],
+    fs_out = []
+    threading.Thread(target=lambda: [fs_out.append(_l.rstrip())
+                                     for _l in proc.stdout],
                      daemon=True).start()
     cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
     t0 = time.perf_counter()
@@ -55189,14 +55198,26 @@ def test_disarm_all_end_to_end_rearms_without_a_cycle():
             time.sleep(0.02)
         return pred()
     try:
-        end = time.perf_counter() + 10
-        while time.perf_counter() < end:
+        # Wait on what the holds need, not a fixed time: flamesafe's own
+        # status reaching both the engine and the deck (a loaded runner
+        # can take a while to start a Python process).
+        end = time.perf_counter() + 30
+        up = False
+        while time.perf_counter() < end and proc.poll() is None:
             s = http("/api/remote/status")[1]
             if s["flames"].get("connected") and not s["flames"]["stale"] \
                     and status.last:
+                up = True
                 break
             time.sleep(0.1)
-        time.sleep(1.2)                    # the deck's lows prove a cycle
+        check(up, f"setup: flamesafe's status reached the engine and the "
+                  f"deck (flamesafe "
+                  f"{'exited ' + str(proc.returncode) if proc.poll() is not None else 'running'}"
+                  f"; its last lines: {fs_out[-6:]})")
+        # The deck's lows prove a cycle: its arm input live in flamesafe.
+        wait(lambda: (status.last or {}).get("arm_input", {}).get("state")
+             == "live", 10)
+        time.sleep(1.2)
         check(hold("front row") and hold("cat-walk"),
               f"setup: both groups armed from the screen: {status.last}; "
               f"{events[-4:]}")
