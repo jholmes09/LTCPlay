@@ -44116,7 +44116,7 @@ ab.click(); await h.sleep(300); out.key_one = n(); ab.click(); await h.sleep(150
 out.key = n();
 pclick(2, "touch"); await h.sleep(250); pclick(3, "touch"); await h.sleep(150);
 out.fingers = n();
-pclick(4, "touch"); await h.sleep(250); pclick(1, "mouse"); await h.sleep(150);
+pclick(4, "touch"); await h.sleep(250); pclick(1, "mouse"); await h.sleep(250);
 out.mixed = n();
 pclick(1, "mouse"); await h.sleep(150);
 out.mixed_then_mouse = n();
