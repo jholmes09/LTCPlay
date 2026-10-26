@@ -301,7 +301,7 @@ Top level:
 | `k` | the key. ltcplay rejects a status frame without its own key |
 | `heartbeat` | flamesafe's tick counter. The corner flame and the deck marquee step on this |
 | `tick_ms` | the tick period |
-| `universe`, `priority`, `arm_value` | what flamesafe is configured to send. `priority` is always 200 |
+| `universe`, `priority`, `arm_value` | what flamesafe is configured to send. `priority` is always 200. `arm_value` here is the FILE's arm value, the default for every group without a `safety_profile`; a group with one arms at its own value, and the per-group `arm_value` is the truth for that group |
 | `confirmed` | false until the config's numbers are confirmed by Andy. Show it, quietly: ltcplay journals it (the Stream Deck once, when it first sees it) and carries it in the engine's status for the rack screen's Info popup. It is never drawn on a Stream Deck key (the amber corner mark went 2026-10-19) and never changes what any key reads |
 | `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
@@ -326,7 +326,8 @@ Per group, the two lamps of section 8 panel 5:
 | `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Abort sentence), `Another sender is on the show program link, or it just changed hands: every group is disarmed and a cycle cannot arm until that has settled. Cycle the arm again once it has.` (2026-10-03, the second-copy guard: shown the same way while `frames.foreign_senders` is non-zero, `frames.new_sender` is true or `frames.flooded` is true; the arm link's sentence wins when both apply), `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
 | `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto, the flame link's included). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
-| `sent_safety` | the SENT safety value this tick: 0 or the arm value |
+| `arm_value` | the value this group raises its safety slots to: the file's `arm_value`, or its `safety_profile`'s (added 2026-10-26). The rack screen shows it as the group name's tooltip, "Arms at N on its safety slots" |
+| `sent_safety` | the SENT safety value this tick: 0 or the group's `arm_value` |
 | `safety_slot` | the group's safety slot; for a multi-safety group, the first of `safety_slots` |
 | `safety_slots` | every safety slot of the group, in config order (added 2026-10-26, multi-safety). One entry for a group whose config `safety` is one number |
 | `safeties_up` | one per safety slot: true when that slot carries the arm value in this frame (added 2026-10-26). `armed` stays the one state of the whole group; this list is for the rack screen's "2 of 3 safeties up" line |
@@ -368,6 +369,43 @@ disarm, one `armed` state.
   flamesafe writes safety slots from its own arm state only.
 - A safety slot in the lockout file of a ONE-safety group is ignored, as
   it always was (only that group's fire slots are zeroed by the lockout).
+
+### A group's own arm value: safety_profile (added 2026-10-26)
+
+The wave flamer is not a G-Flame, so the G-Flame and Showven rules that fix
+the file's `arm_value` (78 validated for 30-50%, 157 for 60-80% with
+`accept_unsourced_risk`, everything else refused) do not describe it. Jeff
+tunes its arm value in the config, as often as the fixtures need:
+
+```json
+{"name": "wave flamer", "safety": [6, 12, 18],
+ "safety_profile": {"arm_value": 178},
+ "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]}
+```
+
+A profile takes four keys; any other key is refused. Every number is Jeff's,
+and the optional keys are guards that compare only the numbers written in
+the profile, never the G-Flame or Showven ones:
+
+| Key | Rule |
+|---|---|
+| `arm_value` | required. A whole number 1 to 255. 0 is the disarm value and is refused; 255 is allowed |
+| `enable_lo`, `enable_hi` | optional, both or neither (null is the same as left out). `enable_lo` is at least 1, so the disarm value 0 reads as not enabled, and `arm_value` lies inside the window |
+| `fire_at` | optional (null is the same as left out): the lowest safety value that fires the fixture. `arm_value` is below it, and no single-bit flip of `arm_value` reaches it (178 with `fire_at` 242 is refused, because 178 with bit 6 flipped is 242; 243 loads). Left out, there is no fire guard: the config loads and flamesafe writes one line at start saying that group has no fire guard |
+
+- A profile replaces the G-Flame and Showven checks for that group only. It
+  needs no `accept_unsourced_risk`: the profile is the deliberate
+  statement. Every group without a profile, and the file's own
+  `arm_value`, is checked exactly as before (178 there is still refused).
+- A group `arm_value` beside a profile that says a different number is
+  refused; the same number is allowed.
+- Arming raises every safety slot of the group (one or a list) to the
+  profile's value; any disarm writes 0 on all of them. Every other rule
+  (the sole writer, the Abort latch, the link key and lock, hold to arm,
+  `arm_stale_ms`, one copy per machine, the lockout, the edge gate, the
+  dwell) is unchanged.
+- The config is read at start, as before: a changed value takes effect on
+  the next restart of flamesafe.
 
 What ltcplay does with it: display, journal, the amber row flag. There is no
 path from a status frame to flame output, because ltcplay never writes the
@@ -1058,3 +1096,9 @@ gains `safety_lock_blocks` and `safety_unconfirmed`. A group whose
 `safety` is one number behaves exactly as before; no existing field's name,
 type or meaning changed (`safety_slot` is the first of the list for a
 multi-safety group).
+
+Version 2, 2026-10-26 (safety_profile, the wave flamer at 178): a group may
+carry a `safety_profile` with its own arm value (see "A group's own arm
+value" under the status frame). The status frame gains a per group
+`arm_value`. The top-level `arm_value` keeps its name and meaning, the
+file's arm value; no existing field's name, type or meaning changed.

@@ -1586,6 +1586,7 @@ function renderLamps(fl){
     el.querySelector(".word").textContent = look.word;
     el.querySelector(".why").textContent = c === "unknown" ? "" : reasonWords(g.reason);
     el.querySelector(".why").title = g.reason || "";
+    el.querySelector("b").title = g.arm_value ? "Arms at " + g.arm_value + " on its safety slots" : "";
     const sl = safetyLine(g, c), se = el.querySelector(".saf");
     se.hidden = !sl;
     se.textContent = sl;

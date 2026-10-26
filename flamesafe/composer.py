@@ -1268,6 +1268,9 @@ class Composer:
             "tick_ms": round(1000.0 / self.cfg.tick_hz, 3),
             "universe": self.cfg.universe,
             "priority": rules.SACN_PRIORITY,
+            # The FILE's arm_value, the default for a group without a
+            # safety_profile.  A group with one arms at its own value: each
+            # group's "arm_value" below is the truth for that group.
             "arm_value": self.cfg.arm_value,
             "confirmed": self.cfg.confirmed,
             "fault": self._fault,

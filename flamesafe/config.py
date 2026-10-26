@@ -242,30 +242,39 @@ def _safety_profile(g, name):
     optional keys are guards that compare only the numbers written here:
 
       arm_value (required): a whole number 1..255.  0 is the disarm value.
-      enable_lo, enable_hi (optional, both or neither): the fixture's enable
-        window.  enable_lo is at least 1, so the disarm value 0 reads as not
-        enabled, and the arm value lies inside the window.
-      fire_at (optional): the lowest safety value that fires the fixture.
-        The arm value is below it and no single-bit flip of the arm value
-        reaches it (the guard rule 1 keeps against the G-Flame threshold,
-        kept here against this number only).  Left out, there is no fire
-        guard; flamesafe says so in one line at start.
+      enable_lo, enable_hi (optional, both or neither; null is left out):
+        the fixture's enable window.  enable_lo is at least 1, so the
+        disarm value 0 reads as not enabled, and the arm value lies inside
+        the window.
+      fire_at (optional; null is left out): the lowest safety value that
+        fires the fixture.  The arm value is below it and no single-bit flip
+        of the arm value reaches it (the guard rule 1 keeps against the
+        G-Flame threshold, kept here against this number only).  Left out,
+        there is no fire guard; flamesafe says so in one line at start.
     """
     p = g["safety_profile"]
     if not isinstance(p, dict):
         raise ConfigError(f"{name}: safety_profile must be an object with at "
                           f"least arm_value.")
-    _only_known(p, set(PROFILE_KEYS), f"{name}: safety_profile")
+    unknown = sorted(k for k in p if k not in PROFILE_KEYS)
+    if unknown:
+        raise ConfigError(f"{name}: safety_profile has a key this program "
+                          f"does not know: {', '.join(unknown)}. A "
+                          f"safety_profile takes {', '.join(PROFILE_KEYS)} "
+                          f"(flamesafe/CONTRACT.md, safety_profile).")
     if "arm_value" not in p:
         raise ConfigError(f"{name}: safety_profile has no arm_value; it is "
                           f"the one number a profile must give.")
     arm = _int(p, "arm_value", rules.DISARM_VALUE + 1, 255,
                f"{name}: safety_profile arm_value")
     lo = hi = None
-    if ("enable_lo" in p) != ("enable_hi" in p):
+    # null is the same as leaving a key out, as for fire_at.
+    has_lo = p.get("enable_lo") is not None
+    has_hi = p.get("enable_hi") is not None
+    if has_lo != has_hi:
         raise ConfigError(f"{name}: safety_profile has one of enable_lo and "
                           f"enable_hi; give both or neither.")
-    if "enable_lo" in p:
+    if has_lo:
         lo = _int(p, "enable_lo", 0, 255, f"{name}: safety_profile enable_lo")
         hi = _int(p, "enable_hi", 0, 255, f"{name}: safety_profile enable_hi")
         if lo <= rules.DISARM_VALUE:
