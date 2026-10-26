@@ -342,7 +342,7 @@ is used), and two lists of OSC messages, each one an address and a value:
 `on` puts the grid up, `off` takes it down. For example (the addresses and
 numbers here are only an example, not BEYOND's real ones):
 
-```json
+```
 "lasers": [
   {"id": "laser-1", "name": "Laser 1", "mechanism": "osc",
    "host": "127.0.0.2", "port": 8100,
