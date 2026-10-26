@@ -115,8 +115,8 @@ click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
 only known command is for all lasers at once; Abort, Hold and the night
 closing disarm every laser, and after Resume or Reset they stay dark until
-you arm them again; the Laser arm light on the rack screen says how many
-are armed); one calibration test button per laser (the laser has to be
+you arm them again; the Lasers pill at the top of the rack screen says how
+many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each button says so until Jeff fills
 in `lasers` in ltcplay_morning.json); the purge (click a machine or a group
@@ -302,8 +302,15 @@ bottom right corner, on every screen, always in sight (it stays there while
 the page scrolls; there is no gesture to find it). The page keeps a strip
 free down its right edge, so no other button is ever under the sign. Point
 at it (or reach it with the Tab key) and a line beside it says what a press
-does now, for example "Nothing to abort right now". One press, then it asks
-once, as before. If you pinch-zoom an iPad in on part of the page, the sign
+does now, for example "Nothing to abort right now". Abort is a DOUBLE TAP,
+with no pop-up: the first tap only makes the sign bigger and flashing, with
+TAP AGAIN TO ABORT on it, and sends nothing; a second tap anywhere on the
+big sign within 2 seconds aborts, exactly as before. Any finger works, two
+different fingers too, or the mouse twice (a double click), or Enter or
+Space twice; a finger then the mouse counts as one tap. After 2 seconds
+with no second tap the sign goes back by itself and nothing happened. It
+works signed out, and with the connection lost it still sends and says
+plainly if the engine did not answer. The Stream Deck's Abort is unchanged. If you pinch-zoom an iPad in on part of the page, the sign
 is only in view when the zoomed part includes the bottom right corner: zoom
 back out to find it. Start now asks once too. Hold, Resume and Reset are one
 press. Disarm all flame groups is one press and never asks. It is a plain
@@ -314,12 +321,17 @@ If the Stream Deck program is not running, or flamesafe does not report
 every group off within a second, Disarm all flame groups disarms them the
 way Abort does instead, and says so.
 
-The lasers chip in the status strip never says lit while BEYOND is not
-running: it reads LINK LOST (red), and if BEYOND was running and stops, an
-alert says so. BEYOND never answers back, so "lit, unconfirmed" means the
+The lasers have ONE pill in the status strip, one plain sentence: who is
+armed and BEYOND's laser output, for example "Lasers: all disarmed, output
+dark", "Lasers: 2 of 3 armed, output off" or "Lasers: all armed, output on"
+("not known: no contact" while the page has lost the engine). Point at it
+for every detail: which lasers are armed, why the output stays off, why an
+arm would be refused, and what the show last sent BEYOND. It never says lit
+while BEYOND is not running: it reads LINK LOST first, in red, and if
+BEYOND was running and stops, an alert says so. BEYOND never answers back, so "lit, unconfirmed" means the
 lasers were sent lit and BEYOND is running; it cannot prove the beams are
-on. Off the show PC, or with BEYOND on another machine, it reads
-"lit? link unknown".
+on. Off the show PC, or with BEYOND on another machine, the pill's details
+say "lit? link unknown".
 
 "Left in this show" counts down the show that is playing. On Hold it stands
 still, because the show's own clock is stopped. Between shows the next

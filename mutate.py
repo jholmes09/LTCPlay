@@ -11735,7 +11735,7 @@ def build():
 
  ("rack screen: the Abort stop sign has no name for a screen reader",
   "ltcplay/web/remote.html",
-  '<button id="b-abort" aria-label="Abort"',
+  '<button id="b-abort" aria-label="Abort. Activate twice to abort."',
   '<button id="b-abort"'),
 
  ("rack screen: the finger that armed a group disarms it on the way up",
@@ -11876,8 +11876,8 @@ def build():
 
  ("rack screen: the idle Abort sign is drawn invisible",
   "ltcplay/web/remote.html",
-  '#abortbar.idle .oct{background:#7A1A16}',
-  '#abortbar.idle .oct{background:transparent}'),
+  '#abortbar.idle:not(.tap1) .oct{background:#7A1A16}',
+  '#abortbar.idle:not(.tap1) .oct{background:transparent}'),
 
  ("rack screen: the Abort sign drops under the page",
   "ltcplay/web/remote.html",
@@ -11893,6 +11893,52 @@ def build():
   "ltcplay/web/remote.html",
   '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});',
   '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; continue; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});'),
+
+ # The Abort double tap and the one laser pill (Jeff, 2026-10-26).
+ ("rack screen: one tap on the Abort sign aborts",
+  "ltcplay/web/remote.html",
+  '  if(prev && nowMs - prev.at <= ABORT_TAP_MS && nowMs >= prev.at && prev.kind === kind) return {fire:true, next:null};',
+  '  return {fire:true, next:null};'),
+
+ ("rack screen: the Abort sign's second tap counts long after the first",
+  "ltcplay/web/remote.html",
+  "const ABORT_TAP_MS = 2000;",
+  "const ABORT_TAP_MS = 5000;"),
+
+ ("rack screen: a finger then the mouse aborts",
+  "ltcplay/web/remote.html",
+  ' && nowMs >= prev.at && prev.kind === kind) return {fire:true, next:null};',
+  ' && nowMs >= prev.at) return {fire:true, next:null};'),
+
+ ("rack screen: the Abort sign's first tap shows nothing",
+  "ltcplay/web/remote.html",
+  '    $("abortbar").classList.add("tap1");\n',
+  ''),
+
+ ("rack screen: the Abort sign never goes back after its first tap",
+  "ltcplay/web/remote.html",
+  "    ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS);\n",
+  ""),
+
+ ("rack screen: the two laser pills are shown apart again",
+  "ltcplay/web/remote.html",
+  "  if(!arm || !out) return subs;",
+  "  return subs;"),
+
+ ("rack screen: the laser pill takes the arm's colour over a fault",
+  "ltcplay/web/remote.html",
+  "  const state = (CHIP_RANK[arm.state] || 0) >= (CHIP_RANK[out.state] || 0) ? arm.state : out.state;",
+  "  const state = arm.state;"),
+
+ ("rack screen: the laser pill leaves out LINK LOST",
+  "ltcplay/web/remote.html",
+  '  const fault = out.state === "bad" ? String(out.word || "fault") + ": " : "";',
+  '  const fault = "";'),
+
+ ("rack screen: the laser pill's tooltip leaves out who is armed",
+  "ltcplay/web/remote.html",
+  '    armed.length ? "Armed: " + armed.map(x => x.name).join(", ") + "." : "",',
+  '    "",'),
 
  ("rack screen: the nav buttons are cut off at the right edge again",
   "ltcplay/web/remote.html",

@@ -41024,8 +41024,8 @@ def test_remote_abort_disarms_with_no_show_live():
                     encoding="utf-8").read()
         check("No show is live, so nothing else changes" in page and
               "abortPlan(ST)" in page,
-              "the page's Abort confirm says what an Abort with no show does, "
-              "from the engine's state (abortPlan)")
+              "the Abort sign's first tap says what an Abort with no show "
+              "does, from the engine's state (abortPlan)")
     finally:
         R.close()
     print("  ok")
@@ -41360,11 +41360,12 @@ def test_remote_abort_and_start_need_the_confirm():
         page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "web", "remote.html"),
                     encoding="utf-8").read()
-        check('confirmBox("Abort the show?"' in page and
+        check('const step = abortTapStep(ABORT_TAP, Date.now(), '
+              'abortTapKind(e));' in page and
               'press("abort", {confirmed:true})' in page and
               'id="abortbar"' in page and "position:fixed" in page,
-              "the page asks before Abort, and the Abort bar is fixed on "
-              "screen")
+              "the page asks for a second tap before Abort, and the Abort "
+              "sign is fixed on screen")
         check('confirmBox("Start a show now?"' in page,
               "the page asks before Start now")
     finally:
@@ -42149,9 +42150,10 @@ def test_rack_screen_width_guard_css_contract():
           "/api/remote/status still names the version")
     check("modeLook(ST)" in page and '$("mode").className = mo.cls' in page,
           "the MODE pill is in the header and drawn from modeLook")
-    check("abortPlan(ST)" in page and "confirmBox(\"Abort the show?\"" in page
-          and "Every flame group disarms at once" not in page,
-          "the Abort confirm lists abortPlan's items; the old promise is gone")
+    check('$("b-abort").title = abortPlan(ST).map(i => i.text).join(" ");'
+          in page and "Every flame group disarms at once" not in page,
+          "the Abort sign's first tap lists abortPlan's items; the old "
+          "promise is gone")
     check('id="abort-said"' in page and "saidAbort(" in page and
           "FLAMES WERE NOT DISARMED FROM THIS SCREEN" in page,
           "the Abort's answer is a banner that says what was not done")
@@ -43892,16 +43894,33 @@ def test_rack_screen_abort_is_a_corner_stop_sign():
             "never behind a gesture, at least 44 px, 'Abort' for a screen "
             "reader and a tooltip; nothing pressable under it at the bottom "
             "of the page, no group's Hold to arm under it at load "
-            "(1366x768, 1280x800, 1366x700, 1920x1080, an iPad); one press "
-            "is the same Abort as before (its confirm, then abort with "
-            "confirmed). Drawn in a real browser and pressed")
+            "(1366x768, 1280x800, 1366x700, 1920x1080, an iPad). A DOUBLE "
+            "TAP (Jeff, 2026-10-26): the first tap only changes the sign "
+            "(larger, TAP AGAIN TO ABORT) and sends nothing, a second tap "
+            "anywhere on it within 2 s sends the same Abort as before, no "
+            "confirm box. Drawn in a real browser and pressed")
     here = os.path.dirname(os.path.abspath(__file__))
     page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
-    for need in ('<button id="b-abort" aria-label="Abort"',
-                 'press("abort", {confirmed:true})',
-                 'confirmBox("Abort the show?"'):
+    for need in ('<button id="b-abort" aria-label="Abort. Activate twice '
+                 'to abort."',
+                 'press("abort", {confirmed:true})'):
         check(need in page, f"the page has {need!r}")
+    check('confirmBox("Abort the show?"' not in page,
+          "no confirm box in front of Abort: the double tap is the confirm")
+    bad = _page_logic_in_node(page, r"""
+t(ABORT_TAP_MS === 2000, "2.0 s");
+t(abortTapStep(null, 1000, "mouse").fire === false, "one tap never aborts");
+const first = abortTapStep(null, 1000, "touch").next;
+t(abortTapStep(first, 2999, "touch").fire === true && abortTapStep(first, 3000, "touch").fire === true, "a second tap within 2.0 s aborts");
+t(abortTapStep(first, 3001, "touch").fire === false && abortTapStep(first, 3001, "touch").next.at === 3001, "a second tap after 2.0 s is a first tap again");
+t(abortTapStep(first, 1500, "mouse").fire === false, "another kind of pointer is a first tap");
+t(abortTapStep({at:1000, kind:"key"}, 1800, "key").fire === true, "Enter or Space twice");
+t(abortTapStep(first, 900, "touch").fire === false, "a clock that went back is a first tap");
+t(abortTapKind({pointerType:"pen"}) === "pen" && abortTapKind({detail:0}) === "key" && abortTapKind({detail:1}) === "mouse", "the kinds");
+""")
+    if bad is not None:
+        check(bad == [], f"the Abort double tap, in node: {bad}")
     check("touchstart" not in page and "swipe" not in page.lower(),
           "no gesture stands in front of Abort")
     chrome = _find_chromium()
@@ -43945,14 +43964,26 @@ scrollTo(0, 0);
 out.tip = (document.getElementById("abort-sub") || {}).textContent || "";
 out.idle = document.getElementById("abortbar").classList.contains("idle");
 out.fill = getComputedStyle(ab.querySelector(".oct")).backgroundColor + " " + getComputedStyle(ab.querySelector(".oct i")).backgroundColor;
+// One tap: the sign changes at once, nothing is sent, it is never
+// disabled, no confirm box; after 2.0 s it goes back by itself.
 h.tap(ab);
-await h.sleep(150);
-out.confirm = !document.getElementById("modal").hidden ? document.getElementById("m-q").textContent : null;
-out.before_yes = h.posts("abort").length;
-document.getElementById("m-yes").click();
+await h.sleep(100);
+const bar = document.getElementById("abortbar");
+out.first = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, disabled:ab.disabled,
+  w:Math.round(box().width), modal:!document.getElementById("modal").hidden, posts:h.posts("abort").length};
+await h.sleep(2150);
+out.back = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, posts:h.posts("abort").length};
+// Two taps: the second anywhere on the enlarged sign, off its centre.
+h.tap(ab);
+await h.sleep(300);
+const r = box();
+const at = document.elementFromPoint(r.left + r.width * 0.3, r.top + r.height * 0.5);
+out.second_on_sign = !!at && (at === ab || ab.contains(at));
+if(at) h.tap(at);
 await h.sleep(200);
 out.abort_posts = h.posts("abort").map(p => p.body.confirmed);
 out.said = !document.getElementById("abort-said").hidden;
+out.after = bar.classList.contains("tap1");
 """
     rules = _css_rules(page)
     tip = _css_rule(rules, "#abortbar button:hover small,"
@@ -43990,8 +44021,8 @@ out.said = !document.getElementById("abort-said").hidden;
               f"across the screen: {a}")
         check(0 <= a["right"] <= 24 and 0 <= a["bottom"] <= 24,
               f"{w}x{h}: in the bottom right corner: {a}")
-        check(a["label"] == "Abort" and a["title"].startswith("Abort") and
-              a["word"] == "ABORT",
+        check(a["label"] == "Abort. Activate twice to abort." and
+              a["title"].startswith("Abort") and a["word"] == "ABORT",
               f"{w}x{h}: 'Abort' for a screen reader, a tooltip, the word "
               f"on the sign: {a}")
         check(m["hit"] == [True, True],
@@ -44012,12 +44043,98 @@ out.said = !document.getElementById("abort-said").hidden;
                            "Stops the show. Flames then need Arm again"),
               f"{w}x{h}: the sign's line says what a press does: "
               f"{m['tip']!r}")
-        check(m["confirm"] == "Abort the show?" and m["before_yes"] == 0 and
-              m["abort_posts"] == [True] and m["said"],
-              f"{w}x{h}: one press asks, Yes sends the same Abort as "
-              f"before (confirmed), and its answer is shown: {m}")
+        f1 = m["first"]
+        check(f1["tap1"] and f1["word"] == "TAP AGAIN TO ABORT" and
+              not f1["disabled"] and f1["w"] > a["w"] and not f1["modal"]
+              and f1["posts"] == 0,
+              f"{w}x{h}: one tap changes the sign at once (larger, TAP "
+              f"AGAIN TO ABORT), never disabled, no confirm box, nothing "
+              f"sent: {f1}")
+        check(not m["back"]["tap1"] and m["back"]["word"] == "ABORT" and
+              m["back"]["posts"] == 0,
+              f"{w}x{h}: after 2.0 s it goes back by itself, nothing sent: "
+              f"{m['back']}")
+        check(m["second_on_sign"] and m["abort_posts"] == [True] and
+              m["said"] and not m["after"],
+              f"{w}x{h}: a second tap anywhere on the enlarged sign within "
+              f"2 s sends the same Abort as before (confirmed), and its "
+              f"answer is shown: {m}")
     print("  measured: " + "; ".join(said))
+    _abort_double_tap_paths(chrome, page)
     print("  ok")
+
+
+def _abort_double_tap_paths(chrome, page):
+    """The Abort double tap (Jeff, 2026-10-26): late, keyboard, two
+    fingers, a mouse's double click, signed out and with no contact."""
+    steps = r"""
+const ab = document.getElementById("b-abort");
+h.tap(ab);
+await h.sleep(2100);
+h.tap(ab);
+await h.sleep(150);
+out.late = h.posts("abort").length;
+out.late_armed = document.getElementById("abortbar").classList.contains("tap1");
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort, a late second tap: {m!r}"):
+        check(m["late"] == 0 and m["late_armed"],
+              f"a second tap after 2.0 s does not abort; it is a first tap "
+              f"again: {m}")
+    steps = r"""
+const ab = document.getElementById("b-abort");
+const n = () => h.posts("abort").length;
+const pclick = (id, type) => ab.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, detail:1, pointerId:id, pointerType:type, isPrimary:id === 1}));
+out.signed = document.getElementById("nav-user").textContent;
+ab.click(); await h.sleep(300); out.key_one = n(); ab.click(); await h.sleep(150);
+out.key = n();
+pclick(2, "touch"); await h.sleep(250); pclick(3, "touch"); await h.sleep(150);
+out.fingers = n();
+pclick(4, "touch"); await h.sleep(250); pclick(1, "mouse"); await h.sleep(150);
+out.mixed = n();
+pclick(1, "mouse"); await h.sleep(150);
+out.mixed_then_mouse = n();
+await h.sleep(2100);
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
+ab.dispatchEvent(new MouseEvent("dblclick", {bubbles:true, detail:2}));
+await h.sleep(150);
+out.dbl = n();
+out.bodies = h.posts("abort").map(p => p.body.confirmed);
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort, the other ways to tap twice: {m!r}"):
+        check(m["signed"] == "Signed out" and m["key_one"] == 0 and
+              m["key"] == 1,
+              f"signed out, Enter or Space twice aborts (once is nothing): "
+              f"{m}")
+        check(m["fingers"] == 2, f"two quick taps by two fingers abort: {m}")
+        check(m["mixed"] == 2 and m["mixed_then_mouse"] == 3,
+              f"a finger then the mouse is two first taps; the mouse twice "
+              f"aborts: {m}")
+        check(m["dbl"] == 4 and all(b is True for b in m["bodies"]),
+              f"a real double click aborts once, every Abort confirmed: {m}")
+    steps = r"""
+const ab = document.getElementById("b-abort");
+window.__patch = st => { throw new Error("the engine went away"); };
+window.__answer["abort"] = b => [503, {error:"The engine did not answer."}];
+await h.sleep(2400);
+out.stale = !document.getElementById("stale").hidden;
+out.disabled = ab.disabled;
+h.tap(ab); await h.sleep(200); h.tap(ab); await h.sleep(250);
+out.posts = h.posts("abort").length;
+out.said = document.querySelector("#abort-said .altext").textContent;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort with no contact: {m!r}"):
+        check(m["stale"] and not m["disabled"] and m["posts"] == 1 and
+              "ABORT pressed, and the engine answered: The engine did not "
+              "answer." in m["said"],
+              f"no contact: the double tap still sends, and a failure is "
+              f"said plainly: {m}")
 
 
 def test_rack_screen_one_button_per_flame_group():
@@ -44517,6 +44634,98 @@ out.note = h.note();
               "not be read" in m["note"],
               f"P2-1: live flame programming's state not readable: Arm all "
               f"holds nothing and says why: {m}")
+
+
+def test_rack_screen_one_laser_pill():
+    section("rack screen (Jeff, 2026-10-26): the two laser pills, Laser arm "
+            "and Lasers (what the show last sent BEYOND), are ONE pill with "
+            "one sentence ('Lasers: all disarmed, output dark'); every fact "
+            "either said is in its tooltip; a fault (LINK LOST) is said "
+            "first and stays red; Disarm all lasers still works. Page logic "
+            "in node, then drawn in a real browser")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    bad = _page_logic_in_node(page, r"""
+const chips = (aw, as, lw, ls) => [{name:"Show", state:"ok", word:"ready"}, {name:"Laser arm", state:as, word:aw}, {name:"Lasers", state:ls, word:lw, title:"sent only"}, {name:"Audio", state:"ok", word:"ready"}];
+const L = (a, b, extra) => Object.assign({lasers:[{id:"L1", name:"Laser 1", armed:a}, {id:"L2", name:"Laser 2", armed:b}], groups:{}}, extra || {});
+let p = laserPill(chips("disarmed", "off", "dark", "ok"), L(false, false));
+t(p.length === 3 && p[1].name === "Lasers" && p[1].word === "all disarmed, output dark" && p[1].state === "ok" && p[0].name === "Show" && p[2].name === "Audio", "one pill, in place: " + JSON.stringify(p));
+p = laserPill(chips("1 of 2 armed", "warn", "dark", "ok"), L(true, false, {why_off:"not every laser is armed"}));
+t(p[1].word === "1 of 2 armed, output off" && p[1].state === "warn" && /Armed: Laser 1\./.test(p[1].title) && /stays off: not every laser is armed/.test(p[1].title) && /Laser arm: 1 of 2 armed/.test(p[1].title) && /last sent BEYOND: dark \(sent only\)/.test(p[1].title), "some armed: " + JSON.stringify(p[1]));
+p = laserPill(chips("ARMED", "warn", "lit, unconfirmed", "ok"), L(true, true, {output_permitted:true}));
+t(p[1].word === "all armed, output on" && p[1].state === "warn", "all armed: " + JSON.stringify(p[1]));
+p = laserPill(chips("disarmed", "off", "LINK LOST", "bad"), L(false, false), {link:"lost", why:"BEYOND is not running"});
+t(p[1].word === "LINK LOST: all disarmed, output dark" && p[1].state === "bad" && /BEYOND: BEYOND is not running\./.test(p[1].title), "a fault first, red: " + JSON.stringify(p[1]));
+p = laserPill(chips("disarmed", "off", "dark", "ok"), L(false, false, {arm_here:"needs screen_arming", arm_refusal:"L2 is locked out"}));
+t(/Arming from here is off: needs screen_arming\./.test(p[1].title) && /would be refused: L2 is locked out\./.test(p[1].title), "the arm refusals in the tooltip");
+p = laserPill(chips("not known", "bad", "dark", "ok"), {error:"boom"});
+t(p[1].word === "arm not known, output not known" && p[1].state === "bad" && /could not be read: boom/.test(p[1].title), "the arm not readable: " + JSON.stringify(p[1]));
+const one = [{name:"Lasers", state:"ok", word:"dark"}];
+t(laserPill(one, null) === one, "only the Lasers chip (no laser arm here): as it was");
+t(!/[\u2013\u2014]/.test(JSON.stringify(p)), "no dashes");
+""")
+    if bad is not None:
+        check(bad == [], f"the laser pill, in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_off()
+    st["subsystems"] = [{"name": n, "state": s, "word": w} for n, s, w in (
+        ("Show", "ok", "ready"), ("Laser arm", "off", "disarmed"),
+        ("Lasers", "ok", "dark"), ("Audio", "ok", "ready"))]
+    steps = r"""
+const pills = () => [...document.querySelectorAll("#subs .chip")].map(el => ({text:el.textContent.replace(/\s+/g, " ").trim(), cls:el.className, title:el.title}));
+await h.sleep(400);
+out.off = pills();
+window.__patch = st => { st.subsystems[1] = {name:"Laser arm", state:"warn", word:"1 of 2 armed"};
+  st.laser_arm = Object.assign({}, st.laser_arm, {lasers:[{id:"L1", name:"Laser 1", armed:true}, {id:"L2", name:"Laser 2", armed:false}], why_off:"not every laser is armed"}); return st; };
+await h.sleep(500);
+out.some = pills();
+out.strip = document.getElementById("lz-st").textContent;
+window.__patch = st => { st.subsystems[2] = {name:"Lasers", state:"bad", word:"LINK LOST"}; st.beyond_link = {link:"lost", why:"BEYOND is not running"}; return st; };
+await h.sleep(500);
+out.lost = pills();
+h.tap(document.getElementById("lz-disarm"));
+await h.sleep(150);
+out.disarm = h.posts("laser-arm").map(p => p.body);
+window.__patch = st => { throw new Error("gone"); };
+await h.sleep(2400);
+out.stale = pills();
+"""
+    m = _rack_drive(chrome, page, st, steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"the laser pill, drawn: {m!r}"):
+        for k in ("off", "some", "lost", "stale"):
+            las = [p for p in m[k] if p["text"].startswith(("Lasers",
+                                                            "Laser arm"))]
+            check(len(las) == 1 and len(m[k]) == 3,
+                  f"{k}: one laser pill, not two: {m[k]}")
+        one = lambda k: [p for p in m[k] if p["text"].startswith("Lasers")][0]
+        check(one("off")["text"] == "Lasers all disarmed, output dark",
+              f"all disarmed: {one('off')}")
+        check(one("some")["text"] == "Lasers 1 of 2 armed, output off" and
+              "warn" in one("some")["cls"] and
+              "Armed: Laser 1." in one("some")["title"] and
+              "not every laser is armed" in one("some")["title"] and
+              "1 of 2 ARMED" in m["strip"],
+              f"one armed: amber, the facts in its tooltip, the strip's "
+              f"detail as before: {one('some')} {m['strip']!r}")
+        check(one("lost")["text"].startswith("Lasers LINK LOST: ") and
+              "bad" in one("lost")["cls"] and
+              "BEYOND is not running" in one("lost")["title"],
+              f"BEYOND lost: said first, red: {one('lost')}")
+        check(m["disarm"] == [{"all": True, "on": False, "seen":
+                               m["disarm"][0].get("seen")}]
+              if m["disarm"] else False,
+              f"Disarm all lasers still works: {m['disarm']}")
+        check(one("stale")["text"] == "Lasers not known: no contact" and
+              "warn" in one("stale")["cls"],
+              f"no contact: {one('stale')}")
+    print("  ok")
 
 
 # Every nav button the page shows, at a size, on a view: inside the window
@@ -62024,6 +62233,7 @@ if __name__ == "__main__":
     test_rack_screen_one_button_per_flame_group()
     test_rack_screen_arm_all_and_disarm_all_toggle()
     test_rack_screen_nav_buttons_never_cut_off()
+    test_rack_screen_one_laser_pill()
     test_streamdeck_reports_rearm_wait_and_purge_refusal()
     test_rack_window_fits_the_work_area_above_the_taskbar()
     test_deck_chip_shows_live_truth()

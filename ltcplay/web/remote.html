@@ -489,9 +489,17 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   border:1px solid var(--red);border-radius:6px;padding:4px 8px;pointer-events:none}
 #abortbar button:hover small,#abortbar button:focus-visible small{display:block}
 #abortbar button small:empty{display:none}
+/* The first tap (2026-10-26): the sign grows at once and pulses, and says
+   TAP AGAIN TO ABORT; a second tap anywhere on it aborts. */
+#abortbar.tap1 button{width:calc(var(--abort-size) * 2.1);height:calc(var(--abort-size) * 2.1);
+  filter:drop-shadow(0 0 18px rgba(230,30,24,.8))}
+#abortbar.tap1 .w{font-size:15px;line-height:1.15;white-space:normal;width:80%;text-align:center}
+#abortbar.tap1 .oct{animation:abortpulse .5s steps(1,end) infinite}
+@keyframes abortpulse{50%{background:#FF6A5E}}
+@media (prefers-reduced-motion:reduce){#abortbar.tap1 .oct{animation:none}}
 /* Nothing to abort (Jeff's decision 19): dimmed, still pressable. */
-#abortbar.idle .oct{background:#7A1A16}
-#abortbar.idle .oct i{background:#4A0F12}
+#abortbar.idle:not(.tap1) .oct{background:#7A1A16}
+#abortbar.idle:not(.tap1) .oct i{background:#4A0F12}
 #abortbar.idle button{filter:none}
 #modal{position:fixed;inset:0;z-index:40;background:rgba(7,6,5,.82);display:flex;
   align-items:center;justify-content:center;padding:16px}
@@ -954,7 +962,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </section>
 </div>
 
-<div id="abortbar"><button id="b-abort" aria-label="Abort" aria-describedby="abort-sub" title="Abort: stops the show. Asks you first."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub"></small></button></div>
+<div id="abortbar"><button id="b-abort" aria-label="Abort. Activate twice to abort." aria-describedby="abort-sub" title="Abort: tap twice to stop the show."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub"></small></button></div>
 </div>
 
 <div id="stale" hidden role="alert"></div>
@@ -1377,6 +1385,61 @@ function armAllWords(parts, out, names){
   by.forEach(b => { t += " Not armed: " + b.names.join(", ") + " (" + b.why + ")."; });
   return t;
 }
+// The Abort double tap (Jeff, 2026-10-26): `prev` is the first tap
+// ({at, kind}) or null. A tap within ABORT_TAP_MS of a first tap of the
+// same kind ("touch", "mouse", "pen", or "key" for Enter or Space) fires;
+// anything else is a first tap. Two fingers are both "touch".
+const ABORT_TAP_MS = 2000;
+function abortTapStep(prev, nowMs, kind){
+  if(prev && nowMs - prev.at <= ABORT_TAP_MS && nowMs >= prev.at && prev.kind === kind) return {fire:true, next:null};
+  return {fire:false, next:{at:nowMs, kind:kind}};
+}
+function abortTapKind(e){
+  if(e && e.pointerType) return e.pointerType;
+  return e && e.detail === 0 ? "key" : "mouse";
+}
+// ONE laser pill (Jeff, 2026-10-26). The engine sends two chips, "Laser
+// arm" (who is armed) and "Lasers" (what the show last sent BEYOND, or a
+// fault: LINK LOST, blanking not set up). The page shows them as one pill
+// with one sentence: the fault first, then the arm, then BEYOND's laser
+// output, e.g. "all disarmed, output dark". Its colour is the worse of
+// the two; every fact either said is in its tooltip. `la` is the status's
+// laser_arm view, `bl` its beyond_link. Display only.
+const CHIP_RANK = {bad:3, warn:2, ok:1, off:0};
+function laserPill(subs, la, bl){
+  subs = subs || [];
+  const arm = subs.find(x => x && x.name === "Laser arm");
+  const out = subs.find(x => x && x.name === "Lasers");
+  if(!arm || !out) return subs;
+  const ls = (la && !la.error && la.lasers) || null;
+  const armed = ls ? ls.filter(x => x.armed) : [];
+  let a, o;
+  if(!ls) a = "arm " + String(arm.word || "not known");
+  else if(!ls.length) a = "none set up";
+  else if(!armed.length) a = "all disarmed";
+  else if(armed.length === ls.length) a = "all armed";
+  else a = armed.length + " of " + ls.length + " armed";
+  if(ls && la.output_permitted) o = "output on";
+  else if(ls && !armed.length) o = "output dark";
+  else if(ls) o = "output off";
+  else o = "output not known";
+  const fault = out.state === "bad" ? String(out.word || "fault") + ": " : "";
+  const state = (CHIP_RANK[arm.state] || 0) >= (CHIP_RANK[out.state] || 0) ? arm.state : out.state;
+  const title = ["Lasers: " + fault + a + ", " + o + ".",
+    "Laser arm: " + arm.word + (arm.title ? " (" + arm.title + ")" : "") + ".",
+    "What the show last sent BEYOND: " + out.word + (out.title ? " (" + out.title + ")" : "") + ".",
+    armed.length ? "Armed: " + armed.map(x => x.name).join(", ") + "." : "",
+    ls && la.why_off && armed.length ? "BEYOND's laser output stays off: " + la.why_off + "." : "",
+    la && la.arm_here ? "Arming from here is off: " + la.arm_here + "." : "",
+    la && la.arm_refusal ? "An arm now would be refused: " + la.arm_refusal + "." : "",
+    la && la.error ? "The laser arm could not be read: " + la.error + "." : "",
+    bl && bl.link === "lost" && bl.why ? "BEYOND: " + bl.why + "." : ""].filter(Boolean).join(" ");
+  const pill = {name:"Lasers", state:state, word:fault + a + ", " + o, title:title, pill:"lasers"};
+  const i = Math.min(subs.indexOf(arm), subs.indexOf(out));
+  const rest = subs.filter(x => x !== arm && x !== out);
+  rest.splice(i, 0, pill);
+  return rest;
+}
 // LOGIC END
 </script>
 <script>
@@ -1522,6 +1585,8 @@ function renderStale(){
     // a chip from an old status is never green and never keeps its old
     // word. Amber, "no contact".
     document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });
+    const lzp = document.querySelector('.chip[data-pill="lasers"] span');
+    if(lzp) lzp.textContent = "not known: no contact";
   }
   const b = $("stale");
   b.hidden = !stale || $("main").hidden;
@@ -1548,7 +1613,7 @@ function renderStale(){
     // Not known is never shown as nothing to abort.
     $("abortbar").classList.remove("idle");
     $("abort-sub").textContent = "";
-    $("b-abort").title = ABORT_TITLE;
+    if(!ABORT_TAP) $("b-abort").title = ABORT_TITLE;
   } else {
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "1";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "1";
@@ -1623,7 +1688,7 @@ function render(){
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "Stops the show. Flames then need Arm again";
-  $("b-abort").title = ABORT_TITLE + " " + $("abort-sub").textContent + ".";
+  if(!ABORT_TAP) $("b-abort").title = ABORT_TITLE + " " + $("abort-sub").textContent + ".";
   LOCAL_FAULT["st-trouble"] = !!s.laser_fault;
   LOCAL_LABEL["st-trouble"] = s.laser_fault ? "Lasers" : "Engine";
   setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
@@ -1678,8 +1743,8 @@ function render(){
   // Which LTC Player this is (its release and build id), so the version
   // on the screen can be read off against the Releases page by phone.
   $("version").textContent = s.version ? ("LTC Player " + s.version) : "";
-  $("subs").innerHTML = (s.subsystems || []).map(x =>
-    `<span class="chip ${esc(x.state)}"${x.title ? ` title="${esc(x.title)}"` : ""}><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
+  $("subs").innerHTML = laserPill(s.subsystems || [], s.laser_arm, s.beyond_link).map(x =>
+    `<span class="chip ${esc(x.state)}"${x.pill ? ` data-pill="${esc(x.pill)}"` : ""}${x.title ? ` title="${esc(x.title)}"` : ""}><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
 
   setWarn("tr-why", tr.programming ? "" : (tr.why || ""));
   const bits = [];
@@ -2162,7 +2227,7 @@ async function press(route, extra, msgEl){
 }
 
 // The stop sign's tooltip (2026-10-26); the line under it says the rest.
-const ABORT_TITLE = "Abort: stops the show. Asks you first.";
+const ABORT_TITLE = "Abort: tap twice to stop the show.";
 // What the Abort did and did NOT do stays on the screen as a banner until
 // it is seen or the Abort is Reset: never only a one-line toast.
 function saidAbort(text, ok){
@@ -2174,10 +2239,32 @@ function saidAbort(text, ok){
   delete b.dataset.latched;
 }
 $("abort-said-ok").addEventListener("click", () => { const b = $("abort-said"); b.hidden = true; delete b.dataset.aborted; delete b.dataset.latched; });
-$("b-abort").addEventListener("click", async () => {
+// ABORT is a DOUBLE TAP (Jeff, 2026-10-26), no confirm box. The first tap
+// only changes the sign at once (larger, pulsing, TAP AGAIN TO ABORT) and
+// sends nothing; a second tap on it within ABORT_TAP_MS, by the same kind
+// of pointer (any finger, the mouse, or Enter or Space again), sends the
+// same Abort as before. After ABORT_TAP_MS the sign goes back by itself.
+// The sign is never disabled, and a page with no contact still sends.
+let ABORT_TAP = null, ABORT_TIMER = null;
+function abortTapDone(){
+  ABORT_TAP = null; clearTimeout(ABORT_TIMER);
+  $("abortbar").classList.remove("tap1");
+  $("b-abort").querySelector(".w").textContent = "ABORT";
+}
+$("b-abort").addEventListener("click", async e => {
+  const step = abortTapStep(ABORT_TAP, Date.now(), abortTapKind(e));
+  if(!step.fire){
+    ABORT_TAP = step.next;
+    clearTimeout(ABORT_TIMER);
+    $("abortbar").classList.add("tap1");
+    $("b-abort").querySelector(".w").textContent = "TAP AGAIN TO ABORT";
+    // What the second tap does, from this screen, right now.
+    $("b-abort").title = abortPlan(ST).map(i => i.text).join(" ");
+    ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS);
+    return;
+  }
+  abortTapDone();
   armStop("Abort");
-  const plan = abortPlan(ST);
-  if(!(await confirmBox("Abort the show?", "What this press does, from this screen, right now:", "Yes, ABORT", "", plan))) return;
   const j = await press("abort", {confirmed:true});
   if(j) saidAbort("ABORT pressed. " + (j.text || "Done.") + (j.disarmed === true ? "" : " FLAMES WERE NOT DISARMED FROM THIS SCREEN: use the Stream Deck's Abort or the hardware e-stop."), j.disarmed === true && !!j.ok);
   else saidAbort("ABORT pressed, and the engine answered: " + $("ctl-msg").textContent, false);
