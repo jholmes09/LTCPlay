@@ -55,10 +55,13 @@
   --serif:"Playfair Display",Georgia,"Times New Roman",serif;
   --caps:"Cinzel","Trajan Pro",Georgia,serif;
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-  /* The Abort stop sign in the bottom right corner, and the room the page
-     keeps under its content so nothing ends up under the sign. */
+  /* The Abort stop sign in the bottom right corner, and the gutter the
+     page keeps down its right edge (review of #118, P2-4) so no control
+     is ever under the sign, at load or at any scroll position. Under the
+     page: room for any part of the window under the taskbar. */
   --abort-size:56px;
-  --abort-room:calc(var(--abort-size) + 16px + env(safe-area-inset-bottom) + var(--pad-bottom, 0px));
+  --abort-gutter:calc(var(--abort-size) + 20px + env(safe-area-inset-right));
+  --abort-room:calc(12px + env(safe-area-inset-bottom) + var(--pad-bottom, 0px));
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{background:var(--bg);margin:0}
@@ -78,7 +81,7 @@ body{color:var(--cream);font:16px/1.35 var(--sans);-webkit-font-smoothing:antial
    below its text. selftest.py's CSS contract fails if any of these go. */
 #app{min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:minmax(0,1fr);
   grid-template-rows:auto auto minmax(min-content,1fr) auto;
-  gap:clamp(6px,1vh,12px);padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) var(--abort-room)}
+  gap:clamp(6px,1vh,12px);padding:clamp(6px,1vh,12px) var(--abort-gutter) var(--abort-room) clamp(10px,1.2vw,24px)}
 #app > *{min-width:0}
 header{display:flex;align-items:center;flex-wrap:wrap;gap:clamp(8px,1vw,20px);min-width:0;
   padding-bottom:clamp(4px,.8vh,10px);border-bottom:1px solid var(--hair)}
@@ -253,6 +256,11 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   text-transform:uppercase;color:inherit;overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
 .lamp button.armb small{position:relative;font:700 clamp(11px,1.5vh,15px)/1.1 var(--sans);color:inherit;opacity:.85}
 .lamp button.armb small:empty{display:none}
+/* An armed group's button (review of #118, P2-3): the big word stays the
+   state (ARMED, ARM AGAIN, WAIT...), and DISARM is the action under it. */
+.lamp button.armb .act{position:relative;font:800 clamp(12px,1.7vh,17px)/1.1 var(--sans);letter-spacing:.08em;
+  text-transform:uppercase;border:1px solid currentColor;border-radius:4px;padding:1px 10px}
+.lamp button.armb .act:empty{display:none}
 .lamp button.armb.dis{cursor:pointer;box-shadow:inset 0 0 0 2px var(--champ)}
 @media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .armb{animation-duration:2s}}
 .flamefoot{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center}
@@ -263,7 +271,10 @@ button.disarm small{display:block;font:400 clamp(10px,1.3vh,13px)/1.1 var(--sans
 #b-disarm{position:relative;overflow:hidden;touch-action:none;-webkit-touch-callout:none}
 #b-disarm .fill{position:absolute;left:0;bottom:0;height:100%;width:0;background:rgba(40,190,90,.45)}
 #b-disarm .lbl,#b-disarm small{position:relative}
-#b-disarm.armall{border:2px solid #5FE08A}
+/* Arm all (review of #118, P2-2): unmistakable. A green outline and
+   "Hold to arm all" in green, never the bronze of a disarm. */
+#b-disarm.armall{border:3px solid #5FE08A;color:#5FE08A;box-shadow:0 0 0 1px rgba(95,224,138,.35)}
+#b-disarm.armall small{color:#5FE08A}
 /* LASERS on the show screen (Jeff, 2026-10-22): one compact strip of its
    own under the flames, violet edged, never inside the flame block and
    never sharing a button with it. Disarm all lasers always works; Arm
@@ -417,6 +428,13 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #mo-firebar .key.ready{border-color:var(--red);color:var(--champ)}
 /* Space only fires while THIS page has the keyboard (Jeff, 2026-10-26). */
 #mo-firebar .focusnote{grid-column:1 / -1;font:700 clamp(14px,1.8vh,17px)/1.25 var(--sans);color:var(--amber)}
+/* A lock or unlock just done, with Undo for 5 s (Jeff, 2026-10-26: no
+   pop-up). Never blocks anything; it goes by itself. */
+.lkundo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--amber);border-radius:6px;
+  padding:2px 8px;font:700 14px/1.25 var(--sans);color:var(--champ);background:rgba(245,160,30,.10)}
+#mo-firebar .lkundo{grid-column:1 / -1}
+.lkundo[hidden]{display:none}
+.lkundo button{min-height:36px;padding:2px 12px;font-size:14px}
 #mo-firebar .key.firing{background:var(--red-deep);border-color:var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
 .mo-lasers{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px}
 .laser{position:relative;display:flex;flex-direction:column;gap:2px;border:2px solid #7A6032;border-radius:8px;
@@ -474,8 +492,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 /* ABORT is a stop sign in the bottom right corner (Jeff, 2026-10-26: the
    big bar took too much room). Always on the screen, never behind a
    gesture: fixed to the window while the page scrolls, 56 px, red, the
-   word on it. #app keeps --abort-room free under its content, so at the
-   bottom of any page nothing sits under the sign. --pad-bottom: how far
+   word on it. #app keeps a gutter down its right edge (--abort-gutter),
+   so no control ever scrolls under the sign. --pad-bottom: how far
    this window reaches below the screen's work area (under the taskbar),
    measured by the page, or the supervisor's pad_bottom (Jeff, 2026-10-26:
    on the Pico the window ran 96 px under the always-on-top taskbar and
@@ -491,11 +509,27 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #abortbar .oct i{inset:3px;background:var(--red-deep)}
 #abortbar .w{position:relative;font:800 14px/1 var(--sans);letter-spacing:.02em}
 #abortbar button:focus-visible{outline:2px solid var(--champ);outline-offset:3px}
-/* Read by a screen reader, not drawn. */
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+/* What a press does now ("Nothing to abort right now", "Stops the
+   show..."), beside the sign on hover or keyboard focus (review of #118,
+   P2-5); a screen reader reads it as the button's description. */
+#abortbar small{display:none;position:absolute;right:calc(100% + 8px);top:50%;transform:translateY(-50%);
+  white-space:nowrap;font:700 14px/1.2 var(--sans);color:var(--champ);background:var(--bg);
+  border:1px solid var(--red);border-radius:6px;padding:4px 8px;pointer-events:none}
+#abortbar button:hover small,#abortbar button:focus-visible small{display:block}
+#abortbar button small:empty{display:none}
+/* The first tap (2026-10-26): the sign grows at once and pulses, and says
+   TAP AGAIN TO ABORT; a second tap anywhere on it aborts. */
+/* It grows UP, inside the right-hand gutter (review of #122, P2-1): never
+   wider than the gutter, so it never covers a control. */
+#abortbar.tap1 button{width:calc(var(--abort-size) + 10px);height:calc(var(--abort-size) * 2.6);
+  filter:drop-shadow(0 0 18px rgba(230,30,24,.8))}
+#abortbar.tap1 .w{font-size:14px;line-height:1.2;letter-spacing:0;white-space:normal;width:92%;text-align:center}
+#abortbar.tap1 .oct{animation:abortpulse .5s steps(1,end) infinite}
+@keyframes abortpulse{50%{background:#FF6A5E}}
+@media (prefers-reduced-motion:reduce){#abortbar.tap1 .oct{animation:none}}
 /* Nothing to abort (Jeff's decision 19): dimmed, still pressable. */
-#abortbar.idle .oct{background:#7A1A16}
-#abortbar.idle .oct i{background:#4A0F12}
+#abortbar.idle:not(.tap1) .oct{background:#7A1A16}
+#abortbar.idle:not(.tap1) .oct i{background:#4A0F12}
 #abortbar.idle button{filter:none}
 #modal{position:fixed;inset:0;z-index:40;background:rgba(7,6,5,.82);display:flex;
   align-items:center;justify-content:center;padding:16px}
@@ -766,7 +800,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <button id="mo-arr-save">Save layout</button><button class="ghost" id="mo-arr-reset">Reset layout</button><button class="ghost" id="mo-arr-cancel">Cancel</button>
         <span class="dim">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
       <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
-      <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="focusnote" id="mo-focus" hidden></div></div>
+      <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="lkundo" id="mo-lkundo" hidden><span></span><button class="ghost" id="mo-lkundo-go">Undo</button></div><div class="focusnote" id="mo-focus" hidden></div></div>
       <!-- Shutdown (Jeff, 2026-10-23): its own labelled section on the
            Startup page. Whether it becomes its own tab is still open. -->
       <section class="card compact" id="mo-shut">
@@ -1020,7 +1054,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </section>
 </div>
 
-<div id="abortbar"><button id="b-abort" aria-label="Abort" aria-describedby="abort-sub" title="Abort: stops the show. Asks you first."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub" class="sr"></small></button></div>
+<div id="abortbar"><button id="b-abort" aria-label="Abort. Activate twice to abort." aria-describedby="abort-sub" title="Abort: tap twice to stop the show."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub"></small></button></div>
 </div>
 
 <div id="stale" hidden role="alert"></div>
@@ -1328,6 +1362,30 @@ function safetyLine(g, c){
     " safeties up" + (locked ? ", " + locked + " locked out" : "") +
     (c === "armed" ? "; ARMED" : "; NOT armed");
 }
+// "armed n of m machines" (Jeff, 2026-10-26), on every flame group's card:
+// m is the group's machines on the Startup page's list that are not
+// locked out (those are said apart, "k locked out"), n how many of them
+// flamesafe has armed: a one-safety group arms all its machines together,
+// so it reads 0 of m or m of m. A group with several safeties keeps its
+// own count (safetyLine). "" when the list, or the group's state, is not
+// known: the card then reads as before. `gm` is the status's
+// morning.group_machines.
+// A machine is counted out as locked only once flamesafe holds its lock
+// (`lock` "ok"); before that it is "k lock pending", and with the lockout
+// not trusted every machine is counted and the line says so (second
+// review of #122, P2-3).
+function machineCountLine(g, c, gm){
+  if(!g || c === "unknown" || (g.safeties_up || []).length >= 2) return "";
+  const x = gm && gm[g.name];
+  if(!x || typeof x.machines !== "number") return "";
+  const k = Math.max(0, Number(x.locked) || 0);
+  const lk = x.lock || "ok";
+  const locked = lk === "ok" ? k : 0;
+  const m = Math.max(0, x.machines - locked);
+  const n = c === "armed" ? m : 0;
+  return "armed " + n + " of " + m + (m === 1 ? " machine" : " machines") +
+    (lk === "untrusted" ? "; lockout not trusted" : k ? (lk === "ok" ? ", " + k + " locked out" : ", " + k + " lock pending") : "");
+}
 // The no-show-file line (Jeff, 2026-10-26; review of #113, P2-a and b):
 // what works NOW without a show file, from the status, never a promise.
 // `su` is the engine's setup view, `st` the status. "" when a show file
@@ -1381,9 +1439,7 @@ function armButtonMode(g, c, on){
 // The Disarm button's small line, in words.
 function disarmHint(c, held){
   if(held === "cycle") return "Disarm, then hold";
-  if(c === "armed") return "Armed. One press disarms";
-  if(c === "unknown") return "One press disarms";
-  return "Asked for. One press disarms";
+  return "One press disarms";
 }
 // What a click on a two-way button does: "disarm" or nothing. The mode
 // the button had when the finger went DOWN decides, never the mode it
@@ -1406,6 +1462,19 @@ function allButtonMode(st, stale){
   return "arm";
 }
 const ONE_GROUP_WORDS = "Live flame programming is on, and it allows one flame group at a time. Hold one group's own button instead.";
+const LF_UNKNOWN_WORDS = "Live flame programming's state could not be read, so Arm all arms nothing. Hold one group's own button instead.";
+const KEY_HOLD_WORDS = "Arming is a hold: press and hold with your finger or mouse.";
+// Why Arm all may hold nothing at all right now, or "": an Abort
+// standing, live flame programming on with one group at a time, or its
+// state not readable. Checked when the hold starts AND on every heartbeat
+// (review of #118, P2-1): turned on mid-hold, it stops the hold.
+function armAllRefusal(st){
+  const lf = (st && st.live_flame) || {};
+  if(st && st.schedule && st.schedule.aborted) return REFUSED_LATCHED;
+  if(lf.error) return LF_UNKNOWN_WORDS;
+  if(lf.on === true && lf.one_group_at_a_time !== false) return ONE_GROUP_WORDS;
+  return "";
+}
 // Arm all: which groups one hold on it holds to arm (`go`), and which stay
 // out and why (`out`, each {group, name, why}). The same rules as a
 // group's own button (armState, the re-arm wait `waits[i]` ms) for every
@@ -1414,9 +1483,8 @@ const ONE_GROUP_WORDS = "Live flame programming is on, and it allows one flame g
 // heartbeat of every group's hold, as it does for a group's own button.
 function armAllPlan(st, nowMs, lastOkMs, waits){
   const gs = ((st && st.flames) || {}).groups || [];
-  const lf = (st && st.live_flame) || {};
-  if(st && st.schedule && st.schedule.aborted) return {go:[], out:[], why:REFUSED_LATCHED};
-  if(lf.on === true && lf.one_group_at_a_time !== false) return {go:[], out:[], why:ONE_GROUP_WORDS};
+  const no = armAllRefusal(st);
+  if(no) return {go:[], out:[], why:no};
   const go = [], out = [];
   gs.forEach((g, i) => {
     const as = armState(st, nowMs, lastOkMs, i);
@@ -1439,6 +1507,82 @@ function armAllWords(parts, out, names){
   left.forEach(l => { const why = String(l.why || "").replace(/[.\s]+$/, ""); const b = by.find(x => x.why === why); if(b) b.names.push(l.name); else by.push({why:why, names:[l.name]}); });
   by.forEach(b => { t += " Not armed: " + b.names.join(", ") + " (" + b.why + ")."; });
   return t;
+}
+// The Abort double tap (Jeff, 2026-10-26): `prev` is the first tap
+// ({at, kind}, on the page's monotonic clock) or null. A tap of the same
+// kind ("touch", "mouse", "pen", or "key" for Enter or Space) within
+// ABORT_TAP_MS fires, however fast (a panic double tap must abort; second
+// review of #122, P2-2: only a held key's repeats are kept out, by the
+// keydown guard), or at any time while the sign is still `enlarged` (a
+// late timer never turns a good second tap into a first one). Anything
+// else is a first tap. Two fingers are both "touch".
+const ABORT_TAP_MS = 2000;
+function abortTapStep(prev, nowMs, kind, enlarged){
+  if(prev && prev.kind === kind && nowMs >= prev.at){
+    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};
+  }
+  return {fire:false, next:{at:nowMs, kind:kind}};
+}
+// Why an unlock of machine `m` ({name, group}) is refused on this page, or
+// "": its flame group armed or asked for, or flamesafe's state not known
+// (review of #122, P1-1). A lock is always allowed.
+function unlockRefusal(m, flames){
+  const fl = flames || {};
+  if(!fl.connected || fl.stale) return "flamesafe's armed groups are not known right now, so " + m.name + " stays locked out. Unlock it once the lamps are live.";
+  const g = (fl.groups || []).find(x => x.name === m.group);
+  if(g && (g.armed === "armed" || g.wanted)) return "Disarm " + m.group + " first, then unlock " + m.name + ".";
+  return "";
+}
+function abortTapKind(e){
+  if(e && e.pointerType) return e.pointerType;
+  return e && e.detail === 0 ? "key" : "mouse";
+}
+// ONE laser pill (Jeff, 2026-10-26). The engine sends two chips, "Laser
+// arm" (who is armed) and "Lasers" (what the show last sent BEYOND, or a
+// fault: LINK LOST, blanking not set up). The page shows them as one pill
+// with one sentence: the fault first, then the arm, then BEYOND's laser
+// output, e.g. "all disarmed, output dark". Its colour is the worse of
+// the two; every fact either said is in its tooltip. `la` is the status's
+// laser_arm view, `bl` its beyond_link. Display only.
+const CHIP_RANK = {bad:3, warn:2, ok:1, off:0};
+function laserPill(subs, la, bl){
+  subs = subs || [];
+  const arm = subs.find(x => x && x.name === "Laser arm");
+  const out = subs.find(x => x && x.name === "Lasers");
+  if(!arm || !out) return subs;
+  const ls = (la && !la.error && la.lasers) || null;
+  const armed = ls ? ls.filter(x => x.armed) : [];
+  let a, o;
+  if(!ls || arm.state === "bad") a = "arm " + String(arm.word || "not known");
+  else if(!ls.length) a = "none set up";
+  else if(!armed.length) a = "all disarmed";
+  else if(armed.length === ls.length) a = "all armed";
+  else a = armed.length + " of " + ls.length + " armed";
+  if(ls && la.output_permitted) o = "output allowed";
+  else if(ls && !armed.length) o = "output dark";
+  else if(ls) o = "output off";
+  else o = "output not known";
+  const fault = out.state === "bad" ? String(out.word || "fault") + ": " : "";
+  // A warning from what the show last sent ("lit? link unknown", "BEYOND
+  // restarted: dark until lit again") is said in the sentence too, never
+  // only in colour and a tooltip a touch screen cannot show (review of
+  // #122, P2-4).
+  const warn = out.state === "warn" || (out.state === "ok" && /\blit\b/.test(String(out.word || ""))) ? "; " + String(out.word || "check") : "";
+  const state = (CHIP_RANK[arm.state] || 0) >= (CHIP_RANK[out.state] || 0) ? arm.state : out.state;
+  const title = ["Lasers: " + fault + a + ", " + o + warn + ".",
+    "Laser arm: " + arm.word + (arm.title ? " (" + arm.title + ")" : "") + ".",
+    "What the show last sent BEYOND: " + out.word + (out.title ? " (" + out.title + ")" : "") + ".",
+    armed.length ? "Armed: " + armed.map(x => x.name).join(", ") + "." : "",
+    ls && la.why_off && armed.length ? "BEYOND's laser output stays off: " + la.why_off + "." : "",
+    la && la.arm_here ? "Arming from here is off: " + la.arm_here + "." : "",
+    la && la.arm_refusal ? "An arm now would be refused: " + la.arm_refusal + "." : "",
+    la && la.error ? "The laser arm could not be read: " + la.error + "." : "",
+    bl && bl.link === "lost" && bl.why ? "BEYOND: " + bl.why + "." : ""].filter(Boolean).join(" ");
+  const pill = {name:"Lasers", state:state, word:fault + a + ", " + o + warn, title:title, pill:"lasers"};
+  const i = Math.min(subs.indexOf(arm), subs.indexOf(out));
+  const rest = subs.filter(x => x !== arm && x !== out);
+  rest.splice(i, 0, pill);
+  return rest;
 }
 // WEATHER (weather.py, WEATHER.md): what the Weather block draws, from the
 // engine's /api/remote/weather (`w`) and how many seconds ago this page
@@ -1465,6 +1609,17 @@ function wxBlock(w, heardAgoS){
   });
   if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
   return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L, foot:foot};
+}
+// The Users screen's "sign everyone out after the last show" minutes, as
+// typed: a whole number 0 to 1440, or null (blank, a word, a decimal,
+// out of range). A null is said on the screen and nothing is saved, so a
+// blank field never switches it off without a word (review of PR #125,
+// P2-7).
+function lastShowMinutes(text){
+  const t = String(text == null ? "" : text).trim();
+  if(!/^[0-9]{1,4}$/.test(t)) return null;
+  const n = parseInt(t, 10);
+  return n <= 1440 ? n : null;
 }
 // LOGIC END
 </script>
@@ -1612,6 +1767,8 @@ function renderStale(){
     // a chip from an old status is never green and never keeps its old
     // word. Amber, "no contact".
     document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });
+    const lzp = document.querySelector('.chip[data-pill="lasers"] span');
+    if(lzp) lzp.textContent = "not known: no contact";
   }
   const b = $("stale");
   b.hidden = !stale || $("main").hidden;
@@ -1632,13 +1789,16 @@ function renderStale(){
       if(sp) sp.textContent = "not known: no contact";
       const why = el.querySelector(".why");
       if(why) why.textContent = "";
+      // Never an old count while nothing is known (second review of #122).
+      const sf = el.querySelector(".saf");
+      if(sf){ sf.hidden = false; sf.textContent = "armed: not known"; sf.title = ""; }
     });
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "0.3";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "0.3";
     // Not known is never shown as nothing to abort.
     $("abortbar").classList.remove("idle");
     $("abort-sub").textContent = "";
-    $("b-abort").title = ABORT_TITLE;
+    if(!ABORT_TAP) $("b-abort").title = ABORT_TITLE;
   } else {
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "1";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "1";
@@ -1713,7 +1873,7 @@ function render(){
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "Stops the show. Flames then need Arm again";
-  $("b-abort").title = ABORT_TITLE + " " + $("abort-sub").textContent + ".";
+  if(!ABORT_TAP) $("b-abort").title = ABORT_TITLE + " " + $("abort-sub").textContent + ".";
   LOCAL_FAULT["st-trouble"] = !!s.laser_fault;
   LOCAL_LABEL["st-trouble"] = s.laser_fault ? "Lasers" : "Engine";
   setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
@@ -1771,8 +1931,8 @@ function render(){
   // Which LTC Player this is (its release and build id), so the version
   // on the screen can be read off against the Releases page by phone.
   $("version").textContent = s.version ? ("LTC Player " + s.version) : "";
-  $("subs").innerHTML = (s.subsystems || []).map(x =>
-    `<span class="chip ${esc(x.state)}"${x.title ? ` title="${esc(x.title)}"` : ""}><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
+  $("subs").innerHTML = laserPill(s.subsystems || [], s.laser_arm, s.beyond_link).map(x =>
+    `<span class="chip ${esc(x.state)}"${x.pill ? ` data-pill="${esc(x.pill)}"` : ""}${x.title ? ` title="${esc(x.title)}"` : ""}><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
 
   setWarn("tr-why", tr.programming ? "" : (tr.why || ""));
   const bits = [];
@@ -1951,7 +2111,7 @@ function renderLamps(fl){
     LAMP_KEY = key;
     box.innerHTML = groups.map((g, i) =>
       `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b>
-        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i></div>`).join("");
+        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><span class="act"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i></div>`).join("");
     // One button (2026-10-26): its mode when the finger went down decides
     // (clickAction). Hold to arm starts on the press and stops on the
     // release; Disarm goes on the click.
@@ -1963,6 +2123,7 @@ function renderLamps(fl){
       b.addEventListener("click", e => {
         const down = b.dataset.down || ""; delete b.dataset.down;
         if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ armStop("disarm"); press("group-disarm", {group:i}); }
+        else if(e.detail === 0 && b.dataset.mode === "hold") armSay(KEY_HOLD_WORDS, 2);
       });
       b.addEventListener("contextmenu", e => e.preventDefault());
     });
@@ -1981,7 +2142,7 @@ function renderLamps(fl){
     el.querySelector("b").title = g.arm_value ? "Arms at " + g.arm_value + " on its safety slots" : "";
     // No key on the Stream Deck (review of #126): said by its name.
     el.querySelector("b").textContent = g.name + (g.deck_key === false ? " (no Stream Deck key)" : "");
-    const sl = safetyLine(g, c), se = el.querySelector(".saf");
+    const sl = safetyLine(g, c) || machineCountLine(g, c, ST && ST.morning && ST.morning.group_machines), se = el.querySelector(".saf");
     se.hidden = !sl;
     se.textContent = sl;
     se.title = sl;
@@ -2061,6 +2222,7 @@ function holding(i){ return !!HOLD && HOLD.parts.some(p => p.group === i && !p.e
 // asked for is left to its own hold's answer from the engine.
 function holdLapsed(){
   if(!HOLD) return "";
+  if(HOLD.all){ const no = armAllRefusal(ST); if(no) return no; }
   const gs = ((ST && ST.flames) || {}).groups || [];
   for(const p of HOLD.parts){
     if(p.end) continue;
@@ -2199,7 +2361,7 @@ function armStop(why){
 // all hold is under way, so the finger never ends up on Disarm all.
 const ALL_WORDS = {
   disarm: ["Disarm all flame groups", "plain disarm: arm again with a hold", "A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset."],
-  arm: ["Arm all flame groups", "hold to arm every group", "Hold to arm every flame group this screen can arm, each by the same rules as its own button. A group that is locked out, waiting or refused stays out and is named. Lift your finger to stop."]};
+  arm: ["Hold to arm all flame groups", "press and hold: every group this screen can arm", "Hold to arm every flame group this screen can arm, each by the same rules as its own button. A group that is locked out, waiting or refused stays out and is named. Lift your finger to stop."]};
 function renderAllButton(stale){
   const b = $("b-disarm");
   const mode = (HOLD && HOLD.all) ? "arm" : allButtonMode(ST, stale);
@@ -2213,11 +2375,13 @@ function renderAllButton(stale){
 function setArmMode(el, mode, c, held){
   el.dataset.mode = mode;
   el.classList.toggle("dis", mode === "disarm");
+  el.querySelector(".act").textContent = "";
   if(mode !== "disarm") return;
   el.disabled = false;
-  // A state not known keeps its word ("Not known"): a big Disarm there
-  // could read as armed. The small line says what a press does.
-  if(c !== "unknown") el.querySelector(".word").textContent = "Disarm";
+  // The big word stays the state (ARMED, ARM AGAIN, Not known: review of
+  // #118, P2-3); DISARM is the action under it, and the small line says
+  // what one press does.
+  el.querySelector(".act").textContent = "Disarm";
   el.querySelector("small").textContent = disarmHint(c, held);
   el.title = "A plain disarm of this group, one press: hold it again to arm it. No Reset needed.";
 }
@@ -2253,7 +2417,7 @@ async function press(route, extra, msgEl){
 }
 
 // The stop sign's tooltip (2026-10-26); the line under it says the rest.
-const ABORT_TITLE = "Abort: stops the show. Asks you first.";
+const ABORT_TITLE = "Abort: tap twice to stop the show.";
 // What the Abort did and did NOT do stays on the screen as a banner until
 // it is seen or the Abort is Reset: never only a one-line toast.
 function saidAbort(text, ok){
@@ -2265,10 +2429,39 @@ function saidAbort(text, ok){
   delete b.dataset.latched;
 }
 $("abort-said-ok").addEventListener("click", () => { const b = $("abort-said"); b.hidden = true; delete b.dataset.aborted; delete b.dataset.latched; });
-$("b-abort").addEventListener("click", async () => {
+// ABORT is a DOUBLE TAP (Jeff, 2026-10-26), no confirm box. The first tap
+// only changes the sign at once (larger, pulsing, TAP AGAIN TO ABORT) and
+// sends nothing; a second tap on it within ABORT_TAP_MS, by the same kind
+// of pointer (any finger, the mouse, or Enter or Space again), sends the
+// same Abort as before. After ABORT_TAP_MS the sign goes back by itself.
+// The sign is never disabled, and a page with no contact still sends.
+let ABORT_TAP = null, ABORT_TIMER = null;
+function abortTapDone(){
+  ABORT_TAP = null; clearTimeout(ABORT_TIMER);
+  $("abortbar").classList.remove("tap1");
+  $("b-abort").querySelector(".w").textContent = "ABORT";
+}
+// A key held down never counts again (review of #122, P2-2): a repeat of
+// Enter or Space on the sign is swallowed before it can click it.
+$("b-abort").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });
+$("b-abort").addEventListener("click", async e => {
+  const kind = abortTapKind(e);
+  // A finger or the mouse leaves no keyboard focus on the sign, so a later
+  // Enter held elsewhere can never abort.
+  if(kind !== "key") $("b-abort").blur();
+  const step = abortTapStep(ABORT_TAP, monoNow(), kind, $("abortbar").classList.contains("tap1"));
+  if(!step.fire){
+    ABORT_TAP = step.next;
+    clearTimeout(ABORT_TIMER);
+    $("abortbar").classList.add("tap1");
+    $("b-abort").querySelector(".w").textContent = "TAP AGAIN TO ABORT";
+    // What the second tap does, from this screen, right now.
+    $("b-abort").title = abortPlan(ST).map(i => i.text).join(" ");
+    ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS);
+    return;
+  }
+  abortTapDone();
   armStop("Abort");
-  const plan = abortPlan(ST);
-  if(!(await confirmBox("Abort the show?", "What this press does, from this screen, right now:", "Yes, ABORT", "", plan))) return;
   const j = await press("abort", {confirmed:true});
   if(j) saidAbort("ABORT pressed. " + (j.text || "Done.") + (j.disarmed === true ? "" : " FLAMES WERE NOT DISARMED FROM THIS SCREEN: use the Stream Deck's group keys or the hardware e-stop."), j.disarmed === true && !!j.ok);
   else saidAbort("ABORT pressed, and the engine answered: " + $("ctl-msg").textContent, false);
@@ -2590,7 +2783,7 @@ ALL_BTN.addEventListener("pointerdown", e => { ALL_BTN.dataset.down = ALL_BTN.da
 ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
   ALL_BTN.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
 ALL_BTN.addEventListener("contextmenu", e => e.preventDefault());
-ALL_BTN.addEventListener("click", e => { const down = ALL_BTN.dataset.down || ""; delete ALL_BTN.dataset.down; if(clickAction(down, ALL_BTN.dataset.mode, e.detail === 0) === "disarm"){ armStop("Disarm all flame groups"); press("disarm-all"); } });
+ALL_BTN.addEventListener("click", e => { const down = ALL_BTN.dataset.down || ""; delete ALL_BTN.dataset.down; if(clickAction(down, ALL_BTN.dataset.mode, e.detail === 0) === "disarm"){ armStop("Disarm all flame groups"); press("disarm-all"); } else if(e.detail === 0 && ALL_BTN.dataset.mode === "arm") armSay(KEY_HOLD_WORDS, 2); });
 
 // LASER STRIP BEGIN. LASERS on the show screen (Jeff, 2026-10-22): the
 // lasers' own controls, apart from every flame control. Disarm all lasers
@@ -3090,19 +3283,84 @@ async function moPress(route, extra, msgEl){
   try{
     const j = await post("/api/remote/" + route, moActor(extra));
     el.textContent = j.text || "Done.";
-    MO = await getJSON("/api/remote/morning", 1500); renderMorning();
-  }catch(e){ el.textContent = e.message; }
+    try{ MO = await getJSON("/api/remote/morning", 1500); renderMorning(); }catch(e2){}
+    return j;
+  }catch(e){ el.textContent = e.message; return null; }
 }
-async function lockClick(kind, id, name){
-  if(arrangeBlocked("lock", {})) return;        // before the confirm, not after
-  const locked = kind === "machine" ? !!(MO.lockout.machines || {})[id] : !!(MO.lockout.lasers || {})[id];
-  if(!locked){
-    if(await confirmBox("Lock out " + name + "?", "It cannot be armed or fired from anywhere, show cues skip it, and it stays locked out across restarts until it is unlocked here.", "Lock out", ""))
-      moPress("lock", {kind:kind, id:id, on:true}, kind === "machine" ? "mo-msg" : "mo-lmsg");
-  } else {
-    if(await confirmBox("Unlock " + name + "?", "It can be armed and fired again from the next cue or purge.", "Yes, unlock", "start"))
-      moPress("lock", {kind:kind, id:id, on:false, confirmed:true}, kind === "machine" ? "mo-msg" : "mo-lmsg");
+// An L button (Jeff, 2026-10-26): ONE tap locks out or unlocks at once,
+// no pop-up, both ways. The engine's answer (or its refusal, in its own
+// words) goes in the message line, and a lock or unlock that went through
+// can be undone for LOCK_UNDO_MS. Every engine rule is as before: the tap
+// is the operator's confirm.
+// Review of #122, P1-1: a second tap (a double tap, a chattering panel)
+// never flips it back. While a lock or unlock of that unit is under way,
+// and for LOCK_QUIET_MS after its answer, its L button does nothing; the
+// choice is made from the engine's state read at the tap, never the
+// page's copy; and the request names the state wanted (on true or false),
+// so a repeat cannot turn a lock into an unlock. An unlock is refused here
+// while the machine's flame group is armed or asked for (unlockRefusal):
+// an unlocked machine in an armed group would fire on the next cue.
+const LOCK_UNDO_MS = 5000, LOCK_QUIET_MS = 1000;
+let LOCK_UNDO = null;
+const LOCK_BUSY = {};
+async function lockClick(kind, id, name, want){
+  if(arrangeBlocked("lock", {})) return;        // before anything is sent
+  const key = kind + ":" + id;
+  // Undo names what it wants and is never held back by the quiet second
+  // (review of #122, second review, P2-1); a tap is.
+  if(LOCK_BUSY[key] && want === undefined) return;
+  const msg = kind === "machine" ? "mo-msg" : "mo-lmsg";
+  // What the operator SAW when they tapped decides what they want (second
+  // review, P1-A): a lock tap on a machine shown unlocked asks for a lock,
+  // even if another screen locked it a moment ago.
+  const isLocked = v => !!(v && v.lockout && (kind === "machine" ? (v.lockout.machines || {})[id] : (v.lockout.lasers || {})[id]));
+  if(want === undefined && !(MO && MO.lockout)){ $(msg).textContent = "The lockout is not shown yet, so nothing was changed. Tap again."; return; }
+  const on = want === undefined ? !isLocked(MO) : want;
+  LOCK_BUSY[key] = true;
+  try{
+    let fresh = null;
+    try{ fresh = await getJSON("/api/remote/morning", 1500); }catch(e){ fresh = null; }
+    if(!fresh || !fresh.lockout){ $(msg).textContent = "The engine's lockout could not be read, so nothing was changed. Tap again."; return; }
+    // Already as wanted (another screen did it, or an answer was lost):
+    // said, and nothing is sent.
+    if(on === isLocked(fresh)){ $(msg).textContent = name + (on ? " is already locked out." : " is already unlocked."); $(msg).title = $(msg).textContent; return; }
+    if(!on && kind === "machine"){
+      const why = unlockRefusal((fresh.machines || []).find(m => m.id === id) || {name:name}, ST && ST.flames);
+      if(why){ $(msg).textContent = why; $(msg).title = why; return; }
+    }
+    const j = await moPress("lock", lockBody(kind, id, on), msg);
+    if(j) lockUndoOffer(kind, id, name, on);
+  } finally {
+    setTimeout(() => { delete LOCK_BUSY[key]; }, LOCK_QUIET_MS);
   }
+}
+// The lock route's body: a lock, or an unlock (the engine asks an unlock
+// to say it is confirmed; the tap is that).
+function lockBody(kind, id, on){ return on ? {kind:kind, id:id, on:true} : {kind:kind, id:id, on:false, confirmed:true}; }
+function lockUndoOffer(kind, id, name, on){
+  const bar = $("mo-lkundo");
+  if(!bar) return;
+  clearTimeout(LOCK_UNDO && LOCK_UNDO.timer);
+  LOCK_UNDO = {kind:kind, id:id, name:name, on:on};
+  bar.querySelector("span").textContent = name + (on ? " locked out." : " unlocked.");
+  // Beside the message line of what was locked (review of #122, P2-5).
+  const at = $(kind === "machine" ? "mo-msg" : "mo-lmsg");
+  if(at && bar.previousElementSibling !== at) at.insertAdjacentElement("afterend", bar);
+  bar.hidden = false;
+  LOCK_UNDO.timer = setTimeout(lockUndoGone, LOCK_UNDO_MS);
+}
+function lockUndoGone(){
+  const bar = $("mo-lkundo");
+  if(LOCK_UNDO) clearTimeout(LOCK_UNDO.timer);
+  LOCK_UNDO = null;
+  if(bar) bar.hidden = true;
+}
+// Undo: the opposite press, through lockClick and every rule it has.
+async function lockUndo(){
+  const u = LOCK_UNDO;
+  lockUndoGone();
+  if(!u) return;
+  await lockClick(u.kind, u.id, u.name, !u.on);
 }
 // ARRANGE BEGIN. Arrange mode on the Morning page (Jeff, 2026-10-19, after
 // bench-2026.10.19-6a32ff9: a picked-up machine followed the mouse for
@@ -3243,6 +3501,7 @@ function renderArrange(){
   if(ab){ ab.disabled = ARRANGE; ab.textContent = "Arrange"; }
 }
 // ARRANGE END
+if($("mo-lkundo-go")) $("mo-lkundo-go").addEventListener("click", lockUndo);
 // The fire key: Space on this page. One keydown starts the heartbeats;
 // keyup, blur, the page hidden or closed, a refused heartbeat or a stale
 // page stops them. The heartbeats are NOT the key: the browser's key
@@ -3498,6 +3757,11 @@ $("au-verify").addEventListener("click", async () => {
   loadUsers();
 });
 $("au-save").addEventListener("click", async () => {
+  const lastShow = lastShowMinutes($("au-lastshow").value);
+  if(lastShow === null){
+    uMsg("au-msg", "Sign out after the last show has to be a whole number of minutes, 0 (off) to 1440. Nothing was saved.", true);
+    return;
+  }
   const body = {enabled:$("au-en").checked, url:$("au-url").value.trim() || undefined, time:$("au-time").value.trim(),
     keep_days:parseInt($("au-keep").value, 10) || 90};
   if($("au-tok").value) body.token = $("au-tok").value;
@@ -3505,7 +3769,7 @@ $("au-save").addEventListener("click", async () => {
   try{
     const r = await post("/api/remote/audit-settings", body);
     await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
-    await post("/api/remote/last-show-signout", {minutes:parseInt($("au-lastshow").value, 10) || 0});
+    await post("/api/remote/last-show-signout", {minutes:lastShow});
     uMsg("au-msg", r.text);
   }catch(e){ uMsg("au-msg", e.message, true); }
   $("au-tok").value = "";

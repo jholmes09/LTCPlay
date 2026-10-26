@@ -151,21 +151,35 @@ click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
 only known command is for all lasers at once; Abort, Hold and the night
 closing disarm every laser, and after Resume or Reset they stay dark until
-you arm them again; the Laser arm light on the rack screen says how many
-are armed); one calibration test button per laser (the laser has to be
+you arm them again; the Lasers pill at the top of the rack screen says how
+many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each button says so until Jeff fills
 in `lasers` in ltcplay_morning.json); Calibrate all lasers (the test on
 for every armed laser that is not locked out, one after another; it names
 any it skipped and why) and Calibration off (every test off, always
 works); Open BEYOND (on the show PC only: brings the BEYOND window to the
-front so you can check the grid there; it sends nothing to BEYOND; if
-Windows will not let it come forward, BEYOND's button on the taskbar
-flashes, click it); the purge (click a machine or a group
+front, any time no show is live, with the calibration tests on or off,
+so you can adjust there; it is refused while a purge or a hold to arm is
+going on, on Hold and between shows; come back to the rack screen (click
+it, or its taskbar button) for Calibration off; it sends nothing to
+BEYOND; if Windows will not let it come
+forward, BEYOND's button on the taskbar flashes, click it); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
 let go and it stops; nothing fires while a show is live or an Abort
-stands); lock out of any one machine or laser (the L button on it; a lock
-stays across restarts until unlocked here, with a confirm; a locked unit
+stands); lock out of any one machine or laser (the L button on it: one tap
+locks it out, one tap on a locked one unlocks it, with no pop-up either
+way; a line under the machine map, or under the lasers, says what was
+done, with Undo for 5 seconds; a tap does what the screen showed when you
+tapped (a machine shown unlocked is locked), and if another screen already
+did it the line says so and nothing is sent; a second tap on the same L
+within about a second does nothing, so a double tap never locks and then
+unlocks; a machine cannot be unlocked while its flame group is armed or
+being armed, or while flamesafe is not reporting, from any screen or the
+Stream Deck: the engine refuses it and the line says "Disarm <group> first,
+then unlock <machine>"; a refusal is
+said there in plain words; a lock stays across
+restarts until unlocked here; a locked unit
 cannot be armed or fired from anywhere and show cues skip it; a banner on
 every screen says what is locked); and the Startup and Shutdown
 checklists (pick your name, tick each step; every tick is recorded for
@@ -335,9 +349,13 @@ Wi-Fi that can reach that address can use the page, so keep the show Wi-Fi
 to the crew.
 
 After the last show of the night, everyone is signed out on their own:
-10 minutes after the last show ends (once nothing is live, on Hold or
-aborted), every screen that was signed in is signed out, once. Anyone who
-signs in after that stays signed in for the rest of the night. An admin
+10 minutes after the last show ends, every screen that was signed in
+before it ended is signed out, once. It waits while a show is live, on
+Hold or aborted, and while anything is armed or going on at the rig (a
+hold to arm, a purge, a laser test, an armed laser or flame group), and
+goes as soon as that is clear. Anyone who signs in after the last show
+ended stays signed in for the rest of the night. It only happens on a
+night with a show on the schedule. An admin
 can change the minutes, or turn it off with 0, on the Users screen
 (USERS.md).
 
@@ -348,8 +366,23 @@ show and how long is left in it, the next show, Start now, Hold, Resume,
 Reset, the flame groups and the status strip along the top (deck,
 flamesafe, audio, video, lasers, pixels). ABORT is a red stop sign in the
 bottom right corner, on every screen, always in sight (it stays there while
-the page scrolls; there is no gesture to find it). One press, then it asks
-once, as before. Start now asks once too. Hold, Resume and Reset are one
+the page scrolls; there is no gesture to find it). The page keeps a strip
+free down its right edge, so no other button is ever under the sign. Point
+at it (or reach it with the Tab key) and a line beside it says what a press
+does now, for example "Nothing to abort right now". Abort is a DOUBLE TAP,
+with no pop-up: the first tap only makes the sign bigger and flashing, with
+TAP AGAIN TO ABORT on it (it grows upward, inside the free strip, so it
+never covers another button), and sends nothing; a second tap anywhere on
+the big sign while it is big (2 seconds) aborts, exactly as before, however
+fast the second tap comes. Any finger works, two
+different fingers too, or the mouse twice (a double click), or Enter or
+Space twice (holding the key down counts once); a finger then the mouse
+counts as one tap. After 2 seconds
+with no second tap the sign goes back by itself and nothing happened. It
+works signed out, and with the connection lost it still sends and says
+plainly if the engine did not answer. The Stream Deck's Abort is unchanged. If you pinch-zoom an iPad in on part of the page, the sign
+is only in view when the zoomed part includes the bottom right corner: zoom
+back out to find it. Start now asks once too. Hold, Resume and Reset are one
 press. Disarm all flame groups is one press and never asks. It is a plain
 disarm: every group goes off, and a group is armed again by holding its
 button, with no Reset. Abort is different: it stops the
@@ -358,12 +391,21 @@ If the Stream Deck program is not running, or flamesafe does not report
 every group off within a second, Disarm all flame groups disarms them the
 way Abort does instead, and says so.
 
-The lasers chip in the status strip never says lit while BEYOND is not
-running: it reads LINK LOST (red), and if BEYOND was running and stops, an
-alert says so. BEYOND never answers back, so "lit, unconfirmed" means the
+The lasers have ONE pill in the status strip, one plain sentence: who is
+armed and BEYOND's laser output, for example "Lasers: all disarmed, output
+dark", "Lasers: 2 of 3 armed, output off" or "Lasers: all armed, output allowed" (allowed: BEYOND may light them;
+the show decides when)
+("not known: no contact" while the page has lost the engine). What the show
+last sent BEYOND is said in the sentence when it matters, for example
+"...; lit, unconfirmed" or "...; lit? link unknown", and a laser arm that
+cannot be read reads "arm not known". Point at it
+for every detail: which lasers are armed, why the output stays off, why an
+arm would be refused, and what the show last sent BEYOND. It never says lit
+while BEYOND is not running: it reads LINK LOST first, in red, and if
+BEYOND was running and stops, an alert says so. BEYOND never answers back, so "lit, unconfirmed" means the
 lasers were sent lit and BEYOND is running; it cannot prove the beams are
-on. Off the show PC, or with BEYOND on another machine, it reads
-"lit? link unknown".
+on. Off the show PC, or with BEYOND on another machine, the pill's details
+say "lit? link unknown".
 
 The video chip says whether MadMapper is ready before any show plays. On
 the show PC it reads "MadMapper running" (green) while the MadMapper
@@ -410,17 +452,34 @@ Each flame group has ONE button, and its colour is the group's state:
 green armed, bronze off, amber held back (flashing: re-arm needed after an
 Abort, a fault or a lost link), WAIT (the re-arm wait). While the group is
 off the button is Hold to arm: press and hold it, as before. While the group
-is armed or asked for, the same button reads DISARM: one press disarms that
-group at once. Lifting the finger that just armed a group never disarms it;
+is armed or asked for, the button still says the state in big letters
+(ARMED, ARM AGAIN, WAIT), with DISARM under it and "One press disarms": one
+press disarms that group at once. Arming is always a hold: the Enter key on
+Hold to arm only says so. Lifting the finger that just armed a group never disarms it;
 a new press does. ARM AGAIN reads "Disarm, then hold" on the button: press
 it once, then hold it. The Stream Deck says ARM AGAIN on the key too.
 
+Under each group's button a small line counts its machines: "armed 0 of 3
+machines" while it is off, "armed 3 of 3 machines" once flamesafe has armed
+it (every machine in a group arms together), with any machine locked out
+said apart ("1 locked out"; it is left out of the count and never fires).
+A lock flamesafe has not taken yet reads "1 lock pending", a lockout that
+cannot be trusted reads "lockout not trusted", and with the engine out of
+contact the line reads "armed: not known".
+The wave flamer, with a safety per fixture, keeps its own count of safeties
+up. If the Startup page's machine list cannot be read the line is left
+off.
+
 The button under the groups is two-way. While every group is off it reads
-Arm all flame groups: press and HOLD it, and every group this screen can arm
-is held to arm at once, each by exactly the same rules as its own button. A
+Hold to arm all flame groups, in green with a green outline: press and HOLD
+it for the full hold, and every group this screen can arm is held to arm at
+once, each by exactly the same rules as its own button. Let go early and
+every hold still under way is let go; a group the Stream Deck already armed
+during the hold stays armed (its button then reads Disarm). A
 group that is locked out, still in its re-arm wait or refused stays out, and
 the line beside it names each one and why. While live flame programming is
-on with one group at a time, Arm all arms nothing and says so. While any
+on with one group at a time (or turns on during the hold), or an Abort
+stands, Arm all arms nothing, stops, and says so. While any
 group is armed or asked for (one or several), or the lamps are not known, it
 reads Disarm all flame groups: one press, as before. With arming from a
 screen switched off it always reads Disarm all flame groups.
