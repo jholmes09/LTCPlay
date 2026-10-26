@@ -1463,6 +1463,17 @@ function wxBlock(w, heardAgoS){
   if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
   return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L, foot:foot};
 }
+// The Users screen's "sign everyone out after the last show" minutes, as
+// typed: a whole number 0 to 1440, or null (blank, a word, a decimal,
+// out of range). A null is said on the screen and nothing is saved, so a
+// blank field never switches it off without a word (review of PR #125,
+// P2-7).
+function lastShowMinutes(text){
+  const t = String(text == null ? "" : text).trim();
+  if(!/^[0-9]{1,4}$/.test(t)) return null;
+  const n = parseInt(t, 10);
+  return n <= 1440 ? n : null;
+}
 // LOGIC END
 </script>
 <script>
@@ -3493,6 +3504,11 @@ $("au-verify").addEventListener("click", async () => {
   loadUsers();
 });
 $("au-save").addEventListener("click", async () => {
+  const lastShow = lastShowMinutes($("au-lastshow").value);
+  if(lastShow === null){
+    uMsg("au-msg", "Sign out after the last show has to be a whole number of minutes, 0 (off) to 1440. Nothing was saved.", true);
+    return;
+  }
   const body = {enabled:$("au-en").checked, url:$("au-url").value.trim() || undefined, time:$("au-time").value.trim(),
     keep_days:parseInt($("au-keep").value, 10) || 90};
   if($("au-tok").value) body.token = $("au-tok").value;
@@ -3500,7 +3516,7 @@ $("au-save").addEventListener("click", async () => {
   try{
     const r = await post("/api/remote/audit-settings", body);
     await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
-    await post("/api/remote/last-show-signout", {minutes:parseInt($("au-lastshow").value, 10) || 0});
+    await post("/api/remote/last-show-signout", {minutes:lastShow});
     uMsg("au-msg", r.text);
   }catch(e){ uMsg("au-msg", e.message, true); }
   $("au-tok").value = "";

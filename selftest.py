@@ -48753,13 +48753,17 @@ def test_open_beyond_window_finder_and_front():
         """[(hwnd, visible, owner, pid, minimized)], {pid: image}. The
         foreground follows set_foreground unless `refuse` is set."""
 
-        def __init__(self, wins, images, fg=1, refuse=False):
+        def __init__(self, wins, images, fg=1, refuse=False, hung=()):
             self.wins = wins
             self.images = images
             self.fg = fg
             self.refuse = refuse
+            self.hung_set = set(hung)
             self.calls = []
             self.attached = set()
+
+        def hung(self, h):
+            return h in self.hung_set
 
         def _w(self, h):
             return [w for w in self.wins if w[0] == h][0]
@@ -48801,17 +48805,14 @@ def test_open_beyond_window_finder_and_front():
             (self.attached.add if on else self.attached.discard)(other)
             return True
 
-        def alt_tap(self):
-            self.calls.append(("alt",))
-
         def set_foreground(self, h):
             self.calls.append(("fg", h))
             if not self.refuse:
                 self.fg = h
             return not self.refuse
 
-        def bring_to_top(self, h):
-            self.calls.append(("top", h))
+        def raise_async(self, h):
+            self.calls.append(("raise", h))
 
         def flash(self, h):
             self.calls.append(("flash", h))
@@ -48835,14 +48836,70 @@ def test_open_beyond_window_finder_and_front():
           "no BEYOND window: None")
     ok, text = WF.open_beyond(None, windows=True, api=api)
     check(ok and api.fg == 5 and ("restore", 5) in api.calls and
-          ("alt",) in api.calls and ("attach", 42, 501, True) in api.calls
+          ("raise", 5) in api.calls and
+          ("attach", 42, 501, True) in api.calls
           and ("attach", 42, 501, False) in api.calls and not api.attached
           and api.calls.index(("restore", 5)) < api.calls.index(("fg", 5))
           and api.calls.index(("attach", 42, 501, True)) <
           api.calls.index(("fg", 5)) and "in front" in text,
-          f"restored, the input attached and the Alt key tapped before "
-          f"SetForegroundWindow, the attach let go after: {ok} {text} "
-          f"{api.calls}")
+          f"restored, the input attached before SetForegroundWindow, "
+          f"raised, the attach let go after; no key is pressed (the fake "
+          f"has no key call at all): {ok} {text} {api.calls}")
+    import inspect
+    wsrc = inspect.getsource(WF)
+    check("keybd_event" not in wsrc and "SendInput" not in wsrc and
+          "VK_MENU" not in wsrc and "BringWindowToTop" not in wsrc and
+          "ShowWindowAsync" in wsrc and "SWP_ASYNCWINDOWPOS" in wsrc and
+          "u.ShowWindow(" not in wsrc,
+          "windowfront presses no key and never waits on BEYOND's window "
+          "(ShowWindowAsync, SetWindowPos with SWP_ASYNCWINDOWPOS)")
+    # A BEYOND that is not responding is left alone.
+    hung = FakeWin(wins, imgs, hung=(5,))
+    ok, text = WF.open_beyond(None, windows=True, api=hung)
+    check(not ok and text == WF.NOT_RESPONDING and not hung.calls,
+          f"a hung BEYOND: not moved, said: {text} {hung.calls}")
+
+    # The attach is let go even when the foreground call raises.
+    class Raises(FakeWin):
+        def set_foreground(self, h):
+            raise OSError("stuck")
+    rz = Raises(wins, imgs)
+    ok, text = WF.open_beyond(None, windows=True, api=rz)
+    check(not ok and ("attach", 42, 501, False) in rz.calls and
+          not rz.attached, f"detached in finally: {rz.calls}")
+    # The Opener: a worker thread, 3 s by default, one press at a time.
+    import threading as _th
+    check(WF.OPEN_TIMEOUT_S == 3.0 and WF.OPENER.timeout_s == 3.0,
+          "Open BEYOND waits 3 s at most")
+    gate = _th.Event()
+    started = []
+
+    def stuck(host):
+        started.append(host)
+        gate.wait(10)
+        return True, "late"
+    op = WF.Opener(stuck, timeout_s=0.2)
+    t0 = time.monotonic()
+    ok, text = op("127.0.0.2")
+    check(not ok and text == WF.NOT_RESPONDING and
+          time.monotonic() - t0 < 2.0 and started == ["127.0.0.2"],
+          f"a press that hangs answers within the limit: {text}")
+    ok, text = op("127.0.0.2")
+    check(not ok and text == WF.BUSY and started == ["127.0.0.2"],
+          f"a second press while the first is out starts nothing: {text}")
+    gate.set()
+    deadline = time.monotonic() + 5
+    while op.busy() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    op2 = WF.Opener(lambda host: (True, f"front {host}"), timeout_s=1.0)
+    check(not op.busy() and op2("127.0.0.2") == (True, "front 127.0.0.2"),
+          "once it ends a press goes again; a quick one answers")
+
+    def boom(host):
+        raise OSError("x")
+    ok, text = WF.Opener(boom, timeout_s=1.0)(None)
+    check(not ok and "could not be brought forward" in text,
+          f"an error in the worker is said: {text}")
     api = FakeWin(wins, imgs, refuse=True)
     ok, text = WF.open_beyond("127.0.0.2", windows=True, api=api)
     check(not ok and ("flash", 5) in api.calls and "flashing" in text and
@@ -48971,6 +49028,27 @@ def test_calibrate_all_lasers_rules_and_order():
           f"asked before each laser; once a show is live nothing more "
           f"goes on: {order} {text}")
     lt.set_all(False)
+    # The show-state check itself failing stops it: fail closed (review
+    # of PR #125, P2-4).
+    del order[:]
+    del sent[:]
+
+    def raises():
+        raise RuntimeError("no state")
+    ok, text = lt.set_all(True, who="Andy", still_ok=raises)
+    check(not ok and not lt.on and not order and not sent and
+          "Stopped there" in text and "could not be read" in text,
+          f"a still_ok that raises: nothing goes on, nothing is sent: "
+          f"{text}")
+    # A lockout that cannot be read counts as locked: skipped, named,
+    # nothing sent.
+    lt3 = LT.LaserTests(lasers, locked=lambda lid: 1 / 0,
+                        socket_factory=_Sock, sleep=lambda s: None,
+                        armed=lambda lid: True)
+    ok, text = lt3.set_all(True, who="Andy")
+    check(not ok and not lt3.on and not sent and
+          "Laser 1 (locked out)" in text and "Laser 5 (locked out)" in text,
+          f"a lockout that raises: every laser skipped as locked: {text}")
     # The single-laser refusal names what to configure too.
     lt2 = LT.LaserTests(lasers, socket_factory=_Sock, sleep=lambda s: None,
                         armed=lambda lid: True)
@@ -49069,6 +49147,47 @@ def test_calibrate_all_and_open_beyond_routes():
         R.remote.open_beyond_fn = fake
         R.remote.beyond_host = "127.0.0.2"
         n_osc = len(R.osc)
+        # Between shows (STANDBY) the rack screen stays in front (review
+        # of PR #125, P2-3); so does it on Hold.
+        check(R.svc.machine.state == "STANDBY", "setup: between shows")
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "STANDBY" in out["error"] and not calls,
+              f"Open BEYOND between shows: refused: {out}")
+        m_standby = R.svc.machine
+        R.svc.machine = _rep(m_standby, state="HOLD")
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "Hold" in out["error"] and not calls,
+              f"Open BEYOND on Hold: refused: {out}")
+        R.svc.machine = _rep(m_standby, state="IDLE")
+        # Anything going on at the rig keeps the rack screen in front.
+        R.m.lasers.on["laser-3"] = {"since": 0, "who": "x"}
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "laser calibration test is on" in out["error"]
+              and not calls, f"a laser test on: refused: {out}")
+        R.m.lasers.on.clear()
+        R.m.purge.selected = ["g1"]
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "purge" in out["error"] and not calls,
+              f"a purge selection: refused: {out}")
+        R.m.purge.selected = []
+        R.m.purge.fire = {"id": 1}
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "purge is firing" in out["error"] and not calls,
+              f"a purge press: refused: {out}")
+        R.m.purge.fire = None
+        R.remote._holds[0] = {"token": "t", "who": "x", "device": "d",
+                              "start": 0, "beat": 0, "id": 1,
+                              "group": "front row"}
+        st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                            client=loop)
+        check(st == 409 and "hold to arm" in out["error"] and not calls,
+              f"a hold to arm in progress: refused: {out}")
+        R.remote._holds.clear()
         st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
                             client=ipad)
         check(st == 403 and "show machine" in out["error"] and not calls,
@@ -49097,11 +49216,24 @@ def test_calibrate_all_and_open_beyond_routes():
         check(st == 409 and "not running" in out["error"],
               f"a refusal from the finder is said: {out}")
         R.remote.open_beyond_fn = None
+        # With nothing injected the press goes through windowfront's
+        # Opener (a worker thread and a time limit), never the bare call.
+        from ltcplay import windowfront as _WF
+        real_opener, via = _WF.OPENER, []
+        _WF.OPENER = lambda host: via.append(host) or (False, "spy")
+        try:
+            st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
+                                client=loop)
+        finally:
+            _WF.OPENER = real_opener
+        check(via == ["127.0.0.2"] and out.get("error") == "spy",
+              f"the press uses windowfront.OPENER: {via} {out}")
         st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
                             client=loop)
         if sys.platform != "win32":
             check(st == 409 and "Windows show PC" in out["error"],
                   f"the real call off Windows refuses plainly: {out}")
+        R.svc.machine = m_standby
         _live_show(R)
         R.remote.open_beyond_fn = fake
         st, _h, out = R.ask("POST", "/api/remote/open-beyond", {},
@@ -52455,14 +52587,18 @@ def test_users_sign_out_after_the_last_show():
         c = sin("Andy", "right-pw-2", False, "iPad 2")   # inside the grace
         w[0] = ended + 10 * 60
         check(us.session(a) is None and us.session(b) is None and
-              us.session(c) is None and us.machine_user() is None,
-              "10 minutes after: every session is signed out, the one "
-              "signed in during the grace too, and the deck acts as nobody")
+              us.machine_user() is None,
+              "10 minutes after: every session from before the show ended "
+              "is signed out, and the deck acts as nobody")
+        check(us.session(c) is not None,
+              "a sign-in after the show ended (inside the grace) is not "
+              "signed out (review of PR #125, P2-5)")
+        us.sign_out(c)
         outs = [n for n in notes if n.get("action") == "sign-out" and
                 "after the last show" in n.get("reason", "")]
-        # Five sessions: the two first sign-ins (choosing a password), a,
-        # b and c.
-        check(len(outs) == 5 and {n["user"] for n in outs} ==
+        # Four sessions: the two first sign-ins (choosing a password), a
+        # and b.
+        check(len(outs) == 4 and {n["user"] for n in outs} ==
               {"Jeff", "Andy"} and all("—" not in n["reason"] and "–" not in
                                        n["reason"] for n in outs),
               f"each one journaled as signed out after the last show: "
@@ -52528,34 +52664,50 @@ def test_users_sign_out_after_the_last_show():
     finally:
         shutil.rmtree(d, ignore_errors=True)
     # The engine's side: when is the last show over?
+    import threading as _th
     utc = timezone.utc
     end = datetime(2026, 11, 15, 4, 30, tzinfo=utc)
+    early = datetime(2026, 11, 15, 2, 0, tzinfo=utc)
+
+    def slot(ended=end, origin="rule"):
+        return types.SimpleNamespace(ended_at=ended, origin=origin)
 
     def machine(**kw):
         base = dict(state="CLOSING", running=0, last_end=end,
                     abort_latched=False, date="2026-11-14",
-                    pending=False)
+                    pending=False, slots=(slot(early), slot(end)))
         base.update(kw)
         m = types.SimpleNamespace(**base)
         m.waiting = lambda: m.pending
         return m
 
-    def engine(m, look=None, latched=False, playing=False):
+    def rig(m, look=None, latched=False, playing=False):
         svc = types.SimpleNamespace(
             machine=m, conductor=types.SimpleNamespace(_look=look,
                                                        latched=latched))
         clk = types.SimpleNamespace(playing=playing)
         r = types.SimpleNamespace(
             schedule=svc, control=types.SimpleNamespace(
-                session=types.SimpleNamespace(clock=clk)))
+                session=types.SimpleNamespace(clock=clk)),
+            _arm_lock=_th.Lock(), _holds={}, morning=None,
+            flame_status=None, _last_show_seen=None)
         r.show_live_refusal = lambda: RM.Remote.show_live_refusal(r)
-        return RM.Remote.last_show_over(r)
+        r.rig_busy = lambda armed=False: RM.Remote.rig_busy(r, armed)
+        r.ask = lambda: RM.Remote.last_show_over(r)
+        return r
+
+    def engine(m, **kw):
+        return rig(m, **kw).ask()
     got = engine(machine())
     check(got == {"night": "2026-11-14", "ended": end.timestamp()},
           f"the last show ended: the night and when: {got}")
     check(engine(machine(state="IDLE")) == got and
           engine(machine(state="OFF")) == got,
           "standing dark after the night closed still counts")
+    check(engine(machine(slots=(slot(end), slot(early, "operator")))) ==
+          got, "the latest end counts, whatever the slot order")
+    got_op = engine(machine(slots=(slot(early), slot(end, "operator"))))
+    check(got_op == got, "a Start now show after the scheduled ones counts")
     for why, eng in (
             ("no schedule", lambda: RM.Remote.last_show_over(
                 types.SimpleNamespace(schedule=None))),
@@ -52573,19 +52725,150 @@ def test_users_sign_out_after_the_last_show():
                                                      latched=True)),
             ("the show clock playing", lambda: engine(machine(),
                                                       playing=True)),
-            ("no show ended tonight", lambda: engine(machine(
-                last_end=None)))):
+            ("no show ended tonight (a restart's assumed end does not "
+             "count)", lambda: engine(machine(slots=(slot(None),)))),
+            ("a night with no show on the schedule, only Start now",
+             lambda: engine(machine(slots=(slot(end, "operator"),))))):
         check(eng() is None, f"{why}: not over, nobody is signed out")
+    # Anything going on at the rig: wait until it is clear (P2-5).
+
+    class _Purge:
+        fire = None
+        selected = []
+
+    class _Lasers:
+        on = {}
+
+    class _Arm:
+        ids = []
+
+        def armed_ids(self):
+            return list(self.ids)
+
+    class _Flames:
+        def __init__(self):
+            self.v = {"stale": False, "groups": [
+                {"name": "front row", "armed": "disarmed", "wanted": False}]}
+
+        def view(self):
+            return self.v
+    r = rig(machine())
+    r.morning = types.SimpleNamespace(purge=_Purge(), lasers=_Lasers(),
+                                      laser_arm=_Arm())
+    r.flame_status = _Flames()
+    check(r.ask() == got, "setup: a quiet rig, the last show is over")
+    for why, on, off in (
+            ("a purge firing",
+             lambda: setattr(r.morning.purge, "fire", {"id": 1}),
+             lambda: setattr(r.morning.purge, "fire", None)),
+            ("machines armed for a purge",
+             lambda: setattr(r.morning.purge, "selected", ["g1"]),
+             lambda: setattr(r.morning.purge, "selected", [])),
+            ("a laser test on",
+             lambda: setattr(r.morning.lasers, "on", {"l1": {}}),
+             lambda: setattr(r.morning.lasers, "on", {})),
+            ("a laser armed",
+             lambda: setattr(r.morning.laser_arm, "ids", ["l1"]),
+             lambda: setattr(r.morning.laser_arm, "ids", [])),
+            ("a flame group armed",
+             lambda: r.flame_status.v["groups"][0].update(armed="armed"),
+             lambda: r.flame_status.v["groups"][0].update(
+                 armed="disarmed")),
+            ("a deck hold (flamesafe: wanted)",
+             lambda: r.flame_status.v["groups"][0].update(wanted=True),
+             lambda: r.flame_status.v["groups"][0].update(wanted=False)),
+            ("a screen's hold to arm",
+             lambda: r._holds.update({0: {}}),
+             lambda: r._holds.clear()),
+            ("a rig state that cannot be read",
+             lambda: setattr(r, "morning", None) or setattr(
+                 r, "flame_status", types.SimpleNamespace(
+                     view=lambda: 1 / 0)),
+             lambda: setattr(r, "flame_status", _Flames()))):
+        on()
+        check(r.ask() is None, f"{why}: it waits")
+        off()
+        check(r.ask() == got, f"{why} over: it goes")
+    # A night whose last show ended just before the 02:00 reset: the new
+    # night (its shows still to come) carries the old night's end, so the
+    # sign-out still comes (P2-8).
+    r = rig(machine())
+    check(r.ask() == got, "setup: the night's last show seen")
+    r.schedule.machine = machine(date="2026-11-15", state="IDLE",
+                                 pending=True, slots=(slot(None),),
+                                 last_end=None)
+    check(r.ask() == got, "after the reset the closed night's end still "
+                          "counts")
+    r.schedule.machine = machine(date="2026-11-15", state="SHOW",
+                                 running=1, pending=True)
+    check(r.ask() is None, "but never while the new night's show is live")
+    r2 = rig(machine(state="STANDBY", pending=True))
+    check(r2.ask() is None, "setup: a show still to come tonight")
+    r2.schedule.machine = machine(state="STANDBY", pending=True,
+                                  date="2026-11-14")
+    check(r2.ask() is None, "the same night is never carried")
+    # Users' own beat signs out with no page asking (P2-6).
+    d2 = tempfile.mkdtemp()
+    try:
+        w2 = [1_800_000_000.0]
+        u2 = U.Users(d2, wall=lambda: w2[0], hash_params=_U_FAST)
+        u2.add("Jeff", "admin", "jeff-temp-1")
+        u2.sign_in("Jeff", "jeff-temp-1", True, "Rack",
+                   new_password="right-pw-1")
+        ended2 = w2[0] + 1
+        w2[0] += 3600
+        u2.last_show = lambda: {"night": "n", "ended": ended2}
+        u2.start(every_s=0.02)
+        deadline = time.monotonic() + 5
+        while u2._sessions and time.monotonic() < deadline:
+            time.sleep(0.02)
+        check(not u2._sessions, "the users' own beat signs out with no "
+                                "session read at all")
+        u2.stop()
+        check(u2._beat is None, "and it stops with the engine")
+    finally:
+        shutil.rmtree(d2, ignore_errors=True)
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "ltcplay", "web.py"), encoding="utf-8").read()
-    check("r.users.last_show = r.last_show_over" in src,
+    check("r.users.last_show = r.last_show_over" in src and
+          "r.users.start()" in src and "r.users.stop()" in src,
           "web.serve gives the users the engine's answer")
     page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
-    check('post("/api/remote/last-show-signout"' in page and
-          'id="au-lastshow"' in page,
+    check('post("/api/remote/last-show-signout", {minutes:lastShow})' in
+          page and 'id="au-lastshow"' in page,
           "the Users screen has the setting and saves it")
+    # A blank or wrong number is said and nothing is saved, never read as
+    # 0 (off) (review of PR #125, P2-7).
+    h = page[page.find('$("au-save").addEventListener'):]
+    h = h[:h.find("});")]
+    check(h.find("lastShowMinutes(") >= 0 and
+          0 <= h.find("if(lastShow === null)") < h.find("post(") and
+          "Nothing was saved" in h and "parseInt($(\"au-lastshow\")" not
+          in h, "Save checks the minutes before it sends anything")
+    import shutil as _sh2
+    import subprocess as _sp2
+    import json as _json2
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function lastShowMinutes(" in logic, "lastShowMinutes is pure "
+                                                "page logic")
+    node = _sh2.which("node")
+    if node:
+        cases = [["", None], ["  ", None], ["abc", None], ["-1", None],
+                 ["2.5", None], ["1441", None], ["99999", None],
+                 [None, None], ["0", 0], ["10", 10], [" 30 ", 30],
+                 ["1440", 1440]]
+        js = logic + "console.log(JSON.stringify(" + _json2.dumps(cases) + \
+            ".map(c => [c[0], lastShowMinutes(c[0]), c[1]])));"
+        r = _sp2.run([node, "-e", js], capture_output=True, text=True,
+                     timeout=60)
+        try:
+            got = _json2.loads(r.stdout)
+        except ValueError:
+            got = None
+        check(got is not None and all(g[1] == g[2] for g in got),
+              f"the page reads the minutes right: {got or r.stderr[-300:]}")
     print("  ok")
 
 
@@ -57495,6 +57778,25 @@ def test_laser_arm_through_web_serve():
         la = httpd.morning.laser_arm
         check(httpd.fire_ice.laser_arm is la and svc.dry_run,
               "ltc serve built the arm and handed it on; a dry run")
+        # Open BEYOND looks for BEYOND where the beyond block says it is
+        # (review of PR #125, P2-9): ltc serve hands the host on.
+        check(httpd.remote.beyond_host == "127.0.0.2",
+              f"ltc serve hands Open BEYOND the beyond host: "
+              f"{httpd.remote.beyond_host!r}")
+        seen_hosts = []
+        httpd.remote.open_beyond_fn = lambda host: (
+            seen_hosts.append(host) or (True, "in front"))
+        st, _h, out = _ask(httpd, "POST", "/api/remote/open-beyond", {},
+                           client=loop)
+        check(st == 200 and seen_hosts == ["127.0.0.2"],
+              f"and the press asks with that host: {st} {out} {seen_hosts}")
+        httpd.remote.open_beyond_fn = None
+        from ltcplay import windowfront as _WF
+        ok, text = _WF.open_beyond("10.20.0.30", windows=True,
+                                   api=object())
+        check(not ok and "another machine" in text,
+              f"a beyond host on another machine is refused before any "
+              f"window is looked at: {text}")
         st, _h, out = _ask(httpd, "POST", "/api/remote/laser-arm",
                            {"group": "All lasers", "on": True}, client=loop)
         check(st == 409 and la.armed_ids() == [],

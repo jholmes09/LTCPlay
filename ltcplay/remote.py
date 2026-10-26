@@ -1124,6 +1124,10 @@ class Remote:
         # the call that brings its window forward (a fake in the selftest).
         self.beyond_host = None
         self.open_beyond_fn = None
+        # The last show seen ended ({"night", "ended"}), kept so a night
+        # that closes at its 02:00 reset before the sign-out is due still
+        # gets it (review of PR #125, P2-8).
+        self._last_show_seen = None
         # madmapperwatch.MadMapperWatch, set by web.serve with MadMapper
         # configured, and its heartbeat Watchdog and HeartbeatConfig: the
         # Video lamp says whether MadMapper is running before a show plays.
@@ -2820,13 +2824,16 @@ class Remote:
             return 403, {"error": "Open BEYOND works on the show machine "
                                   "itself, where BEYOND's window is. "
                                   "Nothing was done."}
-        why = self.show_live_refusal()
+        why = self.show_live_refusal() or self._open_beyond_state() or \
+            self.rig_busy()
         if why:
             return 409, {"error": f"Open BEYOND is not allowed now: {why}."}
         fn = self.open_beyond_fn
         if fn is None:
+            # On a worker thread with a 3 s limit, one press at a time
+            # (review of PR #125, P2-2).
             from . import windowfront
-            fn = windowfront.open_beyond
+            fn = windowfront.OPENER
         try:
             ok, text = fn(self.beyond_host)
         except Exception as e:                   # noqa: BLE001
@@ -2839,6 +2846,54 @@ class Remote:
                       f"{screen or 'show machine'}: {text}")
         return (200 if ok else 409), ({"ok": True, "text": text} if ok
                                       else {"error": text})
+
+    def _open_beyond_state(self):
+        """Why Open BEYOND may not go in this scheduler state, or "": on
+        Hold (or the conductor holding), and between shows (STANDBY), when
+        the rack screen has to stay in front (review of PR #125, P2-3)."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        state = getattr(m, "state", None)
+        if state == "HOLD" or getattr(getattr(svc, "conductor", None),
+                                      "_look", None) == "HELD":
+            return "the show is on Hold; the rack screen stays in front"
+        if state == "STANDBY":
+            return ("the night is between shows (STANDBY); the rack screen "
+                    "stays in front until the last show is over")
+        return ""
+
+    def rig_busy(self, armed=False):
+        """What is going on at the rig that a window in front of the rack
+        screen, or a sign-out, must not cut into, as a sentence, or "": a
+        screen's hold to arm, a purge selected or firing, a laser
+        calibration test on; with `armed`, also any laser armed and any
+        flame group flamesafe reports armed or wanted (the Stream Deck's
+        holds show there). Fails closed: a state that cannot be read is
+        busy. Plain reads (review of PR #125, P2-3 and P2-5)."""
+        try:
+            with self._arm_lock:
+                if self._holds:
+                    return "a hold to arm a flame group is in progress"
+            m = self.morning
+            if m is not None:
+                if m.purge.fire is not None:
+                    return "a purge is firing"
+                if m.purge.selected:
+                    return "machines are armed for a purge"
+                if m.lasers.on:
+                    return "a laser calibration test is on"
+                if armed and m.laser_arm.armed_ids():
+                    return "a laser is armed"
+            fs = self.flame_status
+            if armed and fs is not None:
+                v = fs.view()
+                if not v.get("stale"):
+                    for g in v.get("groups") or []:
+                        if g.get("armed") == "armed" or g.get("wanted"):
+                            return f"flame group {g.get('name')} is armed"
+        except Exception as e:                   # noqa: BLE001
+            return f"the rig's state could not be read ({type(e).__name__})"
+        return ""
 
     def morning_post(self, name, body, ctx):
         if name == "open-beyond":
@@ -2949,12 +3004,23 @@ class Remote:
 
     def last_show_over(self):
         """For users.Users.last_show (sign everyone out after the last
-        show, Jeff, 2026-10-26): {"night", "ended"} once tonight's last
-        show has ended, else None. None with no schedule, while a show is
-        live or paused, on Hold, while a show is still to come or waiting
-        after a Hold, while an Abort stands, while the show clock plays,
-        and on a night no show has ended. A show started by hand (Start
-        now) ends like any other. Plain reads, never a lock."""
+        show, Jeff, 2026-10-26): {"night", "ended"} once the night's last
+        show has ended, else None.
+
+        The night is the schedule's own (its 02:00 reset, schedule.night_of),
+        and "ended" is when the last show of it that really ran ended (a
+        slot's ended_at; a restart's assumed end does not count). A show
+        started by hand (Start now) counts, but only on a night that had a
+        show on the schedule: without one, never (review of PR #125, P2-8).
+        A night whose last show ended shortly before the 02:00 reset still
+        gets its sign-out after the reset (remembered here).
+
+        None with no schedule, while a show is live, paused or on Hold,
+        while a show is still to come or waiting after a Hold, while an
+        Abort stands, while the show clock plays, and while anything is
+        going on at the rig (rig_busy with armed: a hold to arm, a purge,
+        a laser test, an armed laser or flame group): it waits until that
+        is clear (P2-5). Plain reads, never a lock."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
         if m is None:
@@ -2965,12 +3031,26 @@ class Remote:
             cond = getattr(svc, "conductor", None)
             if getattr(m, "state", None) in ("SHOW", "PAUSED", "HOLD") or \
                     getattr(cond, "_look", None) == "HELD" or \
-                    getattr(m, "running", 0) or m.waiting():
+                    getattr(m, "running", 0):
                 return None
-            end = getattr(m, "last_end", None)
-            if end is None:
+            if self.rig_busy(armed=True):
                 return None
-            return {"night": str(m.date), "ended": end.timestamp()}
+            slots = list(getattr(m, "slots", ()) or ())
+            ends = [s.ended_at for s in slots
+                    if getattr(s, "ended_at", None) is not None]
+            scheduled = any(getattr(s, "origin", "rule") != "operator"
+                            for s in slots)
+            if ends and scheduled:
+                self._last_show_seen = {"night": str(m.date),
+                                        "ended": max(ends).timestamp()}
+                if not m.waiting():
+                    return dict(self._last_show_seen)
+            seen = self._last_show_seen
+            if seen is not None and seen["night"] != str(m.date):
+                # That night closed at its reset (nothing of it can still
+                # run), so its last show is over whatever tonight holds.
+                return dict(seen)
+            return None
         except Exception:                        # noqa: BLE001
             return None
 

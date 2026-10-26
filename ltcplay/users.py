@@ -42,12 +42,15 @@ changes nothing on the rig.
 
 SIGN OUT AFTER THE LAST SHOW (Jeff, 2026-10-26): when tonight's last show
 has ended (nothing still to come, nothing live or held, no Abort
-standing), and `signout_after_last_show_min` minutes have passed (default
-10; 0 is off), every session signed in before then is signed out, once
-for that night. Someone who signs in after it is not signed out again that
-night. Without a schedule it never happens. The engine says when the last
-show ended (`last_show`, remote.Remote.last_show_over); this module only
-counts the minutes.
+standing, nothing going on at the rig), and `signout_after_last_show_min`
+minutes have passed (default 10; 0 is off), every session signed in
+before the show ended is signed out, once for that night. Someone who
+signs in after the show ended is left signed in. Without a show on the
+schedule that night it never happens. The engine says when the last show
+ended (`last_show`, remote.Remote.last_show_over); this module only counts
+the minutes. It is checked on every session read and on its own beat
+(start(), every LAST_SHOW_BEAT_S), so it happens on time with no page
+open.
 """
 import hashlib
 import hmac
@@ -131,6 +134,7 @@ FIXED = {("admin", "users"): True}
 # Sign everyone out this many minutes after the night's last show ended
 # (Jeff, 2026-10-26): on by default; 0 is off.
 LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10
+LAST_SHOW_BEAT_S = 5.0     # the sign-out's own beat (Users.start)
 
 
 # ---------------------------------------------------- which press is which --
@@ -376,6 +380,8 @@ class Users:
         # engine (remote.Remote.last_show_over). None: never.
         self.last_show = None
         self._last_show_done = None   # the night already signed out
+        self._beat_stop = threading.Event()
+        self._beat = None
 
     # -- the file -------------------------------------------------------
     def _load(self):
@@ -514,8 +520,11 @@ class Users:
         if night == self._last_show_done or self._wall() < due:
             return
         self._last_show_done = night
+        ended = due - mins * 60
+        # Only sessions signed in before the show ended: a sign-in after
+        # it is never signed out by this (review of PR #125, P2-5).
         gone = [(t, s) for t, s in self._sessions.items()
-                if s.get("wall_at", 0.0) < due]
+                if s.get("wall_at", 0.0) < ended]
         for t, s in gone:
             del self._sessions[t]
             self._note("sign-out", s["name"],
@@ -524,12 +533,35 @@ class Users:
                        source=s["source"])
 
     def after_last_show_tick(self):
-        """The same check, from the engine's own beat. Never raises."""
+        """The same check, from this module's own beat (start()). Never
+        raises."""
         try:
             with self._lock:
                 self._drop_after_last_show()
         except Exception:                        # noqa: BLE001
             pass
+
+    def start(self, every_s=LAST_SHOW_BEAT_S):
+        """The sign-out after the last show on a beat of its own, so it
+        happens on time with no page open (review of PR #125, P2-6).
+        web.serve starts it and stops it with the engine."""
+        if self._beat is not None:
+            return self
+        self._beat_stop.clear()
+
+        def loop():
+            while not self._beat_stop.wait(every_s):
+                self.after_last_show_tick()
+        self._beat = threading.Thread(target=loop, daemon=True,
+                                      name="ltcplay-users-beat")
+        self._beat.start()
+        return self
+
+    def stop(self):
+        self._beat_stop.set()
+        t, self._beat = self._beat, None
+        if t is not None:
+            t.join(timeout=2.0)
 
     def session(self, token):
         """The live session for a cookie token, or None. A session whose
