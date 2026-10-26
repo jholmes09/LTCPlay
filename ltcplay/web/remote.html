@@ -173,9 +173,12 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   padding:10px 14px;font:800 clamp(17px,2.4vh,26px)/1.25 var(--sans);text-align:center}
 #main{min-height:0;min-width:0;position:relative;overflow:hidden}
 .view{height:100%;min-height:0;min-width:0}
-/* Every screen but the show screen keeps its own inner scrolling, as
-   before: its content never sets the page's height. */
-.view:not(#v-show){contain:size}
+/* Every screen but the show screen and Startup keeps its own inner
+   scrolling, as before: its content never sets the page's height. Startup
+   (Jeff, 2026-10-26: at 1280x800 its tiles and checks shrank to 9 px)
+   sets the page's height like the show screen: the page scrolls, the
+   Abort bar stays on the bottom edge, nothing shrinks. */
+.view:not(#v-show):not(#v-morning){contain:size}
 [hidden]{display:none !important}
 
 /* ---- the show screen ---- */
@@ -315,31 +318,42 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .utab button,.utab select,.utab input{min-height:34px;font-size:13px;padding:2px 8px}
 .big{font:800 clamp(30px,5vh,56px)/1.05 var(--sans);font-variant-numeric:tabular-nums;color:var(--champ)}
 
-/* ---- Morning and Shutdown (Jeff, 2026-10-17): one screen, the field on
-   the left, lasers and the checklists on the right. The checklist card
-   may scroll inside itself; nothing else does. ---- */
-#v-morning{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:10px;min-height:0}
-#mo-left{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
-#mo-right{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
+/* ---- Morning and Shutdown (Jeff, 2026-10-17): the field on the left,
+   lasers and the checklists on the right. READABLE FIRST (Jeff,
+   2026-10-26, the Pico at 1280x800 logical: the machine tiles and engine
+   checks shrank to 8 or 9 px): no text here is under 14 px and a machine
+   tile's name is 16 px or more. The panels keep their size and stack on a
+   narrow window; the page scrolls, the Abort bar staying on the bottom
+   edge. selftest.py draws it in a real browser and measures every piece
+   of text. ---- */
+#v-morning{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:10px;align-content:start;align-items:start}
+#v-morning .card h2{font-size:14px}
+#v-morning .toast{font-size:clamp(14px,1.7vh,17px)}
+#mo-left{display:flex;flex-direction:column;gap:8px;min-width:0}
+#mo-right{display:flex;flex-direction:column;gap:8px;min-width:0}
 #mo-shut{flex:0 0 auto}
 #mo-shut h2{margin:0 0 4px}
 #mo-shut .shutrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-#mo-shut .shutrow .dim{flex:1 1 12em;font-size:clamp(12px,1.5vh,14px)}
-#mo-shut button{min-height:36px;padding:4px 12px;font-size:14px}
-.mo-groups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) auto auto;gap:6px}
-.mo-groups button{min-height:clamp(38px,5.5vh,56px);font-size:clamp(12px,1.7vh,16px);padding:4px 6px}
+#mo-shut .shutrow .dim{flex:1 1 12em;font-size:14px}
+#mo-shut button{min-height:40px;padding:4px 12px;font-size:15px}
+.mo-groups{display:flex;flex-wrap:wrap;gap:6px}
+.mo-groups button{flex:1 1 9em;min-height:clamp(44px,5.5vh,56px);font-size:clamp(14px,1.8vh,18px);padding:4px 8px}
+.mo-groups button.ghost{flex:0 0 auto}
 .mo-groups button.on{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
-#mo-field{flex:1 1 auto;min-height:0;position:relative;border:1px solid var(--hair);border-radius:8px;
+#mo-field{flex:0 0 auto;height:clamp(360px,56vh,680px);position:relative;border:1px solid var(--hair);border-radius:8px;
   background:rgba(7,6,5,.6) linear-gradient(180deg,rgba(212,168,74,.05),rgba(212,168,74,0));overflow:hidden}
-#mo-field .edge{position:absolute;left:8px;right:8px;font:700 10px/1.2 var(--caps);letter-spacing:.2em;
+#mo-field .edge{position:absolute;left:8px;right:8px;font:700 14px/1.2 var(--caps);letter-spacing:.14em;
   text-transform:uppercase;color:var(--muted);pointer-events:none}
 #mo-field .edge.top{top:6px} #mo-field .edge.bot{bottom:6px;text-align:right}
-.mach{position:absolute;transform:translate(-50%,-50%);width:clamp(86px,9vw,124px);border-radius:8px;
-  border:2px solid #7A6032;background:var(--bronze);color:var(--champ);padding:4px 4px 3px;text-align:center;
+.mach{position:absolute;transform:translate(-50%,-50%);width:clamp(132px,11vw,176px);border-radius:8px;
+  border:2px solid #7A6032;background:var(--bronze);color:var(--champ);padding:5px 6px 4px;text-align:center;
   cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none}
-.mach b{display:block;font:700 clamp(10px,1.4vh,13px)/1.15 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mach .w{display:block;font:800 clamp(11px,1.6vh,14px)/1.1 var(--sans);letter-spacing:.04em;text-transform:uppercase;margin-top:2px}
-.mach .k{display:block;font:400 9px/1.1 var(--sans);color:var(--muted);margin-top:1px}
+.mach b{display:block;font:700 clamp(16px,1.9vh,20px)/1.15 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mach .w{display:block;font:800 clamp(16px,1.9vh,19px)/1.1 var(--sans);letter-spacing:.02em;text-transform:uppercase;margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mach .k{display:block;font:400 14px/1.15 var(--sans);color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mach .wait{display:block;font:700 14px/1.15 var(--sans);margin-top:2px;white-space:normal}
+.mach .wait:empty{display:none}
 .mach.sel{border-color:var(--amber);background:#3A2606;color:var(--champ)}
 .mach.armed{border-color:#5FE08A;background:var(--green);color:var(--green-ink)}
 .mach.armed .k{color:var(--green-ink)}
@@ -353,76 +367,86 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
    the only three ways out. While it shows, nothing on this page arms. */
 #mo-arrange-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;border:2px solid var(--amber);
   background:rgba(245,160,30,.16);color:var(--champ);border-radius:8px;padding:6px 10px;min-width:0}
-#mo-arrange-bar b{flex:1 1 auto;font:800 clamp(13px,1.8vh,17px)/1.2 var(--caps);letter-spacing:.08em;color:var(--amber)}
-#mo-arrange-bar .dim{flex:1 1 100%;font-size:12px}
-#mo-arrange-bar button{min-height:clamp(34px,4.5vh,44px);padding:4px 12px}
-.mach .lk{position:absolute;right:-6px;top:-8px;min-height:0;width:22px;height:22px;padding:0;border-radius:50%;
-  font:800 11px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
+#mo-arrange-bar b{flex:1 1 auto;font:800 clamp(14px,1.8vh,17px)/1.2 var(--caps);letter-spacing:.08em;color:var(--amber)}
+#mo-arrange-bar .dim{flex:1 1 100%;font-size:14px}
+#mo-arrange-bar button{min-height:clamp(40px,4.5vh,44px);padding:4px 12px;font-size:15px}
+.mach .lk{position:absolute;right:-8px;top:-10px;min-height:0;width:28px;height:28px;padding:0;border-radius:50%;
+  font:800 14px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
 .mach.locked .lk{background:var(--amber);color:var(--amber-ink)}
-#mo-firebar{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:center}
-#mo-firebar .key{font:800 clamp(14px,2.2vh,20px)/1.1 var(--sans);letter-spacing:.08em;text-transform:uppercase;
-  border:2px solid var(--hair);border-radius:8px;padding:8px 14px;color:var(--muted);white-space:nowrap}
+#mo-firebar{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center}
+#mo-firebar .key{font:800 clamp(14px,2vh,19px)/1.15 var(--sans);letter-spacing:.04em;
+  border:2px solid var(--hair);border-radius:8px;padding:8px 14px;color:var(--muted);white-space:normal}
 #mo-firebar .key.ready{border-color:var(--red);color:var(--champ)}
 /* Space only fires while THIS page has the keyboard (Jeff, 2026-10-26). */
 #mo-firebar .focusnote{grid-column:1 / -1;font:700 clamp(14px,1.8vh,17px)/1.25 var(--sans);color:var(--amber)}
 #mo-firebar .key.firing{background:var(--red-deep);border-color:var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
-.mo-lasers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.mo-lasers{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px}
 .laser{position:relative;display:flex;flex-direction:column;gap:2px;border:2px solid #7A6032;border-radius:8px;
   background:var(--bronze);color:var(--champ);padding:6px 8px;min-height:clamp(44px,6vh,64px);cursor:pointer;text-align:left}
-.laser b{font:700 clamp(12px,1.6vh,15px)/1.2 var(--sans)}
-.laser span{font:400 11px/1.2 var(--sans);color:var(--muted)}
+.laser b{font:700 clamp(15px,1.7vh,17px)/1.2 var(--sans)}
+.laser span{font:400 14px/1.25 var(--sans);color:var(--muted)}
 .laser.on{border-color:#5FE08A;background:var(--green);color:var(--green-ink)} .laser.on span{color:var(--green-ink)}
 .laser.locked{border-style:dashed;border-color:#9A8A6A;background:#1A1712;color:var(--muted)}
-.laser .lk{position:absolute;right:-6px;top:-8px;min-height:0;width:22px;height:22px;padding:0;border-radius:50%;
-  font:800 11px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
+.laser .lk{position:absolute;right:-8px;top:-10px;min-height:0;width:28px;height:28px;padding:0;border-radius:50%;
+  font:800 14px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
 .laser.locked .lk{background:var(--amber);color:var(--amber-ink)}
 /* The laser arm (Jeff, 2026-10-22): ARM is a click and a confirm, DISARM a
    single click; the state reads on every tile and in one line above. */
-.laser .arm{align-self:flex-start;min-height:0;padding:2px 8px;margin-top:2px;font:800 11px/1.3 var(--sans);
-  letter-spacing:.06em;text-transform:uppercase;border-radius:6px;background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
+.laser .arm{align-self:flex-start;min-height:0;padding:3px 10px;margin-top:2px;font:800 14px/1.3 var(--sans);
+  letter-spacing:.04em;text-transform:uppercase;border-radius:6px;background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
 .laser.armed{box-shadow:inset 0 0 0 3px var(--amber)}
 .laser.armed .arm{background:var(--amber);color:var(--amber-ink);border-color:var(--amber)}
 .mo-larm{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px}
-.mo-larm button{min-height:clamp(30px,4vh,40px);font-size:clamp(11px,1.5vh,14px);padding:2px 8px}
+.mo-larm button{min-height:clamp(40px,4.5vh,44px);font-size:clamp(14px,1.6vh,16px);padding:2px 10px}
 .mo-larm button.on{background:var(--amber);border-color:var(--amber);color:var(--amber-ink)}
-.mo-larm .st{flex:1 1 100%;font:700 clamp(11px,1.5vh,14px)/1.25 var(--sans);color:var(--champ)}
+.mo-larm .st{flex:1 1 100%;font:700 clamp(14px,1.6vh,16px)/1.3 var(--sans);color:var(--champ)}
 .mo-larm .st.armed{color:var(--amber)}
-#mo-check{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#mo-check{display:flex;flex-direction:column}
 #mo-check .tabs{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-#mo-check .tabs button{min-height:36px;font-size:13px;padding:4px 10px}
+#mo-check .tabs button{min-height:40px;font-size:14px;padding:4px 10px}
 #mo-check .tabs button.on{background:var(--champ);color:var(--btn-ink)}
-#mo-check select{min-height:36px;width:auto;font-size:13px;padding:2px 8px}
-#mo-steps{flex:1 1 auto;min-height:0;overflow:auto;margin-top:6px}
+#mo-check .tabs .dim{font-size:14px}
+#mo-check select{min-height:40px;width:auto;font-size:14px;padding:2px 8px}
+#mo-steps{max-height:60vh;overflow:auto;margin-top:6px}
 .step{display:grid;grid-template-columns:34px 1fr auto;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--hair-soft)}
 .step .box{width:30px;height:30px;border:2px solid var(--gold);border-radius:6px;background:transparent;color:var(--green-ink);
   font:800 18px/1 var(--sans);min-height:0;padding:0}
 .step.done .box{background:var(--green);border-color:#5FE08A}
-.step .t{font:400 clamp(12px,1.6vh,15px)/1.3 var(--sans);color:var(--cream)}
+.step .t{font:400 clamp(14px,1.7vh,16px)/1.3 var(--sans);color:var(--cream)}
 .step.done .t{color:var(--muted)}
-.step .m{font:400 11px/1.2 var(--sans);color:var(--muted)}
+.step .m{font:400 14px/1.25 var(--sans);color:var(--muted)}
 .step .m .n{color:var(--champ)}
-.step button.note{min-height:30px;font-size:12px;padding:2px 8px}
+.step button.note{min-height:36px;font-size:14px;padding:2px 10px}
 /* The engine checks (soak 2026-10-21): renders against the layout, the
    PC's clock, the show folder served. A bad one is red and stays red. */
 .mo-checks{display:flex;flex-direction:column;gap:4px}
 .mo-checks .ck{border:1px solid var(--hair);border-left:6px solid var(--muted);border-radius:6px;
-  padding:4px 8px;font:400 12px/1.3 var(--sans);overflow-wrap:anywhere}
+  padding:4px 8px;font:400 14px/1.35 var(--sans);overflow-wrap:anywhere}
 .mo-checks .ck b{font-weight:700;color:var(--champ)}
 .mo-checks .ck.ok{border-left-color:var(--green)}
 .mo-checks .ck.warn{border-left-color:var(--amber)}
 .mo-checks .ck.bad{border-left-color:var(--red);border-color:var(--red);background:var(--red-deep);color:var(--champ)}
 .mo-foot{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
-.mo-foot button{min-height:34px;font-size:12px;padding:2px 10px}
-.mo-foot .tally{font:400 11px/1.2 var(--sans);color:var(--muted);flex:1 1 100%}
-/* The Abort bar stays on the bottom edge while the page scrolls. */
-#abortbar{padding:6px 0 calc(8px + env(safe-area-inset-bottom));border-top:1px solid var(--hair);
+.mo-foot button{min-height:40px;font-size:14px;padding:2px 10px}
+.mo-foot .tally{font:400 14px/1.25 var(--sans);color:var(--muted);flex:1 1 100%}
+/* A narrow window: the two columns stack, the field first. */
+@media (max-width:1100px){
+  #v-morning{grid-template-columns:minmax(0,1fr)}
+}
+/* The Abort bar stays on the bottom edge while the page scrolls. Under it,
+   --pad-bottom: how far this window reaches below the screen's work area
+   (under the taskbar), measured by the page, or the supervisor's
+   pad_bottom (Jeff, 2026-10-26: on the Pico the window ran 96 px under
+   the always-on-top taskbar and cut the ABORT bar in half). 0 in a normal
+   window. */
+#abortbar{padding:6px 0 calc(8px + env(safe-area-inset-bottom) + var(--pad-bottom, 0px));border-top:1px solid var(--hair);
   position:sticky;bottom:0;z-index:15;background:var(--bg)}
 #abortbar button{width:100%;min-height:clamp(60px,9vh,108px);display:flex;align-items:center;
   justify-content:center;gap:.6em;flex-wrap:wrap;
   font:800 clamp(28px,5vh,58px)/1 var(--sans);letter-spacing:.22em;
   background:var(--red-deep);border:3px solid var(--red);color:var(--champ);
   box-shadow:0 0 0 1px rgba(7,6,5,.9) inset,0 0 26px rgba(230,30,24,.35)}
-#abortbar button small{font:700 clamp(12px,1.6vh,18px)/1.2 var(--sans);letter-spacing:.04em}
+#abortbar button small{font:700 clamp(14px,1.6vh,18px)/1.2 var(--sans);letter-spacing:.04em}
 #abortbar small:empty{display:none}
 /* Nothing to abort (Jeff's decision 19): dimmed, still pressable. */
 #abortbar.idle button{background:#4A0F12;border-color:#7A1A16;box-shadow:none}
@@ -457,6 +481,15 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
    programming need no show file). It is never taller than 40 percent of
    the window and scrolls inside itself; the flame groups keep their room. */
 #setup{flex:0 1 auto;max-height:40vh;min-height:0;overflow:auto}
+/* Folded to its one line while flamesafe reports flame groups (CI, review
+   of #115: at 1366x768 the open card pushed the groups' Hold to arm under
+   the Abort bar at load). One press opens the three steps. */
+#setup .surow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#setup .surow h2{flex:1 1 auto;margin:0;padding:0;border:0}
+#setup .surow .dim{font-size:14px}
+#setup .surow button{min-height:40px;padding:4px 12px;font-size:15px}
+#setup:not(.folded) .surow{margin-bottom:8px}
+#setup.folded .steps,#setup.folded .foot{display:none}
 /* No show file: one plain line, on every screen, never folded away. */
 #nofile{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
   border-radius:6px;padding:4px 10px;font-size:clamp(14px,1.8vh,17px);line-height:1.3}
@@ -557,7 +590,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden>No show file yet. Arming, disarming and programming flames still work; playing a show needs one.</div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -595,7 +628,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
          set up, and this says the three steps and where to click. It goes
          away by itself once a show file and a schedule exist. -->
     <section class="card" id="setup" hidden>
-      <h2>Getting started: three things to set up</h2>
+      <div class="surow"><h2>Getting started: three things to set up</h2><span class="dim" id="su-sum"></span><button class="ghost" id="su-more" aria-expanded="false">Show the steps</button></div>
       <div class="steps">
         <div class="step" id="su-folder"><b>1. The show folder</b><div class="t"></div>
           <div class="row"><button class="ghost" data-open="show">Open the show folder</button><button class="ghost" data-go="programming">Change it</button></div></div>
@@ -641,7 +674,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <button id="mo-arr-save">Save layout</button><button class="ghost" id="mo-arr-reset">Reset layout</button><button class="ghost" id="mo-arr-cancel">Cancel</button>
         <span class="dim">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
       <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
-      <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="focusnote" id="mo-focus" hidden>Click this page, then hold Space</div></div>
+      <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="focusnote" id="mo-focus" hidden></div></div>
       <!-- Shutdown (Jeff, 2026-10-23): its own labelled section on the
            Startup page. Whether it becomes its own tab is still open. -->
       <section class="card compact" id="mo-shut">
@@ -1014,6 +1047,59 @@ function machineLook(m, mo, flames, purge){
   if(armed) return {cls:"armed", word:"Purge armed"};
   return {cls:"sel", word:(g && g.reason) ? "Held: " + g.reason : "Arming..."};
 }
+// The re-arm wait (Jeff, 2026-10-26: a quick re-arm after a Disarm sat on
+// "arming" with no word why). How long before group `g` may be armed
+// again, in ms: flamesafe's re-arm dwell (dwell_s, whole seconds rounded
+// up, as of its frame `flAgeMs` old) and the Stream Deck's re-arm
+// refractory window (rearm_ms, as of the status), less the status's age
+// on this page. Rounded up, never down: the page never says ready early.
+// Words only: the deck and flamesafe decide, and a hold is still needed.
+function rearmLeftMs(g, pageAgeMs, flAgeMs){
+  if(!g || g.armed === "armed") return 0;
+  const age = Math.max(0, Number(pageAgeMs) || 0);
+  const dwell = (Number(g.dwell_s) || 0) * 1000 - Math.max(0, Number(flAgeMs) || 0) - age;
+  const deck = (Number(g.rearm_ms) || 0) - age;
+  return Math.max(0, dwell, deck);
+}
+function rearmText(ms){ return "Re-arm in " + (Math.ceil(ms / 100) / 10).toFixed(1) + " s"; }
+const REARM_READY = "ready: hold to arm";
+const REARM_REFUSED = "Refused: the re-arm wait was not over. Hold again.";
+const REARM_REFUSED_PURGE = "Refused: the re-arm wait was not over. Press Clear, then click it again.";
+// An Abort standing (review of #115, P1): no countdown and never "ready"
+// (the deck refuses every hold as latched until Reset).
+const REARM_ABORTED = "Press Reset first";
+const REFUSED_LATCHED = "Refused: an Abort is standing. Press Reset first, then hold again.";
+// The arm button's small line about the wait, or null to leave armHint's:
+// `left` ms of wait, `aborted` the scheduler's latch (schedule.aborted),
+// `waited` a wait seen in the last 15 s, `ok` armState's verdict.
+function armWaitWords(left, aborted, waited, ok){
+  if(aborted) return REARM_ABORTED;
+  if(left > 0) return rearmText(left);
+  if(ok && waited) return REARM_READY;
+  return null;
+}
+// What a hold that ended in an error says, or null for the engine's own
+// sentence: an Abort first (code latched, or the latch standing), then the
+// re-arm wait (code refractory, or no code while a wait still runs).
+function holdRefusalWords(code, waitLeftMs, aborted){
+  if(code === "latched" || aborted) return REFUSED_LATCHED;
+  if(code === "refractory" || (!code && waitLeftMs > 0)) return REARM_REFUSED;
+  return null;
+}
+// What a selected machine's tile says under its word while it is not
+// armed: the deck refused its purge arm, the wait still running, or
+// nothing.
+function machineWait(m, flames, purge, pageAgeMs, aborted){
+  const sel = !!(purge && (purge.selected || []).includes(m.id));
+  const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
+  if(!sel || !g || g.armed === "armed" || (flames && flames.stale)) return "";
+  // A default wave flamer is never purged (machineLook says so): no wait.
+  if(m.kind === "waver" && (m.pan == null || m.tilt == null)) return "";
+  if(aborted) return REARM_ABORTED;
+  if(g.purge_refused === "refractory") return REARM_REFUSED_PURGE;
+  const left = rearmLeftMs(g, pageAgeMs, flames && flames.age_ms);
+  return left > 0 ? rearmText(left) : "";
+}
 // The fire key's own rule (review of PR #68, P1-4): the heartbeats are not
 // the key; the browser's key repeat events are. A press older than graceMs
 // whose last repeat event (or its start) is more than gapMs ago has lost
@@ -1117,6 +1203,44 @@ function safetyLine(g, c){
     " safeties up" + (locked ? ", " + locked + " locked out" : "") +
     (c === "armed" ? "; ARMED" : "; NOT armed");
 }
+// The no-show-file line (Jeff, 2026-10-26; review of #113, P2-a and b):
+// what works NOW without a show file, from the status, never a promise.
+// `su` is the engine's setup view, `st` the status. "" when a show file
+// loads.
+function noFileLine(su, st){
+  if(!su || su.show_files !== 0) return "";
+  const errs = su.show_file_errors || [];
+  let t = errs.length ? "No show file loads yet (" + errs.join("; ") + ")." : "No show file yet.";
+  const fl = (st && st.flames) || {};
+  const live = !!(fl.connected && !fl.stale && (fl.groups || []).length);
+  const on = !!(st && st.arming && st.arming.enabled);
+  if(live && on) t += " Arming and disarming flames still work";
+  else if(live) t += " Disarming flames still works; arming from this screen is switched off (Programming, Arming from a screen), so arm from the Stream Deck";
+  else t += " flamesafe is not reporting, so no flame group can be armed from here; Disarm all and Abort still work";
+  return t + ". Live flame programming needs xlights_networks.xml in the show folder; playing a show needs a show file.";
+}
+// How far the window reaches below the screen's work area, in CSS px: the
+// room the Abort bar keeps under itself (Jeff, 2026-10-26). `scr` is
+// window.screen, `win` the window (screenY, outerHeight), `minPad` the
+// supervisor's pad_bottom. Only an overlap that lies in the screen's own
+// band below its work area (the taskbar's, screen.height less the work
+// area) counts, give or take a window border: a screen that reports less
+// than the window (a headless browser, a stale screen) adds nothing. An
+// overlap under 16 px is a maximized window's own border. Never over
+// PAD_MAX, the supervisor's floor included (review of #115, P2-2: the
+// sticky Abort bar must never eat the screen).
+const PAD_MAX = 160;
+function bottomPad(scr, win, minPad){
+  const floor = Math.max(0, Math.min(PAD_MAX, Number(minPad) || 0));
+  const ah = Number(scr && scr.availHeight) || 0, oh = Number(win && win.outerHeight) || 0;
+  const sh = Number(scr && scr.height) || 0;
+  if(!ah || !oh || !sh) return floor;
+  const workBottom = (Number(scr.availTop) || 0) + ah;
+  const band = sh - workBottom;            // the taskbar's band, in CSS px
+  const over = (Number(win.screenY) || 0) + oh - workBottom;
+  if(over < 16 || band <= 0 || over > band + 32) return floor;
+  return Math.max(floor, Math.min(PAD_MAX, Math.round(over)));
+}
 // LOGIC END
 </script>
 <script>
@@ -1149,7 +1273,7 @@ async function post(p, body){
   const r = await fetch(p, {method:"POST", credentials:"same-origin", cache:"no-store",
     headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {})});
   const j = await r.json().catch(() => ({}));
-  if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
+  if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; e.code = j.code || ""; throw e; }
   return j;
 }
 // No sign-in (Jeff, 2026-10-07): the engine names the surface a press
@@ -1165,6 +1289,18 @@ function fill(sel, names, keep){
   if(cur && names.includes(cur)) sel.value = cur;
 }
 
+// The room under the Abort bar (bottomPad), measured now and every second
+// (a window moved to another display fires no event).
+const PAD_MIN = Number(new URLSearchParams(location.search).get("pad_bottom")) || 0;
+let PAD_NOW = -1;
+function applyBottomPad(){
+  let p = 0;
+  try{ p = bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
+  if(p !== PAD_NOW){ PAD_NOW = p; document.documentElement.style.setProperty("--pad-bottom", p + "px"); }
+}
+applyBottomPad();
+window.addEventListener("resize", applyBottomPad);
+setInterval(applyBottomPad, 1000);
 // Three screens, one page: the show (the default), Tonight and
 // Programming. The Abort bar is on every one of them.
 const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning", users:"v-users"};
@@ -1289,6 +1425,9 @@ function renderStale(){
   document.querySelectorAll("[data-arm]").forEach(el => {
     const i = Number(el.dataset.arm);
     if(!(HOLD && HOLD.group === i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
+    // And off while its re-arm wait runs (2026-10-26; words, not a rule:
+    // the deck and flamesafe refuse it anyway).
+    if(!(HOLD && HOLD.group === i) && rearmWaitFor(i) > 0) el.disabled = true;
   });
   renderLaserStrip(ST && ST.laser_arm, stale);
   renderMode(stale);
@@ -1614,6 +1753,26 @@ function renderLamps(fl){
     ab.hidden = false;
     ab.querySelector("small").textContent = armHint(c, look, on);
     el.querySelector("[data-gdis]").hidden = !on;
+    // The re-arm wait, counted down in words; the button stays off until
+    // it is over, then says it is ready (Jeff, 2026-10-26). A hold already
+    // under way is left alone. A hold the wait refused says so.
+    const left = rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms);
+    const aborted = !!(ST && ST.schedule && ST.schedule.aborted);
+    const small = ab.querySelector("small");
+    if(on && c !== "armed" && c !== "unknown"){
+      if(left > 0) REARM_SEEN[i] = Date.now();
+      const w = armWaitWords(left, aborted, !!REARM_SEEN[i] && Date.now() - REARM_SEEN[i] < 15000, as.ok);
+      if(w !== null) small.textContent = w;
+      if(left > 0 && !aborted){
+        if(!(HOLD && HOLD.group === i)) ab.disabled = true;
+        ab.title = rearmText(left) + ": the Stream Deck and flamesafe wait this long after a disarm before they take a new arm.";
+      }
+    }
+    const ref = REARM_REFUSED_AT[i];
+    if(ref && Date.now() - ref.at < 10000 && c !== "armed"){
+      el.querySelector(".why").textContent = ref.text;
+      el.querySelector(".why").title = ref.text;
+    }
   });
   const on = !!(ST && ST.arming && ST.arming.enabled);
   if(!on && !HOLD && $("arm-note").textContent !== ARMING_OFF) armSay(ARMING_OFF, 1);
@@ -1636,8 +1795,16 @@ function armSay(text, level){
 // answer lets go. The engine also lets go by itself 0.25 s after the last
 // heartbeat, so a page that is closed, slept or cut off cannot finish one.
 let HOLD = null;
+// The re-arm wait per group: when this page last saw one running, and when
+// a hold was last refused for it (2026-10-26). Words only.
+const REARM_SEEN = {}, REARM_REFUSED_AT = {};
+function rearmWaitFor(i){
+  const fl = (ST && ST.flames) || {};
+  return rearmLeftMs((fl.groups || [])[i], LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms);
+}
 function armStart(i){
   armStop("a new hold");
+  delete REARM_REFUSED_AT[i];
   const as = armState(ST, Date.now(), LAST_OK, i);
   if(!as.ok){ armSay("Not armed: " + as.why, 2); return; }
   HOLD = {group:i, id:null};
@@ -1663,7 +1830,23 @@ async function armBeat(h){
     if(fill) fill.style.width = Math.min(100, 100 * j.held_s / (j.needs_s || 1)) + "%";
     armSay(j.held_s >= j.needs_s ? "Keep holding: the Stream Deck arms it in a moment, and says so here." : "Keep holding...", 0);
     h.timer = setTimeout(() => armBeat(h), 100);
-  }catch(e){ if(HOLD === h) armStop(e.message); }
+  }catch(e){
+    if(HOLD !== h) return;
+    // The Stream Deck's re-arm refractory window refused it (its own
+    // code), or the hold ended while a re-arm wait was still running:
+    // said plainly (Jeff, 2026-10-26).
+    const fl = (ST && ST.flames) || {};
+    const g = (fl.groups || [])[h.group];
+    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms),
+      !!(ST && ST.schedule && ST.schedule.aborted));
+    if(said){
+      armStop("");
+      REARM_REFUSED_AT[h.group] = {at:Date.now(), text:said};
+      armSay(said, 2);
+      return;
+    }
+    armStop(e.message);
+  }
 }
 function armStop(why){
   const h = HOLD;
@@ -1784,17 +1967,34 @@ document.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click"
   try{ const j = await post("/api/remote/open-folder", {which:b.dataset.open}); el.textContent = j.text || "Opened."; }
   catch(e){ el.textContent = e.message; }
 }));
-let SETUP_KEY = "";
+let SETUP_KEY = "", SETUP_OPEN = null;     // null: the page decides
+$("su-more").addEventListener("click", () => {
+  SETUP_OPEN = $("setup").classList.contains("folded");
+  renderSetupFold();
+});
+function renderSetupFold(){
+  const fl = (ST && ST.flames) || {};
+  const groups = !!(fl.connected && (fl.groups || []).length);
+  const open = SETUP_OPEN === null ? !groups : SETUP_OPEN;
+  $("setup").classList.toggle("folded", !open);
+  $("su-more").textContent = open ? "Hide the steps" : "Show the steps";
+  $("su-more").setAttribute("aria-expanded", open ? "true" : "false");
+}
 function renderSetup(su, pr){
   const card = $("setup");
   // No show file: said in one plain line; the flame groups stay (Jeff,
   // 2026-10-26). Only the show machine's status carries `setup`.
-  $("nofile").hidden = !(su && su.show_files === 0);
+  const nf = noFileLine(su, ST);
+  $("nofile").hidden = !nf;
+  if($("nofile").textContent !== nf) $("nofile").textContent = nf;
   if(!su){ card.hidden = true; return; }
+  renderSetupFold();
   const key = JSON.stringify([su, pr]);
   if(key === SETUP_KEY) return;
   SETUP_KEY = key;
   card.hidden = !!su.ready;
+  const done = [su.show_files > 0, !!su.schedule_ok, !!(su.flamesafe_connected && su.deck_heard)].filter(Boolean).length;
+  $("su-sum").textContent = done + " of 3 done";
   const fo = $("su-folder"), sc = $("su-sched"), fl = $("su-flames");
   fo.classList.toggle("done", su.show_files > 0);
   fo.querySelector(".t").innerHTML = su.show_files > 0
@@ -2297,13 +2497,14 @@ function renderMorning(){
     (mo.machines || []).forEach(m => {
       const el = document.createElement("div");
       el.className = "mach"; el.dataset.id = m.id;
-      el.innerHTML = `<b>${esc(m.name)}</b><span class="w"></span><span class="k">${esc(m.kind)} ${esc(m.group)}</span><button class="lk" title="Lock out or unlock">L</button>`;
+      el.innerHTML = `<b>${esc(m.name)}</b><span class="w"></span><span class="wait"></span><span class="k">${esc(m.kind)} ${esc(m.group)}</span><button class="lk" title="Lock out or unlock">L</button>`;
       wireMachine(el, m);
       el.querySelector(".lk").addEventListener("pointerdown", e => e.stopPropagation());
       el.querySelector(".lk").addEventListener("click", e => { e.stopPropagation(); lockClick("machine", m.id, m.name); });
       field.appendChild(el);
     });
   }
+  let refusedNow = false;
   (mo.machines || []).forEach(m => {
     const el = field.querySelector(`.mach[data-id="${m.id}"]`); if(!el) return;
     // While arranging, a machine that was moved shows where it was dropped
@@ -2315,8 +2516,14 @@ function renderMorning(){
     el.className = "mach " + look.cls + (ARRANGE ? " drag" : "") + (DRAG && DRAG.id === m.id ? " lift" : "");
     el.querySelector(".w").textContent = look.word;
     el.title = m.notes || "";
+    // The re-arm wait or a refused purge arm, said on the tile (Jeff,
+    // 2026-10-26: it sat on "Arming..." with no word why).
+    const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK, !!(ST && ST.schedule && ST.schedule.aborted));
+    el.querySelector(".wait").textContent = wait;
+    if(wait === REARM_REFUSED_PURGE) refusedNow = true;
     el.querySelector(".lk").textContent = "L";
   });
+  if(refusedNow && $("mo-msg").textContent !== REARM_REFUSED_PURGE){ $("mo-msg").textContent = REARM_REFUSED_PURGE; $("mo-msg").title = REARM_REFUSED_PURGE; }
   // The fire key's state.
   const k = $("mo-key");
   const any = (purge.selected || []).length > 0;
@@ -2409,10 +2616,24 @@ function renderMorning(){
 // that has the keyboard: said on the control, and in one line while this
 // page does not have it (Jeff, 2026-10-26). Words only; nothing arms.
 const SPACE_KEY = "Hold Space (this page must be selected)";
+function focusNote(hasFocus, tag, purgeOk){
+  // Review of #113, P2-c: nothing when a purge cannot be fired from here
+  // anyway; a text box or drop-down keeps Space for itself.
+  if(!purgeOk) return "";
+  if(!hasFocus) return "Click this page, then hold Space";
+  if(/^(INPUT|SELECT|TEXTAREA)$/.test(tag || "")) return "Space does nothing in a text box: click the machine map, then hold Space";
+  return "";
+}
 function renderFocusNote(){
   const n = $("mo-focus");
-  if(n) n.hidden = !MO_OPEN || ARRANGE || document.hasFocus();
+  if(!n) return;
+  const ok = MO_OPEN && !ARRANGE && !!MO && !!MO.purge_enabled && !MO.live_refusal;
+  const t = focusNote(document.hasFocus(), document.activeElement && document.activeElement.tagName, ok);
+  n.hidden = !t;
+  if(n.textContent !== t) n.textContent = t;
 }
+document.addEventListener("focusin", renderFocusNote);
+document.addEventListener("focusout", () => setTimeout(renderFocusNote, 0));
 window.addEventListener("focus", renderFocusNote);
 window.addEventListener("blur", renderFocusNote);
 function renderEngineChecks(list){
@@ -2682,7 +2903,7 @@ function renderChecklists(c){
     MO_KEY = tkey;
     tabs.innerHTML = lists.map(l => `<button class="${l.id === MO_TAB ? "on" : "ghost"}" data-tab="${esc(l.id)}">${esc(listTitle(l))} ${l.done}/${l.total}</button>`).join("") +
       `<select id="mo-name"><option value="">Who is ticking?</option>${(c.names || []).map(n => `<option${n === MO_NAME ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>` +
-      `<span class="dim" style="font-size:11px">Show date ${esc(c.show_date || "")}</span>`;
+      `<span class="dim">Show date ${esc(c.show_date || "")}</span>`;
     tabs.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { MO_TAB = b.dataset.tab; MO_KEY = ""; renderChecklists(MO.checklists); }));
     $("mo-name").addEventListener("change", () => { MO_NAME = $("mo-name").value; });
   }

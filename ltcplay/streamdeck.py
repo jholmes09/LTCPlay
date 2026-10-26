@@ -1314,6 +1314,10 @@ class ScreenKeys:
         # (2026-10-26: green with the deck unplugged). Display only.
         self.report_present = None
         self.report_arm = None
+        # () -> Controller.rearm_report(): rearm (ms left in each group's
+        # re-arm refractory window) and prefused (a purge arm refused for
+        # it), for the rack screen's words (2026-10-26). Display only.
+        self.report_rearm = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
         # Screen holds this deck would not take: hold id -> (code, clock),
@@ -1409,6 +1413,28 @@ class ScreenKeys:
         if isinstance(age, int) and not isinstance(age, bool) and age >= 0:
             path += "&" if "?" in path else "?"
             path += f"arm_ms={age}"
+        try:
+            got = self.report_rearm() \
+                if self.report_rearm is not None else ({}, {})
+        except Exception:                        # noqa: BLE001
+            got = ({}, {})
+        # Each copied on its own (review of #115, P2-1): one that fails
+        # never drops the other.
+        try:
+            rearm = ",".join(f"{i}.{int(ms)}"
+                             for i, ms in sorted(dict(got[0]).items())
+                             if isinstance(i, int) and int(ms) > 0)
+        except Exception:                        # noqa: BLE001
+            rearm = ""
+        try:
+            pr = ",".join(f"{i}.{c}" for i, c in sorted(dict(got[1]).items())
+                          if isinstance(i, int) and str(c).isalpha())
+        except Exception:                        # noqa: BLE001
+            pr = ""
+        if rearm:
+            path += ("&" if "?" in path else "?") + f"rearm={rearm}"
+        if pr:
+            path += ("&" if "?" in path else "?") + f"prefused={pr}"
         try:
             ref = self._refused_param()
         except Exception:                        # noqa: BLE001
@@ -2340,6 +2366,13 @@ class Controller:
         self._purge_armed = set()
         self._purge_seen = set()
         self._purge_refused_said = set()
+        # Groups whose purge arm this deck refused because the re-arm
+        # refractory window was still running: group index -> code, while
+        # the group stays in the engine's purge list. Reported to the
+        # engine (ScreenKeys.report_rearm) so the Startup page says so
+        # instead of "Arming..." forever (Jeff, 2026-10-26). Reporting
+        # only: whether and when a group arms is decided exactly as before.
+        self._purge_refused = {}
         self.purge_fire = None        # PurgeFire, given by _main
         # Item 1's second line of defence: what THIS deck itself last sent,
         # so a status frame that disagrees can be caught even if a rogue
@@ -2616,6 +2649,28 @@ class Controller:
                     return True
         return False
 
+    def rearm_report(self):
+        """({group index: ms left in its re-arm refractory window},
+        {group index: purge refusal code}): what the rack screen needs to
+        say "Re-arm in 1.5 s" and why a purge click did not arm (Jeff,
+        2026-10-26). Only groups with something to say. Reporting only."""
+        now = self._clock()
+        left = {}
+        try:
+            for i in range(len(self.names)):
+                ms = int(self._in_rearm_refractory(i, now) * 1000)
+                if ms > 0:
+                    left[i] = ms
+        except Exception:                        # noqa: BLE001
+            left = {}
+        try:
+            # Read from the deck-input thread while the main loop may
+            # change it: a copy that fails says nothing, the waits still go.
+            refused = dict(self._purge_refused)
+        except Exception:                        # noqa: BLE001
+            refused = {}
+        return left, refused
+
     def _in_rearm_refractory(self, i, now):
         at = self._disarmed_at[i]
         if at is None:
@@ -2761,6 +2816,10 @@ class Controller:
             # operator gate (a purge needs a chosen operator on the deck,
             # like any arm). Only the hold itself is waived (Jeff).
             who = self.operator_provider() or ""
+            if self._in_rearm_refractory(i, now) > 0:
+                self._purge_refused[i] = "refractory"   # reporting only
+            else:
+                self._purge_refused.pop(i, None)
             self._do_arm_fire(i, now, who=who, screen="Morning page")
             if not self.arm.wanted[i]:
                 continue             # refused; _do_arm_fire said why
@@ -2770,6 +2829,8 @@ class Controller:
                       f"exception to hold-to-arm). It is disarmed the "
                       f"moment the page stops asking for it.", action="arm",
                       who=who, screen="Morning page")
+        for i in [i for i in self._purge_refused if i not in wanted]:
+            del self._purge_refused[i]
         for i in sorted(self._purge_armed - wanted):
             self._purge_armed.discard(i)
             if self.arm.wanted[i]:
@@ -4606,6 +4667,9 @@ def _main(args):
     # Deck chip is green only on both (2026-10-26). Display only.
     screen.report_present = lambda: controller.deck_present
     screen.report_arm = arm.sent_age_ms
+    # And each group's re-arm wait and any purge arm refused for it, so the
+    # rack screen counts the wait down in words (2026-10-26). Display only.
+    screen.report_rearm = controller.rearm_report
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.
