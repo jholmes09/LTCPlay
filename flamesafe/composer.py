@@ -1009,8 +1009,9 @@ class Composer:
                 rt.append(t)
                 values.append(g.arm_value)
                 held.append(("", ""))
-                # The safety slots this rise raises: every unlocked one.
-                self._raised[i] = frozenset(g.safeties) - locked_saf
+                # The safety slots this rise raises: every one not locked
+                # (step 5 takes the locked ones out, this tick and after).
+                self._raised[i] = frozenset(g.safeties)
                 # +1 because this tick consumes one count and this tick is
                 # clean by construction; the count is about the ticks AFTER
                 # the rise.
@@ -1043,8 +1044,7 @@ class Composer:
             else:
                 self._raised[i] = self._raised[i] - locked_saf
             for s in g.safeties:
-                buf[s - 1] = (values[i] if s in self._raised[i]
-                              and s not in locked_saf else DISARM)
+                buf[s - 1] = values[i] if s in self._raised[i] else DISARM
             quiet = self._edge_quiet[i] > 0
             if quiet:
                 self._edge_quiet[i] -= 1
