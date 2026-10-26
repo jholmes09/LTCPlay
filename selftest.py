@@ -44728,6 +44728,116 @@ out.stale = pills();
     print("  ok")
 
 
+def test_startup_lock_is_one_tap_with_undo():
+    section("Startup page lockout (Jeff, 2026-10-26): an L button locks out "
+            "or unlocks with ONE tap, no pop-up, both ways, for machines and "
+            "lasers; what happened is said in a line with Undo for 5 s; a "
+            "refusal is said in the engine's own words; every engine rule "
+            "as before (an unlock says confirmed). Drawn in a real browser "
+            "and pressed")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    lc = page[page.find("async function lockClick("):
+              page.find("// ARRANGE BEGIN")]
+    check(lc and "confirmBox(" not in lc and "confirm(" not in lc,
+          "the L buttons ask nothing")
+    check('confirmBox("Rewrite the lockout file?"' in page,
+          "Rewrite the lockout file still asks first")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_off()
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True}
+    mo = _morning_view_pico()
+    mo["lockout"] = {"machines": {"m2": True}, "lasers": {}}
+    steps = r"""
+let asked = 0;
+window.confirm = () => { asked++; return true; };
+const modal = () => !document.getElementById("modal").hidden;
+const lk = id => document.querySelector('.mach[data-id="' + id + '"] .lk');
+const locks = () => h.posts("lock").map(p => ({kind:p.body.kind, id:p.body.id, on:p.body.on, confirmed:p.body.confirmed}));
+const undo = () => { const b = document.getElementById("mo-lkundo"); return b.hidden ? null : b.querySelector("span").textContent; };
+window.__answer["lock"] = b => [200, {ok:true, text:(b.on ? "Locked out " : "Unlocked ") + b.id + "."}];
+await h.sleep(900);
+h.tap(lk("m1"));
+await h.sleep(200);
+out.lock = {posts:locks(), modal:modal(), undo:undo(), msg:document.getElementById("mo-msg").textContent};
+h.tap(document.getElementById("mo-lkundo-go"));
+await h.sleep(200);
+out.undone = {posts:locks(), undo:undo()};
+h.tap(lk("m2"));
+await h.sleep(200);
+out.unlock = {posts:locks(), modal:modal(), undo:undo()};
+h.tap(document.querySelector('[data-llock="L1"]'));
+await h.sleep(200);
+out.laser = {posts:locks(), modal:modal(), msg:document.getElementById("mo-lmsg").textContent};
+window.__answer["lock"] = b => [409, {error:"flamesafe would not take the lockout file: it is not trusted."}];
+h.tap(lk("m3"));
+await h.sleep(200);
+out.refused = {msg:document.getElementById("mo-msg").textContent, undo:undo(), n:h.posts("lock").length};
+out.asked = asked;
+"""
+    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
+                    routes={"/api/remote/morning": mo})
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Startup page, the L buttons pressed: {m!r}"):
+        check(m["lock"]["posts"] == [{"kind": "machine", "id": "m1",
+                                      "on": True}] and
+              not m["lock"]["modal"] and m["asked"] == 0 and
+              m["lock"]["msg"] == "Locked out m1." and
+              m["lock"]["undo"] == "front row 1 locked out.",
+              f"one tap locks out at once, one request, no pop-up, said with "
+              f"Undo: {m['lock']}")
+        check(m["undone"]["posts"][-1] == {"kind": "machine", "id": "m1",
+                                           "on": False, "confirmed": True}
+              and len(m["undone"]["posts"]) == 2 and
+              m["undone"]["undo"] is None,
+              f"Undo sends the opposite at once and goes: {m['undone']}")
+        check(m["unlock"]["posts"][-1] == {"kind": "machine", "id": "m2",
+                                           "on": False, "confirmed": True}
+              and len(m["unlock"]["posts"]) == 3 and
+              not m["unlock"]["modal"] and
+              m["unlock"]["undo"] == "front row 2 unlocked.",
+              f"one tap unlocks at once, no pop-up, with Undo: "
+              f"{m['unlock']}")
+        check(m["laser"]["posts"][-1] == {"kind": "laser", "id": "L1",
+                                          "on": True} and
+              not m["laser"]["modal"] and
+              m["laser"]["msg"] == "Locked out L1.",
+              f"a laser's lock button: one tap: {m['laser']}")
+        check(m["refused"]["n"] == 5 and m["refused"]["msg"] ==
+              "flamesafe would not take the lockout file: it is not "
+              "trusted." and m["refused"]["undo"] == "Laser 1 locked out.",
+              f"a refusal is said in the engine's words, and no Undo is "
+              f"offered for it: {m['refused']}")
+    # The 5 s itself: the timer Undo sets is read, and run ten times
+    # faster so the draw fits the browser's time budget.
+    steps = r"""
+const si = window.setTimeout;
+window.setTimeout = (f, ms, ...a) => { if(f && f.name === "lockUndoGone"){ out.ms = ms; ms = ms / 10; } return si(f, ms, ...a); };
+await h.sleep(900);
+h.tap(document.querySelector('.mach[data-id="m1"] .lk'));
+await h.sleep(250);
+out.shown = !document.getElementById("mo-lkundo").hidden;
+await h.sleep(600);
+out.gone = document.getElementById("mo-lkundo").hidden;
+out.n = h.posts("lock").length;
+"""
+    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
+                    routes={"/api/remote/morning": mo})
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Startup page, Undo's 5 s: {m!r}"):
+        check(m.get("ms") == 5000 and m["shown"] and m["gone"] and m["n"] == 1,
+              f"Undo goes by itself after 5 s, nothing more sent: {m}")
+    print("  ok")
+
+
 # Every nav button the page shows, at a size, on a view: inside the window
 # and the button itself under a finger.
 _NAV_MEASURE_JS = r"""
@@ -62234,6 +62344,7 @@ if __name__ == "__main__":
     test_rack_screen_arm_all_and_disarm_all_toggle()
     test_rack_screen_nav_buttons_never_cut_off()
     test_rack_screen_one_laser_pill()
+    test_startup_lock_is_one_tap_with_undo()
     test_streamdeck_reports_rearm_wait_and_purge_refusal()
     test_rack_window_fits_the_work_area_above_the_taskbar()
     test_deck_chip_shows_live_truth()

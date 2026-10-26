@@ -122,8 +122,11 @@ how BEYOND is told is not set yet, so each button says so until Jeff fills
 in `lasers` in ltcplay_morning.json); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
 let go and it stops; nothing fires while a show is live or an Abort
-stands); lock out of any one machine or laser (the L button on it; a lock
-stays across restarts until unlocked here, with a confirm; a locked unit
+stands); lock out of any one machine or laser (the L button on it: one tap
+locks it out, one tap on a locked one unlocks it, with no pop-up either
+way; a line under the machine map says what was done, with Undo for 5
+seconds; a refusal is said there in plain words; a lock stays across
+restarts until unlocked here; a locked unit
 cannot be armed or fired from anywhere and show cues skip it; a banner on
 every screen says what is locked); and the Startup and Shutdown
 checklists (pick your name, tick each step; every tick is recorded for

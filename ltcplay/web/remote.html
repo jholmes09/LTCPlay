@@ -407,6 +407,12 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #mo-firebar .key.ready{border-color:var(--red);color:var(--champ)}
 /* Space only fires while THIS page has the keyboard (Jeff, 2026-10-26). */
 #mo-firebar .focusnote{grid-column:1 / -1;font:700 clamp(14px,1.8vh,17px)/1.25 var(--sans);color:var(--amber)}
+/* A lock or unlock just done, with Undo for 5 s (Jeff, 2026-10-26: no
+   pop-up). Never blocks anything; it goes by itself. */
+.lkundo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--amber);border-radius:6px;
+  padding:2px 8px;font:700 14px/1.25 var(--sans);color:var(--champ);background:rgba(245,160,30,.10)}
+#mo-firebar .lkundo{grid-column:1 / -1}
+.lkundo button{min-height:36px;padding:2px 12px;font-size:14px}
 #mo-firebar .key.firing{background:var(--red-deep);border-color:var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
 .mo-lasers{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px}
 .laser{position:relative;display:flex;flex-direction:column;gap:2px;border:2px solid #7A6032;border-radius:8px;
@@ -729,7 +735,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <button id="mo-arr-save">Save layout</button><button class="ghost" id="mo-arr-reset">Reset layout</button><button class="ghost" id="mo-arr-cancel">Cancel</button>
         <span class="dim">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
       <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
-      <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="focusnote" id="mo-focus" hidden></div></div>
+      <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="lkundo" id="mo-lkundo" hidden><span></span><button class="ghost" id="mo-lkundo-go">Undo</button></div><div class="focusnote" id="mo-focus" hidden></div></div>
       <!-- Shutdown (Jeff, 2026-10-23): its own labelled section on the
            Startup page. Whether it becomes its own tab is still open. -->
       <section class="card compact" id="mo-shut">
@@ -3084,19 +3090,48 @@ async function moPress(route, extra, msgEl){
   try{
     const j = await post("/api/remote/" + route, moActor(extra));
     el.textContent = j.text || "Done.";
-    MO = await getJSON("/api/remote/morning", 1500); renderMorning();
-  }catch(e){ el.textContent = e.message; }
+    try{ MO = await getJSON("/api/remote/morning", 1500); renderMorning(); }catch(e2){}
+    return j;
+  }catch(e){ el.textContent = e.message; return null; }
 }
+// An L button (Jeff, 2026-10-26): ONE tap locks out or unlocks at once,
+// no pop-up, both ways. The engine's answer (or its refusal, in its own
+// words) goes in the message line, and a lock or unlock that went through
+// can be undone for LOCK_UNDO_MS. Every engine rule is as before: the tap
+// is the operator's confirm.
+const LOCK_UNDO_MS = 5000;
+let LOCK_UNDO = null;
 async function lockClick(kind, id, name){
-  if(arrangeBlocked("lock", {})) return;        // before the confirm, not after
+  if(arrangeBlocked("lock", {})) return;        // before anything is sent
   const locked = kind === "machine" ? !!(MO.lockout.machines || {})[id] : !!(MO.lockout.lasers || {})[id];
-  if(!locked){
-    if(await confirmBox("Lock out " + name + "?", "It cannot be armed or fired from anywhere, show cues skip it, and it stays locked out across restarts until it is unlocked here.", "Lock out", ""))
-      moPress("lock", {kind:kind, id:id, on:true}, kind === "machine" ? "mo-msg" : "mo-lmsg");
-  } else {
-    if(await confirmBox("Unlock " + name + "?", "It can be armed and fired again from the next cue or purge.", "Yes, unlock", "start"))
-      moPress("lock", {kind:kind, id:id, on:false, confirmed:true}, kind === "machine" ? "mo-msg" : "mo-lmsg");
-  }
+  const msg = kind === "machine" ? "mo-msg" : "mo-lmsg";
+  const j = await moPress("lock", lockBody(kind, id, !locked), msg);
+  if(j) lockUndoOffer(kind, id, name, !locked);
+}
+// The lock route's body: a lock, or an unlock (the engine asks an unlock
+// to say it is confirmed; the tap is that).
+function lockBody(kind, id, on){ return on ? {kind:kind, id:id, on:true} : {kind:kind, id:id, on:false, confirmed:true}; }
+function lockUndoOffer(kind, id, name, on){
+  const bar = $("mo-lkundo");
+  if(!bar) return;
+  clearTimeout(LOCK_UNDO && LOCK_UNDO.timer);
+  LOCK_UNDO = {kind:kind, id:id, name:name, on:on};
+  bar.querySelector("span").textContent = name + (on ? " locked out." : " unlocked.");
+  bar.hidden = false;
+  LOCK_UNDO.timer = setTimeout(lockUndoGone, LOCK_UNDO_MS);
+}
+function lockUndoGone(){
+  const bar = $("mo-lkundo");
+  if(LOCK_UNDO) clearTimeout(LOCK_UNDO.timer);
+  LOCK_UNDO = null;
+  if(bar) bar.hidden = true;
+}
+// Undo: the opposite press, at once, through the same route and rules.
+async function lockUndo(){
+  const u = LOCK_UNDO;
+  lockUndoGone();
+  if(!u) return;
+  await moPress("lock", lockBody(u.kind, u.id, !u.on), u.kind === "machine" ? "mo-msg" : "mo-lmsg");
 }
 // ARRANGE BEGIN. Arrange mode on the Morning page (Jeff, 2026-10-19, after
 // bench-2026.10.19-6a32ff9: a picked-up machine followed the mouse for
@@ -3237,6 +3272,7 @@ function renderArrange(){
   if(ab){ ab.disabled = ARRANGE; ab.textContent = "Arrange"; }
 }
 // ARRANGE END
+if($("mo-lkundo-go")) $("mo-lkundo-go").addEventListener("click", lockUndo);
 // The fire key: Space on this page. One keydown starts the heartbeats;
 // keyup, blur, the page hidden or closed, a refused heartbeat or a stale
 // page stops them. The heartbeats are NOT the key: the browser's key

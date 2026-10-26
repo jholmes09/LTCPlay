@@ -8825,7 +8825,7 @@ def build():
 
  ("morning page: an L lock button locks or unlocks while arranging",
   "ltcplay/web/remote.html",
-  '''  if(arrangeBlocked("lock", {})) return;        // before the confirm, not after''',
+  '''  if(arrangeBlocked("lock", {})) return;        // before anything is sent''',
   '''  // gate gone'''),
 
  ("morning page: the group buttons stay live while arranging",
@@ -11939,6 +11939,37 @@ def build():
   "ltcplay/web/remote.html",
   '    armed.length ? "Armed: " + armed.map(x => x.name).join(", ") + "." : "",',
   '    "",'),
+
+ # One-tap lockout on the Startup page (Jeff, 2026-10-26).
+ ("startup page: an L button asks before it locks again",
+  "ltcplay/web/remote.html",
+  '  const j = await moPress("lock", lockBody(kind, id, !locked), msg);',
+  '  if(!(await confirmBox("Lock out " + name + "?", "", "Lock out", ""))) return;\n  const j = await moPress("lock", lockBody(kind, id, !locked), msg);'),
+
+ ("startup page: an unlock is sent without saying it is confirmed",
+  "ltcplay/web/remote.html",
+  " : {kind:kind, id:id, on:false, confirmed:true}; }",
+  " : {kind:kind, id:id, on:false}; }"),
+
+ ("startup page: a lock or unlock offers no Undo",
+  "ltcplay/web/remote.html",
+  "  if(j) lockUndoOffer(kind, id, name, !locked);",
+  ""),
+
+ ("startup page: Undo does the same again instead of the opposite",
+  "ltcplay/web/remote.html",
+  '  await moPress("lock", lockBody(u.kind, u.id, !u.on),',
+  '  await moPress("lock", lockBody(u.kind, u.id, u.on),'),
+
+ ("startup page: Undo never goes away",
+  "ltcplay/web/remote.html",
+  "  LOCK_UNDO.timer = setTimeout(lockUndoGone, LOCK_UNDO_MS);",
+  ""),
+
+ ("startup page: a refused lock offers an Undo",
+  "ltcplay/web/remote.html",
+  "  }catch(e){ el.textContent = e.message; return null; }",
+  "  }catch(e){ el.textContent = e.message; return {}; }"),
 
  ("rack screen: the nav buttons are cut off at the right edge again",
   "ltcplay/web/remote.html",
