@@ -135,7 +135,13 @@ you arm them again; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each button says so until Jeff fills
-in `lasers` in ltcplay_morning.json); the purge (click a machine or a group
+in `lasers` in ltcplay_morning.json); Calibrate all lasers (the test on
+for every armed laser that is not locked out, one after another; it names
+any it skipped and why) and Calibration off (every test off, always
+works); Open BEYOND (on the show PC only: brings the BEYOND window to the
+front so you can check the grid there; it sends nothing to BEYOND; if
+Windows will not let it come forward, BEYOND's button on the taskbar
+flashes, click it); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
 let go and it stops; nothing fires while a show is live or an Abort
 stands); lock out of any one machine or laser (the L button on it: one tap
@@ -318,6 +324,13 @@ network". Then start it with the show network on (Run ltcplay, answer y to
 the iPad question). There is no PIN, and signing in is optional (USERS.md): anything on the show
 Wi-Fi that can reach that address can use the page, so keep the show Wi-Fi
 to the crew.
+
+After the last show of the night, everyone is signed out on their own:
+10 minutes after the last show ends (once nothing is live, on Hold or
+aborted), every screen that was signed in is signed out, once. Anyone who
+signs in after that stays signed in for the rest of the night. An admin
+can change the minutes, or turn it off with 0, on the Users screen
+(USERS.md).
 
 On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. It goes
 straight to the show screen. Everything you need during a show is on that

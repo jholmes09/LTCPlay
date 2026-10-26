@@ -1474,6 +1474,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
                       target=target, result=result, reason=reason,
                       source=source)
         r.users = users_mod.Users(r.folder, audit=_note)
+        # Sign everyone out after the night's last show (Jeff, 2026-10-26).
+        r.users.last_show = r.last_show_over
         r.users.seed(users_mod.SEED_USERS if users_seed is None
                      else users_seed)
         r.uploader = auditsend.Uploader(
@@ -2021,6 +2023,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         _attach_scrub_flames(httpd)
     _bey_cfg = getattr(fire_ice, "beyond", None) if fire_ice else None
     if _bey_cfg is not None:
+        # Open BEYOND on the Startup page (windowfront.py) refuses when
+        # BEYOND is set up on another machine.
+        httpd.remote.beyond_host = getattr(_bey_cfg, "host", None)
         # Is BEYOND still running (2026-10-23)? Its own thread, display
         # only: the Lasers lamp and an alert when it is gone.
         from . import beyondwatch as beyondwatch_mod

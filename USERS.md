@@ -44,6 +44,15 @@ screen with no scrolling.
   can clear it at once ("Clear sign-in lockouts").
 - Idle sign out is OFF on the show PC. An admin can turn it on (minutes,
   on the Users screen); 0 means off.
+- Sign out after the last show is ON: 10 minutes after the last show of
+  the night has ended, everyone signed in is signed out, once. It waits
+  while a show is live, on Hold, or after an Abort until Reset. A show
+  started by hand with Start now counts as a show. Someone who signs in
+  after that stays signed in for the rest of the night. Without a
+  schedule it never happens. An admin can change the minutes on the
+  Users screen ("Sign everyone out this many minutes after the last show
+  of the night"); 0 means off. The audit log says "after the last show"
+  for each one.
 - The Stream Deck has no sign-in of its own. It acts as whoever is signed
   in on the rack screen of that PC, and shows their name on the Start key
   for a few seconds when it changes (SIGNED IN / NAME, or SIGNED OUT).
@@ -75,7 +84,7 @@ the ticks there. These are the proposed defaults:
 | Unlock a machine, turn a laser test on | yes | yes | no | yes |
 | Tick the Morning and Shutdown checklists | yes | yes | no | yes |
 | Show files and setup (show folder, schedule, layout) | yes | yes | no | no |
-| Settings (show network, arming from a screen, fire flames while scrubbing, audit upload, idle sign out) | yes | no | no | no |
+| Settings (show network, arming from a screen, fire flames while scrubbing, audit upload, idle sign out, sign out after the last show) | yes | no | no | no |
 | Users (add, remove, passwords, roles, lockouts) | yes | no | no | no |
 
 "Signed out" keeps your 2026-10-07 rule: nobody needs to sign in to run

@@ -193,6 +193,10 @@ machines whose group flamesafe reports ARMED get a value; locked machines
 never do; a Waver's head-up time counts from the first beat on which it is
 both selected and armed, so a group that arms late in a press waits its
 full settle time; a machine cannot be added to a press that is firing.
+`purge.waver.head_settle_s` may be 0 (Jeff, 2026-10-26): then the head
+going up and the fire go out together, in the same frame, on that first
+beat. It still fires only a selected, unlocked Waver whose group flamesafe
+reports ARMED, and every other rule here stays the same.
 A heartbeat fires only when its body carries `"on": true` (the JSON word
 true, nothing else). Every other `purge-fire` body (`"on"` false, missing,
 null, 0, `"false"`) is a release: the engine turns it into the same stop
@@ -298,6 +302,60 @@ every engine start and restart is DISARMED, and BEYOND's
   an audit event (system) and a journal line from beyond.py, a failed one a
   fault.
 
+### Calibrate all lasers, Calibration off, Open BEYOND (Jeff, 2026-10-26)
+
+Three buttons under the lasers on the Startup page:
+
+- **Calibrate all lasers** turns the calibration test on for every laser
+  that is ARMED and not locked out, one after another in the order of
+  `lasers` in `ltcplay_morning.json`. Each one goes through the same rules
+  as that laser's own button: a locked-out laser is skipped and named, a
+  laser that is not armed is skipped and named, a laser whose cue is not
+  set up says what to put in the settings and sends nothing. It is refused
+  while a show is live, while an Abort stands, and while this page's
+  settings or lockout cannot be trusted, and the engine asks again before
+  each laser, so a show going live part way stops it there. From the show
+  network it needs `screen_arming`, and Arrange mode holds it back, as a
+  single test ON does.
+- **Calibration off** turns every laser's test off. Like any test off it
+  always goes, from every surface, signed in or not.
+- **Open BEYOND** brings the BEYOND window to the front of the show PC, so
+  the grid can be checked in BEYOND itself (`windowfront.py`). It only
+  moves a window: it never sends anything to BEYOND and never starts it.
+  It works on the show PC itself only (the button is not shown
+  elsewhere), not while a show is live or an Abort stands, signed in or
+  not. It finds BEYOND's window by its program (`beyond*.exe`, the same
+  names the BEYOND watch uses), restores it if it was minimized and puts
+  it in front. When Windows will not let it come to the front, BEYOND's
+  taskbar button flashes and the page says to click it. It says so plainly
+  when this is not Windows, when BEYOND is not running, and when BEYOND is
+  set up on another machine.
+
+### How to set up the laser calibration cue
+
+BEYOND's commands for the calibration cue are not known yet (coming
+soon). Until they are, every laser says "not set up yet" and nothing is
+sent. When Jeff or Andy knows them, each laser in `ltcplay_morning.json`
+gets them under `lasers`: `"mechanism": "osc"`, BEYOND's address
+(`host` and `port`; left out, the `beyond` block of `ltcplay_fire_ice.json`
+is used), and two lists of OSC messages, each one an address and a value:
+`on` puts the grid up, `off` takes it down. For example (the addresses and
+numbers here are only an example, not BEYOND's real ones):
+
+```json
+"lasers": [
+  {"id": "laser-1", "name": "Laser 1", "mechanism": "osc",
+   "host": "127.0.0.2", "port": 8100,
+   "on":  [["/beyond/general/startcue", 101]],
+   "off": [["/beyond/general/stopcue", 101]]}
+]
+```
+
+Each message is sent three times. BEYOND's BlackOut, MasterPause,
+brightness and laser output switch can never be used here. Restart the
+engine after changing the file. The laser still has to be armed for its
+test to go on.
+
 ### Checklists: append-only, hash-chained, exported
 
 Every tick, untick and note is one record in
@@ -337,7 +395,7 @@ the page shows queued, sent and the last error.
 | T9 | A network device purges, unlocks or lights a laser without anyone meaning it to | purge from the network, an unlock and a laser test ON all need `screen_arming` true (the existing switch, off by default); a lock, which only lowers risk, is open to every device; every press is journaled with the device address; the same proxy, Host and cross-site refusals as every other route |
 | T10 | A laser test lights during a show, or on a locked laser | the engine refuses the toggle while a show is live or latched; the watcher turns tests off when a show goes live; the sender refuses a locked laser; only configured addresses with no OSC wildcards, never BEYOND's BlackOut or MasterPause |
 | T11 | The deck stays re-mapped after the page closes (FIRE where START was) | the deck's morning mode follows the engine's `morning_open` flag, which the engine clears 2 s after the last page beat from a device that may purge (a view-only device's beats do not count); a stale `deck-input` (0.3 s) also ends it |
-| T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0.5 s at least) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
+| T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0 to 10 s; with 0 the head values and the fire value go in the same frame, the first beat on which it is selected, unlocked and armed) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
 | T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
 | T16 | A purge writes one value to every channel of a fireball (fuel, air, valve and ignite at once) | the rule is by flamesafe group (`MorningConfig.purge_refusal`, `fireball_groups`): a machine of any kind in a fireball group is refused by `purge-select` and left out of `groups_wanted` and the frame, and `ltcplay_morning.json` cannot put a machine of another kind in one; the Stream Deck never arms a group with no key for a purge click |
 | T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |

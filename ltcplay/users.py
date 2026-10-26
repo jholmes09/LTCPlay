@@ -35,9 +35,19 @@ crew and the show. So here:
 Files, in the settings folder (never in the repo):
   ltcplay_users.json  {"users": {name: {"role", "pw": {alg, params, salt,
                       hash}, "created", "changed"}}, "matrix": {...},
-                      "idle_signout_min": 0}
+                      "idle_signout_min": 0,
+                      "signout_after_last_show_min": 10}
 Sessions live in memory: an engine restart signs everyone out, which
 changes nothing on the rig.
+
+SIGN OUT AFTER THE LAST SHOW (Jeff, 2026-10-26): when tonight's last show
+has ended (nothing still to come, nothing live or held, no Abort
+standing), and `signout_after_last_show_min` minutes have passed (default
+10; 0 is off), every session signed in before then is signed out, once
+for that night. Someone who signs in after it is not signed out again that
+night. Without a schedule it never happens. The engine says when the last
+show ended (`last_show`, remote.Remote.last_show_over); this module only
+counts the minutes.
 """
 import hashlib
 import hmac
@@ -85,7 +95,8 @@ PERMS = (
                    "reload, the machine layout"),
     ("settings", "Settings: the show network, arming from a screen, live "
                  "flame programming, fire flames while scrubbing, the "
-                 "timecode input, the audit upload, idle sign out"),
+                 "timecode input, the audit upload, idle sign out, sign out "
+                 "after the last show"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -117,6 +128,9 @@ SEED_USERS = (("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator"),
               ("Dave", "operator"), ("Jared", "operator"))
 # An admin can always manage users, so nobody can lock every admin out.
 FIXED = {("admin", "users"): True}
+# Sign everyone out this many minutes after the night's last show ended
+# (Jeff, 2026-10-26): on by default; 0 is off.
+LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10
 
 
 # ---------------------------------------------------- which press is which --
@@ -137,6 +151,7 @@ REMOTE_ROUTES = {
     "live-flame": "settings", "scrub-flames": "settings",
     "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",
+    "last-show-signout": "settings",
     "users": "users", "role-matrix": "users", "clear-lockouts": "users",
     "schedule-file": "show_files", "show-folder": "show_files",
     "layout": "show_files",
@@ -145,6 +160,8 @@ REMOTE_ROUTES = {
     "checklist-tally-retry": None, "open-folder": None, "screen": None,
     "show-select": None,
     "audit-verify": None, "my-password": None,
+    # Open BEYOND (windowfront.py) only moves a window on the show PC.
+    "open-beyond": None,
     # The Fuel page (fuel.py): not a show control, so no matrix row; the
     # route itself needs a signed-in operator or admin (an undo, an admin).
     "fuel-refill": None, "fuel-undo": None,
@@ -353,6 +370,12 @@ class Users:
         self._doc = None
         self._mtime = None
         self.error = ""
+        # () -> None, or {"night": the schedule's night, "ended": wall
+        # clock seconds the last show of it ended}, only while that last
+        # show is over and nothing is live, held or aborted. Set by the
+        # engine (remote.Remote.last_show_over). None: never.
+        self.last_show = None
+        self._last_show_done = None   # the night already signed out
 
     # -- the file -------------------------------------------------------
     def _load(self):
@@ -412,6 +435,15 @@ class Users:
         return v if isinstance(v, int) and not isinstance(v, bool) and \
             0 <= v <= 24 * 60 else 0
 
+    def last_show_minutes(self):
+        """Minutes after the night's last show ended that everyone is
+        signed out; 0 is off. Not in the file: the default (10)."""
+        with self._lock:
+            v = self._load().get("signout_after_last_show_min",
+                                 LAST_SHOW_SIGNOUT_DEFAULT_MIN)
+        return v if isinstance(v, int) and not isinstance(v, bool) and \
+            0 <= v <= 24 * 60 else LAST_SHOW_SIGNOUT_DEFAULT_MIN
+
     def role_of(self, name):
         with self._lock:
             u = self._load().get("users", {}).get(name)
@@ -462,6 +494,43 @@ class Users:
             self._note("sign-out", s["name"], reason=f"idle for {mins} min",
                        source=s["source"])
 
+    def _drop_after_last_show(self):
+        """Every session signed in before the night's last show ended plus
+        the grace, signed out once for that night. Asks the engine
+        (`last_show`) and does nothing at all while it says no, or when
+        the setting is 0."""
+        mins = self.last_show_minutes()
+        fn = self.last_show
+        if not mins or fn is None:
+            return
+        try:
+            info = fn()
+            if not info:
+                return
+            night = str(info["night"])
+            due = float(info["ended"]) + mins * 60
+        except Exception:                        # noqa: BLE001
+            return
+        if night == self._last_show_done or self._wall() < due:
+            return
+        self._last_show_done = night
+        gone = [(t, s) for t, s in self._sessions.items()
+                if s.get("wall_at", 0.0) < due]
+        for t, s in gone:
+            del self._sessions[t]
+            self._note("sign-out", s["name"],
+                       reason=f"after the last show of the night ({mins} "
+                              f"min after it ended)",
+                       source=s["source"])
+
+    def after_last_show_tick(self):
+        """The same check, from the engine's own beat. Never raises."""
+        try:
+            with self._lock:
+                self._drop_after_last_show()
+        except Exception:                        # noqa: BLE001
+            pass
+
     def session(self, token):
         """The live session for a cookie token, or None. A session whose
         user was removed is gone."""
@@ -470,6 +539,7 @@ class Users:
         with self._lock:
             now = self._clock()
             self._drop_idle(now)
+            self._drop_after_last_show()
             s = self._sessions.get(token)
             if s is None:
                 return None
@@ -493,6 +563,7 @@ class Users:
         with self._lock:
             now = self._clock()
             self._drop_idle(now)
+            self._drop_after_last_show()
             best = None
             users = self._load().get("users", {})
             for s in self._sessions.values():
@@ -594,7 +665,7 @@ class Users:
             token = secrets.token_urlsafe(24)
             self._sessions[token] = {"name": real, "local": bool(local),
                                      "source": str(source), "at": now,
-                                     "seen": now}
+                                     "seen": now, "wall_at": self._wall()}
         self._note("sign-in", real, source=source)
         return True, f"Signed in as {real}.", token, False
 
@@ -785,6 +856,19 @@ class Users:
                     f"A screen idle for {minutes} min is signed out.")
         return self._change(fn)
 
+    def set_last_show(self, minutes):
+        if isinstance(minutes, bool) or not isinstance(minutes, int) or \
+                not 0 <= minutes <= 24 * 60:
+            raise ValueError("Sign out after the last show is 0 (off) to "
+                             "1440 minutes.")
+
+        def fn(doc):
+            doc["signout_after_last_show_min"] = minutes
+            return ("Sign out after the last show is off." if not minutes
+                    else f"Everyone is signed out {minutes} min after the "
+                         f"last show of the night ends.")
+        return self._change(fn)
+
     def clear_lockouts(self):
         with self._lock:
             n = len(self._fails)
@@ -799,4 +883,5 @@ class Users:
                 "safety": SAFETY_ROWS, "matrix": self.matrix(),
                 "fixed": [list(k) for k in FIXED],
                 "idle_signout_min": self.idle_minutes(),
+                "signout_after_last_show_min": self.last_show_minutes(),
                 "error": self.error}
