@@ -5011,13 +5011,13 @@ def _groups_with(i, **over):
     return d
 
 
-def _refused(msg, d):
+def _refused(msg, d, says=""):
     try:
         config.from_dict(d)
     except config.ConfigError as e:
         check(str(e).strip().endswith(".") and "\n" not in str(e),
               f"the refusal is one plain sentence: {e}")
-        return check(True, msg)
+        return check(says in str(e), f"{msg}, saying {says!r}: {e}")
     return check(False, f"NOT refused: {msg}")
 
 
@@ -5057,7 +5057,7 @@ def test_multi_safety_config():
     _refused("an empty safety list",
              _groups_with(WAVE, safety=[]))
     _refused("a safety slot listed twice",
-             _groups_with(WAVE, safety=[6, 12, 6]))
+             _groups_with(WAVE, safety=[6, 12, 6]), says="listed twice")
     _refused("a safety slot that is one of the group's own fire slots",
              _groups_with(WAVE, safety=[6, 12, 1]))
     _refused("a safety slot that is another group's safety slot",
