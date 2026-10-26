@@ -155,6 +155,34 @@ def run_check(folder, nights=True, fs=True, **kw):
     return cw.check(w, recs, fsl, GROUPS, 78, **kw)
 
 
+def open_files_in(path):
+    """Files this process still has open inside `path` (Linux, through
+    /proc/self/fd; empty elsewhere). Windows cannot delete an open file,
+    so a folder removed with one inside fails there (#111): this finds the
+    same leak on Linux before the folder goes."""
+    root = os.path.realpath(path) + os.sep
+    out = []
+    try:
+        fds = os.listdir("/proc/self/fd")
+    except OSError:
+        return out
+    for fd in fds:
+        try:
+            target = os.readlink(os.path.join("/proc/self/fd", fd))
+        except OSError:
+            continue
+        if target.startswith(root):
+            out.append(target)
+    return out
+
+
+def rmtree_closed(test, path):
+    """Remove `path`, failing `test` first if a file inside is still open."""
+    test.assertEqual(open_files_in(path), [],
+                     f"{test.id()}: files still open in {path}")
+    shutil.rmtree(path)
+
+
 def rules(res):
     return sorted({e["rule"] for e in res["episodes"]})
 
@@ -268,9 +296,7 @@ class TestChecker(unittest.TestCase):
         # goes: an open one (a test that never called close()) cannot be
         # deleted on Windows and leaks the folder (#111, windows-latest).
         self.w.close()
-        self.assertTrue(all(fh.closed for fh in self.w.files()),
-                        "a witness file is still open")
-        shutil.rmtree(self.d)
+        rmtree_closed(self, self.d)
 
     def good_show(self):
         """A show with a proper arm, fire in SHOW, Abort and Reset."""
@@ -459,14 +485,18 @@ class TestChecker(unittest.TestCase):
         rc = cw.main(["--witness", self.w.dir, "--nights", self.j.dir,
                       "--flamesafe-log", self.j.fs])
         self.assertEqual(rc, 1)
-        text = open(os.path.join(self.w.dir, "check_report.txt")).read()
+        with open(os.path.join(self.w.dir, "check_report.txt")) as fh:
+            text = fh.read()
         self.assertIn("Verdict: FAIL", text)
         self.assertIn("FIRE WITHOUT ARM", text)
         self.assertNotIn(chr(0x2014), text)
         self.assertNotIn(chr(0x2013), text)
 
     def test_companion_run_is_marked(self):
-        shutil.rmtree(self.w.dir)
+        # setUp's run still has its files open: close them before the
+        # folder goes (Windows cannot delete an open file).
+        self.w.close()
+        rmtree_closed(self, self.w.dir)
         self.w = WitnessRun(self.w.dir, companion=True)
         self.w.logline(T0, "COMPANION", "ltcplay-soak.exe is running")
         self.w.close()
