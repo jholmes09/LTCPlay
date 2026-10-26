@@ -165,6 +165,10 @@ def load_settings():
         # The rack screen page (/remote), maximized on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
         "page_monitor": 1,
+        # Extra room under the page's Abort bar, in the page's own pixels,
+        # for a window that still reaches under the taskbar (0: none; the
+        # page also measures it by itself, 2026-10-26).
+        "page_bottom_pad": 0,
         "show_mode": "fire_ice",
         "schedule": os.path.join(appdata_dir(), "ltcplay_schedule.json"),
     }
@@ -1393,22 +1397,87 @@ def _write_refusal(why):
 RACK_PAGE = "/remote"     # the rack screen page ("Rack screen")
 
 
+def dip_rect(rect, dpi):
+    """(left, top, right, bottom) in physical pixels at `dpi` -> the same
+    in Edge's own (96 dpi) pixels, which --window-size and
+    --window-position take: at Windows' 200 percent (192 dpi) a 2560x1504
+    work area is 1280x752. Rounded inward, so the window is never larger
+    than the work area. A missing or odd dpi is 96."""
+    import math
+    try:
+        d = float(dpi)
+    except (TypeError, ValueError):
+        d = 96.0
+    if not 48 <= d <= 960:
+        d = 96.0
+    k = 96.0 / d
+    left, top, right, bottom = rect[:4]
+    return (int(math.ceil(left * k)), int(math.ceil(top * k)),
+            int(math.floor(right * k)), int(math.floor(bottom * k)))
+
+
+def work_area(monitor_rect, work_rect):
+    """The window's rectangle on one display: its WORK AREA (rcWork, the
+    display less the taskbar and any docked bars), never the whole display
+    (Jeff, 2026-10-26: sized to the monitor, the window ran 96 px under the
+    always-on-top taskbar and cut the ABORT bar in half). A work area that
+    is empty or not inside the display is the display."""
+    ml, mt, mr, mb = monitor_rect[:4]
+    wl, wt, wr, wb = work_rect[:4]
+    if wr > wl and wb > wt and wl >= ml and wt >= mt and wr <= mr and \
+            wb <= mb:
+        return (wl, wt, wr, wb)
+    return (ml, mt, mr, mb)
+
+
 def monitors():
-    """[(left, top, right, bottom)] of every display, the main one first
-    (Windows). [] when they cannot be read."""
+    """[(left, top, right, bottom, dpi)] of every display's WORK AREA (the
+    display less the taskbar), in physical pixels, and its dpi, the main
+    one first (Windows). Read per-monitor DPI aware, so the numbers are the
+    real pixels whatever this process's own setting; rack_page_command
+    turns them into Edge's 96 dpi pixels. [] when they cannot be read."""
     if not ltcwin.WINDOWS:
         return []
     try:
         import ctypes
         from ctypes import wintypes
         found = []
+        u32 = ctypes.WinDLL("user32")
+        old_ctx = None
+        try:
+            # PER_MONITOR_AWARE_V2 (-4), for this thread only, put back
+            # below: the rects and the dpi then agree (real pixels).
+            u32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+            u32.SetThreadDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
+            old_ctx = u32.SetThreadDpiAwarenessContext(
+                ctypes.c_void_p(-4)) or None
+        except (AttributeError, OSError):
+            old_ctx = None          # Windows before 10 1703: not aware, 96
+        try:
+            shcore = ctypes.WinDLL("shcore")
+            shcore.GetDpiForMonitor.argtypes = (
+                wintypes.HMONITOR, ctypes.c_int,
+                ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT))
+        except (OSError, AttributeError):
+            shcore = None
+
+        def dpi_of(hmon):
+            if old_ctx is None or shcore is None:
+                return 96
+            x, y = wintypes.UINT(), wintypes.UINT()
+            try:
+                if shcore.GetDpiForMonitor(hmon, 0, ctypes.byref(x),
+                                           ctypes.byref(y)) == 0 and x.value:
+                    return int(x.value)
+            except OSError:
+                pass
+            return 96
 
         class MONITORINFO(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.DWORD),
                         ("rcMonitor", wintypes.RECT),
                         ("rcWork", wintypes.RECT),
                         ("dwFlags", wintypes.DWORD)]
-        u32 = ctypes.WinDLL("user32")
         u32.GetMonitorInfoW.argtypes = (wintypes.HMONITOR,
                                         ctypes.POINTER(MONITORINFO))
         u32.GetMonitorInfoW.restype = wintypes.BOOL
@@ -1420,11 +1489,20 @@ def monitors():
             mi = MONITORINFO()
             mi.cbSize = ctypes.sizeof(MONITORINFO)
             if u32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
-                r = mi.rcMonitor
-                found.append(((r.left, r.top, r.right, r.bottom),
-                              bool(mi.dwFlags & 1)))
+                r, w = mi.rcMonitor, mi.rcWork
+                found.append((work_area(
+                    (r.left, r.top, r.right, r.bottom),
+                    (w.left, w.top, w.right, w.bottom)) + (dpi_of(hmon),),
+                    bool(mi.dwFlags & 1)))
             return True
-        u32.EnumDisplayMonitors(None, None, PROC(cb), 0)
+        try:
+            u32.EnumDisplayMonitors(None, None, PROC(cb), 0)
+        finally:
+            if old_ctx is not None:
+                try:
+                    u32.SetThreadDpiAwarenessContext(ctypes.c_void_p(old_ctx))
+                except OSError:
+                    pass
         found.sort(key=lambda m: (not m[1], m[0][0], m[0][1]))
         return [r for r, _main in found]
     except Exception as e:
@@ -1444,23 +1522,36 @@ def edge_exe(env=None, isfile=os.path.isfile):
     return None
 
 
-def rack_page_command(port, monitor, screens, edge, profile, url=None):
+def rack_page_command(port, monitor, screens, edge, profile, url=None,
+                      bottom_pad=0):
     """The command that opens the rack screen page as an ordinary Edge app
     window (its own profile, so it never asks first-run questions): a title
     bar with Minimize, Maximize and Close, maximized on display number
     `monitor` (1 = main) of `screens`, or None without Edge. An unknown
     display number means the main one. NOT a kiosk (Jeff, 2026-10-19: the
     kiosk window could not be minimized, and the Explorer windows the page
-    opened came up behind it with no taskbar to find them on)."""
+    opened came up behind it with no taskbar to find them on).
+    `screens` are monitors()'s work areas, (left, top, right, bottom[,
+    dpi]) in real pixels: the window's size and place are that WORK AREA
+    in Edge's 96 dpi pixels (Jeff, 2026-10-26: sized to the whole 2560x1600
+    display at 200 percent, it ran under the taskbar). `bottom_pad` (CSS
+    px, showpc.json page_bottom_pad) is passed to the page as pad_bottom."""
     if not edge:
         return None
     url = url or f"http://127.0.0.1:{port}{RACK_PAGE}"
+    try:
+        pad = int(bottom_pad)
+    except (TypeError, ValueError):
+        pad = 0
+    if 0 < pad <= 400 and url.startswith("http"):
+        url += ("&" if "?" in url else "?") + f"pad_bottom={pad}"
     cmd = [edge, f"--app={url}", "--start-maximized", "--no-first-run",
            f"--user-data-dir={profile}"]
     if screens:
         i = monitor - 1 if isinstance(monitor, int) and \
             1 <= monitor <= len(screens) else 0
-        left, top, right, bottom = screens[i][:4]
+        dpi = screens[i][4] if len(screens[i]) > 4 else 96
+        left, top, right, bottom = dip_rect(screens[i][:4], dpi)
         if right > left and bottom > top:
             cmd.append(f"--window-size={right - left},{bottom - top}")
         cmd.append(f"--window-position={left},{top}")
@@ -1474,15 +1565,18 @@ def open_page_now(port):
     url = f"http://127.0.0.1:{port}{RACK_PAGE}"
     try:
         if ltcwin.WINDOWS:
+            cfg = load_settings()
             cmd = rack_page_command(
-                port, load_settings().get("page_monitor", 1), monitors(),
-                edge_exe(), os.path.join(appdata_dir(), "rack-screen"))
+                port, cfg.get("page_monitor", 1), monitors(),
+                edge_exe(), os.path.join(appdata_dir(), "rack-screen"),
+                bottom_pad=cfg.get("page_bottom_pad", 0))
             if cmd:
                 RACK_WINDOW[0] = subprocess.Popen(
                     cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, close_fds=True)
                 log(f"opened the rack screen as an app window, maximized "
-                    f"on the show monitor: {cmd[1]} ({cmd[-1]}). Its title "
+                    f"on the show monitor's work area (above the taskbar): "
+                    f"{cmd[1]} ({' '.join(cmd[-2:])}). Its title "
                     f"bar has Minimize, Maximize and Close; the page's i "
                     f"button also closes it; the show keeps running.")
                 return

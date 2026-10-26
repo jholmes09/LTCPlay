@@ -996,6 +996,35 @@ def deck_refused(query):
     return out
 
 
+# A deck's rearm and prefused words are shown only while its reads keep
+# coming (it reads 20 times a second); older than this, nothing is said.
+DECK_REARM_FRESH_S = 1.0
+DECK_REARM_MAX_MS = 60000
+
+
+def deck_rearm(query):
+    """({group: ms left in the Stream Deck's re-arm refractory window},
+    {group: purge refusal code}) from a deck-input query's `rearm`
+    ("0.1500,2.300") and `prefused` ("1.refractory"); codes DECK_REFUSALS
+    knows only. Display only: the page's "Re-arm in 1.5 s" (Jeff,
+    2026-10-26). Never raises."""
+    import urllib.parse
+    left, pref = {}, {}
+    try:
+        q = urllib.parse.parse_qs(query or "")
+        for part in ",".join(q.get("rearm") or []).split(",")[:DECK_REFUSED_MAX]:
+            gi, _, ms = part.partition(".")
+            if gi.isdigit() and ms.isdigit():
+                left[int(gi)] = min(int(ms), DECK_REARM_MAX_MS)
+        for part in ",".join(q.get("prefused") or []).split(",")[:DECK_REFUSED_MAX]:
+            gi, _, code = part.partition(".")
+            if gi.isdigit() and code in DECK_REFUSALS:
+                pref[int(gi)] = code
+    except (ValueError, TypeError):
+        return {}, {}
+    return left, pref
+
+
 def deck_taken(query):
     """[hold id] from a deck-input query's `taken`: screen holds the Stream
     Deck itself armed a group from (streamdeck.ScreenKeys.note_taken), at
@@ -1075,6 +1104,9 @@ class Remote:
         # on its arm link (deck_arm_ms). The Deck chip's; display only.
         self._deck_hw = None
         self._deck_arm_ms = None
+        # The deck's re-arm waits and purge refusals: (left, prefused,
+        # clock() read), display only (deck_rearm).
+        self._deck_rearm = ({}, {}, None)
         # Screen holds the Stream Deck would not take, as its deck-input
         # reads reported them: hold id -> DECK_REFUSALS code.
         self._deck_refused = {}
@@ -2046,8 +2078,11 @@ class Remote:
                 code = self._deck_refused.get(body.get("hold_id"))
             if code is not None and code != "taken":
                 # The Stream Deck would not take this hold (its own rules,
-                # streamdeck.Controller.screen_pass): said, and let go.
-                return refuse(409, DECK_REFUSALS[code].format(g=gname))
+                # streamdeck.Controller.screen_pass): said, and let go. The
+                # code rides along for the page's own words (2026-10-26).
+                c, b = refuse(409, DECK_REFUSALS[code].format(g=gname))
+                b["code"] = code
+                return c, b
             # A heartbeat for a hold already under way. If that hold is not
             # the live one any more (a gap longer than BEAT_STALE_S, an
             # Abort, a disarm, a restart), it is over: a hold that was
@@ -2158,6 +2193,7 @@ class Remote:
         self._deck_usb_fail = deck_usb_fail(query)
         self._deck_hw = deck_hw(query)
         self._deck_arm_ms = deck_arm_ms(query)
+        self._deck_rearm = deck_rearm(query) + (now,)
         refused = deck_refused(query)
         taken = deck_taken(query)
         enabled = self.arming_enabled()
@@ -3362,6 +3398,16 @@ class Remote:
             return 0
         return len([t for t in tls if not t.get("error")])
 
+    def _show_file_errors(self):
+        """["file: why"] for the show files in the folder that do not load
+        (at most 3), for the no-show-file line (review of #113, P2-b)."""
+        try:
+            tls = self.control.timelines()
+        except Exception:                        # noqa: BLE001
+            return []
+        return [f"{t.get('file') or t.get('name')}: {t.get('error')}"
+                for t in tls if t.get("error")][:3]
+
     def _schedule_path(self):
         """The scheduler's own file, or where one would go (the same name
         schedule_service.RULE_FILE has, spelled here so a GPL engine, which
@@ -3403,6 +3449,8 @@ class Remote:
                 "show_folder_problem": self.show_folder_problem(),
                 "show_folder_exists": bool(folder) and os.path.isdir(folder),
                 "show_files": files,
+                "show_file_errors": self._show_file_errors() if not files
+                else [],
                 "schedule_path": sched_path,
                 "schedule_exists": os.path.isfile(sched_path),
                 "schedule_ok": bool(sched_ok),
@@ -3799,6 +3847,21 @@ class Remote:
                 self._version = f"version unknown ({type(e).__name__})"
         return self._version
 
+    def _rearm_words(self, fl):
+        """Each flame group's `rearm_ms` (ms left in the Stream Deck's
+        re-arm refractory window, as of this status) and `purge_refused`
+        (the deck refused a purge arm for it: "refractory", or ""), from
+        the deck's last read while it is fresh. Display only (Jeff,
+        2026-10-26: a quick re-arm after a Disarm sat on "arming" with no
+        word why)."""
+        left, pref, at = self._deck_rearm
+        age = None if at is None else self.clock() - at
+        fresh = age is not None and 0 <= age <= DECK_REARM_FRESH_S
+        for i, g in enumerate(fl.get("groups") or []):
+            ms = left.get(i, 0) - int(age * 1000) if fresh else 0
+            g["rearm_ms"] = max(0, ms)
+            g["purge_refused"] = pref.get(i, "") if fresh else ""
+
     def status(self, ctx):
         out = {"served_at": int(self.wall() * 1000), "fresh_s": FRESH_S,
                "me": self.whoami(ctx), "version": self.version_line()}
@@ -3861,6 +3924,7 @@ class Remote:
                                     "Deck."}
         else:
             out["flames"] = self.flame_status.view()
+        self._rearm_words(out["flames"])
         # Review of PR #43, P1-3: the flame cues refused for a reason that
         # is a fault (the render and the layout do not fit, and the like).
         out["flames"]["cues_fault"] = self.cues_fault()
