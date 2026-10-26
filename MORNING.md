@@ -44,8 +44,13 @@ rule written there.
    from any surface: this page, the deck, show cues, the remote. Enforced
    at flamesafe for flames (it is the only writer of the flame universe)
    and in the laser output path for lasers. A lock icon on the machine, a
-   banner on every screen, a journal line on lock and unlock; unlock needs
-   one deliberate confirm.
+   banner on every screen, a journal line on lock and unlock. On the rack
+   screen one tap on the L button locks or unlocks, with no pop-up (Jeff,
+   2026-10-26), and an Undo for 5 s; the engine still requires an unlock
+   to say it is confirmed, and the tap is that confirm. The engine refuses
+   an unlock of a machine while its flame group is armed or asked for, or
+   while flamesafe's state is not known ("Disarm <group> first, then
+   unlock <machine>"), from every surface; a lock is never held back.
 6. **Stream Deck**: while this page is open the deck re-maps itself (the
    group keys show PURGE ARMED / OFF / LOCKED, the Start key becomes the
    FIRE key) and restores when the page is left or the engine stops saying
@@ -337,7 +342,7 @@ is used), and two lists of OSC messages, each one an address and a value:
 `on` puts the grid up, `off` takes it down. For example (the addresses and
 numbers here are only an example, not BEYOND's real ones):
 
-```json
+```
 "lasers": [
   {"id": "laser-1", "name": "Laser 1", "mechanism": "osc",
    "host": "127.0.0.2", "port": 8100,

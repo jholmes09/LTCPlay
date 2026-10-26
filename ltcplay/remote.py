@@ -4439,6 +4439,8 @@ class Remote:
             except Exception as e:                   # noqa: BLE001
                 out["morning"] = {"error": f"{type(e).__name__}: {e}"}
             out["morning"]["purge_enabled"] = self.purge_enabled(ctx.local)
+            out["morning"]["group_machines"] = self.group_machines(
+                m, out["morning"])
             out["laser_arm"] = self.rack_laser_view(m, ctx)
         if self.fuel is not None:
             # The Fuel nav button's colour (fuel.py). Display only.
@@ -4447,6 +4449,36 @@ class Remote:
             except Exception as e:                   # noqa: BLE001
                 out["fuel"] = {"fault": f"{type(e).__name__}: {e}"}
         return out
+
+    @staticmethod
+    def group_machines(m, sv=None):
+        """Each flame group's machines from the Startup page's machine list,
+        for the show screen's "armed n of m machines" line (Jeff,
+        2026-10-26): {group: {"machines": n, "locked": k, "lock": how}},
+        k of them in the lock table; how is "ok" once flamesafe holds
+        exactly that table (sv's flamesafe_confirmed), "pending" before,
+        "untrusted" under a lock error (second review of #122, P2-3).
+        Display only; None when the config could not be read or the list
+        cannot be read (the page then shows what it showed before). Never
+        raises."""
+        try:
+            if getattr(m, "config_error", ""):
+                return None
+            sv = sv or {}
+            how = ("untrusted" if sv.get("lock_error") else
+                   "ok" if sv.get("flamesafe_confirmed") is True else
+                   "pending")
+            locked = m.lockout.machines
+            out = {}
+            for x in m.cfg.machines:
+                g = out.setdefault(str(x.group), {"machines": 0, "locked": 0,
+                                                  "lock": how})
+                g["machines"] += 1
+                if x.id in locked:
+                    g["locked"] += 1
+            return out
+        except Exception:                        # noqa: BLE001
+            return None
 
     def rack_laser_view(self, m, ctx):
         """The show screen's LASERS strip (Jeff, 2026-10-22): every laser's

@@ -97,7 +97,7 @@ The first row can never be unticked by anyone. It is not in the settings
 at all: it is written into the program.
 
 On the rack screen and the iPad, the first row's buttons never ask anyone to
-sign in: the ABORT stop sign in the bottom right corner, a flame group's
+sign in: the ABORT stop sign in the bottom right corner (tap it twice), a flame group's
 button while it reads Disarm, and Disarm all flame groups. Arm all flame
 groups is arming: it follows the "Arm flames" row, group by group, and a
 group the screen may not arm stays out and is named.

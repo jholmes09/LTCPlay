@@ -41043,8 +41043,8 @@ def test_remote_abort_disarms_with_no_show_live():
                     encoding="utf-8").read()
         check("No show is live, so nothing else changes" in page and
               "abortPlan(ST)" in page,
-              "the page's Abort confirm says what an Abort with no show does, "
-              "from the engine's state (abortPlan)")
+              "the Abort sign's first tap says what an Abort with no show "
+              "does, from the engine's state (abortPlan)")
     finally:
         R.close()
     print("  ok")
@@ -41379,11 +41379,12 @@ def test_remote_abort_and_start_need_the_confirm():
         page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "web", "remote.html"),
                     encoding="utf-8").read()
-        check('confirmBox("Abort the show?"' in page and
+        check('const step = abortTapStep(ABORT_TAP, monoNow(), kind, '
+              '$("abortbar").classList.contains("tap1"));' in page and
               'press("abort", {confirmed:true})' in page and
               'id="abortbar"' in page and "position:fixed" in page,
-              "the page asks before Abort, and the Abort bar is fixed on "
-              "screen")
+              "the page asks for a second tap before Abort, and the Abort "
+              "sign is fixed on screen")
         check('confirmBox("Start a show now?"' in page,
               "the page asks before Start now")
     finally:
@@ -41910,7 +41911,7 @@ t(Math.abs(countdownRead(ca, 400).s - 9.6) < 1e-9, "a late reply does not move t
 t(clockText(3725) === "1:02:05" && clockText(65.9) === "1:05" && clockText(-3) === "0:00", "clock text");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip() or "null")
     except ValueError:
@@ -41996,7 +41997,7 @@ t(laserArmLine({lasers:[{id:"l1", name:"Laser 1", armed:true}], output_permitted
 t(laserArmLine({lasers:[]}) === "No lasers are configured.", "no lasers");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip() or "null")
     except ValueError:
@@ -42147,6 +42148,7 @@ def test_rack_screen_width_guard_css_contract():
     bar = _css_rule(rules, "#abortbar") or {}
     btn = _css_rule(rules, "#abortbar button") or {}
     check(bar.get("position") == "fixed" and "right" in bar and
+          bar.get("z-index") == "15" and
           "var(--pad-bottom, 0px)" in bar.get("bottom", "") and
           btn.get("width") == "var(--abort-size)" and
           btn.get("height") == "var(--abort-size)" and
@@ -42172,9 +42174,10 @@ def test_rack_screen_width_guard_css_contract():
           "/api/remote/status still names the version")
     check("modeLook(ST)" in page and '$("mode").className = mo.cls' in page,
           "the MODE pill is in the header and drawn from modeLook")
-    check("abortPlan(ST)" in page and "confirmBox(\"Abort the show?\"" in page
-          and "Every flame group disarms at once" not in page,
-          "the Abort confirm lists abortPlan's items; the old promise is gone")
+    check('$("b-abort").title = abortPlan(ST).map(i => i.text).join(" ");'
+          in page and "Every flame group disarms at once" not in page,
+          "the Abort sign's first tap lists abortPlan's items; the old "
+          "promise is gone")
     check('id="abort-said"' in page and "saidAbort(" in page and
           "FLAMES WERE NOT DISARMED FROM THIS SCREEN" in page,
           "the Abort's answer is a banner that says what was not done")
@@ -42232,7 +42235,7 @@ t(p.some(i => /Lasers: blanked/.test(i.text)), "a conductor with an address: las
 t(p.some(i => /No show is live/.test(i.text)), "no show: says so");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip() or "null")
     except ValueError:
@@ -42252,6 +42255,25 @@ console.log(JSON.stringify(out));
 # page in headless Chromium (or Chrome or Edge) at the show PC's sizes with
 # three or more banners, and measures every button that arms, disarms or
 # stops.
+
+def _node_js(node, js, **kw):
+    """node running `js`, as subprocess.run([node, "-e", js], **kw) did,
+    but from a temporary file: the page's logic block alone is over 30,000
+    characters, and Windows refuses a command line over 32,767 (WinError
+    206). The same output and return code on every OS."""
+    import subprocess as _subp
+    import tempfile as _tf
+    fd, path = _tf.mkstemp(suffix=".js", prefix="ltc-node-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(js)
+        return _subp.run([node, path], **kw)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
 
 def _find_chromium():
     """A Chromium, Chrome or Edge to draw the page with, or None.
@@ -42335,7 +42357,13 @@ def _rack_status_pico(many=True):
     }
     if many:
         st["morning"] = {"locked_machines": ["wave flamer 3"],
-                         "locked_lasers": [], "flamesafe_confirmed": True}
+                         "locked_lasers": [], "flamesafe_confirmed": True,
+                         # Every card's "armed n of m machines" line drawn
+                         # too (2026-10-26).
+                         "group_machines": {
+                             "front row": {"machines": 3, "locked": 0},
+                             "cat-walk": {"machines": 3, "locked": 0},
+                             "wave flamer": {"machines": 3, "locked": 1}}}
         st["disk"] = {"text": ("The show PC's drive is 93 percent full: "
                                "clear space before the next show night so "
                                "the logs and the journal keep writing.")}
@@ -42736,9 +42764,11 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
     check(bar.get("position") == "fixed" and "bottom" in bar and
           "right" in bar,
           f"the Abort stop sign stays in the window's corner: {bar}")
-    check("var(--abort-room)" in app.get("padding", ""),
-          f"the page keeps room under its content for the Abort stop sign, "
-          f"so nothing ends up under it: {app}")
+    check("var(--abort-gutter)" in app.get("padding", "") and
+          "var(--abort-room)" in app.get("padding", ""),
+          f"the page keeps a gutter down its right edge for the Abort stop "
+          f"sign (review of #118, P2-4), so nothing ends up under it, and "
+          f"room under its content for the taskbar: {app}")
     # Startup sets the page's height too (Jeff, 2026-10-26: it shrank its
     # text to 9 px at 1280x800 instead of scrolling).
     check((_css_rule(rules, ".view:not(#v-show):not(#v-morning)") or {}
@@ -42795,7 +42825,7 @@ t(JSON.stringify(alertFold(two, null).keys) === JSON.stringify(["a7", "a8"]), "t
 t(alertFold([{key:"a9", fault:true, label:"Flames", text:"new"}], new Set()).fresh === true, "fresh is said even with one banner");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -42945,7 +42975,7 @@ t(/^No show file loads yet \(night\.json: no cues\)\./.test(bad), "a show file t
 t(!/[\u2013\u2014]/.test(nominal + off + stale + bad), "no dashes");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         lines = r.stdout.strip().splitlines()
         try:
@@ -43212,7 +43242,7 @@ t(holdRefusalWords("refractory", 0, false) === REARM_REFUSED && holdRefusalWords
 t(holdRefusalWords("operator", 900, false) === null && holdRefusalWords("", 0, false) === null, "anything else: the engine's own sentence");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -43499,7 +43529,7 @@ t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:7
 t(bottomPad({}, {}, 0) === 0 && bottomPad(null, null, 12) === 12, "nothing known: the floor");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -43642,8 +43672,7 @@ function measure(){
     const tw = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
     for(let n = tw.nextNode(); n; n = tw.nextNode()){
       const t = n.textContent.trim(); const el = n.parentElement;
-      // .sr: read by a screen reader, never drawn.
-      if(!t || !shown(el) || el.closest(".sr")) continue;
+      if(!t || !shown(el)) continue;
       const px = parseFloat(getComputedStyle(el).fontSize);
       if(px < out.min_px) out.min_px = px;
       if(px < 14) out.small.push(Math.round(px * 10) / 10 + " px: " + (el.id || el.className || el.tagName) + ": " + t.slice(0, 30));
@@ -43821,13 +43850,14 @@ _RACK_DRIVE_JS = r"""
 <script>
 (function(){
 const realFetch = window.fetch.bind(window);
-window.__posts = []; window.__patch = null; window.__answer = {};
+window.__posts = []; window.__patch = null; window.__answer = {}; window.__delay = {}; window.__patchMorning = null;
 window.fetch = async function(url, opt){
   const u = String(url);
   if(opt && opt.method === "POST"){
     const route = u.replace(/^.*\/api\/remote\//, "");
     let body = {}; try{ body = JSON.parse(opt.body || "{}"); }catch(e){}
     window.__posts.push({route:route, body:body});
+    if(window.__delay[route]) await new Promise(r => setTimeout(r, window.__delay[route]));
     const f = window.__answer[route];
     const a = f ? f(body) : [200, {ok:true, text:"Done."}];
     return new Response(JSON.stringify(a[1]), {status:a[0], headers:{"Content-Type":"application/json"}});
@@ -43836,6 +43866,10 @@ window.fetch = async function(url, opt){
   if(u.indexOf("/api/remote/status") >= 0 && window.__patch){
     const st = window.__patch(await r.json());
     return new Response(JSON.stringify(st), {status:200, headers:{"Content-Type":"application/json"}});
+  }
+  if(u.indexOf("/api/remote/morning") >= 0 && window.__patchMorning){
+    const mo = window.__patchMorning(await r.json());
+    return new Response(JSON.stringify(mo), {status:200, headers:{"Content-Type":"application/json"}});
   }
   return r;
 };
@@ -43846,6 +43880,7 @@ const ev = (el, type, detail) => el.dispatchEvent(type === "click" ?
 const tap = el => { ev(el, "pointerdown"); ev(el, "pointerup"); ev(el, "click"); };
 const lamp = i => document.querySelector('[data-arm="' + i + '"]');
 const look = i => { const b = lamp(i); return {word:b.querySelector(".word").textContent, small:b.querySelector("small").textContent,
+  act:(b.querySelector(".act") || {}).textContent || "",
   mode:b.dataset.mode, disabled:b.disabled, fill:b.querySelector(".fill").style.width,
   buttons:b.closest(".lamp").querySelectorAll("button").length}; };
 const posts = route => window.__posts.filter(p => p.route === route);
@@ -43900,7 +43935,7 @@ def _page_logic_in_node(page, body):
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     js = logic + "\nconst out = [];\nconst t = (c, m) => { if(!c) out.push(m); };\n" + \
         body + "\nconsole.log(JSON.stringify(out));\n"
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
@@ -43914,16 +43949,42 @@ def test_rack_screen_abort_is_a_corner_stop_sign():
             "never behind a gesture, at least 44 px, 'Abort' for a screen "
             "reader and a tooltip; nothing pressable under it at the bottom "
             "of the page, no group's Hold to arm under it at load "
-            "(1366x768, 1280x800, 1366x700, 1920x1080, an iPad); one press "
-            "is the same Abort as before (its confirm, then abort with "
-            "confirmed). Drawn in a real browser and pressed")
+            "(1366x768, 1280x800, 1366x700, 1920x1080, an iPad). A DOUBLE "
+            "TAP (Jeff, 2026-10-26): the first tap only changes the sign "
+            "(larger, TAP AGAIN TO ABORT) and sends nothing, a second tap "
+            "anywhere on it within 2 s sends the same Abort as before, no "
+            "confirm box. Drawn in a real browser and pressed")
     here = os.path.dirname(os.path.abspath(__file__))
     page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
-    for need in ('<button id="b-abort" aria-label="Abort"',
-                 'press("abort", {confirmed:true})',
-                 'confirmBox("Abort the show?"'):
+    for need in ('<button id="b-abort" aria-label="Abort. Activate twice '
+                 'to abort."',
+                 'press("abort", {confirmed:true})'):
         check(need in page, f"the page has {need!r}")
+    check('confirmBox("Abort the show?"' not in page,
+          "no confirm box in front of Abort: the double tap is the confirm")
+    bad = _page_logic_in_node(page, r"""
+t(ABORT_TAP_MS === 2000, "2.0 s");
+t(abortTapStep(null, 1000, "mouse").fire === false, "one tap never aborts");
+const first = abortTapStep(null, 1000, "touch").next;
+t(abortTapStep(first, 2999, "touch").fire === true && abortTapStep(first, 3000, "touch").fire === true, "a second tap within 2.0 s aborts");
+t(abortTapStep(first, 3001, "touch").fire === false && abortTapStep(first, 3001, "touch").next.at === 3001, "a second tap after 2.0 s is a first tap again");
+t(abortTapStep(first, 1500, "mouse").fire === false, "another kind of pointer is a first tap");
+t(abortTapStep({at:1000, kind:"key"}, 1800, "key").fire === true, "Enter or Space twice");
+t(abortTapStep(first, 900, "touch").fire === false, "a clock that went back is a first tap");
+t(abortTapKind({pointerType:"pen"}) === "pen" && abortTapKind({detail:0}) === "key" && abortTapKind({detail:1}) === "mouse", "the kinds");
+// Second review of #122, P2-2: a panic double tap, however fast, aborts.
+t(abortTapStep(first, 1040, "touch").fire === true && abortTapStep(first, 1100, "mouse").fire === false, "a fast second tap of the same kind aborts");
+t(abortTapStep(first, 3500, "touch", true).fire === true, "the sign still enlarged (a late timer): the second tap fires");
+t(abortTapStep(first, 3500, "touch", false).fire === false, "and once it has gone back: a first tap");
+t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"armed"}]}) === "Disarm ground first, then unlock G1.", "no unlock while its group is armed");
+t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"held", wanted:true}]}) === "Disarm ground first, then unlock G1.", "nor asked for");
+t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"disarmed"}]}) === "", "off: unlock");
+t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:true, groups:[]})), "flamesafe not known: no unlock");
+t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:false, stale:false, groups:[{name:"ground", armed:"disarmed"}]})), "flamesafe not connected: no unlock");
+""")
+    if bad is not None:
+        check(bad == [], f"the Abort double tap, in node: {bad}")
     check("touchstart" not in page and "swipe" not in page.lower(),
           "no gesture stands in front of Abort")
     chrome = _find_chromium()
@@ -43952,21 +44013,70 @@ for(const y of [0, 1e6]){
   out.hit.push(!!at && (at === ab || ab.contains(at)));
 }
 out.under_at_bottom = pressable().filter(el => cover(el.getBoundingClientRect())).map(el => el.id || el.textContent.trim().slice(0, 20));
+// Review of #118, P2-4: at EVERY scroll position, not only the bottom.
+out.under_anywhere = [];
+const maxY = document.scrollingElement.scrollHeight - innerHeight;
+for(let y = 0; y <= maxY + 40; y += 20){
+  scrollTo(0, y);
+  for(const el of pressable()) if(cover(el.getBoundingClientRect())){
+    const k = (el.id || el.dataset.arm && ("group " + el.dataset.arm) || el.textContent.trim().slice(0, 20)) + " at " + scrollY;
+    if(out.under_anywhere.length < 12) out.under_anywhere.push(k);
+  }
+}
 scrollTo(0, 0);
+// P2-5: the line saying what a press does, on the sign for sighted users.
+out.tip = (document.getElementById("abort-sub") || {}).textContent || "";
+out.idle = document.getElementById("abortbar").classList.contains("idle");
+out.fill = getComputedStyle(ab.querySelector(".oct")).backgroundColor + " " + getComputedStyle(ab.querySelector(".oct i")).backgroundColor;
+// One tap: the sign changes at once, nothing is sent, it is never
+// disabled, no confirm box; after 2.0 s it goes back by itself.
 h.tap(ab);
-await h.sleep(150);
-out.confirm = !document.getElementById("modal").hidden ? document.getElementById("m-q").textContent : null;
-out.before_yes = h.posts("abort").length;
-document.getElementById("m-yes").click();
+await h.sleep(100);
+const bar = document.getElementById("abortbar");
+out.first = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, disabled:ab.disabled,
+  h:Math.round(box().height), modal:!document.getElementById("modal").hidden, posts:h.posts("abort").length};
+// Review of #122, P2-1: the enlarged sign covers nothing either.
+out.under_enlarged = [];
+for(const y of [0, 1e6]){ scrollTo(0, y); for(const el of pressable()) if(cover(el.getBoundingClientRect())) out.under_enlarged.push((el.id || el.textContent.trim().slice(0, 20)) + " at " + scrollY); }
+scrollTo(0, 0);
+await h.sleep(2150);
+out.back = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, posts:h.posts("abort").length};
+// Two taps: the second anywhere on the enlarged sign, off its centre.
+h.tap(ab);
+await h.sleep(300);
+const r = box();
+const at = document.elementFromPoint(r.left + r.width * 0.3, r.top + r.height * 0.5);
+out.second_on_sign = !!at && (at === ab || ab.contains(at));
+if(at) h.tap(at);
 await h.sleep(200);
 out.abort_posts = h.posts("abort").map(p => p.body.confirmed);
 out.said = !document.getElementById("abort-said").hidden;
+out.after = bar.classList.contains("tap1");
 """
+    rules = _css_rules(page)
+    tip = _css_rule(rules, "#abortbar button:hover small,"
+                           "#abortbar button:focus-visible small") or {}
+    check(tip.get("display") == "block" and
+          (_css_rule(rules, "#abortbar small") or {}).get("display") ==
+          "none",
+          f"review of #118, P2-5: what a press does shows beside the sign "
+          f"on hover or keyboard focus: {tip}")
+    # Review of #118, P2-4: the Pico's screen with every group armed, the
+    # banners and live flame programming's bar (its Turn off), at the
+    # short laptop, the laptop, and an iPad both ways.
+    busy = _rack_status_pico()
+    busy["flames"] = dict(busy["flames"], groups=[
+        dict(g, armed="armed", wanted=True) for g in busy["flames"]["groups"]])
+    busy["live_flame"] = {"on": True, "receiving": True, "who": "Jeff",
+                          "map": [{"universe": 9, "slots": "1-24"}]}
     st = _rack_status_no_show_file()
     said = []
-    for size in ((1366, 768), (1280, 800), (1366, 700), (1920, 1080),
-                 (768, 1024)):
-        m = _rack_drive(chrome, page, st, steps, size=size)
+    for status, size in ([(st, z) for z in ((1366, 768), (1280, 800),
+                                            (1366, 700), (1920, 1080),
+                                            (768, 1024))] +
+                         [(busy, z) for z in ((1366, 600), (1366, 768),
+                                              (768, 1024), (800, 1280))]):
+        m = _rack_drive(chrome, page, status, steps, size=size)
         w, h = size
         if not check(isinstance(m, dict) and not m.get("problems"),
                      f"{w}x{h}: drawn and pressed: {m!r}"):
@@ -43979,8 +44089,8 @@ out.said = !document.getElementById("abort-said").hidden;
               f"across the screen: {a}")
         check(0 <= a["right"] <= 24 and 0 <= a["bottom"] <= 24,
               f"{w}x{h}: in the bottom right corner: {a}")
-        check(a["label"] == "Abort" and a["title"].startswith("Abort") and
-              a["word"] == "ABORT",
+        check(a["label"] == "Abort. Activate twice to abort." and
+              a["title"].startswith("Abort") and a["word"] == "ABORT",
               f"{w}x{h}: 'Abort' for a screen reader, a tooltip, the word "
               f"on the sign: {a}")
         check(m["hit"] == [True, True],
@@ -43989,15 +44099,165 @@ out.said = !document.getElementById("abort-said").hidden;
         check(m["arm_under_at_load"] == [],
               f"{w}x{h}: no group's Hold to arm or Disarm under it at load: "
               f"{m['arm_under_at_load']}")
-        check(m["under_at_bottom"] == [],
-              f"{w}x{h}: at the bottom of the page nothing pressable is "
-              f"under it: {m['under_at_bottom']}")
-        check(m["confirm"] == "Abort the show?" and m["before_yes"] == 0 and
-              m["abort_posts"] == [True] and m["said"],
-              f"{w}x{h}: one press asks, Yes sends the same Abort as "
-              f"before (confirmed), and its answer is shown: {m}")
+        check(m["under_at_bottom"] == [] and m["under_anywhere"] == [],
+              f"{w}x{h}: nothing pressable is ever under it, at load or at "
+              f"any scroll position (review of #118, P2-4): "
+              f"{m['under_at_bottom']} {m['under_anywhere']}")
+        check("rgba(0, 0, 0, 0)" not in m["fill"] and
+              "transparent" not in m["fill"],
+              f"{w}x{h}: the sign is drawn red{' (idle, dimmed)' if m['idle'] else ''}: "
+              f"{m['fill']}")
+        check(m["tip"] in ("Nothing to abort right now",
+                           "Stops the show. Flames then need Arm again"),
+              f"{w}x{h}: the sign's line says what a press does: "
+              f"{m['tip']!r}")
+        f1 = m["first"]
+        check(f1["tap1"] and f1["word"] == "TAP AGAIN TO ABORT" and
+              not f1["disabled"] and f1["h"] > a["h"] and not f1["modal"]
+              and f1["posts"] == 0 and m["under_enlarged"] == [],
+              f"{w}x{h}: one tap changes the sign at once (larger, TAP "
+              f"AGAIN TO ABORT), never disabled, no confirm box, nothing "
+              f"sent, and the bigger sign covers no control (review of "
+              f"#122, P2-1): {f1} {m['under_enlarged']}")
+        check(not m["back"]["tap1"] and m["back"]["word"] == "ABORT" and
+              m["back"]["posts"] == 0,
+              f"{w}x{h}: after 2.0 s it goes back by itself, nothing sent: "
+              f"{m['back']}")
+        check(m["second_on_sign"] and m["abort_posts"] == [True] and
+              m["said"] and not m["after"],
+              f"{w}x{h}: a second tap anywhere on the enlarged sign within "
+              f"2 s sends the same Abort as before (confirmed), and its "
+              f"answer is shown: {m}")
     print("  measured: " + "; ".join(said))
+    _abort_double_tap_paths(chrome, page)
     print("  ok")
+
+
+def _abort_double_tap_paths(chrome, page):
+    """The Abort double tap (Jeff, 2026-10-26): late, keyboard, two
+    fingers, a mouse's double click, signed out and with no contact."""
+    steps = r"""
+const ab = document.getElementById("b-abort");
+h.tap(ab);
+await h.sleep(2100);
+h.tap(ab);
+await h.sleep(150);
+out.late = h.posts("abort").length;
+out.late_armed = document.getElementById("abortbar").classList.contains("tap1");
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort, a late second tap: {m!r}"):
+        check(m["late"] == 0 and m["late_armed"],
+              f"a second tap after 2.0 s does not abort; it is a first tap "
+              f"again: {m}")
+    steps = r"""
+const ab = document.getElementById("b-abort");
+const n = () => h.posts("abort").length;
+const pclick = (id, type) => ab.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, detail:1, pointerId:id, pointerType:type, isPrimary:id === 1}));
+out.signed = document.getElementById("nav-user").textContent;
+ab.click(); await h.sleep(300); out.key_one = n(); ab.click(); await h.sleep(150);
+out.key = n();
+pclick(2, "touch"); await h.sleep(250); pclick(3, "touch"); await h.sleep(150);
+out.fingers = n();
+pclick(4, "touch"); await h.sleep(250); pclick(1, "mouse"); await h.sleep(250);
+out.mixed = n();
+pclick(1, "mouse"); await h.sleep(150);
+out.mixed_then_mouse = n();
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+await h.sleep(200);
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
+ab.dispatchEvent(new MouseEvent("dblclick", {bubbles:true, detail:2}));
+await h.sleep(150);
+out.dbl = n();
+// A fast double click (two clicks at once) aborts too.
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
+await h.sleep(60);
+out.bounce = {n:n(), tap1:document.getElementById("abortbar").classList.contains("tap1")};
+out.bodies = h.posts("abort").map(p => p.body.confirmed);
+// A held key's repeats are swallowed; the mouse leaves no focus behind.
+const rep = new KeyboardEvent("keydown", {key:"Enter", repeat:true, bubbles:true, cancelable:true});
+ab.dispatchEvent(rep);
+out.repeat_swallowed = rep.defaultPrevented;
+const first = new KeyboardEvent("keydown", {key:"Enter", repeat:false, bubbles:true, cancelable:true});
+ab.dispatchEvent(first);
+out.first_key_kept = !first.defaultPrevented;
+ab.focus();
+h.tap(ab);
+out.focus_left = document.activeElement !== ab;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort, the other ways to tap twice: {m!r}"):
+        check(m["signed"] == "Signed out" and m["key_one"] == 0 and
+              m["key"] == 1,
+              f"signed out, Enter or Space twice aborts (once is nothing): "
+              f"{m}")
+        check(m["fingers"] == 2, f"two quick taps by two fingers abort: {m}")
+        check(m["mixed"] == 2 and m["mixed_then_mouse"] == 3,
+              f"a finger then the mouse is two first taps; the mouse twice "
+              f"aborts: {m}")
+        check(m["dbl"] == 4 and all(b is True for b in m["bodies"]),
+              f"a real double click aborts once, every Abort confirmed: {m}")
+        check(m["bounce"] == {"n": 5, "tap1": False},
+              f"second review of #122, P2-2: a fast double click aborts: "
+              f"{m}")
+        check(m["repeat_swallowed"] and m["first_key_kept"] and
+              m["focus_left"],
+              f"review of #122, P2-2: a held key's repeats never count, and "
+              f"a tap leaves no keyboard focus on the sign: {m}")
+    # Review of #122, P2-6 and P2-8: a late timer, and a hold under way.
+    steps = r"""
+const ab = document.getElementById("b-abort");
+const si = window.setTimeout;
+window.setTimeout = (f, ms, ...a) => si(f, f && f.name === "abortTapDone" ? ms + 1500 : ms, ...a);
+window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:7, held_s:0.4, needs_s:2}];
+h.ev(h.lamp(1), "pointerdown");
+await h.sleep(300);
+const holds = h.posts("arm-hold").length;
+h.tap(ab);
+await h.sleep(2300);
+out.still_big = document.getElementById("abortbar").classList.contains("tap1");
+h.tap(ab);
+await h.sleep(250);
+out.aborts = h.posts("abort").length;
+out.released = h.posts("arm-release").map(p => p.body.group);
+const after = h.posts("arm-hold").length;
+await h.sleep(300);
+out.more_holds = h.posts("arm-hold").length - after;
+out.holds = holds;
+out.note = h.note();
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort, a late timer and a hold under way: {m!r}"):
+        check(m["still_big"] and m["aborts"] == 1,
+              f"review of #122, P2-6: a late timer never turns a good second "
+              f"tap into a first one: {m}")
+        check(m["holds"] >= 2 and m["released"] == [1] and
+              m["more_holds"] == 0 and m["note"] == "Hold stopped: Abort",
+              f"review of #122, P2-8: the second tap lets go of a hold under "
+              f"way at once: {m}")
+    steps = r"""
+const ab = document.getElementById("b-abort");
+window.__patch = st => { throw new Error("the engine went away"); };
+window.__answer["abort"] = b => [503, {error:"The engine did not answer."}];
+await h.sleep(2400);
+out.stale = !document.getElementById("stale").hidden;
+out.disabled = ab.disabled;
+h.tap(ab); await h.sleep(200); h.tap(ab); await h.sleep(250);
+out.posts = h.posts("abort").length;
+out.said = document.querySelector("#abort-said .altext").textContent;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort with no contact: {m!r}"):
+        check(m["stale"] and not m["disabled"] and m["posts"] == 1 and
+              "ABORT pressed, and the engine answered: The engine did not "
+              "answer." in m["said"],
+              f"no contact: the double tap still sends, and a failure is "
+              f"said plainly: {m}")
 
 
 def test_rack_screen_one_button_per_flame_group():
@@ -44020,7 +44280,7 @@ t(armButtonMode({armed:"armed"}, "armed", true) === "disarm", "armed: Disarm");
 t(armButtonMode({armed:"held", wanted:true}, "held", true) === "disarm", "asked for: Disarm");
 t(armButtonMode({armed:"unknown"}, "unknown", true) === "disarm", "not known: a press disarms");
 t(armButtonMode({armed:"armed"}, "armed", false) === "lamp" && armButtonMode({armed:"disarmed"}, "disarmed", false) === "lamp", "screen arming off: the lamp only, no per-group disarm");
-t(disarmHint("armed", "") === "Armed. One press disarms" && disarmHint("held", "cycle") === "Disarm, then hold", "the small line");
+t(disarmHint("armed", "") === "One press disarms" && disarmHint("unknown", "") === "One press disarms" && disarmHint("held", "cycle") === "Disarm, then hold", "the small line");
 t(clickAction("disarm", "disarm", false) === "disarm", "a press that went down on Disarm disarms");
 t(clickAction("hold", "disarm", false) === "", "a hold that armed the group: lifting the finger never disarms it");
 t(clickAction("", "disarm", false) === "" && clickAction("hold", "hold", false) === "", "a click with no Disarm press: nothing");
@@ -44044,10 +44304,22 @@ window.__patch = st => { const gs = st.flames.groups;
 window.__answer["arm-hold"] = b => heldOn ? [200, {ok:true, armed:true, text:"cat-walk is asked for.", hold_id:5, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:5, held_s:0.5, needs_s:2}];
 await h.sleep(700);
 out.before = [0, 1, 2].map(h.look);
+h.lamp(1).click();
+await h.sleep(60);
+out.kbd_hold_note = h.note();
+out.kbd_hold_posts = h.posts("arm-hold").length;
 h.tap(h.lamp(0));
 await h.sleep(150);
+out.note_after_disarm = h.note();
 out.disarm_first = h.posts("group-disarm").map(p => p.body.group);
-out.holds_first = h.posts("arm-hold").length;
+// Let go early: the group's hold let go, no more heartbeats.
+h.ev(h.lamp(1), "pointerdown");
+await h.sleep(250);
+h.ev(h.lamp(1), "pointerup"); h.ev(h.lamp(1), "click");
+const early = h.posts("arm-hold").length;
+await h.sleep(350);
+out.early = {more:h.posts("arm-hold").length - early, released:h.posts("arm-release").map(p => p.body.group), note:h.note(), disarms:h.posts("group-disarm").length};
+out.holds_first = h.posts("arm-hold").filter(p => p.body.group === 0).length;
 h.ev(h.lamp(1), "pointerdown");
 await h.sleep(350);
 out.during = h.look(1);
@@ -44081,15 +44353,32 @@ out.off_posts = h.posts("group-disarm").length - n;
         b0, b1, b2 = m["before"]
         check(all(b["buttons"] == 1 for b in m["before"]),
               f"one button per group: {m['before']}")
-        check(b0.get("word") == "Disarm" and b0.get("mode") == "disarm" and
-              not b0["disabled"] and
-              b0.get("small") == "Armed. One press disarms",
-              f"an armed group's button reads Disarm: {b0}")
+        check(b0.get("word") == "Armed" and b0.get("act") == "Disarm" and
+              b0.get("mode") == "disarm" and not b0["disabled"] and
+              b0.get("small") == "One press disarms",
+              f"review of #118, P2-3: an armed group's button says ARMED, "
+              f"never DISARM, with Disarm under it and 'One press "
+              f"disarms': {b0}")
         check(b1.get("word") == "Off" and b1.get("mode") == "hold" and
-              not b1["disabled"] and b1.get("small") == "hold to arm",
+              not b1["disabled"] and b1.get("small") == "hold to arm" and
+              b1.get("act") == "",
               f"an off group's button is Hold to arm, as before: {b1}")
-        check(b2.get("word") == "Disarm" and b2.get("small") == "Disarm, then hold",
-              f"a group asked for and held back: Disarm, then hold: {b2}")
+        check(b2.get("word") == "Arm again" and b2.get("act") == "Disarm" and
+              b2.get("small") == "Disarm, then hold",
+              f"a group asked for and held back keeps its words (Arm "
+              f"again), with Disarm, then hold: {b2}")
+        check(m.get("kbd_hold_note") == "Arming is a hold: press and hold "
+              "with your finger or mouse." and m.get("kbd_hold_posts") == 0,
+              f"review of #118, P2-5: Enter on Hold to arm says arming is a "
+              f"hold, and arms nothing: {m.get('kbd_hold_note')!r}")
+        check(not m["note_after_disarm"].startswith("Not armed"),
+              f"a press on Disarm never tries a hold: "
+              f"{m['note_after_disarm']!r}")
+        check(m["early"]["more"] == 0 and m["early"]["released"] == [1] and
+              m["early"]["note"] == "Hold stopped: let go" and
+              m["early"]["disarms"] == 1,
+              f"a group's hold let go early: let go, no more heartbeats, "
+              f"nothing disarmed: {m['early']}")
         check(m["disarm_first"] == [0] and m["holds_first"] == 0,
               f"one press on Disarm disarms that group at once, no hold: "
               f"{m['disarm_first']} {m['holds_first']}")
@@ -44098,7 +44387,8 @@ out.off_posts = h.posts("group-disarm").length - n;
               f"holding the off group: the hold's heartbeats and its "
               f"progress on the button: {m['during']} {m['holds']}")
         check(m["armed"].get("mode") == "disarm" and
-              m["armed"].get("word") == "Disarm" and
+              m["armed"].get("word") == "Armed" and
+              m["armed"].get("act") == "Disarm" and
               m["armed_note"] == "cat-walk is asked for.",
               f"once armed the same button reads Disarm: {m['armed']} "
               f"{m['armed_note']!r}")
@@ -44110,7 +44400,7 @@ out.off_posts = h.posts("group-disarm").length - n;
               f"a fresh press, or Enter, on Disarm disarms: "
               f"{m['disarm_pressed']} {m['disarm_keyboard']}")
         check(all(b.get("mode") == "lamp" and b["disabled"] and
-                  b.get("word") != "Disarm" for b in m["off"]) and
+                  b.get("act") == "" for b in m["off"]) and
               m["off"][0].get("word") == "Armed" and m["off_posts"] == 0,
               f"screen arming off: the lamp only, greyed, no per-group "
               f"disarm, as before: {m['off']} {m['off_posts']}")
@@ -44172,6 +44462,8 @@ p = armAllPlan(live([{name:"a", armed:"armed"}, {name:"b", armed:"disarmed"}]), 
 t(JSON.stringify(p.go) === "[1]" && p.out[0].why === "Already armed or asked for.", "the same rules as a group's own button");
 p = armAllPlan(Object.assign(live(off), {live_flame:{on:true, one_group_at_a_time:true}}), now, now, {});
 t(p.go.length === 0 && p.why === ONE_GROUP_WORDS, "live flame programming, one group at a time: nothing held");
+p = armAllPlan(Object.assign(live(off), {live_flame:{on:true}}), now, now, {});
+t(p.go.length === 0 && p.why === ONE_GROUP_WORDS, "live flame programming on, its one-group setting not said: one at a time");
 p = armAllPlan(Object.assign(live(off), {live_flame:{on:true, one_group_at_a_time:false}}), now, now, {});
 t(p.go.length === 3, "live flame programming allowing more: every group");
 p = armAllPlan(Object.assign(live(off), {schedule:{aborted:true}}), now, now, {});
@@ -44181,7 +44473,10 @@ t(p.go.length === 0 && /Not live/.test(p.out[0].why), "a stale status: nothing h
 const w = armAllWords([{group:0, end:"armed"}, {group:1, end:"out", why:"b is locked out."}], [{group:2, name:"c", why:"Re-arm in 1.5 s"}], ["a", "b", "c"]);
 t(w === "Arm all: a is asked for; the lamps show when armed. Not armed: b (b is locked out). Not armed: c (Re-arm in 1.5 s).", "the words: " + w);
 t(armAllWords([{group:0, end:"out", why:"X."}, {group:1, end:"out", why:"X"}], [], ["a", "b"]) === "Arm all: nothing was armed. Not armed: a, b (X).", "one reason said once");
-t(!/[\u2013\u2014]/.test(w + ONE_GROUP_WORDS), "no dashes");
+t(!/[\u2013\u2014]/.test(w + ONE_GROUP_WORDS + LF_UNKNOWN_WORDS + KEY_HOLD_WORDS), "no dashes");
+t(armAllRefusal(Object.assign(live(off), {live_flame:{on:false, error:"x"}})) === LF_UNKNOWN_WORDS, "live flame programming not readable: Arm all refused");
+t(armAllRefusal(Object.assign(live(off), {live_flame:{on:false}})) === "" && armAllRefusal(live(off)) === "", "off, or not in this engine: no refusal");
+t(armAllPlan(Object.assign(live(off), {live_flame:{on:false, error:"x"}}), now, now, {}).go.length === 0, "and the plan holds nothing");
 """)
     if bad is not None:
         check(bad == [], f"Arm all and Disarm all, in node: {bad}")
@@ -44227,13 +44522,13 @@ out.released = h.posts("arm-release").map(p => p.body.group).sort();
     m = _rack_drive(chrome, page, _rack_status_off(), steps)
     if check(isinstance(m, dict) and not m.get("problems"),
              f"drawn and pressed: {m!r}"):
-        check(m["label_off"] == "Arm all flame groups",
+        check(m["label_off"] == "Hold to arm all flame groups",
               f"every group off: the button is Arm all: {m['label_off']!r}")
         check(m["held"] == [0, 1],
               f"one hold on Arm all holds every group it can (wave flamer, "
               f"in its re-arm wait, stays out): {m['held']}")
         check(m["fill"] == "50%" and
-              m["label_holding"] == "Arm all flame groups",
+              m["label_holding"] == "Hold to arm all flame groups",
               f"the hold's progress fills Arm all: {m['fill']} "
               f"{m['label_holding']!r}")
         check(m["label_after"] == "Disarm all flame groups",
@@ -44281,6 +44576,595 @@ out.label_switch_off = lbl();
               m["label_switch_off"] == "Disarm all flame groups",
               f"a mix armed, or screen arming off: Disarm all: "
               f"{m['label_mix']!r} {m['label_switch_off']!r}")
+    _arm_all_review_118(chrome, page)
+    print("  ok")
+
+
+def _arm_all_review_118(chrome, page):
+    """Review of #118: Arm all let go early, its label through a hold, a
+    stale page and live flame programming or an Abort mid-hold, the
+    keyboard, and how it looks."""
+    rules = _css_rules(page)
+    arm = _css_rule(rules, "#b-disarm.armall") or {}
+    check("#5fe08a" in arm.get("border", "").lower() and
+          arm.get("color", "").lower() == "#5fe08a",
+          f"P2-2: Arm all has a green outline and green words: {arm}")
+    # P1: the finger lifted (or lost) early: every group's hold let go,
+    # no more heartbeats, nothing armed; and the keyboard says it is a hold.
+    steps = r"""
+const B = document.getElementById("b-disarm");
+window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:10 + b.group, held_s:0.3, needs_s:2}];
+await h.sleep(700);
+out.cls = B.className;
+out.label = B.querySelector(".lbl").textContent;
+B.click();
+await h.sleep(60);
+out.kbd_note = h.note();
+out.kbd_holds = h.posts("arm-hold").length;
+out.runs = [];
+for(const up of ["pointerup", "pointercancel", "pointerleave"]){
+  const r0 = h.posts("arm-release").length;
+  h.ev(B, "pointerdown");
+  await h.sleep(300);
+  const held = [...new Set(h.posts("arm-hold").map(p => p.body.group))].sort();
+  h.ev(B, up);
+  if(up === "pointerup") h.ev(B, "click");
+  const at = h.posts("arm-hold").length;
+  await h.sleep(450);
+  out.runs.push({up:up, held:held, more:h.posts("arm-hold").length - at,
+    released:h.posts("arm-release").slice(r0).map(p => p.body.group).sort(), note:h.note()});
+}
+out.disarm_all = h.posts("disarm-all").length;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Arm all let go early: drawn and pressed: {m!r}"):
+        check("armall" in m["cls"].split() and
+              m["label"] == "Hold to arm all flame groups",
+              f"P2-2: the button reads Hold to arm all, green: {m['cls']!r} "
+              f"{m['label']!r}")
+        check(m["kbd_note"] == "Arming is a hold: press and hold with your "
+              "finger or mouse." and m["kbd_holds"] == 0,
+              f"P2-5: Enter on Arm all says arming is a hold, and holds "
+              f"nothing: {m['kbd_note']!r} {m['kbd_holds']}")
+        for r in m["runs"]:
+            check(r["held"] == [0, 1, 2] and r["more"] == 0 and
+                  r["released"] == [0, 1, 2] and
+                  r["note"].startswith("Arm all: nothing was armed."),
+                  f"P1: Arm all let go early ({r['up']}): every group's hold "
+                  f"let go, no more heartbeats, nothing armed: {r}")
+        check(m["disarm_all"] == 0, "and no Disarm all from that finger")
+    # P1 (P2 item 6): the label stays Hold to arm all while a group of the
+    # hold is already asked for and the others are still being held.
+    steps = r"""
+let asked = false;
+const B = document.getElementById("b-disarm");
+window.__patch = st => { if(asked){ st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; } return st; };
+window.__answer["arm-hold"] = b => b.group === 0 && asked ? [200, {ok:true, armed:true, text:"front row is asked for.", hold_id:1, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:2 + b.group, held_s:1, needs_s:2}];
+await h.sleep(700);
+h.ev(B, "pointerdown");
+await h.sleep(300);
+asked = true;
+await h.sleep(700);
+out.mid = {label:B.querySelector(".lbl").textContent, mode:B.dataset.mode, holding:[1, 2].map(i => h.posts("arm-hold").filter(p => p.body.group === i).length)};
+const n = h.posts("arm-hold").length;
+await h.sleep(250);
+out.still = h.posts("arm-hold").length - n;
+h.ev(B, "pointerup"); h.ev(B, "click");
+await h.sleep(300);
+out.after = B.querySelector(".lbl").textContent;
+out.note = h.note();
+out.released = h.posts("arm-release").map(p => p.body.group).sort();
+out.disarm_all = h.posts("disarm-all").length;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Arm all, one group asked for mid-hold: {m!r}"):
+        check(m["mid"]["label"] == "Hold to arm all flame groups" and
+              m["mid"]["mode"] == "arm" and m["still"] > 0,
+              f"P2-6: while the other groups are still held the button stays "
+              f"Hold to arm all, never Disarm all: {m['mid']} {m['still']}")
+        check(m["after"] == "Disarm all flame groups" and
+              m["released"] == [1, 2] and m["disarm_all"] == 0 and
+              m["note"].startswith("Arm all: front row is asked for"),
+              f"let go: the others let go, front row asked for, the button "
+              f"now Disarm all, nothing disarmed: {m}")
+    # P1: the page stops seeing the engine mid-hold: the page itself stops
+    # the hold; no heartbeat goes on a status over 1 s old.
+    steps = r"""
+const B = document.getElementById("b-disarm");
+const ages = [];
+window.__answer["arm-hold"] = b => { ages.push(Date.now() - LAST_OK); return [200, {ok:true, hold_id:10 + b.group, held_s:0.5, needs_s:2}]; };
+await h.sleep(700);
+h.ev(B, "pointerdown");
+await h.sleep(300);
+window.__patch = st => { throw new Error("the engine went away"); };
+await h.sleep(1900);
+out.max_age = Math.max(...ages);
+out.beats = ages.length;
+out.released = [...new Set(h.posts("arm-release").map(p => p.body.group))].sort();
+out.holding = !!HOLD;
+out.note = h.note();
+h.ev(B, "pointerup");
+"""
+    # Twice: as the page runs, and with its 250 ms check paused, so the
+    # heartbeat's own check is the one that has to stop the hold.
+    pause = ("<script>(function(){const si = window.setInterval;"
+             "window.setInterval = (f, ms) => si(() => { if(!(window.__pauseStale"
+             " && f.name === 'renderStale')) f(); }, ms);})();</script>")
+    for how, head, pre in (("as it runs", "", ""),
+                           ("by the heartbeat itself", pause,
+                            "window.__pauseStale = true;\n")):
+        m = _rack_drive(chrome, page, _rack_status_off(),
+                        steps.replace("window.__patch = st => { throw",
+                                      pre + "window.__patch = st => { throw"),
+                        head_js=head)
+        if check(isinstance(m, dict) and not m.get("problems"),
+                 f"Arm all, the page goes stale mid-hold ({how}): {m!r}"):
+            check(m["beats"] >= 6 and m["max_age"] <= 1050 and
+                  m["released"] == [0, 1, 2] and not m["holding"] and
+                  "Not live" in m["note"],
+                  f"P1: a stale page stops Arm all {how}: no heartbeat on a "
+                  f"status over 1 s old, every hold let go, said: {m}")
+    # P2-1: live flame programming turned on (one group at a time), or an
+    # Abort, mid-hold stops Arm all at once; its state not readable
+    # refuses Arm all.
+    for name, patch, words in (
+            ("live flame programming turned on",
+             "st.live_flame = {on:true, one_group_at_a_time:true, receiving:true, map:[]};",
+             "Live flame programming is on, and it allows one flame group "
+             "at a time."),
+            ("an Abort", 'st.schedule = Object.assign({}, st.schedule, {aborted:true, state:"ABORTED"});',
+             "Refused: an Abort is standing.")):
+        steps = r"""
+let on = false;
+const B = document.getElementById("b-disarm");
+window.__patch = st => { if(on){ PATCH } return st; };
+window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:10 + b.group, held_s:0.5, needs_s:2}];
+await h.sleep(700);
+h.ev(B, "pointerdown");
+await h.sleep(300);
+on = true;
+await h.sleep(700);
+const n = h.posts("arm-hold").length;
+await h.sleep(300);
+out.more = h.posts("arm-hold").length - n;
+out.released = [...new Set(h.posts("arm-release").map(p => p.body.group))].sort();
+out.holding = !!HOLD;
+out.note = h.note();
+h.ev(B, "pointerup");
+""".replace("PATCH", patch)
+        m = _rack_drive(chrome, page, _rack_status_off(), steps)
+        if check(isinstance(m, dict) and not m.get("problems"),
+                 f"Arm all, {name} mid-hold: {m!r}"):
+            check(m["more"] == 0 and m["released"] == [0, 1, 2] and
+                  not m["holding"] and words in m["note"],
+                  f"P2-1: {name} mid-hold: Arm all stops at once, every "
+                  f"hold let go, said: {m}")
+    steps = r"""
+const B = document.getElementById("b-disarm");
+window.__patch = st => { st.live_flame = {available:true, on:false, error:"RuntimeError: boom"}; return st; };
+await h.sleep(700);
+h.ev(B, "pointerdown"); await h.sleep(250); h.ev(B, "pointerup"); h.ev(B, "click");
+await h.sleep(100);
+out.holds = h.posts("arm-hold").length;
+out.note = h.note();
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Arm all, live flame programming not readable: {m!r}"):
+        check(m["holds"] == 0 and "Live flame programming's state could "
+              "not be read" in m["note"],
+              f"P2-1: live flame programming's state not readable: Arm all "
+              f"holds nothing and says why: {m}")
+
+
+def test_rack_screen_one_laser_pill():
+    section("rack screen (Jeff, 2026-10-26): the two laser pills, Laser arm "
+            "and Lasers (what the show last sent BEYOND), are ONE pill with "
+            "one sentence ('Lasers: all disarmed, output dark'); every fact "
+            "either said is in its tooltip; a fault (LINK LOST) is said "
+            "first and stays red; Disarm all lasers still works. Page logic "
+            "in node, then drawn in a real browser")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    bad = _page_logic_in_node(page, r"""
+const chips = (aw, as, lw, ls) => [{name:"Show", state:"ok", word:"ready"}, {name:"Laser arm", state:as, word:aw}, {name:"Lasers", state:ls, word:lw, title:"sent only"}, {name:"Audio", state:"ok", word:"ready"}];
+const L = (a, b, extra) => Object.assign({lasers:[{id:"L1", name:"Laser 1", armed:a}, {id:"L2", name:"Laser 2", armed:b}], groups:{}}, extra || {});
+let p = laserPill(chips("disarmed", "off", "dark", "ok"), L(false, false));
+t(p.length === 3 && p[1].name === "Lasers" && p[1].word === "all disarmed, output dark" && p[1].state === "ok" && p[0].name === "Show" && p[2].name === "Audio", "one pill, in place: " + JSON.stringify(p));
+p = laserPill(chips("1 of 2 armed", "warn", "dark", "ok"), L(true, false, {why_off:"not every laser is armed"}));
+t(p[1].word === "1 of 2 armed, output off" && p[1].state === "warn" && /Armed: Laser 1\./.test(p[1].title) && /stays off: not every laser is armed/.test(p[1].title) && /Laser arm: 1 of 2 armed/.test(p[1].title) && /last sent BEYOND: dark \(sent only\)/.test(p[1].title), "some armed: " + JSON.stringify(p[1]));
+p = laserPill(chips("ARMED", "warn", "lit, unconfirmed", "ok"), L(true, true, {output_permitted:true}));
+t(p[1].word === "all armed, output allowed; lit, unconfirmed" && p[1].state === "warn", "all armed: BEYOND's output allowed, never said on (review of #122, P2-4): " + JSON.stringify(p[1]));
+p = laserPill(chips("ARMED", "warn", "lit? link unknown", "warn"), L(true, true, {output_permitted:true}));
+t(p[1].word === "all armed, output allowed; lit? link unknown", "a warning is in the sentence, not only the colour: " + p[1].word);
+p = laserPill(chips("disarmed", "off", "BEYOND restarted: dark until lit again", "warn"), L(false, false));
+t(p[1].word === "all disarmed, output dark; BEYOND restarted: dark until lit again" && p[1].state === "warn", "and this one: " + p[1].word);
+p = laserPill(chips("ARMED", "warn", "lit, unconfirmed", "ok"), L(true, true, {output_permitted:true}));
+t(p[1].word === "all armed, output allowed; lit, unconfirmed", "second review of #122, P2-4: lit, unconfirmed is said: " + p[1].word);
+p = laserPill(chips("not known", "bad", "dark", "ok"), L(false, false));
+t(p[1].word === "arm not known, output dark" && p[1].state === "bad", "a laser arm not known is said in words, never only red: " + p[1].word);
+p = laserPill(chips("disarmed", "off", "LINK LOST", "bad"), L(false, false), {link:"lost", why:"BEYOND is not running"});
+t(p[1].word === "LINK LOST: all disarmed, output dark" && p[1].state === "bad" && /BEYOND: BEYOND is not running\./.test(p[1].title), "a fault first, red: " + JSON.stringify(p[1]));
+p = laserPill(chips("disarmed", "off", "dark", "ok"), L(false, false, {arm_here:"needs screen_arming", arm_refusal:"L2 is locked out"}));
+t(/Arming from here is off: needs screen_arming\./.test(p[1].title) && /would be refused: L2 is locked out\./.test(p[1].title), "the arm refusals in the tooltip");
+p = laserPill(chips("not known", "bad", "dark", "ok"), {error:"boom"});
+t(p[1].word === "arm not known, output not known" && p[1].state === "bad" && /could not be read: boom/.test(p[1].title), "the arm not readable: " + JSON.stringify(p[1]));
+const one = [{name:"Lasers", state:"ok", word:"dark"}];
+t(laserPill(one, null) === one, "only the Lasers chip (no laser arm here): as it was");
+t(!/[\u2013\u2014]/.test(JSON.stringify(p)), "no dashes");
+""")
+    if bad is not None:
+        check(bad == [], f"the laser pill, in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_off()
+    st["subsystems"] = [{"name": n, "state": s, "word": w} for n, s, w in (
+        ("Show", "ok", "ready"), ("Laser arm", "off", "disarmed"),
+        ("Lasers", "ok", "dark"), ("Audio", "ok", "ready"))]
+    steps = r"""
+const pills = () => [...document.querySelectorAll("#subs .chip")].map(el => ({text:el.textContent.replace(/\s+/g, " ").trim(), cls:el.className, title:el.title}));
+await h.sleep(400);
+out.off = pills();
+window.__patch = st => { st.subsystems[1] = {name:"Laser arm", state:"warn", word:"1 of 2 armed"};
+  st.laser_arm = Object.assign({}, st.laser_arm, {lasers:[{id:"L1", name:"Laser 1", armed:true}, {id:"L2", name:"Laser 2", armed:false}], why_off:"not every laser is armed"}); return st; };
+await h.sleep(500);
+out.some = pills();
+out.strip = document.getElementById("lz-st").textContent;
+window.__patch = st => { st.subsystems[2] = {name:"Lasers", state:"bad", word:"LINK LOST"}; st.beyond_link = {link:"lost", why:"BEYOND is not running"}; return st; };
+await h.sleep(500);
+out.lost = pills();
+h.tap(document.getElementById("lz-disarm"));
+await h.sleep(150);
+out.disarm = h.posts("laser-arm").map(p => p.body);
+window.__patch = st => { throw new Error("gone"); };
+await h.sleep(2400);
+out.stale = pills();
+"""
+    m = _rack_drive(chrome, page, st, steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"the laser pill, drawn: {m!r}"):
+        for k in ("off", "some", "lost", "stale"):
+            las = [p for p in m[k] if p["text"].startswith(("Lasers",
+                                                            "Laser arm"))]
+            check(len(las) == 1 and len(m[k]) == 3,
+                  f"{k}: one laser pill, not two: {m[k]}")
+        one = lambda k: [p for p in m[k] if p["text"].startswith("Lasers")][0]
+        check(one("off")["text"] == "Lasers all disarmed, output dark",
+              f"all disarmed: {one('off')}")
+        check(one("some")["text"] == "Lasers 1 of 2 armed, output off" and
+              "warn" in one("some")["cls"] and
+              "Armed: Laser 1." in one("some")["title"] and
+              "not every laser is armed" in one("some")["title"] and
+              "1 of 2 ARMED" in m["strip"],
+              f"one armed: amber, the facts in its tooltip, the strip's "
+              f"detail as before: {one('some')} {m['strip']!r}")
+        check(one("lost")["text"].startswith("Lasers LINK LOST: ") and
+              "bad" in one("lost")["cls"] and
+              "BEYOND is not running" in one("lost")["title"],
+              f"BEYOND lost: said first, red: {one('lost')}")
+        check(m["disarm"] == [{"all": True, "on": False, "seen":
+                               m["disarm"][0].get("seen")}]
+              if m["disarm"] else False,
+              f"Disarm all lasers still works: {m['disarm']}")
+        check(one("stale")["text"] == "Lasers not known: no contact" and
+              "warn" in one("stale")["cls"],
+              f"no contact: {one('stale')}")
+    print("  ok")
+
+
+def test_startup_lock_is_one_tap_with_undo():
+    section("Startup page lockout (Jeff, 2026-10-26): an L button locks out "
+            "or unlocks with ONE tap, no pop-up, both ways, for machines and "
+            "lasers; what happened is said in a line with Undo for 5 s; a "
+            "refusal is said in the engine's own words; every engine rule "
+            "as before (an unlock says confirmed). Drawn in a real browser "
+            "and pressed")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    lc = page[page.find("async function lockClick("):
+              page.find("// ARRANGE BEGIN")]
+    check(lc and "confirmBox(" not in lc and "confirm(" not in lc,
+          "the L buttons ask nothing")
+    check('confirmBox("Rewrite the lockout file?"' in page,
+          "Rewrite the lockout file still asks first")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_off()
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True}
+    mo = _morning_view_pico()
+    mo["lockout"] = {"machines": {"m2": True}, "lasers": {}}
+    # The engine's lockout is kept in the page's stub: every lock request
+    # changes it, and the Startup page's state is read from it.
+    steps = r"""
+let asked = 0;
+window.confirm = () => { asked++; return true; };
+const lock = {machines:{m2:true}, lasers:{}};
+window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:Object.assign({}, lock.lasers)}; return mo; };
+window.__answer["lock"] = b => { const t = b.kind === "machine" ? lock.machines : lock.lasers; if(b.on) t[b.id] = true; else delete t[b.id];
+  return [200, {ok:true, text:(b.on ? "Locked out " : "Unlocked ") + b.id + "."}]; };
+const modal = () => !document.getElementById("modal").hidden;
+const lk = id => document.querySelector('.mach[data-id="' + id + '"] .lk');
+const locks = () => h.posts("lock").map(p => ({kind:p.body.kind, id:p.body.id, on:p.body.on, confirmed:p.body.confirmed}));
+const undo = () => { const b = document.getElementById("mo-lkundo"); return b.hidden ? null : b.querySelector("span").textContent; };
+const msg = () => document.getElementById("mo-msg").textContent;
+await h.sleep(900);
+// One tap locks out m1.
+h.tap(lk("m1"));
+await h.sleep(250);
+out.lock = {posts:locks(), modal:modal(), undo:undo(), msg:msg()};
+// Undo at once, inside the quiet second: never dropped (second review
+// of #122, P2-1).
+h.tap(document.getElementById("mo-lkundo-go"));
+await h.sleep(250);
+out.undone = {posts:locks(), undo:undo()};
+await h.sleep(900);
+// One tap unlocks m2 (front row is off).
+h.tap(lk("m2"));
+await h.sleep(250);
+out.unlock = {posts:locks(), modal:modal(), undo:undo()};
+// A laser's L: one tap; its Undo sits beside the lasers' message line.
+h.tap(document.querySelector('[data-llock="L1"]'));
+await h.sleep(250);
+out.laser = {posts:locks(), modal:modal(), msg:document.getElementById("mo-lmsg").textContent,
+  beside:(document.getElementById("mo-lkundo").previousElementSibling || {}).id};
+// A refusal, in the engine's words, and no Undo for it.
+window.__answer["lock"] = b => [409, {error:"flamesafe would not take the lockout file: it is not trusted."}];
+h.tap(lk("m3"));
+await h.sleep(250);
+out.refused = {msg:msg(), n:h.posts("lock").length, undo:undo()};
+out.asked = asked;
+"""
+    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
+                    routes={"/api/remote/morning": mo})
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Startup page, the L buttons pressed: {m!r}"):
+        check(m["lock"]["posts"] == [{"kind": "machine", "id": "m1",
+                                      "on": True}] and
+              not m["lock"]["modal"] and m["asked"] == 0 and
+              m["lock"]["msg"] == "Locked out m1." and
+              m["lock"]["undo"] == "front row 1 locked out.",
+              f"one tap locks out at once, one request, no pop-up, said with "
+              f"Undo: {m['lock']}")
+        check(m["undone"]["posts"][-1] == {"kind": "machine", "id": "m1",
+                                           "on": False, "confirmed": True}
+              and len(m["undone"]["posts"]) == 2,
+              f"Undo sends the opposite: {m['undone']}")
+        check(m["unlock"]["posts"][-1] == {"kind": "machine", "id": "m2",
+                                           "on": False, "confirmed": True}
+              and len(m["unlock"]["posts"]) == 3 and
+              not m["unlock"]["modal"] and
+              m["unlock"]["undo"] == "front row 2 unlocked.",
+              f"one tap unlocks at once, no pop-up, with Undo: "
+              f"{m['unlock']}")
+        check(m["laser"]["posts"][-1] == {"kind": "laser", "id": "L1",
+                                          "on": True} and
+              not m["laser"]["modal"] and
+              m["laser"]["msg"] == "Locked out L1." and
+              m["laser"]["beside"] == "mo-lmsg",
+              f"a laser's lock button: one tap, its Undo beside the lasers' "
+              f"line (review of #122, P2-5): {m['laser']}")
+        check(m["refused"]["n"] == 5 and m["refused"]["msg"] ==
+              "flamesafe would not take the lockout file: it is not "
+              "trusted." and m["refused"]["undo"] != "front row 3 locked out.",
+              f"a refusal is said in the engine's words, with no Undo for "
+              f"it: {m['refused']}")
+    # Review of #122, P1-1: a double tap, a tap while the request is under
+    # way, and an unlock while the machine's group is armed.
+    steps = r"""
+const lock = {machines:{}, lasers:{}};
+window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:{}}; return mo; };
+window.__answer["lock"] = b => { if(b.on) lock.machines[b.id] = true; else delete lock.machines[b.id]; return [200, {ok:true, text:"Done " + b.id + "."}]; };
+const lk = id => document.querySelector('.mach[data-id="' + id + '"] .lk');
+const sent = id => h.posts("lock").filter(p => p.body.id === id).map(p => p.body.on);
+await h.sleep(900);
+h.tap(lk("m1")); await h.sleep(180); h.tap(lk("m1"));
+await h.sleep(400);
+out.double = {sent:sent("m1"), locked:!!lock.machines.m1};
+window.__delay["lock"] = 700;
+h.tap(lk("m4")); await h.sleep(300); h.tap(lk("m4"));
+await h.sleep(800);
+out.inflight = sent("m4");
+await h.sleep(300); h.tap(lk("m4")); await h.sleep(100);
+out.quiet = sent("m4");
+"""
+    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
+                    routes={"/api/remote/morning": mo})
+    steps2 = r"""
+const lock = {machines:{m2:true}, lasers:{}};
+window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:{}}; return mo; };
+window.__answer["lock"] = b => { if(b.on) lock.machines[b.id] = true; else delete lock.machines[b.id]; return [200, {ok:true, text:"Done " + b.id + "."}]; };
+window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; return st; };
+await h.sleep(900);
+h.tap(document.querySelector('.mach[data-id="m2"] .lk'));
+await h.sleep(300);
+out.armed = {sent:h.posts("lock").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent, locked:!!lock.machines.m2};
+h.tap(document.querySelector('.mach[data-id="m4"] .lk'));
+await h.sleep(300);
+out.lock_armed_group_other = h.posts("lock").map(p => p.body.id);
+// Lock m1 (front row, armed) and Undo it at once: the Undo is an unlock,
+// refused on the page while front row is armed, said, never silent.
+h.tap(document.querySelector('.mach[data-id="m1"] .lk'));
+await h.sleep(300);
+h.tap(document.getElementById("mo-lkundo-go"));
+await h.sleep(300);
+out.undo_armed = {sent:h.posts("lock").filter(p => p.body.id === "m1").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent};
+// Another device locked m5 a moment ago: this page still shows it
+// unlocked, so its tap means LOCK; the engine has it locked already, so
+// nothing is sent and it says so (second review of #122, P1-A).
+lock.machines.m5 = true;
+h.tap(document.querySelector('.mach[data-id="m5"] .lk'));
+await h.sleep(300);
+out.engine_state = {sent:h.posts("lock").filter(p => p.body.id === "m5").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent, locked:!!lock.machines.m5};
+"""
+    m2 = _rack_drive(chrome, page, st, steps2, size=(1366, 768),
+                     frag="#morning", routes={"/api/remote/morning": mo})
+    if isinstance(m, dict) and isinstance(m2, dict):
+        m["armed"] = m2.get("armed")
+        m["lock_other"] = m2.get("lock_armed_group_other")
+        m["engine_state"] = m2.get("engine_state")
+        m["undo_armed"] = m2.get("undo_armed")
+        m["problems"] = m.get("problems", []) + m2.get("problems", [])
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Startup page, double taps and an armed group: {m!r}"):
+        check(m["double"] == {"sent": [True], "locked": True},
+              f"P1-1: a double tap on L locks once and stays locked, never "
+              f"lock then unlock: {m['double']}")
+        check(m["inflight"] == [True] and m["quiet"] == [True],
+              f"P1-1: a tap while the lock is under way, or within 1 s of "
+              f"its answer, does nothing: {m['inflight']} {m['quiet']}")
+        check(m["armed"] == {"sent": [], "locked": True, "msg": "Disarm "
+                             "front row first, then unlock front row 2."},
+              f"P1-1: no unlock while the machine's group is armed or "
+              f"asked for, said plainly: {m['armed']}")
+        check(m["lock_other"] == ["m4"],
+              f"locking is always allowed: {m['lock_other']}")
+        check(m["undo_armed"] == {"sent": [True], "msg": "Disarm front row "
+                                  "first, then unlock front row 1."},
+              f"second review of #122: Undo of a lock while the group is "
+              f"armed is refused and said: {m['undo_armed']}")
+        check(m["engine_state"] == {"sent": [], "locked": True,
+                                    "msg": "cat-walk 2 is already locked "
+                                           "out."},
+              f"second review of #122, P1-A: a tap means what the operator "
+              f"saw (lock); the engine has it locked already: nothing sent, "
+              f"said: {m['engine_state']}")
+    # The 5 s itself: the timer Undo sets is read, and run ten times
+    # faster so the draw fits the browser's time budget.
+    steps = r"""
+const si = window.setTimeout;
+window.setTimeout = (f, ms, ...a) => { if(f && f.name === "lockUndoGone"){ out.ms = ms; ms = ms / 10; } return si(f, ms, ...a); };
+await h.sleep(900);
+h.tap(document.querySelector('.mach[data-id="m1"] .lk'));
+await h.sleep(250);
+out.shown = !document.getElementById("mo-lkundo").hidden;
+await h.sleep(600);
+out.gone = document.getElementById("mo-lkundo").hidden;
+out.n = h.posts("lock").length;
+"""
+    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
+                    routes={"/api/remote/morning": mo})
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Startup page, Undo's 5 s: {m!r}"):
+        check(m.get("ms") == 5000 and m["shown"] and m["gone"] and m["n"] == 1,
+              f"Undo goes by itself after 5 s, nothing more sent: {m}")
+    print("  ok")
+
+
+def test_rack_screen_flame_group_machine_count():
+    section("rack screen (Jeff, 2026-10-26): every flame group's card says "
+            "'armed n of m machines', m the group's machines on the Startup "
+            "page's list that are not locked out (those said apart, 'k "
+            "locked out'), n how many flamesafe has armed (a one-safety "
+            "group: 0 of m or m of m); the wave flamer with several safeties "
+            "keeps its own count; the words and colours as before; nothing "
+            "new when the list is not known")
+    import types
+    from ltcplay import remote as RM
+    mk = lambda i, g: types.SimpleNamespace(id=i, group=g)
+    m = types.SimpleNamespace(
+        cfg=types.SimpleNamespace(machines=[mk("g1", "front row"),
+                                            mk("g2", "front row"),
+                                            mk("g3", "front row"),
+                                            mk("c1", "cat-walk"),
+                                            mk("f1", "fireball")]),
+        lockout=types.SimpleNamespace(machines={"g2": {}}))
+    ok = {"flamesafe_confirmed": True, "lock_error": ""}
+    check(RM.Remote.group_machines(m, ok) == {
+        "front row": {"machines": 3, "locked": 1, "lock": "ok"},
+        "cat-walk": {"machines": 1, "locked": 0, "lock": "ok"},
+        "fireball": {"machines": 1, "locked": 0, "lock": "ok"}},
+        f"the engine counts each group's machines and those locked out: "
+        f"{RM.Remote.group_machines(m, ok)}")
+    # Second review of #122, P2-3: a lock counts once flamesafe holds it.
+    check(RM.Remote.group_machines(m, {"flamesafe_confirmed": None})
+          ["front row"]["lock"] == "pending" and
+          RM.Remote.group_machines(m, {"flamesafe_confirmed": False})
+          ["front row"]["lock"] == "pending",
+          "before flamesafe holds the lock: pending")
+    check(RM.Remote.group_machines(m, {"flamesafe_confirmed": True,
+                                       "lock_error": "unreadable"})
+          ["front row"]["lock"] == "untrusted", "a lock error: untrusted")
+    m.config_error = "bad file"
+    check(RM.Remote.group_machines(m, ok) is None,
+          "the config could not be read (the default list): None")
+    check(RM.Remote.group_machines(types.SimpleNamespace()) is None,
+          "a list it cannot read: None, never raises")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    bad = _page_logic_in_node(page, r"""
+const gm = {"front row":{machines:3, locked:1}, "cat-walk":{machines:4, locked:0}, "fireball":{machines:1, locked:0}};
+t(machineCountLine({name:"front row"}, "armed", gm) === "armed 2 of 2 machines, 1 locked out", "armed: m of m, the locked one apart");
+t(machineCountLine({name:"cat-walk"}, "disarmed", gm) === "armed 0 of 4 machines", "off: 0 of m");
+t(machineCountLine({name:"cat-walk"}, "held", gm) === "armed 0 of 4 machines", "held back: 0 of m");
+t(machineCountLine({name:"fireball"}, "armed", gm) === "armed 1 of 1 machine", "one machine");
+t(machineCountLine({name:"wave flamer", safeties_up:[true, false]}, "held", gm) === "", "several safeties: their own count");
+t(machineCountLine({name:"cat-walk"}, "unknown", gm) === "", "a state not known: nothing");
+t(machineCountLine({name:"cat-walk"}, "armed", null) === "" && machineCountLine({name:"nope"}, "armed", gm) === "", "a list not known: nothing new");
+t(machineCountLine({name:"front row"}, "armed", {"front row":{machines:3, locked:1, lock:"pending"}}) === "armed 3 of 3 machines, 1 lock pending", "a lock flamesafe does not hold yet: counted in, said pending");
+t(machineCountLine({name:"front row"}, "disarmed", {"front row":{machines:3, locked:1, lock:"untrusted"}}) === "armed 0 of 3 machines; lockout not trusted", "the lockout not trusted: said");
+t(machineCountLine({name:"cat-walk", safeties_up:[true, false]}, "armed", gm) === "" && machineCountLine({name:"cat-walk", safeties_up:[true]}, "armed", gm) === "armed 4 of 4 machines", "two safeties: their own count; one: the machine count");
+""")
+    if bad is not None:
+        check(bad == [], f"the machine count, in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_off()
+    st["flames"] = dict(st["flames"], groups=[
+        dict(st["flames"]["groups"][0], armed="armed"),
+        dict(st["flames"]["groups"][1]),
+        dict(st["flames"]["groups"][2], safeties_up=[True, False, True],
+             safeties_locked=[False, False, False])])
+    st["morning"] = {"locked_machines": ["front row 2"], "locked_lasers": [],
+                     "flamesafe_confirmed": True,
+                     "group_machines": {"front row": {"machines": 3,
+                                                      "locked": 1},
+                                        "cat-walk": {"machines": 3,
+                                                     "locked": 0},
+                                        "wave flamer": {"machines": 2,
+                                                        "locked": 0}}}
+    steps = r"""
+await h.sleep(400);
+const cards = () => [0, 1, 2].map(i => { const lp = h.lamp(i).closest(".lamp"); const s = lp.querySelector(".saf");
+  return {word:h.lamp(i).querySelector(".word").textContent, saf:s.hidden ? null : s.textContent, cls:lp.className}; });
+out.cards = cards();
+window.__patch = st => { throw new Error("gone"); };
+await h.sleep(2500);
+out.stale = cards();
+"""
+    m = _rack_drive(chrome, page, st, steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"the cards, drawn: {m!r}"):
+        c = m["cards"]
+        check(c[0]["saf"] == "armed 2 of 2 machines, 1 locked out" and
+              c[0]["word"] == "Armed" and "armed" in c[0]["cls"],
+              f"front row armed: its word and colour, and the count: {c[0]}")
+        check(c[1]["saf"] == "armed 0 of 3 machines" and c[1]["word"] == "Off",
+              f"cat-walk off: {c[1]}")
+        check((c[2]["saf"] or "").startswith("wave flamer: 2 of 3 safeties "
+                                             "up"),
+              f"the wave flamer keeps its safety count: {c[2]}")
+        check(all(x["saf"] == "armed: not known" for x in m["stale"]),
+              f"second review of #122, P2-3: no contact: never an old "
+              f"count: {m['stale']}")
     print("  ok")
 
 
@@ -48145,8 +49029,11 @@ def test_flamesafe_multi_safety_ltcplay_side():
                 encoding="utf-8").read()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function safetyLine" in logic and
-          'const sl = safetyLine(g, c), se = el.querySelector(".saf");'
-          in page, "the card draws the safety line from page logic")
+          'const sl = safetyLine(g, c) || machineCountLine(g, c, ST && '
+          'ST.morning && ST.morning.group_machines), se = '
+          'el.querySelector(".saf");' in page,
+          "the card draws the safety line (or, with one safety, the "
+          "machine count) from page logic")
     node = _sh.which("node")
     if node:
         js = logic + r"""
@@ -48162,7 +49049,7 @@ t(safetyLine({name:"front row"}, "armed") === "", "an older flamesafe: no line")
 t(safetyLine(Object.assign({safeties_up:[true,true,true], safeties_locked:[false,false,false]}, W), "unknown") === "", "not known: no line");
 console.log(JSON.stringify(out));
 """
-        r = subprocess.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                            timeout=30)
         try:
             bad = _json.loads(r.stdout.strip().splitlines()[-1])
@@ -49714,6 +50601,18 @@ def test_purge_rules_at_the_engine():
               f"{R.m.purge.selected} {link.locked}")
         R.fs_lockout = {"slots": [412, 431, 432, 433], "state": "read"}
         R.feed()
+        # Review of #122, P1-B: no unlock while the machine's group is
+        # armed or asked for; a lock is never held back.
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "w1", "on": False,
+                             "confirmed": True}, client=loop)
+        check(st == 409 and out["error"] == "Disarm wave flamer first, then "
+              "unlock Waver 1." and R.m.lockout.is_locked("machine", "w1"),
+              f"no unlock while its group is armed: {st} {out}")
+        for g in R.groups:
+            if g["name"] == "wave flamer":
+                g.update(armed="disarmed", wanted=False)
+        R.feed()
         st, _h, out = R.ask("POST", "/api/remote/lock",
                             {"kind": "machine", "id": "w1", "on": False},
                             client=loop)
@@ -50668,6 +51567,102 @@ def test_checklist_audit_chain_pdf_export_and_tally():
     print("  ok")
 
 
+def test_morning_no_unlock_while_group_armed():
+    section("Morning lockout at the engine (review of #122, P1-B): an UNLOCK "
+            "of a machine is refused while its flame group is armed or "
+            "asked for, or flamesafe's state is not known (none, stale, not "
+            "connected), with 'Disarm <group> first, then unlock "
+            "<machine>'; a lock is never held back; a laser is not "
+            "affected; every surface (the page, the deck, a direct POST) "
+            "comes through this route")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import morning as MO
+    d = tempfile.mkdtemp()
+    try:
+        fs = os.path.join(d, "flamesafe.json")
+        with open(fs, "w", encoding="utf-8") as fh:
+            _j.dump(_MO_FLAMESAFE, fh)
+        with open(os.path.join(d, MO.CONFIG_FILE), "w",
+                  encoding="utf-8") as fh:
+            _j.dump(_MO_CONFIG, fh)
+        names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
+        fsview = {"slots": [], "state": "read"}
+        arm = {"front row": ("disarmed", False)}
+        mode = ["live"]
+
+        def flames():
+            if mode[0] == "none":
+                return None
+            return {"connected": mode[0] != "gone", "stale": mode[0] == "stale",
+                    "age_ms": 10, "fault": "", "lockout": dict(fsview),
+                    "groups": [{"name": n,
+                                "armed": arm.get(n, ("armed", True))[0],
+                                "wanted": arm.get(n, ("armed", True))[1],
+                                "reason": "", "dwell_s": 0} for n in names]}
+
+        class _Sock:
+            def sendto(self, pkt, addr):
+                pass
+
+            def close(self):
+                pass
+        m = MO.Morning(d, flamesafe_config=fs, link_get=lambda: None,
+                       flames_get=flames, laser_output=_FakeLaserOutput,
+                       live_check=lambda: "", group_names=lambda: names,
+                       journal=lambda t, **f: None, clock=lambda: 100.0,
+                       wall=lambda: 1_800_000_000.0, threaded=False,
+                       socket_factory=_Sock)
+        rack = ("Rack screen", "", "Rack screen", True, True)
+        unlock = {"kind": "machine", "id": "g1", "on": False,
+                  "confirmed": True}
+        # Locking is never held back, armed or not.
+        arm["front row"] = ("armed", True)
+        st, out = m.post("lock", {"kind": "machine", "id": "g1", "on": True},
+                         *rack)
+        check(st == 200 and m.lockout.is_locked("machine", "g1"),
+              f"a lock goes while the group is armed: {st} {out}")
+        fsview["slots"] = sorted(m.lockout.channels(m.cfg))
+        for name, a, md in (("armed", ("armed", False), "live"),
+                            ("asked for", ("held", True), "live"),
+                            ("flamesafe stale", ("disarmed", False), "stale"),
+                            ("flamesafe not connected", ("disarmed", False),
+                             "gone"),
+                            ("flamesafe not known", ("disarmed", False),
+                             "none")):
+            arm["front row"] = a
+            mode[0] = md
+            st, out = m.post("lock", unlock, *rack)
+            want = ("Disarm front row first, then unlock Ground 1."
+                    if md == "live" else "flamesafe's armed groups are not "
+                    "known right now, so Ground 1 stays locked out.")
+            check(st == 409 and out.get("error", "").startswith(want) and
+                  m.lockout.is_locked("machine", "g1"),
+                  f"{name}: no unlock, said plainly: {st} {out}")
+        # Disarmed and known: the unlock goes.
+        arm["front row"] = ("disarmed", False)
+        mode[0] = "live"
+        st, out = m.post("lock", unlock, *rack)
+        check(st == 200 and not m.lockout.is_locked("machine", "g1"),
+              f"front row off: the unlock goes: {st} {out}")
+        # A laser is not a flame group's: unaffected, every group armed.
+        arm.clear()
+        st, out = m.post("lock", {"kind": "laser", "id": "laser-1",
+                                  "on": True}, *rack)
+        check(st == 200, f"a laser locks: {st} {out}")
+        st, out = m.post("lock", {"kind": "laser", "id": "laser-1",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 200 and not m.lockout.is_locked("laser", "laser-1"),
+              f"and unlocks, flame groups armed or not: {st} {out}")
+        check(m.unlock_refusal("nope") == "",
+              "an id the config does not know: no word from this check (the "
+              "lock table says the rest)")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 def test_morning_lockout_trust_link_and_close():
     section("Morning and Shutdown, the lock table when it cannot be trusted: "
             "an unreadable lockout file, or one naming a machine the config "
@@ -50689,11 +51684,15 @@ def test_morning_lockout_trust_link_and_close():
             _j.dump(_MO_CONFIG, fh)
         names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
         fsview = {"slots": [], "state": "read"}
+        # Every group armed, until a test unlocks (review of #122, P1-B:
+        # no unlock while the group is armed).
+        fsarm = {"armed": "armed", "wanted": True}
 
         def flames():
             return {"connected": True, "stale": False, "age_ms": 10,
                     "fault": "", "lockout": dict(fsview),
-                    "groups": [{"name": n, "armed": "armed", "wanted": True,
+                    "groups": [{"name": n, "armed": fsarm["armed"],
+                                "wanted": fsarm["wanted"],
                                 "reason": "", "dwell_s": 0} for n in names]}
         lines = []
         holder = [None]
@@ -50805,6 +51804,13 @@ def test_morning_lockout_trust_link_and_close():
         check(any(f.get("outcome") == "rewritten" and f.get("fault")
                   for t, f in lines), "and journaled as a fault")
         fsview["slots"] = [412, 413]
+        st, out = m.post("lock", {"kind": "machine", "id": "ghost",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 409 and out.get("error") == "Disarm front row first, "
+              "then unlock Ghost.",
+              f"review of #122, P1-B: no unlock while the group is armed, "
+              f"at the engine: {st} {out}")
+        fsarm.update(armed="disarmed", wanted=False)
         st, out = m.post("lock", {"kind": "machine", "id": "ghost",
                                   "on": False, "confirmed": True}, *rack)
         check(st == 200 and _j.load(open(lk, encoding="utf-8"))
@@ -51227,7 +52233,7 @@ t(renders > 0, "the page was redrawn");
         lc = page[page.find("async function lockClick("):a]
         check(lc.startswith("async function lockClick("),
               "the page has lockClick before the ARRANGE block")
-        r = _sp.run([node, "-e", prelude + lc + block + body], capture_output=True,
+        r = _node_js(node, prelude + lc + block + body, capture_output=True,
                     text=True, timeout=60)
         try:
             bad = _j.loads(r.stdout.strip() or "null")
@@ -57601,7 +58607,7 @@ let MO = {laser_arm: {lasers: [{id:"l1", name:"Laser 1", armed:true},
   console.log(JSON.stringify({presses, confirms}));
 })();
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             got = _json.loads(r.stdout.strip())
@@ -58092,7 +59098,7 @@ console.log(JSON.stringify(out));
 process.exit(0);
 })().catch(e => { console.log(JSON.stringify(["threw: " + e])); process.exit(0); });
 """
-    r = _sp.run([node, "-e", prelude + block + body], capture_output=True,
+    r = _node_js(node, prelude + block + body, capture_output=True,
                 text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip().splitlines()[-1] or "null")
@@ -59025,6 +60031,9 @@ def test_video_lamp_follows_the_madmapper_watch():
     draw = _js_block(page, '$("subs").innerHTML = ', '\n\n')
     check(draw.startswith('$("subs").innerHTML'),
           "the page has its status strip drawing")
+    # The strip draws through the one laser pill (2026-10-26): its pure
+    # function comes along.
+    draw = _js_block(page, "const CHIP_RANK = {", "// LOGIC END") + "\n" + draw
     node = shutil.which("node")
     if not node:
         check(not IN_CI, "node is missing on this CI runner, so the status "
@@ -59513,7 +60522,7 @@ t(els["se-tz"].innerHTML.indexOf('value="Etc/GMT+7"') >= 0, "a zone outside the 
 t(listTitle({id:"morning", title:"Morning"}) === "Startup" && listTitle({id:"shutdown", title:"Shutdown"}) === "Shutdown", "the morning list reads Startup");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", prelude + js + body], capture_output=True,
+    r = _node_js(node, prelude + js + body, capture_output=True,
                 text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -65383,7 +66392,7 @@ t(b.lines[0].cls === "net" && /^No internet/.test(b.lines[0].text), "no internet
 t(wxBlock(Object.assign({}, V, {lines:[{level:"weird", text:"x"}]}), 1).lines.some(l => l.cls === "none" && l.text === "x"), "an unknown level is grey");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -65954,6 +66963,9 @@ if __name__ == "__main__":
     test_rack_screen_one_button_per_flame_group()
     test_rack_screen_arm_all_and_disarm_all_toggle()
     test_rack_screen_nav_buttons_never_cut_off()
+    test_rack_screen_one_laser_pill()
+    test_startup_lock_is_one_tap_with_undo()
+    test_rack_screen_flame_group_machine_count()
     test_streamdeck_reports_rearm_wait_and_purge_refusal()
     test_rack_window_fits_the_work_area_above_the_taskbar()
     test_deck_chip_shows_live_truth()
@@ -66014,6 +67026,7 @@ if __name__ == "__main__":
     test_rack_lasers_strip_page()
     test_checklist_audit_chain_pdf_export_and_tally()
     test_morning_lockout_trust_link_and_close()
+    test_morning_no_unlock_while_group_armed()
     test_morning_arrange_mode_arms_nothing()
     test_morning_arrange_disables_firing()
     test_purge_release_can_never_start_a_fire()
