@@ -55,8 +55,10 @@ LOCK_SETTLE_S = 1.5
 NAME_MAX = 48
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 
+# "fuel" is the Fuel page's own block (fuel.py), checked there: a mistake
+# in it shows on the Fuel page and never stops this page.
 TOP_KEYS = frozenset(("machines", "groups", "purge", "lasers", "checklists",
-                      "names", "tally", "notes", "laser_groups"))
+                      "names", "tally", "notes", "laser_groups", "fuel"))
 MACHINE_KEYS = frozenset(("id", "name", "kind", "group", "fire", "pan",
                           "tilt", "notes", "safety"))
 PURGE_KEYS = frozenset(("gflame_fire", "waver", "fireball"))

@@ -7355,8 +7355,8 @@ def build():
 
  ('fix round 1: the flame frames never raise an unconfirmed disarm',
   'ltcplay/flamelink.py',
-  '            late = self._abort_overdue()\n        if late is not None:\n            self._note_unconfirmed(late)\n        return ok',
-  '            late = None\n        if late is not None:\n            self._note_unconfirmed(late)\n        return ok'),
+  '            late = self._abort_overdue()\n        if late is not None:\n            self._note_unconfirmed(late)\n        obs = self.observer',
+  '            late = None\n        if late is not None:\n            self._note_unconfirmed(late)\n        obs = self.observer'),
 
  ('fix round 1: status frames never raise an unconfirmed disarm',
   'ltcplay/flamelink.py',
@@ -12140,6 +12140,262 @@ def build():
   "ltcplay/remote.py",
   "        stale = self._stale(body)\n        if stale:\n"
   "            return 409, {\"error\": stale, \"stale\": True}\n",
+  ""),
+
+ # The fuel tracker (fuel.py, FUEL.md, Jeff 2026-10-26).
+ ("fuel: the flame link's observer is told before the frame went",
+  "ltcplay/flamelink.py",
+  "        with self._read_lock:\n            tc, values = self.values_now()\n",
+  "        with self._read_lock:\n            tc, values = self.values_now()\n"
+  "        if self.observer is not None:\n"
+  "            self.observer(tc, values, True)\n"),
+
+ ("fuel: an observer that raises reaches the flame link's sender",
+  "ltcplay/flamelink.py",
+  "            try:\n                obs(tc, values, ok)\n"
+  "            except Exception:\n                pass",
+  "            obs(tc, values, ok)"),
+
+ ("fuel: the observer is given the values before a zero was applied",
+  "ltcplay/flamelink.py",
+  "                obs(tc, values, ok)",
+  "                obs(tc, b\"\\xff\" * UNIVERSE_SIZE, ok)"),
+
+ ("fuel: one under the fire value counts as flame",
+  "ltcplay/fuel.py",
+  "            if not any(0 < s <= n and values[s - 1] >= at for s in m.fire):",
+  "            if not any(0 < s <= n and values[s - 1] >= at - 1\n"
+  "                       for s in m.fire):"),
+
+ ("fuel: a Showven's purge counts",
+  "ltcplay/fuel.py",
+  "            if source == \"purge\" and not kc[\"count_purge\"]:",
+  "            if False:"),
+
+ ("fuel: a group flamesafe does not report armed burns",
+  "ltcplay/fuel.py",
+  "            if m.group not in armed:\n                continue",
+  "            if m.group not in armed:\n                pass"),
+
+ ("fuel: a locked out unit burns",
+  "ltcplay/fuel.py",
+  "            if self._locked(m.id):\n                continue\n"
+  "            if armed is None:",
+  "            if armed is None:"),
+
+ ("fuel: flame is counted with flamesafe's armed state unknown",
+  "ltcplay/fuel.py",
+  "            if armed is None:\n                self.uncounted_s += dt\n"
+  "                continue",
+  "            if armed is None:\n                armed = {m.group}"),
+
+ ("fuel: a stale armed list is used for ever",
+  "ltcplay/fuel.py",
+  "        if s is not None and now - at <= ARMED_KEEP_S:",
+  "        if s is not None:"),
+
+ ("fuel: a frame that was not sent burns",
+  "ltcplay/fuel.py",
+  "        if not ok or not values or dt <= 0 or not any(values):",
+  "        if not values or dt <= 0 or not any(values):"),
+
+ ("fuel: a gap in the frames counts in full",
+  "ltcplay/fuel.py",
+  "            min(max(t - self._last_t, 0.0), MAX_FRAME_DT_S)",
+  "            max(t - self._last_t, 0.0)"),
+
+ ("fuel: the wall clock times the flame",
+  "ltcplay/fuel.py",
+  "        self._q.append((self._clock(), tc is not None,",
+  "        self._q.append((self._wall(), tc is not None,"),
+
+ ("fuel: live flame programming counts as a show",
+  "ltcplay/fuel.py",
+  "        if rehearse or program:\n            source = \"other\"",
+  "        if rehearse:\n            source = \"other\""),
+
+ ("fuel: scrubbing starts a performance",
+  "ltcplay/fuel.py",
+  "        show_tc = has_tc and not rehearse\n",
+  "        show_tc = has_tc\n"),
+
+ ("fuel: a failed start counts as a show",
+  "ltcplay/fuel.py",
+  "                   and ep.get(\"tc_s\", 0.0) >= self.cfg[\"min_show_s\"])",
+  "                   and True)"),
+
+ ("fuel: a programming session counts as a show",
+  "ltcplay/fuel.py",
+  "        is_show = (not ep.get(\"rehearsal\")",
+  "        is_show = (True"),
+
+ ("fuel: a short gap in the show timecode ends the performance",
+  "ltcplay/fuel.py",
+  "        elif self.episode is not None and self._ep_last_tc is not None and \\\n"
+  "                t - self._ep_last_tc > EPISODE_END_S:",
+  "        elif self.episode is not None and self._ep_last_tc is not None and \\\n"
+  "                t - self._ep_last_tc > 0.5:"),
+
+ ("fuel: a locked out unit counts the show",
+  "ltcplay/fuel.py",
+  "            if is_show and mid in ids and not self._locked(mid):",
+  "            if is_show and mid in ids:"),
+
+ ("fuel: the outlier guard is gone",
+  "ltcplay/fuel.py",
+  "        kept = [c for c in last if m / ratio <= c <= m * ratio]",
+  "        kept = last"),
+
+ ("fuel: every refill ever is learned from",
+  "ltcplay/fuel.py",
+  "    last = [c for c in cycles if c > 0][-n:]",
+  "    last = [c for c in cycles if c > 0]"),
+
+ ("fuel: an undone refill still counts",
+  "ltcplay/fuel.py",
+  "        return sorted((r for r in u[\"refills\"] if not r.get(\"undone\")),",
+  "        return sorted((r for r in u[\"refills\"]),"),
+
+ ("fuel: shows left from fewer shows than min_shows",
+  "ltcplay/fuel.py",
+  "               if len(recent) >= cfg[\"min_shows\"] else None)",
+  "               if recent else None)"),
+
+ ("fuel: refill soon never said",
+  "ltcplay/fuel.py",
+  "                                 sl <= cfg[\"refill_soon_shows\"]))",
+  "                                 sl < 0))"),
+
+ ("fuel: the starting estimate is ignored",
+  "ltcplay/fuel.py",
+  "        if cap is None and est is not None:\n",
+  "        if False:\n"),
+
+ ("fuel: a refill is not saved at once",
+  "ltcplay/fuel.py",
+  "        self._note(f\"Fuel: {who or 'someone'} logged a refill of {names}.\")\n"
+  "        ok = self.save()",
+  "        self._note(f\"Fuel: {who or 'someone'} logged a refill of {names}.\")\n"
+  "        ok = True"),
+
+ ("fuel: a refill during a show forgets the flame so far",
+  "ltcplay/fuel.py",
+  "            burn[\"show\"] += float(self.episode[\"burn\"].get(mid, 0.0))",
+  "            pass"),
+
+ ("fuel: fuel.json is written in place",
+  "ltcplay/fuel.py",
+  "                tmp = f\"{self.path}.{os.getpid()}.tmp\"",
+  "                tmp = self.path"),
+
+ ("fuel: a failed save is never tried again",
+  "ltcplay/fuel.py",
+  "            with self._lock:\n                self._dirty = True\n"
+  "                if not self.save_error:",
+  "            with self._lock:\n                if not self.save_error:"),
+
+ ("fuel: a save failure is journaled on every try",
+  "ltcplay/fuel.py",
+  "                if not self.save_error:\n                    self._note(f\"Fuel: {self.path} could not be written \"",
+  "                if True:\n                    self._note(f\"Fuel: {self.path} could not be written \""),
+
+ ("fuel: an unreadable fuel.json is written over",
+  "ltcplay/fuel.py",
+  "                os.replace(self.path, kept)",
+  "                pass"),
+
+ ("fuel: a show under way at a restart is lost",
+  "ltcplay/fuel.py",
+  "                self._end_episode(self._machines(),\n"
+  "                                  \"the engine stopped during it\")",
+  "                self.episode = None"),
+
+ ("fuel: closing the engine during a show loses it",
+  "ltcplay/fuel.py",
+  "                    self._end_episode(self._machines(),\n"
+  "                                      \"the engine was stopped during it\")",
+  "                    pass"),
+
+ ("fuel: a counting failure raises out of the pass",
+  "ltcplay/fuel.py",
+  "        except Exception as e:                    # noqa: BLE001\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:",
+  "        except ZeroDivisionError as e:\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:"),
+
+ ("fuel: a Fireball is tracked",
+  "ltcplay/fuel.py",
+  "        return [m for m in ms if getattr(m, \"kind\", None) in TRACKED_KINDS]",
+  "        return list(ms)"),
+
+ ("fuel: an unknown fuel setting is accepted",
+  "ltcplay/fuel.py",
+  "    _only(doc, TOP_KEYS, f\"{where}: fuel\")",
+  "    pass"),
+
+ ("fuel: an unknown kind setting is accepted",
+  "ltcplay/fuel.py",
+  "        _only(kd, KIND_KEYS, w)",
+  "        pass"),
+
+ ("fuel: an edited settings file is not read again",
+  "ltcplay/fuel.py",
+  "        if stamp == self._cfg_stamp and self._cfg_stamp is not None:",
+  "        if self._cfg_stamp is not None:"),
+
+ ("fuel: the Morning page refuses a fuel block",
+  "ltcplay/morning.py",
+  "                      \"names\", \"tally\", \"notes\", \"laser_groups\", \"fuel\"))",
+  "                      \"names\", \"tally\", \"notes\", \"laser_groups\"))"),
+
+ ("fuel: a viewer may log a refill",
+  "ltcplay/fuel.py",
+  "    if role not in roles:",
+  "    if False:"),
+
+ ("fuel: an operator may undo a refill",
+  "ltcplay/fuel.py",
+  "    return _may(ctx, users, (\"admin\",), \"undo a refill\")",
+  "    return _may(ctx, users, REFILL_ROLES, \"undo a refill\")"),
+
+ ("fuel: without sign-in a network device may refill",
+  "ltcplay/fuel.py",
+  "        if getattr(ctx, \"local\", False):\n            return True, \"\"",
+  "        if True:\n            return True, \"\""),
+
+ ("fuel: refill all needs no confirm",
+  "ltcplay/fuel.py",
+  "            if body.get(\"confirm\") is not True:",
+  "            if False:"),
+
+ ("fuel: the engine never watches the flame link",
+  "ltcplay/fuel.py",
+  "    if link is not None:\n        tr.attach(link)",
+  "    pass"),
+
+ ("fuel: closing the engine leaves the tracker running",
+  "ltcplay/web.py",
+  "            remote.fuel.close()",
+  "            pass"),
+
+ ("fuel: the status does not carry the Fuel button's state",
+  "ltcplay/remote.py",
+  "                out[\"fuel\"] = self.fuel.summary()",
+  "                pass"),
+
+ ("fuel: the page never draws the health bar",
+  "ltcplay/web/remote.html",
+  "<i style=\"width:${pct}%\"></i>",
+  "<i></i>"),
+
+ ("fuel: the page offers Refilled to someone who may not",
+  "ltcplay/web/remote.html",
+  "<button data-refill=\"${esc(u.id)}\" ${f.may_refill ? \"\" : \"disabled\"}",
+  "<button data-refill=\"${esc(u.id)}\""),
+
+ ("fuel: the Fuel button never turns amber",
+  "ltcplay/web/remote.html",
+  "  $(\"nav-fuel\").classList.toggle(\"soon\", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));",
   ""),
 
 ]

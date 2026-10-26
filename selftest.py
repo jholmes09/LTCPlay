@@ -60480,6 +60480,1090 @@ def test_scrub_flames_review_of_117():
     print("  ok")
 
 
+# -- the fuel tracker (Jeff, 2026-10-26; fuel.py, FUEL.md) -------------------
+
+def _fuel_machines():
+    from ltcplay import morning as MO
+    return [MO.Machine("g1", "Ground 1", "gflame", "front row", [411]),
+            MO.Machine("g2", "Ground 2", "gflame", "front row", [412]),
+            MO.Machine("c1", "Catwalk 1", "gflame", "cat-walk", [424]),
+            MO.Machine("w1", "Wave 1", "waver", "wave flamer",
+                       [1, 2, 3, 4, 5], safety=6),
+            MO.Machine("fb", "Fireball", "fireball", "fireball", [451])]
+
+
+class _FuelRig:
+    """A FuelTracker on the test's clocks, watching a stand-in flame link
+    whose frames the test sends through its observer, exactly as
+    FlameLink.send_frame calls it."""
+
+    def __init__(self, work=None, config=None, machines=None):
+        import types
+        self.work = work or tempfile.mkdtemp()
+        self.t = [500.0]
+        self.wall = [1_800_000_000.0]
+        self.ms = machines if machines is not None else _fuel_machines()
+        self.armed = {"front row", "cat-walk", "wave flamer", "fireball"}
+        self.locked = set()
+        self.rehearsal = [False]
+        self.lines = []
+        self.cfg_path = os.path.join(self.work, "ltcplay_morning.json")
+        if config is not None:
+            self.write_config(config)
+        self.link = types.SimpleNamespace(rehearse_on=False,
+                                          program_on=False,
+                                          purges_sent=0, observer=None)
+        self.tr = self.open()
+
+    def write_config(self, fuel_block):
+        import json as _j
+        with open(self.cfg_path, "w", encoding="utf-8") as fh:
+            _j.dump({"fuel": fuel_block}, fh)
+
+    def open(self):
+        from ltcplay import fuel as F
+        tr = F.FuelTracker(
+            self.work, lambda: self.ms, config_path=self.cfg_path,
+            armed_get=lambda: (None if self.armed is None
+                               else set(self.armed)),
+            locked_get=lambda mid: mid in self.locked,
+            rehearsal_get=lambda: self.rehearsal[0],
+            journal=lambda text, fault=False: self.lines.append(
+                (text, fault)),
+            clock=lambda: self.t[0], wall=lambda: self.wall[0],
+            threaded=False)
+        tr.attach(self.link)
+        return tr
+
+    def reopen(self):
+        self.tr = self.open()
+        return self.tr
+
+    def frames(self, n, tc=False, on=(), purge=False, ok=True, dt=0.025,
+               pump=True):
+        vals = bytearray(512)
+        for s, v in on:
+            vals[s - 1] = v
+        vals = bytes(vals)
+        for _ in range(n):
+            self.t[0] += dt
+            self.wall[0] += dt
+            if purge:
+                self.link.purges_sent += 1
+            self.link.observer("00:00:10:00" if tc else None, vals, ok)
+        if pump:
+            self.tr.pump()
+
+    def show(self, seconds, fire_s=0.0, on=((411, 255),)):
+        """A performance: `seconds` of show timecode, the first `fire_s`
+        of it with `on` firing, then the timecode stops."""
+        n_fire = int(round(fire_s * 40))
+        n_all = int(round(seconds * 40))
+        if n_fire:
+            self.frames(n_fire, tc=True, on=on)
+        self.frames(n_all - n_fire, tc=True)
+        self.frames(100)            # 2.5 s with no show timecode: it ends
+
+    def unit(self, mid):
+        for u in self.tr.view()["units"]:
+            if u["id"] == mid:
+                return u
+        return None
+
+    def close(self):
+        import shutil
+        shutil.rmtree(self.work, ignore_errors=True)
+
+
+def _near(a, b, tol=0.06):
+    return a is not None and abs(float(a) - float(b)) <= tol
+
+
+def test_fuel_flame_seconds_at_the_flame_link():
+    section("fuel (Jeff, 2026-10-26): flame seconds per unit, measured on "
+            "the frames the flame link actually sent; the link's observer "
+            "is told after the frame went, a failing one never reaches the "
+            "sender; armed, locked, fire values and the clocks")
+    from ltcplay import flamelink as fl
+    from ltcplay import fuel as F
+    import json as _j
+    # The link: with an observer the frames are the same, it is told
+    # what went out after it went, and one that raises changes nothing.
+    cfg = fl.FlameLinkConfig("127.0.0.1", 9, 1, _fl_key(),
+                             frame_stale_ms=500)
+    t = [100.0]
+    vals = [0] * 512
+    vals[410] = 240
+    n = [0]
+
+    def state():
+        return f"00:00:10:{n[0] % 30:02d}", True
+
+    def mk():
+        link = _flk_unguarded(cfg, cues=lambda tc: list(vals),
+                              show_state=state, clock=lambda: t[0])
+        link._sock = _FlSock()
+        link.release()
+        return link
+    plain, watched = mk(), mk()
+    check(plain.observer is None, "a new link has no observer")
+    seen = []
+    watched.observer = lambda tc, v, ok: seen.append(
+        (tc, bytes(v), ok, len(watched._sock.sent)))
+    for i in range(4):
+        n[0] += 1
+        t[0] += 0.025
+        for lk in (plain, watched):
+            check(lk.send_frame() is True, "the frame went out")
+    def values_of(link):
+        return [_j.loads(d)["values"] for d, _a in link._sock.sent
+                if _j.loads(d)["t"] == "flame"]
+    check(values_of(plain) == values_of(watched) and
+          values_of(watched)[-1][410] == 240,
+          "with an observer the frames carry exactly the same values")
+    check(len(seen) == 4 and all(s[2] is True for s in seen) and
+          [list(s[1]) for s in seen] == values_of(watched),
+          "the observer is given what each frame carried")
+    check(all(s[3] == i + 1 for i, s in enumerate(seen)),
+          f"and only after it was sent: {[s[3] for s in seen]}")
+
+    def boom(*a):
+        raise RuntimeError("the fuel tracker broke")
+    watched.observer = boom
+    n[0] += 1
+    t[0] += 0.025
+    check(watched.send_frame() is True and len(watched._sock.sent) == 5,
+          "an observer that raises: the frame still went, and send_frame "
+          "says so")
+    watched._sock.failing = True
+    got = []
+    watched.observer = lambda tc, v, ok: got.append(ok)
+    n[0] += 1
+    t[0] += 0.025
+    watched.send_frame()
+    check(got == [False], "a frame that could not be sent is told as not "
+                          "sent")
+    # A real link, watched by a real tracker: what it sent is counted.
+    R = _FuelRig()
+    try:
+        link = mk()
+        R.tr.attach(link)
+        check(link.observer == R.tr.observe, "attach() sets the observer")
+        for i in range(41):
+            n[0] += 1
+            t[0] += 0.025
+            R.t[0] = t[0]
+            link.send_frame()
+        R.tr.pump()
+        check(R.tr.episode is not None and
+              _near(R.tr.episode["burn"].get("g1"), 1.0),
+              f"one second of a real link's show frames at 240 on Ground "
+              f"1's slot is one second of show flame: {R.tr.episode}")
+    finally:
+        R.close()
+    # The rules, on the stand-in link.
+    R = _FuelRig()
+    try:
+        R.frames(400, tc=True, on=((411, 229), (412, 228), (3, 253),
+                                   (424, 255), (451, 255)))
+        ep = R.tr.episode["burn"]
+        check(_near(ep.get("g1"), 10.0) and "g2" not in ep and
+              "w1" not in ep,
+              f"229 is G-Flame flame and 228 is not; 253 is not Showven "
+              f"flame: {ep}")
+        check(_near(ep.get("c1"), 10.0), "cat-walk is armed too")
+        check("fb" not in ep and "fb" not in R.tr.units and
+              [u["id"] for u in R.tr.view()["units"]] ==
+              ["g1", "g2", "c1", "w1"],
+              "a Fireball is never tracked")
+        R.frames(80, tc=True, on=((3, 254),))
+        check(_near(R.tr.episode["burn"].get("w1"), 2.0),
+              "254 on any of a Showven's fire slots is flame")
+        R.armed = {"front row"}
+        R.frames(80, tc=True, on=((424, 255), (411, 255)))
+        ep = R.tr.episode["burn"]
+        check(_near(ep.get("c1"), 10.0) and _near(ep.get("g1"), 12.0),
+              f"a group flamesafe does not report armed burns nothing "
+              f"(flamesafe holds its fire slots at zero): {ep}")
+        R.locked = {"g1"}
+        R.frames(80, tc=True, on=((411, 255),))
+        check(_near(R.tr.episode["burn"].get("g1"), 12.0) and
+              R.unit("g1")["locked"] is True,
+              "a locked out unit is still tracked and burns nothing")
+        R.locked = set()
+        R.frames(80, tc=True, on=((411, 255),), ok=False)
+        check(_near(R.tr.episode["burn"].get("g1"), 12.0),
+              "a frame that was not sent burns nothing")
+        # flamesafe's word not known: a stale list is used ARMED_KEEP_S,
+        # then nothing is counted and the page says how much was not.
+        R.armed = None
+        R.frames(40, tc=True, on=((411, 255),))
+        check(_near(R.tr.episode["burn"].get("g1"), 13.0),
+              "the last armed list is used for a few seconds")
+        R.t[0] += F.ARMED_KEEP_S
+        R.frames(40, tc=True, on=((411, 255),))
+        v = R.tr.view()
+        check(_near(R.tr.episode["burn"].get("g1"), 13.0) and
+              _near(v["uncounted_s"], 1.0, 0.15),
+              f"after that, flame is not counted and the page says how "
+              f"much: {v['uncounted_s']}")
+        R.armed = {"front row", "cat-walk", "wave flamer"}
+        # The clocks: a wall clock change adds nothing; a gap in the frames
+        # counts at most one frame's worth.
+        before = R.tr.episode["burn"]["g1"]
+        R.wall[0] += 3600
+        R.frames(40, tc=True, on=((411, 255),))
+        R.wall[0] -= 7200
+        R.frames(40, tc=True, on=((411, 255),))
+        check(_near(R.tr.episode["burn"]["g1"] - before, 2.0),
+              f"the wall clock jumping an hour either way changes no burn: "
+              f"{R.tr.episode['burn']['g1'] - before}")
+        R.t[0] += 30.0
+        before = R.tr.episode["burn"]["g1"]
+        R.frames(1, tc=True, on=((411, 255),))
+        check(R.tr.episode["burn"]["g1"] - before <= F.MAX_FRAME_DT_S + 1e-9,
+              "a 30 s gap between frames counts one frame at most")
+        R.armed = None
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_purge_counts_for_gflame_not_showven():
+    section("fuel: a purge burns a G-Flame's own tank and counts; a "
+            "Showven purges from its own purge fuel and does not; both "
+            "can be set per kind")
+    R = _FuelRig()
+    try:
+        R.frames(200, purge=True, on=((411, 255), (1, 255), (2, 255)))
+        g, w = R.unit("g1"), R.unit("w1")
+        check(_near(g["since"]["purge"], 5.0) and g["since"]["show"] == 0,
+              f"a G-Flame's purge counts as purge: {g['since']}")
+        check(w["burn_s"] == 0 and w["since"]["purge"] == 0,
+              f"a Showven's purge does not count: {w['since']}")
+        check(R.tr.episode is None and g["shows_since"] == 0,
+              "a purge is never a show")
+        R.write_config({"kinds": {"waver": {"count_purge": True},
+                                  "gflame": {"count_purge": False}}})
+        R.tr.tick()
+        R.frames(200, purge=True, on=((411, 255), (1, 255)))
+        check(_near(R.unit("w1")["since"]["purge"], 5.0) and
+              _near(R.unit("g1")["since"]["purge"], 5.0),
+              "count_purge set the other way round: the Showven counts, the "
+              "G-Flame's stays where it was")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_counts_shows_and_not_rehearsals():
+    section("fuel: a performance counts as a show once its timecode has "
+            "run min_show_s, to its end or an abort, by hand or by the "
+            "schedule; a failed start, a programming session, scrubbing "
+            "and live flame programming are other burn, never a show")
+    R = _FuelRig()
+    try:
+        R.frames(400, tc=True, on=((411, 255),))
+        v = R.tr.view()
+        check(v["show_running"] and _near(R.unit("g1")["burn_s"], 10.0) and
+              R.unit("g1")["shows_since"] == 0,
+              "during a show its burn shows at once, the show is not "
+              "counted until it is over")
+        R.frames(2000, tc=True)
+        R.frames(60)
+        check(R.tr.episode is not None,
+              "1.5 s without timecode does not end it")
+        R.frames(40)
+        g = R.unit("g1")
+        check(R.tr.episode is None and g["shows_since"] == 1 and
+              _near(g["since"]["show"], 10.0) and
+              R.unit("w1")["shows_since"] == 1,
+              f"over: one show for every tracked unit, its burn under "
+              f"shows: {g}")
+        # Hold: the timecode stays (frozen) and nothing fires: one show.
+        R.frames(400, tc=True, on=((411, 255),))
+        R.frames(2400, tc=True)
+        R.frames(400, tc=True, on=((411, 255),))
+        R.frames(100)
+        check(R.unit("g1")["shows_since"] == 2,
+              "a show with a Hold in it is one show")
+        # An abort after 35 s: the timecode stops; it counts.
+        R.show(35, 5)
+        check(R.unit("g1")["shows_since"] == 3,
+              "a performance aborted after its min_show_s counts")
+        # A start that failed: 10 s.
+        R.show(10, 5)
+        g = R.unit("g1")
+        check(g["shows_since"] == 3 and _near(g["since"]["other"], 5.0),
+              f"10 s of timecode is not a show; its flame is other: "
+              f"{g['since']}")
+        # A programming session.
+        R.rehearsal[0] = True
+        R.show(60, 5)
+        R.rehearsal[0] = False
+        g = R.unit("g1")
+        check(g["shows_since"] == 3 and _near(g["since"]["other"], 10.0),
+              "a programming session is never a show")
+        # Scrubbing with flames: the scrub's own timecode, never a show.
+        R.link.rehearse_on = True
+        R.frames(2000, tc=True, on=((411, 255),))
+        R.link.rehearse_on = False
+        R.frames(100)
+        g = R.unit("g1")
+        check(R.tr.episode is None and g["shows_since"] == 3 and
+              _near(g["since"]["other"], 60.0),
+              f"scrubbing burns real fuel, as other, never a show: "
+              f"{g['since']} {g['shows_since']}")
+        # Live flame programming while a show's timecode is up.
+        R.frames(1600, tc=True)
+        R.link.program_on = True
+        R.frames(200, tc=True, on=((411, 255),))
+        R.link.program_on = False
+        R.frames(100)
+        g = R.unit("g1")
+        check(_near(g["since"]["other"], 65.0) and
+              _near(g["since"]["show"], 35.0) and g["shows_since"] == 4,
+              f"live flame programming is other, even with a show's "
+              f"timecode up: {g['since']}")
+        # A unit locked out when a show ends is not counted in it.
+        R.locked = {"g2"}
+        R.show(40, 0)
+        R.locked = set()
+        check(R.unit("g2")["shows_since"] == R.unit("g1")["shows_since"] - 1,
+              "a locked out unit does not count the show")
+        check(R.tr.view()["shows_total"] == 5,
+              f"five shows in all: {R.tr.view()['shows_total']}")
+        check(any("a show was counted" in t for t, _f in R.lines),
+              "each counted show is journaled")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_learns_the_tank_and_counts_shows_left():
+    section("fuel: a kind's tank is learned from refills (median of the "
+            "last few, an outlier left out), shows left from the unit's "
+            "own recent shows; learning, a starting estimate, colours and "
+            "refill soon")
+    from ltcplay import fuel as F
+    check(F.learned_tank([], 5, 2.0) == (None, 0), "nothing yet")
+    check(F.learned_tank([100.0, 110.0, 90.0], 5, 2.0) == (100.0, 3),
+          "the median")
+    check(F.learned_tank([10.0, 100.0], 5, 2.0) == (55.0, 2),
+          "two: no outlier guard yet")
+    check(F.learned_tank([100.0, 105.0, 95.0, 10.0, 400.0], 5, 2.0) ==
+          (100.0, 3), "with three or more, a far one is left out")
+    check(F.learned_tank([40.0, 40.0, 40.0, 100.0, 100.0, 100.0], 3, 2.0)
+          == (100.0, 3), "only the last learn_refills")
+    R = _FuelRig()
+    try:
+        u = R.unit("g1")
+        check(u["status"] == "never" and u["percent"] is None and
+              "No refill logged yet" in u["words"],
+              f"never refilled: {u['words']}")
+        R.tr.refill("g1", "Andy", "operator")
+        R.show(31, 10)
+        u = R.unit("g1")
+        check(u["status"] == "learning" and u["percent"] is None and
+              u["shows_left"] is None and "Learning" in u["words"] and
+              "1 show" in u["words"],
+              f"one refill: learning, with the burn and shows: "
+              f"{u['words']}")
+        # Jeff's starting estimate: 40 shows a tank.
+        R.write_config({"kinds": {"gflame": {"start_shows_per_tank": 40}}})
+        R.tr.tick()
+        u = R.unit("g1")
+        check(u["status"] == "estimate" and u["shows_left"] == 39 and
+              "starting number" in u["words"],
+              f"with a starting estimate: shows left from it: {u}")
+        R.write_config({})
+        R.tr.tick()
+        for _ in range(9):
+            R.show(31, 10)
+        R.tr.refill("g1", "Andy", "operator")
+        k = R.tr.view()["kinds"]["gflame"]
+        check(_near(k["tank_s"], 100.0, 0.5) and k["cycles"] == 1,
+              f"two refills of a G-Flame: its tank is learned: {k}")
+        g2 = R.unit("g2")
+        check(g2["status"] == "never",
+              "a unit never refilled still needs its first refill")
+        R.tr.refill("g2", "Andy", "operator")
+        check(R.unit("g2")["percent"] == 100,
+              "every G-Flame uses the kind's learned tank")
+        R.show(31, 10)
+        R.show(31, 10)
+        u = R.unit("g1")
+        check(u["percent"] == 80 and u["shows_left"] == 8 and
+              u["color"] == "green" and not u["refill_soon"] and
+              u["words"] == "About 8 shows left (80 percent).",
+              f"20 s of a 100 s tank, 10 s a show: {u}")
+        for _ in range(5):
+            R.show(31, 10)
+        u = R.unit("g1")
+        check(u["percent"] == 30 and u["color"] == "amber" and
+              u["shows_left"] == 3 and u["refill_soon"] and
+              u["words"].startswith("Refill soon."),
+              f"30 percent: amber, and refill soon at 3 shows: {u}")
+        check(R.tr.view()["refill_soon"] == ["Ground 1"] and
+              R.tr.summary()["refill_soon"] == 1,
+              "the page and the status both list it")
+        R.show(31, 10)
+        R.show(31, 10)
+        u = R.unit("g1")
+        check(u["percent"] == 10 and u["color"] == "red" and
+              u["shows_left"] == 1, f"10 percent: red: {u}")
+        R.show(31, 15)
+        u = R.unit("g1")
+        check(u["percent"] == 0 and u["shows_left"] == 0,
+              f"past the tank: empty, never negative: {u}")
+        # A unit that never fires in a show: no shows left, and why.
+        R.tr.refill("c1", "Andy", "operator")
+        check(R.unit("c1")["shows_left"] is None and
+              "has not burned in a show yet" in R.unit("c1")["words"],
+              f"a unit no show fires: {R.unit('c1')['words']}")
+        # The thresholds are Jeff's.
+        R.write_config({"amber_below_percent": 50, "red_below_percent": 20,
+                        "refill_soon_shows": 0})
+        R.tr.tick()
+        R.tr.refill("g1", "Andy", "operator")
+        for _ in range(6):
+            R.show(31, 10)
+        u = R.unit("g1")
+        check(u["color"] == "amber" and not u["refill_soon"],
+              f"40 percent with amber under 50 and refill soon off: {u}")
+        # A Showven learns from Showven refills only.
+        check(R.tr.view()["kinds"]["waver"]["tank_s"] is None,
+              "the Showven's tank is still being learned")
+    finally:
+        R.close()
+    # Fewer shows than min_shows: the percent, and how many more it needs.
+    R = _FuelRig()
+    try:
+        R.tr.refill("g1", "Andy", "operator")
+        R.show(31, 10)
+        R.tr.refill("g1", "Andy", "operator")
+        u = R.unit("g1")
+        check(u["percent"] == 100 and u["shows_left"] is None and
+              "appears after 2 more shows" in u["words"],
+              f"one show of its own so far: {u['words']}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_refill_undo_and_the_record():
+    section("fuel: a refill is logged with who and when and saved at once; "
+            "refill all; an undo marks it undone (never deleted) and puts "
+            "everything back")
+    import json as _j
+    from ltcplay import fuel as F
+    R = _FuelRig()
+    try:
+        R.show(31, 10)
+        ok, text = R.tr.refill("nope", "Andy", "operator")
+        check(not ok and "Nothing was logged" in text,
+              f"an unknown unit: {text}")
+        ok, text = R.tr.refill("g1", "Andy", "operator")
+        check(ok and text == "Refill of Ground 1 logged.", text)
+        doc = _j.load(open(R.tr.path, encoding="utf-8"))
+        r = doc["units"]["g1"]["refills"][-1]
+        check(r["who"] == "Andy" and r["role"] == "operator" and
+              r["at"] == R.wall[0] and r["undone"] is None and
+              doc["fuel_format"] == F.FUEL_FORMAT,
+              f"on disk at once, who and when: {r}")
+        u = R.unit("g1")
+        check(u["burn_s"] == 0 and u["shows_since"] == 0 and
+              u["last_refill"]["who"] == "Andy",
+              f"since the refill: nothing yet: {u}")
+        R.show(31, 10)
+        ok, text = R.tr.refill("all", "Dave", "operator")
+        check(ok and "every unit" in text, text)
+        v = R.tr.view()
+        check(all(u["burn_s"] == 0 and u["last_refill"]["who"] == "Dave"
+                  for u in v["units"]),
+              "refill all: every tracked unit at once")
+        batch = v["recent_refills"][0]
+        check(batch["who"] == "Dave" and len(batch["units"]) == 4,
+              f"one press, one entry: {batch}")
+        ok, text = R.tr.undo(batch["id"], "Jeff")
+        g = R.unit("g1")
+        check(ok and "is undone" in text and _near(g["burn_s"], 10.0) and
+              g["shows_since"] == 1 and g["last_refill"]["who"] == "Andy",
+              f"undone: Ground 1 counts from Andy's refill again: {g}")
+        check(R.unit("g2")["status"] == "never",
+              "and Ground 2 is back to never refilled")
+        doc = _j.load(open(R.tr.path, encoding="utf-8"))
+        rs = doc["units"]["g1"]["refills"]
+        check(len(rs) == 2 and rs[-1]["undone"]["who"] == "Jeff",
+              f"the undone refill stays in the record: {rs}")
+        ok, text = R.tr.undo(batch["id"], "Jeff")
+        check(not ok and "already undone" in text, text)
+        check(not R.tr.undo(999, "Jeff")[0], "an unknown refill")
+        # A refill during a show counts from that moment.
+        R.frames(400, tc=True, on=((411, 255),))
+        R.tr.refill("g1", "Andy", "operator")
+        R.frames(400, tc=True, on=((411, 255),))
+        R.frames(800, tc=True)
+        R.frames(100)
+        g = R.unit("g1")
+        check(_near(g["burn_s"], 10.0) and g["shows_since"] == 1,
+              f"a refill mid show: only the flame after it: {g}")
+        # Ids carry on after a restart: an undo never hits an old refill.
+        nid = R.tr.next_id
+        R.reopen()
+        check(R.tr.next_id == nid, f"next id kept: {R.tr.next_id} {nid}")
+        check(any("logged a refill" in t for t, _f in R.lines) and
+              any("undid the refill" in t for t, _f in R.lines),
+              "refills and undos are journaled")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_survives_restarts_and_a_bad_disk():
+    section("fuel: fuel.json is written atomically, often enough and on "
+            "close; a restart mid show keeps the show; an unreadable file "
+            "is kept aside, never written over; a disk that refuses keeps "
+            "the record in memory and says so; a failure never raises")
+    import json as _j
+    from ltcplay import fuel as F
+    R = _FuelRig()
+    try:
+        R.tr.refill("g1", "Andy", "operator")
+        R.frames(400, tc=True, on=((411, 255),))
+        R.tr.tick()
+        doc = _j.load(open(R.tr.path, encoding="utf-8"))
+        check(doc["episode"] is None, "not written again before it is due")
+        R.frames(820, tc=True)
+        R.tr.tick()
+        doc = _j.load(open(R.tr.path, encoding="utf-8"))
+        check(doc["episode"] is not None and
+              _near(doc["episode"]["burn"]["g1"], 10.0),
+              "a show under way is saved within SAVE_EVERY_S")
+        check(F.SAVE_EVERY_S <= 60, "at least once a minute")
+        check(not [n for n in os.listdir(R.work) if n.endswith(".tmp")],
+              "no temporary file is left")
+        # The engine stops mid show (no close): the next start counts it.
+        R.frames(200, tc=True)
+        R.tr.save()
+        R.reopen()
+        g = R.unit("g1")
+        check(R.tr.episode is None and g["shows_since"] == 1 and
+              _near(g["since"]["show"], 10.0),
+              f"a show cut short by a restart is counted: {g}")
+        check(any("engine stopped during it" in t for t, _f in R.lines),
+              "and journaled")
+        check(R.unit("g1")["last_refill"]["who"] == "Andy",
+              "the refill survived the restart")
+        # Too short when it was cut: not a show.
+        R.frames(200, tc=True, on=((411, 255),))
+        R.tr.save()
+        R.reopen()
+        g = R.unit("g1")
+        check(g["shows_since"] == 1 and _near(g["since"]["other"], 5.0),
+              f"a 5 s start cut by a restart is other burn: {g['since']}")
+        # close() ends a show and saves.
+        R.frames(1400, tc=True, on=((411, 255),))
+        R.tr.close()
+        check(R.link.observer is None, "close() stops watching the link")
+        doc = _j.load(open(R.tr.path, encoding="utf-8"))
+        check(doc["episode"] is None and doc["units"]["g1"]["shows"] == 2,
+              f"close() ends the show and saves it counted: "
+              f"{doc['episode']} {doc['units']['g1']['shows']}")
+        R.reopen()
+        check(R.unit("g1")["shows_since"] == 2,
+              "closing the engine during a show counts it and saves")
+        # Atomic: a write that fails half way leaves the old file whole.
+        before = open(R.tr.path, encoding="utf-8").read()
+        real = os.fsync
+
+        def bad_fsync(fd):
+            raise OSError(28, "No space left on device")
+        os.fsync = bad_fsync
+        try:
+            ok, text = R.tr.refill("g2", "Andy", "operator")
+        finally:
+            os.fsync = real
+        check(open(R.tr.path, encoding="utf-8").read() == before,
+              "a failed write leaves fuel.json exactly as it was")
+        check(ok and "could NOT be written" in text and
+              "No space left" in text,
+              f"the refill is logged, and the answer says it is not "
+              f"saved: {text}")
+        v = R.tr.view()
+        check("No space left" in v["fault"] and
+              R.unit("g2")["last_refill"]["who"] == "Andy",
+              f"the page shows it, the refill is kept: {v['fault']}")
+        faults = [t for t, f in R.lines if f]
+        R.t[0] += F.SAVE_EVERY_S
+        os.fsync = bad_fsync
+        try:
+            R.tr.tick()
+        finally:
+            os.fsync = real
+        check(len([t for t, f in R.lines if f]) == len(faults),
+              "a failure that goes on is journaled once")
+        R.t[0] += F.SAVE_EVERY_S
+        R.tr.tick()
+        doc = _j.load(open(R.tr.path, encoding="utf-8"))
+        check(doc["units"]["g2"]["refills"][-1]["who"] == "Andy" and
+              not R.tr.view()["fault"],
+              "tried again: the refill reaches the disk, the fault clears")
+        # An unreadable file: kept aside, the page says so, a new record.
+        with open(R.tr.path, "w", encoding="utf-8") as fh:
+            fh.write("{ this is not json")
+        R.reopen()
+        kept = [n for n in os.listdir(R.work) if ".unreadable-" in n]
+        check(len(kept) == 1 and open(os.path.join(R.work, kept[0]),
+                                      encoding="utf-8").read() ==
+              "{ this is not json",
+              f"the unreadable file is kept as it was: {kept}")
+        v = R.tr.view()
+        check("could not be read" in v["fault"] and kept[0] in v["fault"]
+              and "—" not in v["fault"],
+              f"the page says so: {v['fault']}")
+        check(R.unit("g1")["status"] == "never", "the record starts again")
+        R.tr.save()
+        with open(R.tr.path, "w", encoding="utf-8") as fh:
+            _j.dump({"fuel_format": 99, "units": {}}, fh)
+        R.reopen()
+        check("could not be read" in R.tr.view()["fault"],
+              "a newer format number is not read as this one")
+        # A bug in the counting: journaled once, shown, never raised.
+        real_frame = R.tr._frame
+
+        def broken(*a):
+            raise ValueError("a bug")
+        R.tr._frame = broken
+        R.frames(5, tc=True, on=((411, 255),), pump=False)
+        R.tr.tick()
+        R.frames(5, tc=True, on=((411, 255),), pump=False)
+        R.tr.tick()
+        check("a bug" in R.tr.view()["fault"] and
+              len([t for t, f in R.lines if f and "a bug" in t]) == 1,
+              "a counting failure is shown and journaled once")
+        R.tr._frame = real_frame
+        R.tr.tick()
+        check(not R.tr.run_error, "and clears when it works again")
+        R.ms = None
+        check(R.tr.view()["units"] == [], "no machine list: no units, no "
+                                          "error")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_settings_are_checked_strictly():
+    section("fuel: the fuel block of ltcplay_morning.json is checked like "
+            "the others: an unknown key or a wrong value is refused in a "
+            "sentence and shown on the page; the Morning page still loads; "
+            "an edited file is read again")
+    from ltcplay import fuel as F
+    from ltcplay import morning as MO
+    d = F.parse_config(None)
+    check(d["kinds"]["gflame"]["label"] == "100 lb propane" and
+          d["kinds"]["waver"]["label"] == "15 gal" and
+          d["kinds"]["gflame"]["count_purge"] is True and
+          d["kinds"]["waver"]["count_purge"] is False and
+          d["kinds"]["gflame"]["fire_at"] == 229 and
+          d["kinds"]["waver"]["fire_at"] == 254,
+          f"Jeff's defaults: {d['kinds']}")
+    good = {"notes": "x", "kinds": {"gflame": {"label": "100 lb tank",
+                                               "start_shows_per_tank": 40,
+                                               "fire_at": 230},
+                                    "waver": {"count_purge": True,
+                                              "start_shows_per_tank": None}},
+            "learn_refills": 3, "outlier_ratio": 1.5, "recent_shows": 5,
+            "min_shows": 2, "min_show_s": 60, "amber_below_percent": 40,
+            "red_below_percent": 10, "refill_soon_shows": 2}
+    c = F.parse_config(good)
+    check(c["kinds"]["gflame"]["label"] == "100 lb tank" and
+          c["kinds"]["gflame"]["start_shows_per_tank"] == 40 and
+          c["kinds"]["waver"]["count_purge"] is True and
+          c["min_show_s"] == 60 and c["outlier_ratio"] == 1.5,
+          "every setting is read")
+    for bad, says in (
+            ([], "has to be an object"),
+            ({"colour": 1}, "has no setting 'colour'"),
+            ({"kinds": {"fireball": {}}}, "Fireballs are not tracked"),
+            ({"kinds": {"laser": {}}}, "gflame and waver"),
+            ({"kinds": {"gflame": {"size": 100}}}, "has no setting 'size'"),
+            ({"kinds": {"gflame": {"label": ""}}}, "label"),
+            ({"kinds": {"gflame": {"fire_at": 0}}}, "fire_at"),
+            ({"kinds": {"gflame": {"fire_at": True}}}, "fire_at"),
+            ({"kinds": {"waver": {"count_purge": "no"}}}, "true or false"),
+            ({"kinds": {"gflame": {"start_shows_per_tank": 0}}},
+             "start_shows_per_tank"),
+            ({"learn_refills": 0}, "learn_refills"),
+            ({"outlier_ratio": 1.0}, "outlier_ratio"),
+            ({"min_shows": 5, "recent_shows": 3}, "cannot be more"),
+            ({"red_below_percent": 40, "amber_below_percent": 30},
+             "has to be under"),
+            ({"min_show_s": "30"}, "min_show_s")):
+        try:
+            F.parse_config(bad)
+            check(False, f"accepted a bad fuel block: {bad!r}")
+        except F.FuelConfigError as e:
+            check(says in str(e) and "—" not in str(e) and
+                  "–" not in str(e),
+                  f"refused in a sentence that says {says!r}: {e}")
+    try:
+        MO.MorningConfig.parse({"fuel": {"anything": 1}})
+        check(True, "")
+    except MO.MorningConfigError as e:
+        check(False, f"the Morning page refused a file with a fuel block: "
+                     f"{e}")
+    R = _FuelRig(config={"kinds": {"gflame": {"colour": "red"}}})
+    try:
+        v = R.tr.view()
+        check("colour" in v["config_error"] and
+              v["kinds"]["gflame"]["label"] == "100 lb propane",
+              f"a wrong block: the page says so and runs on the defaults: "
+              f"{v['config_error']}")
+        check(any(f and "colour" in t for t, f in R.lines),
+              "and it is journaled")
+        R.write_config({"kinds": {"gflame": {"label": "Big tank"}},
+                        "notes": "edited"})
+        R.tr.tick()
+        v = R.tr.view()
+        check(v["config_error"] == "" and
+              v["kinds"]["gflame"]["label"] == "Big tank",
+              "the edited file is read again on the next pass")
+    finally:
+        R.close()
+    here = os.path.dirname(os.path.abspath(__file__))
+    import json as _j
+    ex = _j.load(open(os.path.join(here, "ltcplay",
+                                   "ltcplay_morning.example.json"),
+                      encoding="utf-8"))
+    check("fuel" in ex and F.parse_config(ex["fuel"]),
+          "the example settings file shows the fuel block, and it loads")
+    print("  ok")
+
+
+def test_fuel_routes_and_who_may_refill():
+    section("fuel: anyone on the show network reads the Fuel page; a "
+            "refill needs a signed-in operator or admin, an undo an admin; "
+            "refill all needs its confirm; without user sign-in only the "
+            "show machine itself; web.serve wires it to the flame link")
+    import types
+    from ltcplay import fuel as F
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import web as W
+    check("fuel" in RM.GET_ROUTES and "fuel-refill" in RM.POST_ROUTES and
+          "fuel-undo" in RM.POST_ROUTES, "the routes exist")
+    check(U.classify("/api/remote/fuel-refill", {"unit": "g1"}) is None and
+          U.classify("/api/remote/fuel-undo", {"id": 1}) is None,
+          "not a show control: no role matrix row (the route checks)")
+    R = _FuelRig()
+    try:
+        net = RM.Ctx(False, "10.20.0.44")
+        here = RM.Ctx(True, "127.0.0.1")
+        st, out = F.route_get(R.tr, net, None, wall=lambda: 1.0)
+        check(st == 200 and out["units"] and out["may_refill"] is False and
+              "show machine" in out["refill_why"],
+              f"no sign-in in this engine: the network reads, may not "
+              f"refill: {st} {out.get('refill_why')}")
+        st, out = F.route_post(R.tr, "fuel-refill", {"unit": "g1"}, net,
+                               None)
+        check(st == 403 and R.unit("g1")["status"] == "never",
+              f"and is refused: {out}")
+        st, out = F.route_post(R.tr, "fuel-refill", {"unit": "g1"}, here,
+                               None)
+        check(st == 200 and R.unit("g1")["last_refill"]["who"] ==
+              "Rack screen", f"the show machine may: {out}")
+        check(F.route_get(None, net, None)[0] == 404 and
+              F.route_post(None, "fuel-refill", {}, here, None)[0] == 404,
+              "no tracker: 404 with a sentence")
+    finally:
+        R.close()
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer"), ("Ola", "operator")))
+    rem = httpd.remote
+    R = _FuelRig()
+    try:
+        rem.fuel = R.tr
+        st, out, _h = http("/api/remote/fuel")
+        check(st == 200 and len(out["units"]) == 4 and
+              out["may_refill"] is False and "Sign in" in out["refill_why"],
+              f"signed out: reads the page, may not refill: {st} "
+              f"{out.get('refill_why')}")
+        st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"})
+        check(st == 403 and "Sign in as an operator or admin" in
+              out["error"], f"signed out: refused: {out}")
+        ck = {}
+        for name in ("Vic", "Ola", "Jeff"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"},
+                           cookie=ck["Vic"])
+        check(st == 403 and "viewer" in out["error"] and
+              R.unit("g1")["status"] == "never",
+              f"a viewer may not: {out}")
+        st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"},
+                           cookie=ck["Ola"])
+        check(st == 200 and R.unit("g1")["last_refill"]["who"] == "Ola",
+              f"an operator may, and is named: {out}")
+        st, out, _h = http("/api/remote/fuel-refill", {"all": True},
+                           cookie=ck["Ola"])
+        check(st == 400 and "confirm" in out["error"],
+              f"refill all without its confirm: {out}")
+        st, out, _h = http("/api/remote/fuel-refill",
+                           {"all": True, "confirm": True}, cookie=ck["Ola"])
+        check(st == 200 and all(u["last_refill"]["who"] == "Ola"
+                                for u in R.tr.view()["units"]),
+              f"refill all, confirmed: {out}")
+        st, out, _h = http("/api/remote/fuel", cookie=ck["Ola"])
+        bid = out["recent_refills"][0]["id"]
+        check(out["may_refill"] and not out["may_undo"],
+              "an operator may refill, not undo")
+        st, out, _h = http("/api/remote/fuel-undo", {"id": bid},
+                           cookie=ck["Ola"])
+        check(st == 403 and "admin" in out["error"],
+              f"an operator may not undo: {out}")
+        st, out, _h = http("/api/remote/fuel-undo", {"id": bid},
+                           cookie=ck["Jeff"])
+        check(st == 200 and R.unit("g2")["status"] == "never",
+              f"an admin may: {out}")
+        st, out, _h = http("/api/remote/fuel-undo", {"id": "x"},
+                           cookie=ck["Jeff"])
+        check(st == 400, "an undo needs a refill's number")
+        st, out, _h = http("/api/remote/status")
+        check(out.get("fuel") == {"refill_soon": 0, "fault": False},
+              f"the status carries the nav button's state: "
+              f"{out.get('fuel')}")
+        rem.audit.flush(5.0)
+        acts = [l["action"] for l in _audit_lines(rem.audit.folder)]
+        check("fuel-refill" in acts and "fuel-undo" in acts,
+              "every refill and undo press is audit logged")
+    finally:
+        rem.fuel = None
+        httpd.server_close()
+        R.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # web.serve's wiring: the Morning page's machines and lockout, the
+    # flame link watched, closed with the engine.
+    work = tempfile.mkdtemp()
+    try:
+        import json as _j
+        cfgp = os.path.join(work, "ltcplay_morning.json")
+        with open(cfgp, "w", encoding="utf-8") as fh:
+            _j.dump({"fuel": {"min_show_s": 45}}, fh)
+        link = types.SimpleNamespace(rehearse_on=False, program_on=False,
+                                     purges_sent=0, observer=None)
+        lines = []
+        morning = types.SimpleNamespace(
+            cfg=types.SimpleNamespace(machines=_fuel_machines()),
+            config_path=cfgp,
+            lockout=types.SimpleNamespace(
+                is_locked=lambda kind, mid: mid == "g2"))
+        remote = types.SimpleNamespace(
+            folder=work, flame_status=None,
+            programming=lambda: (True, ""),
+            _journal=lambda *a, **k: lines.append(a))
+        closed = []
+        httpd = types.SimpleNamespace(
+            remote=remote, morning=morning,
+            fire_ice=types.SimpleNamespace(flame_link=link),
+            server_close=lambda: closed.append(1))
+        W._attach_fuel(httpd)
+        tr = remote.fuel
+        try:
+            tr._stop.set()
+            check(link.observer == tr.observe and
+                  tr.cfg["min_show_s"] == 45 and
+                  tr.path == os.path.join(work, "fuel.json"),
+                  "built on the engine's settings folder and the Morning "
+                  "settings file, watching the flame link")
+            check(tr._locked_get("g2") and not tr._locked_get("g1") and
+                  tr._rehearsal_get() is True and tr._armed_get() is None,
+                  "the Morning lockout, programming sessions and "
+                  "flamesafe's armed groups (none known here)")
+            tr.refill("g1", "Andy", "operator")
+            check(any("fuel" in a for a in lines),
+                  "its journal lines go to the engine's journal")
+        finally:
+            httpd.server_close()
+        check(closed and link.observer is None and
+              os.path.exists(os.path.join(work, "fuel.json")),
+              "closing the engine closes it and saves")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+_FUEL_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function go(){
+  const tiles = [...document.querySelectorAll("#fu-units .fu-unit")];
+  if(!tiles.length) return setTimeout(go, 100);
+  setTimeout(() => {
+    const out = {vw:innerWidth, sw:document.scrollingElement.scrollWidth, tiles:[], problems:[],
+      view_shown:shown(document.getElementById("v-fuel")), all_disabled:document.getElementById("fu-all").disabled,
+      why:document.getElementById("fu-why").textContent, undo_shown:shown(document.getElementById("fu-undo")),
+      undo_buttons:document.querySelectorAll("#fu-recent [data-undo]").length,
+      warn:shown(document.getElementById("fu-warn")) ? document.getElementById("fu-warn").textContent : "",
+      kinds:document.getElementById("fu-kinds").textContent};
+    const rects = [];
+    tiles.forEach(t => {
+      const bar = t.querySelector(".fu-bar i"), btn = t.querySelector("[data-refill]"), r = t.getBoundingClientRect();
+      const texts = [...t.querySelectorAll("*")].filter(e => [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim()));
+      out.tiles.push({id:t.dataset.unit, cls:t.className, bar:bar ? bar.style.width : null,
+        bar_px:bar ? Math.round(bar.getBoundingClientRect().width) : 0,
+        left:t.querySelector(".fu-left").textContent, words:t.querySelector(".fu-words").textContent,
+        tags:[...t.querySelectorAll(".fu-tag")].map(x => x.textContent),
+        disabled:btn.disabled, btn_h:Math.round(btn.getBoundingClientRect().height),
+        minfont:Math.min(...texts.map(e => parseFloat(getComputedStyle(e).fontSize)))});
+      if(r.right > innerWidth + 0.5 || r.left < -0.5) out.problems.push(t.dataset.unit + " is not inside the window");
+      rects.push([t.dataset.unit, r]);
+    });
+    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
+      const a = rects[i][1], b = rects[j][1];
+      if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+        out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
+    }
+    history.replaceState(null, "", location.pathname);
+    showView();
+    setTimeout(() => {
+      const nf = document.getElementById("nav-fuel");
+      out.nav = {shown:shown(nf), soon:nf.classList.contains("soon"), text:nf.textContent,
+        inside:[...document.querySelectorAll("nav button")].filter(shown).every(b => b.getBoundingClientRect().right <= innerWidth + 0.5)};
+      const pre = document.createElement("pre"); pre.id = "rack-measure";
+      pre.textContent = JSON.stringify([out]);
+      document.body.appendChild(pre);
+    }, 1500);
+  }, 400);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_fuel_page_in_a_browser():
+    section("fuel: the Fuel page drawn in a real browser: a tile per tank "
+            "with its health bar, shows left and words; Refilled is off "
+            "with the reason until someone who may is signed in; the "
+            "admin's undo list; the nav button turns amber for refill soon")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('<button id="nav-fuel" class="ghost" data-go="fuel" '
+                 'hidden>Fuel</button>', 'fuel:"v-fuel"',
+                 'fuelView(v === "fuel");', '<section id="v-fuel"'):
+        check(need in page, f"the page has {need!r}")
+    a, b = page.index("<!-- Fuel (Jeff"), page.index("<!-- Users and the")
+    js_a = page.index("// ---- Fuel (Jeff")
+    js_b = page.index("// The show's name and where it plays")
+    for part in (page[a:b], page[js_a:js_b]):
+        check("—" not in part and "–" not in part,
+              "the Fuel page's words have no em or en dashes")
+    R = _FuelRig()
+    try:
+        R.tr.refill("all", "Andy", "operator")
+        for _ in range(10):
+            R.show(31, 10)
+        R.tr.refill("g1", "Andy", "operator")
+        R.tr.refill("w1", "Andy", "operator")
+        R.locked = {"c1"}
+        for _ in range(7):
+            R.show(31, 10, on=((411, 255), (412, 255)))
+        view = R.tr.view()
+    finally:
+        R.close()
+    g1 = next(u for u in view["units"] if u["id"] == "g1")
+    check(g1["percent"] == 30 and g1["refill_soon"],
+          f"setup: Ground 1 needs a refill soon: {g1}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["fuel"] = {"refill_soon": 1, "fault": False}
+    signed_out = dict(view, may_refill=False, may_undo=False,
+                      refill_why="Sign in as an operator or admin to log a "
+                                 "refill (the user chip at the top).",
+                      undo_why="")
+    admin = dict(view, may_refill=True, may_undo=True, refill_why="",
+                 undo_why="")
+    for which, fv, sizes in (("signed out", signed_out,
+                              ((1280, 800), (768, 1024))),
+                             ("admin", admin, ((1366, 768),))):
+        got = _rack_screen_in_chromium(
+            chrome, page, st, sizes, measure_js=_FUEL_MEASURE_JS,
+            frag="#fuel", routes={"/api/remote/fuel": fv})
+        for size, res in got.items():
+            if not check(isinstance(res, list) and res,
+                         f"{which} {size}: drawn: {res!r}"):
+                continue
+            m = res[0]
+            tiles = {t["id"]: t for t in m["tiles"]}
+            check(m["view_shown"] and list(tiles) == ["g1", "g2", "c1", "w1"],
+                  f"{which} {size}: one tile per G-Flame and Showven, no "
+                  f"Fireball: {list(tiles)}")
+            t = tiles["g1"]
+            check(t["bar"] == "30%" and t["bar_px"] > 0 and
+                  "amber" in t["cls"] and t["left"] == "3 shows left" and
+                  "Refill soon" in t["tags"],
+                  f"{which} {size}: Ground 1's bar, shows left and refill "
+                  f"soon: {t}")
+            check("Locked out: still tracked, burns nothing" in
+                  tiles["c1"]["tags"], f"a locked unit says so: "
+                                       f"{tiles['c1']['tags']}")
+            check(tiles["w1"]["left"] == "Learning" and
+                  tiles["w1"]["bar"] == "0%",
+                  f"a Showven still learning: {tiles['w1']}")
+            check(all(x["minfont"] >= 12 for x in m["tiles"]) and
+                  all(x["btn_h"] >= 44 for x in m["tiles"]),
+                  f"{which} {size}: readable, buttons a finger can press: "
+                  f"{[(x['minfont'], x['btn_h']) for x in m['tiles']]}")
+            check(not m["problems"] and m["sw"] <= m["vw"] + 1,
+                  f"{which} {size}: nothing overlaps or runs off the side: "
+                  f"{m['problems']} {m['sw']} {m['vw']}")
+            check("G-Flame" in m["kinds"] and "Purges count" in m["kinds"]
+                  and "Purges do not count" in m["kinds"],
+                  f"{which}: the kinds line: {m['kinds']}")
+            check(m["nav"]["shown"] and m["nav"]["soon"] and
+                  m["nav"]["inside"],
+                  f"{which} {size}: on the show screen the Fuel button is "
+                  f"there, amber for refill soon: {m['nav']}")
+            if which == "signed out":
+                check(m["all_disabled"] and
+                      all(x["disabled"] for x in m["tiles"]) and
+                      "Sign in" in m["why"] and not m["undo_shown"],
+                      f"signed out: every Refilled is off and says why: "
+                      f"{m['why']!r}")
+            else:
+                check(not m["all_disabled"] and
+                      not any(x["disabled"] for x in m["tiles"]) and
+                      m["undo_shown"] and m["undo_buttons"] >= 1,
+                      f"an admin: Refilled on, the undo list shown: {m}")
+    print("  ok")
+
+
+def test_fuel_doc_in_plain_words():
+    section("fuel: FUEL.md says what it does, how to refill, how it learns "
+            "and how to correct a mistake, in plain words")
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "FUEL.md"), encoding="utf-8").read()
+    for need in ("Refilled", "Refill all", "Undo", "learn", "shows left",
+                 "Showven", "G-Flame", "purge", "fuel.json"):
+        check(need.lower() in doc.lower(), f"FUEL.md covers {need!r}")
+    check("—" not in doc and "–" not in doc, "FUEL.md has no em or en "
+                                             "dashes")
+    print("  ok")
+
+
 
 if __name__ == "__main__":
     t0 = time.time()
@@ -61072,6 +62156,16 @@ if __name__ == "__main__":
     test_scrub_flames_engine_routes_roles_and_page()
     test_scrub_flames_end_to_end_real_flamesafe()
     test_scrub_flames_review_of_117()
+    test_fuel_flame_seconds_at_the_flame_link()
+    test_fuel_purge_counts_for_gflame_not_showven()
+    test_fuel_counts_shows_and_not_rehearsals()
+    test_fuel_learns_the_tank_and_counts_shows_left()
+    test_fuel_refill_undo_and_the_record()
+    test_fuel_survives_restarts_and_a_bad_disk()
+    test_fuel_settings_are_checked_strictly()
+    test_fuel_routes_and_who_may_refill()
+    test_fuel_page_in_a_browser()
+    test_fuel_doc_in_plain_words()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
