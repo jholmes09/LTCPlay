@@ -42123,6 +42123,7 @@ def test_rack_screen_width_guard_css_contract():
     bar = _css_rule(rules, "#abortbar") or {}
     btn = _css_rule(rules, "#abortbar button") or {}
     check(bar.get("position") == "fixed" and "right" in bar and
+          bar.get("z-index") == "15" and
           "var(--pad-bottom, 0px)" in bar.get("bottom", "") and
           btn.get("width") == "var(--abort-size)" and
           btn.get("height") == "var(--abort-size)" and
@@ -42712,9 +42713,11 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
     check(bar.get("position") == "fixed" and "bottom" in bar and
           "right" in bar,
           f"the Abort stop sign stays in the window's corner: {bar}")
-    check("var(--abort-room)" in app.get("padding", ""),
-          f"the page keeps room under its content for the Abort stop sign, "
-          f"so nothing ends up under it: {app}")
+    check("var(--abort-gutter)" in app.get("padding", "") and
+          "var(--abort-room)" in app.get("padding", ""),
+          f"the page keeps a gutter down its right edge for the Abort stop "
+          f"sign (review of #118, P2-4), so nothing ends up under it, and "
+          f"room under its content for the taskbar: {app}")
     # Startup sets the page's height too (Jeff, 2026-10-26: it shrank its
     # text to 9 px at 1280x800 instead of scrolling).
     check((_css_rule(rules, ".view:not(#v-show):not(#v-morning)") or {}
@@ -43617,8 +43620,7 @@ function measure(){
     const tw = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
     for(let n = tw.nextNode(); n; n = tw.nextNode()){
       const t = n.textContent.trim(); const el = n.parentElement;
-      // .sr: read by a screen reader, never drawn.
-      if(!t || !shown(el) || el.closest(".sr")) continue;
+      if(!t || !shown(el)) continue;
       const px = parseFloat(getComputedStyle(el).fontSize);
       if(px < out.min_px) out.min_px = px;
       if(px < 14) out.small.push(Math.round(px * 10) / 10 + " px: " + (el.id || el.className || el.tagName) + ": " + t.slice(0, 30));
@@ -43821,6 +43823,7 @@ const ev = (el, type, detail) => el.dispatchEvent(type === "click" ?
 const tap = el => { ev(el, "pointerdown"); ev(el, "pointerup"); ev(el, "click"); };
 const lamp = i => document.querySelector('[data-arm="' + i + '"]');
 const look = i => { const b = lamp(i); return {word:b.querySelector(".word").textContent, small:b.querySelector("small").textContent,
+  act:(b.querySelector(".act") || {}).textContent || "",
   mode:b.dataset.mode, disabled:b.disabled, fill:b.querySelector(".fill").style.width,
   buttons:b.closest(".lamp").querySelectorAll("button").length}; };
 const posts = route => window.__posts.filter(p => p.route === route);
@@ -43927,7 +43930,21 @@ for(const y of [0, 1e6]){
   out.hit.push(!!at && (at === ab || ab.contains(at)));
 }
 out.under_at_bottom = pressable().filter(el => cover(el.getBoundingClientRect())).map(el => el.id || el.textContent.trim().slice(0, 20));
+// Review of #118, P2-4: at EVERY scroll position, not only the bottom.
+out.under_anywhere = [];
+const maxY = document.scrollingElement.scrollHeight - innerHeight;
+for(let y = 0; y <= maxY + 40; y += 20){
+  scrollTo(0, y);
+  for(const el of pressable()) if(cover(el.getBoundingClientRect())){
+    const k = (el.id || el.dataset.arm && ("group " + el.dataset.arm) || el.textContent.trim().slice(0, 20)) + " at " + scrollY;
+    if(out.under_anywhere.length < 12) out.under_anywhere.push(k);
+  }
+}
 scrollTo(0, 0);
+// P2-5: the line saying what a press does, on the sign for sighted users.
+out.tip = (document.getElementById("abort-sub") || {}).textContent || "";
+out.idle = document.getElementById("abortbar").classList.contains("idle");
+out.fill = getComputedStyle(ab.querySelector(".oct")).backgroundColor + " " + getComputedStyle(ab.querySelector(".oct i")).backgroundColor;
 h.tap(ab);
 await h.sleep(150);
 out.confirm = !document.getElementById("modal").hidden ? document.getElementById("m-q").textContent : null;
@@ -43937,11 +43954,30 @@ await h.sleep(200);
 out.abort_posts = h.posts("abort").map(p => p.body.confirmed);
 out.said = !document.getElementById("abort-said").hidden;
 """
+    rules = _css_rules(page)
+    tip = _css_rule(rules, "#abortbar button:hover small,"
+                           "#abortbar button:focus-visible small") or {}
+    check(tip.get("display") == "block" and
+          (_css_rule(rules, "#abortbar small") or {}).get("display") ==
+          "none",
+          f"review of #118, P2-5: what a press does shows beside the sign "
+          f"on hover or keyboard focus: {tip}")
+    # Review of #118, P2-4: the Pico's screen with every group armed, the
+    # banners and live flame programming's bar (its Turn off), at the
+    # short laptop, the laptop, and an iPad both ways.
+    busy = _rack_status_pico()
+    busy["flames"] = dict(busy["flames"], groups=[
+        dict(g, armed="armed", wanted=True) for g in busy["flames"]["groups"]])
+    busy["live_flame"] = {"on": True, "receiving": True, "who": "Jeff",
+                          "map": [{"universe": 9, "slots": "1-24"}]}
     st = _rack_status_no_show_file()
     said = []
-    for size in ((1366, 768), (1280, 800), (1366, 700), (1920, 1080),
-                 (768, 1024)):
-        m = _rack_drive(chrome, page, st, steps, size=size)
+    for status, size in ([(st, z) for z in ((1366, 768), (1280, 800),
+                                            (1366, 700), (1920, 1080),
+                                            (768, 1024))] +
+                         [(busy, z) for z in ((1366, 600), (1366, 768),
+                                              (768, 1024), (800, 1280))]):
+        m = _rack_drive(chrome, page, status, steps, size=size)
         w, h = size
         if not check(isinstance(m, dict) and not m.get("problems"),
                      f"{w}x{h}: drawn and pressed: {m!r}"):
@@ -43964,9 +44000,18 @@ out.said = !document.getElementById("abort-said").hidden;
         check(m["arm_under_at_load"] == [],
               f"{w}x{h}: no group's Hold to arm or Disarm under it at load: "
               f"{m['arm_under_at_load']}")
-        check(m["under_at_bottom"] == [],
-              f"{w}x{h}: at the bottom of the page nothing pressable is "
-              f"under it: {m['under_at_bottom']}")
+        check(m["under_at_bottom"] == [] and m["under_anywhere"] == [],
+              f"{w}x{h}: nothing pressable is ever under it, at load or at "
+              f"any scroll position (review of #118, P2-4): "
+              f"{m['under_at_bottom']} {m['under_anywhere']}")
+        check("rgba(0, 0, 0, 0)" not in m["fill"] and
+              "transparent" not in m["fill"],
+              f"{w}x{h}: the sign is drawn red{' (idle, dimmed)' if m['idle'] else ''}: "
+              f"{m['fill']}")
+        check(m["tip"] in ("Nothing to abort right now",
+                           "Stops the show. Flames then need Arm again"),
+              f"{w}x{h}: the sign's line says what a press does: "
+              f"{m['tip']!r}")
         check(m["confirm"] == "Abort the show?" and m["before_yes"] == 0 and
               m["abort_posts"] == [True] and m["said"],
               f"{w}x{h}: one press asks, Yes sends the same Abort as "
@@ -43995,7 +44040,7 @@ t(armButtonMode({armed:"armed"}, "armed", true) === "disarm", "armed: Disarm");
 t(armButtonMode({armed:"held", wanted:true}, "held", true) === "disarm", "asked for: Disarm");
 t(armButtonMode({armed:"unknown"}, "unknown", true) === "disarm", "not known: a press disarms");
 t(armButtonMode({armed:"armed"}, "armed", false) === "lamp" && armButtonMode({armed:"disarmed"}, "disarmed", false) === "lamp", "screen arming off: the lamp only, no per-group disarm");
-t(disarmHint("armed", "") === "Armed. One press disarms" && disarmHint("held", "cycle") === "Disarm, then hold", "the small line");
+t(disarmHint("armed", "") === "One press disarms" && disarmHint("unknown", "") === "One press disarms" && disarmHint("held", "cycle") === "Disarm, then hold", "the small line");
 t(clickAction("disarm", "disarm", false) === "disarm", "a press that went down on Disarm disarms");
 t(clickAction("hold", "disarm", false) === "", "a hold that armed the group: lifting the finger never disarms it");
 t(clickAction("", "disarm", false) === "" && clickAction("hold", "hold", false) === "", "a click with no Disarm press: nothing");
@@ -44019,10 +44064,22 @@ window.__patch = st => { const gs = st.flames.groups;
 window.__answer["arm-hold"] = b => heldOn ? [200, {ok:true, armed:true, text:"cat-walk is asked for.", hold_id:5, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:5, held_s:0.5, needs_s:2}];
 await h.sleep(700);
 out.before = [0, 1, 2].map(h.look);
+h.lamp(1).click();
+await h.sleep(60);
+out.kbd_hold_note = h.note();
+out.kbd_hold_posts = h.posts("arm-hold").length;
 h.tap(h.lamp(0));
 await h.sleep(150);
+out.note_after_disarm = h.note();
 out.disarm_first = h.posts("group-disarm").map(p => p.body.group);
-out.holds_first = h.posts("arm-hold").length;
+// Let go early: the group's hold let go, no more heartbeats.
+h.ev(h.lamp(1), "pointerdown");
+await h.sleep(250);
+h.ev(h.lamp(1), "pointerup"); h.ev(h.lamp(1), "click");
+const early = h.posts("arm-hold").length;
+await h.sleep(350);
+out.early = {more:h.posts("arm-hold").length - early, released:h.posts("arm-release").map(p => p.body.group), note:h.note(), disarms:h.posts("group-disarm").length};
+out.holds_first = h.posts("arm-hold").filter(p => p.body.group === 0).length;
 h.ev(h.lamp(1), "pointerdown");
 await h.sleep(350);
 out.during = h.look(1);
@@ -44056,15 +44113,32 @@ out.off_posts = h.posts("group-disarm").length - n;
         b0, b1, b2 = m["before"]
         check(all(b["buttons"] == 1 for b in m["before"]),
               f"one button per group: {m['before']}")
-        check(b0.get("word") == "Disarm" and b0.get("mode") == "disarm" and
-              not b0["disabled"] and
-              b0.get("small") == "Armed. One press disarms",
-              f"an armed group's button reads Disarm: {b0}")
+        check(b0.get("word") == "Armed" and b0.get("act") == "Disarm" and
+              b0.get("mode") == "disarm" and not b0["disabled"] and
+              b0.get("small") == "One press disarms",
+              f"review of #118, P2-3: an armed group's button says ARMED, "
+              f"never DISARM, with Disarm under it and 'One press "
+              f"disarms': {b0}")
         check(b1.get("word") == "Off" and b1.get("mode") == "hold" and
-              not b1["disabled"] and b1.get("small") == "hold to arm",
+              not b1["disabled"] and b1.get("small") == "hold to arm" and
+              b1.get("act") == "",
               f"an off group's button is Hold to arm, as before: {b1}")
-        check(b2.get("word") == "Disarm" and b2.get("small") == "Disarm, then hold",
-              f"a group asked for and held back: Disarm, then hold: {b2}")
+        check(b2.get("word") == "Arm again" and b2.get("act") == "Disarm" and
+              b2.get("small") == "Disarm, then hold",
+              f"a group asked for and held back keeps its words (Arm "
+              f"again), with Disarm, then hold: {b2}")
+        check(m.get("kbd_hold_note") == "Arming is a hold: press and hold "
+              "with your finger or mouse." and m.get("kbd_hold_posts") == 0,
+              f"review of #118, P2-5: Enter on Hold to arm says arming is a "
+              f"hold, and arms nothing: {m.get('kbd_hold_note')!r}")
+        check(not m["note_after_disarm"].startswith("Not armed"),
+              f"a press on Disarm never tries a hold: "
+              f"{m['note_after_disarm']!r}")
+        check(m["early"]["more"] == 0 and m["early"]["released"] == [1] and
+              m["early"]["note"] == "Hold stopped: let go" and
+              m["early"]["disarms"] == 1,
+              f"a group's hold let go early: let go, no more heartbeats, "
+              f"nothing disarmed: {m['early']}")
         check(m["disarm_first"] == [0] and m["holds_first"] == 0,
               f"one press on Disarm disarms that group at once, no hold: "
               f"{m['disarm_first']} {m['holds_first']}")
@@ -44073,7 +44147,8 @@ out.off_posts = h.posts("group-disarm").length - n;
               f"holding the off group: the hold's heartbeats and its "
               f"progress on the button: {m['during']} {m['holds']}")
         check(m["armed"].get("mode") == "disarm" and
-              m["armed"].get("word") == "Disarm" and
+              m["armed"].get("word") == "Armed" and
+              m["armed"].get("act") == "Disarm" and
               m["armed_note"] == "cat-walk is asked for.",
               f"once armed the same button reads Disarm: {m['armed']} "
               f"{m['armed_note']!r}")
@@ -44085,7 +44160,7 @@ out.off_posts = h.posts("group-disarm").length - n;
               f"a fresh press, or Enter, on Disarm disarms: "
               f"{m['disarm_pressed']} {m['disarm_keyboard']}")
         check(all(b.get("mode") == "lamp" and b["disabled"] and
-                  b.get("word") != "Disarm" for b in m["off"]) and
+                  b.get("act") == "" for b in m["off"]) and
               m["off"][0].get("word") == "Armed" and m["off_posts"] == 0,
               f"screen arming off: the lamp only, greyed, no per-group "
               f"disarm, as before: {m['off']} {m['off_posts']}")
@@ -44147,6 +44222,8 @@ p = armAllPlan(live([{name:"a", armed:"armed"}, {name:"b", armed:"disarmed"}]), 
 t(JSON.stringify(p.go) === "[1]" && p.out[0].why === "Already armed or asked for.", "the same rules as a group's own button");
 p = armAllPlan(Object.assign(live(off), {live_flame:{on:true, one_group_at_a_time:true}}), now, now, {});
 t(p.go.length === 0 && p.why === ONE_GROUP_WORDS, "live flame programming, one group at a time: nothing held");
+p = armAllPlan(Object.assign(live(off), {live_flame:{on:true}}), now, now, {});
+t(p.go.length === 0 && p.why === ONE_GROUP_WORDS, "live flame programming on, its one-group setting not said: one at a time");
 p = armAllPlan(Object.assign(live(off), {live_flame:{on:true, one_group_at_a_time:false}}), now, now, {});
 t(p.go.length === 3, "live flame programming allowing more: every group");
 p = armAllPlan(Object.assign(live(off), {schedule:{aborted:true}}), now, now, {});
@@ -44156,7 +44233,10 @@ t(p.go.length === 0 && /Not live/.test(p.out[0].why), "a stale status: nothing h
 const w = armAllWords([{group:0, end:"armed"}, {group:1, end:"out", why:"b is locked out."}], [{group:2, name:"c", why:"Re-arm in 1.5 s"}], ["a", "b", "c"]);
 t(w === "Arm all: a is asked for; the lamps show when armed. Not armed: b (b is locked out). Not armed: c (Re-arm in 1.5 s).", "the words: " + w);
 t(armAllWords([{group:0, end:"out", why:"X."}, {group:1, end:"out", why:"X"}], [], ["a", "b"]) === "Arm all: nothing was armed. Not armed: a, b (X).", "one reason said once");
-t(!/[\u2013\u2014]/.test(w + ONE_GROUP_WORDS), "no dashes");
+t(!/[\u2013\u2014]/.test(w + ONE_GROUP_WORDS + LF_UNKNOWN_WORDS + KEY_HOLD_WORDS), "no dashes");
+t(armAllRefusal(Object.assign(live(off), {live_flame:{on:false, error:"x"}})) === LF_UNKNOWN_WORDS, "live flame programming not readable: Arm all refused");
+t(armAllRefusal(Object.assign(live(off), {live_flame:{on:false}})) === "" && armAllRefusal(live(off)) === "", "off, or not in this engine: no refusal");
+t(armAllPlan(Object.assign(live(off), {live_flame:{on:false, error:"x"}}), now, now, {}).go.length === 0, "and the plan holds nothing");
 """)
     if bad is not None:
         check(bad == [], f"Arm all and Disarm all, in node: {bad}")
@@ -44202,13 +44282,13 @@ out.released = h.posts("arm-release").map(p => p.body.group).sort();
     m = _rack_drive(chrome, page, _rack_status_off(), steps)
     if check(isinstance(m, dict) and not m.get("problems"),
              f"drawn and pressed: {m!r}"):
-        check(m["label_off"] == "Arm all flame groups",
+        check(m["label_off"] == "Hold to arm all flame groups",
               f"every group off: the button is Arm all: {m['label_off']!r}")
         check(m["held"] == [0, 1],
               f"one hold on Arm all holds every group it can (wave flamer, "
               f"in its re-arm wait, stays out): {m['held']}")
         check(m["fill"] == "50%" and
-              m["label_holding"] == "Arm all flame groups",
+              m["label_holding"] == "Hold to arm all flame groups",
               f"the hold's progress fills Arm all: {m['fill']} "
               f"{m['label_holding']!r}")
         check(m["label_after"] == "Disarm all flame groups",
@@ -44256,7 +44336,187 @@ out.label_switch_off = lbl();
               m["label_switch_off"] == "Disarm all flame groups",
               f"a mix armed, or screen arming off: Disarm all: "
               f"{m['label_mix']!r} {m['label_switch_off']!r}")
+    _arm_all_review_118(chrome, page)
     print("  ok")
+
+
+def _arm_all_review_118(chrome, page):
+    """Review of #118: Arm all let go early, its label through a hold, a
+    stale page and live flame programming or an Abort mid-hold, the
+    keyboard, and how it looks."""
+    rules = _css_rules(page)
+    arm = _css_rule(rules, "#b-disarm.armall") or {}
+    check("#5fe08a" in arm.get("border", "").lower() and
+          arm.get("color", "").lower() == "#5fe08a",
+          f"P2-2: Arm all has a green outline and green words: {arm}")
+    # P1: the finger lifted (or lost) early: every group's hold let go,
+    # no more heartbeats, nothing armed; and the keyboard says it is a hold.
+    steps = r"""
+const B = document.getElementById("b-disarm");
+window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:10 + b.group, held_s:0.3, needs_s:2}];
+await h.sleep(700);
+out.cls = B.className;
+out.label = B.querySelector(".lbl").textContent;
+B.click();
+await h.sleep(60);
+out.kbd_note = h.note();
+out.kbd_holds = h.posts("arm-hold").length;
+out.runs = [];
+for(const up of ["pointerup", "pointercancel", "pointerleave"]){
+  const r0 = h.posts("arm-release").length;
+  h.ev(B, "pointerdown");
+  await h.sleep(300);
+  const held = [...new Set(h.posts("arm-hold").map(p => p.body.group))].sort();
+  h.ev(B, up);
+  if(up === "pointerup") h.ev(B, "click");
+  const at = h.posts("arm-hold").length;
+  await h.sleep(450);
+  out.runs.push({up:up, held:held, more:h.posts("arm-hold").length - at,
+    released:h.posts("arm-release").slice(r0).map(p => p.body.group).sort(), note:h.note()});
+}
+out.disarm_all = h.posts("disarm-all").length;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Arm all let go early: drawn and pressed: {m!r}"):
+        check("armall" in m["cls"].split() and
+              m["label"] == "Hold to arm all flame groups",
+              f"P2-2: the button reads Hold to arm all, green: {m['cls']!r} "
+              f"{m['label']!r}")
+        check(m["kbd_note"] == "Arming is a hold: press and hold with your "
+              "finger or mouse." and m["kbd_holds"] == 0,
+              f"P2-5: Enter on Arm all says arming is a hold, and holds "
+              f"nothing: {m['kbd_note']!r} {m['kbd_holds']}")
+        for r in m["runs"]:
+            check(r["held"] == [0, 1, 2] and r["more"] == 0 and
+                  r["released"] == [0, 1, 2] and
+                  r["note"].startswith("Arm all: nothing was armed."),
+                  f"P1: Arm all let go early ({r['up']}): every group's hold "
+                  f"let go, no more heartbeats, nothing armed: {r}")
+        check(m["disarm_all"] == 0, "and no Disarm all from that finger")
+    # P1 (P2 item 6): the label stays Hold to arm all while a group of the
+    # hold is already asked for and the others are still being held.
+    steps = r"""
+let asked = false;
+const B = document.getElementById("b-disarm");
+window.__patch = st => { if(asked){ st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; } return st; };
+window.__answer["arm-hold"] = b => b.group === 0 && asked ? [200, {ok:true, armed:true, text:"front row is asked for.", hold_id:1, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:2 + b.group, held_s:1, needs_s:2}];
+await h.sleep(700);
+h.ev(B, "pointerdown");
+await h.sleep(300);
+asked = true;
+await h.sleep(700);
+out.mid = {label:B.querySelector(".lbl").textContent, mode:B.dataset.mode, holding:[1, 2].map(i => h.posts("arm-hold").filter(p => p.body.group === i).length)};
+const n = h.posts("arm-hold").length;
+await h.sleep(250);
+out.still = h.posts("arm-hold").length - n;
+h.ev(B, "pointerup"); h.ev(B, "click");
+await h.sleep(300);
+out.after = B.querySelector(".lbl").textContent;
+out.note = h.note();
+out.released = h.posts("arm-release").map(p => p.body.group).sort();
+out.disarm_all = h.posts("disarm-all").length;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Arm all, one group asked for mid-hold: {m!r}"):
+        check(m["mid"]["label"] == "Hold to arm all flame groups" and
+              m["mid"]["mode"] == "arm" and m["still"] > 0,
+              f"P2-6: while the other groups are still held the button stays "
+              f"Hold to arm all, never Disarm all: {m['mid']} {m['still']}")
+        check(m["after"] == "Disarm all flame groups" and
+              m["released"] == [1, 2] and m["disarm_all"] == 0 and
+              m["note"].startswith("Arm all: front row is asked for"),
+              f"let go: the others let go, front row asked for, the button "
+              f"now Disarm all, nothing disarmed: {m}")
+    # P1: the page stops seeing the engine mid-hold: the page itself stops
+    # the hold; no heartbeat goes on a status over 1 s old.
+    steps = r"""
+const B = document.getElementById("b-disarm");
+const ages = [];
+window.__answer["arm-hold"] = b => { ages.push(Date.now() - LAST_OK); return [200, {ok:true, hold_id:10 + b.group, held_s:0.5, needs_s:2}]; };
+await h.sleep(700);
+h.ev(B, "pointerdown");
+await h.sleep(300);
+window.__patch = st => { throw new Error("the engine went away"); };
+await h.sleep(1900);
+out.max_age = Math.max(...ages);
+out.beats = ages.length;
+out.released = [...new Set(h.posts("arm-release").map(p => p.body.group))].sort();
+out.holding = !!HOLD;
+out.note = h.note();
+h.ev(B, "pointerup");
+"""
+    # Twice: as the page runs, and with its 250 ms check paused, so the
+    # heartbeat's own check is the one that has to stop the hold.
+    pause = ("<script>(function(){const si = window.setInterval;"
+             "window.setInterval = (f, ms) => si(() => { if(!(window.__pauseStale"
+             " && f.name === 'renderStale')) f(); }, ms);})();</script>")
+    for how, head, pre in (("as it runs", "", ""),
+                           ("by the heartbeat itself", pause,
+                            "window.__pauseStale = true;\n")):
+        m = _rack_drive(chrome, page, _rack_status_off(),
+                        steps.replace("window.__patch = st => { throw",
+                                      pre + "window.__patch = st => { throw"),
+                        head_js=head)
+        if check(isinstance(m, dict) and not m.get("problems"),
+                 f"Arm all, the page goes stale mid-hold ({how}): {m!r}"):
+            check(m["beats"] >= 6 and m["max_age"] <= 1050 and
+                  m["released"] == [0, 1, 2] and not m["holding"] and
+                  "Not live" in m["note"],
+                  f"P1: a stale page stops Arm all {how}: no heartbeat on a "
+                  f"status over 1 s old, every hold let go, said: {m}")
+    # P2-1: live flame programming turned on (one group at a time), or an
+    # Abort, mid-hold stops Arm all at once; its state not readable
+    # refuses Arm all.
+    for name, patch, words in (
+            ("live flame programming turned on",
+             "st.live_flame = {on:true, one_group_at_a_time:true, receiving:true, map:[]};",
+             "Live flame programming is on, and it allows one flame group "
+             "at a time."),
+            ("an Abort", 'st.schedule = Object.assign({}, st.schedule, {aborted:true, state:"ABORTED"});',
+             "Refused: an Abort is standing.")):
+        steps = r"""
+let on = false;
+const B = document.getElementById("b-disarm");
+window.__patch = st => { if(on){ PATCH } return st; };
+window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:10 + b.group, held_s:0.5, needs_s:2}];
+await h.sleep(700);
+h.ev(B, "pointerdown");
+await h.sleep(300);
+on = true;
+await h.sleep(700);
+const n = h.posts("arm-hold").length;
+await h.sleep(300);
+out.more = h.posts("arm-hold").length - n;
+out.released = [...new Set(h.posts("arm-release").map(p => p.body.group))].sort();
+out.holding = !!HOLD;
+out.note = h.note();
+h.ev(B, "pointerup");
+""".replace("PATCH", patch)
+        m = _rack_drive(chrome, page, _rack_status_off(), steps)
+        if check(isinstance(m, dict) and not m.get("problems"),
+                 f"Arm all, {name} mid-hold: {m!r}"):
+            check(m["more"] == 0 and m["released"] == [0, 1, 2] and
+                  not m["holding"] and words in m["note"],
+                  f"P2-1: {name} mid-hold: Arm all stops at once, every "
+                  f"hold let go, said: {m}")
+    steps = r"""
+const B = document.getElementById("b-disarm");
+window.__patch = st => { st.live_flame = {available:true, on:false, error:"RuntimeError: boom"}; return st; };
+await h.sleep(700);
+h.ev(B, "pointerdown"); await h.sleep(250); h.ev(B, "pointerup"); h.ev(B, "click");
+await h.sleep(100);
+out.holds = h.posts("arm-hold").length;
+out.note = h.note();
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Arm all, live flame programming not readable: {m!r}"):
+        check(m["holds"] == 0 and "Live flame programming's state could "
+              "not be read" in m["note"],
+              f"P2-1: live flame programming's state not readable: Arm all "
+              f"holds nothing and says why: {m}")
 
 
 # Every nav button the page shows, at a size, on a view: inside the window

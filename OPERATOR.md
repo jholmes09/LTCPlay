@@ -299,8 +299,13 @@ show and how long is left in it, the next show, Start now, Hold, Resume,
 Reset, the flame groups and the status strip along the top (deck,
 flamesafe, audio, video, lasers, pixels). ABORT is a red stop sign in the
 bottom right corner, on every screen, always in sight (it stays there while
-the page scrolls; there is no gesture to find it). One press, then it asks
-once, as before. Start now asks once too. Hold, Resume and Reset are one
+the page scrolls; there is no gesture to find it). The page keeps a strip
+free down its right edge, so no other button is ever under the sign. Point
+at it (or reach it with the Tab key) and a line beside it says what a press
+does now, for example "Nothing to abort right now". One press, then it asks
+once, as before. If you pinch-zoom an iPad in on part of the page, the sign
+is only in view when the zoomed part includes the bottom right corner: zoom
+back out to find it. Start now asks once too. Hold, Resume and Reset are one
 press. Disarm all flame groups is one press and never asks. It is a plain
 disarm: every group goes off, and a group is armed again by holding its
 button, with no Reset. Abort is different: it stops the
@@ -346,17 +351,22 @@ Each flame group has ONE button, and its colour is the group's state:
 green armed, bronze off, amber held back (flashing: re-arm needed after an
 Abort, a fault or a lost link), WAIT (the re-arm wait). While the group is
 off the button is Hold to arm: press and hold it, as before. While the group
-is armed or asked for, the same button reads DISARM: one press disarms that
-group at once. Lifting the finger that just armed a group never disarms it;
+is armed or asked for, the button still says the state in big letters
+(ARMED, ARM AGAIN, WAIT), with DISARM under it and "One press disarms": one
+press disarms that group at once. Arming is always a hold: the Enter key on
+Hold to arm only says so. Lifting the finger that just armed a group never disarms it;
 a new press does. ARM AGAIN reads "Disarm, then hold" on the button: press
 it once, then hold it. The Stream Deck says ARM AGAIN on the key too.
 
 The button under the groups is two-way. While every group is off it reads
-Arm all flame groups: press and HOLD it, and every group this screen can arm
-is held to arm at once, each by exactly the same rules as its own button. A
+Hold to arm all flame groups, in green with a green outline: press and HOLD
+it for the full hold, and every group this screen can arm is held to arm at
+once, each by exactly the same rules as its own button. Let go early and
+every hold is let go and nothing arms. A
 group that is locked out, still in its re-arm wait or refused stays out, and
 the line beside it names each one and why. While live flame programming is
-on with one group at a time, Arm all arms nothing and says so. While any
+on with one group at a time (or turns on during the hold), or an Abort
+stands, Arm all arms nothing, stops, and says so. While any
 group is armed or asked for (one or several), or the lamps are not known, it
 reads Disarm all flame groups: one press, as before. With arming from a
 screen switched off it always reads Disarm all flame groups.

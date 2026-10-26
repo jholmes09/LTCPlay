@@ -55,10 +55,13 @@
   --serif:"Playfair Display",Georgia,"Times New Roman",serif;
   --caps:"Cinzel","Trajan Pro",Georgia,serif;
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-  /* The Abort stop sign in the bottom right corner, and the room the page
-     keeps under its content so nothing ends up under the sign. */
+  /* The Abort stop sign in the bottom right corner, and the gutter the
+     page keeps down its right edge (review of #118, P2-4) so no control
+     is ever under the sign, at load or at any scroll position. Under the
+     page: room for any part of the window under the taskbar. */
   --abort-size:56px;
-  --abort-room:calc(var(--abort-size) + 16px + env(safe-area-inset-bottom) + var(--pad-bottom, 0px));
+  --abort-gutter:calc(var(--abort-size) + 20px + env(safe-area-inset-right));
+  --abort-room:calc(12px + env(safe-area-inset-bottom) + var(--pad-bottom, 0px));
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{background:var(--bg);margin:0}
@@ -78,7 +81,7 @@ body{color:var(--cream);font:16px/1.35 var(--sans);-webkit-font-smoothing:antial
    below its text. selftest.py's CSS contract fails if any of these go. */
 #app{min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:minmax(0,1fr);
   grid-template-rows:auto auto minmax(min-content,1fr) auto;
-  gap:clamp(6px,1vh,12px);padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) var(--abort-room)}
+  gap:clamp(6px,1vh,12px);padding:clamp(6px,1vh,12px) var(--abort-gutter) var(--abort-room) clamp(10px,1.2vw,24px)}
 #app > *{min-width:0}
 header{display:flex;align-items:center;flex-wrap:wrap;gap:clamp(8px,1vw,20px);min-width:0;
   padding-bottom:clamp(4px,.8vh,10px);border-bottom:1px solid var(--hair)}
@@ -253,6 +256,11 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   text-transform:uppercase;color:inherit;overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
 .lamp button.armb small{position:relative;font:700 clamp(11px,1.5vh,15px)/1.1 var(--sans);color:inherit;opacity:.85}
 .lamp button.armb small:empty{display:none}
+/* An armed group's button (review of #118, P2-3): the big word stays the
+   state (ARMED, ARM AGAIN, WAIT...), and DISARM is the action under it. */
+.lamp button.armb .act{position:relative;font:800 clamp(12px,1.7vh,17px)/1.1 var(--sans);letter-spacing:.08em;
+  text-transform:uppercase;border:1px solid currentColor;border-radius:4px;padding:1px 10px}
+.lamp button.armb .act:empty{display:none}
 .lamp button.armb.dis{cursor:pointer;box-shadow:inset 0 0 0 2px var(--champ)}
 @media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .armb{animation-duration:2s}}
 .flamefoot{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center}
@@ -263,7 +271,10 @@ button.disarm small{display:block;font:400 clamp(10px,1.3vh,13px)/1.1 var(--sans
 #b-disarm{position:relative;overflow:hidden;touch-action:none;-webkit-touch-callout:none}
 #b-disarm .fill{position:absolute;left:0;bottom:0;height:100%;width:0;background:rgba(40,190,90,.45)}
 #b-disarm .lbl,#b-disarm small{position:relative}
-#b-disarm.armall{border:2px solid #5FE08A}
+/* Arm all (review of #118, P2-2): unmistakable. A green outline and
+   "Hold to arm all" in green, never the bronze of a disarm. */
+#b-disarm.armall{border:3px solid #5FE08A;color:#5FE08A;box-shadow:0 0 0 1px rgba(95,224,138,.35)}
+#b-disarm.armall small{color:#5FE08A}
 /* LASERS on the show screen (Jeff, 2026-10-22): one compact strip of its
    own under the flames, violet edged, never inside the flame block and
    never sharing a button with it. Disarm all lasers always works; Arm
@@ -453,8 +464,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 /* ABORT is a stop sign in the bottom right corner (Jeff, 2026-10-26: the
    big bar took too much room). Always on the screen, never behind a
    gesture: fixed to the window while the page scrolls, 56 px, red, the
-   word on it. #app keeps --abort-room free under its content, so at the
-   bottom of any page nothing sits under the sign. --pad-bottom: how far
+   word on it. #app keeps a gutter down its right edge (--abort-gutter),
+   so no control ever scrolls under the sign. --pad-bottom: how far
    this window reaches below the screen's work area (under the taskbar),
    measured by the page, or the supervisor's pad_bottom (Jeff, 2026-10-26:
    on the Pico the window ran 96 px under the always-on-top taskbar and
@@ -470,8 +481,14 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #abortbar .oct i{inset:3px;background:var(--red-deep)}
 #abortbar .w{position:relative;font:800 14px/1 var(--sans);letter-spacing:.02em}
 #abortbar button:focus-visible{outline:2px solid var(--champ);outline-offset:3px}
-/* Read by a screen reader, not drawn. */
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+/* What a press does now ("Nothing to abort right now", "Stops the
+   show..."), beside the sign on hover or keyboard focus (review of #118,
+   P2-5); a screen reader reads it as the button's description. */
+#abortbar small{display:none;position:absolute;right:calc(100% + 8px);top:50%;transform:translateY(-50%);
+  white-space:nowrap;font:700 14px/1.2 var(--sans);color:var(--champ);background:var(--bg);
+  border:1px solid var(--red);border-radius:6px;padding:4px 8px;pointer-events:none}
+#abortbar button:hover small,#abortbar button:focus-visible small{display:block}
+#abortbar button small:empty{display:none}
 /* Nothing to abort (Jeff's decision 19): dimmed, still pressable. */
 #abortbar.idle .oct{background:#7A1A16}
 #abortbar.idle .oct i{background:#4A0F12}
@@ -937,7 +954,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </section>
 </div>
 
-<div id="abortbar"><button id="b-abort" aria-label="Abort" aria-describedby="abort-sub" title="Abort: stops the show. Asks you first."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub" class="sr"></small></button></div>
+<div id="abortbar"><button id="b-abort" aria-label="Abort" aria-describedby="abort-sub" title="Abort: stops the show. Asks you first."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub"></small></button></div>
 </div>
 
 <div id="stale" hidden role="alert"></div>
@@ -1291,9 +1308,7 @@ function armButtonMode(g, c, on){
 // The Disarm button's small line, in words.
 function disarmHint(c, held){
   if(held === "cycle") return "Disarm, then hold";
-  if(c === "armed") return "Armed. One press disarms";
-  if(c === "unknown") return "One press disarms";
-  return "Asked for. One press disarms";
+  return "One press disarms";
 }
 // What a click on a two-way button does: "disarm" or nothing. The mode
 // the button had when the finger went DOWN decides, never the mode it
@@ -1316,6 +1331,19 @@ function allButtonMode(st, stale){
   return "arm";
 }
 const ONE_GROUP_WORDS = "Live flame programming is on, and it allows one flame group at a time. Hold one group's own button instead.";
+const LF_UNKNOWN_WORDS = "Live flame programming's state could not be read, so Arm all arms nothing. Hold one group's own button instead.";
+const KEY_HOLD_WORDS = "Arming is a hold: press and hold with your finger or mouse.";
+// Why Arm all may hold nothing at all right now, or "": an Abort
+// standing, live flame programming on with one group at a time, or its
+// state not readable. Checked when the hold starts AND on every heartbeat
+// (review of #118, P2-1): turned on mid-hold, it stops the hold.
+function armAllRefusal(st){
+  const lf = (st && st.live_flame) || {};
+  if(st && st.schedule && st.schedule.aborted) return REFUSED_LATCHED;
+  if(lf.error) return LF_UNKNOWN_WORDS;
+  if(lf.on === true && lf.one_group_at_a_time !== false) return ONE_GROUP_WORDS;
+  return "";
+}
 // Arm all: which groups one hold on it holds to arm (`go`), and which stay
 // out and why (`out`, each {group, name, why}). The same rules as a
 // group's own button (armState, the re-arm wait `waits[i]` ms) for every
@@ -1324,9 +1352,8 @@ const ONE_GROUP_WORDS = "Live flame programming is on, and it allows one flame g
 // heartbeat of every group's hold, as it does for a group's own button.
 function armAllPlan(st, nowMs, lastOkMs, waits){
   const gs = ((st && st.flames) || {}).groups || [];
-  const lf = (st && st.live_flame) || {};
-  if(st && st.schedule && st.schedule.aborted) return {go:[], out:[], why:REFUSED_LATCHED};
-  if(lf.on === true && lf.one_group_at_a_time !== false) return {go:[], out:[], why:ONE_GROUP_WORDS};
+  const no = armAllRefusal(st);
+  if(no) return {go:[], out:[], why:no};
   const go = [], out = [];
   gs.forEach((g, i) => {
     const as = armState(st, nowMs, lastOkMs, i);
@@ -1831,7 +1858,7 @@ function renderLamps(fl){
     LAMP_KEY = key;
     box.innerHTML = groups.map((g, i) =>
       `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b>
-        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i></div>`).join("");
+        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><span class="act"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i></div>`).join("");
     // One button (2026-10-26): its mode when the finger went down decides
     // (clickAction). Hold to arm starts on the press and stops on the
     // release; Disarm goes on the click.
@@ -1843,6 +1870,7 @@ function renderLamps(fl){
       b.addEventListener("click", e => {
         const down = b.dataset.down || ""; delete b.dataset.down;
         if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ armStop("disarm"); press("group-disarm", {group:i}); }
+        else if(e.detail === 0 && b.dataset.mode === "hold") armSay(KEY_HOLD_WORDS, 2);
       });
       b.addEventListener("contextmenu", e => e.preventDefault());
     });
@@ -1939,6 +1967,7 @@ function holding(i){ return !!HOLD && HOLD.parts.some(p => p.group === i && !p.e
 // asked for is left to its own hold's answer from the engine.
 function holdLapsed(){
   if(!HOLD) return "";
+  if(HOLD.all){ const no = armAllRefusal(ST); if(no) return no; }
   const gs = ((ST && ST.flames) || {}).groups || [];
   for(const p of HOLD.parts){
     if(p.end) continue;
@@ -2077,7 +2106,7 @@ function armStop(why){
 // all hold is under way, so the finger never ends up on Disarm all.
 const ALL_WORDS = {
   disarm: ["Disarm all flame groups", "plain disarm: arm again with a hold", "A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset."],
-  arm: ["Arm all flame groups", "hold to arm every group", "Hold to arm every flame group this screen can arm, each by the same rules as its own button. A group that is locked out, waiting or refused stays out and is named. Lift your finger to stop."]};
+  arm: ["Hold to arm all flame groups", "press and hold: every group this screen can arm", "Hold to arm every flame group this screen can arm, each by the same rules as its own button. A group that is locked out, waiting or refused stays out and is named. Lift your finger to stop."]};
 function renderAllButton(stale){
   const b = $("b-disarm");
   const mode = (HOLD && HOLD.all) ? "arm" : allButtonMode(ST, stale);
@@ -2091,11 +2120,13 @@ function renderAllButton(stale){
 function setArmMode(el, mode, c, held){
   el.dataset.mode = mode;
   el.classList.toggle("dis", mode === "disarm");
+  el.querySelector(".act").textContent = "";
   if(mode !== "disarm") return;
   el.disabled = false;
-  // A state not known keeps its word ("Not known"): a big Disarm there
-  // could read as armed. The small line says what a press does.
-  if(c !== "unknown") el.querySelector(".word").textContent = "Disarm";
+  // The big word stays the state (ARMED, ARM AGAIN, Not known: review of
+  // #118, P2-3); DISARM is the action under it, and the small line says
+  // what one press does.
+  el.querySelector(".act").textContent = "Disarm";
   el.querySelector("small").textContent = disarmHint(c, held);
   el.title = "A plain disarm of this group, one press: hold it again to arm it. No Reset needed.";
 }
@@ -2468,7 +2499,7 @@ ALL_BTN.addEventListener("pointerdown", e => { ALL_BTN.dataset.down = ALL_BTN.da
 ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
   ALL_BTN.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
 ALL_BTN.addEventListener("contextmenu", e => e.preventDefault());
-ALL_BTN.addEventListener("click", e => { const down = ALL_BTN.dataset.down || ""; delete ALL_BTN.dataset.down; if(clickAction(down, ALL_BTN.dataset.mode, e.detail === 0) === "disarm"){ armStop("Disarm all flame groups"); press("disarm-all"); } });
+ALL_BTN.addEventListener("click", e => { const down = ALL_BTN.dataset.down || ""; delete ALL_BTN.dataset.down; if(clickAction(down, ALL_BTN.dataset.mode, e.detail === 0) === "disarm"){ armStop("Disarm all flame groups"); press("disarm-all"); } else if(e.detail === 0 && ALL_BTN.dataset.mode === "arm") armSay(KEY_HOLD_WORDS, 2); });
 
 // LASER STRIP BEGIN. LASERS on the show screen (Jeff, 2026-10-22): the
 // lasers' own controls, apart from every flame control. Disarm all lasers

@@ -11728,10 +11728,10 @@ def build():
   "  --abort-size:56px;",
   "  --abort-size:30px;"),
 
- ("rack screen: the page keeps no room under the Abort stop sign",
+ ("rack screen: the page keeps no gutter beside the Abort stop sign",
   "ltcplay/web/remote.html",
-  "clamp(10px,1.2vw,24px) var(--abort-room)}",
-  "clamp(10px,1.2vw,24px) 0}"),
+  "padding:clamp(6px,1vh,12px) var(--abort-gutter) var(--abort-room)",
+  "padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) var(--abort-room)"),
 
  ("rack screen: the Abort stop sign has no name for a screen reader",
   "ltcplay/web/remote.html",
@@ -11775,7 +11775,7 @@ def build():
 
  ("rack screen: Arm all holds two groups under live flame programming's one at a time",
   "ltcplay/web/remote.html",
-  '  if(lf.on === true && lf.one_group_at_a_time !== false) return {go:[], out:[], why:ONE_GROUP_WORDS};',
+  '  if(lf.on === true && lf.one_group_at_a_time !== false) return ONE_GROUP_WORDS;\n',
   ''),
 
  ("rack screen: Arm all holds a group in its re-arm wait",
@@ -11785,8 +11785,114 @@ def build():
 
  ("rack screen: Arm all holds while an Abort stands",
   "ltcplay/web/remote.html",
-  '  if(st && st.schedule && st.schedule.aborted) return {go:[], out:[], why:REFUSED_LATCHED};',
+  '  if(st && st.schedule && st.schedule.aborted) return REFUSED_LATCHED;\n',
   ''),
+
+ # Review of #118: the follow-up's guards.
+ ("rack screen: letting go of Arm all early does not let go",
+  "ltcplay/web/remote.html",
+  '  ALL_BTN.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));',
+  '  ALL_BTN.addEventListener(ev, () => {}));'),
+
+ ("rack screen: a stale page never stops an Arm all hold",
+  "ltcplay/web/remote.html",
+  '    if(HOLD.all && g && (g.armed === "armed" || g.wanted) && as.why === "Already armed or asked for.") continue;',
+  '    if(HOLD.all) continue;'),
+
+ ("rack screen: an Arm all heartbeat goes on a stale status",
+  "ltcplay/web/remote.html",
+  '    const why = holdLapsed();\n    if(why){ armStop(why); return; }',
+  '    const why = "";'),
+
+ ("rack screen: Arm all reads Disarm all while it is still arming",
+  "ltcplay/web/remote.html",
+  'const mode = (HOLD && HOLD.all) ? "arm" : allButtonMode(ST, stale);',
+  'const mode = allButtonMode(ST, stale);'),
+
+ ("rack screen: live flame programming turned on mid-hold does not stop Arm all",
+  "ltcplay/web/remote.html",
+  '  if(HOLD.all){ const no = armAllRefusal(ST); if(no) return no; }\n',
+  ''),
+
+ ("rack screen: live flame programming not readable allows Arm all",
+  "ltcplay/web/remote.html",
+  '  if(lf.error) return LF_UNKNOWN_WORDS;\n',
+  ''),
+
+ ("rack screen: an armed group's button reads DISARM, not ARMED",
+  "ltcplay/web/remote.html",
+  '  el.querySelector(".act").textContent = "Disarm";',
+  '  el.querySelector(".word").textContent = "Disarm";'),
+
+ ("rack screen: Enter on Arm all says nothing",
+  "ltcplay/web/remote.html",
+  ' else if(e.detail === 0 && ALL_BTN.dataset.mode === "arm") armSay(KEY_HOLD_WORDS, 2);',
+  ''),
+
+ ("rack screen: Arm all looks like Disarm all",
+  "ltcplay/web/remote.html",
+  '#b-disarm.armall{border:3px solid #5FE08A;color:#5FE08A;',
+  '#b-disarm.armall{'),
+
+ ("rack screen: the Abort sign's line is never shown",
+  "ltcplay/web/remote.html",
+  '#abortbar button:hover small,#abortbar button:focus-visible small{display:block}',
+  '#abortbar button:hover small,#abortbar button:focus-visible small{display:none}'),
+
+ ("rack screen: letting go of a group's Hold to arm early does not let go",
+  "ltcplay/web/remote.html",
+  'b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
+  'b.addEventListener(ev, () => {}));'),
+
+ ("rack screen: a press on a group's Disarm tries a hold",
+  "ltcplay/web/remote.html",
+  'if(b.dataset.mode === "hold") armStart(i); });',
+  'armStart(i); });'),
+
+ ("rack screen: a group whose state is not known shows Hold to arm",
+  "ltcplay/web/remote.html",
+  '  if(c === "unknown") return "disarm";\n  if(g && (g.armed',
+  '  if(c === "unknown") return "hold";\n  if(g && (g.armed'),
+
+ ("rack screen: a page with no contact leaves its buttons as they were",
+  "ltcplay/web/remote.html",
+  '    if(stale) setArmMode(el, armOn ? "disarm" : "lamp", "unknown");\n',
+  ''),
+
+ ("rack screen: Arm all offered while a group is not known",
+  "ltcplay/web/remote.html",
+  '(g.armed !== "disarmed" && g.armed !== "held")',
+  '(g.armed === "armed")'),
+
+ ("rack screen: live flame programming with its one-group setting unsaid allows Arm all",
+  "ltcplay/web/remote.html",
+  'lf.one_group_at_a_time !== false',
+  'lf.one_group_at_a_time === true'),
+
+ ("rack screen: Enter on a group's Disarm does nothing",
+  "ltcplay/web/remote.html",
+  'if(keyboard) return nowMode === "disarm" ? "disarm" : "";',
+  'if(keyboard) return "";'),
+
+ ("rack screen: the idle Abort sign is drawn invisible",
+  "ltcplay/web/remote.html",
+  '#abortbar.idle .oct{background:#7A1A16}',
+  '#abortbar.idle .oct{background:transparent}'),
+
+ ("rack screen: the Abort sign drops under the page",
+  "ltcplay/web/remote.html",
+  '#abortbar{position:fixed;z-index:15;',
+  '#abortbar{position:fixed;z-index:0;'),
+
+ ("rack screen: the Abort sign moves to the left corner",
+  "ltcplay/web/remote.html",
+  'right:calc(10px + env(safe-area-inset-right));',
+  'left:calc(10px + env(safe-area-inset-right));'),
+
+ ("rack screen: letting go of Arm all never tells the engine",
+  "ltcplay/web/remote.html",
+  '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});',
+  '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; continue; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});'),
 
  ("rack screen: the nav buttons are cut off at the right edge again",
   "ltcplay/web/remote.html",
