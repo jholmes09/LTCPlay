@@ -33,7 +33,9 @@ Rules:
   client is unknown until the real PC (Oct 14); if it refuses, the alert
   banner says so and the pulse covers it.
 
-Why not announce.py: announcements are PUBLIC and Hold the show first.
+Why not announce.py: announcements are PUBLIC, on their own named output,
+and between shows they put the night on Hold first (during a show they play
+over it and hold nothing; Jeff, 2026-10-26).
 This module never holds anything and never reaches the show output; a
 test in selftest.py reads this file to prove it names neither.
 

@@ -734,6 +734,12 @@ def wanted_args(settings):
               "--no-browser"]
     if mode == "fire_ice":
         engine += ["--schedule", settings["schedule"]]
+        # Operator announcements (announce.py, Jeff 2026-10-26), always on
+        # in fire_ice mode, from ltcplay_announce.json beside the schedule.
+        # Safe with nothing set up: a missing file, no output device or a
+        # missing recording each refuse every press with a sentence on the
+        # rack screen, and nothing plays to the system default, ever.
+        engine += ["--announce", announce_path(settings)]
     out["engine"] = (engine, "")
     url = f"http://127.0.0.1:{port}"
     if mode != "fire_ice":
@@ -827,6 +833,35 @@ def example_schedule_path():
     return os.path.join(root, "ltcplay", "ltcplay_schedule.example.json")
 
 
+ANNOUNCE_FILE = "ltcplay_announce.json"
+ANNOUNCE_DIR = "Announcements"
+ANNOUNCE_IDS = ("delayed", "cancellation", "cannot_continue")
+REMOTE_FILE = "ltcplay_remote.json"
+
+
+def announce_path(settings):
+    """ltcplay_announce.json, beside the schedule file (where the Fire &
+    Ice file is too)."""
+    return os.path.join(os.path.dirname(os.path.abspath(
+        settings["schedule"])), ANNOUNCE_FILE)
+
+
+def first_run_announce_doc():
+    """The first-run announcements file: NO output device yet (it has to
+    be the output's exact name, and the system default is never used), and
+    the three recordings in the Announcements folder beside it, which the
+    rack screen reads as Recording missing until they are copied there."""
+    return {"device": "",
+            "files": {i: f"{ANNOUNCE_DIR}/{i}.wav" for i in ANNOUNCE_IDS}}
+
+
+def first_run_booth_doc():
+    """The first-run rack screen settings, written only when there are none
+    yet: the booth speaker block (boothaudio.py), off until its device is
+    set by its exact name."""
+    return {"booth_alert": {"device": "", "channels": [1, 2], "files": {}}}
+
+
 def safe_flamesafe_config(example_doc):
     """The first-run flamesafe config: the shipped example, sending to
     this PC only (127.0.0.1, which the example already does), with every
@@ -902,6 +937,25 @@ def first_run_defaults(settings, write=True):
         except OSError as e:
             log(f"first run: ltcplay_fire_ice.json could not be written "
                 f"({e})")
+    ann = announce_path(settings)
+    if not os.path.isfile(ann):
+        try:
+            if write:
+                _write_json(ann, first_run_announce_doc())
+                os.makedirs(os.path.join(os.path.dirname(ann), ANNOUNCE_DIR),
+                            exist_ok=True)
+            written["announce"] = ann
+        except OSError as e:
+            log(f"first run: {ANNOUNCE_FILE} could not be written ({e}); "
+                f"the rack screen says announcements are not set up")
+    booth = os.path.join(appdata_dir(), REMOTE_FILE)
+    if not os.path.isfile(booth):
+        try:
+            if write:
+                _write_json(booth, first_run_booth_doc())
+            written["booth"] = booth
+        except OSError as e:
+            log(f"first run: {REMOTE_FILE} could not be written ({e})")
     if written and write:
         for name, path in written.items():
             log(f"first run: wrote a safe default {name} file: {path}")
@@ -1971,12 +2025,14 @@ def self_check():
              "show_mode": "fire_ice", "schedule": r"C:\x\ltcplay_schedule.json"}
     want = wanted_args(probe)
     if "--schedule" not in (want["engine"][0] or []) or \
+            "--announce" not in (want["engine"][0] or []) or \
             f"http://127.0.0.1:{DEFAULT_PORT}" not in (want["deck"][0] or []):
         raise RuntimeError(f"fire_ice mode does not run the scheduler and the "
                            f"deck on the engine's address: {want}")
     probe["show_mode"] = "plain"
     want = wanted_args(probe)
-    if want["deck"][0] is not None or "--schedule" in want["engine"][0]:
+    if want["deck"][0] is not None or "--schedule" in want["engine"][0] \
+            or "--announce" in want["engine"][0]:
         raise RuntimeError(f"plain mode would start the deck or the "
                            f"scheduler: {want}")
     yield "fire_ice mode runs the scheduler and the deck; plain runs neither"

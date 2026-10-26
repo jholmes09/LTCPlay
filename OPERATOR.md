@@ -97,7 +97,10 @@ three below:
 
 | START / STOP | Floor G | Cat-Walk G |
 |---|---|---|
-| **Blue Flames** | **Fireball** | (spare, blank) |
+| **Blue Flames** | **Fireball** | ANNOUNCE |
+
+Key 5 reads ANNOUNCE while LTC Player runs announcements (it is blank and
+does nothing otherwise). One press opens page 2, see Announcements below.
 
 The deck has **no Hold key and no Abort key** any more. Hold, Resume,
 Abort and Reset are on the Rack screen (and the hardware e-stop is where it
@@ -110,6 +113,54 @@ other group follows in flamesafe's order on the keys left over: if one of
 the four names is missing, the next group takes its key, and a group past
 key 4 has no key. So check the labels when flamesafe's groups change. The
 deck writes its key map to the journal every time it starts.
+
+**Announcements** (Jeff, 2026-10-26). Three recorded messages: Delayed,
+Cancellation and Cannot continue. On the rack screen they are three buttons
+under Start now, Hold, Resume and Reset, with Stop announcement beside
+them; on the Stream Deck they are page 2 (press ANNOUNCE):
+
+| START / STOP | DELAYED | CANCEL |
+|---|---|---|
+| **CANNOT CONTINUE** | **STOP ANNC.** | **BACK** |
+
+- One press plays. There is no double tap and no hold. Only one plays at
+  a time; a second press while one plays is refused.
+- **Between shows** a press puts the schedule on Hold first, so the next
+  show does not start while you are away. The rack screen says HELD FOR
+  ANNOUNCEMENT, with a Stop button, while it plays. When it ends the
+  schedule STAYS on Hold: press Resume when you are ready to carry on.
+- **During a show** the announcement plays over the show and pauses,
+  holds and stops nothing. If the show has to end, press Stop (or Abort)
+  yourself. The banner then reads ANNOUNCEMENT PLAYING.
+- **Stop announcement** (and STOP ANNC. on the deck) ends only the sound.
+  A Hold it made stays until Resume. An announcement never disarms, stops
+  or latches anything by itself.
+- A recording that is not on this PC yet reads **Recording missing** on
+  its button (NO FILE on the deck) and the button does nothing. Copy the
+  three WAV files (16, 24 or 32 bit, or 32-bit float, at most 5 minutes)
+  into the Announcements folder beside ltcplay_announce.json, named
+  delayed.wav, cancellation.wav and cannot_continue.wav, then restart LTC
+  Player.
+- The sound goes to ONE output, named exactly in ltcplay_announce.json
+  (`"device"`), never the system default (that is where the show audio
+  is). The first run of LTC Player writes the file with no device, so the
+  rack screen says "Output device: not set" and every button stays off
+  until you type the output's exact name (as Windows lists it) and restart
+  LTC Player. A named output that is unplugged reads "not attached".
+- The deck's page 2 hides the four flame keys while it is up, because the
+  deck has only six keys. It goes back to the flame keys by itself: BACK,
+  ten seconds with no key pressed, an Abort, an alert, the Startup page
+  opening, or a deck alarm. START / STOP is the same key on both pages.
+- Announcements are pressed on the show PC itself (the rack screen and the
+  Stream Deck), not from an iPad.
+
+The **booth speaker** is separate from announcements: it plays the short
+alert notes (the Stream Deck unplugged, a show that did not start) to a
+private speaker in the booth, never the PA. It is the "booth_alert" block
+in ltcplay_remote.json: `"device"` (the exact output name), `"channels"`
+(the output pair, like [15, 16]) and `"files"` (a WAV per alert kind). The
+first run writes it with no device, so it is off; the Announcements line
+on the rack screen says "Booth speaker: not set" until it is set.
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
 Run has been pressed and playback is going it reads STOP RUN: hold it for

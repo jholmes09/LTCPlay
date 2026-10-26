@@ -2000,6 +2000,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         httpd.server_close = _close_fire_ice
     if httpd.loopback is not None:
         httpd.loopback.announce = httpd.announce
+    if getattr(httpd, "remote", None) is not None:
+        # The rack screen's and the Stream Deck's announcement presses go
+        # through the remote routes (remote.announce_post).
+        httpd.remote.announce = httpd.announce
     httpd.morning = None
     if fire_ice is not None:
         # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py,

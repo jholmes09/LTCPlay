@@ -98,8 +98,18 @@ started the engine alone and the Stream Deck "never connected"):
   the rack screen: Programming, "Schedule: the show times".
 - `ltcplay_fire_ice.json`: `scheduler_performs` false (the scheduler
   decides but starts nothing) and the flamesafe config above.
+- `ltcplay_announce.json` (2026-10-26): the operator announcements, with
+  NO output device yet and the three recordings expected in the
+  `Announcements` folder beside it (delayed.wav, cancellation.wav,
+  cannot_continue.wav). The engine runs announcements from it by itself;
+  until the device's exact name is set and the files are copied there,
+  the rack screen says "Output device: not set" and "Recording missing"
+  and nothing plays. The system default output is never used.
+- `ltcplay_remote.json`, only when there is none: the booth speaker block
+  (`booth_alert`) with no device, so the booth alert notes stay off until
+  it is set.
 
-All three live in Start menu, LTC Player, "Settings and logs". A file that
+All of them live in Start menu, LTC Player, "Settings and logs". A file that
 is already there is never touched. The rack screen's "Getting started"
 card lists what is still missing (a show folder with a show file in it,
 the schedule) and where to click; it goes away once both exist.

@@ -7,7 +7,32 @@ THE KEYS (Jeff, 2026-10-26; a Stream Deck Mini, 3 by 2)
 =======================================================
 
   key 0  START / STOP   key 1  Floor G      key 2  Cat-Walk G
-  key 3  Blue Flames    key 4  Fireball     key 5  spare, blank
+  key 3  Blue Flames    key 4  Fireball     key 5  ANNOUNCE (page 2)
+
+PAGE 2, ANNOUNCEMENTS (Jeff, 2026-10-26; announce.py), one press of key 5
+(only while the engine says announcements are running; otherwise key 5 is
+blank and does nothing):
+
+  key 0  START / STOP   key 1  DELAYED      key 2  CANCEL
+  key 3  CANNOT CONT.   key 4  STOP ANNC.   key 5  BACK
+
+One press plays (no double tap), through the engine's
+/api/remote/announce-play, on this process's press thread. Between shows
+the engine Holds the schedule first; during a show the announcement plays
+over it and pauses nothing. STOP ANNC. ends only the announcement's sound.
+A recording not on the PC yet reads NO FILE and its press is refused by
+the engine. Nothing on page 2 arms, disarms, stops or latches anything.
+
+KEYS RAN OUT, said honestly: the Mini has 6 keys and keys 1 to 4 are the
+four arm keys, so page 2 has to cover them. The arm keys are hidden ONLY
+while page 2 is up, and page 2 gives way to page 1 by itself: BACK, no key
+pressed for PAGE2_IDLE_S, an Abort latch, an open alert, the Morning page
+opening, a spoof alarm, or a deck reconnect. It cannot even be opened
+while any of those is true or any other key is down or an arm hold is
+filling. Key 0 is the same START / STOP on both pages, so Stop (every
+group disarmed, then the run stopped) is never more than one hold away,
+and an Abort on any screen still disarms everything. A key that is down
+when the page changes does nothing until it is let go.
 
 Keys 1 to 4 arm and disarm the first four flame groups in the deck's key
 order (ltcplay_deck.json, deck_layout: by default flamesafe's own order,
@@ -322,12 +347,22 @@ SPOOF_GRACE_S = 0.5
 RECONNECT_GRACE_S = 1.0
 
 # The keys (Jeff, 2026-10-26): key 0 is Start/Stop; keys 1 to 4 arm and
-# disarm the first four flame groups in the deck's key order; key 5 is
-# spare and stays blank. The deck has no Hold and no Abort key any more:
+# disarm the first four flame groups in the deck's key order; key 5 opens
+# the announcements page while the engine runs announcements, and is blank
+# and does nothing otherwise. The deck has no Hold and no Abort key any more:
 # Hold and Abort are the Rack screen's (and the hardware e-stop's).
 TOP_START = 0
 GROUP_KEYS = (1, 2, 3, 4)
 SPARE_KEY = 5
+# Page 2, the announcements (module docstring). Key 5 opens it and is BACK
+# on it; keys 1 to 3 play, key 4 stops the sound.
+ANNOUNCE_KEY = SPARE_KEY
+PAGE2_PLAY = {1: "delayed", 2: "cancellation", 3: "cannot_continue"}
+PAGE2_FACE = {"delayed": ["DELAYED"], "cancellation": ["CANCEL"],
+              "cannot_continue": ["CANNOT", "CONTINUE"]}
+PAGE2_STOP = 4
+PAGE2_BACK = SPARE_KEY
+PAGE2_IDLE_S = 10.0     # no key pressed this long on page 2: back to page 1
 
 # Which flame group sits on which key, and what the key calls it (Jeff,
 # 2026-10-26): ltcplay_deck.json in the settings folder, optional.
@@ -926,17 +961,25 @@ def role_gate(user, action):
             f"change the matrix on the Users screen. Nothing was done.")
 
 
-def deck_key_name(k, names, latched=False, morning=False, ack=False):
+def deck_key_name(k, names, latched=False, morning=False, ack=False,
+                  page=1):
     """What the audit log calls a deck key (audit.py). The Start key keeps
     its old name, "Start now", whatever it reads (review of PR #120, P2-6:
     the name an audit search finds stays the same); what a Stop hold did
     is its own audit line (action "stop")."""
     if k == TOP_START:
         return "ACK" if ack else ("FIRE" if morning else "Start now")
+    if page == 2:
+        if k in PAGE2_PLAY:
+            return f"announce {PAGE2_PLAY[k]}"
+        if k == PAGE2_STOP:
+            return "announce stop"
+        if k == PAGE2_BACK:
+            return "announce back"
     if k in GROUP_KEYS and k - GROUP_KEYS[0] < len(names):
         return f"arm key {names[k - GROUP_KEYS[0]]}"
     if k == SPARE_KEY:
-        return "spare key"
+        return "announce key"
     return f"key {k}"
 
 
@@ -1227,6 +1270,9 @@ class EngineConductor:
         # #43, P1-3), "" when none: shown on the deck's own keys.
         self.cues_fault = ""
         self._last_ok = None      # when the engine last answered a poll
+        # The engine's answer to the last announcement press: (ok,
+        # sentence, clock()), or None. Page 2's own faces show it.
+        self.announce_said = None
 
     def start(self):
         if self._threads:
@@ -1290,6 +1336,17 @@ class EngineConductor:
         It stops playback and blacks the outputs out; no show starts until
         Run is pressed again. On the queue, like Hold."""
         return self._press("stop", who, screen, path="/api/stop")
+
+    def announce(self, ann_id, who="", screen="Stream Deck"):
+        """Page 2's play key: one press, POST /api/remote/announce-play on
+        the press thread. The engine decides (a recording missing, no
+        output device, one already playing) and journals it; a refusal is
+        never an ENGINE FAULT on the Start key."""
+        return self._press("announce-play", who, screen, id=str(ann_id))
+
+    def announce_stop(self, who="", screen="Stream Deck"):
+        """Page 2's STOP ANNC.: the announcement's sound only."""
+        return self._press("announce-stop", who, screen)
 
     def _press(self, name, who, screen, path=None, **extra):
         body = {"who": who, "screen": screen or "Stream Deck",
@@ -1365,7 +1422,12 @@ class EngineConductor:
         # the show PC: Hold showed ENGINE FAULT while the Hold had worked).
         noop = (not ok and name in ("hold", "resume") and
                 doc.get("nothing_to_do") is True)
-        if name != "alert":
+        if name in ("announce-play", "announce-stop"):
+            # An announcement is not a press on the rig: a refusal (a
+            # recording missing, no output device) is journaled and shown
+            # on page 2, never as ENGINE FAULT on the Start key.
+            self.announce_said = (bool(ok), str(text), self._clock())
+        elif name != "alert":
             # An alert post is not a press on the rig: a refused or late
             # Acknowledge (two keys inside one poll) is journaled below,
             # never shown as ENGINE FAULT on the keys.
@@ -1772,6 +1834,18 @@ class ScreenKeys:
             return ()
         return tuple(a for a in (last[0].get("alerts") or [])
                      if isinstance(a, dict))
+
+    def announce(self):
+        """The engine's announcements, as its last fresh deck-input answer
+        carried them ({"configured", "device_ok", "ready", "missing",
+        "playing"}), or None when stale or not there. Display only: page
+        2's faces. The engine decides every press."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        a = last[0].get("announce")
+        return a if isinstance(a, dict) else None
 
     def user(self):
         """Who is signed in on this machine, as the engine's last fresh
@@ -2603,6 +2677,12 @@ class Controller:
         self.run_live_provider = run_live_provider or (lambda: None)
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
+        # Page 2, the announcements (module docstring): 1 or 2, when page 2
+        # last saw a key pressed, and the keys that were down at the last
+        # page change, which do nothing until they are let go.
+        self.page = 1
+        self._page2_at = None
+        self._masked = set()
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
         # disarm-refractory clock per group key.
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
@@ -2681,6 +2761,8 @@ class Controller:
     def _key_down(self, i):
         """Whether group `i`'s own deck key is down. Always False for a
         screen-only group (module docstring 5): it has no key."""
+        if self.page != 1 or self._group_key.get(i) in self._masked:
+            return False    # page 2 is up, or the key is masked till let go
         k = self._group_key.get(i)
         return k is not None and bool(self._prev_keys[k])
 
@@ -2719,7 +2801,7 @@ class Controller:
             self._audit_event(what, deck_key_name(
                 k, [self.names[g] for g in
                     self.key_order[:len(GROUP_KEYS)]], latched=latched,
-                morning=morning, ack=bool(pending)))
+                morning=morning, ack=bool(pending), page=self.page))
 
     def _log(self, text, **kw):
         try:
@@ -2766,6 +2848,8 @@ class Controller:
             h.release()
         self._stop_hold.release()
         self._vholds.clear()
+        self.page, self._page2_at = 1, None
+        self._masked = set()
         self._vpressed.clear()
         self._vwho.clear()
         self._vheld.clear()
@@ -3304,6 +3388,14 @@ class Controller:
         self._audit_keys(down, latched, pending)
         if pending and edges(self._prev_keys, down):
             self._do_acknowledge(pending)
+        self._masked -= set(releases(self._prev_keys, down))
+        if self.page == 2:
+            why = self._page2_must_close(latched, pending)
+            if why:
+                self._to_page1(why, down)
+            else:
+                self._page2_run(down, now)
+                return
         for k in releases(self._prev_keys, down):
             if k == TOP_START:
                 # The FIRE key (Morning page): letting go ends the purge
@@ -3351,8 +3443,126 @@ class Controller:
                     # Start and Stop are one key (Jeff, 2026-10-26).
                     self._do_start_or_stop(now)
             elif k in self._key_group:
-                self._on_group_press(self._key_group[k], now)
+                if k not in self._masked:
+                    self._on_group_press(self._key_group[k], now)
+            elif k == ANNOUNCE_KEY and not pending and \
+                    (self.announce_view() or {}).get("configured"):
+                # Only while the engine says announcements are running:
+                # otherwise key 5 stays the blank key that does nothing.
+                self._open_page2(down, now, latched, morning)
         self._prev_keys = list(down)
+
+    # -- page 2, the announcements (module docstring) ------------------------
+    def _page2_must_close(self, latched, pending, now=None):
+        """Why page 2 has to give way to page 1 right now, or "". Every
+        one of these needs the arm keys (or the Start key's own face)
+        back in front of the operator."""
+        if latched:
+            return "an Abort is latched"
+        if pending:
+            return "an alert is open"
+        if self._spoof_alarm:
+            return "the arm link alarm is up"
+        if self.morning_open():
+            return "the Morning page opened"
+        if now is not None and self._page2_at is not None and \
+                now - self._page2_at >= PAGE2_IDLE_S:
+            return f"no key was pressed for {PAGE2_IDLE_S:g} s"
+        return ""
+
+    def _open_page2(self, down, now, latched, morning):
+        """Key 5 pressed on page 1. Opened only with nothing else going
+        on: no latch, no alert, no Morning page, no spoof alarm, no other
+        key down, no arm hold filling, no Stop hold filling."""
+        why = ""
+        if latched or morning or self._spoof_alarm:
+            why = "the deck is busy with something more important"
+        elif any(down[k] for k in range(len(down)) if k != ANNOUNCE_KEY):
+            why = "another key is down"
+        elif any(h.fraction(now) > 0 for h in self._arm_holds) or \
+                self._stop_hold.fraction(now) > 0:
+            why = "a hold is filling"
+        if why:
+            self._log(f"Stream Deck: the announcements page was not "
+                      f"opened: {why}.", action="page")
+            return
+        self.page, self._page2_at = 2, now
+        self._masked = {k for k in range(len(down)) if down[k]}
+        self._log("Stream Deck: announcements page open. The arm keys are "
+                  "back on BACK, or by themselves after "
+                  f"{PAGE2_IDLE_S:g} s.", action="page")
+
+    def _to_page1(self, why, down=None):
+        if self.page != 1:
+            self.page, self._page2_at = 1, None
+            cur = down if down is not None else self._prev_keys
+            # A key down at the change does nothing until it is let go.
+            self._masked = {k for k in range(len(cur)) if cur[k]}
+            self._log(f"Stream Deck: back to the arm keys ({why}).",
+                      action="page")
+
+    def _page2_run(self, down, now):
+        """run_once on page 2. Key 0 is the same START / STOP as page 1;
+        keys 1 to 3 play, key 4 stops the sound, key 5 is BACK. No group
+        key exists on this page: nothing here arms or disarms."""
+        for k in releases(self._prev_keys, down):
+            if k == TOP_START:
+                self._fire_release("the key came up")
+                self._stop_hold.release()
+        for k in edges(self._prev_keys, down):
+            if k in self._masked:
+                continue
+            self._page2_at = now
+            if k == TOP_START:
+                self._do_start_or_stop(now)
+            elif k in PAGE2_PLAY:
+                self._announce_press(PAGE2_PLAY[k])
+            elif k == PAGE2_STOP:
+                self._announce_stop()
+            elif k == PAGE2_BACK:
+                self._to_page1("BACK pressed", down)
+        self._prev_keys = list(down)
+
+    def _announce_press(self, ann_id):
+        """One press, one announcement (no double tap, no hold). Not behind
+        the operator gate: the engine names the deck's chosen operator, or
+        the Stream Deck, and decides every rule itself."""
+        who = self.operator_provider() or ""
+        fn = getattr(self.conductor, "announce", None)
+        if fn is None:
+            self._log("Stream Deck announcement pressed: no engine is "
+                      "connected in this build. Nothing was played.",
+                      fault=True, action="announce", who=who,
+                      screen="Stream Deck")
+            return
+        r = fn(ann_id, who=who, screen="Stream Deck")
+        self._log(f"Stream Deck {ann_id} announcement: {r.sentence}",
+                  fault=not r.ok, action="announce", who=who,
+                  screen="Stream Deck")
+
+    def _announce_stop(self):
+        who = self.operator_provider() or ""
+        fn = getattr(self.conductor, "announce_stop", None)
+        if fn is None:
+            self._log("Stream Deck announcement Stop pressed: no engine is "
+                      "connected in this build.", fault=True,
+                      action="announce", who=who, screen="Stream Deck")
+            return
+        r = fn(who=who, screen="Stream Deck")
+        self._log(f"Stream Deck announcement Stop: {r.sentence}",
+                  fault=not r.ok, action="announce", who=who,
+                  screen="Stream Deck")
+
+    def announce_view(self):
+        """The engine's announcements for page 2's faces, or None."""
+        s = self.screen
+        fn = getattr(s, "announce", None) if s is not None else None
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
 
     def tick(self):
         """Called once per MAIN-LOOP pass, UNCONDITIONALLY -- whether or
@@ -3370,6 +3580,10 @@ class Controller:
         on CHANGE rather than continuously."""
         now = self._clock()
         latched = self._latched_now()
+        if self.page == 2:
+            why = self._page2_must_close(latched, self.alert_pending(), now)
+            if why:
+                self._to_page1(why)
         if latched != self._was_latched:
             # An Abort or a Reset from a screen (the deck has neither key
             # since 2026-10-26): every group's re-arm refractory window
@@ -3670,6 +3884,9 @@ class Controller:
         # Stop's hold fills its own ring, latched or not (Stop stays
         # reachable while aborted, as on the Rack screen).
         stop_frac = self._stop_hold.fraction(now)
+        if self.page == 2:
+            # No arm key on page 2: only Stop's ring can fill.
+            arm_fills = {}
         if stop_frac > 0:
             arm_fills[TOP_START] = stop_frac
         draw_marquee(d, chase, abort_frac, arm_fills)
@@ -3774,7 +3991,15 @@ class Controller:
                               max_size=16)
             else:
                 fonts.show_key(d, b0, ["START", "NOW"], CHAMPAGNE)
-        # Key 5 is spare (Jeff, 2026-10-26): left blank, nothing drawn.
+        if self.page == 2:
+            self._draw_page2(fonts, d, blink_on)
+            return canvas
+        # Key 5 opens the announcements page (module docstring), drawn only
+        # when the engine says announcements are running.
+        av = self.announce_view()
+        if av and av.get("configured") and not latched:
+            fonts.show_key(d, face_box(ANNOUNCE_KEY), ["ANNOUNCE"],
+                           CHAMPAGNE, bg=BRONZE, kind="sans", max_size=14)
         fault, _confirmed = self._top_fault_confirmed()
         # Only the groups with a key are drawn, in key order, each under
         # its label: a screen-only group (module docstring 5) has none.
@@ -3846,6 +4071,45 @@ class Controller:
                 arm_key_image(fonts, d, face_box(GROUP_KEYS[i]), "",
                               group_look(None, slot=i), group_blink)
         return canvas
+
+    def _draw_page2(self, fonts, d, blink_on):
+        """Page 2's faces (keys 1 to 5; key 0 is drawn as on page 1): each
+        announcement READY, NO FILE (the recording is not on the PC yet),
+        NO OUTPUT, or PLAYING; STOP ANNC.; BACK. Display only."""
+        av = self.announce_view() or {}
+        ready = av.get("ready") if isinstance(av.get("ready"), dict) else {}
+        missing = av.get("missing") if isinstance(av.get("missing"),
+                                                  dict) else {}
+        playing = av.get("playing")
+        for k, aid in PAGE2_PLAY.items():
+            box = face_box(k)
+            lines = list(PAGE2_FACE[aid])
+            if playing == aid:
+                fonts.show_key(d, box, lines + ["PLAYING"],
+                               BLACK if blink_on else AMBER,
+                               bg=AMBER if blink_on else BRONZE,
+                               kind="sans", max_size=14)
+            elif not av.get("configured"):
+                fonts.show_key(d, box, lines + ["NOT SET UP"], DIM_TEXT,
+                               kind="sans", max_size=12)
+            elif missing.get(aid):
+                fonts.show_key(d, box, lines + ["NO FILE"], AMBER,
+                               kind="sans", max_size=12)
+            elif not ready.get(aid):
+                fonts.show_key(d, box, lines + ["CANNOT PLAY"], AMBER,
+                               kind="sans", max_size=12)
+            elif not av.get("device_ok"):
+                fonts.show_key(d, box, lines + ["NO OUTPUT"], AMBER,
+                               kind="sans", max_size=12)
+            else:
+                fonts.show_key(d, box, lines, CHAMPAGNE, bg=BRONZE,
+                               kind="sans", max_size=16)
+        fonts.show_key(d, face_box(PAGE2_STOP), ["STOP", "ANNC."],
+                       CHAMPAGNE if playing else DIM_TEXT,
+                       bg=BRONZE if playing else None, kind="sans",
+                       max_size=16)
+        fonts.show_key(d, face_box(PAGE2_BACK), ["BACK"], CHAMPAGNE,
+                       kind="sans", max_size=16)
 
     def user_toast(self, now):
         """The Start key's lines naming who is signed in on this machine,
@@ -4854,7 +5118,8 @@ def deck_layout_at_start(names, folder, journal, settings_folder=None):
                      f"and key by name, and {t!r} keeps its own name.")
     ok = ok and bool(folder)
     notes.append(f"the keys are key 0 Start/Stop, "
-                 f"{_keys_text(order, labels, list(names))}; key 5 is spare. "
+                 f"{_keys_text(order, labels, list(names))}; key 5 opens "
+                 f"the announcements page. "
                  f"Unless {DECK_CONFIG_FILE} says otherwise, front row, "
                  f"cat-walk, wave flamer and fireball go on keys 1 to 4 by "
                  f"name and every other group follows in flamesafe's order "

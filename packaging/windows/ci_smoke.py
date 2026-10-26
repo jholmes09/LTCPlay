@@ -493,9 +493,18 @@ def main(installer, version=""):
                 first = json.load(fh)
         except (OSError, ValueError):
             first = {}
-        check(set((first.get("written") or {})) == {"schedule", "fire_ice"},
-              f"first run wrote the schedule and the Fire & Ice file and "
-              f"left the seeded flamesafe.json alone: {first}")
+        wrote = set((first.get("written") or {}))
+        check({"schedule", "fire_ice", "announce"} <= wrote <=
+              {"schedule", "fire_ice", "announce", "booth"},
+              f"first run wrote the schedule, the Fire & Ice file and the "
+              f"announcements file (no output device yet) and left the "
+              f"seeded flamesafe.json alone: {first}")
+        an = status.get("announce") or {}
+        check(an.get("configured") is True and an.get("device_set") is False
+              and all(i.get("missing") for i in an.get("items") or [{}]),
+              f"the engine runs announcements with no flag typed by "
+              f"anyone: no output device set, every recording missing, "
+              f"nothing playable: {str(an)[:300]}")
         check(isinstance(status.get("setup"), dict) and
               status["setup"].get("schedule_ok") is True and
               isinstance(status.get("deck"), dict),

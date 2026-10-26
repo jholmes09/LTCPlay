@@ -207,6 +207,17 @@ SCRUB_FLAMES_ENABLES = (
 # screen-arming (2026-10-22): the switch for arming from a screen, set on
 # the show machine itself, never from the network.
 LOCAL_ONLY = frozenset(("network", "screen-arming"))
+# Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
+# three buttons and its Stop, and the Stream Deck's page 2 keys, which post
+# here from this machine. One press plays (no double tap). From the show
+# machine only: a public announcement is not an iPad press. Between shows
+# a Play Holds the schedule first; during a show it plays over the show and
+# Holds, pauses and stops nothing. Stop ends the announcement's audio only.
+ANNOUNCE_ROUTES = ("announce-play", "announce-stop")
+# How long the rack screen's announcement block is reused before the
+# service is asked again (it asks the audio system for the device): the
+# page polls four times a second. A press always asks at once.
+ANNOUNCE_VIEW_S = 1.0
 # What the Stream Deck reports back about a screen hold it would not take
 # (deck-input's `refused`, streamdeck.ScreenKeys): its code, and what the
 # page says. The deck's own rules decide; the engine only passes it on.
@@ -1213,6 +1224,10 @@ class Remote:
         # The rack screen's Weather block (weather.py, WEATHER.md), set by
         # web.serve. Display only; None: the block says it is not running.
         self.weather = None
+        # announce.AnnounceService, set by web.serve when announcements are
+        # configured; None: the rack screen's block says they are not.
+        self.announce = None
+        self._ann_cache = None       # (clock(), view)
         # The Windows supervisor's word on the disk (housekeeping.py writes
         # disk-low.txt in the settings folder while it is low or critical,
         # and removes it when it is fine again). Read at most every 30 s.
@@ -1407,6 +1422,8 @@ class Remote:
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
                                          self.users),) + ({},)
+        if name in ANNOUNCE_ROUTES:
+            return (*self.announce_post(name, body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -1718,6 +1735,99 @@ class Remote:
                       f"{who} switched arming from a screen "
                       f"{'ON' if on else 'OFF'} on the {screen}.")
         return 200, {"ok": True, "enabled": on, "text": text}
+
+    # -- announcements (announce.py) ----------------------------------------
+    ANNOUNCE_OFF = ("Announcements are not running in this engine. LTC "
+                    "Player starts them with ltcplay_announce.json in the "
+                    "settings folder; restart LTC Player once it is there.")
+
+    def announce_view(self, force=False):
+        """The rack screen's and the Stream Deck's view of the three
+        announcements: each one ready, or "recording missing", or why not;
+        the output device; what is playing and whether it Held the
+        schedule. Reused for ANNOUNCE_VIEW_S. Display only; never raises."""
+        ann = self.announce
+        if ann is None:
+            return {"configured": False, "why": self.ANNOUNCE_OFF}
+        now = self.clock()
+        c = self._ann_cache
+        if not force and c is not None and now - c[0] < ANNOUNCE_VIEW_S:
+            return c[1]
+        try:
+            st = ann.status()
+            v = {"configured": True, "ok": bool(st.get("ok")),
+                 "error": st.get("error"), "device": st.get("device"),
+                 "device_set": bool(st.get("device_set")),
+                 "device_available": bool(st.get("device_available")),
+                 "device_reason": st.get("device_reason"),
+                 "blocked": st.get("blocked"),
+                 "over_show": bool(st.get("over_show")),
+                 "items": [{k: i.get(k) for k in
+                            ("id", "name", "available", "missing", "reason",
+                             "length_s")}
+                           for i in st.get("announcements") or []],
+                 "playing": st.get("playing")}
+        except Exception as e:                   # noqa: BLE001
+            v = {"configured": True, "ok": False,
+                 "error": f"The announcements could not be read "
+                          f"({type(e).__name__}: {e}).", "items": [],
+                 "playing": None}
+        self._ann_cache = (now, v)
+        return v
+
+    def announce_post(self, name, body, ctx):
+        """POST announce-play {"id"} and announce-stop: one press each, from
+        the show machine (the rack screen, or the Stream Deck process, which
+        names itself and its chosen operator). Who is the signed-in person,
+        the deck's operator, or the surface itself. Every refusal is a
+        sentence; nothing here ever disarms, stops or latches anything, and
+        Stop ends only the announcement's audio (the schedule's Hold, if it
+        held one, stays until Resume)."""
+        if not ctx.local:
+            return 403, {"error": "Announcements are played from the show "
+                                  "machine itself (the rack screen or the "
+                                  "Stream Deck), not from here. Nothing was "
+                                  "changed."}
+        ann = self.announce
+        if ann is None:
+            return 409, {"error": self.ANNOUNCE_OFF + " Nothing was "
+                                                      "changed."}
+        who, screen, surface = self._actor(ctx, body)
+        if not who:
+            who, surface = screen, True
+        if name == "announce-play":
+            # A Play acts on what the page shows (which recordings are
+            # there, what is playing): refused on a stale page, like Start
+            # now. Stop only takes something away and is never refused.
+            why = self._stale(body)
+            if why:
+                return 409, {"error": why, "stale": True}
+        try:
+            if name == "announce-play":
+                st = ann.play(str(body.get("id") or ""), who, screen,
+                              surface=surface)
+                p = st.get("playing") or {}
+                text = (f"{p.get('name') or 'The announcement'} is playing. "
+                        + ("The schedule is held for it; press Resume when "
+                           "you are ready to carry on."
+                           if p.get("held_schedule") else
+                           "It plays over the show; nothing was paused or "
+                           "stopped."))
+            else:
+                ann.stop(who, screen, surface=surface)
+                text = ("The announcement was stopped. Nothing else was "
+                        "changed.")
+        except ValueError as e:
+            self._ann_cache = None
+            return 409, {"error": str(e),
+                         "announce": self.announce_view(force=True)}
+        except Exception as e:                   # noqa: BLE001
+            self._ann_cache = None
+            return 500, {"error": f"The announcement press failed "
+                                  f"({type(e).__name__}: {e}). Nothing "
+                                  f"else was changed."}
+        return 200, {"ok": True, "text": text,
+                     "announce": self.announce_view(force=True)}
 
     # -- presses -----------------------------------------------------------
     def _stale(self, body):
@@ -2355,6 +2465,16 @@ class Remote:
         # open, and any key press acknowledges (alerts.py).
         out = {"enabled": enabled, "holds": holds if enabled else [],
                "disarms": disarms, "alerts": self.alerts.view()}
+        # The announcements, for the deck's page 2 keys (display only).
+        av = self.announce_view()
+        out["announce"] = {
+            "configured": bool(av.get("configured")),
+            "device_ok": bool(av.get("device_available")),
+            "ready": {i["id"]: bool(i.get("available"))
+                      for i in av.get("items") or []},
+            "missing": {i["id"]: bool(i.get("missing"))
+                        for i in av.get("items") or []},
+            "playing": (av.get("playing") or {}).get("id")}
         # Who is signed in on this machine (users.py): the deck shows it
         # and acts as them.
         uv = self.user_view_for_deck()
@@ -4539,6 +4659,9 @@ class Remote:
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""
         out["booth"] = {"configured": bool(booth), "device": booth}
+        if ctx.local:
+            # Operator announcements: the rack screen's block (announce.py).
+            out["announce"] = self.announce_view()
         # The lock banner and the purge, on every screen (morning.py).
         m = self.morning
         if m is not None:

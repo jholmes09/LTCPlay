@@ -2855,19 +2855,38 @@ MUTATIONS = [
   "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
   "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
- ("an announcement never holds the show first", "ltcplay/announce.py",
-  '            claim_epoch = None\n'
-  '            if self.hold_requester is not None:\n'
-  '                hold_refusal, claim_epoch = self._request_hold(\n'
-  '                    who, screen,\n'
-  '                    detail=f"played the {label} announcement{screen_txt}")\n'
-  '                if hold_refusal:',
-  '            claim_epoch = None\n'
+ ("an announcement never holds the schedule first between shows",
+  "ltcplay/announce.py",
+  '            if self.hold_requester is not None and not over_show:\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n',
   '            if False:\n'
-  '                hold_refusal, claim_epoch = self._request_hold(\n'
-  '                    who, screen,\n'
-  '                    detail=f"played the {label} announcement{screen_txt}")\n'
-  '                if hold_refusal:'),
+  '                hold_refusal, claim_epoch = self._request_hold(\n'),
+
+ # Jeff, 2026-10-26: during a show an announcement plays over it and
+ # Holds nothing. Asking for the Hold during a show too (the old rule)
+ # pauses the show (test_announce_hold_during_show).
+ ("an announcement during a show pauses the show again",
+  "ltcplay/announce.py",
+  '            if self.hold_requester is not None and not over_show:\n',
+  '            if self.hold_requester is not None:\n'),
+
+ # A press that cannot play (no device set, the device unplugged) must
+ # be refused before anything is Held (Jeff, 2026-10-26).
+ ("an announcement with no output device set holds the schedule anyway",
+  "ltcplay/announce.py",
+  '            if not self.device_set:\n'
+  '                text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
+  '                        f"Refused: {self.DEVICE_NOT_SET}")',
+  '            if False:\n'
+  '                text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
+  '                        f"Refused: {self.DEVICE_NOT_SET}")'),
+
+ # Over a running show with no Hold: a show that ended during the file
+ # read leaves nothing holding the schedule, so the press is refused.
+ ("an announcement pressed over a show still plays after the show ended "
+  "while loading", "ltcplay/announce.py",
+  '            if not held and over_show and state not in SHOW_STATES:',
+  '            if False:'),
 
  # Deliberately no mutation here disabling the FIRST checkpoint's own
  # "if hold_refusal:" alone (only the "if self.hold_requester is not
@@ -2978,7 +2997,8 @@ MUTATIONS = [
  ("a name not on the operator list can still press Play",
   "ltcplay/announce.py",
   '                raise ValueError(text)\n'
-  '            if who.lower() not in {n.lower() for n in self.operators}:\n'
+  '            if not surface and \\\n'
+  '                    who.lower() not in {n.lower() for n in self.operators}:\n'
   '                reason = (f"{who!r} is not on the operator list "',
   '                raise ValueError(text)\n'
   '            if False:\n'
@@ -3599,8 +3619,7 @@ MUTATIONS = [
 
  ("the second check re-Holds instead of only reading the state",
   "ltcplay/announce.py",
-  "            if self.hold_requester is not None \\\n"
-  "                    and not self._check_still_held(claim_epoch):",
+  "            if held and not self._check_still_held(claim_epoch):",
   "            if False:"),
 
  ("hold_still_claimed ignores the epoch, only the state",
@@ -8623,6 +8642,57 @@ def build():
   "ltcplay/streamdeck.py",
   "        self._prev_keys = [False] * 6\n        for h in self._arm_holds:\n            h.release()\n        self._stop_hold.release()\n",
   "        self._prev_keys = [False] * 6\n        self._stop_hold.release()\n"),
+
+ # The Stream Deck's page 2, the announcements (Jeff, 2026-10-26): it
+ # covers the arm keys, so it must give way to them by itself, and nothing
+ # on it may arm (test_streamdeck_announcements_page_two).
+ ("deck page 2: stays up through an Abort latch",
+  "ltcplay/streamdeck.py",
+  '        if latched:\n            return "an Abort is latched"',
+  '        if False:\n            return "an Abort is latched"'),
+
+ ("deck page 2: never goes back by itself when idle",
+  "ltcplay/streamdeck.py",
+  "                now - self._page2_at >= PAGE2_IDLE_S:",
+  "                False:"),
+
+ ("deck page 2: stays up through an alarm on the arm link",
+  "ltcplay/streamdeck.py",
+  '        if self._spoof_alarm:\n            return "the arm link alarm is up"',
+  '        if False:\n            return "the arm link alarm is up"'),
+
+ ("deck page 2: opens while another key is down",
+  "ltcplay/streamdeck.py",
+  "        elif any(down[k] for k in range(len(down)) if k != ANNOUNCE_KEY):",
+  "        elif False:"),
+
+ ("deck page 2: a press plays twice",
+  "ltcplay/streamdeck.py",
+  "            elif k in PAGE2_PLAY:\n"
+  "                self._announce_press(PAGE2_PLAY[k])",
+  "            elif k in PAGE2_PLAY:\n"
+  "                self._announce_press(PAGE2_PLAY[k])\n"
+  "                self._announce_press(PAGE2_PLAY[k])"),
+
+ ("deck: key 5 opens page 2 with no announcements running",
+  "ltcplay/streamdeck.py",
+  '                    (self.announce_view() or {}).get("configured"):',
+  "                    True:"),
+
+ # The rack screen's announcement routes (remote.announce_post).
+ ("announcements: an iPad can play one",
+  "ltcplay/remote.py",
+  "        if not ctx.local:\n"
+  '            return 403, {"error": "Announcements are played from the show "',
+  "        if False:\n"
+  '            return 403, {"error": "Announcements are played from the show "'),
+
+ ("announcements: a stale page's Play is taken",
+  "ltcplay/remote.py",
+  '        if name == "announce-play":\n'
+  "            # A Play acts on what the page shows",
+  '        if False:\n'
+  "            # A Play acts on what the page shows"),
 
  ("morning: a click on a fireball arms its group for a purge",
   "ltcplay/morning.py",

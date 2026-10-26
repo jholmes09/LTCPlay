@@ -177,6 +177,9 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
   background:rgba(230,30,24,.22);color:var(--champ);border-radius:6px;padding:6px 10px;
   font-size:clamp(14px,1.8vh,18px);min-width:0}
 .lfbanner[hidden]{display:none}
+/* An announcement playing (announce.py): amber, with its Stop. Held for
+   announcement between shows; over the show during one. */
+.lfbanner.annbar{border-color:var(--amber);background:rgba(245,160,30,.22)}
 .lfbanner b{font:800 clamp(14px,1.9vh,19px)/1.1 var(--sans);letter-spacing:.06em;color:#fff;white-space:nowrap}
 .lfbanner span{flex:1 1 auto;min-width:0}
 .alertbox .altext{flex:1 1 auto;min-width:0}
@@ -221,6 +224,23 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 .big2:empty,.cdlabel:empty{display:none}
 .ctl{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .ctl button{min-height:clamp(52px,8vh,96px);font-size:clamp(18px,3vh,30px)}
+/* Operator announcements (announce.py, Jeff 2026-10-26): one press plays,
+   no double tap. A recording not on this PC yet reads Recording missing
+   and its button is off. */
+.ann{flex:0 0 auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,.8fr);gap:8px;align-items:stretch}
+.ann[hidden]{display:none}
+.ann-head{grid-column:1 / -1;display:flex;gap:12px;align-items:baseline;min-width:0;
+  font-size:clamp(13px,1.6vh,16px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ann-head b{font:700 clamp(11px,1.4vh,13px)/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;color:var(--champ)}
+.ann-head .bad{color:var(--amber)}
+.ann-btns{display:contents}
+.ann button{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,22px);line-height:1.1;padding:4px 8px}
+.ann button small{display:block;font-size:clamp(11px,1.4vh,14px);opacity:.85;font-weight:400}
+.ann button.on{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
+.ann button.missing:disabled{opacity:1;filter:none;background:transparent;border:1px dashed var(--amber);color:var(--muted)}
+.ann button.missing small{color:var(--amber);font-weight:700}
+.ann .toast{grid-column:1 / -1}
+.ann .toast:empty{display:none}
 #ctl-msg{margin-top:-2px}
 /* The flame groups never give their room (2026-10-24): neither the block
    nor a group's row may shrink below its content. */
@@ -704,7 +724,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -737,6 +757,16 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
       <button id="b-reset">Reset</button>
     </div>
     <div class="toast" id="ctl-msg"></div>
+    <!-- Operator announcements (announce.py, Jeff 2026-10-26): Delayed,
+         Cancellation, Cannot continue, one press each, and Stop. Between
+         shows a press holds the schedule first; during a show it plays
+         over the show and pauses nothing. Stop ends only the sound. -->
+    <div class="ann" id="ann" hidden aria-label="Announcements">
+      <div class="ann-head"><b>Announcements</b><span id="ann-dev"></span><span class="dim" id="ann-note"></span></div>
+      <div class="ann-btns" id="ann-btns"></div>
+      <button id="ann-stop" title="Stops the announcement's sound only. A held schedule stays held until Resume.">Stop announcement</button>
+      <div class="toast" id="ann-msg"></div>
+    </div>
     <div id="abort-said" hidden><div class="altext"></div><button class="ghost" id="abort-said-ok">Seen</button></div>
     <!-- Getting started (Jeff, 2026-10-17): on a fresh install nothing is
          set up, and this says the three steps and where to click. It goes
@@ -1630,6 +1660,47 @@ function stopWords(j){
   if(f && f.disarmed === false) return STOP_DISARM_FAILED;
   return "Stopped.";
 }
+// Operator announcements (announce.py, Jeff 2026-10-26): what the rack
+// screen's Announcements block and its banner show, from the status's
+// "announce". One press plays. A recording not on this PC yet says
+// Recording missing and its button is off; so is every button while no
+// output device is set or attached, while one is playing, or while the
+// engine says announcements cannot play at all. Stop is on only while one
+// plays. The engine refuses anything this page lets through anyway.
+function announceLook(an, booth){
+  const a = an || {};
+  if(!a.configured) return {show:false, buttons:[], banner:"", word:"", stopOff:true, device:"", devBad:false, note:""};
+  const playing = a.playing || null;
+  const bad = a.ok === false ? (a.error || "The announcements file could not be used.") : "";
+  const devOk = !!a.device_set && !!a.device_available;
+  const buttons = (a.items || []).map(i => {
+    let sub = "", off = false;
+    if(i.missing){ sub = "Recording missing"; off = true; }
+    else if(!i.available){ sub = "Cannot play"; off = true; }
+    else sub = (typeof i.length_s === "number") ? Math.round(i.length_s) + " s" : "";
+    if(bad || !devOk || a.blocked || playing) off = true;
+    return {id:String(i.id || ""), label:String(i.name || i.id || ""), sub:sub, off:off,
+            missing:!!i.missing, title:String(i.reason || ""), on:!!(playing && playing.id === i.id)};
+  });
+  let banner = "", word = "";
+  if(playing){
+    word = playing.held_schedule ? "HELD FOR ANNOUNCEMENT" : "ANNOUNCEMENT PLAYING";
+    const el = (typeof playing.elapsed_s === "number") ? Math.round(playing.elapsed_s) : null;
+    const len = (typeof playing.length_s === "number") ? Math.round(playing.length_s) : null;
+    banner = String(playing.name || "") + (el !== null && len !== null ? " (" + el + " s of " + len + " s)" : "") +
+      (playing.held_schedule ? ". The schedule stays held until Resume." : ". It plays over the show; nothing was paused.");
+  }
+  let device = "";
+  if(!a.device_set) device = "Output device: not set";
+  else device = "Output: " + String(a.device || "") + (a.device_available ? "" : " (not attached)");
+  const b = booth || {};
+  device += b.configured ? ". Booth speaker: " + String(b.device || "") : ". Booth speaker: not set";
+  let note = bad || (!a.device_set || !a.device_available ? String(a.device_reason || "") : String(a.blocked || ""));
+  if(!note && !playing) note = a.over_show ? "A show is running: an announcement plays over it and pauses nothing. Stop ends the show." :
+    "Between shows: an announcement holds the schedule first. Only Resume carries on.";
+  return {show:true, buttons:buttons, banner:banner, word:word, stopOff:!playing, device:device,
+          devBad:!devOk, note:note};
+}
 // LOGIC END
 </script>
 <script>
@@ -1912,6 +1983,7 @@ function render(){
   // never a fault (remote.py artnet_note).
   setWarn("an-note", s.artnet_note || "");
   renderAlerts(s.alerts || []);
+  renderAnnounce();
   renderLamps(fl);
   // The Morning and Shutdown page exists only with the Fire & Ice engine;
   // its lock banner shows on every screen while anything is locked out.
@@ -2424,6 +2496,50 @@ async function press(route, extra, msgEl){
   el.title = el.textContent;
   return j;          // the engine's answer, or null when it refused
 }
+
+// Operator announcements: the block on the show screen and its banner on
+// every screen (announceLook says what). Buttons are drawn again only
+// when what they say changes, so a press is never lost to a redraw.
+let ANN_SIG = "", ANN_BUSY = false;
+function renderAnnounce(){
+  const s = ST || {};
+  const L = announceLook(s.announce, s.booth);
+  $("ann").hidden = !L.show;
+  $("ann-banner").hidden = !L.banner;
+  $("ann-banner-word").textContent = L.word || "HELD FOR ANNOUNCEMENT";
+  $("ann-banner-text").textContent = L.banner;
+  if(!L.show) return;
+  $("ann-dev").textContent = L.device; $("ann-dev").title = L.device;
+  $("ann-dev").className = L.devBad ? "bad" : "";
+  $("ann-note").textContent = L.note; $("ann-note").title = L.note;
+  const sig = JSON.stringify([L.buttons, ANN_BUSY]);
+  if(sig !== ANN_SIG){
+    ANN_SIG = sig;
+    $("ann-btns").innerHTML = L.buttons.map(b =>
+      `<button data-ann="${esc(b.id)}" class="${b.on ? "on" : ""}${b.missing ? " missing" : ""}"` +
+      `${b.off || ANN_BUSY ? " disabled" : ""} title="${esc(b.title)}">${esc(b.label)}<small>${esc(b.sub)}</small></button>`).join("");
+  }
+  $("ann-stop").disabled = L.stopOff || ANN_BUSY;
+}
+async function annPress(route, extra){
+  if(ANN_BUSY) return;            // one press, one announcement
+  ANN_BUSY = true; renderAnnounce();
+  const el = $("ann-msg");
+  try{
+    const j = await post("/api/remote/" + route, actor(extra));
+    el.textContent = j.text || "Done.";
+    if(j.announce && ST) ST.announce = j.announce;
+  }catch(e){ el.textContent = e.message; }
+  el.title = el.textContent;
+  ANN_BUSY = false; renderAnnounce();
+}
+$("ann-btns").addEventListener("click", e => {
+  const b = e.target.closest("button[data-ann]");
+  if(!b || b.disabled) return;
+  annPress("announce-play", {id: b.dataset.ann});
+});
+$("ann-stop").addEventListener("click", () => annPress("announce-stop"));
+$("ann-banner-stop").addEventListener("click", () => annPress("announce-stop"));
 
 // The stop sign's tooltip (2026-10-26); the line under it says the rest.
 const ABORT_TITLE = "Abort: tap twice to stop the show.";
