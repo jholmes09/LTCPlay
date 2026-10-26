@@ -363,6 +363,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #mo-firebar .key{font:800 clamp(14px,2.2vh,20px)/1.1 var(--sans);letter-spacing:.08em;text-transform:uppercase;
   border:2px solid var(--hair);border-radius:8px;padding:8px 14px;color:var(--muted);white-space:nowrap}
 #mo-firebar .key.ready{border-color:var(--red);color:var(--champ)}
+/* Space only fires while THIS page has the keyboard (Jeff, 2026-10-26). */
+#mo-firebar .focusnote{grid-column:1 / -1;font:700 clamp(14px,1.8vh,17px)/1.25 var(--sans);color:var(--amber)}
 #mo-firebar .key.firing{background:var(--red-deep);border-color:var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
 .mo-lasers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
 .laser{position:relative;display:flex;flex-direction:column;gap:2px;border:2px solid #7A6032;border-radius:8px;
@@ -449,11 +451,15 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #info kbd{font:700 .95em var(--sans);border:1px solid var(--hair);border-radius:4px;padding:1px 6px;color:var(--champ)}
 
 /* ---- Getting started (a fresh install): the three steps, where to click ---- */
-/* The card takes the lamps' room while it is up (there are no lamps before
-   flamesafe is set up) and scrolls inside itself on a short window; the
-   show screen itself never scrolls. */
-#setup{flex:1 1 auto;min-height:0;overflow:auto}
-#v-show.setup-on .flames{display:none}
+/* The card sits ABOVE the flame groups, never instead of them (Jeff,
+   2026-10-26: with no show file in the folder the card hid every group's
+   Hold to arm and Disarm, and Disarm all; arming, disarming and live flame
+   programming need no show file). It is never taller than 40 percent of
+   the window and scrolls inside itself; the flame groups keep their room. */
+#setup{flex:0 1 auto;max-height:40vh;min-height:0;overflow:auto}
+/* No show file: one plain line, on every screen, never folded away. */
+#nofile{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
+  border-radius:6px;padding:4px 10px;font-size:clamp(14px,1.8vh,17px);line-height:1.3}
 /* The three steps stay side by side down to about 800 px (the 950 px Edge
    app window at 1070 high showed two of them and hid the third below the
    card's own scroll); narrower than that they stack. */
@@ -551,7 +557,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden>No show file yet. Arming, disarming and programming flames still work; playing a show needs one.</div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -635,7 +641,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <button id="mo-arr-save">Save layout</button><button class="ghost" id="mo-arr-reset">Reset layout</button><button class="ghost" id="mo-arr-cancel">Cancel</button>
         <span class="dim">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
       <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
-      <div id="mo-firebar"><div class="key" id="mo-key">Hold SPACE to fire</div><div class="toast" id="mo-msg"></div></div>
+      <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="focusnote" id="mo-focus" hidden>Click this page, then hold Space</div></div>
       <!-- Shutdown (Jeff, 2026-10-23): its own labelled section on the
            Startup page. Whether it becomes its own tab is still open. -->
       <section class="card compact" id="mo-shut">
@@ -1776,12 +1782,14 @@ document.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click"
 let SETUP_KEY = "";
 function renderSetup(su, pr){
   const card = $("setup");
+  // No show file: said in one plain line; the flame groups stay (Jeff,
+  // 2026-10-26). Only the show machine's status carries `setup`.
+  $("nofile").hidden = !(su && su.show_files === 0);
   if(!su){ card.hidden = true; return; }
   const key = JSON.stringify([su, pr]);
   if(key === SETUP_KEY) return;
   SETUP_KEY = key;
   card.hidden = !!su.ready;
-  $("v-show").classList.toggle("setup-on", !su.ready);
   const fo = $("su-folder"), sc = $("su-sched"), fl = $("su-flames");
   fo.classList.toggle("done", su.show_files > 0);
   fo.querySelector(".t").innerHTML = su.show_files > 0
@@ -2307,10 +2315,11 @@ function renderMorning(){
   const k = $("mo-key");
   const any = (purge.selected || []).length > 0;
   k.className = "key" + (purge.firing ? " firing" : any ? " ready" : ""); k.title = "";
-  k.textContent = purge.firing ? "FIRING" : any ? "Hold SPACE to fire" : "Click a machine or a group to arm it";
+  k.textContent = purge.firing ? "FIRING" : any ? SPACE_KEY : "Click a machine or a group to arm it";
   if(!mo.purge_enabled) k.textContent = "Purge arming is switched off for this device";
   if(mo.live_refusal) k.textContent = "Purge not allowed now: " + mo.live_refusal;
   if(ARRANGE){ k.className = "key"; k.textContent = ARRANGE_BANNER; k.title = "Save layout or Cancel first"; }
+  renderFocusNote();
   // A lock problem (the file and the config, or flamesafe, disagree): the
   // one way out is a confirmed rewrite on the show machine itself.
   let rw = $("mo-rewrite");
@@ -2390,6 +2399,16 @@ function renderMorning(){
   renderChecklists(mo.checklists || {});
   renderEngineChecks(mo.checks || []);
 }
+// The purge fires on Space, and a browser only gives Space to the page
+// that has the keyboard: said on the control, and in one line while this
+// page does not have it (Jeff, 2026-10-26). Words only; nothing arms.
+const SPACE_KEY = "Hold Space (this page must be selected)";
+function renderFocusNote(){
+  const n = $("mo-focus");
+  if(n) n.hidden = !MO_OPEN || ARRANGE || document.hasFocus();
+}
+window.addEventListener("focus", renderFocusNote);
+window.addEventListener("blur", renderFocusNote);
 function renderEngineChecks(list){
   const box = $("mo-engine");
   const key = JSON.stringify(list);

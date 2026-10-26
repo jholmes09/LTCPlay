@@ -42400,6 +42400,17 @@ function measure(tag){
   const sdis = document.getElementById("al-sum-dis");
   out.sum_disarm = shown(sdis);
   if(shown(sdis)) for(const b of hits(sdis)) out.problems.push("the folded line's Disarm all: " + b);
+  // No show file (Jeff, 2026-10-26): the plain line, and the getting-
+  // started card never over or instead of the flame groups.
+  const nf = document.getElementById("nofile"), su = document.getElementById("setup");
+  out.nofile = shown(nf) ? nf.textContent : null;
+  out.setup_shown = shown(su);
+  const fb = document.querySelector(".flames");
+  if(shown(su) && shown(fb)){
+    const a = rectOf(su), b = rectOf(fb);
+    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+      out.problems.push("overlap: the getting-started card and the flame groups");
+  }
   out.alerts_top = Math.round(rectOf(document.getElementById("alerts")).h);
   // The folded part alone (the live flame programming bar is never folded).
   out.fold_h = ["al-sum", "al-body"].map(id => document.getElementById(id))
@@ -42476,19 +42487,28 @@ def _run_browser(cmd, limit, env):
 
 
 def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
-                             tries=None):
+                             tries=None, measure_js=None, head_js="",
+                             frag="", routes=None):
     """Draw `page` (remote.html's text) in headless `chrome` (a path, or a
     command as a list) at each (width, height) in `sizes`, its engine a
     stub answering `status`, and return {(w, h): [measure, ...]} (see
     _RACK_MEASURE_JS) or {(w, h): "why not"}. `floor` overrides
     RACK_DRAW_FLOOR (tests). `tries`, a list, is given each draw's
-    (size, attempt, limit, outcome)."""
+    (size, attempt, limit, outcome). `measure_js` replaces the measuring
+    script (it must leave <pre id="rack-measure"> with JSON in it),
+    `head_js` runs before the page's own script (an emulated screen),
+    `frag` is added to the URL ("?q=1#morning") and `routes` maps more GET
+    paths to the JSON they answer (/api/remote/morning)."""
     import http.server
     import shutil
     import subprocess as _sp
     import tempfile
     import threading
-    html = page.replace("</body>", _RACK_MEASURE_JS + "</body>", 1)
+    html = page.replace("</body>", (measure_js or _RACK_MEASURE_JS) +
+                        "</body>", 1)
+    if head_js:
+        html = html.replace("<head>", "<head>" + head_js, 1)
+    routes = dict(routes or {})
 
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -42515,6 +42535,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                 st = dict(status)
                 st["served_at"] = int(time.time() * 1000)
                 return self._out(200, json.dumps(st))
+            if p in routes:
+                return self._out(200, json.dumps(routes[p]))
             if p.startswith("/brand/"):
                 return self._out(404, "{}")
             return self._out(200, "{}")
@@ -42551,7 +42573,7 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                 "--hide-scrollbars", f"--user-data-dir={prof}",
                 f"--window-size={w},{h}", "--virtual-time-budget=6000",
                 "--dump-dom",
-                f"http://127.0.0.1:{srv.server_address[1]}/remote"]
+                f"http://127.0.0.1:{srv.server_address[1]}/remote{frag}"]
             try:
                 limit = _rack_draw_limit(slowest[0]) if floor is None else \
                     max(floor, min(RACK_DRAW_CEILING,
@@ -42811,6 +42833,269 @@ console.log(JSON.stringify(out));
         f"{w}x{h} {r[0]['lamps'][0].get('arm_seen')}/"
         f"{r[-1]['lamps'][0].get('arm_seen')}"
         for (w, h), r in got.items() if isinstance(r, list) and r))
+    print("  ok")
+
+
+def _rack_status_no_show_file():
+    """The Pico on 2026-10-26: flamesafe reports three groups, screen
+    arming is on, and the show folder holds no show file."""
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["setup"] = {"ready": False, "show_files": 0,
+                   "show_folder": r"C:\Users\show\Documents\LTC Shows",
+                   "show_folder_exists": True, "schedule_ok": True,
+                   "schedule_exists": True,
+                   "schedule_path": r"C:\ProgramData\ltcplay\ltcplay_schedule.json",
+                   "example_schedule": False, "flamesafe_connected": True,
+                   "deck_heard": True, "settings_folder": r"C:\ProgramData\ltcplay"}
+    return st
+
+
+NO_SHOW_FILE_LINE = ("No show file yet. Arming, disarming and programming "
+                     "flames still work; playing a show needs one.")
+
+
+def test_rack_screen_flame_controls_need_no_show_file():
+    section("rack screen (Jeff, 2026-10-26, the Pico): with no show file in "
+            "the show folder the getting-started card no longer replaces "
+            "the flame groups; flamesafe's three groups, their Hold to arm "
+            "and Disarm, Disarm all flame groups and Abort are drawn and "
+            "pressable, and one plain line says what works without a show "
+            "file. Drawn in a real browser")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check(".flames{display:none}" not in page.replace(" ", ""),
+          "no rule hides the flame groups")
+    check(NO_SHOW_FILE_LINE in page, "the page has the no-show-file line")
+    check("\u2014" not in NO_SHOW_FILE_LINE and
+          "\u2013" not in NO_SHOW_FILE_LINE, "no dashes")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the page was not drawn")
+        print("  ok")
+        return
+    got = _rack_screen_in_chromium(chrome, page, _rack_status_no_show_file(),
+                                   ((1280, 800), (1366, 768), (1920, 1080)))
+    for (w, h), res in got.items():
+        if not check(isinstance(res, list) and res,
+                     f"{w}x{h}: drawn and measured: {res!r}"):
+            continue
+        m = res[0]
+        check(not m["problems"],
+              f"{w}x{h}, no show file: every group's Hold to arm and "
+              f"Disarm, Disarm all and Abort pressable, nothing overlapping: "
+              f"{m['problems'][:8]}")
+        check(len(m["lamps"]) == 3 and all(
+            l.get("arm_seen", 0) >= 44 and l.get("disarm_seen", 0) >= 44
+            for l in m["lamps"]),
+            f"{w}x{h}, no show file: three flame cards with their buttons: "
+            f"{m['lamps']}")
+        check(m.get("setup_shown") is True,
+              f"{w}x{h}: the getting-started card is still there, beside or "
+              f"above the groups")
+        check(m.get("nofile") == NO_SHOW_FILE_LINE,
+              f"{w}x{h}: the no-show-file line is said: {m.get('nofile')!r}")
+    # A show file present: the line is gone.
+    st = _rack_status_no_show_file()
+    st["setup"] = dict(st["setup"], show_files=1, ready=True)
+    got = _rack_screen_in_chromium(chrome, page, st, ((1366, 768),))
+    res = got[(1366, 768)]
+    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
+        check(res[0].get("nofile") is None and not res[0]["problems"],
+              f"a show file: no line, the groups as before: "
+              f"{res[0].get('nofile')!r} {res[0]['problems'][:4]}")
+    print("  ok")
+
+
+def _morning_view_pico(selected=(), firing=False):
+    """The Startup page's /api/remote/morning answer on the Pico: eight
+    machines in three groups, two lasers, the engine checks, both
+    checklists."""
+    machines = []
+    for i, (g, kind) in enumerate([("front row", "flame")] * 3 +
+                                  [("cat-walk", "flame")] * 3 +
+                                  [("wave flamer", "flame")] * 2):
+        machines.append({"id": f"m{i + 1}", "name": f"{g} {i % 3 + 1}",
+                         "kind": kind, "group": g})
+    layout = {m["id"]: {"x": 12 + (i % 4) * 25, "y": 25 + (i // 4) * 45}
+              for i, m in enumerate(machines)}
+    groups = {}
+    for m in machines:
+        groups.setdefault(m["group"], []).append(m["id"])
+    steps = [{"id": f"s{i}", "text": t, "done": i == 0, "who": "Andy",
+              "at": "17:02", "note": ""} for i, t in enumerate(
+        ["Walk the field: nothing within 10 m of a machine",
+         "Fuel pressure read at every machine and written down",
+         "Fire extinguishers at stations 1 to 4",
+         "Purge every machine for 2 s"])]
+    return {
+        "machines": machines, "groups": groups, "layout": layout,
+        "layout_saved": True, "config_error": "",
+        "lockout": {"machines": {}, "lasers": {}},
+        "purge_state": {"selected": list(selected),
+                        "owner": "this PC (rack screen)" if selected else None,
+                        "firing": firing},
+        "purge_enabled": True, "live_refusal": "",
+        "lasers": [{"id": "L1", "name": "Laser 1", "on": False,
+                    "locked": False, "configured": True},
+                   {"id": "L2", "name": "Laser 2", "on": False,
+                    "locked": False, "configured": True}],
+        "laser_arm": {"lasers": [{"id": "L1", "name": "Laser 1",
+                                  "armed": False},
+                                 {"id": "L2", "name": "Laser 2",
+                                  "armed": False}],
+                      "groups": {"All": ["L1", "L2"]}},
+        "checklists": {"checklists": [
+            {"id": "startup", "title": "Startup", "done": 1, "total": 4,
+             "steps": steps},
+            {"id": "shutdown", "title": "Shutdown", "done": 0, "total": 0,
+             "steps": []}], "names": ["Andy", "Jeff"],
+            "show_date": "2026-10-26"},
+        "checks": [
+            {"title": "Renders against the layout", "level": "ok",
+             "text": "Every render matches the layout's channel count."},
+            {"title": "This PC's clock", "level": "warn",
+             "text": "The clock was set by hand; NTP has not answered "
+                     "since 14:10."},
+            {"title": "The show folder", "level": "bad",
+             "text": "No show file yet: playing a show needs one."}],
+        "flamesafe_groups": ["front row", "cat-walk", "wave flamer"],
+        "open": True, "me": "this PC (rack screen)"}
+
+
+_STARTUP_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function rectOf(el){ const r = el.getBoundingClientRect();
+  return {top:r.top + scrollY, bottom:r.bottom + scrollY, left:r.left, right:r.right, h:r.height, w:r.width}; }
+function hits(el){
+  el.scrollIntoView({block:"center", inline:"nearest"});
+  const r = el.getBoundingClientRect(), bad = [];
+  if(r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) bad.push("not wholly inside the window when scrolled to");
+  const ins = Math.min(4, r.width / 4, r.height / 4);
+  for(const [x, y] of [[r.left + r.width/2, r.top + r.height/2], [r.left + ins, r.top + ins], [r.right - ins, r.bottom - ins]]){
+    const at = document.elementFromPoint(x, y);
+    if(!at || !(el === at || el.contains(at))) bad.push("covered at " + Math.round(x) + "," + Math.round(y) + " by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
+  }
+  return bad;
+}
+function measure(){
+  scrollTo(0, 0);
+  const out = {vw:innerWidth, vh:innerHeight, problems:[], small:[], min_px:999, tile_px:999,
+    key:(document.getElementById("mo-key") || {}).textContent || "",
+    focus:shown(document.getElementById("mo-focus")) ? document.getElementById("mo-focus").textContent : null,
+    nofile:shown(document.getElementById("nofile")) ? document.getElementById("nofile").textContent : null,
+    tiles:[], scroll_h:document.scrollingElement.scrollHeight};
+  // Every piece of text on the Startup page and the Abort bar.
+  const root = [document.getElementById("v-morning"), document.getElementById("abortbar")];
+  for(const r of root){
+    const tw = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
+    for(let n = tw.nextNode(); n; n = tw.nextNode()){
+      const t = n.textContent.trim(); const el = n.parentElement;
+      if(!t || !shown(el)) continue;
+      const px = parseFloat(getComputedStyle(el).fontSize);
+      if(px < out.min_px) out.min_px = px;
+      if(px < 14) out.small.push(Math.round(px * 10) / 10 + " px: " + (el.id || el.className || el.tagName) + ": " + t.slice(0, 30));
+    }
+  }
+  document.querySelectorAll("#mo-field .mach").forEach(el => {
+    const b = el.querySelector("b"); const px = parseFloat(getComputedStyle(b).fontSize);
+    out.tile_px = Math.min(out.tile_px, px);
+    out.tiles.push({id:el.dataset.id, px:px, w:Math.round(el.getBoundingClientRect().width), word:el.querySelector(".w").textContent});
+  });
+  // The panels never overlap each other.
+  const panels = ["mo-groups", "mo-field", "mo-firebar", "mo-shut"].map(id => document.getElementById(id))
+    .concat([...document.querySelectorAll("#mo-right > section")]).filter(shown);
+  for(let i = 0; i < panels.length; i++) for(let j = i + 1; j < panels.length; j++){
+    const a = rectOf(panels[i]), b = rectOf(panels[j]);
+    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+      out.problems.push("overlap: " + (panels[i].id || panels[i].querySelector("h2").textContent) + " and " + (panels[j].id || panels[j].querySelector("h2").textContent));
+  }
+  // The machine tiles never overlap each other either.
+  const ms = [...document.querySelectorAll("#mo-field .mach")];
+  for(let i = 0; i < ms.length; i++) for(let j = i + 1; j < ms.length; j++){
+    const a = ms[i].getBoundingClientRect(), b = ms[j].getBoundingClientRect();
+    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+      out.problems.push("overlap: tiles " + ms[i].dataset.id + " and " + ms[j].dataset.id);
+  }
+  // Abort: on the window at the top of the page and at its bottom.
+  const ab = document.getElementById("b-abort");
+  for(const y of [0, 1e6]){
+    scrollTo(0, y);
+    const r = ab.getBoundingClientRect();
+    if(r.bottom > innerHeight + 0.5 || r.top < 0) out.problems.push("Abort is off the window at scroll " + y);
+  }
+  scrollTo(0, 0);
+  for(const b of hits(ab)) out.problems.push("Abort: " + b);
+  scrollTo(0, 0);
+  return out;
+}
+function go(){
+  if(!document.querySelector("#mo-field .mach") || !document.querySelector("#mo-engine .ck")) return setTimeout(go, 100);
+  setTimeout(() => {
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify([measure()]);
+    document.body.appendChild(pre);
+  }, 600);
+}
+go();
+})();
+</script>
+"""
+
+# The page has no keyboard focus (another window was clicked last).
+_NO_FOCUS_JS = "<script>document.hasFocus = () => false;</script>"
+
+
+def test_startup_page_says_hold_space_and_this_page_selected():
+    section("Startup page (Jeff, 2026-10-26, the Pico): the purge's fire "
+            "control says Space must be held with this page selected, and "
+            "a line says to click the page first when it does not have the "
+            "keyboard; the no-show-file line shows here too. Drawn in a "
+            "real browser")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for t in ("Hold Space (this page must be selected)",
+              "Click this page, then hold Space"):
+        check(t in page, f"the page says {t!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_no_show_file()
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True}
+    mo = _morning_view_pico(selected=["m1"])
+    for focus_js, has in (("", True), (_NO_FOCUS_JS, False)):
+        got = _rack_screen_in_chromium(
+            chrome, page, st, ((1280, 800),), measure_js=_STARTUP_MEASURE_JS,
+            head_js=focus_js, frag="#morning",
+            routes={"/api/remote/morning": mo})
+        res = got[(1280, 800)]
+        if not check(isinstance(res, list) and res, f"drawn: {res!r}"):
+            continue
+        m = res[0]
+        check(m["key"] == "Hold Space (this page must be selected)",
+              f"a machine armed for the purge: the fire control says to hold "
+              f"Space with this page selected: {m['key']!r}")
+        if has:
+            check(m["focus"] is None,
+                  f"the page has the keyboard: no click-first line: "
+                  f"{m['focus']!r}")
+        else:
+            check(m["focus"] == "Click this page, then hold Space",
+                  f"the page does not have the keyboard: it says so: "
+                  f"{m['focus']!r}")
+        check(m["nofile"] == NO_SHOW_FILE_LINE,
+              f"the no-show-file line on the Startup page: {m['nofile']!r}")
     print("  ok")
 
 
@@ -58671,6 +58956,8 @@ if __name__ == "__main__":
     test_rack_screen_width_guard_css_contract()
     test_rack_screen_banners_never_squeeze_the_flame_controls()
     test_rack_screen_browser_check_retries_only_a_timeout()
+    test_rack_screen_flame_controls_need_no_show_file()
+    test_startup_page_says_hold_space_and_this_page_selected()
     test_deck_chip_shows_live_truth()
     test_pixels_chip_shows_live_truth()
     test_deck_chip_red_when_the_deck_loop_hangs()
