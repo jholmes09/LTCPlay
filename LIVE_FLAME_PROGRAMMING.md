@@ -217,15 +217,20 @@ A different switch from live flame programming. It plays the flame cues that are
 Only when all of these are true:
 
 1. A show file is running in Programming (Run with Programming chosen), and no scheduled show is live.
-2. The Programming screen's transport is playing: after Play from, a Jump, Continue, or the loop. Not paused, not following timecode, and no Blackout or Preshow look on the pixels.
+2. The Programming screen's transport is playing: after Play from, a Jump, Continue, or the loop. Not paused, not following timecode, and no Blackout or Preshow look on the pixels. A free run that LTC Player started by itself because timecode was lost does not count: nothing fires from it.
 3. The show's music clock is not playing a cue.
 4. The render passes the same checks as in a show: not older than `xlights_networks.xml`, the right number of channels, and the flame controller where it was when the render was checked. Between cues and past the end of a render the flames are zero.
 
 ### The seek rule (how a scrub cannot fire a burst)
 
-- After turning it on, and after every Play from, Jump, loop wrap, or Pause then Continue, every flame value is zero until the position has played on steadily for half a second.
-- A flame cue that was already under way where you landed stays zero until it has ended. Only a cue that starts after you land fires. So dragging or jumping through the show never fires anything on the way, and a cue you jumped into the middle of never fires.
-- A position that moves by more than a quarter of a second more or less than the time that passed counts as a jump. A position that stops for a tenth of a second counts as stopped.
+- Every press that moves the position is a landing, however small: Play from, every Jump, Continue, the loop turned on, and the loop jumping back to A. So is a position that is more than 0.15 s off the time that has passed since the last landing, however it got there.
+- After a landing, and after turning it on, every flame value is zero until the position has played on steadily for half a second.
+- This is decided channel by channel. A flame channel that is already up where you landed stays zero until it has gone to zero once. So a single long flame you jumped into the middle of never fires, and dragging or jumping through the show never fires anything on the way. A pulsing effect that is part way through where you land can fire again at its next pulse, after the half second.
+- A position that stops for a tenth of a second counts as stopped.
+
+### Who can move the position while it is on
+
+While it is on, Play from, Jump, Continue and turning the loop on work only on the show PC itself, or for someone signed in with the Settings permission (admin). An iPad that is signed out, or signed in without Settings, is refused with: "Flames are live in rehearsal; move the position from the show PC or sign in as an admin." Pause, Follow timecode again, setting marks and turning it off still work from anywhere.
 
 ### What turns it off by itself
 
@@ -236,7 +241,7 @@ Each of these turns it off, sets every flame value to zero at once, and writes t
 - A show going live: a scheduled show starting, or the show's music clock playing a cue.
 - Anything that zeroes the show's flame cues (a Hold, an Abort, the end of a show).
 - Live flame programming starting.
-- An Abort or a Hold standing, or the session no longer being Programming.
+- The session no longer being Programming. (A standing Abort or Hold also stops it, but in Programming the scheduler rarely has one; flamesafe's own Abort latch and hold to arm are what keep a group from firing after an Abort.)
 - A purge selected or firing on the Morning page, or the flame link to flamesafe not sending.
 
 **Turning it off does not disarm.** The groups you armed for the session stay armed, as after a show. Disarm them on the Stream Deck when you are done.

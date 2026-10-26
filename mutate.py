@@ -11829,14 +11829,20 @@ def build():
 
  ("scrub flames: zero() leaves it on at the link",
   "ltcplay/flamelink.py",
-  "            # mode on its next pass).\n            self._rehearse_on = False\n",
-  "            # mode on its next pass).\n"),
+  "            if self._rehearse_on:\n                self._seek_reset()\n"
+  "            self._rehearse_on = False\n            self._rehearse = None\n"
+  "            self._program = None",
+  "            if self._rehearse_on:\n                self._seek_reset()\n"
+  "            self._rehearse = None\n"
+  "            self._program = None"),
 
  ("scrub flames: an Abort leaves it on at the link",
   "ltcplay/flamelink.py",
-  "                # And fire flames while scrubbing, the same way.\n"
+  "                if self._rehearse_on:\n"
+  "                    self._seek_reset()\n"
   "                self._rehearse_on = False\n",
-  "                # And fire flames while scrubbing, the same way.\n"),
+  "                if self._rehearse_on:\n"
+  "                    self._seek_reset()\n"),
 
  ("scrub flames: the link takes it while live flame programming is on",
   "ltcplay/flamelink.py",
@@ -11978,9 +11984,9 @@ def build():
   "ltcplay/remote.py",
   "            return 400, {\"error\": \"Confirm it on the page first. Nothing \"\n"
   "                                  \"was changed.\"}\n"
-  "        ok, text = sf.begin(",
+  "        # A confirm box left open",
   "            pass\n"
-  "        ok, text = sf.begin("),
+  "        # A confirm box left open"),
 
  ("scrub flames: ON needs no Settings permission",
   "ltcplay/users.py",
@@ -11996,6 +12002,119 @@ def build():
   "ltcplay/web/remote.html",
   "  $(\"sf-on\").hidden = !(ME && ME.local);",
   "  $(\"sf-on\").hidden = false;"),
+
+ # Review of #117 (cold safety review): one mutation per new guard and
+ # per guard it found untested.
+ ("scrub flames: a transport command under the jump threshold is no landing",
+  "ltcplay/flamelink.py",
+  "            if a is None or tok != a[2] or \\\n",
+  "            if a is None or \\\n"),
+
+ ("scrub flames: a slow drag is no landing",
+  "ltcplay/flamelink.py",
+  "                    abs((secs - a[0]) - (now - a[1])) > REHEARSE_DRIFT_S:",
+  "                    False:"),
+
+ ("scrub flames: zero() leaves the scrub's seek state for the next show",
+  "ltcplay/flamelink.py",
+  "            if self._rehearse_on:\n                self._seek_reset()\n"
+  "            self._rehearse_on = False\n            self._rehearse = None\n"
+  "            self._program = None",
+  "            self._rehearse_on = False\n            self._rehearse = None\n"
+  "            self._program = None"),
+
+ ("scrub flames: disarm_all() leaves the scrub's seek state for the next show",
+  "ltcplay/flamelink.py",
+  "                if self._rehearse_on:\n"
+  "                    self._seek_reset()\n"
+  "                self._rehearse_on = False\n",
+  "                self._rehearse_on = False\n"),
+
+ ("scrub flames: rehearse_end leaves the scrub's seek state for the next show",
+  "ltcplay/flamelink.py",
+  "            self._zero_gen += 1\n            self._seek_reset()\n"
+  "            self._send_zero_frame()\n            return True",
+  "            self._zero_gen += 1\n"
+  "            self._send_zero_frame()\n            return True"),
+
+ ("scrub flames: a new session is no landing",
+  "ltcplay/flamelink.py",
+  "            self._rehearse_session += 1\n            self._seek_reset()\n",
+  "            self._rehearse_session += 1\n"),
+
+ ("scrub flames: the show live alone does not zero the scrub",
+  "ltcplay/flamelink.py",
+  "        if live is True or show_tc is not None:",
+  "        if show_tc is not None:"),
+
+ ("scrub flames: an Abort during turn-on does not win",
+  "ltcplay/scrubflames.py",
+  "            elif self._cut_epoch != epoch:",
+  "            elif False:"),
+
+ ("scrub flames: on before its watch is running",
+  "ltcplay/scrubflames.py",
+  "                try:\n                    if self._threaded:",
+  "                self.on = True\n                try:\n"
+  "                    if self._threaded:"),
+
+ ("scrub flames: a lost feed's free run is a position",
+  "ltcplay/scrubflames.py",
+  "            if getattr(p, \"freerun_by\", None) != \"operator\":\n"
+  "                return None\n",
+  ""),
+
+ ("scrub flames: the position carries no move count",
+  "ltcplay/scrubflames.py",
+  "            return tc, getattr(p, \"transport_moves\", 0)",
+  "            return tc, 0"),
+
+ ("scrub flames: a lost feed's free run is not marked",
+  "ltcplay/player.py",
+  "                self.freerun_by = \"lost\"\n",
+  ""),
+
+ ("scrub flames: GO is not marked as the operator's",
+  "ltcplay/player.py",
+  "        self.freerun_by = \"operator\"\n",
+  ""),
+
+ ("scrub flames: a Jump is not a move",
+  "ltcplay/player.py",
+  "        self.freerun_epoch = _now() - at\n        self.transport_moves += 1",
+  "        self.freerun_epoch = _now() - at"),
+
+ ("scrub flames: at_transport reads a render checked at another channel",
+  "ltcplay/fire_ice.py",
+  "        if checked_at is not None and checked_at != span[0]:\n"
+  "            return self._scrub_zero(",
+  "        if False:\n            return self._scrub_zero("),
+
+ ("scrub flames: at_transport ignores the reader's render age check",
+  "ltcplay/fire_ice.py",
+  "            if stale_s is s and path in stale:",
+  "            if False:"),
+
+ ("scrub flames: closing the engine leaves it on",
+  "ltcplay/web.py",
+  "            remote.scrub_flames_end(\"the engine is closing\")",
+  "            pass"),
+
+ ("scrub flames: moves from a signed-out iPad go while it is on",
+  "ltcplay/remote.py",
+  "        if not moves or getattr(ctx, \"local\", False):",
+  "        if True:"),
+
+ ("scrub flames: moves need only the Show permission while it is on",
+  "ltcplay/remote.py",
+  "                    users_mod.allowed(u.matrix(), role, \"settings\"):",
+  "                    users_mod.allowed(u.matrix(), role, \"show\"):"),
+
+ ("scrub flames: a stale page turns it on",
+  "ltcplay/remote.py",
+  "        stale = self._stale(body)\n        if stale:\n"
+  "            return 409, {\"error\": stale, \"stale\": True}\n",
+  ""),
 
 ]
 

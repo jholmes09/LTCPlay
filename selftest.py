@@ -59632,8 +59632,33 @@ def test_scrub_flames_read_the_fseq_at_the_transport():
             cues._folder = None
             check(ask() == [70] * 512 and cues.scrub_fault == "",
                   f"{mode}: rendered again: back, the fault cleared")
-            check("—" not in cues.scrub_fault and
-                  "–" not in cues.scrub_fault, "no dashes")
+            if bg:
+                # The reader's age check has run, the layout it read has
+                # not been published again yet: refused all the same.
+                r = os.stat(rig.render).st_mtime_ns
+                os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
+                cues._check_renders_once()
+                got = cues.at_transport(_sf_tc(2.5))
+                check(got is None and "older than" in cues.scrub_fault,
+                      f"{mode}: a render the reader found older than the "
+                      f"layout is refused before the layout is read again: "
+                      f"{cues.scrub_fault!r}")
+                rig.rerender(1534, 70)
+                cues._folder = None
+                check(ask() == [70] * 512, f"{mode}: and back")
+            # The flame controller moved, with the layout file dated older
+            # than the render: the channel the render was checked at tells.
+            rig.layout("B")
+            r = os.stat(rig.render).st_mtime_ns
+            os.utime(rig.net, ns=(r - 10 ** 9, r - 10 ** 9))
+            cues._folder = None
+            got = ask()
+            check(got is None and "when this render was checked" in
+                  cues.scrub_fault,
+                  f"{mode}: the flame controller moved since the render was "
+                  f"checked: refused: {cues.scrub_fault!r}")
+            check("\u2014" not in cues.scrub_fault and
+                  "\u2013" not in cues.scrub_fault, "no dashes")
             cues.close()
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -59648,7 +59673,8 @@ def _sf_engine(work):
     from ltcplay import scrubflames as SF
     player = types.SimpleNamespace(override=None, freerun_epoch=1.0,
                                    freerun_paused_at=None, tc_seconds=2.5,
-                                   on_lost="hold")
+                                   on_lost="hold", freerun_by="operator",
+                                   transport_moves=3)
     clock = types.SimpleNamespace(playing=False)
     sess = types.SimpleNamespace(running=True, player=player, clock=clock,
                                  no_output=False, tl=None)
@@ -59691,22 +59717,30 @@ def test_scrub_flames_the_mode_starts_off_and_ends_itself():
         check(code == 403 and not sf.on, f"ON from an iPad: refused: {out}")
         code, out = r.scrub_flames_post({"on": True}, local)
         check(code == 400 and not sf.on, f"unconfirmed: refused: {out}")
+        code, out = r.scrub_flames_post({"on": True, "confirmed": True,
+                                         "seen": (time.time() - 30) * 1000},
+                                        local)
+        check(code == 409 and out.get("stale") and not sf.on,
+              f"a page showing an old status: refused: {out}")
         # Not a programming session.
         e.player.on_lost = "freerun"
-        code, out = r.scrub_flames_post({"on": True, "confirmed": True},
+        code, out = r.scrub_flames_post({"on": True, "confirmed": True,
+                                         "seen": time.time() * 1000},
                                         local)
         check(code == 409 and "Show mode" in out["error"] and not sf.on,
               f"in Show mode: refused: {out}")
         e.player.on_lost = "hold"
         # Live flame programming on: refused, and the other way round.
         r.live_flame = types.SimpleNamespace(on=True)
-        code, out = r.scrub_flames_post({"on": True, "confirmed": True},
+        code, out = r.scrub_flames_post({"on": True, "confirmed": True,
+                                         "seen": time.time() * 1000},
                                         local)
         check(code == 409 and "live flame programming is on" in
               out["error"] and not sf.on,
               f"refused while live flame programming is on: {out}")
         r.live_flame = types.SimpleNamespace(on=False)
-        code, out = r.scrub_flames_post({"on": True, "confirmed": True},
+        code, out = r.scrub_flames_post({"on": True, "confirmed": True,
+                                         "seen": time.time() * 1000},
                                         local)
         check(code == 200 and sf.on and link.rehearse_on,
               f"on: {out}")
@@ -59719,11 +59753,16 @@ def test_scrub_flames_the_mode_starts_off_and_ends_itself():
         v = r.scrub_flames_view()
         check(v["on"] and v["position"] == "00:00:02:15",
               f"the status says so, with the position: {v}")
-        check(sf.state() == "00:00:02:15", "the position, playing")
+        check(sf.state() == ("00:00:02:15", 3),
+              f"the position, playing, with the move count: {sf.state()}")
+        e.player.freerun_by = "lost"
+        check(sf.state() is None, "a free run a lost feed started: none")
+        e.player.freerun_by = "operator"
         e.player.freerun_paused_at = 2.5
         check(sf.state() is None, "paused: no position (zeros)")
         e.player.freerun_paused_at = None
-        code, out = r.scrub_flames_post({"on": True, "confirmed": True},
+        code, out = r.scrub_flames_post({"on": True, "confirmed": True,
+                                         "seen": time.time() * 1000},
                                         local)
         check(code == 409 and "already on" in out["error"], "already on")
         # Off from anywhere.
@@ -59795,7 +59834,8 @@ def test_scrub_flames_the_mode_starts_off_and_ends_itself():
         sched.machine.abort_latched = True
         check(sf.check() is True and "aborted" in sf.last_end["reason"],
               f"an Abort standing ends it: {sf.last_end}")
-        code, out = r.scrub_flames_post({"on": True, "confirmed": True},
+        code, out = r.scrub_flames_post({"on": True, "confirmed": True,
+                                         "seen": time.time() * 1000},
                                         local)
         check(code == 409 and "aborted" in out["error"],
               f"and it will not turn on until Reset: {out}")
@@ -59814,7 +59854,7 @@ def test_scrub_flames_the_mode_starts_off_and_ends_itself():
         r.flame_cues = types.SimpleNamespace(at_transport=lambda tc: None,
                                              scrub_fault="")
         # Every journal line in plain words.
-        check(all("—" not in t and "–" not in t
+        check(all("\u2014" not in t and "\u2013" not in t
                   for _o, t in e.lines) and
               any(o == "on" for o, _t in e.lines) and
               any(o == "off" and "No flame group was disarmed" in t
@@ -59891,7 +59931,8 @@ def test_scrub_flames_engine_routes_roles_and_page():
                            cookie=jeff)
         check(st == 400 and not sf.calls, f"unconfirmed: refused: {out}")
         st, out, _h = http("/api/remote/scrub-flames",
-                           {"on": True, "confirmed": True}, cookie=jeff)
+                           {"on": True, "confirmed": True,
+                            "seen": time.time() * 1000}, cookie=jeff)
         check(st == 200 and sf.calls == [("begin", "Jeff", "Rack screen")],
               f"an admin on the rack screen, confirmed: on: {out}")
         st, out, _h = http("/api/remote/status")
@@ -59944,7 +59985,7 @@ def test_scrub_flames_engine_routes_roles_and_page():
     check('$("sf-on").hidden = !(ME && ME.local);' in page,
           "Turn on is offered on the show machine only")
     for t in (RM.SCRUB_FLAMES_ENABLES, "FLAMES LIVE IN REHEARSAL"):
-        check("—" not in t and "–" not in t, "no dashes")
+        check("\u2014" not in t and "\u2013" not in t, "no dashes")
     print("  ok")
 
 
@@ -60104,6 +60145,286 @@ def test_scrub_flames_end_to_end_real_flamesafe():
         node.close()
         import shutil
         shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_scrub_flames_review_of_117():
+    section("fire flames while scrubbing, review of #117: every transport "
+            "command is a landing however small (a 0.2 s Jump into a cue, "
+            "repeated 0.2 s Jumps, a 0.1 s Jump, a 5x drag all stay zero "
+            "until 0.5 s steady); a new session is a landing; zero(), "
+            "disarm_all() and rehearse_end leave the guard as a fresh link "
+            "has it; the show live alone zeros it; a lost-feed free run is "
+            "no position; moves need the show PC or Settings while it is "
+            "on; an Abort during turn-on wins; no watch, no mode; engine "
+            "close ends it")
+    import types
+    from ltcplay import flamelink as fl
+    from ltcplay import scrubflames as SF
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    clk = [100.0]
+    show = {"tc": None, "live": False}
+    pos = {"t": None, "moves": 0}
+
+    def state():
+        return show["tc"], show["live"]
+
+    def cues(tc):
+        h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
+        t = h * 3600 + m * 60 + s + f / 30
+        v = [0] * 512
+        if 10.0 <= t < 14.0:
+            v[410] = 200               # cue A, a long flame on slot 411
+        return v
+
+    def scrub():
+        if pos["t"] is None:
+            return None
+        return _sf_tc(pos["t"]), pos["moves"]
+
+    def frame(lk):
+        lk.send_frame()
+        return [f for f in lk.wire if f["t"] == "flame"][-1]["values"]
+
+    def play(lk, frm, to, step=0.025, speed=1.0):
+        out = []
+        t = frm
+        while t < to - 1e-9:
+            pos["t"] = t
+            out.append((t, frame(lk)))
+            t += step * speed
+            clk[0] += step
+        return out
+    link = _sf_link(cues=lambda tc: None, show_state=state,
+                    clock=lambda: clk[0])
+    link.rehearse_begin(scrub, cues)
+    # Steady just before A, then Jump +0.2 s into it: one transport command.
+    play(link, 9.0, 9.95)
+    pos["moves"] += 1
+    got = play(link, 10.15, 11.5)
+    check(not any(v[410] for _t, v in got),
+          f"a Jump of +0.2 s into cue A never fires it: "
+          f"{[t for t, v in got if v[410]][:3]}")
+    # Repeated Jump +0.2 s every 100 ms from before A.
+    pos["moves"] += 1
+    play(link, 8.0, 9.0)
+    t = 9.6
+    rep = []
+    for _ in range(15):
+        pos["moves"] += 1
+        for _k in range(4):               # 100 ms of frames at each landing
+            pos["t"] = t + 0.025 * _k
+            rep.append(frame(link)[410])
+            clk[0] += 0.025
+        t += 0.2 + 0.1
+    check(not any(rep), f"Jumps of +0.2 s every 100 ms: nothing fires: "
+                        f"{rep.count(200)}")
+    # A tiny Jump (+0.1 s, inside the drift) is still a landing.
+    pos["moves"] += 1
+    play(link, 9.0, 9.98)
+    pos["moves"] += 1
+    got = play(link, 10.08, 11.0)
+    check(not any(v[410] for _t, v in got),
+          "a Jump of +0.1 s into cue A is a landing too: it never fires")
+    # A 5x forward drag with no command (the position alone moving fast).
+    pos["moves"] += 1
+    play(link, 8.0, 9.0)
+    got = play(link, 9.0, 12.0, speed=5.0)
+    check(not any(v[410] for _t, v in got),
+          "a 5x forward drag through the start of A: nothing fires")
+    # And played through normally, A fires after its start.
+    pos["moves"] += 1
+    got = play(link, 9.0, 10.8)
+    check(any(v[410] for t, v in got if t > 10.1),
+          "played through at normal speed, A fires")
+    # A Pause, even one too short to look like a jump, is a landing: a
+    # flame under way at the Pause stays zero after it.
+    play(link, 9.0, 10.8)
+    check(frame(link)[410] == 200, "setup: A firing")
+    pos["t"] = None
+    for _ in range(3):
+        frame(link)
+        clk[0] += 0.025
+    got = play(link, 10.8, 11.6)
+    check(not any(v[410] for _t, v in got),
+          "a 75 ms Pause in the middle of A: it stays zero after")
+    # A new session while it is on is a landing (rehearse_begin's reset).
+    link.rehearse_begin(scrub, cues)
+    got = play(link, 10.8, 11.5)
+    check(not any(v[410] for _t, v in got),
+          "a new session in the middle of A: it never fires")
+    # The show live, alone (no timecode with it): zeros.
+    play(link, 9.0, 10.8)
+    check(frame(link)[410] == 200, "setup: firing")
+    show["live"] = True
+    pos["t"] = 10.83
+    check(not any(frame(link)), "the show live with no timecode: zero")
+    show["live"] = False
+    link.rehearse_end()
+
+    # zero(), disarm_all() and rehearse_end: a live show landing right
+    # where the scrub stopped sends what a fresh link sends.
+    def live(lk, frm, to):
+        out = []
+        t = frm
+        while t < to - 1e-9:
+            show["tc"], show["live"] = _sf_tc(t), True
+            out.append(frame(lk)[410])
+            t += 0.025
+            clk[0] += 0.025
+        show["tc"], show["live"] = None, False
+        return out
+    for how in ("rehearse_end", "zero", "disarm_all"):
+        lk = _sf_link(cues=cues, show_state=state, clock=lambda: clk[0])
+        lk.rehearse_begin(scrub, cues)
+        pos["moves"] += 1
+        play(lk, 9.0, 11.0)
+        check(frame(lk)[410] == 200, f"{how}: setup, the scrub firing")
+        if how == "disarm_all":
+            lk.disarm_all("Abort (selftest)")
+        else:
+            getattr(lk, how)()
+        lk.zeroed = False
+        clk[0] += 0.5
+        fresh = _sf_link(cues=cues, show_state=state, clock=lambda: clk[0])
+        fresh.zeroed = False
+        a = live(fresh, 11.05, 12.5)
+        clk[0] -= 1.45
+        b = live(lk, 11.05, 12.5)
+        check(a == b and not any(b),
+              f"after {how}, a live show landing in cue A sends what a "
+              f"fresh link sends (nothing): {b.count(200)} {a.count(200)}")
+    # The engine: state() carries the moves; a lost feed's free run is none;
+    # the moves of a real player.
+    from ltcplay import player as plmod
+    A = FakeFSEQ(frames=800, step=25)
+    tl = _timeline([("00:00:05:00", "A", A)])
+    p = plmod.Player(tl, FakeNetmap(), CountingSender(), freewheel_ms=50,
+                     hold_ms=100, on_lost="freerun")
+    n0 = p.transport_moves
+    p.go(6.0)
+    check(p.freerun_by == "operator" and p.transport_moves == n0 + 1,
+          "GO is the operator's free run, and a move")
+    for f, a in ((p.nudge, (0.1,)), (p.freerun_pause, (True,)),
+                 (p.freerun_pause, (False,)), (p.set_loop, (6.0, 8.0)),
+                 (p.go_to_cue, (0,)), (p.release, ())):
+        before = p.transport_moves
+        f(*a)
+        check(p.transport_moves == before + 1, f"{f.__name__} is a move")
+    check(p.freerun_by is None, "released: no free run")
+    p.feed_timecode(7.0, plmod._now())
+    p._tick()
+    time.sleep(0.3)
+    p._tick()
+    check(p.freerun_epoch is not None and p.freerun_by == "lost",
+          f"a lost feed's free run is marked as one: {p.freerun_by}")
+    sess = types.SimpleNamespace(running=True, player=p)
+    sf = SF.ScrubFlames(link_get=lambda: None, cues_get=lambda: None,
+                        control=types.SimpleNamespace(session=sess),
+                        blockers=lambda: "", threaded=False)
+    sf.on, sf._session = True, sess
+    check(sf.state() is None, "a lost feed's free run: no position, zeros")
+    p.go(6.0)
+    p._tick()
+    st = sf.state()
+    check(st is not None and st[1] == p.transport_moves,
+          f"the transport's free run: the position and the moves: {st}")
+    # Moves while it is on need the show PC or Settings.
+    r = RM.Remote(types.SimpleNamespace(session=None, state=lambda: {}),
+                  None, folder=tempfile.gettempdir())
+    r.scrub_flames = types.SimpleNamespace(on=True)
+    ipad = RM.Ctx(False, "10.20.0.44")
+    local = RM.Ctx(True, "127.0.0.1")
+    for name, body in (("play-from", {"at": "00:00:10:00"}),
+                       ("jump", {"seconds": 5}), ("continue", {}),
+                       ("loop", {"on": True})):
+        body = dict(body, seen=time.time() * 1000)
+        code, out = r.press(name, body, ipad)
+        check(code == 403 and "Flames are live in rehearsal" in
+              out["error"], f"{name} from a signed-out iPad: refused: "
+                            f"{code} {out}")
+        code, out = r.press(name, body, local)
+        check("Flames are live" not in str(out.get("error")),
+              f"{name} on the show PC: not refused for it")
+    r.users = types.SimpleNamespace(active=lambda: True,
+                                    matrix=lambda: U.DEFAULT_MATRIX)
+    for role, ok in (("admin", True), ("operator", False),
+                     ("viewer", False)):
+        ctx = RM.Ctx(False, "10.20.0.44",
+                     session={"name": "X", "role": role})
+        code, out = r.press("jump", {"seconds": 5,
+                                     "seen": time.time() * 1000}, ctx)
+        check(("Flames are live" in str(out.get("error"))) != ok,
+              f"jump from an iPad signed in as {role}: "
+              f"{'allowed' if ok else 'refused'}: {out}")
+    for name, body in (("pause", {}), ("follow", {}),
+                       ("loop", {"on": False}), ("mark-a", {})):
+        code, out = r.press(name, dict(body, seen=time.time() * 1000), ipad)
+        check("Flames are live" not in str(out.get("error")),
+              f"{name} from an iPad still goes (it only stops or marks)")
+    r.scrub_flames = types.SimpleNamespace(on=False)
+    code, out = r.press("jump", {"seconds": 5, "seen": time.time() * 1000},
+                        ipad)
+    check("Flames are live" not in str(out.get("error")),
+          "with it off, nothing new is refused")
+    # An Abort, Hold or Start now during turn-on wins.
+    link = _sf_link(cues=cues, show_state=state, clock=lambda: clk[0])
+    box = {}
+
+    def blockers():
+        if box.get("cut"):
+            box["sf"].cut("Abort pressed while it was starting")
+        return ""
+    sess = types.SimpleNamespace(running=True, player=None)
+    sf = box["sf"] = SF.ScrubFlames(
+        link_get=lambda: link,
+        cues_get=lambda: types.SimpleNamespace(at_transport=lambda tc: None),
+        control=types.SimpleNamespace(session=sess), blockers=blockers,
+        threaded=False)
+    box["cut"] = True
+    ok, text = sf.begin("Jeff", "Rack screen")
+    check(not ok and not sf.on and not link.rehearse_on and
+          "was pressed while it was starting" in text,
+          f"an Abort during turn-on wins: {text}")
+    box["cut"] = False
+    # No watch, no mode.
+    sf2 = SF.ScrubFlames(
+        link_get=lambda: link,
+        cues_get=lambda: types.SimpleNamespace(at_transport=lambda tc: None),
+        control=types.SimpleNamespace(session=sess), blockers=lambda: "",
+        threaded=True)
+    real = SF.threading.Thread
+
+    class NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+    SF.threading.Thread = NoThread
+    try:
+        ok, text = sf2.begin("Jeff", "Rack screen")
+    finally:
+        SF.threading.Thread = real
+    check(not ok and not sf2.on and not link.rehearse_on and
+          "watch could not be started" in text,
+          f"a watch that will not start leaves it off: {text}")
+    # Engine close ends it (web._attach_scrub_flames).
+    from ltcplay import web as W
+    r2 = RM.Remote(types.SimpleNamespace(session=sess, state=lambda: {}),
+                   None, folder=tempfile.gettempdir())
+    closed = []
+    httpd = types.SimpleNamespace(
+        remote=r2, fire_ice=types.SimpleNamespace(flame_link=link),
+        server_close=lambda: closed.append(1))
+    W._attach_scrub_flames(httpd)
+    r2.scrub_flames._threaded = False
+    r2.scrub_flames.on = True
+    httpd.server_close()
+    check(closed and not r2.scrub_flames.on and
+          "closing" in (r2.scrub_flames.last_end or {}).get("reason", ""),
+          f"closing the engine ends it: {r2.scrub_flames.last_end}")
     print("  ok")
 
 
@@ -60698,6 +61019,7 @@ if __name__ == "__main__":
     test_scrub_flames_the_mode_starts_off_and_ends_itself()
     test_scrub_flames_engine_routes_roles_and_page()
     test_scrub_flames_end_to_end_real_flamesafe()
+    test_scrub_flames_review_of_117()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

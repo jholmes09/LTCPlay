@@ -26,12 +26,18 @@ The rules, in one place:
     free run that is not paused, with no Blackout, Preshow or look on the
     pixels. Paused, stopped, following timecode, or the show clock playing:
     zero.
-  - The seek guard, always (flamelink.SEEK_SETTLE_S, SEEK_JUMP_S): after
-    turning it on, after every Play from, Jump, loop wrap, Continue or any
-    other move, every flame value is zero until the position has run
-    steadily for 0.5 s, and a flame cue already under way where it landed
-    stays zero until it has ended. A scrub drag never fires anything on
-    the way, and a cue whose start was jumped over never fires.
+  - The seek guard, always (flamelink.SEEK_SETTLE_S, REHEARSE_DRIFT_S):
+    every transport command is a landing however small (the player's
+    transport_moves), and so is a position off the time that passed by
+    more than 0.15 s. After a landing, and after turning it on, every flame
+    value is zero until the position has run steadily for 0.5 s, and each
+    channel already up where it landed stays zero until it has been seen
+    at zero. A scrub drag never fires anything on the way, and a long cue
+    whose start was jumped over never fires.
+  - While it is on, a press that moves the position (Play from, Jump,
+    Continue, the loop on) needs the show machine or the Settings
+    permission (remote.scrub_transport_refusal). A free run started by a
+    lost timecode feed is never a position here.
   - The live show's own cue path (FlameCues.__call__, FlameLink.values_now
     below its first line) is not used and not changed.
   - It ends by itself, with the reason in the journal and the audit log,
@@ -190,18 +196,33 @@ class ScrubFlames:
                 why = ("an Abort, Hold or Start now was pressed while it "
                        "was starting.")
             else:
-                self.on = True
                 self._gen += 1
                 gen = self._gen
                 self._session = sess
                 self._link_session = n
                 self.who, self.screen = who or "unsigned", screen
                 self.began = self._clock()
-                if self._threaded:
-                    self._thread = threading.Thread(
-                        target=self._watch, args=(gen,), daemon=True,
-                        name="ltcplay-scrub-flames")
-                    self._thread.start()
+                # On only once its watch is running (review of #117,
+                # P2-5): a watch that cannot start leaves it off, the
+                # link's slot shut. The watch's first look is WATCH_S
+                # from now, after `on` is set below.
+                try:
+                    if self._threaded:
+                        t = threading.Thread(
+                            target=self._watch, args=(gen,), daemon=True,
+                            name="ltcplay-scrub-flames")
+                        t.start()
+                        self._thread = t
+                    self.on = True
+                except Exception as e:
+                    self._gen += 1
+                    self._session = None
+                    try:
+                        link.rehearse_end()
+                    except Exception:
+                        pass
+                    why = (f"its watch could not be started "
+                           f"({type(e).__name__}: {e}).")
         if why:
             return self._refused(who, screen, why)
         text = (f"{self.who} turned {NAME} ON on the {screen}. The show's "
@@ -217,11 +238,14 @@ class ScrubFlames:
 
     # -- every frame (the flame link's sender) --------------------------------
     def state(self):
-        """The transport position as the flame link's timecode text, or
-        None (zeros): off, another session than the one it was turned on
-        in, nothing running, no player, a Blackout, Preshow or look, not
-        on the transport's free run, or paused. Never raises, never waits
-        (plain reads only)."""
+        """(the transport position as the flame link's timecode text, the
+        player's transport_moves), or None (zeros): off, another session
+        than the one it was turned on in, nothing running, no player, a
+        Blackout, Preshow or look, not on a free run the transport started
+        (a free run started by a lost timecode feed is not one: review of
+        #117, P2-3), or paused. The move count makes every transport
+        command a landing at the flame link, however small. Never raises,
+        never waits (plain reads only)."""
         try:
             if not self.on:
                 return None
@@ -235,7 +259,12 @@ class ScrubFlames:
             if getattr(p, "freerun_epoch", None) is None or \
                     getattr(p, "freerun_paused_at", None) is not None:
                 return None
-            return tc_text(getattr(p, "tc_seconds", None))
+            if getattr(p, "freerun_by", None) != "operator":
+                return None
+            tc = tc_text(getattr(p, "tc_seconds", None))
+            if tc is None:
+                return None
+            return tc, getattr(p, "transport_moves", 0)
         except Exception:
             return None
 
@@ -262,6 +291,14 @@ class ScrubFlames:
         by = who or ("system" if system else "unsigned")
         with self._lock:
             if not self.on:
+                # Off already; the link's slot is shut again anyway
+                # (review of #117, P2-6: cheap, and never wrong).
+                link = self.link()
+                if link is not None:
+                    try:
+                        link.rehearse_end()
+                    except Exception:
+                        pass
                 return False
             self.on = False
             self.ends += 1
@@ -334,7 +371,8 @@ class ScrubFlames:
             began = self.began
             out["since_s"] = (round(self._clock() - began, 1)
                               if began is not None else None)
-            out["position"] = self.state()
+            pos = self.state()
+            out["position"] = pos[0] if pos else None
             link = self.link()
             out["firing"] = bool(getattr(link, "last_values_nonzero",
                                          False))

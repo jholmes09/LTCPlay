@@ -182,10 +182,12 @@ SCRUB_FLAMES_ENABLES = (
     "(Play from, Jump, Continue, the loop). flamesafe still fires only a "
     "group that is armed, and still applies lockouts and Abort. Nothing "
     "fires while paused, and nothing for half a second after every jump, "
-    "loop or Play from; a flame cue already under way where you land "
-    "stays off until it ends. It turns itself off on Off, Abort, Hold, "
-    "Start now, Run, Stop or a show going live. Turning it off does not "
-    "disarm: disarm on the Stream Deck when you are done.")
+    "loop, Pause or Play from; a flame channel already up where you land "
+    "stays off until it has gone to zero. While it is on, only the show PC "
+    "or an admin signed in can move the position. It turns itself off on "
+    "Off, Abort, Hold, Start now, Run, Stop or a show going live. Turning "
+    "it off does not disarm: disarm on the Stream Deck when you are "
+    "done.")
 # screen-arming (2026-10-22): the switch for arming from a screen, set on
 # the show machine itself, never from the network.
 LOCAL_ONLY = frozenset(("network", "screen-arming"))
@@ -1767,6 +1769,12 @@ class Remote:
         if name == "abort":
             return self.abort(who, screen, flames, lasers, pressed)
         if name in TRANSPORT_ROUTES:
+            why = self.scrub_transport_refusal(name, body, ctx)
+            if why:
+                self._journal(who, screen, name, "refused",
+                              f"{who or 'Someone'}'s {name} on the {screen} "
+                              f"was refused. {why}")
+                return 403, {"error": why}
             return self.transport(name, body, who, screen)
         svc = self.schedule
         if svc is None:
@@ -2541,6 +2549,40 @@ class Remote:
                     "Shutdown page; clear the purge selection first.")
         return ""
 
+    # The transport presses that move the position and so decide when
+    # flames fire while fire flames while scrubbing is on (Jeff's decision
+    # on review of #117, P1-2). Pause, Follow and the marks only stop or
+    # mark it.
+    SCRUB_MOVES = ("play-from", "jump", "continue")
+    SCRUB_MOVE_REFUSED = ("Flames are live in rehearsal; move the position "
+                          "from the show PC or sign in as an admin. "
+                          "Nothing was changed.")
+
+    def scrub_transport_refusal(self, name, body, ctx):
+        """While fire flames while scrubbing is on, a press that moves the
+        position (Play from, Jump, Continue, the loop turned on) needs the
+        show machine itself or someone signed in with the Settings
+        permission; "" when it may go ahead. Never refuses while the mode
+        is off. Fails closed."""
+        sf = self.scrub_flames
+        if sf is None or not getattr(sf, "on", False):
+            return ""
+        moves = name in self.SCRUB_MOVES or (
+            name == "loop" and isinstance(body, dict)
+            and body.get("on") is True)
+        if not moves or getattr(ctx, "local", False):
+            return ""
+        try:
+            from . import users as users_mod
+            u = self.users
+            role = (getattr(ctx, "session", None) or {}).get("role")
+            if u is not None and u.active() and role is not None and \
+                    users_mod.allowed(u.matrix(), role, "settings"):
+                return ""
+        except Exception:                        # noqa: BLE001
+            pass
+        return self.SCRUB_MOVE_REFUSED
+
     def scrub_flames_cut(self, reason, who="", screen=""):
         """At an Abort, Hold or Start now press: the flame link's slot shut
         now (ScrubFlames.cut), the journal and audit lines on a thread of
@@ -2622,6 +2664,11 @@ class Remote:
         if body.get("confirmed") is not True:
             return 400, {"error": "Confirm it on the page first. Nothing "
                                   "was changed."}
+        # A confirm box left open across an engine restart must not turn
+        # it on in the new engine (review of #117, P2-4).
+        stale = self._stale(body)
+        if stale:
+            return 409, {"error": stale, "stale": True}
         ok, text = sf.begin(who or "unsigned", screen)
         if not ok:
             return 409, {"error": text}

@@ -193,6 +193,12 @@ PROGRAM_HOLD_S = 0.25
 # show live, starting or held), and the seek guard ALWAYS applies to it,
 # whatever seek_guard says. zero() and disarm_all() end it, like live flame
 # programming, so a Hold or an Abort stops it at the link at once.
+# Every move of the transport is a landing (review of #117, P1-1: a Jump
+# shorter than SEEK_JUMP_S, or a slow drag, was not a seek): state() may
+# answer (tc, token) with a token the player bumps on every transport
+# command, and a position more than REHEARSE_DRIFT_S off the time that has
+# passed since the last landing is a landing too, however it got there.
+REHEARSE_DRIFT_S = 0.15
 LOCK_ALARM_S = 1.0         # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
 KEY_MIN, KEY_MAX = 16, 128
@@ -509,6 +515,7 @@ class FlameLink:
         self._rehearse_on = False
         self._rehearse = None
         self._rehearse_session = 0
+        self._r_anchor = None       # (seconds, clock, token) at the landing
         self.rehearse_sent = 0      # frames with a flame value in them
         # Lockout (2026-10-17): channels (1-based slots) zeroed in every
         # frame this link sends, cue or purge. flamesafe enforces the same
@@ -1024,6 +1031,7 @@ class FlameLink:
         self._seek_last = None
         self._steady_since = None
         self._blocked = set(range(UNIVERSE_SIZE))
+        self._r_anchor = None
 
     def rehearse_begin(self, state, cues):
         """Fire flames while scrubbing is on: from the next frame the
@@ -1076,8 +1084,10 @@ class FlameLink:
           3. state() answered a timecode (None: paused, stopped, a look,
              following timecode, not the programming session);
           4. the seek guard, ALWAYS, whatever self.seek_guard says: run
-             steadily for SEEK_SETTLE_S since the last seek, jump, loop
-             wrap, Pause, or the mode starting, and channel by channel
+             steadily for SEEK_SETTLE_S since the last landing (the mode
+             starting, a Pause, every transport command however small,
+             a loop wrap, any position off the time that passed by more
+             than REHEARSE_DRIFT_S), and channel by channel
              seen at zero since then. A position that stands still for
              more than TC_STILL_S ends the steady run, so it is moving
              too;
@@ -1109,8 +1119,23 @@ class FlameLink:
                                                 f"not be read "
                                                 f"({_exc_text(e)})")
             return None, zeros
+        tok = None
+        if isinstance(tc, tuple) and len(tc) == 2:
+            tc, tok = tc
         if not isinstance(tc, str) or not _TC.fullmatch(tc):
             tc = None
+        if tc is not None:
+            # A landing: the first position, any transport command (the
+            # token changed), or a position off the time that passed since
+            # the last landing by more than REHEARSE_DRIFT_S. The seek guard
+            # starts again from it, so nothing fires for SEEK_SETTLE_S and
+            # a channel already up stays zero until it has been at zero.
+            secs = self._tc_seconds(tc)
+            a = self._r_anchor
+            if a is None or tok != a[2] or \
+                    abs((secs - a[0]) - (now - a[1])) > REHEARSE_DRIFT_S:
+                self._seek_reset()
+                self._r_anchor = (secs, now, tok)
         settled = self._seek_guard(tc, now)
         if tc is None:
             # Paused, stopped or not on the transport: zero, and whatever
@@ -1378,7 +1403,10 @@ class FlameLink:
             # flame programming at the link too: xLights stops with the
             # fire (flameprog.py ends the mode on its next pass).
             # So does fire flames while scrubbing (scrubflames.py ends the
-            # mode on its next pass).
+            # mode on its next pass), with the seek guard started again as
+            # rehearse_end does (review of #117, P2-1).
+            if self._rehearse_on:
+                self._seek_reset()
             self._rehearse_on = False
             self._rehearse = None
             self._program = None
@@ -1411,6 +1439,8 @@ class FlameLink:
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
                 # And fire flames while scrubbing, the same way.
+                if self._rehearse_on:
+                    self._seek_reset()
                 self._rehearse_on = False
                 self._rehearse = None
                 self._program = None

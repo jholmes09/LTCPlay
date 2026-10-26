@@ -167,6 +167,14 @@ class Player:
         # release, so a show following timecode never sees either.
         self.freerun_paused_at = None
         self.loop = None
+        # Fire flames while scrubbing (scrubflames.py, review of #117): who
+        # started the free run ("operator": GO, Play from and the rest of
+        # the transport; "lost": on_lost freerun when the feed died; None),
+        # and a count bumped by EVERY move of the position (each transport
+        # command, a loop wrap, a release), so the flame link can treat
+        # each one as a landing however small the move.
+        self.freerun_by = None
+        self.transport_moves = 0
         # The FEED's own state while a free run is on; the show's
         # state is FREERUN. Kept apart so the display can tell the
         # truth about the feed without logging a flip per frame.
@@ -511,6 +519,8 @@ class Player:
             self.freerun_epoch = None
             self.freerun_paused_at = None
             self.loop = None
+            self.freerun_by = None
+            self.transport_moves += 1
         self._event("clock", "the show clock stopped; back to the idle look")
 
     def _now_tc(self):
@@ -713,6 +723,7 @@ class Player:
                     # one (flamelink's seek guard).
                     self.freerun_epoch = now - loop[0]
                     self.tc_seconds = loop[0]
+                    self.transport_moves += 1
             return self._play_at(self.tc_seconds, prev_state, prev_cue,
                                  prev_source)
 
@@ -778,6 +789,8 @@ class Player:
                 # Start from where the feed actually was, not from now: the
                 # hold window has already elapsed, and the music did not wait.
                 self.freerun_epoch = last - self.last_ltc_seconds
+                self.freerun_by = "lost"
+                self.transport_moves += 1
                 self._event("freerun",
                             f"timecode lost; running the rest of the set on "
                             f"this Mac's clock from "
@@ -894,6 +907,8 @@ class Player:
                              "show clock")
         self.freerun_epoch = _now() - tc_seconds
         self.freerun_paused_at = None
+        self.freerun_by = "operator"
+        self.transport_moves += 1
         self.override = None
         self._event("freerun", f"GO from {tc_seconds:.3f}s on this machine's "
                                f"own clock; the timecode feed is being "
@@ -916,6 +931,7 @@ class Player:
                 else _now() - self.freerun_epoch)
         at = max(0.0, here + float(seconds))
         self.freerun_epoch = _now() - at
+        self.transport_moves += 1
         if self.freerun_paused_at is not None:
             self.freerun_paused_at = at
         self._event("freerun", f"skipped {float(seconds):+.1f}s to {at:.3f}s")
@@ -925,6 +941,7 @@ class Player:
         """Pause a free run on the frame it is at, or carry on from it.
         Programming sessions only (the remote page refuses it otherwise).
         Returns the show time it paused or continued at."""
+        self.transport_moves += 1
         if self.freerun_epoch is None:
             raise ValueError("The show is following timecode, so this Mac "
                              "cannot pause it. Pause only applies to a free "
@@ -955,6 +972,7 @@ class Player:
             raise ValueError("A loop needs mark B after mark A.")
         if b - a < 1.0:
             raise ValueError("A loop has to be at least 1 second long.")
+        self.transport_moves += 1
         self.loop = (a, b)
         self._event("freerun", f"looping {a:.3f}s to {b:.3f}s")
         return self.loop
@@ -990,6 +1008,7 @@ class Player:
         else:
             i = min(len(cues) - 1, (here + 1) if here >= 0 else 0)
         target = cues[i]
+        self.transport_moves += 1
         self.freerun_epoch = _now() - target.tc_seconds
         if self.freerun_paused_at is not None:
             self.freerun_paused_at = target.tc_seconds
@@ -1001,6 +1020,8 @@ class Player:
         """Hand the show back to the timecode."""
         if self.freerun_epoch is None:
             return False
+        self.freerun_by = None
+        self.transport_moves += 1
         self.freerun_epoch = None
         self.freerun_paused_at = None
         self.loop = None
