@@ -12202,9 +12202,9 @@ def build():
   '    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};\n  }\n  return {fire:true, next:null};'),
 
  ("rack screen: the Abort sign's second tap counts long after the first",
-  "ltcplay/web/remote.html",
-  'const ABORT_TAP_MS = 2000, ABORT_TAP_MIN_MS = 150;',
-  'const ABORT_TAP_MS = 5000, ABORT_TAP_MIN_MS = 150;'),
+  'ltcplay/web/remote.html',
+  'const ABORT_TAP_MS = 2000;',
+  'const ABORT_TAP_MS = 5000;'),
 
  ("rack screen: a finger then the mouse aborts",
   "ltcplay/web/remote.html",
@@ -12274,19 +12274,19 @@ def build():
 
  # Review of #122.
  ("startup page: a second tap on L while the first is under way flips it back",
-  "ltcplay/web/remote.html",
-  "  if(LOCK_BUSY[key]) return;\n",
-  ""),
+  'ltcplay/web/remote.html',
+  '  if(LOCK_BUSY[key] && want === undefined) return;\n',
+  ''),
 
  ("startup page: an L button is free again at once after its answer",
   "ltcplay/web/remote.html",
   "    setTimeout(() => { delete LOCK_BUSY[key]; }, LOCK_QUIET_MS);",
   "    delete LOCK_BUSY[key];"),
 
- ("startup page: an L tap decides from the page's old copy",
-  "ltcplay/web/remote.html",
-  "    try{ fresh = await getJSON(\"/api/remote/morning\", 1500); }catch(e){ fresh = null; }",
-  "    fresh = MO;"),
+ ("startup page: an L tap never asks the engine before it sends",
+  'ltcplay/web/remote.html',
+  '    try{ fresh = await getJSON("/api/remote/morning", 1500); }catch(e){ fresh = null; }',
+  '    fresh = MO;'),
 
  ("startup page: a machine is unlocked while its flame group is armed",
   "ltcplay/web/remote.html",
@@ -12303,10 +12303,10 @@ def build():
   "#abortbar.tap1 button{width:calc(var(--abort-size) + 10px);",
   "#abortbar.tap1 button{width:calc(var(--abort-size) * 2.1);"),
 
- ("rack screen: a bounce on the Abort sign is a double tap",
-  "ltcplay/web/remote.html",
-  "    if(nowMs - prev.at < ABORT_TAP_MIN_MS) return {fire:false, same:true, next:prev};\n",
-  ""),
+ ("rack screen: a fast double tap on the Abort sign waits for a third",
+  'ltcplay/web/remote.html',
+  '  if(prev && prev.kind === kind && nowMs >= prev.at){',
+  '  if(prev && prev.kind === kind && nowMs >= prev.at && nowMs - prev.at >= 150){'),
 
  ("rack screen: a held Enter on the Abort sign counts again and again",
   "ltcplay/web/remote.html",
@@ -12319,9 +12319,9 @@ def build():
   ''),
 
  ("rack screen: a late timer turns a good second Abort tap into a first",
-  "ltcplay/web/remote.html",
-  '$("abortbar").classList.contains("tap1"));\n  if(step.same) return;',
-  'false);\n  if(step.same) return;'),
+  'ltcplay/web/remote.html',
+  'abortTapStep(ABORT_TAP, monoNow(), kind, $("abortbar").classList.contains("tap1"));',
+  'abortTapStep(ABORT_TAP, monoNow(), kind, false);'),
 
  ("rack screen: the second Abort tap leaves a hold under way",
   "ltcplay/web/remote.html",
@@ -12334,8 +12334,8 @@ def build():
   '  if(ls && la.output_permitted) o = "output on";'),
 
  ("rack screen: a laser warning shows only as a colour",
-  "ltcplay/web/remote.html",
-  '  const warn = out.state === "warn" ? "; " + String(out.word || "check") : "";',
+  'ltcplay/web/remote.html',
+  '  const warn = out.state === "warn" || (out.state === "ok" && /\\blit\\b/.test(String(out.word || ""))) ? "; " + String(out.word || "check") : "";',
   '  const warn = "";'),
 
  # Every flame group's "armed n of m machines" (Jeff, 2026-10-26).
@@ -12358,6 +12358,82 @@ def build():
   "ltcplay/remote.py",
   "                if x.id in locked:\n                    g[\"locked\"] += 1",
   "                if False:\n                    g[\"locked\"] += 1"),
+
+ # Second review of #122.
+ ("startup page: a tap sends what the engine has, not what the operator saw",
+  "ltcplay/web/remote.html",
+  "    if(on === isLocked(fresh)){",
+  "    if(false){"),
+
+ ("startup page: Undo is dropped inside the quiet second",
+  "ltcplay/web/remote.html",
+  "  if(LOCK_BUSY[key] && want === undefined) return;",
+  "  if(LOCK_BUSY[key]) return;"),
+
+ ("startup page: Undo unlocks a machine whose group is armed",
+  "ltcplay/web/remote.html",
+  '    if(!on && kind === "machine"){\n      const why = unlockRefusal(',
+  '    if(!on && kind === "machine" && want === undefined){\n      const why = unlockRefusal('),
+
+ ("startup page: an unlock goes while flamesafe is not connected",
+  "ltcplay/web/remote.html",
+  "  if(!fl.connected || fl.stale) return",
+  "  if(fl.stale) return"),
+
+ ("morning: a machine is unlocked while its flame group is armed",
+  "ltcplay/morning.py",
+  "                why = self.unlock_refusal(uid)\n",
+  "                why = \"\"\n"),
+
+ ("morning: a machine is unlocked while its group is asked for",
+  "ltcplay/morning.py",
+  "            if g.get(\"name\") == m.group and (g.get(\"armed\") == \"armed\" or\n                                             g.get(\"wanted\")):",
+  "            if g.get(\"name\") == m.group and g.get(\"armed\") == \"armed\":"),
+
+ ("morning: a machine is unlocked while flamesafe is stale",
+  "ltcplay/morning.py",
+  "        if not fl or fl.get(\"stale\") or not fl.get(\"connected\"):",
+  "        if not fl:"),
+
+ ("rack screen: a page with no contact keeps an old machine count",
+  "ltcplay/web/remote.html",
+  '      if(sf){ sf.hidden = false; sf.textContent = "armed: not known"; sf.title = ""; }\n',
+  ''),
+
+ ("rack screen: a lock flamesafe does not hold yet is counted out",
+  "ltcplay/web/remote.html",
+  '  const locked = lk === "ok" ? k : 0;',
+  "  const locked = k;"),
+
+ ("remote: a lock counts as held before flamesafe says so",
+  "ltcplay/remote.py",
+  '"ok" if sv.get("flamesafe_confirmed") is True else',
+  '"ok" if True else'),
+
+ ("remote: the machine count reads the default list on a config error",
+  "ltcplay/remote.py",
+  '            if getattr(m, "config_error", ""):\n                return None\n',
+  ''),
+
+ ("rack screen: the laser pill leaves out lit, unconfirmed",
+  "ltcplay/web/remote.html",
+  ' || (out.state === "ok" && /\\blit\\b/.test(String(out.word || "")))',
+  ''),
+
+ ("rack screen: a laser arm not known is only red",
+  "ltcplay/web/remote.html",
+  '  if(!ls || arm.state === "bad") a = ',
+  '  if(!ls) a = '),
+
+ ("rack screen: some lasers armed reads output dark",
+  "ltcplay/web/remote.html",
+  '  else if(ls) o = "output off";',
+  '  else if(ls) o = "output dark";'),
+
+ ("rack screen: a two-safety group gets the machine count too",
+  "ltcplay/web/remote.html",
+  '  if(!g || c === "unknown" || (g.safeties_up || []).length >= 2) return "";',
+  '  if(!g || c === "unknown" || (g.safeties_up || []).length > 2) return "";'),
 
  ("rack screen: the nav buttons are cut off at the right edge again",
   "ltcplay/web/remote.html",

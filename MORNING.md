@@ -47,7 +47,10 @@ rule written there.
    banner on every screen, a journal line on lock and unlock. On the rack
    screen one tap on the L button locks or unlocks, with no pop-up (Jeff,
    2026-10-26), and an Undo for 5 s; the engine still requires an unlock
-   to say it is confirmed, and the tap is that confirm.
+   to say it is confirmed, and the tap is that confirm. The engine refuses
+   an unlock of a machine while its flame group is armed or asked for, or
+   while flamesafe's state is not known ("Disarm <group> first, then
+   unlock <machine>"), from every surface; a lock is never held back.
 6. **Stream Deck**: while this page is open the deck re-maps itself (the
    group keys show PURGE ARMED / OFF / LOCKED, the Start key becomes the
    FIRE key) and restores when the page is left or the engine stops saying

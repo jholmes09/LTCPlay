@@ -43954,17 +43954,15 @@ t(abortTapStep(first, 1500, "mouse").fire === false, "another kind of pointer is
 t(abortTapStep({at:1000, kind:"key"}, 1800, "key").fire === true, "Enter or Space twice");
 t(abortTapStep(first, 900, "touch").fire === false, "a clock that went back is a first tap");
 t(abortTapKind({pointerType:"pen"}) === "pen" && abortTapKind({detail:0}) === "key" && abortTapKind({detail:1}) === "mouse", "the kinds");
-// Review of #122, P2-2 and P2-6.
-t(ABORT_TAP_MIN_MS === 150, "150 ms");
-let q = abortTapStep(first, 1100, "touch");
-t(q.fire === false && q.same === true && q.next === first, "a second tap under 150 ms is a bounce: the same tap, still waiting");
-t(abortTapStep(first, 1150, "touch").fire === true, "150 ms after: a double tap");
+// Second review of #122, P2-2: a panic double tap, however fast, aborts.
+t(abortTapStep(first, 1040, "touch").fire === true && abortTapStep(first, 1100, "mouse").fire === false, "a fast second tap of the same kind aborts");
 t(abortTapStep(first, 3500, "touch", true).fire === true, "the sign still enlarged (a late timer): the second tap fires");
 t(abortTapStep(first, 3500, "touch", false).fire === false, "and once it has gone back: a first tap");
 t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"armed"}]}) === "Disarm ground first, then unlock G1.", "no unlock while its group is armed");
 t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"held", wanted:true}]}) === "Disarm ground first, then unlock G1.", "nor asked for");
 t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"disarmed"}]}) === "", "off: unlock");
 t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:true, groups:[]})), "flamesafe not known: no unlock");
+t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:false, stale:false, groups:[{name:"ground", armed:"disarmed"}]})), "flamesafe not connected: no unlock");
 """)
     if bad is not None:
         check(bad == [], f"the Abort double tap, in node: {bad}")
@@ -44153,16 +44151,11 @@ ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
 ab.dispatchEvent(new MouseEvent("dblclick", {bubbles:true, detail:2}));
 await h.sleep(150);
 out.dbl = n();
-// A bounce: two clicks at once are one tap, still waiting; a third
-// (deliberate) tap aborts.
+// A fast double click (two clicks at once) aborts too.
 ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
 ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
 await h.sleep(60);
 out.bounce = {n:n(), tap1:document.getElementById("abortbar").classList.contains("tap1")};
-await h.sleep(250);
-ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
-await h.sleep(150);
-out.bounce_then = n();
 out.bodies = h.posts("abort").map(p => p.body.confirmed);
 // A held key's repeats are swallowed; the mouse leaves no focus behind.
 const rep = new KeyboardEvent("keydown", {key:"Enter", repeat:true, bubbles:true, cancelable:true});
@@ -44188,9 +44181,9 @@ out.focus_left = document.activeElement !== ab;
               f"aborts: {m}")
         check(m["dbl"] == 4 and all(b is True for b in m["bodies"]),
               f"a real double click aborts once, every Abort confirmed: {m}")
-        check(m["bounce"] == {"n": 4, "tap1": True} and m["bounce_then"] == 5,
-              f"review of #122, P2-2: two clicks under 150 ms apart are one "
-              f"tap, still waiting; the next tap aborts: {m}")
+        check(m["bounce"] == {"n": 5, "tap1": False},
+              f"second review of #122, P2-2: a fast double click aborts: "
+              f"{m}")
         check(m["repeat_swallowed"] and m["first_key_kept"] and
               m["focus_left"],
               f"review of #122, P2-2: a held key's repeats never count, and "
@@ -44765,11 +44758,15 @@ t(p.length === 3 && p[1].name === "Lasers" && p[1].word === "all disarmed, outpu
 p = laserPill(chips("1 of 2 armed", "warn", "dark", "ok"), L(true, false, {why_off:"not every laser is armed"}));
 t(p[1].word === "1 of 2 armed, output off" && p[1].state === "warn" && /Armed: Laser 1\./.test(p[1].title) && /stays off: not every laser is armed/.test(p[1].title) && /Laser arm: 1 of 2 armed/.test(p[1].title) && /last sent BEYOND: dark \(sent only\)/.test(p[1].title), "some armed: " + JSON.stringify(p[1]));
 p = laserPill(chips("ARMED", "warn", "lit, unconfirmed", "ok"), L(true, true, {output_permitted:true}));
-t(p[1].word === "all armed, output allowed" && p[1].state === "warn", "all armed: BEYOND's output allowed, never said on (review of #122, P2-4): " + JSON.stringify(p[1]));
+t(p[1].word === "all armed, output allowed; lit, unconfirmed" && p[1].state === "warn", "all armed: BEYOND's output allowed, never said on (review of #122, P2-4): " + JSON.stringify(p[1]));
 p = laserPill(chips("ARMED", "warn", "lit? link unknown", "warn"), L(true, true, {output_permitted:true}));
 t(p[1].word === "all armed, output allowed; lit? link unknown", "a warning is in the sentence, not only the colour: " + p[1].word);
 p = laserPill(chips("disarmed", "off", "BEYOND restarted: dark until lit again", "warn"), L(false, false));
 t(p[1].word === "all disarmed, output dark; BEYOND restarted: dark until lit again" && p[1].state === "warn", "and this one: " + p[1].word);
+p = laserPill(chips("ARMED", "warn", "lit, unconfirmed", "ok"), L(true, true, {output_permitted:true}));
+t(p[1].word === "all armed, output allowed; lit, unconfirmed", "second review of #122, P2-4: lit, unconfirmed is said: " + p[1].word);
+p = laserPill(chips("not known", "bad", "dark", "ok"), L(false, false));
+t(p[1].word === "arm not known, output dark" && p[1].state === "bad", "a laser arm not known is said in words, never only red: " + p[1].word);
 p = laserPill(chips("disarmed", "off", "LINK LOST", "bad"), L(false, false), {link:"lost", why:"BEYOND is not running"});
 t(p[1].word === "LINK LOST: all disarmed, output dark" && p[1].state === "bad" && /BEYOND: BEYOND is not running\./.test(p[1].title), "a fault first, red: " + JSON.stringify(p[1]));
 p = laserPill(chips("disarmed", "off", "dark", "ok"), L(false, false, {arm_here:"needs screen_arming", arm_refusal:"L2 is locked out"}));
@@ -44890,8 +44887,8 @@ await h.sleep(900);
 h.tap(lk("m1"));
 await h.sleep(250);
 out.lock = {posts:locks(), modal:modal(), undo:undo(), msg:msg()};
-// Undo (after the quiet second): the opposite, through the same rules.
-await h.sleep(900);
+// Undo at once, inside the quiet second: never dropped (second review
+// of #122, P2-1).
 h.tap(document.getElementById("mo-lkundo-go"));
 await h.sleep(250);
 out.undone = {posts:locks(), undo:undo()};
@@ -44979,12 +44976,20 @@ out.armed = {sent:h.posts("lock").map(p => p.body.on), msg:document.getElementBy
 h.tap(document.querySelector('.mach[data-id="m4"] .lk'));
 await h.sleep(300);
 out.lock_armed_group_other = h.posts("lock").map(p => p.body.id);
-// Another device locked m5 a moment ago: the page's copy still says
-// unlocked; a tap goes by the engine's state, so it is an unlock.
+// Lock m1 (front row, armed) and Undo it at once: the Undo is an unlock,
+// refused on the page while front row is armed, said, never silent.
+h.tap(document.querySelector('.mach[data-id="m1"] .lk'));
+await h.sleep(300);
+h.tap(document.getElementById("mo-lkundo-go"));
+await h.sleep(300);
+out.undo_armed = {sent:h.posts("lock").filter(p => p.body.id === "m1").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent};
+// Another device locked m5 a moment ago: this page still shows it
+// unlocked, so its tap means LOCK; the engine has it locked already, so
+// nothing is sent and it says so (second review of #122, P1-A).
 lock.machines.m5 = true;
 h.tap(document.querySelector('.mach[data-id="m5"] .lk'));
 await h.sleep(300);
-out.engine_state = h.posts("lock").filter(p => p.body.id === "m5").map(p => p.body.on);
+out.engine_state = {sent:h.posts("lock").filter(p => p.body.id === "m5").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent, locked:!!lock.machines.m5};
 """
     m2 = _rack_drive(chrome, page, st, steps2, size=(1366, 768),
                      frag="#morning", routes={"/api/remote/morning": mo})
@@ -44992,6 +44997,7 @@ out.engine_state = h.posts("lock").filter(p => p.body.id === "m5").map(p => p.bo
         m["armed"] = m2.get("armed")
         m["lock_other"] = m2.get("lock_armed_group_other")
         m["engine_state"] = m2.get("engine_state")
+        m["undo_armed"] = m2.get("undo_armed")
         m["problems"] = m.get("problems", []) + m2.get("problems", [])
     if check(isinstance(m, dict) and not m.get("problems"),
              f"Startup page, double taps and an armed group: {m!r}"):
@@ -45007,10 +45013,16 @@ out.engine_state = h.posts("lock").filter(p => p.body.id === "m5").map(p => p.bo
               f"asked for, said plainly: {m['armed']}")
         check(m["lock_other"] == ["m4"],
               f"locking is always allowed: {m['lock_other']}")
-        check(m["engine_state"] == [False],
-              f"P1-1: a tap goes by the engine's lockout, not the page's "
-              f"copy (another device had just locked it: an unlock): "
-              f"{m['engine_state']}")
+        check(m["undo_armed"] == {"sent": [True], "msg": "Disarm front row "
+                                  "first, then unlock front row 1."},
+              f"second review of #122: Undo of a lock while the group is "
+              f"armed is refused and said: {m['undo_armed']}")
+        check(m["engine_state"] == {"sent": [], "locked": True,
+                                    "msg": "cat-walk 2 is already locked "
+                                           "out."},
+              f"second review of #122, P1-A: a tap means what the operator "
+              f"saw (lock); the engine has it locked already: nothing sent, "
+              f"said: {m['engine_state']}")
     # The 5 s itself: the timer Undo sets is read, and run ten times
     # faster so the draw fits the browser's time budget.
     steps = r"""
@@ -45051,12 +45063,25 @@ def test_rack_screen_flame_group_machine_count():
                                             mk("c1", "cat-walk"),
                                             mk("f1", "fireball")]),
         lockout=types.SimpleNamespace(machines={"g2": {}}))
-    check(RM.Remote.group_machines(m) == {
-        "front row": {"machines": 3, "locked": 1},
-        "cat-walk": {"machines": 1, "locked": 0},
-        "fireball": {"machines": 1, "locked": 0}},
+    ok = {"flamesafe_confirmed": True, "lock_error": ""}
+    check(RM.Remote.group_machines(m, ok) == {
+        "front row": {"machines": 3, "locked": 1, "lock": "ok"},
+        "cat-walk": {"machines": 1, "locked": 0, "lock": "ok"},
+        "fireball": {"machines": 1, "locked": 0, "lock": "ok"}},
         f"the engine counts each group's machines and those locked out: "
-        f"{RM.Remote.group_machines(m)}")
+        f"{RM.Remote.group_machines(m, ok)}")
+    # Second review of #122, P2-3: a lock counts once flamesafe holds it.
+    check(RM.Remote.group_machines(m, {"flamesafe_confirmed": None})
+          ["front row"]["lock"] == "pending" and
+          RM.Remote.group_machines(m, {"flamesafe_confirmed": False})
+          ["front row"]["lock"] == "pending",
+          "before flamesafe holds the lock: pending")
+    check(RM.Remote.group_machines(m, {"flamesafe_confirmed": True,
+                                       "lock_error": "unreadable"})
+          ["front row"]["lock"] == "untrusted", "a lock error: untrusted")
+    m.config_error = "bad file"
+    check(RM.Remote.group_machines(m, ok) is None,
+          "the config could not be read (the default list): None")
     check(RM.Remote.group_machines(types.SimpleNamespace()) is None,
           "a list it cannot read: None, never raises")
     here = os.path.dirname(os.path.abspath(__file__))
@@ -45071,6 +45096,9 @@ t(machineCountLine({name:"fireball"}, "armed", gm) === "armed 1 of 1 machine", "
 t(machineCountLine({name:"wave flamer", safeties_up:[true, false]}, "held", gm) === "", "several safeties: their own count");
 t(machineCountLine({name:"cat-walk"}, "unknown", gm) === "", "a state not known: nothing");
 t(machineCountLine({name:"cat-walk"}, "armed", null) === "" && machineCountLine({name:"nope"}, "armed", gm) === "", "a list not known: nothing new");
+t(machineCountLine({name:"front row"}, "armed", {"front row":{machines:3, locked:1, lock:"pending"}}) === "armed 3 of 3 machines, 1 lock pending", "a lock flamesafe does not hold yet: counted in, said pending");
+t(machineCountLine({name:"front row"}, "disarmed", {"front row":{machines:3, locked:1, lock:"untrusted"}}) === "armed 0 of 3 machines; lockout not trusted", "the lockout not trusted: said");
+t(machineCountLine({name:"cat-walk", safeties_up:[true, false]}, "armed", gm) === "" && machineCountLine({name:"cat-walk", safeties_up:[true]}, "armed", gm) === "armed 4 of 4 machines", "two safeties: their own count; one: the machine count");
 """)
     if bad is not None:
         check(bad == [], f"the machine count, in node: {bad}")
@@ -45096,8 +45124,12 @@ t(machineCountLine({name:"cat-walk"}, "armed", null) === "" && machineCountLine(
                                                         "locked": 0}}}
     steps = r"""
 await h.sleep(400);
-out.cards = [0, 1, 2].map(i => { const lp = h.lamp(i).closest(".lamp"); const s = lp.querySelector(".saf");
+const cards = () => [0, 1, 2].map(i => { const lp = h.lamp(i).closest(".lamp"); const s = lp.querySelector(".saf");
   return {word:h.lamp(i).querySelector(".word").textContent, saf:s.hidden ? null : s.textContent, cls:lp.className}; });
+out.cards = cards();
+window.__patch = st => { throw new Error("gone"); };
+await h.sleep(2500);
+out.stale = cards();
 """
     m = _rack_drive(chrome, page, st, steps)
     if check(isinstance(m, dict) and not m.get("problems"),
@@ -45111,6 +45143,9 @@ out.cards = [0, 1, 2].map(i => { const lp = h.lamp(i).closest(".lamp"); const s 
         check((c[2]["saf"] or "").startswith("wave flamer: 2 of 3 safeties "
                                              "up"),
               f"the wave flamer keeps its safety count: {c[2]}")
+        check(all(x["saf"] == "armed: not known" for x in m["stale"]),
+              f"second review of #122, P2-3: no contact: never an old "
+              f"count: {m['stale']}")
     print("  ok")
 
 
@@ -50042,6 +50077,18 @@ def test_purge_rules_at_the_engine():
               f"{R.m.purge.selected} {link.locked}")
         R.fs_lockout = {"slots": [412, 431, 432, 433], "state": "read"}
         R.feed()
+        # Review of #122, P1-B: no unlock while the machine's group is
+        # armed or asked for; a lock is never held back.
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "w1", "on": False,
+                             "confirmed": True}, client=loop)
+        check(st == 409 and out["error"] == "Disarm wave flamer first, then "
+              "unlock Waver 1." and R.m.lockout.is_locked("machine", "w1"),
+              f"no unlock while its group is armed: {st} {out}")
+        for g in R.groups:
+            if g["name"] == "wave flamer":
+                g.update(armed="disarmed", wanted=False)
+        R.feed()
         st, _h, out = R.ask("POST", "/api/remote/lock",
                             {"kind": "machine", "id": "w1", "on": False},
                             client=loop)
@@ -50996,6 +51043,102 @@ def test_checklist_audit_chain_pdf_export_and_tally():
     print("  ok")
 
 
+def test_morning_no_unlock_while_group_armed():
+    section("Morning lockout at the engine (review of #122, P1-B): an UNLOCK "
+            "of a machine is refused while its flame group is armed or "
+            "asked for, or flamesafe's state is not known (none, stale, not "
+            "connected), with 'Disarm <group> first, then unlock "
+            "<machine>'; a lock is never held back; a laser is not "
+            "affected; every surface (the page, the deck, a direct POST) "
+            "comes through this route")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import morning as MO
+    d = tempfile.mkdtemp()
+    try:
+        fs = os.path.join(d, "flamesafe.json")
+        with open(fs, "w", encoding="utf-8") as fh:
+            _j.dump(_MO_FLAMESAFE, fh)
+        with open(os.path.join(d, MO.CONFIG_FILE), "w",
+                  encoding="utf-8") as fh:
+            _j.dump(_MO_CONFIG, fh)
+        names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
+        fsview = {"slots": [], "state": "read"}
+        arm = {"front row": ("disarmed", False)}
+        mode = ["live"]
+
+        def flames():
+            if mode[0] == "none":
+                return None
+            return {"connected": mode[0] != "gone", "stale": mode[0] == "stale",
+                    "age_ms": 10, "fault": "", "lockout": dict(fsview),
+                    "groups": [{"name": n,
+                                "armed": arm.get(n, ("armed", True))[0],
+                                "wanted": arm.get(n, ("armed", True))[1],
+                                "reason": "", "dwell_s": 0} for n in names]}
+
+        class _Sock:
+            def sendto(self, pkt, addr):
+                pass
+
+            def close(self):
+                pass
+        m = MO.Morning(d, flamesafe_config=fs, link_get=lambda: None,
+                       flames_get=flames, laser_output=_FakeLaserOutput,
+                       live_check=lambda: "", group_names=lambda: names,
+                       journal=lambda t, **f: None, clock=lambda: 100.0,
+                       wall=lambda: 1_800_000_000.0, threaded=False,
+                       socket_factory=_Sock)
+        rack = ("Rack screen", "", "Rack screen", True, True)
+        unlock = {"kind": "machine", "id": "g1", "on": False,
+                  "confirmed": True}
+        # Locking is never held back, armed or not.
+        arm["front row"] = ("armed", True)
+        st, out = m.post("lock", {"kind": "machine", "id": "g1", "on": True},
+                         *rack)
+        check(st == 200 and m.lockout.is_locked("machine", "g1"),
+              f"a lock goes while the group is armed: {st} {out}")
+        fsview["slots"] = sorted(m.lockout.channels(m.cfg))
+        for name, a, md in (("armed", ("armed", False), "live"),
+                            ("asked for", ("held", True), "live"),
+                            ("flamesafe stale", ("disarmed", False), "stale"),
+                            ("flamesafe not connected", ("disarmed", False),
+                             "gone"),
+                            ("flamesafe not known", ("disarmed", False),
+                             "none")):
+            arm["front row"] = a
+            mode[0] = md
+            st, out = m.post("lock", unlock, *rack)
+            want = ("Disarm front row first, then unlock Ground 1."
+                    if md == "live" else "flamesafe's armed groups are not "
+                    "known right now, so Ground 1 stays locked out.")
+            check(st == 409 and out.get("error", "").startswith(want) and
+                  m.lockout.is_locked("machine", "g1"),
+                  f"{name}: no unlock, said plainly: {st} {out}")
+        # Disarmed and known: the unlock goes.
+        arm["front row"] = ("disarmed", False)
+        mode[0] = "live"
+        st, out = m.post("lock", unlock, *rack)
+        check(st == 200 and not m.lockout.is_locked("machine", "g1"),
+              f"front row off: the unlock goes: {st} {out}")
+        # A laser is not a flame group's: unaffected, every group armed.
+        arm.clear()
+        st, out = m.post("lock", {"kind": "laser", "id": "laser-1",
+                                  "on": True}, *rack)
+        check(st == 200, f"a laser locks: {st} {out}")
+        st, out = m.post("lock", {"kind": "laser", "id": "laser-1",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 200 and not m.lockout.is_locked("laser", "laser-1"),
+              f"and unlocks, flame groups armed or not: {st} {out}")
+        check(m.unlock_refusal("nope") == "",
+              "an id the config does not know: no word from this check (the "
+              "lock table says the rest)")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 def test_morning_lockout_trust_link_and_close():
     section("Morning and Shutdown, the lock table when it cannot be trusted: "
             "an unreadable lockout file, or one naming a machine the config "
@@ -51017,11 +51160,15 @@ def test_morning_lockout_trust_link_and_close():
             _j.dump(_MO_CONFIG, fh)
         names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
         fsview = {"slots": [], "state": "read"}
+        # Every group armed, until a test unlocks (review of #122, P1-B:
+        # no unlock while the group is armed).
+        fsarm = {"armed": "armed", "wanted": True}
 
         def flames():
             return {"connected": True, "stale": False, "age_ms": 10,
                     "fault": "", "lockout": dict(fsview),
-                    "groups": [{"name": n, "armed": "armed", "wanted": True,
+                    "groups": [{"name": n, "armed": fsarm["armed"],
+                                "wanted": fsarm["wanted"],
                                 "reason": "", "dwell_s": 0} for n in names]}
         lines = []
         holder = [None]
@@ -51133,6 +51280,13 @@ def test_morning_lockout_trust_link_and_close():
         check(any(f.get("outcome") == "rewritten" and f.get("fault")
                   for t, f in lines), "and journaled as a fault")
         fsview["slots"] = [412, 413]
+        st, out = m.post("lock", {"kind": "machine", "id": "ghost",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 409 and out.get("error") == "Disarm front row first, "
+              "then unlock Ghost.",
+              f"review of #122, P1-B: no unlock while the group is armed, "
+              f"at the engine: {st} {out}")
+        fsarm.update(armed="disarmed", wanted=False)
         st, out = m.post("lock", {"kind": "machine", "id": "ghost",
                                   "on": False, "confirmed": True}, *rack)
         check(st == 200 and _j.load(open(lk, encoding="utf-8"))
@@ -66160,6 +66314,7 @@ if __name__ == "__main__":
     test_rack_lasers_strip_page()
     test_checklist_audit_chain_pdf_export_and_tally()
     test_morning_lockout_trust_link_and_close()
+    test_morning_no_unlock_while_group_armed()
     test_morning_arrange_mode_arms_nothing()
     test_morning_arrange_disables_firing()
     test_purge_release_can_never_start_a_fire()

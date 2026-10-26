@@ -1879,6 +1879,27 @@ class Morning:
                 "laser_arm": self.laser_arm.status_view(),
                 "open": self.page_open(), "config_error": self.config_error}
 
+    def unlock_refusal(self, uid):
+        """Why machine `uid` may not be unlocked now, in a sentence, or "":
+        its flame group armed or asked for (wanted), or flamesafe's state
+        not known (none, stale, not connected). Never raises."""
+        m = self.cfg.by_id.get(uid)
+        if m is None:
+            return ""
+        try:
+            fl = self._flames_get() or {}
+        except Exception:                        # noqa: BLE001
+            fl = {}
+        if not fl or fl.get("stale") or not fl.get("connected"):
+            return (f"flamesafe's armed groups are not known right now, so "
+                    f"{m.name} stays locked out. Unlock it once flamesafe "
+                    f"is reporting.")
+        for g in fl.get("groups") or []:
+            if g.get("name") == m.group and (g.get("armed") == "armed" or
+                                             g.get("wanted")):
+                return f"Disarm {m.group} first, then unlock {m.name}."
+        return ""
+
     # -- the routes ---------------------------------------------------------
     def full_view(self, ctx_device):
         pos, saved = self.layout.load(self.cfg)
@@ -2018,6 +2039,19 @@ class Morning:
                                       f"ltcplay_morning.json could not be "
                                       f"read ({self.config_error}). Fix it "
                                       f"and restart the engine."}
+            if kind == "machine" and not on and \
+                    self.lockout.is_locked("machine", uid):
+                # Review of #122, P1-B: an unlocked machine in an armed
+                # group fires on the next cue with no new hold, so no
+                # unlock while its group is armed or asked for, or while
+                # flamesafe's word on that is not known. A lock is never
+                # held back. Every surface comes through here.
+                why = self.unlock_refusal(uid)
+                if why:
+                    self._note(f"{device}'s unlock of {uid} was refused: "
+                               f"{why}", action="lock", outcome="refused",
+                               screen=device)
+                    return 409, {"error": why}
             ok, text = self.lockout.set(self.cfg, kind, uid, on, who, device,
                                         reason=body.get("reason", ""),
                                         confirmed=body.get("confirmed"))

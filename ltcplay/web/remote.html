@@ -1365,14 +1365,21 @@ function safetyLine(g, c){
 // own count (safetyLine). "" when the list, or the group's state, is not
 // known: the card then reads as before. `gm` is the status's
 // morning.group_machines.
+// A machine is counted out as locked only once flamesafe holds its lock
+// (`lock` "ok"); before that it is "k lock pending", and with the lockout
+// not trusted every machine is counted and the line says so (second
+// review of #122, P2-3).
 function machineCountLine(g, c, gm){
   if(!g || c === "unknown" || (g.safeties_up || []).length >= 2) return "";
   const x = gm && gm[g.name];
   if(!x || typeof x.machines !== "number") return "";
-  const locked = Math.max(0, Number(x.locked) || 0);
+  const k = Math.max(0, Number(x.locked) || 0);
+  const lk = x.lock || "ok";
+  const locked = lk === "ok" ? k : 0;
   const m = Math.max(0, x.machines - locked);
   const n = c === "armed" ? m : 0;
-  return "armed " + n + " of " + m + (m === 1 ? " machine" : " machines") + (locked ? ", " + locked + " locked out" : "");
+  return "armed " + n + " of " + m + (m === 1 ? " machine" : " machines") +
+    (lk === "untrusted" ? "; lockout not trusted" : k ? (lk === "ok" ? ", " + k + " locked out" : ", " + k + " lock pending") : "");
 }
 // The no-show-file line (Jeff, 2026-10-26; review of #113, P2-a and b):
 // what works NOW without a show file, from the status, never a promise.
@@ -1498,16 +1505,15 @@ function armAllWords(parts, out, names){
 }
 // The Abort double tap (Jeff, 2026-10-26): `prev` is the first tap
 // ({at, kind}, on the page's monotonic clock) or null. A tap of the same
-// kind ("touch", "mouse", "pen", or "key" for Enter or Space) fires when
-// it comes at least ABORT_TAP_MIN_MS after the first (sooner is a bounce:
-// the SAME tap, still waiting; review of #122, P2-2) and within
-// ABORT_TAP_MS, or at any time while the sign is still `enlarged` (a late
-// timer never turns a good second tap into a first one, P2-6). Anything
+// kind ("touch", "mouse", "pen", or "key" for Enter or Space) within
+// ABORT_TAP_MS fires, however fast (a panic double tap must abort; second
+// review of #122, P2-2: only a held key's repeats are kept out, by the
+// keydown guard), or at any time while the sign is still `enlarged` (a
+// late timer never turns a good second tap into a first one). Anything
 // else is a first tap. Two fingers are both "touch".
-const ABORT_TAP_MS = 2000, ABORT_TAP_MIN_MS = 150;
+const ABORT_TAP_MS = 2000;
 function abortTapStep(prev, nowMs, kind, enlarged){
   if(prev && prev.kind === kind && nowMs >= prev.at){
-    if(nowMs - prev.at < ABORT_TAP_MIN_MS) return {fire:false, same:true, next:prev};
     if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};
   }
   return {fire:false, next:{at:nowMs, kind:kind}};
@@ -1542,7 +1548,7 @@ function laserPill(subs, la, bl){
   const ls = (la && !la.error && la.lasers) || null;
   const armed = ls ? ls.filter(x => x.armed) : [];
   let a, o;
-  if(!ls) a = "arm " + String(arm.word || "not known");
+  if(!ls || arm.state === "bad") a = "arm " + String(arm.word || "not known");
   else if(!ls.length) a = "none set up";
   else if(!armed.length) a = "all disarmed";
   else if(armed.length === ls.length) a = "all armed";
@@ -1556,7 +1562,7 @@ function laserPill(subs, la, bl){
   // restarted: dark until lit again") is said in the sentence too, never
   // only in colour and a tooltip a touch screen cannot show (review of
   // #122, P2-4).
-  const warn = out.state === "warn" ? "; " + String(out.word || "check") : "";
+  const warn = out.state === "warn" || (out.state === "ok" && /\blit\b/.test(String(out.word || ""))) ? "; " + String(out.word || "check") : "";
   const state = (CHIP_RANK[arm.state] || 0) >= (CHIP_RANK[out.state] || 0) ? arm.state : out.state;
   const title = ["Lasers: " + fault + a + ", " + o + warn + ".",
     "Laser arm: " + arm.word + (arm.title ? " (" + arm.title + ")" : "") + ".",
@@ -1767,6 +1773,9 @@ function renderStale(){
       if(sp) sp.textContent = "not known: no contact";
       const why = el.querySelector(".why");
       if(why) why.textContent = "";
+      // Never an old count while nothing is known (second review of #122).
+      const sf = el.querySelector(".saf");
+      if(sf){ sf.hidden = false; sf.textContent = "armed: not known"; sf.title = ""; }
     });
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "0.3";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "0.3";
@@ -2423,7 +2432,6 @@ $("b-abort").addEventListener("click", async e => {
   // Enter held elsewhere can never abort.
   if(kind !== "key") $("b-abort").blur();
   const step = abortTapStep(ABORT_TAP, monoNow(), kind, $("abortbar").classList.contains("tap1"));
-  if(step.same) return;
   if(!step.fire){
     ABORT_TAP = step.next;
     clearTimeout(ABORT_TIMER);
@@ -3278,17 +3286,24 @@ const LOCK_BUSY = {};
 async function lockClick(kind, id, name, want){
   if(arrangeBlocked("lock", {})) return;        // before anything is sent
   const key = kind + ":" + id;
-  if(LOCK_BUSY[key]) return;
-  LOCK_BUSY[key] = true;
+  // Undo names what it wants and is never held back by the quiet second
+  // (review of #122, second review, P2-1); a tap is.
+  if(LOCK_BUSY[key] && want === undefined) return;
   const msg = kind === "machine" ? "mo-msg" : "mo-lmsg";
+  // What the operator SAW when they tapped decides what they want (second
+  // review, P1-A): a lock tap on a machine shown unlocked asks for a lock,
+  // even if another screen locked it a moment ago.
+  const isLocked = v => !!(v && v.lockout && (kind === "machine" ? (v.lockout.machines || {})[id] : (v.lockout.lasers || {})[id]));
+  if(want === undefined && !(MO && MO.lockout)){ $(msg).textContent = "The lockout is not shown yet, so nothing was changed. Tap again."; return; }
+  const on = want === undefined ? !isLocked(MO) : want;
+  LOCK_BUSY[key] = true;
   try{
     let fresh = null;
     try{ fresh = await getJSON("/api/remote/morning", 1500); }catch(e){ fresh = null; }
     if(!fresh || !fresh.lockout){ $(msg).textContent = "The engine's lockout could not be read, so nothing was changed. Tap again."; return; }
-    MO = fresh;
-    const locked = kind === "machine" ? !!(fresh.lockout.machines || {})[id] : !!(fresh.lockout.lasers || {})[id];
-    const on = want === undefined ? !locked : want;
-    if(on === locked){ $(msg).textContent = name + (locked ? " is already locked out." : " is already unlocked."); return; }
+    // Already as wanted (another screen did it, or an answer was lost):
+    // said, and nothing is sent.
+    if(on === isLocked(fresh)){ $(msg).textContent = name + (on ? " is already locked out." : " is already unlocked."); $(msg).title = $(msg).textContent; return; }
     if(!on && kind === "machine"){
       const why = unlockRefusal((fresh.machines || []).find(m => m.id === id) || {name:name}, ST && ST.flames);
       if(why){ $(msg).textContent = why; $(msg).title = why; return; }

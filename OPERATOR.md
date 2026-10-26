@@ -141,10 +141,14 @@ let go and it stops; nothing fires while a show is live or an Abort
 stands); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
 way; a line under the machine map, or under the lasers, says what was
-done, with Undo for 5 seconds; a second tap on the same L within about a
-second does nothing, so a double tap never locks and then unlocks; a
-machine cannot be unlocked while its flame group is armed or being armed:
-the line says "Disarm <group> first, then unlock <machine>"; a refusal is
+done, with Undo for 5 seconds; a tap does what the screen showed when you
+tapped (a machine shown unlocked is locked), and if another screen already
+did it the line says so and nothing is sent; a second tap on the same L
+within about a second does nothing, so a double tap never locks and then
+unlocks; a machine cannot be unlocked while its flame group is armed or
+being armed, or while flamesafe is not reporting, from any screen or the
+Stream Deck: the engine refuses it and the line says "Disarm <group> first,
+then unlock <machine>"; a refusal is
 said there in plain words; a lock stays across
 restarts until unlocked here; a locked unit
 cannot be armed or fired from anywhere and show cues skip it; a banner on
@@ -329,9 +333,8 @@ does now, for example "Nothing to abort right now". Abort is a DOUBLE TAP,
 with no pop-up: the first tap only makes the sign bigger and flashing, with
 TAP AGAIN TO ABORT on it (it grows upward, inside the free strip, so it
 never covers another button), and sends nothing; a second tap anywhere on
-the big sign while it is big (2 seconds) aborts, exactly as before. Two
-taps closer together than about a sixth of a second count as one tap (a
-bounce), so tap again. Any finger works, two
+the big sign while it is big (2 seconds) aborts, exactly as before, however
+fast the second tap comes. Any finger works, two
 different fingers too, or the mouse twice (a double click), or Enter or
 Space twice (holding the key down counts once); a finger then the mouse
 counts as one tap. After 2 seconds
@@ -352,9 +355,10 @@ The lasers have ONE pill in the status strip, one plain sentence: who is
 armed and BEYOND's laser output, for example "Lasers: all disarmed, output
 dark", "Lasers: 2 of 3 armed, output off" or "Lasers: all armed, output allowed" (allowed: BEYOND may light them;
 the show decides when)
-("not known: no contact" while the page has lost the engine). A warning
-about what the show last sent BEYOND is said in the sentence too, for
-example "...; lit? link unknown". Point at it
+("not known: no contact" while the page has lost the engine). What the show
+last sent BEYOND is said in the sentence when it matters, for example
+"...; lit, unconfirmed" or "...; lit? link unknown", and a laser arm that
+cannot be read reads "arm not known". Point at it
 for every detail: which lasers are armed, why the output stays off, why an
 arm would be refused, and what the show last sent BEYOND. It never says lit
 while BEYOND is not running: it reads LINK LOST first, in red, and if
@@ -419,6 +423,9 @@ Under each group's button a small line counts its machines: "armed 0 of 3
 machines" while it is off, "armed 3 of 3 machines" once flamesafe has armed
 it (every machine in a group arms together), with any machine locked out
 said apart ("1 locked out"; it is left out of the count and never fires).
+A lock flamesafe has not taken yet reads "1 lock pending", a lockout that
+cannot be trusted reads "lockout not trusted", and with the engine out of
+contact the line reads "armed: not known".
 The wave flamer, with a safety per fixture, keeps its own count of safeties
 up. If the Startup page's machine list cannot be read the line is left
 off.
