@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install numpy zstandard tzdata
+      - run: python -m pip install numpy zstandard tzdata pillow
       - id: sweep
         shell: bash
         timeout-minutes: 285
