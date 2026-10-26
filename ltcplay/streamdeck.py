@@ -348,10 +348,33 @@ DECK_LABELS = {"front row": "Floor G", "cat-walk": "Cat-Walk G",
 LABEL_MAX = 12          # the key's name bar fits this many letters
 
 
+# Other spellings of Jeff's rows that the Morning page also takes as the
+# same row (morning.GFLAME_ROW_NAMES), so the deck and the Morning page
+# never disagree on which group is the cat-walk (third review of #126,
+# P2-3).
+DECK_ALIASES = {"cat walk": "cat-walk", "catwalk": "cat-walk"}
+
+
 def _known(name):
     """A flamesafe group name as DECK_ORDER and DECK_LABELS spell it:
-    any case, spaces around it ignored."""
-    return str(name).strip().lower()
+    any case, spaces around it ignored, "cat walk" and "catwalk" read as
+    "cat-walk"."""
+    n = str(name).strip().lower()
+    return DECK_ALIASES.get(n, n)
+
+
+def _case_twins(names):
+    """The flamesafe group names that read the same as an earlier one to
+    the deck (_known: "front row" and "Front Row"). flamesafe tells them
+    apart by case, so they are two groups; only the first gets Jeff's
+    label and its key by name, the other keeps its own name."""
+    seen, twins = set(), []
+    for n in names:
+        k = _known(n)
+        if k in seen:
+            twins.append(n)
+        seen.add(k)
+    return twins
 
 
 def _default_layout(names):
@@ -361,11 +384,15 @@ def _default_layout(names):
     flamesafe's file lists them; review of #126, P1), then every other
     group in the file's own order (an install with none of those names
     keeps its order). DECK_LABELS' words for a name that matches one,
-    whatever its case or spaces, else the group's own name."""
+    whatever its case or spaces (and cat walk or catwalk for cat-walk),
+    else the group's own name. Two groups that differ only by case: the
+    first in the file gets the label, the other keeps its own name, so
+    two keys never read the same (third review of #126, P2-3)."""
     known = [_known(n) for n in names]
     order = [known.index(k) for k in DECK_ORDER if k in known]
     order += [i for i in range(len(names)) if i not in order]
-    return order, [DECK_LABELS.get(_known(n), n) for n in names]
+    return order, [DECK_LABELS.get(k, n) if known.index(k) == i else n
+                   for i, (n, k) in enumerate(zip(names, known))]
 
 
 def _keys_text(order, labels, names):
@@ -415,7 +442,16 @@ def deck_layout(names, doc=None, where=DECK_CONFIG_FILE):
                             f"group in flamesafe's config "
                             f"({', '.join(names)}).")
             continue
-        i = known.index(_known(g))
+        stripped = [str(n).strip() for n in names]
+        if g.strip() in stripped:
+            i = stripped.index(g.strip())
+        elif known.count(_known(g)) > 1:
+            problems.append(f"{where} lists {g!r}, and flamesafe has more "
+                            f"than one group by that name in another case. "
+                            f"Write it exactly as flamesafe does.")
+            continue
+        else:
+            i = known.index(_known(g))
         if i in order:
             problems.append(f"{where} lists {g!r} twice.")
             continue
@@ -434,6 +470,12 @@ def deck_layout(names, doc=None, where=DECK_CONFIG_FILE):
     for i in order:
         mine = labels[i].strip().lower()
         for j, other in enumerate(names):
+            if j != i and _known(other) == _known(names[i]) and \
+                    labels[i].strip() == str(names[i]).strip():
+                # Two flamesafe groups that differ only by case: a key
+                # with its own group's name is the truth, not a look-alike
+                # (third review of #126, P2-3).
+                continue
             if j != i and mine in (other.lower(), d_labels[j].lower(),
                                    labels[j].strip().lower()):
                 problems.append(f"{where}: the label {labels[i]!r} for "
@@ -1177,6 +1219,10 @@ class EngineConductor:
         # for), for the deck's own keys to show, not only its console; ""
         # once a press is taken again (fix round 2, E).
         self.fault = ""
+        # The words on key 0 for that fault: ENGINE FAULT, or DISARM FAILED
+        # when a Stop stopped playback but the engine's flame disarm failed
+        # (third review of #126, P2-2).
+        self.fault_face = ("ENGINE", "FAULT")
         # The engine's flame cue fault from /api/conductor (review of PR
         # #43, P1-3), "" when none: shown on the deck's own keys.
         self.cues_fault = ""
@@ -1291,6 +1337,19 @@ class EngineConductor:
                 doc = got[2]
         except Exception as e:
             ok, text = False, f"{type(e).__name__}: {e}"
+        # Stop (/api/stop) also disarms every flame group on the flame link
+        # (review of #126, P2-1). Playback stopped but that disarm failed:
+        # a fault on the deck's own key, never a quiet "done" (third review
+        # of #126, P2-2). The deck's own arm link disarm went first anyway.
+        flames = doc.get("flames") if isinstance(doc, dict) else None
+        disarm_failed = (name == "stop" and ok and isinstance(flames, dict)
+                         and flames.get("disarmed") is False)
+        if disarm_failed:
+            ok = False
+            text = (f"playback stopped, but the flame disarm FAILED "
+                    f"({flames.get('text') or 'no reason given'}): use "
+                    f"Disarm all flame groups on the Rack screen or the "
+                    f"hardware e-stop")
         if name == "abort" and doc.get("stopped") is False:
             # The engine disarmed every flame group but had no show to stop
             # (review of PR #43, P0-1), so nothing is latched: the Abort key
@@ -1311,6 +1370,8 @@ class EngineConductor:
             # Acknowledge (two keys inside one poll) is journaled below,
             # never shown as ENGINE FAULT on the keys.
             self.fault = "" if (ok or noop) else f"{name.title()}: {text}"
+            self.fault_face = ("DISARM", "FAILED") if disarm_failed else \
+                ("ENGINE", "FAULT")
         elif "raise" in body:
             self.alert_delivered = bool(ok)
         if noop:
@@ -1318,6 +1379,8 @@ class EngineConductor:
                     f"says: {text}")
         elif ok:
             line = f"Stream Deck {name.title()}: the engine says: {text}"
+        elif disarm_failed:
+            line = f"Stream Deck Stop: {text}."
         else:
             line = (f"Stream Deck {name.title()}: the engine's show "
                     f"conductor did NOT take it: {text}")
@@ -2848,6 +2911,11 @@ class Controller:
                   "already begun). Nothing was started.", fault=True,
                   action="start", who=who, screen="Stream Deck")
 
+    def nokey(self):
+        """The group indices with no key on the deck (past key 4 in key
+        order), for the Rack screen's flame card. Display only."""
+        return list(self.key_order[GROUP_KEY_LIMIT:])
+
     def rearm_report(self):
         """({group index: ms left in its re-arm refractory window},
         {group index: purge refusal code}): what the rack screen needs to
@@ -3616,7 +3684,10 @@ class Controller:
             # reached): said on the deck itself, not only its console. A
             # fault face outranks the ACK face below (review of PR #59):
             # a refused press is never hidden behind a waiting alert.
-            fonts.show_key(d, b0, ["ENGINE", "FAULT"],
+            face = list(getattr(self.conductor, "fault_face", None) or
+                        ("ENGINE", "FAULT")) if getattr(
+                self.conductor, "fault", "") else ["ENGINE", "FAULT"]
+            fonts.show_key(d, b0, face,
                            BLACK if blink_on else RED,
                            bg=RED if blink_on else None, kind="sans",
                            max_size=16)
@@ -4776,13 +4847,20 @@ def deck_layout_at_start(names, folder, journal, settings_folder=None):
                          f"layout.")
     order, labels, more, ok = load_deck_layout(names, folder)
     notes += more
+    for t in _case_twins(list(names)):
+        notes.append(f"flamesafe has a group {t!r} whose name differs from "
+                     f"an earlier group's only by case. They are two "
+                     f"groups: only the first gets the deck's own label "
+                     f"and key by name, and {t!r} keeps its own name.")
     ok = ok and bool(folder)
     notes.append(f"the keys are key 0 Start/Stop, "
                  f"{_keys_text(order, labels, list(names))}; key 5 is spare. "
                  f"Unless {DECK_CONFIG_FILE} says otherwise, front row, "
                  f"cat-walk, wave flamer and fireball go on keys 1 to 4 by "
-                 f"name and every other group follows in flamesafe's order. "
-                 f"The deck has no Hold "
+                 f"name and every other group follows in flamesafe's order "
+                 f"on the keys left over (a key one of those four does not "
+                 f"use goes to the next group; past key 4, Rack screen "
+                 f"only). The deck has no Hold "
                  f"or Abort key (2026-10-26): Hold and Abort are on the "
                  f"Rack screen.")
     for note in notes:
@@ -4913,7 +4991,7 @@ def _main(args):
     # for the Deck chip (review of PR #120, P2-1). Display only.
     screen.report_layout_default = lambda: not layout_ok
     # And which groups have no key, for the Rack screen's flame card.
-    screen.report_nokey = lambda: controller.key_order[GROUP_KEY_LIMIT:]
+    screen.report_nokey = controller.nokey
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.

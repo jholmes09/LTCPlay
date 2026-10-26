@@ -192,8 +192,10 @@ NO_FIREBALL_PURGE = "a fireball has no purge sequence yet"
 # purge until the group is declared: fireball_groups (never purged) or
 # gflame_groups (G-Flames, purged one by one). Only Jeff's own rows are
 # G-Flames by name, and only by their whole name (GFLAME_ROW_NAMES, any
-# case); a name that says fireball or ball is a fireball, one that says
-# wave a waver (never purged without its pan and tilt map).
+# case, and one safety slot); a name that says fireball or ball is a
+# fireball, one that says wave a waver (never purged without its pan and
+# tilt map). A multi-safety group is purged only as a waver or when
+# gflame_groups lists it (third review of #126, P2-1).
 NO_UNKNOWN_PURGE = ("unknown flame group, declare it in fireball_groups "
                     "(or gflame_groups for G-Flames) in "
                     "ltcplay_morning.json")
@@ -551,20 +553,21 @@ def parse_gflame_groups(doc, where, groups, fireball_groups):
 def unknown_multi_groups(groups, fireball_groups, gflame_groups):
     """The flamesafe groups whose default machines are never purged: every
     group that would be built as G-Flames (not a waver or a fireball by
-    name, not a multi-safety group, whose fixtures are paired by slot
-    layout) and is neither declared in gflame_groups nor one of Jeff's
-    rows by its whole name (GFLAME_ROW_NAMES, any case). One fire slot or
-    many: a name is no proof of what is on the end of it."""
+    name) and is neither declared in gflame_groups nor one of Jeff's rows
+    by its whole name (GFLAME_ROW_NAMES, any case). One fire slot or many:
+    a name is no proof of what is on the end of it. A group with more than
+    one safety slot is purged only as a waver or when gflame_groups lists
+    it, never by a row name alone (third review of #126, P2-1: "Big Boom",
+    fire 21 to 24 and 26 to 29, safeties 25 and 30, was purged)."""
     out = set()
     for g in groups or []:
         name = g["name"]
-        if len(g.get("safeties") or []) > 1:
-            continue
         if name in fireball_groups or name in gflame_groups:
             continue
         if _kind_for(name) != "gflame":
             continue
-        if name.strip().lower() in GFLAME_ROW_NAMES:
+        if name.strip().lower() in GFLAME_ROW_NAMES and \
+                len(g.get("safeties") or []) <= 1:
             continue
         out.add(name)
     return frozenset(out)

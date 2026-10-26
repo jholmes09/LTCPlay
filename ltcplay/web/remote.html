@@ -1621,6 +1621,15 @@ function lastShowMinutes(text){
   const n = parseInt(t, 10);
   return n <= 1440 ? n : null;
 }
+// What the Rack screen says after Stop: /api/stop also disarms every flame
+// group (review of #126, P2-1), and a disarm that failed is said plainly,
+// never a bare "Stopped." (third review of #126, P2-2).
+const STOP_DISARM_FAILED = "Stopped, but the flame disarm FAILED: use Disarm all flame groups or the hardware e-stop.";
+function stopWords(j){
+  const f = j && j.flames;
+  if(f && f.disarmed === false) return STOP_DISARM_FAILED;
+  return "Stopped.";
+}
 // LOGIC END
 </script>
 <script>
@@ -2767,8 +2776,8 @@ $("b-run").addEventListener("click", async () => {
   catch(e){ $("run-msg").textContent = e.message; }
 });
 $("b-stoprun").addEventListener("click", async () => {
-  if(!(await confirmBox("Stop?", "Stop playback. No show starts until Run is pressed again.", "Yes, Stop", ""))) return;
-  try{ await post("/api/stop", {}); $("run-msg").textContent = "Stopped."; }
+  if(!(await confirmBox("Stop?", "Stop playback and disarm every flame group. No show starts until Run is pressed again, and each group has to be armed again.", "Yes, Stop", ""))) return;
+  try{ const j = await post("/api/stop", {}); $("run-msg").textContent = stopWords(j); }
   catch(e){ $("run-msg").textContent = e.message; }
 });
 $("b-hold").addEventListener("click", () => press("hold"));

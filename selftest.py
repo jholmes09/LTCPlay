@@ -46308,9 +46308,9 @@ def test_stream_deck_key_order_and_labels_come_from_config():
     # Every mistake sets the whole file aside: no key moves.
     entries = [{"group": n} for n in jeff]
     for bad, says in (
-            ([{"group": "front row"}, {"group": "cat walk"},
+            ([{"group": "front row"}, {"group": "cat walks"},
               {"group": "wave flamer"}, {"group": "fireball"}],
-             "'cat walk', which is not a flame group"),
+             "'cat walks', which is not a flame group"),
             (entries + [{"group": "front row"}], "twice"),
             ([{"label": "x"}] + entries, "no \"group\" name"),
             (["cat-walk"] + entries, "no \"group\" name"),
@@ -46344,6 +46344,55 @@ def test_stream_deck_key_order_and_labels_come_from_config():
     check(ok and order == [3, 0, 1, 2] and labels[3] == "Boom" and
           not notes, f"a file listing one group: it goes first, the rest "
                      f"follow: {order} {labels} {notes}")
+    # Third review of #126: a listed name matches in any case, and the
+    # groups it does not list follow in the DEFAULT order (Jeff's four by
+    # name), never the file's.
+    check(sd.deck_layout(jeff, {"groups": [{"group": " FIREBALL "}]})[:2]
+          == ([3, 0, 1, 2], dflt),
+          f"ltcplay_deck.json's names match in any case: "
+          f"{sd.deck_layout(jeff, {'groups': [{'group': ' FIREBALL '}]})}")
+    mixed = ["pump", "fireball", "wave flamer", "front row", "cat-walk"]
+    order, labels, notes, ok = sd.deck_layout(
+        mixed, {"groups": [{"group": "wave flamer"}]})
+    check(ok and order == [2, 3, 4, 1, 0],
+          f"the unlisted groups follow in the default order (front row, "
+          f"cat-walk, fireball, then pump), not flamesafe's: {order} "
+          f"{notes}")
+    # The Morning page's spellings of the cat-walk are the deck's too
+    # (third review of #126, P2-3), and a name that only looks close is
+    # not Jeff's.
+    for cw in ("cat walk", "Catwalk", "CAT-WALK", " cat walk "):
+        names_ = ["fireball2", "front-row", cw, "Wave Flamer", "Fireball"]
+        order, labels, notes, ok = sd.deck_layout(names_)
+        check(order == [2, 3, 4, 0, 1] and labels[2] == "Cat-Walk G",
+              f"{cw!r} is the cat-walk, on key 1 here (no 'front row'): "
+              f"{order} {labels}")
+    from ltcplay import morning as _mo
+    check({sd._known(n) for n in _mo.GFLAME_ROW_NAMES} <=
+          set(sd.DECK_ORDER),
+          "every row spelling the Morning page takes, the deck takes")
+    # Two flamesafe groups whose names differ only by case are two groups:
+    # never two keys with the same label.
+    twins = ["front row", "Front Row", "cat-walk"]
+    order, labels, notes, ok = sd.deck_layout(twins)
+    check(order == [0, 2, 1] and labels == ["Floor G", "Front Row",
+                                            "Cat-Walk G"],
+          f"only the first twin gets Floor G: {order} {labels}")
+    order, labels, notes, ok = sd.deck_layout(
+        twins, {"groups": [{"group": "Front Row"}]})
+    check(ok and order == [1, 0, 2] and labels[1] == "Front Row",
+          f"a file naming a twin exactly: that group, and its own name is "
+          f"no look-alike: {order} {labels} {notes}")
+    order, labels, notes, ok = sd.deck_layout(
+        twins, {"groups": [{"group": "FRONT ROW"}]}, "deck.json")
+    check(not ok and "more than one group" in " ".join(notes),
+          f"a name that could be either twin is refused, said: {notes}")
+    tw_lines = []
+    sd.deck_layout_at_start(twins, tempfile.mkdtemp(),
+                            lambda t_, **kw: tw_lines.append(t_))
+    check(any("'Front Row'" in t_ and "only by case" in t_
+              for t_ in tw_lines),
+          f"the twins are journaled at start: {tw_lines}")
     md = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
     deck_doc = [_json.loads(b) for b in
                 re.findall(r"```json\n(\{\"groups\".*?)\n```", md, re.S)]
@@ -46396,6 +46445,9 @@ def test_stream_deck_key_order_and_labels_come_from_config():
                       journal=lambda t_, **kw: events.append((t_, kw)),
                       clock=lambda: t[0], screen=scr, key_order=order,
                       labels=labels)
+    check(c.nokey() == [4],
+          f"the Rack screen hears exactly the fifth group has no key "
+          f"(third review of #126): {c.nokey()}")
     said = [e[0] for e in events if e[1].get("outcome") == "screen-only"]
     check(len(said) == 1 and "Pump has no key" in said[0] and
           "Big Ball, Floor G, Catwalk, Blue" in said[0],
@@ -46587,13 +46639,13 @@ def test_stream_deck_review_of_120():
               f"Jeff's four by name whatever flamesafe's order, and the key "
               f"map journaled in plain words: {lines}")
         with open(os.path.join(work, sd.DECK_CONFIG_FILE), "w") as fh:
-            fh.write('{"groups": [{"group": "cat walk"}]}')
+            fh.write('{"groups": [{"group": "cat walks"}]}')
         lines[:] = []
         o, l, ok = sd.deck_layout_at_start(jeff, work,
                                            lambda t_, **kw: lines.append(
                                                (t_, kw)))
         check(not ok and o == [0, 1, 2, 3, 4] and
-              any("'cat walk'" in t_ for t_, _k in lines) and
+              any("'cat walks'" in t_ for t_, _k in lines) and
               all(kw.get("outcome") == "layout-default" for _t, kw in lines),
               f"a file set aside: said, and the Deck chip told: {lines}")
     finally:
@@ -46664,6 +46716,20 @@ def test_stop_disarms_every_flame_group_without_the_latch():
             def end(self, *a, **kw):
                 order.append(("end",))
         R.remote.live_flame = _LF()
+
+        class _SF:
+            # Fire flames while scrubbing (third review of #126: its end
+            # was never exercised by a Stop).
+            def end(self, reason, **kw):
+                order.append(("scrub", reason))
+                return True
+        R.remote.scrub_flames = _SF()
+        # The scheduler's own Abort must never be what Stop calls (third
+        # review of #126: a Stop calling operator_press("abort") survived).
+        presses = []
+        real_press = R.svc.operator_press
+        R.svc.operator_press = lambda what, *a, **kw: (
+            presses.append(what), real_press(what, *a, **kw))[1]
         real_stop = R.httpd.control.stop
         R.httpd.control.stop = lambda: (order.append(("stop",)),
                                         real_stop())[1]
@@ -46673,15 +46739,31 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         check(st == 200 and out.get("flames", {}).get("disarmed") is True,
               f"Stop answers with the flames disarmed: {st} {out}")
         kinds = [o[0] for o in order]
-        check(kinds == ["cut", "disarm", "stop"],
-              f"live flame programming cut, then the flame link's disarm, "
-              f"then playback stopped, in that order: {order}")
-        check("Andy" in order[1][1] and "Stop" in order[1][1] and
-              "Stream Deck" in order[1][1],
-              f"the disarm names who and where: {order[1]}")
+        check(kinds == ["cut", "scrub", "disarm", "stop"],
+              f"live flame programming cut, fire while scrubbing ended, then "
+              f"the flame link's disarm, then playback stopped, in that "
+              f"order: {order}")
+        check("Andy" in order[2][1] and "Stop" in order[2][1] and
+              "Stream Deck" in order[2][1],
+              f"the disarm names who and where: {order[2]}")
+        check("Andy" in order[1][1] and "Stop" in order[1][1],
+              f"and so does the scrub flames end: {order[1]}")
         R.settle()
         check(R.c is None or not R.c.snapshot().get("latched"),
               "Stop never sets the Abort latch")
+        check("abort" not in presses and not getattr(
+                  R.svc.machine, "abort_latched", False),
+              f"nor the scheduler's: no Abort press, abort_latched False "
+              f"(third review of #126): {presses}")
+        # The flame link's disarm failed: the answer says so, for the Rack
+        # screen and the deck to show (third review of #126, P2-2).
+        R.remote._flame_disarm = lambda reason: type(
+            "_F", (), {"ok": False, "sentence": "no answer"})()
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop", {},
+                           client=("127.0.0.1", 50000))
+        check(st == 200 and out.get("flames", {}).get("disarmed") is False
+              and "did NOT go out" in out["flames"].get("text", ""),
+              f"a failed flame disarm is in Stop's answer: {st} {out}")
         # No flame link in this engine: Stop is what it always was.
         del order[:]
         R.remote._flame_disarm = None
@@ -46689,10 +46771,108 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         st, _h, out = _ask(R.httpd, "POST", "/api/stop", {},
                            client=("127.0.0.1", 50000))
         check(st == 200 and "flames" not in out and
-              [o[0] for o in order] == ["cut", "stop"],
+              [o[0] for o in order] == ["cut", "scrub", "stop"],
               f"no flame link: Stop as before: {st} {out} {order}")
     finally:
         R.close()
+    # A scheduled show live: Stop is refused, and nothing of its flame
+    # half is sent first (third review of #126).
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        sent = []
+        R.remote._flame_disarm = lambda reason: (sent.append(reason), type(
+            "_R", (), {"ok": True, "sentence": "sent"})())[1]
+        R.remote.live_flame_cut = lambda *a, **kw: sent.append("cut")
+        R.remote.scrub_flames_end = lambda *a, **kw: sent.append("scrub")
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"who": "Andy", "screen": "Stream Deck"},
+                           client=("127.0.0.1", 50000))
+        check(st == 409 and sent == [],
+              f"a live show: Stop refused, and no cut, scrub end or flame "
+              f"disarm sent: {st} {out} {sent}")
+        check(R.svc.machine.state == S.SHOW, "the show plays on")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_stop_says_when_its_flame_disarm_failed():
+    """Third review of #126, P2-2: /api/stop also disarms every flame group,
+    and when that disarm fails, the Rack screen says so instead of a bare
+    "Stopped.", and the deck's key 0 reads DISARM FAILED (the deck's own
+    fault), never a quiet "done". The Rack screen's Stop confirm says it
+    disarms every flame group too."""
+    section("Stop: a failed flame disarm is said on the Rack screen and the "
+            "Stream Deck")
+    import shutil as _sh
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    # The deck: Stop's answer from the engine, as _http_post returns it.
+    lines = []
+    answer = {}
+    e = sd.EngineConductor(
+        "http://127.0.0.1:1", poster=lambda path, body: (
+            True, "done", answer["doc"]),
+        fetcher=lambda path: None,
+        journal=lambda t, **k: lines.append((t, k.get("fault"))))
+    answer["doc"] = {"stopped": True, "flames": {
+        "disarmed": False, "text": "The disarm of every flame group did NOT "
+                                   "go out (no answer)."}}
+    e._post_one("stop", {"who": "Andy", "screen": "Stream Deck"},
+                path="/api/stop")
+    check("FAILED" in e.fault and "e-stop" in e.fault,
+          f"the deck's fault says the disarm failed: {e.fault!r}")
+    check(tuple(e.fault_face) == ("DISARM", "FAILED"),
+          f"and key 0 reads DISARM FAILED: {e.fault_face}")
+    check(any("FAILED" in t and f for t, f in lines),
+          f"journaled as a fault: {lines}")
+    answer["doc"] = {"stopped": True, "flames": {"disarmed": True,
+                                                 "text": "sent"}}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check(e.fault == "" and tuple(e.fault_face) == ("ENGINE", "FAULT"),
+          f"a Stop whose disarm went out clears it: {e.fault!r}")
+    answer["doc"] = {"stopped": True}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check(e.fault == "", "no flame link (no flames in the answer): no fault")
+    answer["doc"] = {"ok": False, "flames": {"disarmed": False}}
+    e._post_one("hold", {"who": "Andy"})
+    check(tuple(e.fault_face) == ("ENGINE", "FAULT"),
+          "only Stop's answer is read for its flames")
+    if not _pillow_missing("the deck's DISARM FAILED key"):
+        src = open(sd.__file__, encoding="utf-8").read()
+        check('getattr(self.conductor, "fault_face", None)' in src,
+              "key 0 draws the conductor's fault face")
+    # The Rack screen.
+    check('$("run-msg").textContent = stopWords(j);' in page,
+          "the Rack screen's Stop says what came back")
+    check("Stop playback and disarm every flame group." in page,
+          "its confirm says Stop disarms every flame group")
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function stopWords" in logic, "stopWords is pure page logic")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(stopWords({stopped:true, flames:{disarmed:false, text:"x"}}) === STOP_DISARM_FAILED, "a failed disarm is said");
+t(/FAILED/.test(STOP_DISARM_FAILED) && /Disarm all flame groups/.test(STOP_DISARM_FAILED) && /e-stop/.test(STOP_DISARM_FAILED), "with what to do");
+t(stopWords({stopped:true, flames:{disarmed:true}}) === "Stopped.", "a disarm that went out: Stopped.");
+t(stopWords({stopped:true}) === "Stopped." && stopWords(null) === "Stopped.", "no flame link: Stopped.");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"Stop's words, in node: {r.stdout[-800:]!r} "
+              f"{r.stderr[-400:]!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
     print("  ok")
 
 
@@ -49535,6 +49715,30 @@ def test_morning_unknown_multi_channel_group_is_never_purged():
     check(cl.unknown_groups == set(loose),
           f"loose names are never purged, Jeff's rows in any case are: "
           f"{sorted(cl.unknown_groups)}")
+    # A group with several safety slots (several fixtures) nothing
+    # declares (third review of #126, P2-1: "Big Boom", fire 21 to 24 and
+    # 26 to 29, safeties 25 and 30, was two purgeable G-Flame machines).
+    # Purged only as a waver or when gflame_groups lists it.
+    boom = {"name": "Big Boom", "safety": 25, "safeties": [25, 30],
+            "fire": [21, 22, 23, 24, 26, 27, 28, 29]}
+    wave = {"name": "wave flamer", "safety": 6, "safeties": [6, 12],
+            "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]}
+    for nm in ("Big Boom", "front row"):
+        b = dict(boom, name=nm)
+        cb = MO.MorningConfig.parse({}, "x", [b, wave])
+        bm = [m for m in cb.machines if m.group == nm]
+        check(nm in cb.unknown_groups and len(bm) == 2 and
+              all(cb.purge_refusal(m) == reason for m in bm) and
+              "wave flamer" not in cb.unknown_groups,
+              f"{nm!r} with two safeties: never purged until declared, "
+              f"even by a row's name: {[m.view() for m in bm]}")
+        check(any(nm in x for x in cb.journal_lines()),
+              f"and journaled: {cb.journal_lines()}")
+        cg = MO.MorningConfig.parse({"gflame_groups": [nm]}, "x", [b, wave])
+        check(nm not in cg.unknown_groups and
+              all(cg.purge_refusal(m) == "" for m in cg.machines
+                  if m.group == nm),
+              f"{nm!r} listed in gflame_groups: purged, fixture by fixture")
     try:
         MO.MorningConfig.parse({"gflame_groups": ["FB"],
                                 "fireball_groups": ["FB"]}, "x",
@@ -67485,6 +67689,7 @@ if __name__ == "__main__":
     test_stream_deck_review_of_120()
     test_stream_deck_start_stop_is_one_key()
     test_stop_disarms_every_flame_group_without_the_latch()
+    test_stop_says_when_its_flame_disarm_failed()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()
