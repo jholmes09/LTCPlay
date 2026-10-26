@@ -1096,6 +1096,10 @@ class FlameCues:
         # made for another flame controller start): "" when none. Read by
         # /api/conductor (the Stream Deck) and the rack screen.
         self.fault = ""
+        # Fire flames while scrubbing (at_transport): its own refusal that
+        # is a fault, for the banner; never in `fault` above.
+        self.scrub_fault = ""
+        self._scrub_why = ""
         self._layout_mtime = None   # xlights_networks.xml's, at _locate
         self._open = {}     # fseq path -> (FSEQ, spans, its mtime, start)
         self.link = None    # the FlameLink (closing it closes the files)
@@ -1443,6 +1447,125 @@ class FlameCues:
                                                   src + hi - dst]
         self._why = ""
         self.fault = ""
+        return out
+
+    # -- fire flames while scrubbing (scrubflames.py) ---------------------
+    def at_transport(self, tc):
+        """Fire flames while scrubbing: the flame universe at `tc`, the
+        programming session's transport position written as show clock
+        text (30 frames a second, timeline seconds, as player.tc_seconds
+        reads them), from the render of the cue the pixels are playing
+        there (timeline.cue_at, as player._play_at). None (all zeros)
+        unless: a session running; its player on a free run (the
+        Programming screen's transport), not paused, no Blackout, Preshow
+        or look; `tc` is the player's own position (within half a second);
+        the show clock playing no cue; and every check __call__ makes of
+        the render (a usable flame controller, the render not older than
+        the layout, its channel count fitting the layout, the flame
+        controller where it was when the render was checked, the frame
+        inside the render). __call__, the live show's own path, is not
+        used and not changed. A refusal that is a FAULT is held in
+        scrub_fault, never in fault (the Stream Deck's CUES FAULT is the
+        live show's). Never raises."""
+        try:
+            return self._at_transport(tc)
+        except Exception as e:
+            self.scrub_fault = (f"the scrub could not be read "
+                                f"({type(e).__name__}: {e})")
+            return None
+
+    def _scrub_zero(self, why="", fault=False):
+        self.scrub_fault = why if fault else ""
+        if fault and why != getattr(self, "_scrub_why", ""):
+            self._note(f"Fire flames while scrubbing: zero, {why}",
+                       action="flames", outcome="scrub_refused", fault=True)
+        self._scrub_why = why if fault else ""
+        return None
+
+    def _at_transport(self, tc):
+        s = getattr(self.control, "session", None)
+        if s is None or not getattr(s, "running", False):
+            return self._scrub_zero()
+        clk = getattr(s, "clock", None)
+        if clk is not None and getattr(clk, "playing", False):
+            return self._scrub_zero()
+        p = getattr(s, "player", None)
+        if p is None or getattr(p, "override", None) is not None:
+            return self._scrub_zero()
+        if getattr(p, "freerun_epoch", None) is None or \
+                getattr(p, "freerun_paused_at", None) is not None:
+            return self._scrub_zero()
+        if not isinstance(tc, str) or len(tc) != 11:
+            return self._scrub_zero()
+        h, m, sec, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), \
+            int(tc[9:11])
+        at = h * 3600 + m * 60 + sec + f / 30.0
+        here = getattr(p, "tc_seconds", None)
+        if here is None or here < 0 or abs(here - at) > 0.5:
+            return self._scrub_zero()
+        tl = getattr(s, "tl", None)
+        cue_at = getattr(tl, "cue_at", None)
+        cue = cue_at(at) if cue_at is not None else None
+        path = getattr(cue, "path", None)
+        if cue is None or not path:
+            return self._scrub_zero()
+        if self._bg:
+            self.start()
+            stale_s, stale = self._stale
+            if stale_s is s and path in stale:
+                return self._scrub_zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
+            lay = self._layout
+            if lay is None or lay[0] is not s:
+                return self._scrub_zero()
+            span, total, laid = lay[1], lay[2], lay[3]
+            if span is None:
+                return self._scrub_zero()
+            got = self._by_path.get(path)
+            if got is None:
+                return self._scrub_zero()
+            if isinstance(got, Exception):
+                return self._scrub_zero(
+                    f"the show's render could not be read "
+                    f"({type(got).__name__}: {got})", fault=True)
+            fs, spans, made, checked_at = got
+        else:
+            span = self._locate(s)
+            total, laid = self._total, self._layout_mtime
+            if span is None:
+                return self._scrub_zero()
+            fs, spans, made, checked_at = self._render(path, span[0])
+        have = max(st + n for st, _src, n in spans)
+        whole = len(spans) == 1 and spans[0][0] == 0
+        if total is None or (have != total if whole else have > total):
+            return self._scrub_zero(
+                f"the show's render has {have} channels but "
+                f"xlights_networks.xml lays out {total}. Render the show "
+                f"again for this layout", fault=True)
+        if made is not None and laid is not None and made < laid:
+            return self._scrub_zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
+        if checked_at is not None and checked_at != span[0]:
+            return self._scrub_zero(
+                f"the flame controller starts at channel {span[0]} in "
+                f"xlights_networks.xml now, but at channel {checked_at} "
+                f"when this render was checked. Render the show again for "
+                f"this layout", fault=True)
+        rel = at - float(getattr(cue, "tc_seconds", 0.0) or 0.0)
+        idx = int(rel * 1000.0 // fs.step_time_ms)
+        if not 0 <= idx < fs.frame_count:
+            # Between cues, or past this render's end: zero, never the
+            # last frame held. Not a fault while scrubbing.
+            return self._scrub_zero()
+        data = fs.frame(idx)
+        start, count = span
+        first, end = start - 1, start - 1 + count
+        out = [0] * 512
+        for dst, src, length in spans:
+            lo, hi = max(dst, first), min(dst + length, end)
+            if lo < hi:
+                out[lo - first:hi - first] = data[src + lo - dst:
+                                                  src + hi - dst]
+        self.scrub_fault = ""
+        self._scrub_why = ""
         return out
 
 

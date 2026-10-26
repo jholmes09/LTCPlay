@@ -6,7 +6,7 @@ Program flame effects in xLights and see them on the real flames, while LTC Play
 - **The path:** xLights sends on this PC only. LTC Player passes the flame channels to flamesafe on its usual link. flamesafe stays the only program that talks to the flame node.
 - **What flamesafe still does:** it fires only a group that is armed. It still applies lockouts, Abort and its own cutoffs.
 - **A group with several safety channels arms as one.** The wave flamer is three fixtures, each with its own safety channel, in one flame group: one key, one hold to arm, one disarm. Live programming treats it as one group, and xLights can never set a safety channel. A fixture locked out for the night stays off; the group's other fixtures still arm.
-- **The name:** this is not the Programming screen. It is also not a programming session (Rehearse and the scrub buttons). Those play a show file. This one listens to xLights.
+- **The name:** this is not the Programming screen. It is also not a programming session (Rehearse and the scrub buttons). Those play a show file. This one listens to xLights. To fire the show file's own flame cues while you scrub, see "Fire flames while scrubbing" at the end.
 
 **Before it goes near real flames:** a cold safety review, and a first test with Andy with the gas off.
 
@@ -201,3 +201,49 @@ flamesafe is not changed:
 - **A spoofed Mac.** With `allowed_source_ip` set, a device on the show network that sends from the Mac's address is taken as the Mac until a second sender identity appears (T16). It is limited to an armed group, one group at a time, behind flamesafe and the key switch. The show network must be closed to outside devices. Leaving `allowed_source_ip` off removes this risk.
 - **The Mac's own output.** The engine cannot see what the Mac's xLights sends, or where (T17). Only the Mac's file being a copy of the PC's, with matching fingerprints, covers it.
 - **Equal priority.** A multicast or node-addressed flame controller that someone sets Active outside this mode would still merge at equal priority on the node. That risk exists today, and this mode refuses to start while it is set.
+
+## Fire flames while scrubbing
+
+A different switch from live flame programming. It plays the flame cues that are already in the show's render, at the place you are scrubbing to on the Programming screen. xLights is not involved.
+
+- **Where:** Programming screen, "Fire flames while scrubbing". The same rule as live flame programming: someone with the Settings permission (admin) turns it on, confirmed, on the show PC itself, never from an iPad. Anyone can turn it off, on any screen, signed in or not.
+- **Off every start.** LTC Player always starts with it off.
+- **Only one of the two.** It will not turn on while live flame programming is on, and live flame programming will not turn on while it is on. Each says why.
+- **What you see:** a red FLAMES LIVE IN REHEARSAL bar on every screen (the rack screen and Programming) while it is on, with where the scrub is and a Turn off button.
+- **The path:** the same as a show. LTC Player reads the flame channels from the show's render at the scrub position and sends them to flamesafe on its usual flame link. flamesafe is not changed. It fires only a group that is armed, and its lockouts, Abort, hold to arm and cutoffs all apply. A disarmed or locked out group never fires.
+
+### When a flame value goes out
+
+Only when all of these are true:
+
+1. A show file is running in Programming (Run with Programming chosen), and no scheduled show is live.
+2. The Programming screen's transport is playing: after Play from, a Jump, Continue, or the loop. Not paused, not following timecode, and no Blackout or Preshow look on the pixels.
+3. The show's music clock is not playing a cue.
+4. The render passes the same checks as in a show: not older than `xlights_networks.xml`, the right number of channels, and the flame controller where it was when the render was checked. Between cues and past the end of a render the flames are zero.
+
+### The seek rule (how a scrub cannot fire a burst)
+
+- After turning it on, and after every Play from, Jump, loop wrap, or Pause then Continue, every flame value is zero until the position has played on steadily for half a second.
+- A flame cue that was already under way where you landed stays zero until it has ended. Only a cue that starts after you land fires. So dragging or jumping through the show never fires anything on the way, and a cue you jumped into the middle of never fires.
+- A position that moves by more than a quarter of a second more or less than the time that passed counts as a jump. A position that stops for a tenth of a second counts as stopped.
+
+### What turns it off by itself
+
+Each of these turns it off, sets every flame value to zero at once, and writes the reason in the journal and the audit log:
+
+- Turn off (the switch or the red bar).
+- Abort, Hold, Start now, Run, or Stop.
+- A show going live: a scheduled show starting, or the show's music clock playing a cue.
+- Anything that zeroes the show's flame cues (a Hold, an Abort, the end of a show).
+- Live flame programming starting.
+- An Abort or a Hold standing, or the session no longer being Programming.
+- A purge selected or firing on the Morning page, or the flame link to flamesafe not sending.
+
+**Turning it off does not disarm.** The groups you armed for the session stay armed, as after a show. Disarm them on the Stream Deck when you are done.
+
+### Also
+
+- While it is on, the Morning page fires nothing and a purge selection stops it from turning on.
+- A live show's own flame cues are not affected: this has its own path, and it is never on during a show.
+- The Stream Deck is unchanged. It shows armed groups as always; the red bar on the screens is where this switch shows.
+- **First test:** gas off and key switch off, as for live flame programming. Arm one group, play into a flame cue, and check: the cue fires only after half a second of steady play; Pause zeroes it; a Jump into the middle of a cue does not fire it; a disarmed group stays at zero; Abort zeroes everything and turns it off.

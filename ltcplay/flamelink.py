@@ -185,7 +185,15 @@ PURGE_HOLD_S = 0.25
 # fire. While the mode is on the show's own cues are never sent (one
 # source at a time).
 PROGRAM_HOLD_S = 0.25
-LOCK_ALARM_S = 1.0          # CONTRACT.md: "for more than 1 s"
+# Fire flames while scrubbing (scrubflames.py, LIVE_FLAME_PROGRAMMING.md,
+# Jeff 2026-10-26): in a programming session the show's own flame cues, read
+# at the Programming screen's transport position, between rehearse_begin()
+# and rehearse_end(). Its own path through values_now (_rehearse_values),
+# never the live show's: zeros whenever the show clock has a cue at all (a
+# show live, starting or held), and the seek guard ALWAYS applies to it,
+# whatever seek_guard says. zero() and disarm_all() end it, like live flame
+# programming, so a Hold or an Abort stops it at the link at once.
+LOCK_ALARM_S = 1.0         # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
 KEY_MIN, KEY_MAX = 16, 128
 REASON_MAX = 200
@@ -494,6 +502,14 @@ class FlameLink:
         self._program = None
         self._program_session = 0
         self.programs_sent = 0
+        # Fire flames while scrubbing: on between rehearse_begin and
+        # rehearse_end (or a zero() or disarm_all()); the providers are
+        # (state, cues): state() -> the transport position as timecode text
+        # or None (zeros), cues(tc) -> 512 ints or None.
+        self._rehearse_on = False
+        self._rehearse = None
+        self._rehearse_session = 0
+        self.rehearse_sent = 0      # frames with a flame value in them
         # Lockout (2026-10-17): channels (1-based slots) zeroed in every
         # frame this link sends, cue or purge. flamesafe enforces the same
         # set from the lockout file; this is the belt to its braces.
@@ -794,6 +810,10 @@ class FlameLink:
     def values_now(self):
         """(tc, values) for a frame sent now. Never raises; zeros on
         anything uncertain. Calls the providers: never under self._lock."""
+        if self._rehearse_on:
+            # Fire flames while scrubbing: its own path, start to end. With
+            # it off (always, during a show) nothing below changes.
+            return self._rehearse_values()
         zeros = bytes(UNIVERSE_SIZE)
         try:
             tc, live = self.show_state()
@@ -997,6 +1017,142 @@ class FlameLink:
         except Exception:
             return False
 
+    # -- fire flames while scrubbing (scrubflames.py) ------------------------
+    def _seek_reset(self):
+        """The seek guard as a new link has it: the next timecode is a
+        landing and every channel waits to be seen at zero."""
+        self._seek_last = None
+        self._steady_since = None
+        self._blocked = set(range(UNIVERSE_SIZE))
+
+    def rehearse_begin(self, state, cues):
+        """Fire flames while scrubbing is on: from the next frame the
+        values are cues(state()), by _rehearse_values's rules. Refused
+        (None) while live flame programming is on; else the session number.
+        The seek guard starts again, so nothing fires until the position
+        has run steadily for SEEK_SETTLE_S, and a cue already under way
+        stays zero until it ends."""
+        with self._lock:
+            if self._program_on:
+                return None
+            self._rehearse = (state, cues)
+            self._rehearse_session += 1
+            self._seek_reset()
+            self._rehearse_on = True
+            return self._rehearse_session
+
+    def rehearse_end(self):
+        """Fire flames while scrubbing is off: one zero frame now, and a
+        frame read before this goes out as zeros (_zero_gen). The seek
+        guard starts again too, so the next show lands as a fresh link
+        does. True when it was on. Never asks the providers."""
+        with self._lock:
+            was = self._rehearse_on
+            self._rehearse_on = False
+            self._rehearse = None
+            if not was:
+                return False
+            self._zero_gen += 1
+            self._seek_reset()
+            self._send_zero_frame()
+            return True
+
+    @property
+    def rehearse_on(self):
+        return self._rehearse_on
+
+    @property
+    def rehearse_session(self):
+        return self._rehearse_session
+
+    def _rehearse_values(self):
+        """(tc, values) while fire flames while scrubbing is on. ALL ZEROS
+        unless every one of these holds:
+
+          1. the show clock has no cue at all (show_state gives no timecode
+             and is not live): a show live, starting, held or fading out
+             is never fed from the scrub, and the mode ends;
+          2. live flame programming is off (one source at a time);
+          3. state() answered a timecode (None: paused, stopped, a look,
+             following timecode, not the programming session);
+          4. the seek guard, ALWAYS, whatever self.seek_guard says: run
+             steadily for SEEK_SETTLE_S since the last seek, jump, loop
+             wrap, Pause, or the mode starting, and channel by channel
+             seen at zero since then. A position that stands still for
+             more than TC_STILL_S ends the steady run, so it is moving
+             too;
+          5. cues(tc) answered 512 whole numbers 0 to 255.
+
+        The lockout is applied last, as for every frame. Never raises."""
+        zeros = bytes(UNIVERSE_SIZE)
+        now = self._clock()
+        try:
+            show_tc, live = self.show_state()
+        except Exception as e:
+            self._cue_episode("state", f"the show state could not be read "
+                                       f"({_exc_text(e)})")
+            return None, zeros
+        if live is True or show_tc is not None:
+            self._cue_episode(
+                "rehearse_show", "the show clock is playing a cue, so "
+                                 "nothing fires from the scrub")
+            return None, zeros
+        if self._program_on:
+            return None, zeros
+        r = self._rehearse
+        if r is None:
+            return None, zeros
+        try:
+            tc = r[0]()
+        except Exception as e:
+            self._cue_episode("rehearse_state", f"the scrub position could "
+                                                f"not be read "
+                                                f"({_exc_text(e)})")
+            return None, zeros
+        if not isinstance(tc, str) or not _TC.fullmatch(tc):
+            tc = None
+        settled = self._seek_guard(tc, now)
+        if tc is None:
+            # Paused, stopped or not on the transport: zero, and whatever
+            # comes next is a landing (the seek guard starts again), so a
+            # cue under way at a Pause stays zero after Continue until it
+            # has ended.
+            self._seek_reset()
+            self._cue_episode("", "")
+            return None, zeros
+        try:
+            v = r[1](tc)
+        except Exception as e:
+            self._cue_episode("raised", f"the flame cue provider raised "
+                                        f"{_exc_text(e)}")
+            return tc, zeros
+        if v is None:
+            self._cue_episode("", "")
+            return tc, zeros
+        try:
+            vals = list(v)
+            ok = len(vals) == UNIVERSE_SIZE and all(
+                _is_int(x) and 0 <= x <= 255 for x in vals)
+        except Exception:
+            ok = False
+        if not ok:
+            self._cue_episode("garbage", f"the flame cue provider did not "
+                                         f"answer {UNIVERSE_SIZE} whole "
+                                         f"numbers 0 to 255")
+            return tc, zeros
+        self._cue_episode("", "")
+        blocked = self._blocked
+        for i in [i for i in blocked if vals[i] == 0]:
+            blocked.discard(i)
+        if not settled:
+            return tc, zeros
+        for i in blocked:
+            vals[i] = 0
+        out = self._unlocked(bytes(vals))
+        if any(out):
+            self.rehearse_sent += 1
+        return tc, out
+
     def set_locked_channels(self, slots):
         """The locked out fire slots (1-based), zeroed in every frame this
         link sends from now on. Rubbish locks nothing extra here: flamesafe
@@ -1144,13 +1300,15 @@ class FlameLink:
             tc, values = self.values_now()
         with self._lock:
             if gen != self._zero_gen or (self.zeroed and self._purge is None
-                                         and self._program is None):
+                                         and self._program is None
+                                         and not self._rehearse_on):
                 # A zero() or disarm_all() that landed since the values were
                 # read wins (gen); and with the cues zeroed, only a purge
                 # frame still held may carry a value (the purge frame is the
                 # one thing that goes out while the conductor has the cues
                 # zeroed, and only while the show is not live: values_now;
-                # so is a live flame programming frame, by the same rule).
+                # so is a live flame programming frame, by the same rule,
+                # and fire flames while scrubbing, by _rehearse_values's).
                 values = bytes(UNIVERSE_SIZE)
             seq, mono = self._next()
             self.last_values_nonzero = any(values)
@@ -1219,6 +1377,10 @@ class FlameLink:
             # Any zero (a Hold, a show's end, the dark sequence) ends live
             # flame programming at the link too: xLights stops with the
             # fire (flameprog.py ends the mode on its next pass).
+            # So does fire flames while scrubbing (scrubflames.py ends the
+            # mode on its next pass).
+            self._rehearse_on = False
+            self._rehearse = None
             self._program = None
             self._program_on = False
             self.zeroed = True
@@ -1248,6 +1410,9 @@ class FlameLink:
                 self._purge = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
+                # And fire flames while scrubbing, the same way.
+                self._rehearse_on = False
+                self._rehearse = None
                 self._program = None
                 self._program_on = False
                 self.zeroed = True
@@ -1408,6 +1573,8 @@ class FlameLink:
                 "program_on": self._program_on,
                 "program": self.program_active(),
                 "programs_sent": self.programs_sent,
+                "rehearse_on": self._rehearse_on,
+                "rehearse_sent": self.rehearse_sent,
                 "locked_channels": sorted(self._locked),
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,

@@ -330,6 +330,12 @@ starts no show. To switch, press Stop, pick the other side of the switch,
 then Run. While a scheduled show is live, Programming is locked and the
 switch says so. Back to the show returns to the show screen.
 
+Fire flames while scrubbing, on the Programming screen, lets the show's own
+flame cues fire while you play, jump and loop in Programming. It is off
+every time LTC Player starts, and only an admin on the show machine can
+turn it on. While it is on, a red FLAMES LIVE IN REHEARSAL bar is on every
+screen with its Turn off button. LIVE_FLAME_PROGRAMMING.md has the rules.
+
 The time zone on the schedule card is a list of plain names (for example
 Mountain Time (Denver)); the show's local time is shown under it. The
 engine checks the zone again when the schedule is saved.

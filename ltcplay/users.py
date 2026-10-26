@@ -84,8 +84,8 @@ PERMS = (
     ("show_files", "Show files and setup: the show folder, the schedule, "
                    "reload, the machine layout"),
     ("settings", "Settings: the show network, arming from a screen, live "
-                 "flame programming, the timecode input, the audit upload, "
-                 "idle sign out"),
+                 "flame programming, fire flames while scrubbing, the "
+                 "timecode input, the audit upload, idle sign out"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -94,7 +94,8 @@ SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
                "flames or lasers), "
                "letting go of a hold, stopping or clearing a purge, "
                "locking a machine, a laser test off, live flame "
-               "programming off, Acknowledge, signing "
+               "programming off, fire flames while scrubbing off, "
+               "Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
 # The proposed defaults (Jeff decides; USERS.md). Signed out keeps the
@@ -133,7 +134,7 @@ REMOTE_ROUTES = {
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
     "network": "settings", "screen-arming": "settings",
-    "live-flame": "settings",
+    "live-flame": "settings", "scrub-flames": "settings",
     "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",
     "users": "users", "role-matrix": "users", "clear-lockouts": "users",
@@ -200,6 +201,11 @@ def classify(route, body=None):
             # Live flame programming OFF (anything but the JSON word true
             # is off at the engine, remote.live_flame_post) only takes
             # risk away: anyone, any surface, signed out.
+            return "safety"
+        if name == "scrub-flames" and body.get("on") is not True:
+            # Fire flames while scrubbing OFF (anything but the JSON word
+            # true, remote.scrub_flames_post), the same as live flame
+            # programming: anyone, any surface, signed out.
             return "safety"
         if name == "laser-arm" and body.get("on") is not True:
             # morning.py arms only for "on" the JSON word true; every other
