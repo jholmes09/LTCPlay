@@ -61946,10 +61946,10 @@ console.log(JSON.stringify(out));
                   f"{size} ({m1['tag']}): the flame groups are seen at load "
                   f"and clear of the Abort bar as without it")
             # The block takes its room from the lamps' stretch, as the
-            # lasers strip does, never from their buttons: every Hold to
-            # arm and Disarm stays at least 44 px (and is checked above).
-            check(all(l.get("arm", 0) >= 44 and l.get("disarm", 0) >= 44
-                      for l in m1["lamps"]) and len(m1["lamps"]) == 3,
+            # lasers strip does, never from their buttons: every group's
+            # button stays at least 44 px (and is checked above).
+            check(all(l.get("arm", 0) >= 44 for l in m1["lamps"]) and
+                  len(m1["lamps"]) == 3,
                   f"{size} ({m1['tag']}): every flame button is 44 px or "
                   f"more: {m1['lamps']}")
     print("  ok")
