@@ -1027,6 +1027,10 @@ function machineLook(m, mo, flames, purge){
   const locked = !!(mo && mo.lockout && mo.lockout.machines && mo.lockout.machines[m.id]);
   if(locked) return {cls:"locked", word:"Locked out"};
   const sel = !!(purge && (purge.selected || []).includes(m.id));
+  // A waver with no pan or tilt slot (a default wave flamer) is never
+  // purged by the engine; its notes say why, in one line.
+  if(m.kind === "waver" && (m.pan == null || m.tilt == null))
+    return {cls:sel ? "sel" : "", word:"Never purged: no pan, tilt and fire map yet"};
   if(!sel) return {cls:"", word:"Off"};
   const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
   const armed = !!(g && g.armed === "armed" && flames && !flames.stale);
@@ -1080,6 +1084,8 @@ function machineWait(m, flames, purge, pageAgeMs, aborted){
   const sel = !!(purge && (purge.selected || []).includes(m.id));
   const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
   if(!sel || !g || g.armed === "armed" || (flames && flames.stale)) return "";
+  // A default wave flamer is never purged (machineLook says so): no wait.
+  if(m.kind === "waver" && (m.pan == null || m.tilt == null)) return "";
   if(aborted) return REARM_ABORTED;
   if(g.purge_refused === "refractory") return REARM_REFUSED_PURGE;
   const left = rearmLeftMs(g, pageAgeMs, flames && flames.age_ms);
@@ -1720,6 +1726,7 @@ function renderLamps(fl){
     el.querySelector(".word").textContent = look.word;
     el.querySelector(".why").textContent = c === "unknown" ? "" : reasonWords(g.reason);
     el.querySelector(".why").title = g.reason || "";
+    el.querySelector("b").title = g.arm_value ? "Arms at " + g.arm_value + " on its safety slots" : "";
     const sl = safetyLine(g, c), se = el.querySelector(".saf");
     se.hidden = !sl;
     se.textContent = sl;
@@ -2484,6 +2491,7 @@ function renderMorning(){
     const look = machineLook(m, mo, fl, purge);
     el.className = "mach " + look.cls + (ARRANGE ? " drag" : "") + (DRAG && DRAG.id === m.id ? " lift" : "");
     el.querySelector(".w").textContent = look.word;
+    el.title = m.notes || "";
     // The re-arm wait or a refused purge arm, said on the tile (Jeff,
     // 2026-10-26: it sat on "Arming..." with no word why).
     const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK, !!(ST && ST.schedule && ST.schedule.aborted));

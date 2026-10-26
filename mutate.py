@@ -8511,6 +8511,25 @@ def build():
   '''        if False:
             return ("The page's status is more than 1 s old. Wait for it "'''),
 
+ ("morning: a default wave flamer with no pan, tilt and fire map is purged "
+  "(raises, or writes a guessed fire value)",
+  "ltcplay/morning.py",
+  '''                no_map = m.purge_refusal()
+                if no_map:''',
+  '''                no_map = m.purge_refusal()
+                if False:'''),
+
+ ("morning: a waver with no pan or tilt slot is not purge-refused",
+  "ltcplay/morning.py",
+  '''        if self.kind == "waver" and (self.pan is None or self.tilt is None
+                                     or not self.fire):''',
+  '''        if False:'''),
+
+ ("morning: a fire press on only never-purged machines is not refused",
+  "ltcplay/morning.py",
+  '''            if ms and all(m.purge_refusal() for m in ms):''',
+  '''            if False:'''),
+
  ("morning: a fire heartbeat gap never ends the press (T2)",
   "ltcplay/morning.py",
   '''            stale = f is not None and now - f["beat"] > BEAT_STALE_S''',
@@ -9213,6 +9232,127 @@ def build():
                 continue''',
   '''            if True:
                 continue'''),
+
+ # safety_profile (Jeff, 2026-10-26): the wave flamer arms at Jeff's own
+ # number (178), every guard optional and against his numbers only.
+ ("flamesafe: a profile's arm value may be the disarm value 0",
+  "flamesafe/config.py",
+  "    arm = _int(p, \"arm_value\", rules.DISARM_VALUE + 1, 255,",
+  "    arm = _int(p, \"arm_value\", rules.DISARM_VALUE, 255,"),
+
+ ("flamesafe: a profile's arm value may be past 255",
+  "flamesafe/config.py",
+  "    arm = _int(p, \"arm_value\", rules.DISARM_VALUE + 1, 255,",
+  "    arm = _int(p, \"arm_value\", rules.DISARM_VALUE + 1, 511,"),
+
+ ("flamesafe: a profile without arm_value is accepted",
+  "flamesafe/config.py",
+  "    if \"arm_value\" not in p:\n",
+  "    if False:\n"),
+
+ ("flamesafe: a profile with half an enable window is accepted",
+  "flamesafe/config.py",
+  "    if has_lo != has_hi:",
+  "    if False:"),
+
+ ("flamesafe: a null enable_lo is read as a number",
+  "flamesafe/config.py",
+  "    has_lo = p.get(\"enable_lo\") is not None",
+  "    has_lo = \"enable_lo\" in p"),
+
+ ("flamesafe: a profile's enable window may hold the disarm value 0",
+  "flamesafe/config.py",
+  "        if lo <= rules.DISARM_VALUE:",
+  "        if False:"),
+
+ ("flamesafe: a profile's arm value may sit outside its enable window",
+  "flamesafe/config.py",
+  "        if not (lo <= arm <= hi):",
+  "        if False:"),
+
+ ("flamesafe: a profile's fire_at is never read",
+  "flamesafe/config.py",
+  "    if p.get(\"fire_at\") is not None:",
+  "    if False:"),
+
+ ("flamesafe: a profile's arm value may be at or above its fire_at",
+  "flamesafe/config.py",
+  "        if arm >= fire_at:",
+  "        if False:"),
+
+ ("flamesafe: a single-bit flip of a profile's arm value may reach fire_at",
+  "flamesafe/config.py",
+  "            if neighbour >= fire_at:",
+  "            if False:"),
+
+ ("flamesafe: the profile's bit-flip guard skips the top bits",
+  "flamesafe/config.py",
+  "            neighbour = arm ^ (1 << bit)",
+  "            neighbour = arm ^ (1 << (bit % 6))"),
+
+ ("flamesafe: the profile's bit-flip guard misses a flip landing on fire_at",
+  "flamesafe/config.py",
+  "            if neighbour >= fire_at:",
+  "            if neighbour > fire_at:"),
+
+ ("flamesafe: a group arm_value that disagrees with its profile is accepted",
+  "flamesafe/config.py",
+  "                if other != arm_value:",
+  "                if False:"),
+
+ ("flamesafe: an unknown key in a profile is accepted",
+  "flamesafe/config.py",
+  "    unknown = sorted(k for k in p if k not in PROFILE_KEYS)",
+  "    unknown = []"),
+
+ ("witness: the checker judges a profile group at the file's arm value",
+  "tools/stress/witness/check_witness.py",
+  '        arm_of[g["name"]] = group_arm_value(g, arm_value)',
+  '        arm_of[g["name"]] = int(g.get("arm_value", arm_value))'),
+
+ ("witness: the checker never reads a safety_profile",
+  "tools/stress/witness/check_witness.py",
+  '    if isinstance(prof, dict) and "arm_value" in prof:\n'
+  '        return int(prof["arm_value"])\n'
+  '    return int(g.get("arm_value", arm))',
+  '    return int(g.get("arm_value", arm))'),
+
+ ("witness: the recorder never reads a safety_profile",
+  "tools/stress/witness/witness.py",
+  '    if isinstance(prof, dict) and "arm_value" in prof:\n'
+  '        return int(prof["arm_value"])\n'
+  '    return int(g.get("arm_value", arm))',
+  '    return int(g.get("arm_value", arm))'),
+
+ ("rack screen: a group's arm value is dropped from the card",
+  "ltcplay/remote.py",
+  '                           "arm_value": _arm(g.get("arm_value"))})',
+  '                           "arm_value": None})'),
+
+ ("flamesafe: a profile group arms at the file's arm value",
+  "flamesafe/config.py",
+  '            arm_value = profile["arm_value"]',
+  "            arm_value = c.arm_value"),
+
+ ("flamesafe: a profile also lets 178 through on other groups",
+  "flamesafe/config.py",
+  "        elif \"arm_value\" in g:\n"
+  "            arm_value = _int(g, \"arm_value\", 0, 255, f\"{name}: arm_value\")\n"
+  "            _validate_arm_value(arm_value, c.gflame_range,",
+  "        elif \"arm_value\" in g:\n"
+  "            arm_value = _int(g, \"arm_value\", 0, 255, f\"{name}: arm_value\")\n"
+  "            if any('safety_profile' in x for x in groups): pass\n"
+  "            else: _validate_arm_value(arm_value, c.gflame_range,"),
+
+ ("flamesafe: the start line says a guarded profile has no fire guard",
+  "flamesafe/__main__.py",
+  '             if p["fire_at"] is None else',
+  '             if True else'),
+
+ ("flamesafe: the status frame gives every group the file's arm value",
+  "flamesafe/composer.py",
+  '                "arm_value": g.arm_value,',
+  '                "arm_value": self.cfg.arm_value,'),
 
  ("flamesafe: a locked safety slot is not left out of the arm",
   "flamesafe/composer.py",

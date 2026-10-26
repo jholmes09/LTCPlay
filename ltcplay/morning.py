@@ -166,6 +166,15 @@ def fixture_pairing(group):
     return out if seen == fire else None
 
 
+# A waver with no pan or no tilt slot (a default machine built from
+# flamesafe's groups, such as Jeff's 6-channel wave flamers whose control
+# channels are not mapped yet) is never purged: writing the fire value to
+# every control slot would be a guess. It stays a machine, so locking and
+# the lamps still work. The reason, word for word, is on the page.
+NO_PURGE_MAP = ("no pan, tilt and fire map yet (set it in "
+                "ltcplay_morning.json machines)")
+
+
 class Machine:
     __slots__ = ("id", "name", "kind", "group", "fire", "pan", "tilt",
                  "bank", "notes", "safety", "safeties")
@@ -192,6 +201,14 @@ class Machine:
         self.safeties = tuple(safeties) if safeties is not None else \
             ((safety,) if safety is not None else ())
 
+    def purge_refusal(self):
+        """Why this machine is never purged, or "": a waver needs its pan
+        and tilt slots (the head goes straight up first) and a fire map."""
+        if self.kind == "waver" and (self.pan is None or self.tilt is None
+                                     or not self.fire):
+            return NO_PURGE_MAP
+        return ""
+
     def channels(self):
         """Every slot this machine owns: fire, a Waver's pan and tilt, and
         its own safety slot in a multi-safety group."""
@@ -211,11 +228,14 @@ class Machine:
 
 def default_machines(groups):
     """One machine per fire slot of flamesafe's groups: a sensible default
-    until Andy's own list is written into ltcplay_morning.json."""
+    until Andy's own list is written into ltcplay_morning.json. A waver
+    built here has no pan and no tilt slot, so it is never purged
+    (Machine.purge_refusal) and its notes say so on the page."""
     out = []
     for g in groups:
         kind = _kind_for(g["name"])
         bank = _bank_for(g["name"], kind)
+        notes = f"Never purged: {NO_PURGE_MAP}." if kind == "waver" else ""
         saf = g.get("safeties") or []
         if len(saf) > 1:
             # A multi-safety group (2026-10-26): one machine per fixture,
@@ -228,20 +248,22 @@ def default_machines(groups):
                 # whole group, and locking it locks every slot of it.
                 out.append(Machine(_slug(g["name"]), g["name"], kind,
                                    g["name"], list(g["fire"]), bank=bank,
-                                   safeties=saf))
+                                   notes=notes, safeties=saf))
                 continue
             order = sorted(pairs, key=lambda s: pairs[s][0])
             for n, s in enumerate(order, 1):
                 out.append(Machine(f"{_slug(g['name'])}-{n}",
                                    f"{g['name']} {n}", kind, g["name"],
-                                   pairs[s], bank=bank, safety=s))
+                                   pairs[s], bank=bank, notes=notes,
+                                   safety=s))
             continue
         for n, slot in enumerate(g["fire"], 1):
             many = len(g["fire"]) > 1
             out.append(Machine(f"{_slug(g['name'])}-{n}" if many
                                else _slug(g["name"]),
                                f"{g['name']} {n}" if many else g["name"],
-                               kind, g["name"], [slot], bank=bank))
+                               kind, g["name"], [slot], bank=bank,
+                               notes=notes))
     return out
 
 
@@ -987,6 +1009,13 @@ class Purge:
                 m = cfg.by_id.get(mid)
                 if m is None:
                     continue
+                no_map = m.purge_refusal()
+                if no_map:
+                    # Never purged and never raises: nothing at all is
+                    # written for it, and the page says why.
+                    heads.pop(mid, None)
+                    waiting.append(f"{m.name}: {no_map}")
+                    continue
                 if self._lockout.is_locked("machine", mid):
                     heads.pop(mid, None)
                     waiting.append(f"{m.name}: locked out")
@@ -1037,6 +1066,16 @@ class Purge:
             owner = self.owner
         if not why and not sel:
             why = "Nothing is armed for a purge. Click a machine first."
+        if not why:
+            # Every machine selected is one that is never purged (a wave
+            # flamer with no pan, tilt and fire map): a clean refusal.
+            cfg = self._cfg()
+            ms = [cfg.by_id.get(mid) for mid in sel]
+            ms = [m for m in ms if m is not None]
+            if ms and all(m.purge_refusal() for m in ms):
+                why = ("Nothing selected can be purged: " +
+                       "; ".join(f"{m.name}: {m.purge_refusal()}"
+                                 for m in ms) + ".")
         if not why and not deck and owner != device:
             why = (f"{owner} has the purge selection; only that device or "
                    f"the Stream Deck fires it.")

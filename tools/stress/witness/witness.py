@@ -93,6 +93,16 @@ def find_config(given=None):
     return None, "no config found"
 
 
+def group_arm_value(g, arm):
+    """The value a group raises its safety slots to: its safety_profile's
+    arm_value (flamesafe, 2026-10-26) over its own arm_value over the
+    file's."""
+    prof = g.get("safety_profile")
+    if isinstance(prof, dict) and "arm_value" in prof:
+        return int(prof["arm_value"])
+    return int(g.get("arm_value", arm))
+
+
 def load_groups(path):
     """{"universe", "dest_ip", "dest_port", "arm_value", "groups":
     [{"name", "safety", "fire", "arm_value"}], "tick_hz"} from a flamesafe
@@ -110,7 +120,7 @@ def load_groups(path):
         groups.append({"name": str(g.get("name", "?")),
                        "safety": saf[0] if saf else 0, "safeties": saf,
                        "fire": [int(f) for f in (g.get("fire") or [])],
-                       "arm_value": int(g.get("arm_value", arm))})
+                       "arm_value": group_arm_value(g, arm)})
     dest = d.get("destination") or {}
     return {"universe": int(d.get("universe", 1)),
             "dest_ip": str(dest.get("ip", "127.0.0.1")),

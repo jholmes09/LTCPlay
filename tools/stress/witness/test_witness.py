@@ -440,6 +440,52 @@ class TestChecker(unittest.TestCase):
         self.assertIn("FIRE WITHOUT ARM",
                       rules(run_check(self.d, locked_slots={401})))
 
+    # flamesafe safety_profile (2026-10-26): the wave flamer arms at its
+    # profile's value (178), not the file's 78.  Groups as flamesafe's own
+    # config writes them: no group arm_value, the profile's instead.
+    PROFILE_GROUPS = GROUPS + [{"name": "wave flamer", "safety": [6, 12, 18],
+                                "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11,
+                                         13, 14, 15, 16, 17],
+                                "safety_profile": {"arm_value": 178}}]
+
+    def profile_check(self):
+        w = cw.load_witness(os.path.join(self.d, "w"))
+        return cw.check(w, cw.load_nights(self.j.dir),
+                        cw.load_flamesafe_log(self.j.fs), self.PROFILE_GROUPS,
+                        78)
+
+    def test_safety_profile_arm_value_is_the_groups_own(self):
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(6, 178), (12, 178), (18, 178), (7, 200)])
+        self.w.close()
+        r = rules(self.profile_check())
+        self.assertNotIn("BAD ARM VALUE", r)
+        self.assertNotIn("FIRE WITHOUT ARM", r)
+
+    def test_safety_profile_the_files_value_is_wrong_for_it(self):
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(6, 78), (12, 78), (18, 78), (7, 200)])
+        self.w.close()
+        r = rules(self.profile_check())
+        self.assertIn("BAD ARM VALUE", r)
+        self.assertIn("FIRE WITHOUT ARM", r)
+
+    def test_safety_profile_read_from_the_flamesafe_config(self):
+        example = os.path.join(HERE, "..", "..", "..", "flamesafe",
+                               "flamesafe.example.json")
+        cfg = wt.load_groups(example)
+        arms = {g["name"]: g["arm_value"] for g in cfg["groups"]}
+        self.assertEqual(arms["wave flamer"], 178)
+        self.assertEqual(arms["front row"], 78)
+        self.assertEqual(cfg["arm_value"], 78)
+        with open(example, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        self.assertEqual([cw.group_arm_value(g, 78) for g in raw["groups"]],
+                         [78, 78, 178, 78, 78, 78])
+        self.assertEqual(cw.group_arm_value({"arm_value": 157}, 78), 157)
+
     def test_gaps_stalls_and_left_on_the_wire(self):
         self.good_show()
         self.w.gap(T0 + timedelta(seconds=4), 300)

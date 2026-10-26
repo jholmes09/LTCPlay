@@ -5408,7 +5408,7 @@ def test_safety_profile_config():
     d["groups"][WAVE]["safety_profile"] = 178
     _refused("a profile that is not an object", d, "must be an object")
     _refused("an unknown key in the profile", _profile(fire_below=229),
-             "does not know")
+             "takes arm_value, enable_lo, enable_hi, fire_at")
 
     # The enable window: optional, both or neither.
     c = _loads("178 in the window 153..204 loads",
@@ -5433,6 +5433,15 @@ def test_safety_profile_config():
              "both or neither")
     _refused("enable_hi 256", _profile(enable_lo=153, enable_hi=256),
              "between 0 and 255")
+    c = _loads("enable_lo and enable_hi null are left out",
+               _profile(enable_lo=None, enable_hi=None))
+    check(c and c.groups[WAVE].profile["enable_lo"] is None
+          and c.groups[WAVE].profile["enable_hi"] is None,
+          "no window is kept")
+    _refused("enable_lo given, enable_hi null",
+             _profile(enable_lo=153, enable_hi=None), "both or neither")
+    _refused("enable_lo null, enable_hi given",
+             _profile(enable_lo=None, enable_hi=204), "both or neither")
 
     # fire_at, and the single-bit-flip guard against it alone.  178 is
     # 1011 0010; its neighbours are computed here, not typed in.
@@ -5557,6 +5566,26 @@ def test_safety_profile_composes():
               and r.safety(0) == ARM,
               f"fire_at {fire_at}: a disarm writes 0 on every safety slot "
               f"and fire, the other group stays up: {safeties_on_wire(r)}")
+    # A profile on a group whose safety is one whole number.
+    d = example_dict()
+    d["groups"][0]["safety_profile"] = {"arm_value": 178}
+    c = _loads("a profile on a one-safety group loads", d)
+    check(c and [g.arm_value for g in c.groups] == [178, 78, 178, 78, 78, 78]
+          and c.groups[0].safeties == [401],
+          f"front row arms at 178: {c and [g.arm_value for g in c.groups]}")
+    r = Rig(groups=d["groups"])
+    r.prove_alive()
+    r.inp.set(0)
+    r.step()
+    check(r.safety(0) == 178 and r.group(0)["arm_value"] == 178
+          and r.group(0)["sent_safety"] == 178
+          and r.group(1)["arm_value"] == ARM
+          and r.out.status["arm_value"] == ARM,
+          f"slot 401 carries 178, the group's status says 178, the "
+          f"top-level arm_value stays the file's default: {r.group(0)}")
+    r.inp.set(0, on=False)
+    r.step()
+    check(r.safety(0) == 0, f"a disarm writes 0 on slot 401: {r.safety(0)}")
     r = armed_wave()
     r.step(n=rules.EDGE_QUIET_FRAMES + 1)
     check(_disarm(r) == "", "setup: the Abort is accepted")

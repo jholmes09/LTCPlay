@@ -84,6 +84,16 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import laser_listener as ll  # noqa: E402  (the same table the listener used)
 
+
+def group_arm_value(g, arm):
+    """A group's safety_profile arm_value (flamesafe, 2026-10-26) over its
+    own arm_value over the file's.  The same rule as witness.py."""
+    prof = g.get("safety_profile")
+    if isinstance(prof, dict) and "arm_value" in prof:
+        return int(prof["arm_value"])
+    return int(g.get("arm_value", arm))
+
+
 GRACE_S = 1.5
 PURGE_MAX_S = 30.0
 SHOW_STATES = ("SHOW",)
@@ -683,7 +693,7 @@ def check(w, recs, fs_lines, groups, arm_value, gap_ms=250.0, stall_s=2.0,
     for g in groups:
         for s in _safeties(g):
             safety_of[s] = g["name"]
-        arm_of[g["name"]] = int(g.get("arm_value", arm_value))
+        arm_of[g["name"]] = group_arm_value(g, arm_value)
         for f in g["fire"]:
             fire_of[f] = g["name"]
     safety_slots = {g["name"]: _safeties(g) for g in groups}
@@ -1009,7 +1019,7 @@ def main(argv=None):
         arm_value = int(d.get("arm_value", 0))
         groups = [{"name": g["name"], "safety": g["safety"],
                    "fire": [int(f) for f in g["fire"]],
-                   "arm_value": int(g.get("arm_value", arm_value))}
+                   "arm_value": group_arm_value(g, arm_value)}
                   for g in d.get("groups", [])]
     recs = load_nights(a.nights)
     fs = load_flamesafe_log(a.flamesafe_log)
