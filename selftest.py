@@ -40183,9 +40183,10 @@ def test_remote_countdown_left_in_this_show():
               f"{out.get('subsystems')}")
         check(out["subsystems"][0]["state"] == "off",
               "the deck has not asked yet: off")
-        R.remote.deck_input()
+        R.remote.deck_input("hw=1&arm_ms=10")
         st, _h, out = R.ask("GET", "/api/remote/status")
-        check(out["subsystems"][0]["state"] == "ok", "the deck asked: ok")
+        check(out["subsystems"][0]["state"] == "ok",
+              "the deck asked, its USB deck here and its arm link fresh: ok")
         R.mono[0] += 5
         st, _h, out = R.ask("GET", "/api/remote/status")
         check(out["subsystems"][0]["state"] == "bad",
@@ -50488,13 +50489,19 @@ def test_deck_usb_meter_fault_line_and_rack_screen_chip():
                 return [x for x in R.remote.subsystems({})
                         if x["name"] == "Deck"][0]
             R.remote.deck_input()
+            check(chip() == {"name": "Deck", "state": "warn",
+                             "word": "USB not known"},
+                  f"an older deck that says nothing of its hardware is never "
+                  f"green (2026-10-26): {chip()}")
+            R.remote.deck_input("hw=1&arm_ms=10")
             check(chip() == {"name": "Deck", "state": "ok", "word": "ok"},
-                  f"an older deck that says nothing: ok: {chip()}")
-            R.remote.deck_input("usb_ms=75")
+                  f"a deck here, its arm link fresh, no USB word: ok: "
+                  f"{chip()}")
+            R.remote.deck_input("usb_ms=75&hw=1&arm_ms=10")
             check(chip() == {"name": "Deck", "state": "ok",
                              "word": "ok, USB 75 ms"},
                   f"the rack screen shows the deck's worst write: {chip()}")
-            R.remote.deck_input("usb_ms=2700")
+            R.remote.deck_input("usb_ms=2700&hw=1&arm_ms=10")
             check(chip() == {"name": "Deck", "state": "warn",
                              "word": "USB slow 2.7 s"} and
                   "do not wait" in R.remote.deck_view()["text"] and
@@ -52028,20 +52035,468 @@ def test_deck_key_write_the_deck_did_not_take():
             def chip():
                 return [x for x in R.remote.subsystems({})
                         if x["name"] == "Deck"][0]
-            R.remote.deck_input("usb_ms=1100&usb_fail=3")
+            R.remote.deck_input("usb_ms=1100&usb_fail=3&hw=1&arm_ms=10")
             v = R.remote.deck_view()
             check(chip() == {"name": "Deck", "state": "warn",
                              "word": "USB 3 write(s) failed"} and
                   v["usb_failed"] == 3 and "did not take 3" in v["text"],
                   f"the Deck chip is amber with the count, the status says "
                   f"why: {chip()} {v.get('text')}")
-            R.remote.deck_input("usb_ms=75")
+            R.remote.deck_input("usb_ms=75&hw=1&arm_ms=10")
             check(chip() == {"name": "Deck", "state": "ok",
                              "word": "ok, USB 75 ms"},
                   f"and back to ok when none failed: {chip()}")
         finally:
             R.close()
     print("  ok")
+
+
+# -- the Deck chip shows live truth (Jeff, 2026-10-26, the Pico) -----------
+# Release bench-2026.10.24-d98242c: the Stream Deck unplugged, its red "not
+# plugged in" FAULT acknowledged, and the Deck chip at the top of the rack
+# screen still green, "ok". The chip only asked whether the deck PROGRAM
+# was reading this engine, and that program keeps reading it (and keeps the
+# arm link on the air) while the hardware is away, by design. A green lamp
+# with the deck gone tells the operator hold-to-arm from the deck works.
+
+class _LampFlames:
+    """A flamesafe status that is linked: a flame rig expects a deck."""
+
+    def view(self):
+        return {"connected": True, "stale": False, "fault": "", "groups": []}
+
+
+def test_deck_chip_shows_live_truth():
+    section("Deck chip (Jeff, 2026-10-26, the Pico: 'Deck ok' with the "
+            "Stream Deck unplugged and its fault acknowledged): green only "
+            "while the deck program is heard, says its USB deck is here and "
+            "its arm link is fresh; red 'missing' unplugged, red 'not heard' "
+            "quiet; an Acknowledge changes no colour; green again by itself "
+            "on a replug")
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as sd
+    check(RM.deck_hw("hw=1") is True and RM.deck_hw("hw=0") is False and
+          RM.deck_hw("") is None and RM.deck_hw("hw=yes") is None and
+          RM.deck_hw("usb_ms=4&hw=0") is False,
+          "the engine reads hw as True, False, or not said")
+    check(RM.deck_arm_ms("arm_ms=40") == 40 and RM.deck_arm_ms("") is None
+          and RM.deck_arm_ms("arm_ms=-1") is None and
+          RM.deck_arm_ms("arm_ms=x") is None and
+          RM.deck_arm_ms("arm_ms=99999999") == 600000,
+          "and arm_ms as a bounded number, or nothing")
+    check(RM.DECK_ARM_FRESH_MS == 500 and RM.PLAIN_DECK_FRESH_S == 0.5,
+          "the arm link is fresh within flamesafe's arm_stale_ms, 500 ms, "
+          "and the program within the plain disarm's 0.5 s")
+    S = _sched()
+    if S is not None:
+        R = _RemoteRig(S)
+        loop = ("127.0.0.1", 5000)
+        try:
+            def chip():
+                st, _h, out = R.ask("GET", "/api/remote/status")
+                return [{k: x[k] for k in ("state", "word")}
+                        for x in out.get("subsystems") or []
+                        if x["name"] == "Deck"][0]
+
+            def deck(q):
+                st, _h, _o = _ask(R.httpd, "GET",
+                                  "/api/remote/deck-input?" + q,
+                                  client=loop)
+                check(st == 200, f"the deck's read is answered: {st}")
+            check(chip() == {"state": "off", "word": "not heard"},
+                  f"no flamesafe and no deck program: grey: {chip()}")
+            R.remote.flame_status = _LampFlames()
+            check(chip() == {"state": "bad", "word": "not heard"},
+                  f"a flame rig whose deck program was never heard: red, "
+                  f"'not heard': {chip()}")
+            deck("hw=1&arm_ms=20")
+            check(chip() == {"state": "ok", "word": "ok"},
+                  f"heard, the deck here, the arm link fresh: green: "
+                  f"{chip()}")
+            # Unplugged: the program carries on reading, the link stays on
+            # the air (ruling 4), and it says the hardware is gone.
+            deck("hw=0&arm_ms=20")
+            check(chip() == {"state": "bad", "word": "missing"},
+                  f"unplugged: red, 'Deck missing', though the program is "
+                  f"heard 20 times a second: {chip()}")
+            st, _h, out = _ask(R.httpd, "POST", "/api/remote/alert",
+                               {"raise": "deck", "text": sd.DECK_LOST_TEXT,
+                                "options": ["Acknowledge", "Disarm all"]},
+                               client=loop)
+            check(st == 200, f"the deck's alert is raised: {st} {out}")
+            st, _h, status = R.ask("GET", "/api/remote/status")
+            aid = (status.get("alerts") or [{}])[0].get("id")
+            st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                               {"id": aid, "action": "acknowledge",
+                                "seen": R.seen()})
+            st2, _h, status = R.ask("GET", "/api/remote/status")
+            check(st == 200 and status.get("alerts") == [],
+                  f"Acknowledge cleared the banner: {st} {o2}")
+            deck("hw=0&arm_ms=20")
+            check(chip() == {"state": "bad", "word": "missing"},
+                  f"acknowledged: still red, still 'missing': {chip()}")
+            R.mono[0] += 30
+            deck("hw=0&arm_ms=20")
+            check(chip()["state"] == "bad",
+                  f"and 30 s later, the same: {chip()}")
+            # Replugged: green again by itself, nobody presses anything.
+            deck("hw=1&arm_ms=20")
+            check(chip() == {"state": "ok", "word": "ok"},
+                  f"replugged: green by itself: {chip()}")
+            # The arm link.
+            deck("hw=1&arm_ms=900")
+            check(chip() == {"state": "warn", "word": "arm link stale"},
+                  f"the deck here but its last arm frame 900 ms old: amber: "
+                  f"{chip()}")
+            deck("hw=1")
+            check(chip() == {"state": "warn", "word": "arm link stale"},
+                  f"no word on the arm link: amber: {chip()}")
+            deck("arm_ms=10")
+            check(chip() == {"state": "warn", "word": "USB not known"},
+                  f"no word on the hardware (an older deck program): "
+                  f"amber, never green: {chip()}")
+            # Late, then quiet.
+            deck("hw=1&arm_ms=20")
+            R.mono[0] += 1.0
+            check(chip() == {"state": "warn", "word": "late 1.0 s"},
+                  f"heard 1 s ago, past the 0.5 s rule: amber: {chip()}")
+            R.mono[0] += 4.0
+            check(chip() == {"state": "bad", "word": "not heard"},
+                  f"not heard for 5 s: red, 'Deck not heard', whatever it "
+                  f"said last: {chip()}")
+            deck("hw=0")
+            R.mono[0] += 5.0
+            check(chip() == {"state": "bad", "word": "not heard"},
+                  f"an unplugged deck whose program then stopped: red, not "
+                  f"heard: {chip()}")
+            deck("hw=1&arm_ms=20")
+            check(chip() == {"state": "ok", "word": "ok"},
+                  f"and the program back with the deck: green: {chip()}")
+            # Display only: a hold is gated exactly as before by the deck
+            # program's reads, never by this chip.
+            check(R.remote.deck_view()["heard"] is True,
+                  "deck_view still says whether the program is heard")
+        finally:
+            R.close()
+    # -- the deck's half: it says whether the hardware is here ----------
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=lambda p: None)
+    keys.report_present = lambda: False
+    keys.report_arm = lambda: 12
+    check(keys._path() == "/api/remote/deck-input?hw=0&arm_ms=12",
+          f"unplugged: hw=0 rides on every read: {keys._path()}")
+    keys.report = lambda: 7
+    keys.report_present = lambda: True
+    check(keys._path() == "/api/remote/deck-input?usb_ms=7&hw=1&arm_ms=12",
+          f"beside usb_ms: {keys._path()}")
+    keys.report_present = lambda: 1 / 0
+    keys.report_arm = lambda: None
+    check(keys._path() == "/api/remote/deck-input?usb_ms=7",
+          f"a reporter that fails says nothing, never 'here': "
+          f"{keys._path()}")
+    arm = sd.ArmSocket("127.0.0.1", 9, "k" * 16, 3)
+    check(arm.sent_age_ms() is None, "no arm frame sent yet: no age")
+    arm.open()
+    try:
+        arm.send(["a", "b", "c"])
+        age = arm.sent_age_ms()
+        check(isinstance(age, int) and 0 <= age < 500,
+              f"just sent: a fresh age: {age}")
+        arm.sent_at -= 2.0
+        check(arm.sent_age_ms() >= 2000, "and it grows")
+    finally:
+        arm.close()
+    # run_forever keeps deck_present: False before the first connect and
+    # while unplugged, True while connected, True again on a replug.
+    t = [100.0]
+    fa = _FakeArmSocket(3)
+    c = sd.Controller(fa, _FakeStatusSocket(), ["a", "b", "c"],
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      clock=lambda: t[0])
+    seen = []
+
+    class _Stop(BaseException):
+        pass
+
+    class _Deck:
+        def __init__(self, passes, then):
+            self.i, self.passes, self.then = 0, passes, then
+
+        def keys_down(self):
+            seen.append(("pass", c.deck_present))
+            self.i += 1
+            if self.i > self.passes:
+                raise self.then()
+            return []
+
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
+    made = [0]
+
+    def factory():
+        made[0] += 1
+        seen.append(("open", c.deck_present))
+        if made[0] == 1:
+            raise OSError("no Stream Deck found")
+        if made[0] == 2:
+            return _Deck(3, lambda: sd.DeckDisconnected("unplugged"))
+        return _Deck(2, _Stop)
+    restore = _deck_draw_stubs(sd)
+    try:
+        sd.run_forever(c, deck_factory=factory,
+                       sleep=lambda s_: t.__setitem__(0, t[0] + s_),
+                       clock=lambda: t[0])
+    except _Stop:
+        pass
+    finally:
+        restore()
+    opens = [v for k, v in seen if k == "open"]
+    passes = [v for k, v in seen if k == "pass"]
+    check(opens == [False, False, False],
+          f"before each connect (none yet, then unplugged) it says not "
+          f"here: {opens}")
+    check(passes and all(passes),
+          f"every pass with a deck connected says here: {passes}")
+    check(c.deck_present is True and made[0] == 3,
+          f"the replug says here again, by itself: {c.deck_present}")
+    print("  ok")
+
+
+def test_pixels_chip_shows_live_truth():
+    section("Pixels chip (2026-10-26, checked beside the Deck chip): green "
+            "only while a send landed within 2 s; a sender that stopped "
+            "without counting an error is red, not 'sending'")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        def px(cs):
+            return [{k: x[k] for k in ("state", "word")}
+                    for x in R.remote.subsystems(cs)
+                    if x["name"] == "Pixels"][0]
+        check(px({}) == {"state": "off", "word": "stopped"}, "not running")
+        check(px({"running": True, "since_ok": 0.1, "send_errors": 0}) ==
+              {"state": "ok", "word": "sending"}, "sending now: green")
+        check(px({"running": True, "since_ok": 0.1, "send_errors": 9}) ==
+              {"state": "ok", "word": "sending"},
+              "old errors, sending now: green")
+        check(px({"running": True, "since_ok": 5.0, "send_errors": 0}) ==
+              {"state": "bad", "word": "not sending"},
+              f"nothing left for 5 s, no error counted: red: "
+              f"{px({'running': True, 'since_ok': 5.0, 'send_errors': 0})}")
+        check(px({"running": True, "since_ok": 5.0, "send_errors": 3}) ==
+              {"state": "bad", "word": "not sending"}, "with errors: red")
+        check(px({"running": True, "since_ok": None}) ==
+              {"state": "warn", "word": "not known"},
+              "no good send yet: amber, never green")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_deck_chip_in_a_browser():
+    section("Deck chip in a real browser (2026-10-26): the rack screen's top "
+            "bar drawn in headless Chromium from the engine's own status "
+            "with the deck unplugged, acknowledged, replugged, and with the "
+            "page cut off from the engine; never green but replugged")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('el.className = "chip warn"; const w = el.querySelector("span"); '
+          'if(w) w.textContent = "no contact";' in page,
+          "a page that lost the engine makes every chip amber, 'no contact'")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: the Deck chip "
+              "could not be drawn")
+        print("  note: no Chromium, Chrome or Edge here, so the Deck chip "
+              "was not drawn (set LTCPLAY_CHROME to one)")
+        print("  ok")
+        return
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import streamdeck as sd
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    states = {}
+    try:
+        R.remote.flame_status = _LampFlames()
+
+        def status():
+            st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                               client=loop)
+            return out
+
+        def deck(q):
+            _ask(R.httpd, "GET", "/api/remote/deck-input?" + q, client=loop)
+        deck("hw=0&arm_ms=20")
+        _ask(R.httpd, "POST", "/api/remote/alert",
+             {"raise": "deck", "text": sd.DECK_LOST_TEXT,
+              "options": ["Acknowledge", "Disarm all"]}, client=loop)
+        states["unplugged"] = status()
+        aid = (states["unplugged"].get("alerts") or [{}])[0].get("id")
+        R.ask("POST", "/api/remote/alert",
+              {"id": aid, "action": "acknowledge", "seen": R.seen()})
+        deck("hw=0&arm_ms=20")
+        states["acknowledged"] = status()
+        deck("hw=1&arm_ms=20")
+        states["replugged"] = status()
+        R.mono[0] += 5
+        states["not heard"] = status()
+    finally:
+        R.close()
+    check(states["acknowledged"].get("alerts") == [],
+          "the acknowledged status carries no alert")
+    want = {"unplugged": ("bad", "missing"),
+            "acknowledged": ("bad", "missing"),
+            "replugged": ("ok", "ok"),
+            "not heard": ("bad", "not heard")}
+    for name, st in states.items():
+        got = _deck_chip_in_chromium(chrome, page, st)
+        d = [x for x in got if isinstance(got, list) and
+             x.get("name") == "Deck"] if isinstance(got, list) else []
+        check(len(d) == 1, f"{name}: the Deck chip was drawn: {got!r}")
+        if not d:
+            continue
+        cls, word = want[name]
+        check(d[0]["cls"] == f"chip {cls}" and d[0]["word"] == word and
+              (d[0]["dot"] == "green") == (cls == "ok"),
+              f"{name}: the Deck chip reads 'Deck {word}', {cls}, its dot "
+              f"green only when ok: {d[0]}")
+    # The page cut off from the engine: one good status (replugged, green),
+    # then none. The chips go amber and say no contact.
+    got = _deck_chip_in_chromium(chrome, page, states["replugged"],
+                                 cut_off=True)
+    d = [x for x in got if x.get("name") == "Deck"] \
+        if isinstance(got, list) else []
+    check(len(d) == 1 and d[0]["cls"] == "chip warn" and
+          d[0]["word"] == "no contact" and d[0]["dot"] != "green",
+          f"the engine gone: the Deck chip is amber, 'no contact', never "
+          f"green: {got!r}")
+    check(isinstance(got, list) and got and
+          all(x["dot"] != "green" for x in got),
+          f"and no other chip is green either: {got!r}")
+    print("  ok")
+
+
+_CHIP_MEASURE_JS = r"""
+<script>
+(function(){
+function read(){
+  const g = getComputedStyle(document.documentElement).getPropertyValue("--green").trim();
+  return [...document.querySelectorAll("#subs .chip")].map(el => {
+    const dot = el.querySelector("i"), w = el.querySelector("span");
+    const bg = dot ? getComputedStyle(dot).backgroundColor : "";
+    const probe = document.createElement("i"); probe.style.background = g;
+    document.body.appendChild(probe);
+    const green = getComputedStyle(probe).backgroundColor; probe.remove();
+    return {name:[...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join("").trim(),
+            cls:el.className, word:w ? w.textContent : "",
+            dot: bg === green ? "green" : bg};
+  });
+}
+function go(){
+  if(!document.querySelector("#subs .chip")) return setTimeout(go, 100);
+  setTimeout(() => {
+    const pre = document.createElement("pre"); pre.id = "chip-measure";
+    pre.textContent = JSON.stringify(read());
+    document.body.appendChild(pre);
+  }, window.__CUT_OFF ? 4000 : 600);
+}
+go();
+})();
+</script>
+"""
+
+
+def _deck_chip_in_chromium(chrome, page, status, cut_off=False):
+    """The rack screen's top bar chips, drawn in headless `chrome` from
+    `status`: [{name, cls, word, dot}], or a sentence saying why not. With
+    `cut_off` the stub answers the status once, then never again."""
+    import http.server
+    import html as _html
+    import shutil
+    import subprocess as _sp
+    import tempfile
+    import threading
+    js = ("<script>window.__CUT_OFF = true;</script>" if cut_off else "") + \
+        _CHIP_MEASURE_JS
+    body = page.replace("</body>", js + "</body>", 1)
+    asked = [0]
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _out(self, code, text, ctype="application/json"):
+            data = text.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            p = self.path.split("?")[0]
+            if p in ("/", "/remote"):
+                return self._out(200, body, "text/html; charset=utf-8")
+            if p == "/api/remote/whoami":
+                return self._out(200, json.dumps(
+                    {"local": True, "device": "this PC (rack screen)",
+                     "fresh_s": 2.0}))
+            if p == "/api/remote/status":
+                asked[0] += 1
+                if cut_off and asked[0] > 1:
+                    return self._out(503, '{"error": "gone"}')
+                st = dict(status)
+                st["served_at"] = int(time.time() * 1000)
+                return self._out(200, json.dumps(st))
+            return self._out(200, "{}")
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            return self._out(200, "{}")
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    prof = tempfile.mkdtemp(prefix="ltc-chip-chrome-")
+    scratch = os.path.join(prof, "tmp")
+    os.makedirs(scratch, exist_ok=True)
+    env = dict(os.environ, TMPDIR=scratch, TMP=scratch, TEMP=scratch)
+    cmd = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu",
+           "--no-first-run", "--no-default-browser-check",
+           "--hide-scrollbars", f"--user-data-dir={prof}",
+           "--window-size=1366,768", "--virtual-time-budget=10000",
+           "--dump-dom", f"http://127.0.0.1:{srv.server_address[1]}/remote"]
+    try:
+        try:
+            code, dom, err = _run_browser(cmd, RACK_DRAW_CEILING, env)
+        except _sp.TimeoutExpired as e:
+            return f"the browser ran out of time: {e}"
+        except (OSError, _sp.SubprocessError) as e:
+            return f"{type(e).__name__}: {e}"
+        a = dom.find('<pre id="chip-measure">')
+        if a < 0:
+            return f"the page never measured itself (exit {code}): " \
+                   f"{err[-600:]!r}"
+        b = dom.find("</pre>", a)
+        try:
+            return json.loads(_html.unescape(
+                dom[a + len('<pre id="chip-measure">'):b]))
+        except ValueError as e:
+            return f"ValueError: {e}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        shutil.rmtree(prof, ignore_errors=True)
 
 
 def test_deck_hold_key_does_what_the_deck_showed():
@@ -57301,6 +57756,9 @@ if __name__ == "__main__":
     test_rack_screen_width_guard_css_contract()
     test_rack_screen_banners_never_squeeze_the_flame_controls()
     test_rack_screen_browser_check_retries_only_a_timeout()
+    test_deck_chip_shows_live_truth()
+    test_pixels_chip_shows_live_truth()
+    test_deck_chip_in_a_browser()
     test_remote_setup_routes_this_machine_only()
     test_windows_supervisor_first_run_defaults()
     test_remote_page_loss_changes_nothing()

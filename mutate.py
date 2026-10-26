@@ -9622,8 +9622,8 @@ def build():
 
  ('deck usb: the Deck chip never shows failed key writes',
   'ltcplay/remote.py',
-  '            elif self._deck_usb_fail:',
-  '            elif False:'),
+  '        elif self._deck_usb_fail:',
+  '        elif False:'),
 
  ('deck usb: failed key writes are never journaled',
   'ltcplay/streamdeck.py',
@@ -9709,17 +9709,79 @@ def build():
 
  ('deck usb: the rack screen chip never turns amber for slow USB',
   'ltcplay/remote.py',
-  '            elif usb >= DECK_USB_SLOW_MS:',
-  '            elif False:'),
+  '        elif usb >= DECK_USB_SLOW_MS:',
+  '        elif False:'),
 
  ('deck usb: a quiet deck reads ok on its last USB word',
   'ltcplay/remote.py',
-  '            if age > self.DECK_QUIET_S:\n'
-  '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
-  '            elif self._deck_usb_fail:',
-  '            if False:\n'
-  '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
-  '            elif self._deck_usb_fail:'),
+  '        if age > self.DECK_QUIET_S:\n'
+  '            return "bad", "not heard"\n'
+  '        hw = self._deck_hw',
+  '        if False:\n'
+  '            return "bad", "not heard"\n'
+  '        hw = self._deck_hw'),
+
+ ('deck lamp: an unplugged Stream Deck reads green while its program runs',
+  'ltcplay/remote.py',
+  '        if hw is False:\n'
+  '            return "bad", "missing"',
+  '        if False:\n'
+  '            return "bad", "missing"'),
+
+ ('deck lamp: an older deck that says nothing of its USB reads green',
+  'ltcplay/remote.py',
+  '        if hw is not True:\n'
+  '            # An older deck program that does not say: never green.\n'
+  '            return "warn", "USB not known"',
+  '        if False:\n'
+  '            return "warn", "USB not known"'),
+
+ ('deck lamp: a stale arm link reads green',
+  'ltcplay/remote.py',
+  '        if arm is None or arm > DECK_ARM_FRESH_MS:',
+  '        if False:'),
+
+ ('deck lamp: a late deck program reads green',
+  'ltcplay/remote.py',
+  '        if age > PLAIN_DECK_FRESH_S:\n'
+  '            return "warn", f"late {age:.1f} s"',
+  '        if False:\n'
+  '            return "warn", f"late {age:.1f} s"'),
+
+ ('deck lamp: a deck never heard on a flame rig is grey, not red',
+  'ltcplay/remote.py',
+  '            return ("bad" if expected else "off"), "not heard"',
+  '            return "off", "not heard"'),
+
+ ('deck lamp: the deck stops saying its USB deck is gone',
+  'ltcplay/streamdeck.py',
+  '            path += "hw=1" if present else "hw=0"',
+  '            path += "hw=1"'),
+
+ ('deck lamp: an unplug leaves the deck saying it is present',
+  'ltcplay/streamdeck.py',
+  '            controller.deck_present = False  # the Deck chip (remote.py)',
+  '            pass'),
+
+ ('deck lamp: the arm link age never rides to the engine',
+  'ltcplay/streamdeck.py',
+  '            path += f"arm_ms={age}"',
+  '            path += ""'),
+
+ ('pixels lamp: a sender that stopped without an error reads sending',
+  'ltcplay/remote.py',
+  '        elif since > 2.0:',
+  '        elif since > 2.0 and (cs.get("send_errors") or 0):'),
+
+ ('pixels lamp: no word on the sends reads sending',
+  'ltcplay/remote.py',
+  '        elif not isinstance(since, (int, float)) or isinstance(since, bool):',
+  '        elif False:'),
+
+ ('deck lamp: a page that lost the engine keeps its chips green',
+  'ltcplay/web/remote.html',
+  '    document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });',
+  '    document.querySelectorAll(".chip").forEach(el => { });'),
 
  ('deck hold: a Hold the engine found already done is ENGINE FAULT',
   'ltcplay/streamdeck.py',

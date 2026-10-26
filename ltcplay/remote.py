@@ -925,6 +925,46 @@ def deck_usb_fail(query):
     return max(0, min(n, 100000))
 
 
+# The Deck chip's live truth (Jeff, 2026-10-26, the Pico: the chip said
+# ok with the Stream Deck unplugged and its FAULT acknowledged, because the
+# deck PROGRAM keeps reading this engine while the hardware is away). Green
+# only while all three hold, each read off the deck's latest deck-input
+# read: the program was heard within PLAIN_DECK_FRESH_S, it says the USB
+# deck is present (hw=1), and its last arm frame went out within
+# DECK_ARM_FRESH_MS (arm_ms), flamesafe's own arm_stale_ms. Display only:
+# nothing that arms, disarms or stops reads these.
+DECK_ARM_FRESH_MS = 500
+
+
+def deck_hw(query):
+    """hw from a deck-input query string: True when the Stream Deck program
+    says its USB deck is present (hw=1), False when it says it is not
+    (hw=0), None when it says nothing (an older deck program) or anything
+    else. Never raises."""
+    import urllib.parse
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("hw") or []
+        v = vals[-1]
+    except (ValueError, TypeError, IndexError):
+        return None
+    return True if v == "1" else False if v == "0" else None
+
+
+def deck_arm_ms(query):
+    """arm_ms from a deck-input query string: how long before the read the
+    deck's last arm frame went out, as an int from 0 to 10 minutes, or None
+    when absent or not a number. Never raises."""
+    import urllib.parse
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("arm_ms") or []
+        ms = int(vals[-1])
+    except (ValueError, TypeError, IndexError):
+        return None
+    if ms < 0:
+        return None
+    return min(ms, 600000)
+
+
 def deck_refused(query):
     """[(hold id, code)] from a deck-input query's `refused`, "7.refractory"
     entries joined by commas (streamdeck.ScreenKeys), only codes
@@ -1016,6 +1056,11 @@ class Remote:
         # None: the rack screen's Deck chip. Display only.
         self._deck_usb_ms = None
         self._deck_usb_fail = 0
+        # The deck's own word, on its last deck-input read, on its USB
+        # hardware (deck_hw: True, False, or None from an older deck) and
+        # on its arm link (deck_arm_ms). The Deck chip's; display only.
+        self._deck_hw = None
+        self._deck_arm_ms = None
         # Screen holds the Stream Deck would not take, as its deck-input
         # reads reported them: hold id -> DECK_REFUSALS code.
         self._deck_refused = {}
@@ -2097,6 +2142,8 @@ class Remote:
         self._deck_seen = now
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)
+        self._deck_hw = deck_hw(query)
+        self._deck_arm_ms = deck_arm_ms(query)
         refused = deck_refused(query)
         taken = deck_taken(query)
         enabled = self.arming_enabled()
@@ -3543,6 +3590,45 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
+    def deck_chip(self):
+        """The Deck chip's colour and word from live truth only
+        (DECK_ARM_FRESH_MS): ("ok", "ok") only while the Stream Deck
+        program was heard within PLAIN_DECK_FRESH_S, says its USB deck is
+        present, and sent an arm frame within DECK_ARM_FRESH_MS. "bad"
+        with plain words when the deck is unplugged ("missing") or the
+        program is not heard; "warn" when its word is late or not known.
+        No alert, and no Acknowledge, is read here: a lamp never changes
+        colour because someone saw a banner. Never raises."""
+        seen = self._deck_seen
+        if seen is None:
+            # A rig with flamesafe, or a show PC whose supervisor runs the
+            # deck program, expects a deck: not hearing it is a fault.
+            # Anywhere else nothing is expected, and the chip is grey.
+            try:
+                expected = self.flame_status is not None or \
+                    "deck" in (self.programs_view() or {})
+            except Exception:                    # noqa: BLE001
+                expected = True
+            return ("bad" if expected else "off"), "not heard"
+        try:
+            age = self.clock() - seen
+        except Exception:                        # noqa: BLE001
+            return "warn", "not known"
+        if age > self.DECK_QUIET_S:
+            return "bad", "not heard"
+        hw = self._deck_hw
+        if hw is False:
+            return "bad", "missing"
+        if age > PLAIN_DECK_FRESH_S:
+            return "warn", f"late {age:.1f} s"
+        if hw is not True:
+            # An older deck program that does not say: never green.
+            return "warn", "USB not known"
+        arm = self._deck_arm_ms
+        if arm is None or arm > DECK_ARM_FRESH_MS:
+            return "warn", "arm link stale"
+        return "ok", "ok"
+
     def subsystems(self, cs):
         """The rack screen's compact strip: one word per subsystem, and
         "ok", "warn", "bad" or "off". Display only, read from what the
@@ -3551,30 +3637,27 @@ class Remote:
 
         def add(name, state, word):
             out.append({"name": name, "state": state, "word": word})
-        seen = self._deck_seen
-        if seen is None:
-            add("Deck", "off", "not heard")
+        state, word = self.deck_chip()
+        usb = self._deck_usb_ms
+        if state != "ok":
+            # Not live, or not all there: said as it is (deck_chip).
+            add("Deck", state, word)
+        elif self._deck_usb_fail:
+            # Key image writes the deck did not take (review of PR #83,
+            # P2-2): its keys may show an older face until a resend goes
+            # through. Display only, like USB slow.
+            add("Deck", "warn",
+                f"USB {self._deck_usb_fail} write(s) failed")
+        elif usb is None:
+            add("Deck", "ok", "ok")
+        elif usb >= DECK_USB_SLOW_MS:
+            # The deck's keys are behind (USB writes stalling on a busy
+            # machine); its arming and Abort are not (they do not wait on
+            # the writes). Said here, and journaled by the deck once per
+            # slow spell.
+            add("Deck", "warn", f"USB slow {usb / 1000.0:.1f} s")
         else:
-            age = self.clock() - seen
-            usb = self._deck_usb_ms
-            if age > self.DECK_QUIET_S:
-                add("Deck", "bad", f"quiet {age:.0f} s")
-            elif self._deck_usb_fail:
-                # Key image writes the deck did not take (review of PR
-                # #83, P2-2): its keys may show an older face until a
-                # resend goes through. Display only, like USB slow.
-                add("Deck", "warn",
-                    f"USB {self._deck_usb_fail} write(s) failed")
-            elif usb is None:
-                add("Deck", "ok", "ok")
-            elif usb >= DECK_USB_SLOW_MS:
-                # The deck's keys are behind (USB writes stalling on a
-                # busy machine); its arming and Abort are not (they do not
-                # wait on the writes). Said here, and journaled by the
-                # deck once per slow spell.
-                add("Deck", "warn", f"USB slow {usb / 1000.0:.1f} s")
-            else:
-                add("Deck", "ok", f"ok, USB {usb} ms")
+            add("Deck", "ok", f"ok, USB {usb} ms")
         try:
             fl = self.flame_status.view() if self.flame_status else None
         except Exception:
@@ -3669,10 +3752,16 @@ class Remote:
                 add(name, "warn", "not known")
             else:
                 add(name, "ok", str(v).lower())
+        since = (cs or {}).get("since_ok")
         if not (cs or {}).get("running"):
             add("Pixels", "off", "stopped")
-        elif (cs.get("send_errors") or 0) and \
-                (cs.get("since_ok") or 0) > 2.0:
+        elif not isinstance(since, (int, float)) or isinstance(since, bool):
+            # No good send yet, or no word on it: never "sending".
+            add("Pixels", "warn", "not known")
+        elif since > 2.0:
+            # Nothing has left this machine for 2 s, counted errors or
+            # not (2026-10-26: a sender that stops without an error read
+            # "sending"); display.py's own rule for the main screen.
             add("Pixels", "bad", "not sending")
         else:
             add("Pixels", "ok", "sending")
