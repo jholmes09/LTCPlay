@@ -43344,6 +43344,19 @@ def test_rack_window_fits_the_work_area_above_the_taskbar():
         check("--window-size=1920,1040" in two and
               two[-1] == "--window-position=2560,0",
               f"a second display, its own work area and dpi: {two}")
+        check(SUP.rack_page_command(7878, 1, [], "e", "p", bottom_pad=1000
+                                    )[1].endswith("?pad_bottom=160") and
+              SUP.PAGE_BOTTOM_PAD_MAX == 160,
+              "review of #115, P2-2: page_bottom_pad is capped at 160")
+        mixed = SUP.rack_page_command(7878, 2, [(0, 0, 2560, 1504, 192),
+                                                (2560, 0, 5440, 1560, 144)],
+                                      "e", "p")
+        check("--window-size=1920,1040" in mixed and
+              mixed[-1] == "--window-position=2560,0",
+              f"review of #115, P2-3: a 150 percent display beside a 200 "
+              f"percent one: its size in Edge's pixels, its place its own "
+              f"real corner (never a scaled one that could land on the "
+              f"other display): {mixed}")
         pad = SUP.rack_page_command(7878, 1, [], "e", "p", bottom_pad=48)
         check(pad[1] == "--app=http://127.0.0.1:7878/remote?pad_bottom=48" and
               SUP.rack_page_command(7878, 1, [], "e", "p",

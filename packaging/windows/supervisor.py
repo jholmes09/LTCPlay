@@ -1395,6 +1395,9 @@ def _write_refusal(why):
 
 
 RACK_PAGE = "/remote"     # the rack screen page ("Rack screen")
+# The most room the page keeps under its Abort bar (CSS px), whatever
+# showpc.json page_bottom_pad says; the page caps it the same (PAD_MAX).
+PAGE_BOTTOM_PAD_MAX = 160
 
 
 def dip_rect(rect, dpi):
@@ -1543,7 +1546,8 @@ def rack_page_command(port, monitor, screens, edge, profile, url=None,
         pad = int(bottom_pad)
     except (TypeError, ValueError):
         pad = 0
-    if 0 < pad <= 400 and url.startswith("http"):
+    pad = min(pad, PAGE_BOTTOM_PAD_MAX)      # review of #115, P2-2
+    if pad > 0 and url.startswith("http"):
         url += ("&" if "?" in url else "?") + f"pad_bottom={pad}"
     cmd = [edge, f"--app={url}", "--start-maximized", "--no-first-run",
            f"--user-data-dir={profile}"]
@@ -1551,10 +1555,19 @@ def rack_page_command(port, monitor, screens, edge, profile, url=None,
         i = monitor - 1 if isinstance(monitor, int) and \
             1 <= monitor <= len(screens) else 0
         dpi = screens[i][4] if len(screens[i]) > 4 else 96
-        left, top, right, bottom = dip_rect(screens[i][:4], dpi)
-        if right > left and bottom > top:
-            cmd.append(f"--window-size={right - left},{bottom - top}")
-        cmd.append(f"--window-position={left},{top}")
+        left, top, right, bottom = screens[i][:4]
+        # The size: the work area's own width and height in Edge's pixels.
+        _l, _t, w, h = dip_rect((0, 0, right - left, bottom - top), dpi)
+        if w > 0 and h > 0:
+            cmd.append(f"--window-size={w},{h}")
+        # The PLACE is the work area's own corner in real pixels, from
+        # MONITORINFO, not scaled (review of #115, P2-3): how Edge lays
+        # displays of different scaling side by side in its own pixels is
+        # not something this can prove, and a scaled corner could land on
+        # the wrong display. The real corner is the display's own (0,0 on
+        # the main one, the same either way); --start-maximized then fills
+        # the work area of whichever display the window is on.
+        cmd.append(f"--window-position={screens[i][0]},{screens[i][1]}")
     return cmd
 
 
