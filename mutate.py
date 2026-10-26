@@ -8511,6 +8511,25 @@ def build():
   '''        if False:
             return ("The page's status is more than 1 s old. Wait for it "'''),
 
+ ("morning: a default wave flamer with no pan, tilt and fire map is purged "
+  "(raises, or writes a guessed fire value)",
+  "ltcplay/morning.py",
+  '''                no_map = m.purge_refusal()
+                if no_map:''',
+  '''                no_map = m.purge_refusal()
+                if False:'''),
+
+ ("morning: a waver with no pan or tilt slot is not purge-refused",
+  "ltcplay/morning.py",
+  '''        if self.kind == "waver" and (self.pan is None or self.tilt is None
+                                     or not self.fire):''',
+  '''        if False:'''),
+
+ ("morning: a fire press on only never-purged machines is not refused",
+  "ltcplay/morning.py",
+  '''            if ms and all(m.purge_refusal() for m in ms):''',
+  '''            if False:'''),
+
  ("morning: a fire heartbeat gap never ends the press (T2)",
   "ltcplay/morning.py",
   '''            stale = f is not None and now - f["beat"] > BEAT_STALE_S''',

@@ -41955,6 +41955,12 @@ t(machineLook(m, mo, Object.assign({}, fl, {stale:true}), {selected:["g1"], firi
 t(machineLook(m, mo, {stale:false, groups:[{name:"front row", armed:"held", reason:"latched"}]}, {selected:["g1"], firing:true}).word === "Held: latched", "a held group says why");
 t(machineLook(m, mo, null, {selected:["g1"], firing:true}).cls === "sel", "no flamesafe at all: Arming..., never FIRING");
 t(machineLook(m, null, fl, null).word === "Off", "no engine view, no purge: Off");
+// A default wave flamer (a waver with no pan or tilt) says it is never purged, even firing.
+const wv = {id:"w9", name:"wave flamer 1", kind:"waver", group:"front row", pan:null, tilt:null};
+t(machineLook(wv, mo, fl, {selected:["w9"], firing:true}).word === "Never purged: no pan, tilt and fire map yet", "a waver with no pan or tilt: never purged, never FIRING");
+t(machineLook(wv, mo, fl, {selected:[], firing:false}).word.indexOf("Never purged") === 0, "and says so when not selected");
+t(machineLook(Object.assign({}, wv, {pan:432, tilt:433}), mo, fl, {selected:["w9"], firing:true}).cls === "firing", "a waver with pan and tilt reads as before");
+t(machineLook(wv, {lockout:{machines:{w9:{}}}}, fl, null).cls === "locked", "locked still beats it");
 // The laser arm's one line (Jeff, 2026-10-22): never "on" unless the engine says every laser is armed.
 const L1 = {id:"l1", name:"Laser 1", armed:false}, L2 = {id:"l2", name:"Laser 2", armed:false};
 t(laserArmLine({lasers:[L1, L2]}).indexOf("DISARMED, every laser") >= 0, "none armed: DISARMED");
@@ -46285,6 +46291,148 @@ def test_morning_multi_safety_machines_pair_by_layout():
         except MO.MorningConfigError as e:
             check(says in str(e) and "—" not in str(e),
                   f"refused in a sentence ({says!r}): {e}")
+
+
+def test_morning_default_wave_flamer_is_never_purged():
+    """A default wave flamer machine (built from flamesafe's groups, with
+    no pan and no tilt slot) is never purged and never raises: the purge
+    frame leaves it out with a plain reason, the page says so, and a fire
+    press on nothing else is refused cleanly. A custom waver with pan and
+    tilt, and a G-Flame, purge exactly as before (Jeff's wave flamers:
+    six channels, 1 to 5 control, 6 safety, control meanings not known)."""
+    section("morning: a default wave flamer has no pan, tilt and fire map, "
+            "so it is never purged and never raises")
+    from ltcplay import morning as MO
+    UNI = MO.UNIVERSE_SIZE
+
+    class _Lock:
+        def __init__(self):
+            self.locked = set()
+
+        def is_locked(self, kind, mid):
+            return mid in self.locked
+
+    class _Link:
+        def __init__(self):
+            self.frames, self.cleared = [], 0
+
+        def purge_set(self, vals):
+            self.frames.append(bytes(vals))
+            return True
+
+        def purge_clear(self):
+            self.cleared += 1
+
+    def rig(cfg, names):
+        t = [100.0]
+        link = _Link()
+        lock = _Lock()
+        fl = {"stale": False, "connected": True, "age_ms": 10,
+              "groups": [{"name": n, "armed": "armed"} for n in names]}
+        p = MO.Purge(lambda: cfg, lock, lambda: link, lambda: fl,
+                     lambda: "", lambda: names, clock=lambda: t[0])
+        return p, link, lock, t
+
+    reason = "no pan, tilt and fire map yet (set it in " \
+             "ltcplay_morning.json machines)"
+    front = {"name": "front row", "safety": 401, "safeties": [401],
+             "fire": [411, 412]}
+    # Jeff's three-safety wave flamer: fire 1 to 5, 7 to 11, 13 to 17.
+    fire = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+    groups = [front, {"name": "wave flamer", "safety": [6, 12, 18],
+                      "safeties": [6, 12, 18], "fire": list(fire)}]
+    names = [g["name"] for g in groups]
+    cfg = MO.MorningConfig.parse({}, "x", groups)
+    waves = [m for m in cfg.machines if m.group == "wave flamer"]
+    check([m.id for m in waves] == ["wave-flamer-1", "wave-flamer-2",
+                                    "wave-flamer-3"] and
+          all(m.kind == "waver" and m.pan is None and m.tilt is None
+              for m in waves),
+          f"the default machines are still built, one per fixture, so "
+          f"locking and the lamps work: {[m.view() for m in waves]}")
+    check(all(m.purge_refusal() == reason for m in waves),
+          f"each is purge-refused with the reason: "
+          f"{[m.purge_refusal() for m in waves]}")
+    check(all(reason in m.view()["notes"] for m in waves),
+          "the page's view carries the reason in the machine's notes")
+    p, link, lock, t = rig(cfg, names)
+    p.selected = [m.id for m in waves]
+    p.owner = "Rack screen"
+    try:
+        vals, firing, waiting = p.frame(t[0])
+        raised = None
+    except Exception as e:                                # noqa: BLE001
+        raised = e
+    check(raised is None, f"the purge frame never raises: {raised!r}")
+    check(vals == bytes(UNI) and firing == [],
+          f"no value at all is written for them: firing {firing}")
+    check(waiting == [f"wave flamer {n}: {reason}" for n in (1, 2, 3)],
+          f"every one is left out, with the reason: {waiting}")
+    check(not any(c in text for text in waiting for c in "–—"),
+          "the reason has no em or en dash")
+    # A fire press on nothing but those: a clean refusal, not a 500.
+    code, out = p.fire_beat({"on": True}, "Rack screen", True)
+    check(code == 409 and out.get("let_go") is True and
+          reason in out.get("error", "") and link.frames == [] and
+          p.fire is None,
+          f"fire_beat refuses cleanly and nothing is set: {code} {out}")
+    # With a G-Flame in the selection the G-Flame fires as before and the
+    # wave flamers are left out with the reason.
+    p.selected = ["front-row-1"] + [m.id for m in waves]
+    code, out = p.fire_beat({"on": True}, "Rack screen", True)
+    gf = cfg.purge["gflame_fire"]
+    check(code == 200 and out["firing"] == ["front row 1"] and
+          len(out["waiting"]) == 3 and reason in out["waiting"][0],
+          f"a G-Flame with them still fires; they wait with the reason: "
+          f"{code} {out}")
+    want = bytearray(UNI)
+    want[410] = gf
+    check(link.frames and link.frames[-1] == bytes(want),
+          "only the G-Flame's slot carries its fire value")
+    p.stop("test")
+    # The single-safety default wave flamer (one machine per fire slot)
+    # is refused the same way.
+    one = [front, {"name": "wave flamer", "safety": 403, "safeties": [403],
+                   "fire": [431, 432, 433]}]
+    cfg1 = MO.MorningConfig.parse({}, "x", one)
+    p1, link1, _l, t1 = rig(cfg1, [g["name"] for g in one])
+    p1.selected = ["wave-flamer-1"]
+    p1.owner = "Rack screen"
+    vals, firing, waiting = p1.frame(t1[0])
+    check(vals == bytes(UNI) and firing == [] and
+          waiting == [f"wave flamer 1: {reason}"],
+          f"a one-safety default wave flamer is refused too: {waiting}")
+    # A custom waver with pan and tilt purges exactly as before: head up
+    # at once, fire after head_settle_s.
+    cfgc = MO.MorningConfig.parse(_MO_CONFIG, "x", None)
+    w1 = cfgc.by_id["w1"]
+    check(w1.purge_refusal() == "" and cfgc.by_id["g1"].purge_refusal() ==
+          "", "a custom waver with pan and tilt, and a G-Flame, are not "
+              "refused")
+    pc, linkc, _l, tc = rig(cfgc, ["front row", "cat-walk", "wave flamer"])
+    pc.selected = ["w1", "g1"]
+    pc.owner = "Rack screen"
+    code, out = pc.fire_beat({"on": True}, "Rack screen", True)
+    w = cfgc.purge["waver"]
+    v = linkc.frames[-1]
+    check(code == 200 and v[431] == w["pan_up"] and v[432] == w["tilt_up"]
+          and v[430] == 0 and v[410] == cfgc.purge["gflame_fire"] and
+          out["firing"] == ["Ground 1"] and
+          out["waiting"] == [f"Waver 1: head going up "
+                             f"({w['head_settle_s']:g} s)"],
+          f"the custom waver's head goes up first, the G-Flame fires: "
+          f"{code} {out}")
+    tc[0] += w["head_settle_s"] + 0.05
+    pc.fire["beat"] = tc[0]
+    code, out = pc.fire_beat({"on": True, "fire_id": out["fire_id"]},
+                             "Rack screen", True)
+    v = linkc.frames[-1]
+    check(code == 200 and v[430] == w["fire"] and v[431] == w["pan_up"] and
+          v[432] == w["tilt_up"] and set(out["firing"]) ==
+          {"Waver 1", "Ground 1"} and out["waiting"] == [],
+          f"after the settle time the custom waver fires as before: "
+          f"{code} {out}")
+    print("  ok")
 
 
 def test_witness_checker_rules():
@@ -58999,6 +59147,7 @@ if __name__ == "__main__":
     test_morning_config_layout_and_lockout_file()
     test_flamesafe_multi_safety_ltcplay_side()
     test_morning_multi_safety_machines_pair_by_layout()
+    test_morning_default_wave_flamer_is_never_purged()
     test_witness_checker_rules()
     test_purge_frame_on_the_flame_link()
     test_purge_rules_at_the_engine()

@@ -1003,6 +1003,10 @@ function machineLook(m, mo, flames, purge){
   const locked = !!(mo && mo.lockout && mo.lockout.machines && mo.lockout.machines[m.id]);
   if(locked) return {cls:"locked", word:"Locked out"};
   const sel = !!(purge && (purge.selected || []).includes(m.id));
+  // A waver with no pan or tilt slot (a default wave flamer) is never
+  // purged by the engine; its notes say why, in one line.
+  if(m.kind === "waver" && (m.pan == null || m.tilt == null))
+    return {cls:sel ? "sel" : "", word:"Never purged: no pan, tilt and fire map yet"};
   if(!sel) return {cls:"", word:"Off"};
   const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
   const armed = !!(g && g.armed === "armed" && flames && !flames.stale);
@@ -2310,6 +2314,7 @@ function renderMorning(){
     const look = machineLook(m, mo, fl, purge);
     el.className = "mach " + look.cls + (ARRANGE ? " drag" : "") + (DRAG && DRAG.id === m.id ? " lift" : "");
     el.querySelector(".w").textContent = look.word;
+    el.title = m.notes || "";
     el.querySelector(".lk").textContent = "L";
   });
   // The fire key's state.
