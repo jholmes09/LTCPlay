@@ -103,8 +103,12 @@ def load_groups(path):
     arm = int(d.get("arm_value", 0))
     groups = []
     for g in d.get("groups") or []:
+        saf = g.get("safety", 0)
+        saf = [int(x) for x in saf] if isinstance(saf, list) else [int(saf)]
+        # "safety" is the first safety slot, "safeties" every one of them
+        # (flamesafe multi-safety, 2026-10-26).
         groups.append({"name": str(g.get("name", "?")),
-                       "safety": int(g.get("safety", 0)),
+                       "safety": saf[0] if saf else 0, "safeties": saf,
                        "fire": [int(f) for f in (g.get("fire") or [])],
                        "arm_value": int(g.get("arm_value", arm))})
     dest = d.get("destination") or {}
@@ -120,7 +124,8 @@ def slot_names(cfg):
     """{slot: "safety of <group>" | "fire of <group>"}."""
     out = {}
     for g in cfg["groups"]:
-        out[g["safety"]] = f"safety of {g['name']}"
+        for s in g.get("safeties") or [g["safety"]]:
+            out[s] = f"safety of {g['name']}"
         for f in g["fire"]:
             out[f] = f"fire of {g['name']}"
     return out
@@ -616,7 +621,8 @@ def main(argv=None):
                                 f"{cfg['dest_ip']}:{cfg['dest_port']}, "
                                 f"arm value {cfg['arm_value']}, confirmed "
                                 f"{cfg['confirmed']}, groups "
-                                + "; ".join(f"{g['name']} safety {g['safety']} "
+                                + "; ".join(f"{g['name']} safety "
+                                            f"{g.get('safeties') or g['safety']} "
                                             f"fire {g['fire']}"
                                             for g in cfg["groups"]))
         except Exception as e:

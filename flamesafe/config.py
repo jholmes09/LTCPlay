@@ -57,23 +57,42 @@ class ConfigError(Exception):
 
 
 class Group:
-    """One arm group: a safety slot and the fire slots it governs.
+    """One arm group: its safety slot(s) and the fire slots it governs.
 
     There is no offset.  Every slot is stated explicitly because rev 1
     invented one and it was wrong for every real unit.  Slots are 1..512
     inside the flame universe.
+
+    Multi-safety (Jeff, 2026-10-26, the wave flamer): one arm group may
+    drive several fixtures, each with a safety channel of its own.
+    `safeties` is every safety slot of the group, in config order; a group
+    written with one integer has a list of one and behaves exactly as
+    before.  `safety` is the first of them, kept for the status frame's
+    `safety_slot` and for code that only ever knew one; everything that
+    writes or checks a safety slot uses `safeties`.
     """
 
-    __slots__ = ("name", "safety", "fire", "arm_value")
+    __slots__ = ("name", "safety", "safeties", "fire", "arm_value")
 
     def __init__(self, name, safety, fire, arm_value):
         self.name = str(name)
-        self.safety = int(safety)
+        if isinstance(safety, (list, tuple)):
+            self.safeties = [int(s) for s in safety]
+        else:
+            self.safeties = [int(safety)]
+        if not self.safeties:
+            raise ValueError("a group needs at least one safety slot")
+        self.safety = self.safeties[0]
         self.fire = [int(f) for f in fire]
         self.arm_value = int(arm_value)
 
+    @property
+    def multi_safety(self):
+        return len(self.safeties) > 1
+
     def __repr__(self):
-        return (f"<Group {self.name!r} safety={self.safety} fire={self.fire} "
+        saf = self.safeties if self.multi_safety else self.safety
+        return (f"<Group {self.name!r} safety={saf} fire={self.fire} "
                 f"arm={self.arm_value}>")
 
 
@@ -105,7 +124,7 @@ class Config:
         return 1.0 / self.tick_hz
 
     def all_slots(self):
-        return ([g.safety for g in self.groups]
+        return ([s for g in self.groups for s in g.safeties]
                 + [f for g in self.groups for f in g.fire])
 
 
@@ -200,6 +219,29 @@ def _validate_arm_value(arm_value, gflame_range, accept_unsourced_risk, who):
         raise ConfigError(
             f"{who}: arm value {arm_value} is not the validated value "
             f"{derived} for the G-Flame range {gflame_range}.")
+
+
+def _safeties(g, name):
+    """A group's safety slot(s), as a list.  One whole number is today's
+    form and is read exactly as before.  A list (multi-safety, 2026-10-26:
+    one arm group driving several fixtures, each with a safety channel of
+    its own) holds one or more distinct slots 1..512; a list of one is the
+    same group as that one number."""
+    raw = g.get("safety")
+    if not isinstance(raw, list):
+        return [_int(g, "safety", 1, rules.UNIVERSE_SIZE,
+                     f"{name}: safety slot")]
+    if not raw:
+        raise ConfigError(f"{name}: safety is an empty list. Give the safety "
+                          f"slot, or a list of every fixture's safety slot.")
+    for s in raw:
+        if isinstance(s, bool) or not isinstance(s, int) \
+                or not (1 <= s <= rules.UNIVERSE_SIZE):
+            raise ConfigError(f"{name}: safety slot {s!r} is not a slot "
+                              f"between 1 and {rules.UNIVERSE_SIZE}.")
+    if len(set(raw)) != len(raw):
+        raise ConfigError(f"{name}: a safety slot is listed twice.")
+    return list(raw)
 
 
 def from_dict(d, source="config"):
@@ -384,8 +426,7 @@ def from_dict(d, source="config"):
         if len(name) > NAME_MAX:
             raise ConfigError(f"group {i + 1}: the name is longer than "
                               f"{NAME_MAX} characters.")
-        safety = _int(g, "safety", 1, rules.UNIVERSE_SIZE,
-                      f"{name}: safety slot")
+        safeties = _safeties(g, name)
         fire = g.get("fire")
         if not isinstance(fire, list):
             raise ConfigError(f"{name}: fire must be a list of slots.")
@@ -398,7 +439,7 @@ def from_dict(d, source="config"):
                     or not (1 <= f <= rules.UNIVERSE_SIZE):
                 raise ConfigError(f"{name}: fire slot {f!r} is not a slot "
                                   f"between 1 and {rules.UNIVERSE_SIZE}.")
-            if f == safety:
+            if f in safeties:
                 raise ConfigError(
                     f"{name}: fire slot {f} is also its safety slot. The "
                     f"G-Flame manual forbids this outright ('Identical DMX "
@@ -410,7 +451,7 @@ def from_dict(d, source="config"):
             arm_value = _int(g, "arm_value", 0, 255, f"{name}: arm_value")
             _validate_arm_value(arm_value, c.gflame_range,
                                 c.accept_unsourced_risk, name)
-        c.groups.append(Group(name, safety, fire, arm_value))
+        c.groups.append(Group(name, safeties, fire, arm_value))
 
     names = {}
     seen = {}
@@ -418,10 +459,11 @@ def from_dict(d, source="config"):
         if g.name in names:
             raise ConfigError(f"two groups are both named {g.name!r}.")
         names[g.name] = True
-        if g.safety in seen:
-            raise ConfigError(f"{g.name} and {seen[g.safety]} share safety "
-                              f"slot {g.safety}.")
-        seen[g.safety] = g.name
+        for s in g.safeties:
+            if s in seen:
+                raise ConfigError(f"{g.name} and {seen[s]} share safety "
+                                  f"slot {s}.")
+            seen[s] = g.name
 
     # Two groups must not share a fire slot.  This program zeros a group's
     # fire slots through its arming edge, so a shared slot means one group
@@ -438,9 +480,9 @@ def from_dict(d, source="config"):
 
     # A fire slot of one group must not be the safety slot of another, or
     # arming group A would be gated on group B's content and vice versa.
-    safeties = {g.safety for g in c.groups}
+    safeties = {s for g in c.groups for s in g.safeties}
     for g in c.groups:
-        clash = (safeties - {g.safety}).intersection(g.fire)
+        clash = (safeties - set(g.safeties)).intersection(g.fire)
         if clash:
             raise ConfigError(f"{g.name}: fire slot(s) {sorted(clash)} are "
                               f"safety slots of another group.")

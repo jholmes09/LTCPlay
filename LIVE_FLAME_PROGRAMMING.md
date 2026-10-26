@@ -5,6 +5,7 @@ Program flame effects in xLights and see them on the real flames, while LTC Play
 - **Who does what:** you arm and disarm in LTC Player (the Stream Deck, or hold to arm on the rack screen). xLights sends the flame commands.
 - **The path:** xLights sends on this PC only. LTC Player passes the flame channels to flamesafe on its usual link. flamesafe stays the only program that talks to the flame node.
 - **What flamesafe still does:** it fires only a group that is armed. It still applies lockouts, Abort and its own cutoffs.
+- **A group with several safety channels arms as one.** The wave flamer is three fixtures, each with its own safety channel, in one flame group: one key, one hold to arm, one disarm. Live programming treats it as one group, and xLights can never set a safety channel. A fixture locked out for the night stays off; the group's other fixtures still arm.
 - **The name:** this is not the Programming screen. It is also not a programming session (Rehearse and the scrub buttons). Those play a show file. This one listens to xLights.
 
 **Before it goes near real flames:** a cold safety review, and a first test with Andy with the gas off.

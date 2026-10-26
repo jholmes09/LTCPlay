@@ -351,10 +351,13 @@ class Exerciser:
 
 class SacnJudge:
     """flamesafe's sACN, packet by packet. `groups`: [(name, safety slot,
-    [fire slots])] from flamesafe's own config (slots are 1-based)."""
+    [fire slots])] from flamesafe's own config (slots are 1-based). The
+    safety slot may be a list (flamesafe multi-safety, 2026-10-26: one arm
+    group, one safety slot per fixture); it is kept as a list here."""
 
     def __init__(self, groups):
-        self.groups = [(n, s, list(f)) for n, s, f in groups]
+        self.groups = [(n, list(s) if isinstance(s, (list, tuple)) else [s],
+                        list(f)) for n, s, f in groups]
         self.fire_frames = {n: 0 for n, _s, _f in self.groups}
         self.violations = []         # (time, sentence)
         self.packets = 0
@@ -390,7 +393,7 @@ class SacnJudge:
             self.nonzero += 1
         mine = set()
         for n, safety, fire in self.groups:
-            slots = [safety] + fire
+            slots = safety + fire
             mine.update(slots)
             settling = at - self._changed.get(n, -1e9) < GRACE_S
             on = [s for s in slots if values[s - 1]]
@@ -446,7 +449,8 @@ class SacnJudge:
             st = self._status_seen.get(n)
             row.append(f"{n}: judged {'armed' if armed.get(n) else 'not'}"
                        f" (changed {at - self._changed.get(n, at):.3f} s "
-                       f"ago); sACN safety {values[safety - 1]} fire "
+                       f"ago); sACN safety "
+                       f"{[values[s - 1] for s in safety] if len(safety) > 1 else values[safety[0] - 1]} fire "
                        f"{[values[f - 1] for f in fire]}; status "
                        + (f"{st[1]} {at - st[0]:.3f} s old" if st else
                           "none"))

@@ -1093,6 +1093,20 @@ function alertFold(items, seen){
     text: worst.text,
     more: list.length - 1, fresh:fresh, keys:keys};
 }
+// flamesafe multi-safety (2026-10-26): the count line on the card of a
+// group with more than one safety slot, one per fixture. A locked safety
+// stays at zero and is left out of the arm. Empty for a one-safety group,
+// and while the state is not known.
+function safetyLine(g, c){
+  const up = g.safeties_up || [], lk = g.safeties_locked || [];
+  if(up.length < 2 || c === "unknown") return "";
+  const locked = lk.filter(Boolean).length;
+  const n = up.filter((u, i) => u && !lk[i]).length;
+  const of = up.length - locked;
+  return g.name + ": " + n + " of " + of + (locked ? " unlocked" : "") +
+    " safeties up" + (locked ? ", " + locked + " locked out" : "") +
+    (c === "armed" ? "; ARMED" : "; NOT armed");
+}
 // LOGIC END
 </script>
 <script>
@@ -1550,7 +1564,7 @@ function renderLamps(fl){
     box.innerHTML = groups.map((g, i) =>
       `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b>
         <div class="lb"><button class="armb" data-arm="${i}"><div class="fill"></div><span class="word"></span><small></small></button>
-        <button class="gdis" data-gdis="${i}" title="A plain disarm of this group: hold Arm to arm it again. No Reset needed.">Disarm</button></div><i class="why"></i></div>`).join("");
+        <button class="gdis" data-gdis="${i}" title="A plain disarm of this group: hold Arm to arm it again. No Reset needed.">Disarm</button></div><i class="why"></i><i class="why saf" hidden></i></div>`).join("");
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
       b.addEventListener("pointerdown", e => { e.preventDefault(); armStart(i); });
@@ -1572,6 +1586,10 @@ function renderLamps(fl){
     el.querySelector(".word").textContent = look.word;
     el.querySelector(".why").textContent = c === "unknown" ? "" : reasonWords(g.reason);
     el.querySelector(".why").title = g.reason || "";
+    const sl = safetyLine(g, c), se = el.querySelector(".saf");
+    se.hidden = !sl;
+    se.textContent = sl;
+    se.title = sl;
     const as = armState(ST, Date.now(), LAST_OK, i);
     const ab = el.querySelector("[data-arm]");
     if(!(HOLD && HOLD.group === i)) ab.disabled = !as.ok;

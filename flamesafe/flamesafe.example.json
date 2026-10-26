@@ -1,7 +1,7 @@
 {
   "flamesafe_config": 1,
   "confirmed": false,
-  "note": "UNCONFIRMED. This is the rev 6 fixture table from the flame panel spec (2026-09-18). Andy Win has not confirmed the flame universe number, the group map, the safety and fire slots, or the arm value (open since rev 9). The destination is loopback on purpose: set it to the PixLite Aux port only when Andy has confirmed every number above. Replace link.key with a value of your own and put the same value in ltcplay's config.",
+  "note": "UNCONFIRMED. This is the rev 6 fixture table from the flame panel spec (2026-09-18). Andy Win has not confirmed the flame universe number, the group map, the safety and fire slots, or the arm value (open since rev 9). The destination is loopback on purpose: set it to the PixLite Aux port only when Andy has confirmed every number above. Replace link.key with a value of your own and put the same value in ltcplay's config. The wave flamer group is three 6-channel fixtures armed as one group (channels 1 to 5 of each are fire slots, channel 6 is that fixture's own safety slot): slots 1 to 18 of universe 1 at the file's arm value, as Jeff gave them on 2026-10-26. A safety slot in the lockout file stays at zero and that fixture is left out of the group's arm.",
   "universe": 1,
   "destination": {"ip": "127.0.0.1", "port": 5568},
   "link": {"listen_ip": "127.0.0.1", "listen_port": 5571,
@@ -21,7 +21,10 @@
   "groups": [
     {"name": "front row",   "safety": 401, "fire": [411, 412, 413, 414, 415]},
     {"name": "cat-walk",    "safety": 402, "fire": [421, 422, 423, 424, 425, 426]},
-    {"name": "wave flamer", "safety": 403, "fire": [431, 432]},
+    {"name": "wave flamer", "safety": [6, 12, 18],
+     "fire": [1, 2, 3, 4, 5,
+              7, 8, 9, 10, 11,
+              13, 14, 15, 16, 17]},
     {"name": "pump",        "safety": 404, "fire": [441]},
     {"name": "fireball",    "safety": 405, "fire": [451]},
     {"name": "spare",       "safety": 406, "fire": [461]}

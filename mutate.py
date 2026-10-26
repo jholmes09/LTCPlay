@@ -2484,7 +2484,7 @@ MUTATIONS = [
 
  ("flamesafe: a fire slot may be its own safety slot",
   "flamesafe/config.py",
-  "            if f == safety:",
+  "            if f in safeties:",
   "            if False:"),
 
  ("flamesafe: a group with no fire slots is accepted",
@@ -2499,8 +2499,10 @@ MUTATIONS = [
 
  ("flamesafe: two groups may share a safety slot",
   "flamesafe/config.py",
-  "        if g.safety in seen:",
-  "        if False:"),
+  "            if s in seen:\n"
+  "                raise ConfigError(f\"{g.name} and {seen[s]} share safety \"",
+  "            if False:\n"
+  "                raise ConfigError(f\"{g.name} and {seen[s]} share safety \""),
 
  ("flamesafe: the link may leave this machine",
   "flamesafe/config.py",
@@ -2717,8 +2719,8 @@ MUTATIONS = [
  ("flamesafe: a panic status calls a live input stale",
   "flamesafe/composer.py",
   "                                  self._held, self._arm_is_live(t),\n"
-  "                                  self._frame_is_fresh(t), False)",
-  "                                  self._held, False, False, False)"),
+  "                                  self._frame_is_fresh(t), False,",
+  "                                  self._held, False, False, False,"),
 
  ("flamesafe: group names are unbounded",
   "flamesafe/config.py",
@@ -2762,8 +2764,8 @@ MUTATIONS = [
 
  ("flamesafe: the safety value is written one slot high",
   "flamesafe/composer.py",
-  "            buf[g.safety - 1] = values[i]",
-  "            buf[g.safety] = values[i]"),
+  "                buf[s - 1] = values[i] if s in self._raised[i] else DISARM",
+  "                buf[s] = values[i] if s in self._raised[i] else DISARM"),
 
  ("flamesafe: the dwell ends 30 ms early",
   "flamesafe/composer.py",
@@ -9147,6 +9149,133 @@ def build():
   '''            if self._group_locked_out(g):''',
   '''            if False:'''),
 
+ # Multi-safety (Jeff, 2026-10-26): one arm group driving several fixtures,
+ # each with a safety slot of its own (the wave flamer).
+ ("flamesafe: a safety slot listed twice in a group is accepted",
+  "flamesafe/config.py",
+  '''    if len(set(raw)) != len(raw):
+        raise ConfigError(f"{name}: a safety slot is listed twice.")''',
+  '''    if False:
+        raise ConfigError(f"{name}: a safety slot is listed twice.")'''),
+
+ ("flamesafe: an empty safety list is accepted",
+  "flamesafe/config.py",
+  '''    if not raw:
+        raise ConfigError(f"{name}: safety is an empty list. Give the safety "''',
+  '''    if False:
+        raise ConfigError(f"{name}: safety is an empty list. Give the safety "'''),
+
+ ("flamesafe: a safety slot in a list is not range checked",
+  "flamesafe/config.py",
+  '''        if isinstance(s, bool) or not isinstance(s, int) \\
+                or not (1 <= s <= rules.UNIVERSE_SIZE):
+            raise ConfigError(f"{name}: safety slot {s!r} is not a slot "''',
+  '''        if isinstance(s, bool) or not isinstance(s, int):
+            raise ConfigError(f"{name}: safety slot {s!r} is not a slot "'''),
+
+ ("flamesafe: only the first safety slot is checked against the group's fire slots",
+  "flamesafe/config.py",
+  '''            if f in safeties:''',
+  '''            if f == safeties[0]:'''),
+
+ ("flamesafe: only the first safety slot of a group is checked for sharing",
+  "flamesafe/config.py",
+  '''        for s in g.safeties:
+            if s in seen:''',
+  '''        for s in g.safeties[:1]:
+            if s in seen:'''),
+
+ ("flamesafe: another group's fire slot may be a later safety slot of a list",
+  "flamesafe/config.py",
+  '''    safeties = {s for g in c.groups for s in g.safeties}''',
+  '''    safeties = {g.safety for g in c.groups}'''),
+
+ ("flamesafe: a multi-safety group raises only its first safety slot",
+  "flamesafe/composer.py",
+  '''            for s in g.safeties:
+                buf[s - 1] = values[i] if s in self._raised[i] else DISARM''',
+  '''            for s in g.safeties[:1]:
+                buf[s - 1] = values[i] if s in self._raised[i] else DISARM'''),
+
+ ("flamesafe: a locked safety slot of a multi-safety group still rises",
+  "flamesafe/composer.py",
+  '''                self._raised[i] = self._raised[i] - locked_saf''',
+  '''                self._raised[i] = self._raised[i]'''),
+
+ ("flamesafe: a multi-safety group with every safety slot locked still arms",
+  "flamesafe/composer.py",
+  '''            if g.multi_safety and len(locked_saf) == len(g.safeties):''',
+  '''            if False:'''),
+
+ ("flamesafe: a dropped or overwritten safety slot no longer takes the group down",
+  "flamesafe/composer.py",
+  '''            if not down and len(locked_saf) < len(g.safeties):
+                continue''',
+  '''            if True:
+                continue'''),
+
+ ("flamesafe: a locked safety slot is not left out of the arm",
+  "flamesafe/composer.py",
+  '''                    if s not in locked_saf and buf[s - 1] != g.arm_value]''',
+  '''                    if buf[s - 1] != g.arm_value]'''),
+
+ ("flamesafe: a lock on a one-safety group's safety slot changes it",
+  "flamesafe/composer.py",
+  '''        if not g.multi_safety:
+            return frozenset()''',
+  '''        if False:
+            return frozenset()'''),
+
+ ("flamesafe: a group taken down for a dropped safety keeps firing",
+  "flamesafe/composer.py",
+  '''            for f in g.fire:
+                buf[f - 1] = 0
+            values[i] = DISARM''',
+  '''            values[i] = DISARM'''),
+
+ ("flamesafe: a group taken down for a dropped safety comes back by itself",
+  "flamesafe/composer.py",
+  '''            self._latched[i] = False
+            self._seen_down[i] = False
+            self._edge_quiet[i] = 0
+            self._unconfirmed[i] = True''',
+  '''            self._seen_down[i] = False
+            self._edge_quiet[i] = 0
+            self._unconfirmed[i] = True'''),
+
+ ("flamesafe: the status says every safety slot is up",
+  "flamesafe/composer.py",
+  '''                "safeties_up": list(ups[i]),''',
+  '''                "safeties_up": [True] * len(g.safeties),'''),
+
+ ("flamesafe: the status never says a safety slot is locked",
+  "flamesafe/composer.py",
+  '''                "safeties_locked": list(locks[i]),''',
+  '''                "safeties_locked": [False] * len(g.safeties),'''),
+
+ ("multi-safety: fire_ice checks only the first safety slot of a list",
+  "ltcplay/fire_ice.py",
+  '''            slots = list(safety)
+        else:''',
+  '''            slots = list(safety[:1])
+        else:'''),
+
+ ("multi-safety: the rack screen loses the per-safety state",
+  "ltcplay/remote.py",
+  '''                           "safeties_up": [bool(x) for x in
+                                           _list(g.get("safeties_up"))],''',
+  '''                           "safeties_up": [],'''),
+
+ ("multi-safety: the card shows the safety line for a one-safety group",
+  "ltcplay/web/remote.html",
+  '''  if(up.length < 2 || c === "unknown") return "";''',
+  '''  if(c === "unknown") return "";'''),
+
+ ("multi-safety: a locked wave flamer machine does not lock its safety slot",
+  "ltcplay/morning.py",
+  '''                                   bank=bank, safety=s))''',
+  '''                                   bank=bank))'''),
+
  ("flamesafe: rubbish lock data locks nothing (T6)",
   "flamesafe/composer.py",
   '''            got = frozenset(range(1, rules.UNIVERSE_SIZE + 1))
@@ -9895,9 +10024,9 @@ def build():
 
  ('screen arm: one locked machine reads as the whole group locked',
   'ltcplay/morning.py',
-  '                return bool(fire) and \\\n'
-  '                    fire <= self.lockout.channels(self.cfg)',
-  '                return bool(fire & self.lockout.channels(self.cfg))'),
+  '                return (bool(fire) and fire <= locked) or \\\n'
+  '                    (len(saf) > 1 and saf <= locked)',
+  '                return bool(fire & locked)'),
 
  ('screen arm: the deck\'s refusal is never said',
   'ltcplay/remote.py',
