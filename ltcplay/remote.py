@@ -163,7 +163,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
 LIVE_FLAME_ENABLES = (
     "On, LTC Player listens for xLights on this PC only (E1.31 to "
-    "127.0.0.1) and passes the flame controller's channels to flamesafe "
+    "127.0.0.1), or also from the one Mac named in its settings, and passes the flame controller's channels to flamesafe "
     "through its own flame link. flamesafe still fires only a group that "
     "is armed (hold to arm on the Stream Deck), and still applies lockouts "
     "and Abort. One flame group may be armed at a time. It turns itself "

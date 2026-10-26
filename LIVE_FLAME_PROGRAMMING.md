@@ -11,7 +11,7 @@ Program flame effects in xLights and see them on the real flames, while LTC Play
 
 ## The rules (defaults, each one a setting or a decision for Jeff and Andy)
 
-1. **xLights runs on the show PC.** LTC Player listens on 127.0.0.1 only. It refuses any other address. Nothing on the network can send flame values.
+1. **xLights runs on the show PC.** LTC Player listens on 127.0.0.1 only. It refuses any other address. Nothing on the network can send flame values. The one exception is a Mac you name yourself: see "Programming from a Mac" below. It is off unless you set it.
 2. **Leaving the mode disarms everything.** Leaving for any reason disarms every flame group and sets every flame value to zero.
 3. **One sender only.** If a second sender appears, everything goes to zero, every group disarms and the mode ends, with the reason. A second sender is another sACN program, another priority, or flamesafe's own output looping back.
 4. **It turns itself off.** That happens after 10 minutes with no xLights data, and after 4 hours in all.
@@ -111,6 +111,40 @@ Do this first, with Andy:
    - Arm a second group: the mode ends.
 5. **Then the node, with Andy.** Connect the node with the gas still off and repeat. Only then turn the gas on, with one machine.
 
+## Programming from a Mac
+
+Off by default. With it off, everything above is exactly as before. Turn it on only when you program in xLights on a Mac on the show network.
+
+**What changes:** LTC Player also listens on the show PC's own show network address, and takes E1.31 from exactly one address: the Mac's. It still relays the flame channels to flamesafe through its own flame link, exactly as above. flamesafe is not changed and is still the only program that talks to the flame node. xLights on the Mac never sends to the flame node.
+
+**Set it up (once):**
+
+1. **Copy the show PC's `xlights_networks.xml` to the Mac.** Always this way round, never from the Mac to the PC. LTC Player reads the PC's file for the channel map, so the universes and channel counts must be identical.
+2. **On the PC's file, the flame controller sends E1.31 unicast to the PC's own show network address** (for example `10.0.0.10`), not `127.0.0.1`, not the flame node, never Multicast. Its Active setting stays "xLights Only". Make this change on the PC, then copy the file to the Mac again (step 1).
+3. **No other controller** that is not Inactive may send E1.31 to the PC's show network address or to `127.0.0.1`, and none may use a flame universe number. Same rules as before, now for the new address too.
+4. **Give the Mac a fixed address** on the show network (a reservation or a manual address). It must be a private address (10.x, 172.16.x to 172.31.x or 192.168.x). It may not be the PC's address, the flame node's, or any other device in `ltcplay_fire_ice.json`, flamesafe's config or `xlights_networks.xml`. Every address in those files must be written plainly (like `10.0.0.60`; `localhost` is fine): a name or an address with leading zeros cannot be compared, so the mode refuses to start.
+5. **Set it in `ltcplay_remote.json`** on the show PC:
+
+   ```json
+   "live_flame": {
+     "allowed_source_ip": "10.0.0.20",
+     "listen_ip": "10.0.0.10"
+   }
+   ```
+
+   - `allowed_source_ip` is the Mac's address. `null` or left out means this PC only.
+   - `listen_ip` is the show PC's own show network address, and it is required with `allowed_source_ip`. The mode refuses to start if it is not an address of this PC.
+   - LTC Player then listens on that address and on `127.0.0.1`, never on every address, and never joins a multicast group.
+6. **Compare the map fingerprint.** When the mode is on, the red LIVE FLAME PROGRAMMING bar shows `map fingerprint` with 8 letters and digits, and `source:` with the sender that holds the lock (`Mac 10.0.0.20`, `this PC`, or none yet). The fingerprint is a hash of the whole `xlights_networks.xml` on the PC: every controller's name, state, addresses, protocols, universes and channel counts. On the Mac, the helper `tools/xlights_map_fingerprint.py` prints the fingerprint of the Mac's copy, and says in plain words how the flame controller is set (protocol, where it sends, its state). A Cowork session linked to the Mac runs it: `python3 tools/xlights_map_fingerprint.py <the Mac's xlights_networks.xml> "<flame controller name>"`. They must match. If they do not, turn the mode off and copy the PC's file to the Mac again.
+
+   **What the engine cannot see:** LTC Player cannot see what the Mac's xLights actually sends, or where. It sees only packets that reach the show PC. If the Mac's xLights were set to send the flame controller somewhere else (the flame node, Multicast), the PC would never know. Only two things cover that: the Mac's `xlights_networks.xml` is a copy of the PC's file, and its fingerprint matches the one on the rack screen.
+
+**What ends it, in addition to the list above:** a packet from any address that is not `127.0.0.1` or the Mac's (another device, the PC's own show network address). A packet that arrives on the wrong socket: this PC's packets count only on the 127.0.0.1 socket, the Mac's only on the `listen_ip` socket. A second sender, from the Mac or from this PC, also ends it: one sender identity, from one place, per session.
+
+Everything else is the same: an admin turns it on on the show PC's own rack screen, never from an iPad; anyone can turn it off; one group at a time; 10 minutes idle and 4 hours in all; Abort, Hold, Run, Start now and a show starting end it.
+
+**First test from the Mac:** the same gas off first test as below, before anything else. Add one check: send from another computer on the show network (or change the Mac's address) and see the mode end.
+
 ## Settings (ltcplay_remote.json, all optional)
 
 ```json
@@ -119,11 +153,13 @@ Do this first, with Andy:
   "idle_off_s": 600,
   "max_session_s": 14400,
   "one_group_at_a_time": true,
-  "networks_xml": null
+  "networks_xml": null,
+  "allowed_source_ip": null
 }
 ```
 
-- **`listen_ip`:** may only be `127.0.0.1`. Anything else is refused.
+- **`listen_ip`:** may only be `127.0.0.1`, unless `allowed_source_ip` is set: then it is required and is the show PC's own show network address. Anything else is refused.
+- **`allowed_source_ip`:** the one Mac that may send (see "Programming from a Mac"). `null` means this PC only.
 - **`networks_xml`:** names the `xlights_networks.xml` xLights uses. Only needed when the show folder has more than one and they disagree.
 
 ## Threat notes (for the safety review)
@@ -144,7 +180,10 @@ flamesafe is not changed:
 | T6 | Startup glitch: xLights opens with a value up | Nothing listens until the mode is on. Each channel stays zero until xLights has sent it at zero. A stream that stops and restarts must show zero again. |
 | T7 | Two senders | The first sender (its CID and priority) is locked. Any other ends the mode with every group disarmed. One xLights sends every controller with the same identity, so at entry no other controller may send E1.31 to this PC or use a flame universe (review of PR #96, P2-1). |
 | T8 | xLights or the engine hangs with a value up | A universe goes to zero 0.25 s after its last packet. The flame link drops the frame 0.25 s after the last update, on its own clock. If the engine dies, flamesafe zeroes fire in 100 ms and disarms in 500 ms. |
-| T9 | A device on the network sends sACN | The listener binds 127.0.0.1 only. A non-loopback source ends the mode. |
+| T9 | A device on the network sends sACN | By default the listener binds 127.0.0.1 only and a non-loopback source ends the mode. With `allowed_source_ip` it also binds the PC's own `listen_ip` (never 0.0.0.0, no multicast join), and a packet from any address but loopback and the Mac's ends the mode, with every group disarmed and the values at zero. |
+| T15 | A wrong Mac address, or one that is really another device | The address must be one private IPv4 address written plainly. Loopback, multicast, broadcast, link local, public addresses and names are refused. At entry it may not be this PC's own, flamesafe's destination (the flame node), any controller in `xlights_networks.xml` or any address in `ltcplay_fire_ice.json` or flamesafe's config. `listen_ip` must be an address of this PC. |
+| T16 | A device on the show network spoofs the Mac's address | Not prevented; this is a residual risk. Its limits: unicast only to the PC, the origin tied to the socket, the one sender lock (CID, priority and origin: a second CID, or the same one from loopback, ends the mode), one group at a time, a group still has to be armed by hold to arm on the Stream Deck, flamesafe's own rules, and the physical key switch. |
+| T17 | The Mac's xLights is set differently from the PC's file (another layout, or the flame controller sending to the node or Multicast) | The engine cannot see the Mac's actual output. The map comes only from the PC's `xlights_networks.xml`. The rack screen shows a fingerprint of that whole file; `tools/xlights_map_fingerprint.py` prints the Mac's and says how its flame controller is set. Operator rule: the file is only ever copied PC to Mac, and the two fingerprints match before arming. |
 | T10 | Purge and program at once | The mode is refused while a purge is selected. The Morning page fires nothing while the mode is on. At the link, the mode's frame replaces the purge frame. |
 | T11 | Malformed or flooding input | Strict E1.31 parsing: every length, vector and the start code are checked, and preview data is ignored. The sACN sequence rule applies. More than 200 packets a second on a universe ends the mode. |
 | T12 | A second group armed from the Stream Deck | The engine cannot refuse a deck key in advance (that would need a Stream Deck change). On a clean arm edge flamesafe raises that group's arm channel in the same tick the group becomes wanted, and holds only its fire channels at zero for 3 ticks (75 ms). The engine sees the group in flamesafe's status (up to 25 ms later), then on the next xLights packet or the next 50 ms pass, shuts the flame link's slot at once and disarms every group; that zero frame reaches flamesafe on the link's next frame (up to 25 ms). Worst case, that adds up to a little more than the 75 ms quiet window, so xLights' values could fire on the second group for about one tick (25 ms). flamesafe's own "dirty edge" rule refuses to arm a group while a fire value of 15 or more is held on it, so a second group with xLights already holding a flame there does not arm at all. **A residual risk Andy must accept.** |
@@ -158,4 +197,6 @@ flamesafe is not changed:
   - **A second group armed from the Stream Deck's own keys** can fire xLights' values for about one flamesafe tick (25 ms) in the worst case, before the mode ends and every group disarms (T12). Removing it needs the Stream Deck to refuse the key itself, which this change does not touch. Andy must accept this or ask for that change.
 - **The Stream Deck as a user.** The engine trusts a request from this PC that says it comes from the Stream Deck (`screen: "Stream Deck"` on loopback) to act as the person signed in on the show machine. Anything running on the show PC could claim that. This is the existing rule, not a new one.
 - **Sampling.** xLights frames are sampled at the flame link's 40 Hz, so one 25 ms pulse can be missed or doubled.
+- **A spoofed Mac.** With `allowed_source_ip` set, a device on the show network that sends from the Mac's address is taken as the Mac until a second sender identity appears (T16). It is limited to an armed group, one group at a time, behind flamesafe and the key switch. The show network must be closed to outside devices. Leaving `allowed_source_ip` off removes this risk.
+- **The Mac's own output.** The engine cannot see what the Mac's xLights sends, or where (T17). Only the Mac's file being a copy of the PC's, with matching fingerprints, covers it.
 - **Equal priority.** A multicast or node-addressed flame controller that someone sets Active outside this mode would still merge at equal priority on the node. That risk exists today, and this mode refuses to start while it is set.

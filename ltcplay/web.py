@@ -1530,7 +1530,7 @@ def _attach_live_flame(httpd, fire_ice, flamesafe_config):
                 getattr(remote.control, "folder", None),
                 fire_ice.flame_controller,
                 show_networks=fire_ice_mod._show_networks,
-                explicit=s.networks_xml)
+                explicit=s.networks_xml, dest=s.listen_ip)
 
         def _journal(who, screen, outcome, text, fault=False):
             remote._journal(who or "system", screen or "engine",
@@ -1552,7 +1552,10 @@ def _attach_live_flame(httpd, fire_ice, flamesafe_config):
             settings_get=lambda: flameprog.load_settings(
                 remote.live_flame_settings_path()),
             disarm=_disarm, journal=_journal,
-            audit=getattr(remote, "audit", None))
+            audit=getattr(remote, "audit", None),
+            device_ips=lambda: flameprog.configured_ips(
+                (getattr(fire_ice, "path", None),
+                 flamesafe_config or fire_ice.flamesafe_config)))
     except Exception as e:                       # noqa: BLE001
         print(f"Live flame programming could not be set up: "
               f"{type(e).__name__}: {e}")
