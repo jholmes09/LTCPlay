@@ -42373,6 +42373,10 @@ function measure(tag){
   // At 1920x1080 and a laptop's 1366x768 the operator sees every group's
   // buttons without scrolling.
   out.flames_visible_at_load = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= innerHeight);
+  // And clear of the sticky Abort bar, which covers the window's bottom.
+  const abTop = document.getElementById("abortbar").getBoundingClientRect().top;
+  out.flames_clear_of_abort = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= abTop + 0.5);
+  out.setup_folded = !!document.querySelector("#setup.folded");
   const ctl = {"Abort": "b-abort", "Hold": "b-hold", "Disarm all flame groups": "b-disarm", "Disarm all lasers": "lz-disarm"};
   for(const k in ctl){
     const el = document.getElementById(ctl[k]);
@@ -42947,9 +42951,13 @@ console.log(JSON.stringify(out));
               f"{w}x{h}: the no-show-file line is said: {m.get('nofile')!r}")
         # Review of #113, P2-d: with the card capped, every group's Hold
         # to arm and Disarm is on the screen without scrolling.
-        check(m.get("flames_visible_at_load"),
-              f"{w}x{h}: every group's buttons on the screen at load, the "
-              f"getting-started card above them: {m['lamps']}")
+        check(m.get("flames_visible_at_load") and
+              m.get("flames_clear_of_abort"),
+              f"{w}x{h}: every group's buttons on the screen at load and "
+              f"clear of the Abort bar, the getting-started card (folded to "
+              f"one line) above them: {m['lamps']}")
+        check(m.get("setup_folded") is True,
+              f"{w}x{h}: flamesafe reports groups: the card is folded")
     # Review of #113, P2-d: no show file and flamesafe stale, or screen
     # arming off: the groups are still drawn, Hold to arm is off and says
     # why, the line says what is missing, Abort and Disarm all pressable.
