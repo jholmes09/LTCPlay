@@ -1218,7 +1218,9 @@ function renderStale(){
       const why = el.querySelector(".why");
       if(why) why.textContent = "";
     });
-    document.querySelectorAll(".chip").forEach(el => { el.className = "chip"; });
+    // The top bar's chips too (2026-10-26): a chip from an old status is
+    // never green and never keeps its old word. Amber, "no contact".
+    document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "0.3";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "0.3";
     // Not known is never shown as nothing to abort.

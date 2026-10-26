@@ -434,6 +434,9 @@ class ArmSocket:
         self._journal = journal or (lambda text, **kw: None)
         self._send_failing = False   # item 10: log once per episode, not
                                      # once per dropped frame
+        # time.monotonic() of the last frame the socket took, or None: the
+        # rack screen's Deck chip (sent_age_ms). Never read by arming.
+        self.sent_at = None
         # Two threads send on this socket since the arm link got a pacer
         # of its own (ArmPacer, 2026-10-21): the pacer's steady assertion
         # and the deck's own instant ones (a disarm, Abort, a completed
@@ -499,6 +502,7 @@ class ArmSocket:
         try:
             self._sock.sendto(encode_arm_frame(self.seq, self.wanted, names,
                                                self.key), (self.ip, self.port))
+            self.sent_at = time.monotonic()
             if self._send_failing:
                 self._send_failing = False
                 return ("Stream Deck: arm frame sends are working again.",
@@ -518,6 +522,14 @@ class ArmSocket:
                         f"until it recovers.",
                         {"fault": True, "action": "arm-link"})
         return None
+
+    def sent_age_ms(self):
+        """ms since the socket last took an arm frame, or None before the
+        first: carried to the engine for the Deck chip. Never raises."""
+        at = self.sent_at
+        if at is None:
+            return None
+        return max(0, int((time.monotonic() - at) * 1000))
 
     def close(self):
         with self.lock:
@@ -1295,6 +1307,12 @@ class ScreenKeys:
         # (UsbMeter.failed_count): usb_fail, for the same chip (review of
         # PR #83, P2-2). Display only.
         self.report_failed = None
+        # () -> whether the USB deck is here (Controller.deck_present):
+        # hw=1 or hw=0; and () -> ms since the last arm frame went out
+        # (ArmSocket.sent_age_ms): arm_ms. The Deck chip's live truth
+        # (2026-10-26: green with the deck unplugged). Display only.
+        self.report_present = None
+        self.report_arm = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
         # Screen holds this deck would not take: hold id -> (code, clock),
@@ -1375,6 +1393,21 @@ class ScreenKeys:
                 n = 0
             if isinstance(n, int) and not isinstance(n, bool) and n > 0:
                 path += f"&usb_fail={n}"
+        try:
+            present = self.report_present() \
+                if self.report_present is not None else None
+        except Exception:                        # noqa: BLE001
+            present = None
+        if isinstance(present, bool):
+            path += "&" if "?" in path else "?"
+            path += "hw=1" if present else "hw=0"
+        try:
+            age = self.report_arm() if self.report_arm is not None else None
+        except Exception:                        # noqa: BLE001
+            age = None
+        if isinstance(age, int) and not isinstance(age, bool) and age >= 0:
+            path += "&" if "?" in path else "?"
+            path += f"arm_ms={age}"
         try:
             ref = self._refused_param()
         except Exception:                        # noqa: BLE001
@@ -2275,6 +2308,11 @@ class Controller:
         # The deck's USB write timing (UsbMeter), for the rack screen and
         # the journal; given by run_forever. Never read by arming.
         self.usb = None
+        # Whether the USB deck is here right now: True from each connect
+        # until the unplug, False before the first and while it is away
+        # (run_forever). Carried to the engine for the rack screen's Deck
+        # chip (ScreenKeys, hw=). Display only: never read by arming.
+        self.deck_present = False
         self.held_provider = held_provider or (lambda: None)
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
@@ -4104,6 +4142,7 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
             display = DisplayWorker(deck, fonts.Image, meter=meter,
                                     clock=clock).start()
         outage.connected()
+        controller.deck_present = True   # the Deck chip (remote.py)
         connected_at = clock()
         try:
             while True:
@@ -4181,6 +4220,7 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
             outage.failed(e, "Every flame group stays as it was on the arm "
                              "link until it reconnects; the alert on the "
                              "rack screen waits for an Acknowledge.")
+            controller.deck_present = False  # the Deck chip (remote.py)
             # NOT arm.close() (round 4, item A): see _hold_link_steady.
             # NOT arm.set_all(False) either (ruling 4, 2026-10-12): the
             # groups stay as they are. The holds in progress are dropped
@@ -4561,6 +4601,10 @@ def _main(args):
     controller.usb = UsbMeter(journal)
     screen.report = controller.usb.worst_ms
     screen.report_failed = controller.usb.failed_count
+    # And whether the USB deck is here, and how fresh the arm link is: the
+    # Deck chip is green only on both (2026-10-26). Display only.
+    screen.report_present = lambda: controller.deck_present
+    screen.report_arm = arm.sent_age_ms
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.
