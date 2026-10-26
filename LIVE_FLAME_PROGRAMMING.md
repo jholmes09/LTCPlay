@@ -223,7 +223,7 @@ Only when all of these are true:
 
 ### The seek rule (how a scrub cannot fire a burst)
 
-- Every press that moves the position is a landing, however small: Play from, every Jump, Pause, Continue, the loop, and the loop jumping back to A. LTC Player counts every move, and that count is the real guard. A position that is more than 0.15 s off the time that has passed since the last landing is a landing too; that is only a backstop.
+- Every press that moves the position is a landing, however small: Play from, every Jump, Pause, Continue, the loop, and the loop jumping back to A. LTC Player counts every move, twice: once as the move starts and once when it is done. It reads the position only between moves, and pairs it with the count it saw before reading it, so a position is never taken as from before a move that already changed it. That count is the real guard. A position that is more than 0.15 s off the time that has passed since the last landing is a landing too; that is only a backstop.
 - A new render of the cue under the playhead (xLights saved it again while you scrub) is a landing too: zero at once, then the same half second.
 - After a landing, and after turning it on, every flame value is zero until the position has played on steadily for half a second.
 - This is decided channel by channel. A flame channel that is already up where you landed stays zero until it has gone to zero once. So a single long flame you jumped into the middle of never fires, and dragging or jumping through the show never fires anything on the way. A pulsing effect that is part way through where you land can fire again at its next pulse, after the half second.

@@ -61387,14 +61387,14 @@ def test_scrub_flames_review_of_117():
                      hold_ms=100, on_lost="freerun")
     n0 = p.transport_moves
     p.go(6.0)
-    check(p.freerun_by == "operator" and p.transport_moves == n0 + 1,
+    check(p.freerun_by == "operator" and p.transport_moves == n0 + 2,
           "GO is the operator's free run, and a move")
     for f, a in ((p.nudge, (0.1,)), (p.freerun_pause, (True,)),
                  (p.freerun_pause, (False,)), (p.set_loop, (6.0, 8.0)),
                  (p.go_to_cue, (0,)), (p.release, ())):
         before = p.transport_moves
         f(*a)
-        check(p.transport_moves == before + 1, f"{f.__name__} is a move")
+        check(p.transport_moves == before + 2, f"{f.__name__} is a move")
     check(p.freerun_by is None, "released: no free run")
     p.feed_timecode(7.0, plmod._now())
     p._tick()
@@ -61534,6 +61534,217 @@ def test_scrub_flames_review_of_117():
     check(closed and not r2.scrub_flames.on and
           "closing" in (r2.scrub_flames.last_end or {}).get("reason", ""),
           f"closing the engine ends it: {r2.scrub_flames.last_end}")
+    print("  ok")
+
+
+def test_scrub_flames_seqlock():
+    section("fire flames while scrubbing, third review of #117: the move "
+            "count is a seqlock; a player tick that lands inside a move "
+            "(after the position is written, before the count) never pairs "
+            "the new position with the old count, so a Jump of +0.12 s, "
+            "+0.10 s or a GO 0.15 s on into a cue fires nothing; a tick "
+            "mid-move, or one a whole move overtook, writes no pair; a loop "
+            "wrap is counted; every move bumps the count by two")
+    import types
+    from ltcplay import player as plmod
+    from ltcplay import scrubflames as SF
+    clk = [1000.0]
+
+    class _T:
+        def perf_counter(self):
+            return clk[0]
+
+        def monotonic(self):
+            return clk[0]
+
+        def time(self):
+            return clk[0]
+
+        def sleep(self, s):
+            clk[0] += s
+
+    def cues(tc):
+        h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
+        t = h * 3600 + m * 60 + s + f / 30
+        v = [0] * 512
+        if 10.0 <= t < 14.0:
+            v[410] = 200
+        return v
+
+    class P(plmod.Player):
+        """A player whose move count and epoch can run something in the
+        middle of a read, as another thread would."""
+        hook = None            # (who, n) -> None; who "tick" or "web"
+        epoch_hook = None
+        in_tick = False
+        moving = False         # a move under test is running (the "web")
+
+        @property
+        def transport_moves(self):
+            v = self.__dict__.get("_tm", 0)
+            h = self.hook
+            if h is not None and (self.in_tick or self.moving) and \
+                    not self.__dict__.get("_in_hook"):
+                who = "tick" if self.in_tick else "web"
+                self.__dict__["_reads"] = self.__dict__.get("_reads", 0) + 1
+                self.__dict__["_in_hook"] = True
+                try:
+                    h(who, self.__dict__["_reads"])
+                finally:
+                    self.__dict__["_in_hook"] = False
+            return v
+
+        @transport_moves.setter
+        def transport_moves(self, v):
+            self.__dict__["_tm"] = v
+
+        @property
+        def freerun_epoch(self):
+            v = self.__dict__.get("_fe")
+            h = self.epoch_hook
+            if h is not None and self.in_tick:
+                # The tick reads the epoch twice: whether there is a free
+                # run, then for the position. The move lands between the
+                # count read and the second.
+                self.__dict__["_fe_reads"] = \
+                    self.__dict__.get("_fe_reads", 0) + 1
+                if self.__dict__["_fe_reads"] == 2:
+                    self.epoch_hook = None
+                    h()
+            return v
+
+        @freerun_epoch.setter
+        def freerun_epoch(self, v):
+            self.__dict__["_fe"] = v
+
+        def _tick(self):
+            self.in_tick = True
+            try:
+                return super()._tick()
+            finally:
+                self.in_tick = False
+    real_time = plmod.time
+    plmod.time = _T()
+    try:
+        def rig():
+            A = FakeFSEQ(frames=2000, step=25)
+            tl = _timeline([("00:00:05:00", "A", A)])
+            p = P(tl, FakeNetmap(), CountingSender(), freewheel_ms=50,
+                  hold_ms=100, on_lost="freerun")
+            sess = types.SimpleNamespace(running=True, player=p)
+            sf = SF.ScrubFlames(link_get=lambda: None, cues_get=lambda: None,
+                                control=types.SimpleNamespace(session=sess),
+                                blockers=lambda: "", threaded=False)
+            sf.on, sf._session = True, sess
+            lk = _sf_link(cues=lambda tc: None,
+                          show_state=lambda: (None, False),
+                          clock=lambda: clk[0])
+            lk.rehearse_begin(sf.state, cues)
+            out = []
+
+            def step():
+                p._tick()
+                lk.send_frame()
+                f = [f for f in lk.wire if f["t"] == "flame"][-1]
+                out.append((round(p.tc_seconds, 3), f["values"][410]))
+                clk[0] += 0.025
+            return p, sf, lk, out, step
+
+        def race(label, move, until=9.90):
+            """Play steadily to `until`, then make the move with a whole
+            tick and flame frame run inside EVERY read of the count the
+            move makes (before its position write and after it)."""
+            p, sf, lk, out, step = rig()
+            p.go(9.0)
+            while p.tc_seconds < until:
+                step()
+            pre = len(out)
+            p.hook = lambda who, n: step() if who == "web" else None
+            p.moving = True
+            try:
+                move(p)
+            finally:
+                p.moving = False
+                p.hook = None
+            for _ in range(80):
+                step()
+            fired = [(t, v) for t, v in out[pre:] if v]
+            check(not fired, f"{label}: a tick inside the move fires "
+                             f"nothing: {fired[:3]}")
+        race("Jump +0.12 s at 9.9 into cue A", lambda p: p.nudge(0.12))
+        race("Jump +0.10 s at 9.9 into cue A", lambda p: p.nudge(0.10))
+        race("GO 10.05 at 9.9", lambda p: p.go(10.05))
+        race("skip to the top of cue A then on (go_to_cue)",
+             lambda p: (p.go(10.6), p.go_to_cue(0)) and None, until=9.5)
+        # A tick in the middle of a move writes no pair, and the scrub has
+        # no position then.
+        p, sf, lk, out, step = rig()
+        p.go(9.0)
+        step()
+        seen = []
+
+        def mid(who, n):
+            if who == "web" and n == 2:            # the closing mark's read
+                p._tick()
+                seen.append((p.transport_at, sf.state()))
+        p.__dict__["_reads"] = 0
+        p.hook = mid
+        p.moving = True
+        p.nudge(0.12)
+        p.moving = False
+        p.hook = None
+        check(seen and seen[0] == (None, None),
+              f"a tick in the middle of a move: no pair, no position: "
+              f"{seen}")
+        # A whole move between the tick's count read and its position
+        # read: no pair.
+        p.__dict__["_fe_reads"] = 0
+        p.epoch_hook = lambda: p.nudge(0.12)
+        p._tick()
+        check(p.transport_at is None and sf.state() is None,
+              f"a move overtaking a tick: no pair: {p.transport_at}")
+        p._tick()
+        check(sf.state() is not None, "the next tick: the new pair")
+        # A whole move between the tick's two count reads, the second
+        # still answering the old count: the pair keeps the count read
+        # BEFORE the position, which is no longer the current one.
+        p.__dict__["_reads"] = 0
+
+        def overtake(who, n):
+            if who == "tick" and n == 2:
+                p.hook = None
+                p.nudge(0.12)
+        p.hook = overtake
+        p._tick()
+        p.hook = None
+        check(sf.state() is None,
+              f"a move between the tick's two reads: no position: "
+              f"{p.transport_at} {p.transport_moves}")
+        # Every move bumps the count by exactly two; a loop wrap is one.
+        p._tick()
+        for f, a in ((p.go, (6.0,)), (p.nudge, (0.1,)),
+                     (p.freerun_pause, (True,)), (p.freerun_pause, (False,)),
+                     (p.go_to_cue, (0,)), (p.set_loop, (6.0, 8.0)),
+                     (p.set_loop, (None, None)), (p.release, ())):
+            before = p.transport_moves
+            f(*a)
+            check(p.transport_moves == before + 2,
+                  f"{f.__name__}: the count moves by two (even again)")
+        p.go(6.0)
+        p.set_loop(6.0, 7.0)
+        p._tick()
+        n = p.transport_moves
+        clk[0] += 1.2
+        p._tick()
+        check(p.transport_moves == n + 2 and p.transport_at is None and
+              abs(p.tc_seconds - 6.0) < 1e-6,
+              f"a loop wrap is a move, and that tick writes no pair: "
+              f"{p.transport_moves - n} {p.transport_at}")
+        p._tick()
+        check(sf.state() is not None and sf.state()[1][0] == n + 2,
+              "and the next tick pairs the wrapped position")
+    finally:
+        plmod.time = real_time
     print("  ok")
 
 
@@ -62136,6 +62347,7 @@ if __name__ == "__main__":
     test_scrub_flames_engine_routes_roles_and_page()
     test_scrub_flames_end_to_end_real_flamesafe()
     test_scrub_flames_review_of_117()
+    test_scrub_flames_seqlock()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
