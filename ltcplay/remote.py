@@ -3595,8 +3595,9 @@ class Remote:
         (DECK_ARM_FRESH_MS): ("ok", "ok") only while the Stream Deck
         program was heard within PLAIN_DECK_FRESH_S, says its USB deck is
         present, and sent an arm frame within DECK_ARM_FRESH_MS. "bad"
-        with plain words when the deck is unplugged ("missing") or the
-        program is not heard; "warn" when its word is late or not known.
+        with plain words when the deck is unplugged ("missing"), the
+        program is not heard, or the deck sends no arm frames ("not
+        arming"); "warn" only while its word is late or not known.
         No alert, and no Acknowledge, is read here: a lamp never changes
         colour because someone saw a banner. Never raises."""
         seen = self._deck_seen
@@ -3626,7 +3627,11 @@ class Remote:
             return "warn", "USB not known"
         arm = self._deck_arm_ms
         if arm is None or arm > DECK_ARM_FRESH_MS:
-            return "warn", "arm link stale"
+            # Heard, the deck here, and yet no arm frame for longer than
+            # flamesafe waits (review of #108, P2-3): its main loop is
+            # frozen and the arm link silent, so flamesafe has disarmed and
+            # nothing arms from the deck. A fault, said plainly.
+            return "bad", "not arming"
         return "ok", "ok"
 
     def subsystems(self, cs):

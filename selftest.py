@@ -52145,12 +52145,12 @@ def test_deck_chip_shows_live_truth():
                   f"replugged: green by itself: {chip()}")
             # The arm link.
             deck("hw=1&arm_ms=900")
-            check(chip() == {"state": "warn", "word": "arm link stale"},
-                  f"the deck here but its last arm frame 900 ms old: amber: "
-                  f"{chip()}")
+            check(chip() == {"state": "bad", "word": "not arming"},
+                  f"the deck here but its last arm frame 900 ms old: red, "
+                  f"'Deck not arming' (review of #108, P2-3): {chip()}")
             deck("hw=1")
-            check(chip() == {"state": "warn", "word": "arm link stale"},
-                  f"no word on the arm link: amber: {chip()}")
+            check(chip() == {"state": "bad", "word": "not arming"},
+                  f"no word on the arm link: red, not arming: {chip()}")
             deck("arm_ms=10")
             check(chip() == {"state": "warn", "word": "USB not known"},
                   f"no word on the hardware (an older deck program): "
@@ -52265,6 +52265,69 @@ def test_deck_chip_shows_live_truth():
     print("  ok")
 
 
+def test_deck_chip_red_when_the_deck_loop_hangs():
+    section("Deck chip (review of #108, P2-3): a Stream Deck whose input "
+            "loop is frozen keeps answering the engine from its screen "
+            "thread with the deck plugged in, but the arm pacer stops and "
+            "flamesafe disarms; the chip is red, 'Deck not arming', driven "
+            "through the real ArmPacer, ArmSocket and ScreenKeys")
+    from ltcplay import streamdeck as sd
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    t = [500.0]
+    arm = sd.ArmSocket("127.0.0.1", 9, "k" * 16, 3)
+    arm._now = lambda: t[0]
+    arm.open()
+    try:
+        pacer = sd.ArmPacer(arm, ["a", "b", "c"], clock=lambda: t[0])
+        def fetch(path):
+            R.mono[0] = t[0]          # the engine's clock, the same time
+            return R.remote.deck_input(path.partition("?")[2])
+        keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=fetch,
+                             clock=lambda: t[0])
+        keys.report_present = lambda: True
+        keys.report_arm = arm.sent_age_ms
+
+        def chip():
+            R.mono[0] = t[0]
+            return [{k: x[k] for k in ("state", "word")}
+                    for x in R.remote.subsystems({})
+                    if x["name"] == "Deck"][0]
+
+        def run(secs, beating):
+            for _ in range(int(round(secs / 0.05))):
+                t[0] += 0.05
+                if beating:
+                    pacer.beat()
+                pacer.step()
+                keys.poll_once()
+        run(1.0, True)
+        check(pacer.sent >= 15 and chip() == {"state": "ok", "word": "ok"},
+              f"the loop beating, the pacer sending: green: {chip()} "
+              f"{pacer.sent}")
+        n = pacer.sent
+        run(0.3, False)
+        check(chip()["state"] in ("ok", "warn") and pacer.sent <= n + 4,
+              f"frozen 0.3 s: the pacer stops after INPUT_STALE_S; not yet "
+              f"past flamesafe's 500 ms: {chip()}")
+        run(0.7, False)
+        check(pacer.sent <= n + 4 and arm.sent_age_ms() > 500,
+              f"frozen 1 s: no arm frame for over 500 ms: "
+              f"{arm.sent_age_ms()} ms")
+        check(chip() == {"state": "bad", "word": "not arming"},
+              f"the deck program still heard, the deck plugged in, its arm "
+              f"link silent: red, 'Deck not arming': {chip()}")
+        run(0.5, True)
+        check(chip() == {"state": "ok", "word": "ok"},
+              f"the loop back: green by itself: {chip()}")
+    finally:
+        arm.close()
+        R.close()
+    print("  ok")
+
+
 def test_pixels_chip_shows_live_truth():
     section("Pixels chip (2026-10-26, checked beside the Deck chip): green "
             "only while a send landed within 2 s; a sender that stopped "
@@ -52375,6 +52438,8 @@ def test_deck_chip_in_a_browser():
                                  cut_off=True)
     d = [x for x in got if x.get("name") == "Deck"] \
         if isinstance(got, list) else []
+    got = [x for x in got if x.get("name") != "#stale"] \
+        if isinstance(got, list) else got
     check(len(d) == 1 and d[0]["cls"] == "chip warn" and
           d[0]["word"] == "no contact" and d[0]["dot"] != "green",
           f"the engine gone: the Deck chip is amber, 'no contact', never "
@@ -52382,6 +52447,29 @@ def test_deck_chip_in_a_browser():
     check(isinstance(got, list) and got and
           all(x["dot"] != "green" for x in got),
           f"and no other chip is green either: {got!r}")
+    # Review of #108, P2-1: the engine answers, but with a status the page
+    # cannot draw (a field of the wrong type). The page must not call it
+    # fresh: after the last good draw ages out, every chip is amber, "no
+    # contact", and the banner says the page cannot show the status.
+    for field, bad in (("subsystems", 7), ("schedule", {"slots": 5}),
+                       ("flames", {"groups": "x", "connected": True})):
+        broken = dict(states["replugged"])
+        broken[field] = bad
+        got = _deck_chip_in_chromium(chrome, page, states["replugged"],
+                                     cut_off=True, after=broken)
+        rows = got if isinstance(got, list) else []
+        chips = [x for x in rows if x.get("name") != "#stale"]
+        banner = [x for x in rows if x.get("name") == "#stale"]
+        check(chips and all(x["cls"] == "chip warn" and
+                            x["word"] == "no contact" and
+                            x["dot"] != "green" for x in chips),
+              f"{field} of the wrong type: every chip amber, no contact, "
+              f"never a green 'Deck ok' kept from the last good status: "
+              f"{got!r}")
+        check(banner and banner[0]["cls"] == "shown" and
+              "CANNOT SHOW" in banner[0]["word"],
+              f"{field} of the wrong type: the banner says the page cannot "
+              f"show the status: {banner}")
     print("  ok")
 
 
@@ -52405,7 +52493,8 @@ function go(){
   if(!document.querySelector("#subs .chip")) return setTimeout(go, 100);
   setTimeout(() => {
     const pre = document.createElement("pre"); pre.id = "chip-measure";
-    pre.textContent = JSON.stringify(read());
+    const b = document.getElementById("stale");
+    pre.textContent = JSON.stringify(window.__CUT_OFF ? read().concat([{name:"#stale", cls:b && !b.hidden ? "shown" : "hidden", word:b ? b.textContent : "", dot:""}]) : read());
     document.body.appendChild(pre);
   }, window.__CUT_OFF ? 4000 : 600);
 }
@@ -52415,10 +52504,12 @@ go();
 """
 
 
-def _deck_chip_in_chromium(chrome, page, status, cut_off=False):
+def _deck_chip_in_chromium(chrome, page, status, cut_off=False, after=None):
     """The rack screen's top bar chips, drawn in headless `chrome` from
     `status`: [{name, cls, word, dot}], or a sentence saying why not. With
-    `cut_off` the stub answers the status once, then never again."""
+    `cut_off` the stub answers the status once, then never again; with
+    `after` too, it answers `after` from then on instead (a status the page
+    cannot draw), and the dump also carries the stale banner's text."""
     import http.server
     import html as _html
     import shutil
@@ -52453,6 +52544,10 @@ def _deck_chip_in_chromium(chrome, page, status, cut_off=False):
                      "fresh_s": 2.0}))
             if p == "/api/remote/status":
                 asked[0] += 1
+                if cut_off and asked[0] > 1 and after is not None:
+                    st = dict(after)
+                    st["served_at"] = int(time.time() * 1000)
+                    return self._out(200, json.dumps(st))
                 if cut_off and asked[0] > 1:
                     return self._out(503, '{"error": "gone"}')
                 st = dict(status)
@@ -58322,6 +58417,7 @@ if __name__ == "__main__":
     test_rack_screen_browser_check_retries_only_a_timeout()
     test_deck_chip_shows_live_truth()
     test_pixels_chip_shows_live_truth()
+    test_deck_chip_red_when_the_deck_loop_hangs()
     test_deck_chip_in_a_browser()
     test_remote_setup_routes_this_machine_only()
     test_windows_supervisor_first_run_defaults()

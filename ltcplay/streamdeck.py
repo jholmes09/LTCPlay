@@ -437,6 +437,7 @@ class ArmSocket:
         # time.monotonic() of the last frame the socket took, or None: the
         # rack screen's Deck chip (sent_age_ms). Never read by arming.
         self.sent_at = None
+        self._now = time.monotonic   # its clock (a test gives its own)
         # Two threads send on this socket since the arm link got a pacer
         # of its own (ArmPacer, 2026-10-21): the pacer's steady assertion
         # and the deck's own instant ones (a disarm, Abort, a completed
@@ -502,7 +503,7 @@ class ArmSocket:
         try:
             self._sock.sendto(encode_arm_frame(self.seq, self.wanted, names,
                                                self.key), (self.ip, self.port))
-            self.sent_at = time.monotonic()
+            self.sent_at = self._now()
             if self._send_failing:
                 self._send_failing = False
                 return ("Stream Deck: arm frame sends are working again.",
@@ -529,7 +530,7 @@ class ArmSocket:
         at = self.sent_at
         if at is None:
             return None
-        return max(0, int((time.monotonic() - at) * 1000))
+        return max(0, int((self._now() - at) * 1000))
 
     def close(self):
         with self.lock:

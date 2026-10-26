@@ -946,7 +946,13 @@ function armState(st, nowMs, lastOkMs, i){
   if(g.armed === "armed" || g.wanted) return {ok:false, why:"Already armed or asked for."};
   return {ok:true, why:""};
 }
-function staleText(nowMs, lastOkMs){
+function staleText(nowMs, lastOkMs, drawErr){
+  if(drawErr){
+    const d = (lastOkMs === null || lastOkMs === undefined) ? "never" :
+      Math.max(0, (nowMs - lastOkMs) / 1000).toFixed(1) + " s ago";
+    return "THIS PAGE CANNOT SHOW the engine's status (" + drawErr + "). Last shown: " + d +
+      ". The show carries on by itself. Start now, Resume, Reset and the programming controls are off until it can.";
+  }
   if(lastOkMs === null || lastOkMs === undefined)
     return "NOT CONNECTED to the show engine yet.";
   const s = Math.max(0, (nowMs - lastOkMs) / 1000);
@@ -1095,6 +1101,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t == null ? "" : t)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 let ME = null, ST = null, LAST_OK = null, FRESH_S = 2.0, POLLING = false;
+// Why the last status could not be drawn, or "" (staleText says it).
+let DRAW_ERR = "";
 // The countdown's moment to count to (countdownAnchor), on the page's own
 // monotonic clock.
 let CD = null;
@@ -1177,12 +1185,26 @@ function startPolling(){
   if(POLLING) return;
   POLLING = true;
   const loop = async () => {
-    try{
-      ST = await getJSON("/api/remote/status", 1500);
+    let got = null;
+    try{ got = await getJSON("/api/remote/status", 1500); }catch(e){}
+    if(got){
+      // Fresh only once it is drawn (review of #108, P2-1): a status the
+      // page cannot draw (a field of the wrong type) must never keep the
+      // last good chips and lamps looking live. Undone on a throw, so the
+      // page goes stale and every chip turns amber, "no contact".
+      const before = LAST_OK;
+      ST = got;
       LAST_OK = Date.now();
-      CD = countdownAnchor(CD, ST && ST.countdown, monoNow());
-      render();
-    }catch(e){}
+      try{
+        CD = countdownAnchor(CD, ST && ST.countdown, monoNow());
+        render();
+        DRAW_ERR = "";
+      }catch(e){
+        LAST_OK = before;
+        DRAW_ERR = (e && e.message) || String(e);
+        try{ renderStale(); }catch(e2){}
+      }
+    }
     if(POLLING) setTimeout(loop, 250);
   };
   loop();
@@ -1198,9 +1220,16 @@ function renderCountdown(){
 
 function renderStale(){
   const stale = isStale(Date.now(), LAST_OK, FRESH_S);
+  if(stale){
+    // The top bar's chips first (2026-10-26; review of #108, P2-1), before
+    // anything below that reads the status and could throw on a bad one:
+    // a chip from an old status is never green and never keeps its old
+    // word. Amber, "no contact".
+    document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });
+  }
   const b = $("stale");
   b.hidden = !stale || $("main").hidden;
-  if(stale) b.textContent = staleText(Date.now(), LAST_OK);
+  if(stale) b.textContent = staleText(Date.now(), LAST_OK, DRAW_ERR);
   const cs = controlStates(ST, stale);
   $("b-start").disabled = !cs.startNow;
   $("b-resume").disabled = !cs.resume;
@@ -1218,9 +1247,6 @@ function renderStale(){
       const why = el.querySelector(".why");
       if(why) why.textContent = "";
     });
-    // The top bar's chips too (2026-10-26): a chip from an old status is
-    // never green and never keeps its old word. Amber, "no contact".
-    document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "0.3";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "0.3";
     // Not known is never shown as nothing to abort.

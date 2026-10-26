@@ -9778,6 +9778,23 @@ def build():
   '        elif not isinstance(since, (int, float)) or isinstance(since, bool):',
   '        elif False:'),
 
+ ('deck lamp: a deck that sends no arm frames is only amber',
+  'ltcplay/remote.py',
+  '            return "bad", "not arming"',
+  '            return "warn", "not arming"'),
+
+ ('rack screen: a status the page cannot draw is still called fresh',
+  'ltcplay/web/remote.html',
+  '        LAST_OK = before;',
+  '        ;'),
+
+ ('rack screen: a stale page reads the status before greying its chips',
+  'ltcplay/web/remote.html',
+  '  if(stale){\n'
+  '    // The top bar\'s chips first',
+  '  if(stale && false){\n'
+  '    // The top bar\'s chips first'),
+
  ('deck lamp: a page that lost the engine keeps its chips green',
   'ltcplay/web/remote.html',
   '    document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });',
