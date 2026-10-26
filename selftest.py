@@ -43132,6 +43132,16 @@ t(machineWait(m, fl({rearm_ms:1500}), {selected:[]}, 0) === "", "not selected: n
 t(machineWait(m, fl({armed:"armed", rearm_ms:1500}), purge, 0) === "", "armed: nothing");
 t(machineWait(m, Object.assign(fl({rearm_ms:1500}), {stale:true}), purge, 0) === "", "flamesafe stale: nothing");
 t(REARM_REFUSED === "Refused: the re-arm wait was not over. Hold again." && REARM_READY === "ready: hold to arm", "the words");
+// Review of #115, P1-a: an Abort standing never counts down, never "ready".
+t(armWaitWords(2000, true, true, true) === "Press Reset first" && armWaitWords(0, true, true, true) === "Press Reset first", "Abort standing: Press Reset first, no countdown, never ready");
+t(armWaitWords(1500, false, true, true) === "Re-arm in 1.5 s", "a wait: counted down");
+t(armWaitWords(0, false, true, true) === REARM_READY && armWaitWords(0, false, true, false) === null && armWaitWords(0, false, false, true) === null, "ready only after a wait and when arming is possible");
+t(machineWait(m, fl({rearm_ms:1500}), purge, 0, true) === "Press Reset first", "a tile while an Abort stands: Press Reset first");
+// P1-b: a latched refusal never says "wait".
+t(holdRefusalWords("latched", 1500, false) === REFUSED_LATCHED && !/wait/.test(REFUSED_LATCHED), "latched: Press Reset, never the wait: " + REFUSED_LATCHED);
+t(holdRefusalWords("refractory", 0, true) === REFUSED_LATCHED, "an Abort standing wins over the wait");
+t(holdRefusalWords("refractory", 0, false) === REARM_REFUSED && holdRefusalWords("", 900, false) === REARM_REFUSED, "the wait: its code, or no code while a wait runs");
+t(holdRefusalWords("operator", 900, false) === null && holdRefusalWords("", 0, false) === null, "anything else: the engine's own sentence");
 console.log(JSON.stringify(out));
 """
         r = _sp.run([node, "-e", js], capture_output=True, text=True,
@@ -43145,8 +43155,11 @@ console.log(JSON.stringify(out));
               f"{r.stderr[-400:]!r}")
     else:
         check(not IN_CI, "node is missing on this CI runner")
-    for need in ('if(e.code === "refractory" || rearmLeftMs(',
-                 'armSay(REARM_REFUSED, 2);',
+    for f in ("function armWaitWords", "function holdRefusalWords"):
+        check(f in logic, f"{f} is pure page logic")
+    for need in ('const said = holdRefusalWords(e.code, rearmLeftMs(',
+                 'armSay(said, 2);',
+                 'const w = armWaitWords(left, aborted, ',
                  'if(!(HOLD && HOLD.group === i)) ab.disabled = true;'):
         check(need in page, f"the page has {need!r}")
     chrome = _find_chromium()
@@ -43186,6 +43199,27 @@ console.log(JSON.stringify(out));
         check(any(x.startswith("Re-arm in") for x in seen) and
               seen[-1] == "ready: hold to arm",
               f"the countdown, as drawn: {seen}")
+    # Review of #115, P1-a: an Abort from the deck's key starts every
+    # group's 2 s window and stands until Reset: no countdown, never ready.
+    polls2 = [0]
+
+    def aborted():
+        polls2[0] += 1
+        st = status()
+        st["schedule"] = dict(st["schedule"], aborted=True, state="ABORTED")
+        st["flames"] = dict(st["flames"], groups=[
+            dict(g, rearm_ms=2000 if polls2[0] <= 3 else 0)
+            for g in st["flames"]["groups"]])
+        return st
+    got = _rack_screen_in_chromium(chrome, page, aborted, ((1366, 768),),
+                                   measure_js=_LAMP_WORDS_JS)
+    res = got[(1366, 768)]
+    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
+        seen = sorted({l["small"] for snap in res for l in snap["lamps"]})
+        check(seen == ["Press Reset first"],
+              f"an Abort standing through a re-arm wait and after it: every "
+              f"lamp says Press Reset first, never a countdown or ready: "
+              f"{seen}")
     # The Startup page: m1 and m2 (front row) selected, the deck refused
     # their purge arm; m4 (cat-walk) selected, its wait running.
     st = _rack_status_pico(many=False)
@@ -43392,7 +43426,8 @@ t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:7
 t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:752}, 30) === 30, "the supervisor's pad_bottom is the floor");
 t(bottomPad({availTop:0, availHeight:600, height:600}, {screenY:0, outerHeight:1080}, 0) === 0, "a screen smaller than the window with no taskbar band (headless): 0");
 t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:1400}, 0) === 0, "far past the taskbar's band: not a taskbar, 0");
-t(bottomPad({availTop:0, availHeight:100, height:400}, {screenY:0, outerHeight:400}, 0) === 240, "never more than 240");
+t(bottomPad({availTop:0, availHeight:100, height:400}, {screenY:0, outerHeight:400}, 0) === 160, "never more than 160 (review of #115, P2-2)");
+t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:752}, 1000) === 160 && PAD_MAX === 160, "nor the supervisor's pad_bottom");
 t(bottomPad({}, {}, 0) === 0 && bottomPad(null, null, 12) === 12, "nothing known: the floor");
 console.log(JSON.stringify(out));
 """

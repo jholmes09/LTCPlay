@@ -1052,13 +1052,35 @@ function rearmText(ms){ return "Re-arm in " + (Math.ceil(ms / 100) / 10).toFixed
 const REARM_READY = "ready: hold to arm";
 const REARM_REFUSED = "Refused: the re-arm wait was not over. Hold again.";
 const REARM_REFUSED_PURGE = "Refused: the re-arm wait was not over. Press Clear, then click it again.";
+// An Abort standing (review of #115, P1): no countdown and never "ready"
+// (the deck refuses every hold as latched until Reset).
+const REARM_ABORTED = "Press Reset first";
+const REFUSED_LATCHED = "Refused: an Abort is standing. Press Reset first, then hold again.";
+// The arm button's small line about the wait, or null to leave armHint's:
+// `left` ms of wait, `aborted` the scheduler's latch (schedule.aborted),
+// `waited` a wait seen in the last 15 s, `ok` armState's verdict.
+function armWaitWords(left, aborted, waited, ok){
+  if(aborted) return REARM_ABORTED;
+  if(left > 0) return rearmText(left);
+  if(ok && waited) return REARM_READY;
+  return null;
+}
+// What a hold that ended in an error says, or null for the engine's own
+// sentence: an Abort first (code latched, or the latch standing), then the
+// re-arm wait (code refractory, or no code while a wait still runs).
+function holdRefusalWords(code, waitLeftMs, aborted){
+  if(code === "latched" || aborted) return REFUSED_LATCHED;
+  if(code === "refractory" || (!code && waitLeftMs > 0)) return REARM_REFUSED;
+  return null;
+}
 // What a selected machine's tile says under its word while it is not
 // armed: the deck refused its purge arm, the wait still running, or
 // nothing.
-function machineWait(m, flames, purge, pageAgeMs){
+function machineWait(m, flames, purge, pageAgeMs, aborted){
   const sel = !!(purge && (purge.selected || []).includes(m.id));
   const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
   if(!sel || !g || g.armed === "armed" || (flames && flames.stale)) return "";
+  if(aborted) return REARM_ABORTED;
   if(g.purge_refused === "refractory") return REARM_REFUSED_PURGE;
   const left = rearmLeftMs(g, pageAgeMs, flames && flames.age_ms);
   return left > 0 ? rearmText(left) : "";
@@ -1189,9 +1211,12 @@ function noFileLine(su, st){
 // band below its work area (the taskbar's, screen.height less the work
 // area) counts, give or take a window border: a screen that reports less
 // than the window (a headless browser, a stale screen) adds nothing. An
-// overlap under 16 px is a maximized window's own border. Never over 240.
+// overlap under 16 px is a maximized window's own border. Never over
+// PAD_MAX, the supervisor's floor included (review of #115, P2-2: the
+// sticky Abort bar must never eat the screen).
+const PAD_MAX = 160;
 function bottomPad(scr, win, minPad){
-  const floor = Math.max(0, Math.min(400, Number(minPad) || 0));
+  const floor = Math.max(0, Math.min(PAD_MAX, Number(minPad) || 0));
   const ah = Number(scr && scr.availHeight) || 0, oh = Number(win && win.outerHeight) || 0;
   const sh = Number(scr && scr.height) || 0;
   if(!ah || !oh || !sh) return floor;
@@ -1199,7 +1224,7 @@ function bottomPad(scr, win, minPad){
   const band = sh - workBottom;            // the taskbar's band, in CSS px
   const over = (Number(win.screenY) || 0) + oh - workBottom;
   if(over < 16 || band <= 0 || over > band + 32) return floor;
-  return Math.max(floor, Math.min(240, Math.round(over)));
+  return Math.max(floor, Math.min(PAD_MAX, Math.round(over)));
 }
 // LOGIC END
 </script>
@@ -1716,19 +1741,21 @@ function renderLamps(fl){
     // it is over, then says it is ready (Jeff, 2026-10-26). A hold already
     // under way is left alone. A hold the wait refused says so.
     const left = rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms);
+    const aborted = !!(ST && ST.schedule && ST.schedule.aborted);
     const small = ab.querySelector("small");
     if(on && c !== "armed" && c !== "unknown"){
-      if(left > 0){
-        small.textContent = rearmText(left);
+      if(left > 0) REARM_SEEN[i] = Date.now();
+      const w = armWaitWords(left, aborted, !!REARM_SEEN[i] && Date.now() - REARM_SEEN[i] < 15000, as.ok);
+      if(w !== null) small.textContent = w;
+      if(left > 0 && !aborted){
         if(!(HOLD && HOLD.group === i)) ab.disabled = true;
         ab.title = rearmText(left) + ": the Stream Deck and flamesafe wait this long after a disarm before they take a new arm.";
-        REARM_SEEN[i] = Date.now();
-      }else if(as.ok && REARM_SEEN[i] && Date.now() - REARM_SEEN[i] < 15000) small.textContent = REARM_READY;
+      }
     }
     const ref = REARM_REFUSED_AT[i];
-    if(ref && Date.now() - ref < 10000 && c !== "armed"){
-      el.querySelector(".why").textContent = REARM_REFUSED;
-      el.querySelector(".why").title = REARM_REFUSED;
+    if(ref && Date.now() - ref.at < 10000 && c !== "armed"){
+      el.querySelector(".why").textContent = ref.text;
+      el.querySelector(".why").title = ref.text;
     }
   });
   const on = !!(ST && ST.arming && ST.arming.enabled);
@@ -1794,10 +1821,12 @@ async function armBeat(h){
     // said plainly (Jeff, 2026-10-26).
     const fl = (ST && ST.flames) || {};
     const g = (fl.groups || [])[h.group];
-    if(e.code === "refractory" || rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms) > 0){
+    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms),
+      !!(ST && ST.schedule && ST.schedule.aborted));
+    if(said){
       armStop("");
-      REARM_REFUSED_AT[h.group] = Date.now();
-      armSay(REARM_REFUSED, 2);
+      REARM_REFUSED_AT[h.group] = {at:Date.now(), text:said};
+      armSay(said, 2);
       return;
     }
     armStop(e.message);
@@ -2457,7 +2486,7 @@ function renderMorning(){
     el.querySelector(".w").textContent = look.word;
     // The re-arm wait or a refused purge arm, said on the tile (Jeff,
     // 2026-10-26: it sat on "Arming..." with no word why).
-    const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK);
+    const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK, !!(ST && ST.schedule && ST.schedule.aborted));
     el.querySelector(".wait").textContent = wait;
     if(wait === REARM_REFUSED_PURGE) refusedNow = true;
     el.querySelector(".lk").textContent = "L";
