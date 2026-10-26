@@ -41911,7 +41911,7 @@ t(Math.abs(countdownRead(ca, 400).s - 9.6) < 1e-9, "a late reply does not move t
 t(clockText(3725) === "1:02:05" && clockText(65.9) === "1:05" && clockText(-3) === "0:00", "clock text");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip() or "null")
     except ValueError:
@@ -41997,7 +41997,7 @@ t(laserArmLine({lasers:[{id:"l1", name:"Laser 1", armed:true}], output_permitted
 t(laserArmLine({lasers:[]}) === "No lasers are configured.", "no lasers");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip() or "null")
     except ValueError:
@@ -42235,7 +42235,7 @@ t(p.some(i => /Lasers: blanked/.test(i.text)), "a conductor with an address: las
 t(p.some(i => /No show is live/.test(i.text)), "no show: says so");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip() or "null")
     except ValueError:
@@ -42255,6 +42255,25 @@ console.log(JSON.stringify(out));
 # page in headless Chromium (or Chrome or Edge) at the show PC's sizes with
 # three or more banners, and measures every button that arms, disarms or
 # stops.
+
+def _node_js(node, js, **kw):
+    """node running `js`, as subprocess.run([node, "-e", js], **kw) did,
+    but from a temporary file: the page's logic block alone is over 30,000
+    characters, and Windows refuses a command line over 32,767 (WinError
+    206). The same output and return code on every OS."""
+    import subprocess as _subp
+    import tempfile as _tf
+    fd, path = _tf.mkstemp(suffix=".js", prefix="ltc-node-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(js)
+        return _subp.run([node, path], **kw)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
 
 def _find_chromium():
     """A Chromium, Chrome or Edge to draw the page with, or None.
@@ -42806,7 +42825,7 @@ t(JSON.stringify(alertFold(two, null).keys) === JSON.stringify(["a7", "a8"]), "t
 t(alertFold([{key:"a9", fault:true, label:"Flames", text:"new"}], new Set()).fresh === true, "fresh is said even with one banner");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -42956,7 +42975,7 @@ t(/^No show file loads yet \(night\.json: no cues\)\./.test(bad), "a show file t
 t(!/[\u2013\u2014]/.test(nominal + off + stale + bad), "no dashes");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         lines = r.stdout.strip().splitlines()
         try:
@@ -43223,7 +43242,7 @@ t(holdRefusalWords("refractory", 0, false) === REARM_REFUSED && holdRefusalWords
 t(holdRefusalWords("operator", 900, false) === null && holdRefusalWords("", 0, false) === null, "anything else: the engine's own sentence");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -43510,7 +43529,7 @@ t(bottomPad({availTop:0, availHeight:752, height:800}, {screenY:0, outerHeight:7
 t(bottomPad({}, {}, 0) === 0 && bottomPad(null, null, 12) === 12, "nothing known: the floor");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -43916,7 +43935,7 @@ def _page_logic_in_node(page, body):
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     js = logic + "\nconst out = [];\nconst t = (c, m) => { if(!c) out.push(m); };\n" + \
         body + "\nconsole.log(JSON.stringify(out));\n"
-    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
@@ -49030,7 +49049,7 @@ t(safetyLine({name:"front row"}, "armed") === "", "an older flamesafe: no line")
 t(safetyLine(Object.assign({safeties_up:[true,true,true], safeties_locked:[false,false,false]}, W), "unknown") === "", "not known: no line");
 console.log(JSON.stringify(out));
 """
-        r = subprocess.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                            timeout=30)
         try:
             bad = _json.loads(r.stdout.strip().splitlines()[-1])
@@ -52214,7 +52233,7 @@ t(renders > 0, "the page was redrawn");
         lc = page[page.find("async function lockClick("):a]
         check(lc.startswith("async function lockClick("),
               "the page has lockClick before the ARRANGE block")
-        r = _sp.run([node, "-e", prelude + lc + block + body], capture_output=True,
+        r = _node_js(node, prelude + lc + block + body, capture_output=True,
                     text=True, timeout=60)
         try:
             bad = _j.loads(r.stdout.strip() or "null")
@@ -58588,7 +58607,7 @@ let MO = {laser_arm: {lasers: [{id:"l1", name:"Laser 1", armed:true},
   console.log(JSON.stringify({presses, confirms}));
 })();
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             got = _json.loads(r.stdout.strip())
@@ -59079,7 +59098,7 @@ console.log(JSON.stringify(out));
 process.exit(0);
 })().catch(e => { console.log(JSON.stringify(["threw: " + e])); process.exit(0); });
 """
-    r = _sp.run([node, "-e", prelude + block + body], capture_output=True,
+    r = _node_js(node, prelude + block + body, capture_output=True,
                 text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip().splitlines()[-1] or "null")
@@ -60503,7 +60522,7 @@ t(els["se-tz"].innerHTML.indexOf('value="Etc/GMT+7"') >= 0, "a zone outside the 
 t(listTitle({id:"morning", title:"Morning"}) === "Startup" && listTitle({id:"shutdown", title:"Shutdown"}) === "Shutdown", "the morning list reads Startup");
 console.log(JSON.stringify(out));
 """
-    r = _sp.run([node, "-e", prelude + js + body], capture_output=True,
+    r = _node_js(node, prelude + js + body, capture_output=True,
                 text=True, timeout=60)
     try:
         bad = json.loads(r.stdout.strip().splitlines()[-1])
@@ -66373,7 +66392,7 @@ t(b.lines[0].cls === "net" && /^No internet/.test(b.lines[0].text), "no internet
 t(wxBlock(Object.assign({}, V, {lines:[{level:"weird", text:"x"}]}), 1).lines.some(l => l.cls === "none" && l.text === "x"), "an unknown level is grey");
 console.log(JSON.stringify(out));
 """
-        r = _sp.run([node, "-e", js], capture_output=True, text=True,
+        r = _node_js(node, js, capture_output=True, text=True,
                     timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
