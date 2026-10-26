@@ -104,15 +104,18 @@ Abort and Reset are on the Rack screen (and the hardware e-stop is where it
 always was). The four flame keys arm and disarm Floor G (front row),
 Cat-Walk G (cat-walk), Blue Flames (wave flamer) and Fireball (fireball):
 hold a key to arm its group, tap it to disarm. With no ltcplay_deck.json
-the keys follow the order of the groups in flamesafe's own config, and the
-deck writes its key map to the journal every time it starts.
+those four go on keys 1 to 4 by their names, wherever flamesafe's config
+lists them, and any other group follows with no key. The deck writes its
+key map to the journal every time it starts.
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
 Run has been pressed and playback is going it reads STOP RUN: hold it for
-half a second to Stop. Stop first turns every flame group off, at once
-(it does not latch the rig the way Abort does), then does exactly what
-the Rack screen's Stop does: playback stops, the outputs go dark, and no
-show starts until Run is pressed again. A tap does nothing; let go before
+half a second to Stop. Stop first turns every flame group off, at once,
+then does exactly what the Rack screen's Stop does: live flame programming
+ends, every flame group is sent off again through the show's flame link
+(the flame half of an Abort, so each group needs a fresh arm), playback
+stops, the outputs go dark, and no show starts until Run is pressed again.
+Unlike Abort it does not latch the rig: nothing needs a Reset. A tap does nothing; let go before
 the ring fills and nothing is sent. During a scheduled show the key keeps
 saying NOW PLAYING, PAUSED or AUDIO LOST and Stop does nothing (use Hold or
 Abort on the Rack screen). After an Abort the deck's border goes red and
@@ -121,7 +124,8 @@ the Rack screen.
 
 **A flame group with no key.** A fifth flame group has no key: arm it by
 holding its Hold to arm button on the Rack screen, disarm it there, with
-Disarm all flame groups, a Stop on the deck or any Abort. A purge click on
+Disarm all flame groups, a Stop on the deck or any Abort. Its name on the
+Rack screen's flame card says "(no Stream Deck key)". A purge click on
 the Morning page never arms it, and a Fireball is never purged at all.
 
 **LASERS on the show screen (Fire & Ice).** Under the flame lamps and

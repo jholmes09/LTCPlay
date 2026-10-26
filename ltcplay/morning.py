@@ -185,20 +185,19 @@ NO_PURGE_MAP = ("no pan, tilt and fire map yet (set it in "
 # No config can turn this on: a fireball purge needs its own design and
 # review first (MORNING.md). purge.fireball in the config is not used.
 NO_FIREBALL_PURGE = "a fireball has no purge sequence yet"
-# A flamesafe group with several fire slots and one safety that nothing
-# says is a row of G-Flames (review of PR #120, P2-1: "FB", "Boom" or
-# "Poofer" with a 4 slot fire list could be a fireball by another name).
-# With no machines list its machines are built, so locking and the lamps
-# work, but none is purged or armed for a purge until the group is
-# declared: fireball_groups (never purged) or gflame_groups (a row of
-# G-Flames, purged one by one). A name that says row, cat, walk, scaffold,
-# ground or g-flame is a row (GFLAME_ROW_WORDS: Jeff's front row and
-# cat-walk), as a name that says fireball or ball is a fireball.
-NO_UNKNOWN_PURGE = ("unknown multi-channel group, declare it in "
-                    "fireball_groups (or gflame_groups for a row of "
-                    "G-Flames) in ltcplay_morning.json")
-GFLAME_ROW_WORDS = ("row", "cat", "walk", "scaffold", "ground", "gflame",
-                    "g-flame", "g flame")
+# A flamesafe group nothing says is G-Flames (review of PR #120, P2-1, and
+# of #126, P2-3: "FB", "Boom", "Poofer", "Crowd Poofers" or "Arrow" could
+# be a fireball by another name). With no machines list its machines are
+# built, so locking and the lamps work, but none is purged or armed for a
+# purge until the group is declared: fireball_groups (never purged) or
+# gflame_groups (G-Flames, purged one by one). Only Jeff's own rows are
+# G-Flames by name, and only by their whole name (GFLAME_ROW_NAMES, any
+# case); a name that says fireball or ball is a fireball, one that says
+# wave a waver (never purged without its pan and tilt map).
+NO_UNKNOWN_PURGE = ("unknown flame group, declare it in fireball_groups "
+                    "(or gflame_groups for G-Flames) in "
+                    "ltcplay_morning.json")
+GFLAME_ROW_NAMES = ("front row", "cat-walk", "cat walk", "catwalk")
 # The refusals that keep a machine out of the purge selection altogether,
 # so its group is never armed for a purge.
 NEVER_SELECTED = (NO_FIREBALL_PURGE, NO_UNKNOWN_PURGE)
@@ -525,9 +524,9 @@ def parse_banks(doc, where, machines):
 
 
 def parse_gflame_groups(doc, where, groups, fireball_groups):
-    """The "gflame_groups" list: flamesafe group names that are rows of
-    G-Flames, one G-Flame per fire slot (review of PR #120, P2-1), for a
-    name GFLAME_ROW_WORDS does not already say. Never a fireball group."""
+    """The "gflame_groups" list: flamesafe group names that are G-Flames,
+    one G-Flame per fire slot (review of PR #120, P2-1), for any group but
+    Jeff's own rows (GFLAME_ROW_NAMES). Never a fireball group."""
     out = set()
     if doc is None:
         return frozenset()
@@ -550,21 +549,22 @@ def parse_gflame_groups(doc, where, groups, fireball_groups):
 
 
 def unknown_multi_groups(groups, fireball_groups, gflame_groups):
-    """The flamesafe groups whose default machines are never purged:
-    several fire slots, one safety slot (or none), not a waver, not
-    declared (fireball_groups, gflame_groups) and not a row by name
-    (GFLAME_ROW_WORDS). A multi-safety group is fixtures paired by slot
-    layout, so it is not one of these."""
+    """The flamesafe groups whose default machines are never purged: every
+    group that would be built as G-Flames (not a waver or a fireball by
+    name, not a multi-safety group, whose fixtures are paired by slot
+    layout) and is neither declared in gflame_groups nor one of Jeff's
+    rows by its whole name (GFLAME_ROW_NAMES, any case). One fire slot or
+    many: a name is no proof of what is on the end of it."""
     out = set()
     for g in groups or []:
         name = g["name"]
-        if len(g.get("fire") or []) < 2 or len(g.get("safeties") or []) > 1:
+        if len(g.get("safeties") or []) > 1:
             continue
         if name in fireball_groups or name in gflame_groups:
             continue
         if _kind_for(name) != "gflame":
             continue
-        if any(w in name.lower() for w in GFLAME_ROW_WORDS):
+        if name.strip().lower() in GFLAME_ROW_NAMES:
             continue
         out.add(name)
     return frozenset(out)
@@ -694,9 +694,8 @@ class MorningConfig:
         """What this config says that a person should read once, in the
         journal: each unknown multi-channel group (review of PR #120,
         P2-1)."""
-        return [f"Morning page: the flame group {g!r} has several fire "
-                f"slots and one safety, and nothing says what it is, so its "
-                f"machines are never purged: {NO_UNKNOWN_PURGE}."
+        return [f"Morning page: nothing says what the flame group {g!r} "
+                f"is, so its machines are never purged: {NO_UNKNOWN_PURGE}."
                 for g in sorted(self.unknown_groups)]
 
     @classmethod
@@ -1947,10 +1946,16 @@ class Morning:
                           for m in ms):
                 fully.append(i)
         pv = self.purge.view()
+        # The groups this page never purges (a fireball group, an unknown
+        # one): the deck refuses a purge arm for them too, a second barrier
+        # behind groups_wanted (review of #126, P2-4).
+        never = [i for i, n in enumerate(names)
+                 if n in self.cfg.fireball_groups or
+                 n in self.cfg.unknown_groups]
         return {"open": open_,
                 "purge": {"wanted_groups": pv["groups_wanted"] if open_
                           else [], "selected": len(pv["selected"]),
-                          "firing": pv["firing"]},
+                          "firing": pv["firing"], "never_groups": never},
                 "locks": {"groups_fully_locked": fully,
                           "machines": len(self.lockout.machines),
                           "lasers": len(self.lockout.lasers)}}

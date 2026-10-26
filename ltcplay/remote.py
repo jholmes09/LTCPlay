@@ -211,6 +211,8 @@ LOCAL_ONLY = frozenset(("network", "screen-arming"))
 # (deck-input's `refused`, streamdeck.ScreenKeys): its code, and what the
 # page says. The deck's own rules decide; the engine only passes it on.
 DECK_REFUSALS = {
+    "neverpurged": ("The Stream Deck refused it: {g} is never purged, so a "
+                    "purge click never arms it."),
     "screenonly": ("The Stream Deck refused it: {g} has no key on the deck, "
                    "so a purge click never arms it. Hold its Hold to arm "
                    "button instead."),
@@ -972,6 +974,22 @@ def deck_usb_ms(query):
     if ms < 0:
         return None
     return min(ms, 600000)
+
+
+def deck_nokey(query):
+    """The flamesafe group indices a deck-input query says have no key on
+    the Stream Deck (`nokey=4,5`; review of #126, P1), for the Rack
+    screen's flame card. Display only. Never raises."""
+    import urllib.parse
+    out = set()
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("nokey") or []
+        for part in ",".join(vals).split(",")[:DECK_REFUSED_MAX]:
+            if part.isdigit():
+                out.add(int(part))
+    except (ValueError, TypeError):
+        return set()
+    return out
 
 
 def deck_layout_default(query):
@@ -2298,6 +2316,7 @@ class Remote:
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)
         self._deck_layout_default = deck_layout_default(query)
+        self._deck_nokey = deck_nokey(query)
         self._deck_hw = deck_hw(query)
         self._deck_arm_ms = deck_arm_ms(query)
         self._deck_rearm = deck_rearm(query) + (now,)
@@ -3013,7 +3032,8 @@ class Remote:
                     "The laser blank did NOT go out at the press.")
 
     def abort(self, who, screen, flames, lasers=(None, ""), pressed=None):
-        """The screen's and the deck's Abort. `flames` is what the disarm
+        """A screen's Abort (the deck has no Abort key since 2026-10-26).
+        `flames` is what the disarm
         sent before anything else did (_disarm_now). Then the scheduler's
         Abort, which stops a live show through the conductor. The answer
         says both, truthfully: a disarm sent with no show to stop is not
@@ -4328,10 +4348,14 @@ class Remote:
         left, pref, at = self._deck_rearm
         age = None if at is None else self.clock() - at
         fresh = age is not None and 0 <= age <= DECK_REARM_FRESH_S
+        nokey = getattr(self, "_deck_nokey", set())
         for i, g in enumerate(fl.get("groups") or []):
             ms = left.get(i, 0) - int(age * 1000) if fresh else 0
             g["rearm_ms"] = max(0, ms)
             g["purge_refused"] = pref.get(i, "") if fresh else ""
+            # Whether the Stream Deck has a key for it (review of #126,
+            # P1): False only on the deck's fresh word that it has none.
+            g["deck_key"] = not (fresh and i in nokey)
 
     def status(self, ctx):
         out = {"served_at": int(self.wall() * 1000), "fresh_s": FRESH_S,

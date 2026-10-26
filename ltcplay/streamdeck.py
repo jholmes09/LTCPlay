@@ -29,9 +29,12 @@ REAL, unconditionally, the moment this runs against the real hardware:
     says what is WANTED, exactly like the test driver.
   - STOP (a STOP_HOLD_S hold, 0.5 s, the old Abort key's) while a run is
     going sends every group's wanted state to false on that SAME link, at
-    once, before anything else (_disarm_all_groups, the path the deck's
-    Abort key used), then posts the Rack screen's Stop (POST /api/stop).
-    It never sets the Abort latch.
+    once, before anything else (_disarm_all_groups: the arm link half the
+    deck's Abort key had), then posts the Rack screen's Stop (POST
+    /api/stop), which in the engine ends live flame programming, sends
+    the flame link's disarm_all (cues zeroed, a zero frame, the keyed
+    disarm and its repeats: the flame half of a screen's Abort) and stops
+    playback. Nothing sets the Abort latch.
   - Disarm (pressing an armed or held group key) is INSTANT: this module
     never adds a hold-down or confirm step to a disarm press (Jeff,
     2026-10-01), and never waits on anything else either -- not the
@@ -56,9 +59,10 @@ and STOP RUN while Run has been pressed and playback is going and the
 scheduler is known to have no show live. Stop is a HOLD of STOP_HOLD_S,
 never a tap (the Rack screen asks for a confirm); letting go early sends
 nothing, and the key ring fills while it is held. It disarms every flame
-group (above), then posts /api/stop (playback stops, the outputs go
-dark; the lasers get exactly what the Rack screen's Stop gives them, the
-same route), never behind the operator gate. It is reachable while an
+group on the arm link (above), then posts /api/stop (live flame
+programming ends, the flame link's disarm_all goes out, playback stops,
+the outputs go dark; the lasers get exactly what the Rack screen's Stop
+gives them, the same route), never behind the operator gate. It is reachable while an
 Abort is latched, as on the Rack screen, and never touches the latch.
 During a scheduled show the key keeps NOW PLAYING, PAUSED or AUDIO LOST
 and a press sends nothing. See Controller.start_key_mode.
@@ -328,24 +332,40 @@ SPARE_KEY = 5
 # Which flame group sits on which key, and what the key calls it (Jeff,
 # 2026-10-26): ltcplay_deck.json in the settings folder, optional.
 #   {"groups": [{"group": "front row", "label": "Floor G"}, ...]}
-# The list's order is the key order (keys 3, 4, 5 left to right), never
-# flamesafe's file order; `label` is what the key says (the group's own
-# name when left out and not one of DECK_LABELS). A group past the three
-# keys is screen-only (module docstring 5). Nothing here changes what is
-# sent: the arm frame keeps flamesafe's names in flamesafe's order.
+# With no file the keys are Jeff's, by NAME (review of #126, P1): front
+# row, cat-walk, wave flamer and fireball on keys 1 to 4 in that order,
+# wherever flamesafe's file lists them, then every other group in the
+# file's order. The file lists only the groups it wants to place, in key
+# order (keys 1 to 4 left to right, top row first); every group it does
+# not list follows in the default order. `label` is what the key says (the
+# group's own name when left out and not one of DECK_LABELS). A group past
+# the fourth key is screen-only (module docstring 5). Nothing here changes
+# what is sent: the arm frame keeps flamesafe's names in flamesafe's order.
 DECK_CONFIG_FILE = "ltcplay_deck.json"
+DECK_ORDER = ("front row", "cat-walk", "wave flamer", "fireball")
 DECK_LABELS = {"front row": "Floor G", "cat-walk": "Cat-Walk G",
                "wave flamer": "Blue Flames", "fireball": "Fireball"}
 LABEL_MAX = 12          # the key's name bar fits this many letters
 
 
+def _known(name):
+    """A flamesafe group name as DECK_ORDER and DECK_LABELS spell it:
+    any case, spaces around it ignored."""
+    return str(name).strip().lower()
+
+
 def _default_layout(names):
-    """(order, labels) with no ltcplay_deck.json: flamesafe's own order,
-    so an install's keys keep their order (review of PR #120, P2-5);
-    DECK_LABELS' words for a name that matches one, whatever its case or
-    spaces, else the group's own name."""
-    return list(range(len(names))), [
-        DECK_LABELS.get(str(n).strip().lower(), n) for n in names]
+    """(order, labels) with no ltcplay_deck.json: Jeff's four groups by
+    NAME first, in DECK_ORDER (front row, cat-walk, wave flamer, fireball:
+    Floor G, Cat-Walk G, Blue Flames, Fireball on keys 1 to 4, wherever
+    flamesafe's file lists them; review of #126, P1), then every other
+    group in the file's own order (an install with none of those names
+    keeps its order). DECK_LABELS' words for a name that matches one,
+    whatever its case or spaces, else the group's own name."""
+    known = [_known(n) for n in names]
+    order = [known.index(k) for k in DECK_ORDER if k in known]
+    order += [i for i in range(len(names)) if i not in order]
+    return order, [DECK_LABELS.get(_known(n), n) for n in names]
 
 
 def _keys_text(order, labels, names):
@@ -365,15 +385,18 @@ def deck_layout(names, doc=None, where=DECK_CONFIG_FILE):
     journal. `ok`: False when `doc` (ltcplay_deck.json, parsed; None for no
     file) had anything wrong with it: then the WHOLE default layout is used,
     never a partly applied file, so no key moves because of a typo (review
-    of PR #120, P2-1), and the notes say why. A label that is another
-    group's name or label is wrong (P2-2): a key must never read like
-    another group's. Never raises: the deck still starts (Jeff,
-    2026-10-26)."""
+    of PR #120, P2-1), and the notes say why. What is wrong: a listed group
+    flamesafe does not have, an entry with no group name, a group listed
+    twice, a label that is not words of up to LABEL_MAX letters, and a
+    label that is another group's name or label (P2-2: a key must never
+    read like another group's). A group the file does not list is never
+    wrong: it follows the listed ones in the default order (review of
+    #126, P1). Never raises: the deck still starts (Jeff, 2026-10-26)."""
     names = list(names)
     d_order, d_labels = _default_layout(names)
     if doc is None:
-        # No file: flamesafe's own order, nothing moved, nothing to say
-        # beyond the key map deck_layout_at_start journals anyway.
+        # No file: Jeff's groups by name, then the rest in file order;
+        # deck_layout_at_start journals the key map.
         return d_order, d_labels, [], True
     problems = []
     lst = doc.get("groups") if isinstance(doc, dict) else None
@@ -386,12 +409,13 @@ def deck_layout(names, doc=None, where=DECK_CONFIG_FILE):
         if not isinstance(g, str) or not g.strip():
             problems.append(f"{where} has an entry with no \"group\" name.")
             continue
-        if g not in names:
+        known = [_known(n) for n in names]
+        if _known(g) not in known:
             problems.append(f"{where} lists {g!r}, which is not a flame "
                             f"group in flamesafe's config "
                             f"({', '.join(names)}).")
             continue
-        i = names.index(g)
+        i = known.index(_known(g))
         if i in order:
             problems.append(f"{where} lists {g!r} twice.")
             continue
@@ -405,10 +429,8 @@ def deck_layout(names, doc=None, where=DECK_CONFIG_FILE):
                             f"up to {LABEL_MAX} letters.")
             continue
         labels[i] = lab.strip()
-    missing = [n for i, n in enumerate(names) if i not in order]
-    if lst and missing:
-        problems.append(f"{where} does not list {', '.join(map(repr, missing))}"
-                        f", a flame group in flamesafe's config.")
+    # Every group the file does not list follows, in the default order.
+    order += [i for i in d_order if i not in order]
     for i in order:
         mine = labels[i].strip().lower()
         for j, other in enumerate(names):
@@ -1109,31 +1131,29 @@ class EngineResult:
 
 
 class EngineConductor:
-    """The engine's show conductor, for Controller, reached over this
-    machine's loopback (PR #43 review, finding 8: `ltc deck` passed
-    conductor=None, so the deck's Abort only disarmed flames while lasers,
-    video and music carried on, and Hold, Resume and Reset did nothing).
+    """The engine (`ltc serve`), for Controller, reached over this
+    machine's loopback (PR #43 review, finding 8).
 
-    Duck-typed like conductor.Conductor as Controller uses it: hold(),
-    resume(), abort() and reset() with who and screen, and snapshot().
+    What the deck asks of it since its Hold and Abort keys went
+    (2026-10-26): stop_run() (POST /api/stop, the Rack screen's Stop, which
+    also sends the flame link's disarm_all and ends live flame programming,
+    review of #126, P2-1), acknowledge() and alert(); snapshot() for the
+    latch, fault and cues_fault for the Start key's face. hold(), resume(),
+    abort() and reset() are still here, duck-typed like
+    conductor.Conductor, for any caller; the deck no longer calls them.
 
-    Each press is POSTed to `ltc serve`'s own loopback remote routes
-    (/api/remote/hold, resume, abort, reset): the same scheduler and
-    conductor path every other screen's press takes, journaled by the
-    engine with the operator and "Stream Deck". The POST runs on a
-    BACKGROUND thread, never the main loop (the same rule as LocalSchedule
-    and DeckJournal: a slow or hung web server must not delay a key read
-    or an arm frame), so a press returns at once saying it was sent; the
-    engine's answer is journaled when it comes, a refusal or no answer as
-    a fault. The deck's own Abort has already sent every group's wanted
-    state false on the arm link before this is asked anything.
+    Each press is POSTed on a BACKGROUND thread, never the main loop (the
+    same rule as LocalSchedule and DeckJournal: a slow or hung web server
+    must not delay a key read or an arm frame), so a press returns at once
+    saying it was sent; the engine's answer is journaled when it comes, a
+    refusal or no answer as a fault. The deck's Stop has already sent every
+    group's wanted state false on the arm link before this is asked.
 
     snapshot() never touches the network and never raises: a background
-    poll caches GET /api/conductor. "latched" is the newer of this deck's
-    own last Abort or Reset and the engine's last answer, so the deck
-    reads latched from the moment its Abort is pressed, and falls back to
-    its own presses alone while the engine cannot be reached (an unknown
-    engine never turns the Abort key into Reset by itself)."""
+    poll caches GET /api/conductor. "latched" is the newer of an abort() or
+    reset() asked through here and the engine's last answer (an Abort or
+    Reset from a screen reaches the deck as the engine's answer), and
+    stays as last answered while the engine cannot be reached."""
 
     def __init__(self, base_url, journal=None, poll_hz=POLL_HZ,
                  clock=time.monotonic, wall=time.time, poster=None,
@@ -1467,6 +1487,9 @@ class ScreenKeys:
         # () -> True when ltcplay_deck.json could not be used and the keys
         # are in the default layout: said as layout=default (Deck chip).
         self.report_layout_default = None
+        # () -> the group indices with no key (screen-only), said as
+        # nokey=4,5 for the Rack screen's flame card (review of #126, P1).
+        self.report_nokey = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
         # Screen holds this deck would not take: hold id -> (code, clock),
@@ -1587,6 +1610,14 @@ class ScreenKeys:
             dflt = False
         if dflt:
             path += ("&" if "?" in path else "?") + "layout=default"
+        try:
+            nokey = ",".join(str(int(i)) for i in (
+                self.report_nokey() if self.report_nokey is not None
+                else ()))
+        except Exception:                        # noqa: BLE001
+            nokey = ""
+        if nokey:
+            path += ("&" if "?" in path else "?") + f"nokey={nokey}"
         if rearm:
             path += ("&" if "?" in path else "?") + f"rearm={rearm}"
         if pr:
@@ -2695,10 +2726,11 @@ class Controller:
 
     def _disarm_all_groups(self, why):
         """Every flame group's wanted goes false on the arm link at once,
-        and every group's re-arm refractory window starts: the path the
-        deck's own Abort key used (it left the deck on 2026-10-26), now
-        Stop's. The arm link goes FIRST, before anything else is asked.
-        Never sets the Abort latch: that is the screens' Abort's alone."""
+        and every group's re-arm refractory window starts: the arm link
+        half of what the deck's own Abort key did (it left the deck on
+        2026-10-26), now Stop's first step. The flame link's disarm_all is
+        the engine's (/api/stop). Never sets the Abort latch: that is a
+        screen's Abort's alone."""
         self.arm.set_all(False)
         self.arm.send(self.names)
         now = self._clock()
@@ -2782,13 +2814,15 @@ class Controller:
 
     def _do_stop(self):
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
-        arm link at once (_disarm_all_groups, the path the deck's Abort key
-        used; never the Abort latch), then the Rack screen's Stop button,
-        POST /api/stop, which stops playback and blacks the outputs out.
-        The lasers: exactly what the Rack screen's Stop does with them,
-        since it is the same route; the deck adds nothing of its own. Never
-        behind the operator gate or a role: it only takes risk away
-        ("safety" in users.WEB_ROUTES)."""
+        arm link at once (_disarm_all_groups; never the Abort latch), then
+        the Rack screen's Stop button, POST /api/stop: the engine ends live
+        flame programming and fire while scrubbing, sends the flame link's
+        disarm_all (cues zeroed, a zero frame, the keyed disarm and its
+        repeats; review of #126, P2-1), then stops playback and blacks the
+        outputs out. The lasers: exactly what the Rack screen's Stop does
+        with them, since it is the same route; the deck adds nothing of its
+        own. Never behind the operator gate or a role: it only takes risk
+        away ("safety" in users.WEB_ROUTES)."""
         self._disarm_all_groups("Stop held")
         who = self.operator_provider() or ""
         fn = getattr(self.conductor, "stop_run", None)
@@ -2975,6 +3009,16 @@ class Controller:
         for i in sorted(entered):
             if self.arm.wanted[i]:
                 continue             # already armed by the operator
+            if self._never_purged(i):
+                # A fireball group, or one the Morning page never purges:
+                # never armed for a purge on the deck either, a second
+                # barrier behind the page's own refusal (review of #126,
+                # P2-4; the Fireball has a key since 2026-10-26).
+                self._purge_refused[i] = "neverpurged"  # reporting only
+                self._log(f"Stream Deck: {self.labels[i]} ({self.names[i]}) "
+                          f"was not armed for a purge: it is never purged.",
+                          action="arm-refused", screen="Morning page")
+                continue
             if i not in self._group_key:
                 # A screen-only group (module docstring 5) is armed by a
                 # screen HOLD only, never by a purge click (review of PR
@@ -3014,6 +3058,18 @@ class Controller:
                                 screen="Morning page")
         if not self.morning_open():
             self._fire_release("the Morning page is not open")
+
+    def _never_purged(self, i):
+        """Whether group `i` is never armed for a purge: its name says
+        fireball or ball (the Morning page's own rule), or the engine's
+        Morning view lists it in purge.never_groups."""
+        n = str(self.names[i]).lower()
+        if "fireball" in n or "ball" in n:
+            return True
+        m = self.morning_view() or {}
+        p = m.get("purge") if isinstance(m.get("purge"), dict) else {}
+        never = p.get("never_groups") or []
+        return isinstance(never, list) and i in never
 
     def _fire_press(self, now):
         """The FIRE key went down while the Morning page is open: the
@@ -4723,8 +4779,10 @@ def deck_layout_at_start(names, folder, journal, settings_folder=None):
     ok = ok and bool(folder)
     notes.append(f"the keys are key 0 Start/Stop, "
                  f"{_keys_text(order, labels, list(names))}; key 5 is spare. "
-                 f"The arm keys follow flamesafe's own order unless "
-                 f"{DECK_CONFIG_FILE} says otherwise. The deck has no Hold "
+                 f"Unless {DECK_CONFIG_FILE} says otherwise, front row, "
+                 f"cat-walk, wave flamer and fireball go on keys 1 to 4 by "
+                 f"name and every other group follows in flamesafe's order. "
+                 f"The deck has no Hold "
                  f"or Abort key (2026-10-26): Hold and Abort are on the "
                  f"Rack screen.")
     for note in notes:
@@ -4854,6 +4912,8 @@ def _main(args):
     # And whether ltcplay_deck.json was set aside for the default layout,
     # for the Deck chip (review of PR #120, P2-1). Display only.
     screen.report_layout_default = lambda: not layout_ok
+    # And which groups have no key, for the Rack screen's flame card.
+    screen.report_nokey = lambda: controller.key_order[GROUP_KEY_LIMIT:]
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.

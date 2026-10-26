@@ -4,7 +4,7 @@ The soak test (packaging/windows/soak.py) switches a few hooks on through
 environment variables in the programs it starts itself: a fake show audio
 device, a virtual Stream Deck, stall and send gap probes, and the
 tracemalloc diagnostic. Any of them left in a show PC's environment would
-run a silent show with live flames, or ignore the real deck's Abort. So
+run a silent show with live flames, or ignore the real deck's keys. So
 (safety audit of bench-build, P1):
 
   * the LTC Player supervisor never passes any of them on

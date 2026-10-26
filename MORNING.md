@@ -100,20 +100,21 @@ Every machine in a fireball group has to say `"kind": "fireball"`: a
 machine there with the kind left out (a G-Flame by default) or of another
 kind is refused when the file is read, in a sentence.
 
-**A group nothing says is a fireball or a row is never purged** (review of
-PR #120, P2-1). With no `machines` list, a flamesafe group with several
-fire slots and one safety slot could be a fireball under another name
-("FB", "Boom", "Poofer"). Unless its name says it is a row of G-Flames
-(row, cat, walk, scaffold, ground or g-flame: Jeff's front row and cat-walk
-are rows) or it is declared, its machines are built (so locking and the
-lamps work) but none is purged or armed for a purge. The tile says "Never
-purged: unknown multi-channel group, declare it in fireball_groups (or
-gflame_groups for a row of G-Flames) in ltcplay_morning.json", and the
-journal says it once at start. Declare it either way:
+**A group nothing says is G-Flames is never purged** (review of PR #120,
+P2-1, and #126, P2-3). With no `machines` list, any flamesafe group could
+be a fireball under another name ("FB", "Boom", "Poofer", "Crowd
+Poofers", "Arrow"). Only Jeff's own rows are G-Flames by name, and only by
+their whole name in any case: front row, cat-walk (or cat walk, catwalk).
+A name that says fireball or ball is a fireball and one that says wave is
+a waver. Every other group's machines are built (so locking and the lamps
+work) but none is purged or armed for a purge until the group is
+declared. The tile says "Never purged: unknown flame group, declare it in
+fireball_groups (or gflame_groups for G-Flames) in ltcplay_morning.json",
+and the journal says it once at start. Declare it either way:
 
 ```
 "fireball_groups": ["FB"]      never purged, one machine for the group
-"gflame_groups": ["Boom"]      a row of G-Flames, purged one by one
+"gflame_groups": ["Boom"]      G-Flames, purged one by one
 ```
 
 A `machines` list is Andy's own word on what each machine is and is taken
@@ -138,22 +139,25 @@ groups, in which order, and what each key says come from
 {"groups": [{"group": "front row", "label": "Floor G"}, {"group": "cat-walk", "label": "Cat-Walk G"}, {"group": "wave flamer", "label": "Blue Flames"}, {"group": "fireball", "label": "Fireball"}]}
 ```
 
-With no file the keys follow the order of the groups in flamesafe's own
-config (so an install's keys do not move), labelled Floor G, Cat-Walk G,
-Blue Flames and Fireball where the group names match, whatever their case;
-with Jeff's flamesafe order that is exactly the list above, keys 1 to 4.
-With a file the order is the file's; a label is up to 12 letters, and a
-group with none says its own name. A group past the fourth has no key: it
+With no file, front row, cat-walk, wave flamer and fireball go on keys 1
+to 4 by their names (any case), wherever flamesafe's config lists them,
+labelled Floor G, Cat-Walk G, Blue Flames and Fireball; every other group
+follows in flamesafe's order. The file lists only the groups it wants to
+place, in key order; every group it does not list follows in that default
+order. A label is up to 12 letters, and a group with none says its own
+name. A group past the fourth has no key: it
 is armed only by holding its Hold to arm button on the Rack screen
 (Arming from a screen on): a purge click never arms it, and its tile says
 so. It is disarmed there, by Disarm all flame groups, by a Stop on the
 deck or by any Abort. At start the deck journals its key map and which
-group has no key. If anything in `ltcplay_deck.json` is wrong (a misspelt
-or missing group, a group twice, a label over 12 letters, or a label that
-reads like another group's name or label) the whole file is set aside for
-the default layout, so a typo never moves a key; the journal says why and
-the Rack screen's Deck chip reads "default keys". It never refuses to
-start over the layout.
+group has no key, and the Rack screen's flame card says "(no Stream Deck
+key)" by its name. If anything in `ltcplay_deck.json` is wrong (a listed
+group flamesafe does not have, an entry with no group name, a group twice,
+a label over 12 letters, or a label that reads like another group's name
+or label) the whole file is set aside for the default layout, so a typo
+never moves a key; the journal says why and the Rack screen's Deck chip
+reads "default keys". A group the file does not list is never wrong. It
+never refuses to start over the layout.
 
 **Show cues and the safety slot.** The show's flame values reach flamesafe
 on the flame link exactly as for the other groups: the flame controller's
@@ -404,14 +408,14 @@ the page shows queued, sent and the last error.
 | T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 0.3 s after the engine stops answering |
 | T5 | A locked machine fires from a show cue or a purge | flamesafe zeroes locked slots on every packet (the only writer); the flame link zeroes them too; `purge-select` refuses a locked machine and a lock drops it from a live selection; while this engine has any machine locked, NO purge goes until flamesafe's status reports exactly the slots this engine asked for (an old flamesafe, one without a lockout file, or a stale status all refuse) |
 | T6 | The lockout file is deleted, corrupted or half-written; the lock table and the config disagree | atomic replace by one writer; flamesafe keeps the last set on an unreadable file, and on a file that held locks and disappeared (the engine never deletes it), and journals both; `lockout_file` defaults to the file beside flamesafe's own config, so the show PC enforces it with nothing set up; on the engine's side a lockout file that could not be read, or one naming a machine `ltcplay_morning.json` no longer has, is never written over (every lock and unlock is refused, the purge and the laser tests too) and is said on every screen until fixed; the engine's view and flamesafe's `lockout` field are compared both ways on the page and in the journal: slots flamesafe holds that this engine cannot account for (the file deleted and kept by flamesafe, an engine restarted without it), a config edited under a lock, flamesafe with no lockout file, or one reading a different path than the engine writes (said at start, both paths named) all refuse every lock, unlock, purge and laser test; the one way out is a confirmed "Rewrite the lockout file" on the show machine itself, journaled as a fault, which writes exactly this engine's table |
-| T7 | Abort during a purge | the engine's Abort clears the purge and sends `disarm_all` before anything else, as today; `disarm_all()` and `zero()` clear the purge frame; a Stop on the deck sends every group false on the arm link (the deck has no Abort key since 2026-10-26); the deck disarms every purge group it armed when it sees the Abort latch; the laser tests are turned off |
+| T7 | Abort during a purge | the engine's Abort clears the purge and sends `disarm_all` before anything else, as today; `disarm_all()` and `zero()` clear the purge frame; the deck has no Abort key since 2026-10-26: it disarms every purge group it armed when it sees the Abort latch, and a Stop (the deck's or the Rack screen's) sends every group false on the arm link and the flame link's `disarm_all`, without the latch; the laser tests are turned off |
 | T8 | The deck arms a purge group while latched, in its refractory window, or with no operator chosen | the deck's purge pass arms through `_do_arm_fire` itself, the code a completed hold goes through: the latch, the re-arm refractory window and the operator gate are checked at the moment of arming; only the hold is waived (Jeff). A latched rig also reads as no groups wanted at all (`purge_wanted`). The test holds that no arm value goes out on the arm link even for one pass |
 | T9 | A network device purges, unlocks or lights a laser without anyone meaning it to | purge from the network, an unlock and a laser test ON all need `screen_arming` true (the existing switch, off by default); a lock, which only lowers risk, is open to every device; every press is journaled with the device address; the same proxy, Host and cross-site refusals as every other route |
 | T10 | A laser test lights during a show, or on a locked laser | the engine refuses the toggle while a show is live or latched; the watcher turns tests off when a show goes live; the sender refuses a locked laser; only configured addresses with no OSC wildcards, never BEYOND's BlackOut or MasterPause |
 | T11 | The deck stays re-mapped after the page closes (FIRE where START was) | the deck's morning mode follows the engine's `morning_open` flag, which the engine clears 2 s after the last page beat from a device that may purge (a view-only device's beats do not count); a stale `deck-input` (0.3 s) also ends it |
 | T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0 to 10 s; with 0 the head values and the fire value go in the same frame, the first beat on which it is selected, unlocked and armed) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
 | T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
-| T16 | A purge writes one value to every channel of a fireball (fuel, air, valve and ignite at once) | the rule is by flamesafe group (`MorningConfig.purge_refusal`, `fireball_groups`): a machine of any kind in a fireball group is refused by `purge-select` and left out of `groups_wanted` and the frame, and `ltcplay_morning.json` cannot put a machine of another kind in one; the Stream Deck never arms a group with no key for a purge click |
+| T16 | A purge writes one value to every channel of a fireball (fuel, air, valve and ignite at once) | the rule is by flamesafe group (`MorningConfig.purge_refusal`, `fireball_groups`): a machine of any kind in a fireball group is refused by `purge-select` and left out of `groups_wanted` and the frame, and `ltcplay_morning.json` cannot put a machine of another kind in one; the Stream Deck refuses a purge arm for a group named fireball or ball and for every group the page lists as never purged (`purge.never_groups`), key or no key, a second barrier (review of #126, P2-4), and never arms a group with no key for a purge click |
 | T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |
 | T15 | A laser lights while disarmed or locked out, or after an Abort or Hold | default disarmed at every start (DisableLaserOutput sent); EnableLaserOutput and the unblank only with every laser armed and none locked out (the laser gate, and again before every unblank packet); Abort and Hold disarm at the press on every surface and the conductor; Resume and Reset never re-arm; the night closing and the engine stopping disarm; a disarm cuts an enable or a restore short; the allow-list in beyond.py holds exactly brightness 0/100 and the two output switches with no argument |
 

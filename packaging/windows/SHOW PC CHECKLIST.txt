@@ -136,7 +136,9 @@ CHANGING THE FLAME GROUPS (at tech)
 [ ] In showpc.json, "show_mode" is "fire_ice" (it is, unless someone
     changed it). That runs the scheduler, the show conductor and the flame
     link, and starts the Stream Deck program on the engine's own address,
-    so the deck's Abort, Hold, Resume and Reset reach the show. With
+    so the deck's Stop reaches the show and the deck shows an Abort from
+    any screen (the deck has no Hold or Abort key since 2026-10-26: those
+    are the Rack screen's). With
     "plain", the Stream Deck program is not started at all.
 [ ] The rack screen page opens maximized on the show monitor, with
     Minimize, Maximize and Close in its title bar. If it

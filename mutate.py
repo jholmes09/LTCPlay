@@ -8473,11 +8473,6 @@ def build():
   "        self._key_group = {GROUP_KEYS[j]: g for j, g in\n                           enumerate(self.key_order[:len(GROUP_KEYS)])}",
   "        self._key_group = {GROUP_KEYS[j]: g for j, g in\n                           enumerate(range(len(self.names))[:len(GROUP_KEYS)])}"),
 
- ("deck: the key order list is ignored",
-  "ltcplay/streamdeck.py",
-  "        i = names.index(g)\n        if i in order:",
-  "        i = names.index(g)\n        if True:"),
-
  ("deck: a key's label is the flamesafe name, never the configured one",
   "ltcplay/streamdeck.py",
   "        labels[i] = lab.strip()\n",
@@ -8639,11 +8634,6 @@ def build():
   "            if m.group in cfg.fireball_groups or \\\n                    cfg.purge_refusal(m) in NEVER_SELECTED:\n                continue",
   "            if False:\n                continue"),
 
- ("deck: the default labels are not Jeff's",
-  "ltcplay/streamdeck.py",
-  "        DECK_LABELS.get(str(n).strip().lower(), n) for n in names]",
-  "        n for n in names]"),
-
  ("deck: the Start/Stop key never becomes Stop",
   "ltcplay/streamdeck.py",
   "            if running is False and self.run_live_provider() is True:",
@@ -8724,25 +8714,10 @@ def build():
   "        if slot == 3:\n            # The fourth arm key",
   "        if False:\n            # The fourth arm key"),
 
- ("deck: with no ltcplay_deck.json the keys leave flamesafe's order (P2-5)",
-  "ltcplay/streamdeck.py",
-  "    return list(range(len(names))), [",
-  "    return list(reversed(range(len(names)))), ["),
-
  ("morning: an unknown multi-channel group is purged (review of #120, P2-1)",
   "ltcplay/morning.py",
   "        if m.group in self.unknown_groups:\n            return NO_UNKNOWN_PURGE\n",
   ""),
-
- ("morning: every multi-channel group counts as a row of G-Flames",
-  "ltcplay/morning.py",
-  "        if any(w in name.lower() for w in GFLAME_ROW_WORDS):\n            continue",
-  "        if True:\n            continue"),
-
- ("morning: a row named row or cat-walk is never purged",
-  "ltcplay/morning.py",
-  "        if any(w in name.lower() for w in GFLAME_ROW_WORDS):\n            continue",
-  "        if False:\n            continue"),
 
  ("morning: gflame_groups is read and ignored",
   "ltcplay/morning.py",
@@ -8758,6 +8733,116 @@ def build():
   "ltcplay/web/remote.html",
   "  if(m.never_purged) return",
   "  if(false) return"),
+
+ ("deck: the key order list is ignored",
+  "ltcplay/streamdeck.py",
+  "        i = known.index(_known(g))\n        if i in order:",
+  "        i = known.index(_known(g))\n        if True:"),
+
+ ("deck: Jeff's four are not keyed by name (review of #126, P1)",
+  "ltcplay/streamdeck.py",
+  "    order = [known.index(k) for k in DECK_ORDER if k in known]\n",
+  "    order = []\n"),
+
+ ("deck: the default labels are not Jeff's",
+  "ltcplay/streamdeck.py",
+  "    return order, [DECK_LABELS.get(_known(n), n) for n in names]",
+  "    return order, list(names)"),
+
+ ("deck: a ltcplay_deck.json must list every group again (review of #126, P1)",
+  "ltcplay/streamdeck.py",
+  "    order += [i for i in d_order if i not in order]\n",
+  "    if [i for i in d_order if i not in order]:\n        problems.append(\"a group is not listed\")\n    order += [i for i in d_order if i not in order]\n"),
+
+ ("deck: the Rack screen never hears which groups have no key",
+  "ltcplay/streamdeck.py",
+  "        if nokey:\n            path += (\"&\" if \"?\" in path else \"?\") + f\"nokey={nokey}\"",
+  "        if False:\n            path += (\"&\" if \"?\" in path else \"?\") + f\"nokey={nokey}\""),
+
+ ("Rack screen: a group with no deck key is not marked",
+  "ltcplay/remote.py",
+  "            g[\"deck_key\"] = not (fresh and i in nokey)",
+  "            g[\"deck_key\"] = True"),
+
+ ("deck: a purge click arms a group the page never purges (review of #126, P2-4)",
+  "ltcplay/streamdeck.py",
+  "            if self._never_purged(i):",
+  "            if False:"),
+
+ ("deck: a group named fireball is armed for a purge on the deck",
+  "ltcplay/streamdeck.py",
+  "        if \"fireball\" in n or \"ball\" in n:\n            return True",
+  "        if False:\n            return True"),
+
+ ("deck: the page's never-purged groups are ignored",
+  "ltcplay/streamdeck.py",
+  "        return isinstance(never, list) and i in never",
+  "        return False"),
+
+ ("morning: the deck is never told which groups are never purged",
+  "ltcplay/morning.py",
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": never},",
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": []},"),
+
+ ("morning: every default-built group counts as G-Flames (review of #126, P2-3)",
+  "ltcplay/morning.py",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if True:\n            continue"),
+
+ ("morning: Jeff's front row and cat-walk are never purged",
+  "ltcplay/morning.py",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if False:\n            continue"),
+
+ ("morning: a row is any name with row, cat or walk in it again",
+  "ltcplay/morning.py",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if any(w in name.lower() for w in (\"row\", \"cat\", \"walk\")):\n            continue"),
+
+ ("morning: a one-slot group nothing declares is purged",
+  "ltcplay/morning.py",
+  "        if len(g.get(\"safeties\") or []) > 1:\n            continue\n        if name in fireball_groups or name in gflame_groups:",
+  "        if len(g.get(\"safeties\") or []) > 1 or len(g.get(\"fire\") or []) < 2:\n            continue\n        if name in fireball_groups or name in gflame_groups:"),
+
+ ("Stop: the engine's Stop sends no flame disarm (review of #126, P2-1)",
+  "ltcplay/web.py",
+  "                flames = self._stop_flames(body)\n",
+  "                flames = None\n"),
+
+ ("Stop: the engine stops playback before the flames are disarmed",
+  "ltcplay/web.py",
+  "                flames = self._stop_flames(body)\n                out = {\"stopped\": c.stop()}",
+  "                out = {\"stopped\": c.stop()}\n                flames = self._stop_flames(body)"),
+
+ ("Stop: live flame programming carries on through a Stop",
+  "ltcplay/web.py",
+  "        for name in (\"live_flame_cut\", \"scrub_flames_end\"):",
+  "        for name in ():"),
+
+ ("deck: a latched press with an alert open starts a Stop hold (mutant C)",
+  "ltcplay/streamdeck.py",
+  "                    if not pending and self.start_key_mode() == \"stop\":",
+  "                    if self.start_key_mode() == \"stop\":"),
+
+ ("deck: a latched press starts a Stop hold whatever the key is (mutant P)",
+  "ltcplay/streamdeck.py",
+  "                    if not pending and self.start_key_mode() == \"stop\":",
+  "                    if not pending:"),
+
+ ("deck: Stop's disarm leaves the purge's own arms (mutant O)",
+  "ltcplay/streamdeck.py",
+  "        self._purge_armed.clear()\n        self._log(f\"Stream Deck: {why}",
+  "        self._log(f\"Stream Deck: {why}"),
+
+ ("deck: Stop asks the engine before it disarms the arm link",
+  "ltcplay/streamdeck.py",
+  "        self._disarm_all_groups(\"Stop held\")\n        who = self.operator_provider() or \"\"\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n",
+  "        who = self.operator_provider() or \"\"\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._disarm_all_groups(\"Stop held\")\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n        self._disarm_all_groups(\"Stop held\")\n"),
+
+ ("supervisor: the first-run flamesafe config is cut to three groups again",
+  "packaging/windows/supervisor.py",
+  "    doc[\"groups\"] = list(doc.get(\"groups\") or [])\n",
+  "    doc[\"groups\"] = list(doc.get(\"groups\") or [])[:3]\n"),
 
  ("deck: Stop is not the Rack screen's Stop route",
   "ltcplay/streamdeck.py",

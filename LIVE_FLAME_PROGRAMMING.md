@@ -24,7 +24,7 @@ Program flame effects in xLights and see them on the real flames, while LTC Play
 Each of these ends the mode. Each one disarms every flame group, sets the values to zero, and writes the reason in the journal and the audit log.
 
 - Off, from any screen or from the red banner.
-- Abort (from any screen, the Stream Deck or the scheduler), Hold, Start now, Run, or a show starting.
+- Abort (from any screen or the scheduler), Hold, Start now, Run, Stop (the Rack screen's, or STOP RUN on the Stream Deck), or a show starting.
 - Anything that zeroes or disarms the flames through the show (a Hold, an Abort, a show ending). This stops xLights at the flame link at once, the same way it stops fire.
 - The listener stopping, or not checking in for 1 second (a watchdog looks every 0.2 s).
 - More than 1000 packets a second reaching the listener, of any kind.

@@ -786,6 +786,42 @@ class Handler(BaseHTTPRequestHandler):
             self._ctx_cache = ctx
         return ctx
 
+    def _stop_flames(self, body):
+        """Stop's flame half (review of #126, P2-1): live flame programming
+        cut, fire while scrubbing ended, then the flame link's disarm_all
+        (the show's flames_disarm_all, never the conductor's Abort, so
+        nothing is latched). {"disarmed": True/False, "text": ...}, or None
+        with no flame link in this engine (the GPL path). Never raises."""
+        rm = getattr(self.server, "remote", None)
+        if rm is None:
+            return None
+        body = body if isinstance(body, dict) else {}
+        try:
+            ctx = self._ctx()
+            who = str(body.get("who") or getattr(ctx, "user", "") or "")
+            screen = str(body.get("screen") or getattr(ctx, "screen", "")
+                         or "Rack screen")
+        except Exception:                        # noqa: BLE001
+            who, screen = "", "Rack screen"
+        reason = f"{who or 'Someone'} pressed Stop on the {screen}"
+        for name in ("live_flame_cut", "scrub_flames_end"):
+            fn = getattr(rm, name, None)
+            if fn is not None:
+                try:
+                    fn(reason, who, screen)
+                except Exception:                # noqa: BLE001
+                    pass
+        fn = getattr(rm, "_disarm_now", None)
+        if fn is None:
+            return None
+        try:
+            ok, said = fn(who, screen, "Stop")
+        except Exception as e:                   # noqa: BLE001
+            ok, said = False, f"{type(e).__name__}: {e}"
+        if ok is None:
+            return None
+        return {"disarmed": bool(ok), "text": said}
+
     # -- users and the audit log (users.py, audit.py) ---------------------
     def _acting_user(self, body):
         """{"name", "role"} of whoever this press counts as, or None for
@@ -1040,7 +1076,7 @@ class Handler(BaseHTTPRequestHandler):
         # The scheduler's own Abort latch, saved in tonight's file, is the
         # one that survives an engine restart (the conductor starts
         # unlatched): latched while either is (review of PR #43, P1-5), so
-        # the Stream Deck's Abort key reads RESET after a restart too. A
+        # the Stream Deck shows the Abort latch after a restart too. A
         # plain read, never the scheduler's lock: this route is polled.
         m = getattr(getattr(self.server, "schedule", None), "machine", None)
         sched_latched = bool(getattr(m, "abort_latched", False))
@@ -1337,7 +1373,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"override": c.override(
                     body.get("look"))})
             if route == "/api/stop":
-                return self._send(200, {"stopped": c.stop()})
+                # Stop takes the flames down first (Jeff, 2026-10-26;
+                # review of #126, P2-1), the Rack screen's and the Stream
+                # Deck's alike: live flame programming and fire while
+                # scrubbing end, and the flame link's disarm_all goes out
+                # (the cues zeroed, a zero frame, the keyed disarm and its
+                # repeats: the flame half of an Abort), WITHOUT the Abort
+                # latch, which is the Abort's alone. Then playback stops.
+                flames = self._stop_flames(body)
+                out = {"stopped": c.stop()}
+                if flames is not None:
+                    out["flames"] = flames
+                return self._send(200, out)
         except USER_ERRORS as e:
             c.last_error = str(e)
             return self._send(400, {"error": str(e)})

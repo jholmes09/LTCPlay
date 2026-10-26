@@ -44491,8 +44491,11 @@ def test_windows_supervisor_first_run_defaults():
             got = json.loads(r.stdout.strip() or "null")
         except ValueError:
             got = None
-        check(got == ["127.0.0.1", False, 3, 5574],
-              f"flamesafe loads it: loopback, unconfirmed, three groups, "
+        check(got == ["127.0.0.1", False, len(json.load(open(os.path.join(
+                  os.path.dirname(os.path.abspath(__file__)), "flamesafe",
+                  "flamesafe.example.json")))["groups"]), 5574],
+              f"flamesafe loads it: loopback, unconfirmed, every group of "
+              f"the example (the deck keys four, the rest from a screen), "
               f"a status copy for the engine: {got} {r.stderr[-300:]!r}")
         from ltcplay import schedule as SCH
         with open(settings["schedule"], encoding="utf-8") as fh:
@@ -45385,15 +45388,25 @@ def test_stream_deck_key_order_and_labels_come_from_config():
     dflt = ["Floor G", "Cat-Walk G", "Blue Flames", "Fireball"]
     check(sd.deck_layout(jeff) == ([0, 1, 2, 3], dflt, [], True),
           f"the defaults: {sd.deck_layout(jeff)}")
-    # With no file the keys keep flamesafe's own order (review of PR #120,
-    # P2-5: an install's keys do not move), and the labels match whatever
-    # the case.
+    # With no file Jeff's four go on keys 1 to 4 by NAME, wherever
+    # flamesafe's file lists them and whatever the case (review of #126,
+    # P1), and every other group follows in the file's order.
     shuffled = ["fireball", "wave flamer", "Front Row", "CAT-WALK"]
     check(sd.deck_layout(shuffled) ==
-          ([0, 1, 2, 3], ["Fireball", "Blue Flames", "Floor G",
+          ([2, 3, 1, 0], ["Fireball", "Blue Flames", "Floor G",
                           "Cat-Walk G"], [], True),
-          f"flamesafe's own order, Jeff's labels whatever the case: "
+          f"Jeff's keys by name, whatever the file's order or case: "
           f"{sd.deck_layout(shuffled)}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    ex = [g["name"] for g in _json.load(open(os.path.join(
+        here, "flamesafe", "flamesafe.example.json"),
+        encoding="utf-8"))["groups"]]
+    order, labels, notes, ok = sd.deck_layout(ex)
+    check([labels[g] for g in order[:4]] == dflt and
+          [ex[g] for g in order[4:]] == ["pump", "spare"] and ok,
+          f"the repo's example config (front row, cat-walk, wave flamer, "
+          f"pump, fireball, spare): key 4 is the Fireball, pump and spare "
+          f"follow with no key: {[ex[g] for g in order]}")
     # An old install whose groups have other names: unchanged, nothing said.
     old = ["stage left", "stage right", "finale"]
     check(sd.deck_layout(old) == ([0, 1, 2], old, [], True),
@@ -45414,7 +45427,6 @@ def test_stream_deck_key_order_and_labels_come_from_config():
             ([{"group": "front row"}, {"group": "cat walk"},
               {"group": "wave flamer"}, {"group": "fireball"}],
              "'cat walk', which is not a flame group"),
-            (entries[:1] + entries[2:], "does not list 'cat-walk'"),
             (entries + [{"group": "front row"}], "twice"),
             ([{"label": "x"}] + entries, "no \"group\" name"),
             (["cat-walk"] + entries, "no \"group\" name"),
@@ -45440,6 +45452,30 @@ def test_stream_deck_key_order_and_labels_come_from_config():
         check(order == [0, 1, 2, 3] and not ok and
               "no \"groups\" list" in notes[0],
               f"a file of the wrong shape: the defaults, said: {notes}")
+    # A file lists only what it places: the rest follow in the default
+    # order (review of #126, P1). MORNING.md's own example, on the
+    # example config, is used as it stands.
+    part = {"groups": [{"group": "fireball", "label": "Boom"}]}
+    order, labels, notes, ok = sd.deck_layout(jeff, part)
+    check(ok and order == [3, 0, 1, 2] and labels[3] == "Boom" and
+          not notes, f"a file listing one group: it goes first, the rest "
+                     f"follow: {order} {labels} {notes}")
+    md = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
+    deck_doc = [_json.loads(b) for b in
+                re.findall(r"```json\n(\{\"groups\".*?)\n```", md, re.S)]
+    check(len(deck_doc) == 1, "MORNING.md shows one ltcplay_deck.json")
+    order, labels, notes, ok = sd.deck_layout(ex, deck_doc[0])
+    check(ok and [labels[g] for g in order[:4]] == dflt,
+          f"MORNING.md's ltcplay_deck.json, on the example config, is used: "
+          f"{[labels[g] for g in order]} {notes}")
+    # Jeff's real flamesafe order, and the same groups reordered: the same
+    # four keys either way.
+    for fs_order in (jeff, ["wave flamer", "fireball", "cat-walk",
+                            "front row"]):
+        order, labels, notes, ok = sd.deck_layout(fs_order)
+        check([labels[g] for g in order] == dflt,
+              f"{fs_order}: keys 1 to 4 read Floor G, Cat-Walk G, Blue "
+              f"Flames, Fireball: {[labels[g] for g in order]}")
     work = tempfile.mkdtemp()
     try:
         check(sd.load_deck_layout(jeff, work) == sd.deck_layout(jeff),
@@ -45583,26 +45619,31 @@ def test_stream_deck_review_of_120():
         c.screen_pass()
         c.tick()
 
-    # The Morning page asks for the pump (no key) and the fireball (key
-    # 1): the keyed one arms on the click, the screen-only one never.
+    # The Morning page asks for the pump (no key), the front row (key 2),
+    # the fireball (key 1) and the cat-walk, which the engine says it
+    # never purges: only the front row arms on the click.
     scr.mo = {"open": True, "purge_enabled": True,
-              "purge": {"wanted_groups": [4, 3], "selected": 2,
-                        "firing": False},
+              "purge": {"wanted_groups": [4, 0, 3, 1], "selected": 4,
+                        "firing": False, "never_groups": [1]},
               "locks": {"groups_fully_locked": []}}
     step()
     step()
-    check(arm.wanted == [False, False, False, True, False],
-          f"a purge click arms the keyed group only, never the one with no "
-          f"key: {arm.wanted}")
-    check(c.rearm_report()[1] == {4: "screenonly"},
-          f"the refusal is reported for the page: {c.rearm_report()}")
+    check(arm.wanted == [True, False, False, False, False],
+          f"a purge click arms the keyed group only, never one with no "
+          f"key, never the fireball, never one the engine never purges "
+          f"(review of #126, P2-4): {arm.wanted}")
+    check(c.rearm_report()[1] == {4: "screenonly", 3: "neverpurged",
+                                  1: "neverpurged"},
+          f"each refusal is reported for the page: {c.rearm_report()}")
     said = [e[0] for e in events if "was not armed for a purge" in e[0]]
-    check(len(said) == 1 and "Pump (pump)" in said[0] and
-          "Hold to arm" in said[0],
-          f"said once, in words: {said}")
+    check(len(said) == 3 and
+          any("Pump (pump)" in x and "Hold to arm" in x for x in said) and
+          any("Big Ball (fireball)" in x and "never purged" in x
+              for x in said),
+          f"each said once, in words: {said}")
     from ltcplay import remote as RM
-    check(RM.deck_rearm("prefused=2.screenonly")[1] == {2: "screenonly"},
-          "the engine takes the code")
+    check(RM.deck_rearm("prefused=2.screenonly,3.neverpurged")[1] ==
+          {2: "screenonly", 3: "neverpurged"}, "the engine takes the codes")
     scr.mo = None
     step()
     check(arm.wanted == [False] * 5, "the page closed: the purge arm is gone")
@@ -45649,18 +45690,18 @@ def test_stream_deck_review_of_120():
     work = tempfile.mkdtemp()
     try:
         o, l, ok = sd.deck_layout_at_start(
-            ["fireball", "front row", "cat-walk", "wave flamer", "pump"],
+            ["fireball", "front row", "pump", "cat-walk", "wave flamer"],
             work, lambda t_, **kw: lines.append((t_, kw)))
-        check(ok and o == [0, 1, 2, 3, 4] and len(lines) == 1 and
+        check(ok and o == [1, 3, 4, 0, 2] and len(lines) == 1 and
               lines[0][0].startswith(
                   "Stream Deck: the keys are key 0 Start/Stop, key 1 "
-                  "Fireball (fireball), key 2 Floor G (front row), key 3 "
-                  "Cat-Walk G (cat-walk), key 4 Blue Flames (wave flamer); "
+                  "Floor G (front row), key 2 Cat-Walk G (cat-walk), key 3 "
+                  "Blue Flames (wave flamer), key 4 Fireball (fireball); "
                   "no key: pump (pump); key 5 is spare.") and
               "no Hold or Abort key" in lines[0][0] and
               all(kw.get("action") == "config" for _t, kw in lines),
-              f"flamesafe's own order, and the key map journaled in "
-              f"plain words: {lines}")
+              f"Jeff's four by name whatever flamesafe's order, and the key "
+              f"map journaled in plain words: {lines}")
         with open(os.path.join(work, sd.DECK_CONFIG_FILE), "w") as fh:
             fh.write('{"groups": [{"group": "cat walk"}]}')
         lines[:] = []
@@ -45684,6 +45725,18 @@ def test_stream_deck_review_of_120():
     check(not ok and o == [0, 1, 2, 3, 4] and
           "settings folder could not be found" in lines[0][0],
           f"no settings folder: said, the defaults used: {lines}")
+    # The Rack screen hears which groups have no key (review of #126, P1).
+    k = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda p: None)
+    k.report_nokey = lambda: [4, 5]
+    check("nokey=4,5" in k._path() and
+          RM.deck_nokey(k._path().split("?", 1)[1]) == {4, 5} and
+          RM.deck_nokey("usb_ms=3") == set(),
+          f"the deck says nokey and the engine reads it: {k._path()}")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('g.deck_key === false ? " (no Stream Deck key)"' in page,
+          "the flame card names a group with no deck key")
     # The Deck chip hears it.
     k = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda p: None)
     k.report_layout_default = lambda: True
@@ -45692,6 +45745,70 @@ def test_stream_deck_review_of_120():
           RM.deck_layout_default("usb_ms=3") is False,
           f"the deck says layout=default and the engine reads it: "
           f"{k._path()}")
+    print("  ok")
+
+
+def test_stop_disarms_every_flame_group_without_the_latch():
+    """Review of #126, P2-1: Stop (the Rack screen's, and so the Stream
+    Deck's STOP RUN, which posts the same route) takes the flames down
+    first: live flame programming cut, fire while scrubbing ended, and the
+    flame link's disarm_all (the flame half of an Abort: cues zeroed, a
+    zero frame, the keyed disarm and its repeats), then playback stops. It
+    never sets the Abort latch. With no flame link (the GPL path) Stop is
+    what it always was."""
+    section("Stop: live flame programming cut, the flame link's disarm_all, "
+            "then playback stops; never the Abort latch")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        order = []
+
+        class _R:
+            ok = True
+            sentence = "a disarm was sent to flamesafe."
+        R.remote._flame_disarm = lambda reason: (order.append(("disarm",
+                                                                reason)),
+                                                 _R())[1]
+
+        class _LF:
+            def cut(self, reason):
+                order.append(("cut", reason))
+                return False
+
+            def end(self, *a, **kw):
+                order.append(("end",))
+        R.remote.live_flame = _LF()
+        real_stop = R.httpd.control.stop
+        R.httpd.control.stop = lambda: (order.append(("stop",)),
+                                        real_stop())[1]
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"who": "Andy", "screen": "Stream Deck"},
+                           client=("127.0.0.1", 50000))
+        check(st == 200 and out.get("flames", {}).get("disarmed") is True,
+              f"Stop answers with the flames disarmed: {st} {out}")
+        kinds = [o[0] for o in order]
+        check(kinds == ["cut", "disarm", "stop"],
+              f"live flame programming cut, then the flame link's disarm, "
+              f"then playback stopped, in that order: {order}")
+        check("Andy" in order[1][1] and "Stop" in order[1][1] and
+              "Stream Deck" in order[1][1],
+              f"the disarm names who and where: {order[1]}")
+        R.settle()
+        check(R.c is None or not R.c.snapshot().get("latched"),
+              "Stop never sets the Abort latch")
+        # No flame link in this engine: Stop is what it always was.
+        del order[:]
+        R.remote._flame_disarm = None
+        R.remote.schedule = None
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop", {},
+                           client=("127.0.0.1", 50000))
+        check(st == 200 and "flames" not in out and
+              [o[0] for o in order] == ["cut", "stop"],
+              f"no flame link: Stop as before: {st} {out} {order}")
+    finally:
+        R.close()
     print("  ok")
 
 
@@ -45745,6 +45862,8 @@ def test_stream_deck_start_stop_is_one_key():
 
         def stop_run(self, who, screen):
             self.calls.append(("stop", who, screen))
+            # What the arm link said when the engine was asked to Stop.
+            self.seen = list(arm.wanted)
             return sd.EngineResult(True, "Stopped.")
 
         def snapshot(self):
@@ -45803,9 +45922,11 @@ def test_stream_deck_start_stop_is_one_key():
     wait(sd.STOP_HOLD_S * 3)
     check(not e.calls, "let go before the hold is done: nothing sent")
     # A full hold: every group disarmed on the arm link first, then Stop,
-    # once.
+    # once; a group armed for a purge is no longer the purge's to disarm
+    # (mutant O).
     arm.set_group(0, True)
     arm.set_group(2, True)
+    c._purge_armed = {0}
     down()
     wait(sd.STOP_HOLD_S - 0.01)
     check(not e.calls and arm.wanted == [True, False, True],
@@ -45818,8 +45939,13 @@ def test_stream_deck_start_stop_is_one_key():
     check(arm.wanted == [False, False, False] and
           any("every flame group's wanted state was sent false" in l[0]
               and "Nothing was latched" in l[0] for l in lines),
-          f"and every flame group was disarmed first: {arm.wanted}")
+          f"and every flame group was disarmed: {arm.wanted}")
+    check(e.seen == [False, False, False],
+          f"the arm link went false BEFORE the engine was asked to Stop "
+          f"(review of #126, P2-6): {e.seen}")
     check(not c._latched_now(), "Stop never latches the rig")
+    check(c._purge_armed == set(),
+          "Stop's disarm forgets the purge's own arms")
     wait(sd.STOP_HOLD_S * 3)
     up()
     check(len(e.calls) == 1, "still held: it does not send twice")
@@ -45862,6 +45988,24 @@ def test_stream_deck_start_stop_is_one_key():
           c._latched_now(),
           f"aborted: a full Stop hold disarms and stops, the latch stays: "
           f"{e.calls} {arm.wanted}")
+    # Aborted with an alert open: the key only acknowledges, it never
+    # starts a Stop hold (review of #126, P2-6, mutant C).
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: None
+    down()
+    check(c._stop_hold._down_at is None,
+          "aborted with an alert open: a press only acknowledges")
+    up()
+    del c.alert_pending
+    del c._do_acknowledge
+    # Aborted with nothing running: the key is not Stop, and no Stop hold
+    # starts (mutant P).
+    run[0] = False
+    down()
+    check(c._stop_hold._down_at is None,
+          "aborted, nothing running: no Stop hold starts")
+    up()
+    run[0] = True
     # Let go early while aborted: nothing (the latched branch takes the
     # release too, review of PR #120, P2-3).
     down()
@@ -48449,7 +48593,7 @@ def test_morning_unknown_multi_channel_group_is_never_purged():
             "cat-walk stay purgeable; journaled and on the tile")
     from ltcplay import morning as MO
     reason = MO.NO_UNKNOWN_PURGE
-    check(reason.startswith("unknown multi-channel group, declare it in "
+    check(reason.startswith("unknown flame group, declare it in "
                             "fireball_groups") and
           not any(c in reason for c in "—–"), f"the words: {reason}")
     front = {"name": "front row", "safety": 401, "safeties": [401],
@@ -48463,15 +48607,18 @@ def test_morning_unknown_multi_channel_group_is_never_purged():
         groups = [front, cat, one, fb]
         cfg = MO.MorningConfig.parse({}, "x", groups)
         ms = [m for m in cfg.machines if m.group == name]
-        check(cfg.unknown_groups == {name} and len(ms) == 4 and
+        check(cfg.unknown_groups == {name, "pump"} and len(ms) == 4 and
               all(cfg.purge_refusal(m) == reason for m in ms) and
               all(m.notes == f"Never purged: {reason}." for m in ms),
               f"{name!r}: four machines, none purged, the notes say why: "
               f"{[m.view() for m in ms]}")
         check(all(cfg.purge_refusal(m) == "" for m in cfg.machines
-                  if m.group in ("front row", "cat-walk", "pump")),
-              "front row and cat-walk (rows by name) and a one-slot group "
-              "stay purgeable")
+                  if m.group in ("front row", "cat-walk")) and
+              all(cfg.purge_refusal(m) == reason for m in cfg.machines
+                  if m.group == "pump"),
+              "front row and cat-walk (Jeff's rows, by their whole name) "
+              "stay purgeable; a one-slot group nothing declares is not "
+              "(review of #126, P2-3)")
         view = {m["id"]: m for m in cfg.view()["machines"]}
         check(view[ms[0].id]["never_purged"] == reason and
               view["front-row-1"]["never_purged"] == "",
@@ -48481,14 +48628,26 @@ def test_morning_unknown_multi_channel_group_is_never_purged():
               f"one journal line names it: {cfg.journal_lines()}")
         # Declared a fireball: one never-purged fireball machine.
         c2 = MO.MorningConfig.parse({"fireball_groups": [name]}, "x", groups)
-        check(not c2.unknown_groups and
+        check(c2.unknown_groups == {"pump"} and
               [m.kind for m in c2.machines if m.group == name] ==
               ["fireball"], f"{name!r} declared a fireball")
         # Declared a row of G-Flames: purgeable, one by one.
         c3 = MO.MorningConfig.parse({"gflame_groups": [name]}, "x", groups)
-        check(not c3.unknown_groups and
+        check(c3.unknown_groups == {"pump"} and
               all(c3.purge_refusal(m) == "" for m in c3.machines
                   if m.group == name), f"{name!r} declared a row")
+    # A name is no proof (review of #126, P2-3): only Jeff's rows by
+    # their whole name, any case; "row", "cat" or "walk" inside another
+    # word proves nothing.
+    loose = ["Crowd Poofers", "Walkway Poofer", "Arrow", "Flame Thrower",
+             "Scatter Boom", "Ground Row", "catwalk G"]
+    gl = [{"name": x, "safety": 300 + i, "safeties": [300 + i],
+           "fire": [200 + 4 * i, 201 + 4 * i]} for i, x in enumerate(loose)]
+    cl = MO.MorningConfig.parse({}, "x", gl + [
+        dict(front, name="Front Row"), dict(cat, name="CAT-WALK")])
+    check(cl.unknown_groups == set(loose),
+          f"loose names are never purged, Jeff's rows in any case are: "
+          f"{sorted(cl.unknown_groups)}")
     try:
         MO.MorningConfig.parse({"gflame_groups": ["FB"],
                                 "fireball_groups": ["FB"]}, "x",
@@ -48556,6 +48715,9 @@ def test_morning_unknown_multi_channel_group_is_never_purged():
                 "never-purged"]
         check(len(said) == 1 and "'FB'" in said[0],
               f"the engine journals the unknown group once: {said}")
+        check(m.deck_view()["purge"]["never_groups"] == [1],
+              f"and tells the Stream Deck it is never purged, a second "
+              f"barrier (review of #126, P2-4): {m.deck_view()['purge']}")
         try:
             m.close()
         except Exception:                        # noqa: BLE001
@@ -55659,6 +55821,18 @@ def test_deck_key_write_the_deck_did_not_take():
                   f"a deck keying its default layout reads amber: {chip()}")
             R.remote.deck_input("usb_ms=75&hw=1&arm_ms=10")
             check(chip()["state"] == "ok", "and ok again without it")
+            # A group with no deck key (review of #126, P1): the flame
+            # card's group says so, from the deck's fresh word only.
+            R.remote.deck_input("usb_ms=75&hw=1&arm_ms=10&nokey=1")
+            fl = {"groups": [{"name": "front row"}, {"name": "pump"}]}
+            R.remote._rearm_words(fl)
+            check([g["deck_key"] for g in fl["groups"]] == [True, False],
+                  f"the keyless group is marked: {fl}")
+            R.mono[0] += 60.0
+            fl = {"groups": [{"name": "front row"}, {"name": "pump"}]}
+            R.remote._rearm_words(fl)
+            check([g["deck_key"] for g in fl["groups"]] == [True, True],
+                  "an old word from the deck says nothing")
         finally:
             R.close()
     print("  ok")
@@ -65965,6 +66139,7 @@ if __name__ == "__main__":
     test_stream_deck_key_order_and_labels_come_from_config()
     test_stream_deck_review_of_120()
     test_stream_deck_start_stop_is_one_key()
+    test_stop_disarms_every_flame_group_without_the_latch()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()
