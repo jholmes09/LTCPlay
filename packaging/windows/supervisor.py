@@ -806,7 +806,6 @@ FIRST_RUN_FILE = "first-run.json"     # what this wrote, for the rack screen
 PROGRAMS_FILE = "programs.json"       # each program: running, or why not
 SCREEN_CLOSE_FILE = "close-rack-screen"   # the engine asks: close Edge
 RESTART_ENGINE_FILE = "restart-engine"    # the engine asks: restart it
-FLAME_GROUPS_FOR_DECK = 3             # the Stream Deck Mini's arm keys
 STATUS_MIRROR_PORT = 5574             # flamesafe's status copy for the engine
 
 
@@ -830,9 +829,10 @@ def example_schedule_path():
 
 def safe_flamesafe_config(example_doc):
     """The first-run flamesafe config: the shipped example, sending to
-    this PC only (127.0.0.1, which the example already does), trimmed to
-    the groups the Stream Deck Mini has keys for, with the status copy the
-    engine's flame lamps read. Unconfirmed, so flamesafe runs it as the
+    this PC only (127.0.0.1, which the example already does), with every
+    one of its groups (the Stream Deck keys four and arms the rest from a
+    screen, 2026-10-26), and the status copy the engine's flame lamps
+    read. Unconfirmed, so flamesafe runs it as the
     bench fixture it is; nothing here can reach a flame controller."""
     doc = dict(example_doc)
     doc["confirmed"] = False
@@ -842,7 +842,7 @@ def safe_flamesafe_config(example_doc):
     link = dict(doc.get("link") or {})
     link.setdefault("status_mirror_port", STATUS_MIRROR_PORT)
     doc["link"] = link
-    doc["groups"] = list(doc.get("groups") or [])[:FLAME_GROUPS_FOR_DECK]
+    doc["groups"] = list(doc.get("groups") or [])
     doc["note"] = ("FIRST-RUN DEFAULT, written by LTC Player so flamesafe "
                    "and the Stream Deck start on a fresh PC. It sends to "
                    "this PC only (destination 127.0.0.1), never to a flame "

@@ -5135,29 +5135,6 @@ def build():
   "                controller.status.poll(clock)",
   "                controller.status.poll(clock)"),
 
- ("round3: an Abort can also complete a same-pass arm-hold again",
-  "ltcplay/streamdeck.py",
-  "            self._do_abort()\n"
-  "            # Item 3 (round 2 of the safety review): never ALSO "
-  "complete an\n"
-  "            # arm-hold in the SAME pass an Abort just fired in. "
-  "_do_abort()\n"
-  "            # just told every group's wanted false; finishing a hold "
-  "a\n"
-  "            # moment later in this same pass would re-arm the very "
-  "group\n"
-  "            # Abort was supposed to clear. _do_arm_fire's own "
-  "latched/\n"
-  "            # refractory guard (now set by _do_abort, just above) is "
-  "a\n"
-  "            # second, independent backstop -- this return is the "
-  "ordering\n"
-  "            # fix itself, not a substitute for that guard, nor the "
-  "other\n"
-  "            # way round.\n"
-  "            return\n",
-  "            self._do_abort()\n"),
-
  ("round3: the arm-hold duration changes without any test noticing",
   "ltcplay/streamdeck.py",
   "ARM_HOLD_S = 0.6",
@@ -5522,25 +5499,6 @@ def build():
   "LINES_PER_MINUTE = 10 ** 6\n"),
 
  # D: the round-4 review's hand mutations that survived the whole suite.
- ("round4: reset_on_reconnect skips only the Abort hold",
-  "ltcplay/streamdeck.py",
-  "        self._prev_keys = [False] * 6\n"
-  "        self._abort_hold.release()\n"
-  "        for h in self._arm_holds:\n"
-  "            h.release()\n",
-  "        self._prev_keys = [False] * 6\n"
-  "        for h in self._arm_holds:\n"
-  "            h.release()\n"),
-
- ("round4: reset_on_reconnect skips only the arm holds",
-  "ltcplay/streamdeck.py",
-  "        self._prev_keys = [False] * 6\n"
-  "        self._abort_hold.release()\n"
-  "        for h in self._arm_holds:\n"
-  "            h.release()\n",
-  "        self._prev_keys = [False] * 6\n"
-  "        self._abort_hold.release()\n"),
-
  ("round4: any forced bit blocks consent on every group",
   "flamesafe/composer.py",
   "                self._seen_down[i] = consent_ok and not f[i]\n",
@@ -7540,35 +7498,10 @@ def build():
   '            if False:\n                kw.update(extra)'),
 
 
- ("fix round 2: the deck's Abort key Resets while aborted",
-  'ltcplay/streamdeck.py',
-  '                    self._do_abort(again=True)',
-  '                    self._do_reset()'),
-
  ('fix round 2: a group key does nothing while aborted',
   'ltcplay/streamdeck.py',
   '                    if self.arm.wanted[i] or self._reported_armed(i):\n                        self._do_disarm(i)',
   '                    if False:\n                        self._do_disarm(i)'),
-
- ('Reset design: a deck press Resets before RESET has shown 0.5 s',
-  'ltcplay/streamdeck.py',
-  '                    if shown is not None and now - shown >= RESET_SHOWN_S:',
-  '                    if shown is not None:'),
-
- ('Reset design: the Abort key never Resets once RESET has shown',
-  'ltcplay/streamdeck.py',
-  '                        self._do_reset()\n                    else:',
-  '                        self._do_abort(again=True)\n                    else:'),
-
- ('Reset design: drawing the latched deck never starts the RESET clock',
-  'ltcplay/streamdeck.py',
-  '        elif self._reset_shown_since is None:\n            self._reset_shown_since = now',
-  '        elif False:\n            self._reset_shown_since = now'),
-
- ('Reset design: the RESET clock survives a Reset',
-  'ltcplay/streamdeck.py',
-  '        if not latched:\n            self._reset_shown_since = None',
-  '        if False:\n            self._reset_shown_since = None'),
 
  ('Deck latched: a tap on a group still reported armed does not disarm it',
   'ltcplay/streamdeck.py',
@@ -7594,11 +7527,6 @@ def build():
   'ltcplay/streamdeck.py',
   '            body["confirmed"] = True\n            # Abort never waits',
   '            body["confirmed"] = True\n        if False:\n            # Abort never waits'),
-
- ('R2-H5 the deck asks the engine to Abort before it disarms its own groups',
-  'ltcplay/streamdeck.py',
-  '        self.arm.set_all(False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        who = self.operator_provider() or ""\n        if again:',
-  '        who = self.operator_provider() or ""\n        if not again and self.conductor is not None:\n            self.conductor.abort(who=who, screen="Stream Deck")\n        self.arm.set_all(False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        if again:'),
 
  ("fix round 2: an engine that did not take a press is not shown on the deck",
   'ltcplay/streamdeck.py',
@@ -8260,15 +8188,6 @@ def build():
   "                bg, text = AUDIO_LOST_ON if blink_on else AUDIO_LOST_OFF\n",
   "                bg, text = AUDIO_LOST_ON\n"),
 
- ("deck states: AUDIO LOST covers the Hold key too",
-  "ltcplay/streamdeck.py",
-  "        elif resume_face and blink_on:\n"
-  "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n",
-  "        elif self._audio_lost():\n"
-  "            fonts.show_key(d, b1, [\"AUDIO\", \"LOST\"], AMBER, kind=\"sans\")\n"
-  "        elif resume_face and blink_on:\n"
-  "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n"),
-
  ("deck states: the deck ignores the engine's audio field",
   "ltcplay/streamdeck.py",
   "                snap = dict(snap, audio=got.get(\"audio\"))\n",
@@ -8532,21 +8451,6 @@ def build():
 ''',
   ''''''),
 
- ("morning: a click on a fireball arms its group for a purge",
-  "ltcplay/morning.py",
-  '''        if cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
-            # Never armed for a purge at all''',
-  '''        if False:
-            # Never armed for a purge at all'''),
-
- ("morning: a fireball in the purge selection asks the deck to arm its group",
-  "ltcplay/morning.py",
-  '''            if m.group in cfg.fireball_groups or \\
-                    cfg.purge_refusal(m) == NO_FIREBALL_PURGE:
-                continue''',
-  '''            if False:
-                continue'''),
-
  ("morning: the default fireball is split into one machine per channel",
   "ltcplay/morning.py",
   '''        if kind == "fireball":
@@ -8569,20 +8473,10 @@ def build():
   "        self._key_group = {GROUP_KEYS[j]: g for j, g in\n                           enumerate(self.key_order[:len(GROUP_KEYS)])}",
   "        self._key_group = {GROUP_KEYS[j]: g for j, g in\n                           enumerate(range(len(self.names))[:len(GROUP_KEYS)])}"),
 
- ("deck: the key order list is ignored",
-  "ltcplay/streamdeck.py",
-  "        i = names.index(g)\n        if i in order:",
-  "        i = names.index(g)\n        if True:"),
-
  ("deck: a key's label is the flamesafe name, never the configured one",
   "ltcplay/streamdeck.py",
   "        labels[i] = lab.strip()\n",
   "        pass\n"),
-
- ("deck: the default labels are not Jeff's",
-  "ltcplay/streamdeck.py",
-  "    return order, [DECK_LABELS.get(n, n) for n in names]\n",
-  "    return order, list(names)\n"),
 
  ("deck: the keys are drawn under flamesafe's names, not their labels",
   "ltcplay/streamdeck.py",
@@ -8643,11 +8537,6 @@ def build():
   "            if j != i and mine in (other.lower(), d_labels[j].lower(),",
   "            if False and mine in (other.lower(), d_labels[j].lower(),"),
 
- ("deck: a reorder with no ltcplay_deck.json is not said (P2-3)",
-  "ltcplay/streamdeck.py",
-  "        if d_order != list(range(len(names))):\n            notes.append(",
-  "        if False:\n            notes.append("),
-
  ("deck: the layout notes and key map are never journaled",
   "ltcplay/streamdeck.py",
   "    for note in notes:\n        try:\n            journal(f\"Stream Deck: {note}\"",
@@ -8696,38 +8585,12 @@ def build():
   '''        if self._latched_now() and i in self._group_key:
             self._log(f"Stream Deck: {self.names[i]} arm-hold completed "'''),
 
- ("deck: the Start/Stop key never becomes Stop",
-  "ltcplay/streamdeck.py",
-  '''            if self.run_live_provider() is True:
-                return "stop"''',
-  '''            if False:
-                return "stop"'''),
-
- ("deck: Stop is sent during a scheduled show",
-  "ltcplay/streamdeck.py",
-  '''            if self.show_running_provider() is True:
-                return "show"''',
-  '''            if False:
-                return "show"'''),
-
  ("deck: Stop waits on the operator gate",
   "ltcplay/streamdeck.py",
   '''        fn = getattr(self.conductor, "stop_run", None)''',
   '''        if operator_gate(who, "start"):
             return
         fn = getattr(self.conductor, "stop_run", None)'''),
-
- ("deck: STOP RUN goes on a single tap again",
-  "ltcplay/streamdeck.py",
-  "            self._stop_hold.press(now)",
-  "            self._do_stop()"),
-
- ("deck: letting go of STOP RUN early still stops",
-  "ltcplay/streamdeck.py",
-  "                # Letting go of Stop before ABORT_HOLD_S sends nothing.\n"
-  "                self._stop_hold.release()",
-  "                # Letting go of Stop before ABORT_HOLD_S sends nothing.\n"
-  "                pass"),
 
  ("deck: a Stop hold stops though the run ended during it",
   "ltcplay/streamdeck.py",
@@ -8738,6 +8601,248 @@ def build():
   "ltcplay/streamdeck.py",
   "            elif stop_frac > 0:",
   "            elif False:"),
+
+ ("round3: a Stop can also complete a same-pass arm-hold again",
+  "ltcplay/streamdeck.py",
+  """                self._do_stop()
+                # Never ALSO complete an arm-hold in the SAME pass Stop just
+                # disarmed every group in (the ordering rule Abort had on
+                # the deck); _do_arm_fire's refractory check, set by the
+                # disarm, is the second, independent backstop.
+                return
+""",
+  """                self._do_stop()
+"""),
+
+ ("round4: reset_on_reconnect skips only the Stop hold",
+  "ltcplay/streamdeck.py",
+  "            h.release()\n        self._stop_hold.release()\n        self._vholds.clear()",
+  "            h.release()\n        self._vholds.clear()"),
+
+ ("round4: reset_on_reconnect skips only the arm holds",
+  "ltcplay/streamdeck.py",
+  "        self._prev_keys = [False] * 6\n        for h in self._arm_holds:\n            h.release()\n        self._stop_hold.release()\n",
+  "        self._prev_keys = [False] * 6\n        self._stop_hold.release()\n"),
+
+ ("morning: a click on a fireball arms its group for a purge",
+  "ltcplay/morning.py",
+  "        never = cfg.purge_refusal(m)\n        if never in NEVER_SELECTED:",
+  "        never = cfg.purge_refusal(m)\n        if False:"),
+
+ ("morning: a fireball in the purge selection asks the deck to arm its group",
+  "ltcplay/morning.py",
+  "            if m.group in cfg.fireball_groups or \\\n                    cfg.purge_refusal(m) in NEVER_SELECTED:\n                continue",
+  "            if False:\n                continue"),
+
+ ("deck: the Start/Stop key never becomes Stop",
+  "ltcplay/streamdeck.py",
+  "            if running is False and self.run_live_provider() is True:",
+  "            if False:"),
+
+ ("deck: STOP RUN shows with the scheduler unknown (review of #120, P2-4)",
+  "ltcplay/streamdeck.py",
+  "            if running is False and self.run_live_provider() is True:",
+  "            if running is not True and self.run_live_provider() is True:"),
+
+ ("deck: Stop is sent during a scheduled show",
+  "ltcplay/streamdeck.py",
+  "        if running is True:\n            return \"show\"",
+  "        if False:\n            return \"show\""),
+
+ ("deck: STOP RUN goes on a single tap again",
+  "ltcplay/streamdeck.py",
+  "            # once the key has been held STOP_HOLD_S.\n            self._stop_hold.press(now)",
+  "            # once the key has been held STOP_HOLD_S.\n            self._do_stop()"),
+
+ ("deck: letting go of STOP RUN early still stops",
+  "ltcplay/streamdeck.py",
+  "                # Letting go of Stop before STOP_HOLD_S sends nothing.\n                self._stop_hold.release()",
+  "                # Letting go of Stop before STOP_HOLD_S sends nothing.\n                pass"),
+
+ ("deck: the FIRE key keeps firing after it is released (T2)",
+  "ltcplay/streamdeck.py",
+  "                self._fire_release(\"the key came up\")\n                # Letting go of Stop before STOP_HOLD_S sends nothing.",
+  "                pass\n                # Letting go of Stop before STOP_HOLD_S sends nothing."),
+
+ ("deck: Stop leaves the screen-only group armed",
+  "ltcplay/streamdeck.py",
+  "        self.arm.set_all(False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        self._purge_armed.clear()",
+  "        for _g in range(min(len(self.names), len(GROUP_KEYS))):\n            self.arm.set_group(_g, False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        self._purge_armed.clear()"),
+
+ ("deck: Stop never disarms the flame groups",
+  "ltcplay/streamdeck.py",
+  "        self._disarm_all_groups(\"Stop held\")\n",
+  ""),
+
+ ("deck: Stop sets the Abort latch",
+  "ltcplay/streamdeck.py",
+  "        self._disarm_all_groups(\"Stop held\")\n",
+  "        self._disarm_all_groups(\"Stop held\")\n        self._latched = True\n"),
+
+ ("deck: Stop cannot be reached while aborted",
+  "ltcplay/streamdeck.py",
+  "                    if not pending and self.start_key_mode() == \"stop\":\n                        self._stop_hold.press(now)",
+  "                    if False:\n                        self._stop_hold.press(now)"),
+
+ ("deck: a held Stop never fires while aborted",
+  "ltcplay/streamdeck.py",
+  "        if self._prev_keys[TOP_START] and self._stop_hold.fired(now):",
+  "        if latched:\n            return\n        if self._prev_keys[TOP_START] and self._stop_hold.fired(now):"),
+
+ ("deck: a Stop hold timer fires with the key up (review of #120, P2-3)",
+  "ltcplay/streamdeck.py",
+  "        if self._prev_keys[TOP_START] and self._stop_hold.fired(now):",
+  "        if self._stop_hold.fired(now):"),
+
+ ("deck: a Reset or Abort from a screen starts no re-arm wait",
+  "ltcplay/streamdeck.py",
+  "            self._was_latched = latched\n            self._disarmed_at = [now] * len(self.names)",
+  "            self._was_latched = latched"),
+
+ ("deck: the Start key's audit name changes (review of #120, P2-6)",
+  "ltcplay/streamdeck.py",
+  "        return \"ACK\" if ack else (\"FIRE\" if morning else \"Start now\")",
+  "        return \"ACK\" if ack else (\"FIRE\" if morning else \"Start/Stop\")"),
+
+ ("deck: the arm keys are not keys 1 to 4",
+  "ltcplay/streamdeck.py",
+  "GROUP_KEYS = (1, 2, 3, 4)",
+  "GROUP_KEYS = (2, 3, 4, 5)"),
+
+ ("deck: the fourth arm key's NO LINK is missing",
+  "ltcplay/streamdeck.py",
+  "        if slot == 3:\n            # The fourth arm key",
+  "        if False:\n            # The fourth arm key"),
+
+ ("morning: an unknown multi-channel group is purged (review of #120, P2-1)",
+  "ltcplay/morning.py",
+  "        if m.group in self.unknown_groups:\n            return NO_UNKNOWN_PURGE\n",
+  ""),
+
+ ("morning: gflame_groups is read and ignored",
+  "ltcplay/morning.py",
+  "        out.add(x)\n    return frozenset(out)\n\n\ndef unknown_multi_groups",
+  "    return frozenset(out)\n\n\ndef unknown_multi_groups"),
+
+ ("morning: an unknown multi-channel group is never journaled",
+  "ltcplay/morning.py",
+  "        for line in self.cfg.journal_lines():",
+  "        for line in []:"),
+
+ ("morning page: an unknown multi-channel group's tile reads Off",
+  "ltcplay/web/remote.html",
+  "  if(m.never_purged) return",
+  "  if(false) return"),
+
+ ("deck: the key order list is ignored",
+  "ltcplay/streamdeck.py",
+  "        i = known.index(_known(g))\n        if i in order:",
+  "        i = known.index(_known(g))\n        if True:"),
+
+ ("deck: Jeff's four are not keyed by name (review of #126, P1)",
+  "ltcplay/streamdeck.py",
+  "    order = [known.index(k) for k in DECK_ORDER if k in known]\n",
+  "    order = []\n"),
+
+ ("deck: the default labels are not Jeff's",
+  "ltcplay/streamdeck.py",
+  "    return order, [DECK_LABELS.get(_known(n), n) for n in names]",
+  "    return order, list(names)"),
+
+ ("deck: a ltcplay_deck.json must list every group again (review of #126, P1)",
+  "ltcplay/streamdeck.py",
+  "    order += [i for i in d_order if i not in order]\n",
+  "    if [i for i in d_order if i not in order]:\n        problems.append(\"a group is not listed\")\n    order += [i for i in d_order if i not in order]\n"),
+
+ ("deck: the Rack screen never hears which groups have no key",
+  "ltcplay/streamdeck.py",
+  "        if nokey:\n            path += (\"&\" if \"?\" in path else \"?\") + f\"nokey={nokey}\"",
+  "        if False:\n            path += (\"&\" if \"?\" in path else \"?\") + f\"nokey={nokey}\""),
+
+ ("Rack screen: a group with no deck key is not marked",
+  "ltcplay/remote.py",
+  "            g[\"deck_key\"] = not (fresh and i in nokey)",
+  "            g[\"deck_key\"] = True"),
+
+ ("deck: a purge click arms a group the page never purges (review of #126, P2-4)",
+  "ltcplay/streamdeck.py",
+  "            if self._never_purged(i):",
+  "            if False:"),
+
+ ("deck: a group named fireball is armed for a purge on the deck",
+  "ltcplay/streamdeck.py",
+  "        if \"fireball\" in n or \"ball\" in n:\n            return True",
+  "        if False:\n            return True"),
+
+ ("deck: the page's never-purged groups are ignored",
+  "ltcplay/streamdeck.py",
+  "        return isinstance(never, list) and i in never",
+  "        return False"),
+
+ ("morning: the deck is never told which groups are never purged",
+  "ltcplay/morning.py",
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": never},",
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": []},"),
+
+ ("morning: every default-built group counts as G-Flames (review of #126, P2-3)",
+  "ltcplay/morning.py",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if True:\n            continue"),
+
+ ("morning: Jeff's front row and cat-walk are never purged",
+  "ltcplay/morning.py",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if False:\n            continue"),
+
+ ("morning: a row is any name with row, cat or walk in it again",
+  "ltcplay/morning.py",
+  "        if name.strip().lower() in GFLAME_ROW_NAMES:\n            continue",
+  "        if any(w in name.lower() for w in (\"row\", \"cat\", \"walk\")):\n            continue"),
+
+ ("morning: a one-slot group nothing declares is purged",
+  "ltcplay/morning.py",
+  "        if len(g.get(\"safeties\") or []) > 1:\n            continue\n        if name in fireball_groups or name in gflame_groups:",
+  "        if len(g.get(\"safeties\") or []) > 1 or len(g.get(\"fire\") or []) < 2:\n            continue\n        if name in fireball_groups or name in gflame_groups:"),
+
+ ("Stop: the engine's Stop sends no flame disarm (review of #126, P2-1)",
+  "ltcplay/web.py",
+  "                flames = self._stop_flames(body)\n",
+  "                flames = None\n"),
+
+ ("Stop: the engine stops playback before the flames are disarmed",
+  "ltcplay/web.py",
+  "                flames = self._stop_flames(body)\n                out = {\"stopped\": c.stop()}",
+  "                out = {\"stopped\": c.stop()}\n                flames = self._stop_flames(body)"),
+
+ ("Stop: live flame programming carries on through a Stop",
+  "ltcplay/web.py",
+  "        for name in (\"live_flame_cut\", \"scrub_flames_end\"):",
+  "        for name in ():"),
+
+ ("deck: a latched press with an alert open starts a Stop hold (mutant C)",
+  "ltcplay/streamdeck.py",
+  "                    if not pending and self.start_key_mode() == \"stop\":",
+  "                    if self.start_key_mode() == \"stop\":"),
+
+ ("deck: a latched press starts a Stop hold whatever the key is (mutant P)",
+  "ltcplay/streamdeck.py",
+  "                    if not pending and self.start_key_mode() == \"stop\":",
+  "                    if not pending:"),
+
+ ("deck: Stop's disarm leaves the purge's own arms (mutant O)",
+  "ltcplay/streamdeck.py",
+  "        self._purge_armed.clear()\n        self._log(f\"Stream Deck: {why}",
+  "        self._log(f\"Stream Deck: {why}"),
+
+ ("deck: Stop asks the engine before it disarms the arm link",
+  "ltcplay/streamdeck.py",
+  "        self._disarm_all_groups(\"Stop held\")\n        who = self.operator_provider() or \"\"\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n",
+  "        who = self.operator_provider() or \"\"\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._disarm_all_groups(\"Stop held\")\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n        self._disarm_all_groups(\"Stop held\")\n"),
+
+ ("supervisor: the first-run flamesafe config is cut to three groups again",
+  "packaging/windows/supervisor.py",
+  "    doc[\"groups\"] = list(doc.get(\"groups\") or [])\n",
+  "    doc[\"groups\"] = list(doc.get(\"groups\") or [])[:3]\n"),
 
  ("deck: Stop is not the Rack screen's Stop route",
   "ltcplay/streamdeck.py",
@@ -8753,22 +8858,6 @@ def build():
   "ltcplay/streamdeck.py",
   '''            elif self.start_key_mode() == "stop":''',
   '''            elif False:'''),
-
- ("deck: Abort leaves the screen-only fourth group armed",
-  "ltcplay/streamdeck.py",
-  '''        self.arm.set_all(False)
-        self.arm.send(self.names)
-        now = self._clock()
-        self._disarmed_at = [now] * len(self.names)
-        who = self.operator_provider() or ""
-        if again:''',
-  '''        for _g in range(min(len(self.names), len(GROUP_KEYS))):
-            self.arm.set_group(_g, False)
-        self.arm.send(self.names)
-        now = self._clock()
-        self._disarmed_at = [now] * len(self.names)
-        who = self.operator_provider() or ""
-        if again:'''),
 
  ("deck: nobody is told which flame group has no key",
   "ltcplay/streamdeck.py",
@@ -9779,13 +9868,6 @@ def build():
             return None
         m = last[0].get("morning")'''),
 
- ("deck: the FIRE key keeps firing after it is released (T2)",
-  "ltcplay/streamdeck.py",
-  '''                self._fire_release("the key came up")
-                # Letting go of Stop before ABORT_HOLD_S sends nothing.''',
-  '''                pass
-                # Letting go of Stop before ABORT_HOLD_S sends nothing.'''),
-
  ("deck: the FIRE heartbeats carry on after the engine refuses one (T3)",
   "ltcplay/streamdeck.py",
   '''            if not ok:
@@ -10234,28 +10316,6 @@ def build():
   'ltcplay/streamdeck.py',
   '            fresh = time.monotonic() - press.started <= PURGE_INPUT_STALE_S',
   '            fresh = False'),
-
- ('deck hold: the Hold key acts on the composed face, not the shown one',
-  'ltcplay/streamdeck.py',
-  '            return self._shown_resume is True\n        return self._held_hint()',
-  '            return self._held_hint()\n        return self._held_hint()'),
-
- ('deck hold: the shown Hold face is never taken from the frame shown',
-  'ltcplay/streamdeck.py',
-  '            self._shown_resume = self._hold_faces[fid]',
-  '            pass'),
-
- ('deck usb: RESET counts from the frame composed, not the frame shown',
-  'ltcplay/streamdeck.py',
-  '        if not self.display_confirms:\n'
-  '            self._track_reset_face(latched, now)',
-  '        if True:\n'
-  '            self._track_reset_face(latched, now)'),
-
- ('deck usb: a frame from before the latch starts the RESET clock',
-  'ltcplay/streamdeck.py',
-  '        if first is not None and fid >= first and \\',
-  '        if first is not None and \\'),
 
  ('deck usb: a slow USB write is never journaled',
   'ltcplay/streamdeck.py',

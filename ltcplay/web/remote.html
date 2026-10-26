@@ -1195,6 +1195,9 @@ function machineLook(m, mo, flames, purge){
   // A fireball is never purged (its channels are a sequence); the engine
   // refuses a click on it.
   if(m.kind === "fireball") return {cls:"", word:"Never purged: a fireball has no purge sequence yet"};
+  // Anything else the engine never purges (an unknown multi-channel group
+  // until it is declared), in the engine's own words.
+  if(m.never_purged) return {cls:sel ? "sel" : "", word:"Never purged: " + m.never_purged};
   if(!sel) return {cls:"", word:"Off"};
   const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
   const armed = !!(g && g.armed === "armed" && flames && !flames.stale);
@@ -1296,7 +1299,7 @@ function abortPlan(st){
   if(s.disarm_connected && fl.connected)
     out.push({ok:true, text:"Flames: every group is sent a disarm through the flame link, the Abort way. flamesafe confirms it; the lamps show each group off. After Reset each group needs Arm again (let go, then hold). Disarm all flame groups is the plain disarm that needs none of that."});
   else
-    out.push({ok:false, text:"Flames: NOT disarmed from this screen. No flame link is connected in this engine. Use the Stream Deck's Abort or the hardware e-stop."});
+    out.push({ok:false, text:"Flames: NOT disarmed from this screen. No flame link is connected in this engine. Use the Stream Deck's group keys or the hardware e-stop."});
   if(s.laser_fault) out.push({ok:false, text:"Lasers: NOT blanked from here (" + s.laser_fault + "). Blank them at BEYOND."});
   else if(sch.conductor) out.push({ok:true, text:"Lasers: blanked at the press."});
   if(s.morning && s.morning.laser_arm) out.push({ok:true, text:"Lasers: every laser is DISARMED at the press and BEYOND's laser output switched off. They stay dark until someone arms them again after Reset."});
@@ -2137,6 +2140,8 @@ function renderLamps(fl){
     el.querySelector(".why").textContent = c === "unknown" ? "" : reasonWords(g.reason);
     el.querySelector(".why").title = g.reason || "";
     el.querySelector("b").title = g.arm_value ? "Arms at " + g.arm_value + " on its safety slots" : "";
+    // No key on the Stream Deck (review of #126): said by its name.
+    el.querySelector("b").textContent = g.name + (g.deck_key === false ? " (no Stream Deck key)" : "");
     const sl = safetyLine(g, c) || machineCountLine(g, c, ST && ST.morning && ST.morning.group_machines), se = el.querySelector(".saf");
     se.hidden = !sl;
     se.textContent = sl;
@@ -2458,7 +2463,7 @@ $("b-abort").addEventListener("click", async e => {
   abortTapDone();
   armStop("Abort");
   const j = await press("abort", {confirmed:true});
-  if(j) saidAbort("ABORT pressed. " + (j.text || "Done.") + (j.disarmed === true ? "" : " FLAMES WERE NOT DISARMED FROM THIS SCREEN: use the Stream Deck's Abort or the hardware e-stop."), j.disarmed === true && !!j.ok);
+  if(j) saidAbort("ABORT pressed. " + (j.text || "Done.") + (j.disarmed === true ? "" : " FLAMES WERE NOT DISARMED FROM THIS SCREEN: use the Stream Deck's group keys or the hardware e-stop."), j.disarmed === true && !!j.ok);
   else saidAbort("ABORT pressed, and the engine answered: " + $("ctl-msg").textContent, false);
 });
 

@@ -439,28 +439,29 @@ Abort bar is on every screen. If the page has not heard from the engine for 2
 s a red banner says so and the controls that act on what it shows go off;
 Hold, Abort and Disarm stay on.
 
-**The Stream Deck after an Abort** (Jeff's approved design, 2026-09-26):
-hold Abort for half a second while the red ring fills. Once it fires, the
-deck border stays solid red, the Abort key reads RESET (flashing red), and
-every other key is greyed and does nothing. One press of the Abort key is
-Reset, but only once the deck has shown RESET for half a second; a press
-before that sends every flame group off again and does not Reset. Reset
-follows the same rules as every Reset (an operator chosen; refused while the
-Abort is still fading), and every flame group stays off until it is armed
-again. One exception to the grey: a group that flamesafe still reports armed
-keeps showing ARMED (and a fault or a lost link still shows), and a tap on it
-turns it off. Abort, Hold, Resume and Reset from the deck go to the engine's show
-conductor; if the engine does not take one, or cannot be reached, the Start
-key reads ENGINE FAULT. A Hold or Resume the engine answers with "already
-so" (the schedule already on hold, a show already paused, the night over,
-nothing held) is journaled and is not ENGINE FAULT, and the Hold key reads
-RESUME while the schedule is on hold between shows.
+**The Stream Deck's keys** (Jeff, 2026-10-26): key 0 is START / STOP,
+keys 1 to 4 arm and disarm the first four flame groups (Floor G, Cat-Walk G,
+Blue Flames, Fireball by default; ltcplay_deck.json can reorder and
+relabel them), key 5 is spare. The deck has no Hold and no Abort key: those
+are the Rack screen's. STOP RUN (while a run is going, and only when the
+scheduler is known to have no show live) is a half second hold: every
+flame group is turned off on the arm link at once, then the Rack screen's
+Stop is asked, which ends live flame programming, sends the flame link's
+disarm_all (the flame half of an Abort) and stops playback; nothing
+latches the rig. After an Abort from any screen
+the deck border stays solid red and every key with nothing to do is
+greyed; a group that flamesafe still reports armed keeps showing ARMED (and
+a fault or a lost link still shows), and a tap on it turns it off. STOP RUN
+still works while aborted, as on the Rack screen. Reset is on the Rack
+screen; the deck starts every group's two second re-arm wait when it sees
+the Abort, and again when it sees the Reset. If the engine does not take a
+press, or cannot be reached, the Start key reads ENGINE FAULT.
 
 **The Stream Deck's three threads** (2026-10-21): the arm link to flamesafe
 is sent from a thread of its own at 20 Hz, the key images are written to the
 deck over USB from another, and the keys are read on a third. A slow or
 stalled USB write (a busy machine) only makes the keys lag; it never delays
-a key read, a hold, a disarm, Abort or the arm link. The arm link still goes
+a key read, a hold, a disarm, Stop or the arm link. The arm link still goes
 silent, and flamesafe still disarms, if the loop that reads the keys stops.
 The rack screen's status strip shows the deck's worst USB write of the last
 minute ("Deck ok, USB 75 ms"); past 1 s the chip turns amber ("USB slow
@@ -469,9 +470,7 @@ A deck whose key image write is stuck is not trusted with a held key: past
 a quarter second an arm hold on the deck's own keys is dropped and a purge
 FIRE is released (let go and press again once it answers), and past 1 s the
 deck is treated as unplugged (the "deck" alert; every flame group stays as
-it was). Abort and a disarm tap never wait on any of this. The Hold key does
-what the deck last showed: if it still reads HOLD, a press is a Hold, even
-if the show was paused elsewhere a moment ago.
+it was). Stop and a disarm tap never wait on any of this.
 
 **Arming from the page** (Jeff, 2026-10-03; no sign-in since 2026-10-07):
 anyone at the rack screen, or on a device that reaches the listed show
