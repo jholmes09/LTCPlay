@@ -41774,8 +41774,9 @@ def _remote_page_logic_in_node():
                  "setInterval(renderStale, 250);",
                  # arming: live state or no hold, and anything that hides
                  # or closes the page lets go
-                 "if(HOLD && !armState(ST, Date.now(), LAST_OK, "
-                 "HOLD.group).ok)",
+                 "const hp = holdLapsed();\n  if(hp) armStop(hp);",
+                 "    const as = armState(ST, Date.now(), LAST_OK, p.group);\n"
+                 "    if(as.ok) continue;",
                  "el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;",
                  "if(document.hidden) armStop(",
                  "window.addEventListener(\"pagehide\", () => armStop(",
@@ -42117,11 +42118,17 @@ def test_rack_screen_width_guard_css_contract():
     # the window (2026-10-24), never sideways: the width guard holds.
     check((_css_rule(rules, "html") or {}).get("overflow-x") == "hidden",
           "the document never scrolls sideways")
-    bar = _css_rule(rules, "#abortbar button") or {}
-    check(bar.get("width") == "100%" and
-          bar.get("justify-content") == "center",
-          f"the Abort bar is the track's width with its word centred, so "
-          f"the track guard is what keeps the word on screen: {bar}")
+    # ABORT is a stop sign fixed in the bottom right corner (Jeff,
+    # 2026-10-26), never in the page's flow, so no text can push it off.
+    bar = _css_rule(rules, "#abortbar") or {}
+    btn = _css_rule(rules, "#abortbar button") or {}
+    check(bar.get("position") == "fixed" and "right" in bar and
+          "var(--pad-bottom, 0px)" in bar.get("bottom", "") and
+          btn.get("width") == "var(--abort-size)" and
+          btn.get("height") == "var(--abort-size)" and
+          "--abort-size:56px" in page,
+          f"the Abort stop sign is fixed in the bottom right corner, 56 px, "
+          f"above any part of the window under the taskbar: {bar} {btn}")
     check("flex-wrap:wrap" in (_css_rule(rules, "header") or {}).__repr__()
           .replace("'", "").replace(": ", ":"),
           "the header wraps instead of overlapping on a narrow window")
@@ -42352,9 +42359,11 @@ function measure(tag){
   const atLoad = [];
   lamps.forEach((lp, i) => {
     const name = (lp.querySelector("b") || {}).textContent || ("group " + i);
-    const arm = lp.querySelector("[data-arm]"), dis = lp.querySelector("[data-gdis]");
-    const row = {name:name, card:rectOf(lp).h};
-    for(const [k, el] of [["arm", arm], ["disarm", dis]]){
+    // One button per group (Jeff, 2026-10-26): Hold to arm, or Disarm.
+    const arm = lp.querySelector("[data-arm]");
+    const row = {name:name, card:rectOf(lp).h, buttons:lp.querySelectorAll("button").length};
+    if(row.buttons !== 1) out.problems.push(name + ": " + row.buttons + " buttons, not one");
+    for(const [k, el] of [["arm", arm]]){
       if(!shown(el)){ out.problems.push(name + " " + k + ": not shown"); continue; }
       const r = rectOf(el);
       row[k] = Math.round(r.h * 10) / 10;
@@ -42373,9 +42382,11 @@ function measure(tag){
   // At 1920x1080 and a laptop's 1366x768 the operator sees every group's
   // buttons without scrolling.
   out.flames_visible_at_load = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= innerHeight);
-  // And clear of the sticky Abort bar, which covers the window's bottom.
-  const abTop = document.getElementById("abortbar").getBoundingClientRect().top;
-  out.flames_clear_of_abort = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= abTop + 0.5);
+  // And never under the Abort stop sign in the window's corner.
+  const ab = document.getElementById("b-abort").getBoundingClientRect();
+  out.abort = {w:Math.round(ab.width), h:Math.round(ab.height), right:Math.round(innerWidth - ab.right), bottom:Math.round(innerHeight - ab.bottom)};
+  out.flames_clear_of_abort = atLoad.every(([_n, r]) => r.top >= 0 &&
+    !(r.left < ab.right - 0.5 && ab.left < r.right - 0.5 && r.top - scrollY < ab.bottom - 0.5 && ab.top < r.bottom - scrollY - 0.5));
   out.setup_folded = !!document.querySelector("#setup.folded");
   const ctl = {"Abort": "b-abort", "Hold": "b-hold", "Disarm all flame groups": "b-disarm", "Disarm all lasers": "lz-disarm"};
   for(const k in ctl){
@@ -42388,7 +42399,7 @@ function measure(tag){
   }
   scrollTo(0, 0);
   // Nothing that arms or disarms overlaps anything else that does. (The
-  // Abort bar is left out: it stays on the window's bottom edge while the
+  // Abort stop sign is left out: it stays in the window's corner while the
   // page scrolls under it, by design; hits() above proves each button can
   // be scrolled clear of it and pressed.)
   const rs = [...document.querySelectorAll("#fl-lamps button, #b-disarm, #lz-disarm, #lz-chips button, #b-hold, #b-start, #b-resume, #b-reset, #alerts button")]
@@ -42698,9 +42709,12 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
         check((_css_rule(rules, sel) or {}).get("min-height") ==
               "min-content", f"{sel} never shrinks below its content")
     bar = _css_rule(rules, "#abortbar") or {}
-    check(bar.get("position") == "sticky" and bar.get("bottom") == "0" and
-          bar.get("background") == "var(--bg)",
-          f"the Abort bar stays on the bottom edge, opaque: {bar}")
+    check(bar.get("position") == "fixed" and "bottom" in bar and
+          "right" in bar,
+          f"the Abort stop sign stays in the window's corner: {bar}")
+    check("var(--abort-room)" in app.get("padding", ""),
+          f"the page keeps room under its content for the Abort stop sign, "
+          f"so nothing ends up under it: {app}")
     # Startup sets the page's height too (Jeff, 2026-10-26: it shrank its
     # text to 9 px at 1280x800 instead of scrolling).
     check((_css_rule(rules, ".view:not(#v-show):not(#v-morning)") or {}
@@ -42809,10 +42823,10 @@ console.log(JSON.stringify(out));
                   f"overlapping; Abort, Hold and the disarms pressable: "
                   f"{m['problems'][:8]}")
             check(len(m["lamps"]) == 3 and all(
-                l.get("arm_seen", 0) >= 44 and l.get("disarm_seen", 0) >= 44
+                l.get("arm_seen", 0) >= 44 and l.get("buttons") == 1
                 for l in m["lamps"]),
-                f"{where}: the three groups' buttons are seen whole: "
-                f"{m['lamps']}")
+                f"{where}: the three groups' one button each is seen "
+                f"whole: {m['lamps']}")
             check(m["overflow_y"][0] in ("auto", "scroll") and
                   m["overflow_y"][1] not in ("hidden", "clip"),
                   f"{where}: the wheel and a finger scroll the page: "
@@ -42929,7 +42943,8 @@ console.log(JSON.stringify(out));
         print("  ok")
         return
     got = _rack_screen_in_chromium(chrome, page, _rack_status_no_show_file(),
-                                   ((1280, 800), (1366, 768), (1920, 1080)))
+                                   ((1280, 800), (1366, 768), (1366, 700),
+                                    (1920, 1080)))
     for (w, h), res in got.items():
         if not check(isinstance(res, list) and res,
                      f"{w}x{h}: drawn and measured: {res!r}"):
@@ -42940,9 +42955,9 @@ console.log(JSON.stringify(out));
               f"Disarm, Disarm all and Abort pressable, nothing overlapping: "
               f"{m['problems'][:8]}")
         check(len(m["lamps"]) == 3 and all(
-            l.get("arm_seen", 0) >= 44 and l.get("disarm_seen", 0) >= 44
+            l.get("arm_seen", 0) >= 44 and l.get("buttons") == 1
             for l in m["lamps"]),
-            f"{w}x{h}, no show file: three flame cards with their buttons: "
+            f"{w}x{h}, no show file: three flame cards, one button each: "
             f"{m['lamps']}")
         check(m.get("setup_shown") is True,
               f"{w}x{h}: the getting-started card is still there, beside or "
@@ -42980,11 +42995,24 @@ console.log(JSON.stringify(out));
                      f"{name}: drawn: {res!r}"):
             continue
         m = res[-1]
-        check(len(m["lamps"]) == 3 and all(
-            l["shown"] and l["disabled"] and small in l["small"] and l["title"]
-            for l in m["lamps"]),
-            f"no show file, {name}: three groups drawn, Hold to arm shown "
-            f"but off, saying why: {m['lamps']}")
+        if name == "flamesafe stale":
+            # A state not known (2026-10-26): the group's one button can
+            # not arm, and one press of it disarms (a disarm only takes
+            # risk away); its word stays Not known.
+            check(len(m["lamps"]) == 3 and all(
+                l["shown"] and not l["disabled"] and
+                l["small"] == "One press disarms" and
+                l["word"] == "Not known" and l["title"]
+                for l in m["lamps"]),
+                f"no show file, {name}: three groups drawn, each button "
+                f"Not known, one press disarms: {m['lamps']}")
+        else:
+            check(len(m["lamps"]) == 3 and all(
+                l["shown"] and l["disabled"] and small in l["small"] and
+                l["title"] and l["word"] != "Disarm"
+                for l in m["lamps"]),
+                f"no show file, {name}: three groups drawn, Hold to arm "
+                f"shown but off, saying why: {m['lamps']}")
         check(line in (m.get("nofile") or ""),
               f"no show file, {name}: the line says what is missing: "
               f"{m.get('nofile')!r}")
@@ -43175,7 +43203,7 @@ console.log(JSON.stringify(out));
     for need in ('const said = holdRefusalWords(e.code, rearmLeftMs(',
                  'armSay(said, 2);',
                  'const w = armWaitWords(left, aborted, ',
-                 'if(!(HOLD && HOLD.group === i)) ab.disabled = true;'):
+                 'if(!holding(i)) ab.disabled = true;'):
         check(need in page, f"the page has {need!r}")
     chrome = _find_chromium()
     if not chrome:
@@ -43589,7 +43617,8 @@ function measure(){
     const tw = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
     for(let n = tw.nextNode(); n; n = tw.nextNode()){
       const t = n.textContent.trim(); const el = n.parentElement;
-      if(!t || !shown(el)) continue;
+      // .sr: read by a screen reader, never drawn.
+      if(!t || !shown(el) || el.closest(".sr")) continue;
       const px = parseFloat(getComputedStyle(el).fontSize);
       if(px < out.min_px) out.min_px = px;
       if(px < 14) out.small.push(Math.round(px * 10) / 10 + " px: " + (el.id || el.className || el.tagName) + ": " + t.slice(0, 30));
@@ -43755,6 +43784,554 @@ def test_startup_page_readable_at_the_show_pc_sizes():
               f"{m['tile_px']} {m['tiles'][:2]}")
         check(not m["problems"], f"{w}x{h}: {m['problems'][:6]}")
     print("  measured: " + "; ".join(said))
+    print("  ok")
+
+
+# -- the rack screen, driven (Jeff, 2026-10-26) -------------------------------
+# Presses on the drawn page: every POST the page sends is recorded (and
+# answered as the test says), and each status the stub serves can be
+# changed on the way in. `window.__drive(out, h)` is the test's own steps;
+# whatever it puts in `out` comes back.
+_RACK_DRIVE_JS = r"""
+<script>
+(function(){
+const realFetch = window.fetch.bind(window);
+window.__posts = []; window.__patch = null; window.__answer = {};
+window.fetch = async function(url, opt){
+  const u = String(url);
+  if(opt && opt.method === "POST"){
+    const route = u.replace(/^.*\/api\/remote\//, "");
+    let body = {}; try{ body = JSON.parse(opt.body || "{}"); }catch(e){}
+    window.__posts.push({route:route, body:body});
+    const f = window.__answer[route];
+    const a = f ? f(body) : [200, {ok:true, text:"Done."}];
+    return new Response(JSON.stringify(a[1]), {status:a[0], headers:{"Content-Type":"application/json"}});
+  }
+  const r = await realFetch(url, opt);
+  if(u.indexOf("/api/remote/status") >= 0 && window.__patch){
+    const st = window.__patch(await r.json());
+    return new Response(JSON.stringify(st), {status:200, headers:{"Content-Type":"application/json"}});
+  }
+  return r;
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const ev = (el, type, detail) => el.dispatchEvent(type === "click" ?
+  new MouseEvent("click", {bubbles:true, cancelable:true, detail:detail === undefined ? 1 : detail}) :
+  new PointerEvent(type, {bubbles:true, cancelable:true, pointerId:1, pointerType:"mouse", isPrimary:true, buttons:type === "pointerdown" ? 1 : 0}));
+const tap = el => { ev(el, "pointerdown"); ev(el, "pointerup"); ev(el, "click"); };
+const lamp = i => document.querySelector('[data-arm="' + i + '"]');
+const look = i => { const b = lamp(i); return {word:b.querySelector(".word").textContent, small:b.querySelector("small").textContent,
+  mode:b.dataset.mode, disabled:b.disabled, fill:b.querySelector(".fill").style.width,
+  buttons:b.closest(".lamp").querySelectorAll("button").length}; };
+const posts = route => window.__posts.filter(p => p.route === route);
+const note = () => (document.getElementById("arm-note") || {}).textContent || "";
+async function go(){
+  if(!document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 50);
+  await sleep(300);
+  const out = {problems:[]};
+  try{ await window.__drive(out, {sleep:sleep, ev:ev, tap:tap, lamp:lamp, look:look, posts:posts, note:note}); }
+  catch(e){ out.problems.push("the steps threw: " + e); }
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify([out]); document.body.appendChild(pre);
+}
+setTimeout(go, 0);
+})();
+</script>
+"""
+
+
+def _rack_drive(chrome, page, status, steps_js, size=(1366, 768), **kw):
+    """Draw the page at `size` and run `steps_js` (the body of
+    window.__drive) on it: the dict it filled, or a string saying why
+    not."""
+    js = "<script>window.__drive = async (out, h) => {\n" + steps_js + \
+        "\n};</script>" + _RACK_DRIVE_JS
+    got = _rack_screen_in_chromium(chrome, page, status, (size,),
+                                   measure_js=js, **kw)
+    res = got[size]
+    return res[0] if isinstance(res, list) and res else str(res)
+
+
+def _rack_status_off():
+    """The Pico, quiet: three groups off, screen arming on, no banners."""
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["flames"] = dict(st["flames"], cues_fault="", groups=[
+        dict(g, wanted=False, rearm_ms=0, purge_refused="")
+        for g in st["flames"]["groups"]])
+    st["deck"] = {"text": "", "heard": True}
+    return st
+
+
+def _page_logic_in_node(page, body):
+    """Run `body` in node after the page's pure logic block: the list of
+    failures it printed, or None when it did not run."""
+    import shutil as _sh
+    import subprocess as _sp
+    node = _sh.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        return None
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    js = logic + "\nconst out = [];\nconst t = (c, m) => { if(!c) out.push(m); };\n" + \
+        body + "\nconsole.log(JSON.stringify(out));\n"
+    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = [f"node did not run it: {r.stdout[-400:]!r} {r.stderr[-600:]!r}"]
+    return bad
+
+
+def test_rack_screen_abort_is_a_corner_stop_sign():
+    section("rack screen ABORT (Jeff, 2026-10-26): a stop sign in the bottom "
+            "right corner instead of the big bar; always on the screen, "
+            "never behind a gesture, at least 44 px, 'Abort' for a screen "
+            "reader and a tooltip; nothing pressable under it at the bottom "
+            "of the page, no group's Hold to arm under it at load "
+            "(1366x768, 1280x800, 1366x700, 1920x1080, an iPad); one press "
+            "is the same Abort as before (its confirm, then abort with "
+            "confirmed). Drawn in a real browser and pressed")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('<button id="b-abort" aria-label="Abort"',
+                 'press("abort", {confirmed:true})',
+                 'confirmBox("Abort the show?"'):
+        check(need in page, f"the page has {need!r}")
+    check("touchstart" not in page and "swipe" not in page.lower(),
+          "no gesture stands in front of Abort")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    steps = r"""
+const ab = document.getElementById("b-abort");
+const box = () => ab.getBoundingClientRect();
+const cover = (r) => { const a = box(); return r.left < a.right - 0.5 && a.left < r.right - 0.5 && r.top < a.bottom - 0.5 && a.top < r.bottom - 0.5; };
+const shown = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+const pressable = () => [...document.querySelectorAll("button, select, input")].filter(el => shown(el) && !el.closest("#abortbar") && !el.closest("#modal") && !el.closest("#info"));
+scrollTo(0, 0);
+let a = box();
+out.vw = innerWidth; out.vh = innerHeight;
+out.abort = {w:Math.round(a.width), h:Math.round(a.height), right:Math.round(innerWidth - a.right), bottom:Math.round(innerHeight - a.bottom),
+  label:ab.getAttribute("aria-label"), title:ab.title, word:(ab.querySelector(".w") || {}).textContent || ""};
+out.arm_under_at_load = [...document.querySelectorAll("[data-arm]")].filter(el => cover(el.getBoundingClientRect())).map(el => el.dataset.arm);
+out.hit = [];
+for(const y of [0, 1e6]){
+  scrollTo(0, y);
+  const r = box();
+  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  out.hit.push(!!at && (at === ab || ab.contains(at)));
+}
+out.under_at_bottom = pressable().filter(el => cover(el.getBoundingClientRect())).map(el => el.id || el.textContent.trim().slice(0, 20));
+scrollTo(0, 0);
+h.tap(ab);
+await h.sleep(150);
+out.confirm = !document.getElementById("modal").hidden ? document.getElementById("m-q").textContent : null;
+out.before_yes = h.posts("abort").length;
+document.getElementById("m-yes").click();
+await h.sleep(200);
+out.abort_posts = h.posts("abort").map(p => p.body.confirmed);
+out.said = !document.getElementById("abort-said").hidden;
+"""
+    st = _rack_status_no_show_file()
+    said = []
+    for size in ((1366, 768), (1280, 800), (1366, 700), (1920, 1080),
+                 (768, 1024)):
+        m = _rack_drive(chrome, page, st, steps, size=size)
+        w, h = size
+        if not check(isinstance(m, dict) and not m.get("problems"),
+                     f"{w}x{h}: drawn and pressed: {m!r}"):
+            continue
+        a = m["abort"]
+        said.append(f"{w}x{h} {a['w']}x{a['h']} px, {a['right']} px from "
+                    f"the right, {a['bottom']} from the bottom")
+        check(44 <= a["w"] <= 80 and 44 <= a["h"] <= 80,
+              f"{w}x{h}: Abort is a stop sign of 44 to 80 px, not a bar "
+              f"across the screen: {a}")
+        check(0 <= a["right"] <= 24 and 0 <= a["bottom"] <= 24,
+              f"{w}x{h}: in the bottom right corner: {a}")
+        check(a["label"] == "Abort" and a["title"].startswith("Abort") and
+              a["word"] == "ABORT",
+              f"{w}x{h}: 'Abort' for a screen reader, a tooltip, the word "
+              f"on the sign: {a}")
+        check(m["hit"] == [True, True],
+              f"{w}x{h}: pressable at the top and the bottom of the page: "
+              f"{m['hit']}")
+        check(m["arm_under_at_load"] == [],
+              f"{w}x{h}: no group's Hold to arm or Disarm under it at load: "
+              f"{m['arm_under_at_load']}")
+        check(m["under_at_bottom"] == [],
+              f"{w}x{h}: at the bottom of the page nothing pressable is "
+              f"under it: {m['under_at_bottom']}")
+        check(m["confirm"] == "Abort the show?" and m["before_yes"] == 0 and
+              m["abort_posts"] == [True] and m["said"],
+              f"{w}x{h}: one press asks, Yes sends the same Abort as "
+              f"before (confirmed), and its answer is shown: {m}")
+    print("  measured: " + "; ".join(said))
+    print("  ok")
+
+
+def test_rack_screen_one_button_per_flame_group():
+    section("rack screen flame groups (Jeff, 2026-10-26): ONE button per "
+            "group. Off, it is Hold to arm (the same hold); armed or asked "
+            "for, the same button reads Disarm and one press disarms; a "
+            "hold that has just armed a group never disarms it when the "
+            "finger comes up; the hold's progress fills the button; with "
+            "screen arming off it is the lamp only, as before. Page logic "
+            "in node, then drawn in a real browser and pressed")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check("data-gdis" not in page and 'class="gdis" data-' not in page,
+          "no separate Disarm button per group")
+    bad = _page_logic_in_node(page, r"""
+t(armButtonMode({armed:"disarmed"}, "disarmed", true) === "hold", "off: hold to arm");
+t(armButtonMode({armed:"held"}, "held", true) === "hold", "held back, not asked for: hold to arm");
+t(armButtonMode({armed:"armed"}, "armed", true) === "disarm", "armed: Disarm");
+t(armButtonMode({armed:"held", wanted:true}, "held", true) === "disarm", "asked for: Disarm");
+t(armButtonMode({armed:"unknown"}, "unknown", true) === "disarm", "not known: a press disarms");
+t(armButtonMode({armed:"armed"}, "armed", false) === "lamp" && armButtonMode({armed:"disarmed"}, "disarmed", false) === "lamp", "screen arming off: the lamp only, no per-group disarm");
+t(disarmHint("armed", "") === "Armed. One press disarms" && disarmHint("held", "cycle") === "Disarm, then hold", "the small line");
+t(clickAction("disarm", "disarm", false) === "disarm", "a press that went down on Disarm disarms");
+t(clickAction("hold", "disarm", false) === "", "a hold that armed the group: lifting the finger never disarms it");
+t(clickAction("", "disarm", false) === "" && clickAction("hold", "hold", false) === "", "a click with no Disarm press: nothing");
+t(clickAction("", "disarm", true) === "disarm" && clickAction("", "hold", true) === "", "the keyboard goes by the button as it is");
+""")
+    if bad is not None:
+        check(bad == [], f"one button per group, in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    steps = r"""
+let heldOn = false, armedNow = false, off = false;
+window.__patch = st => { const gs = st.flames.groups;
+  gs[0].armed = "armed"; gs[2].armed = "held"; gs[2].wanted = true; gs[2].reason = "cycle the arm";
+  if(armedNow){ gs[1].armed = "armed"; gs[1].wanted = true; }
+  if(off) st.arming = Object.assign({}, st.arming, {enabled:false});
+  return st; };
+window.__answer["arm-hold"] = b => heldOn ? [200, {ok:true, armed:true, text:"cat-walk is asked for.", hold_id:5, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:5, held_s:0.5, needs_s:2}];
+await h.sleep(700);
+out.before = [0, 1, 2].map(h.look);
+h.tap(h.lamp(0));
+await h.sleep(150);
+out.disarm_first = h.posts("group-disarm").map(p => p.body.group);
+out.holds_first = h.posts("arm-hold").length;
+h.ev(h.lamp(1), "pointerdown");
+await h.sleep(350);
+out.during = h.look(1);
+out.holds = h.posts("arm-hold").filter(p => p.body.group === 1).length;
+heldOn = true;
+await h.sleep(300);
+armedNow = true;
+await h.sleep(600);
+out.armed = h.look(1);
+out.armed_note = h.note();
+h.ev(h.lamp(1), "pointerup"); h.ev(h.lamp(1), "click");
+await h.sleep(200);
+out.disarm_on_release = h.posts("group-disarm").map(p => p.body.group);
+h.tap(h.lamp(1));
+await h.sleep(150);
+out.disarm_pressed = h.posts("group-disarm").map(p => p.body.group);
+h.lamp(2).click();
+await h.sleep(150);
+out.disarm_keyboard = h.posts("group-disarm").map(p => p.body.group);
+off = true;
+await h.sleep(700);
+out.off = [0, 1].map(h.look);
+const n = h.posts("group-disarm").length;
+h.tap(h.lamp(0));
+await h.sleep(150);
+out.off_posts = h.posts("group-disarm").length - n;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"drawn and pressed: {m!r}"):
+        b0, b1, b2 = m["before"]
+        check(all(b["buttons"] == 1 for b in m["before"]),
+              f"one button per group: {m['before']}")
+        check(b0.get("word") == "Disarm" and b0.get("mode") == "disarm" and
+              not b0["disabled"] and
+              b0.get("small") == "Armed. One press disarms",
+              f"an armed group's button reads Disarm: {b0}")
+        check(b1.get("word") == "Off" and b1.get("mode") == "hold" and
+              not b1["disabled"] and b1.get("small") == "hold to arm",
+              f"an off group's button is Hold to arm, as before: {b1}")
+        check(b2.get("word") == "Disarm" and b2.get("small") == "Disarm, then hold",
+              f"a group asked for and held back: Disarm, then hold: {b2}")
+        check(m["disarm_first"] == [0] and m["holds_first"] == 0,
+              f"one press on Disarm disarms that group at once, no hold: "
+              f"{m['disarm_first']} {m['holds_first']}")
+        check(m["holds"] >= 2 and m["during"].get("fill") == "25%" and
+              m["during"].get("mode") == "hold",
+              f"holding the off group: the hold's heartbeats and its "
+              f"progress on the button: {m['during']} {m['holds']}")
+        check(m["armed"].get("mode") == "disarm" and
+              m["armed"].get("word") == "Disarm" and
+              m["armed_note"] == "cat-walk is asked for.",
+              f"once armed the same button reads Disarm: {m['armed']} "
+              f"{m['armed_note']!r}")
+        check(m["disarm_on_release"] == [0],
+              f"lifting the finger that armed it never disarms it: "
+              f"{m['disarm_on_release']}")
+        check(m["disarm_pressed"] == [0, 1] and
+              m["disarm_keyboard"] == [0, 1, 2],
+              f"a fresh press, or Enter, on Disarm disarms: "
+              f"{m['disarm_pressed']} {m['disarm_keyboard']}")
+        check(all(b.get("mode") == "lamp" and b["disabled"] and
+                  b.get("word") != "Disarm" for b in m["off"]) and
+              m["off"][0].get("word") == "Armed" and m["off_posts"] == 0,
+              f"screen arming off: the lamp only, greyed, no per-group "
+              f"disarm, as before: {m['off']} {m['off_posts']}")
+    # The page loses the engine (no status for over 2 s): no group can be
+    # held to arm, and every group's button still disarms with one press.
+    steps2 = r"""
+window.__patch = st => { st.flames.groups[0].armed = "armed"; return st; };
+await h.sleep(500);
+window.__patch = st => { throw new Error("the engine went away"); };
+await h.sleep(2800);
+out.stale = [0, 1, 2].map(h.look);
+out.banner = !document.getElementById("stale").hidden;
+h.tap(h.lamp(1));
+await h.sleep(150);
+out.stale_posts = h.posts("group-disarm").map(p => p.body.group);
+out.stale_holds = h.posts("arm-hold").length;
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps2)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"drawn, then cut off: {m!r}"):
+        check(m["banner"] and all(b.get("mode") == "disarm" and
+                                  not b.get("disabled") for b in m["stale"]),
+              f"no contact: every group's button is a Disarm, pressable: "
+              f"{m['stale']}")
+        check(m["stale_posts"] == [1] and m["stale_holds"] == 0,
+              f"no contact: one press disarms, nothing is held: "
+              f"{m['stale_posts']} {m['stale_holds']}")
+    print("  ok")
+
+
+def test_rack_screen_arm_all_and_disarm_all_toggle():
+    section("rack screen (Jeff, 2026-10-26): Disarm all flame groups is a "
+            "two-way button. Every group off: Arm all flame groups, a HOLD "
+            "that holds every group this screen can arm, each by its own "
+            "button's rules; a group locked out, waiting or refused stays "
+            "out and is named. Any group armed or asked for, a mix, or a "
+            "state not known: Disarm all, one press, as before. Never "
+            "under live flame programming's one group at a time; never a "
+            "Disarm all from the finger that armed. Page logic in node, "
+            "then drawn in a real browser and pressed")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    bad = _page_logic_in_node(page, r"""
+const live = gs => ({arming:{enabled:true, fresh_s:1.0}, flames:{connected:true, stale:false, age_ms:100, groups:gs}, schedule:{aborted:false}});
+const off = [{name:"a", armed:"disarmed"}, {name:"b", armed:"disarmed"}, {name:"c", armed:"held"}];
+t(allButtonMode(live(off), false) === "arm", "every group off: Arm all");
+t(allButtonMode(live([{armed:"armed"}, {armed:"disarmed"}]), false) === "disarm", "a mix: Disarm all");
+t(allButtonMode(live([{armed:"disarmed", wanted:true}, {armed:"disarmed"}]), false) === "disarm", "one asked for: Disarm all");
+t(allButtonMode(live([{armed:"unknown"}]), false) === "disarm", "a group not known: Disarm all");
+t(allButtonMode(live(off), true) === "disarm", "a stale page: Disarm all");
+t(allButtonMode(Object.assign(live(off), {arming:{enabled:false}}), false) === "disarm", "screen arming off: Disarm all");
+t(allButtonMode(Object.assign(live(off), {flames:{connected:true, stale:true, groups:off}}), false) === "disarm", "flamesafe stale: Disarm all");
+t(allButtonMode(live([]), false) === "disarm" && allButtonMode(null, false) === "disarm", "no groups, no status: Disarm all");
+const now = 1e6;
+let p = armAllPlan(live(off), now, now, {1:1500});
+t(JSON.stringify(p.go) === "[0,2]" && p.out.length === 1 && p.out[0].name === "b" && p.out[0].why === "Re-arm in 1.5 s", "a group in its re-arm wait stays out, named: " + JSON.stringify(p));
+p = armAllPlan(live([{name:"a", armed:"armed"}, {name:"b", armed:"disarmed"}]), now, now, {});
+t(JSON.stringify(p.go) === "[1]" && p.out[0].why === "Already armed or asked for.", "the same rules as a group's own button");
+p = armAllPlan(Object.assign(live(off), {live_flame:{on:true, one_group_at_a_time:true}}), now, now, {});
+t(p.go.length === 0 && p.why === ONE_GROUP_WORDS, "live flame programming, one group at a time: nothing held");
+p = armAllPlan(Object.assign(live(off), {live_flame:{on:true, one_group_at_a_time:false}}), now, now, {});
+t(p.go.length === 3, "live flame programming allowing more: every group");
+p = armAllPlan(Object.assign(live(off), {schedule:{aborted:true}}), now, now, {});
+t(p.go.length === 0 && p.why === REFUSED_LATCHED, "an Abort standing: nothing held, Press Reset");
+p = armAllPlan(live(off), now, now - 5000, {});
+t(p.go.length === 0 && /Not live/.test(p.out[0].why), "a stale status: nothing held");
+const w = armAllWords([{group:0, end:"armed"}, {group:1, end:"out", why:"b is locked out."}], [{group:2, name:"c", why:"Re-arm in 1.5 s"}], ["a", "b", "c"]);
+t(w === "Arm all: a is asked for; the lamps show when armed. Not armed: b (b is locked out). Not armed: c (Re-arm in 1.5 s).", "the words: " + w);
+t(armAllWords([{group:0, end:"out", why:"X."}, {group:1, end:"out", why:"X"}], [], ["a", "b"]) === "Arm all: nothing was armed. Not armed: a, b (X).", "one reason said once");
+t(!/[\u2013\u2014]/.test(w + ONE_GROUP_WORDS), "no dashes");
+""")
+    if bad is not None:
+        check(bad == [], f"Arm all and Disarm all, in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    locked = ("Every machine in cat-walk is locked out on the Startup page, "
+              "so flamesafe will not arm it. Unlock one there first.")
+    steps = r"""
+let asked = false, armNow = false;
+window.__patch = st => { const gs = st.flames.groups;
+  gs[2].rearm_ms = 60000;
+  if(asked){ gs[0].armed = "armed"; gs[0].wanted = true; }
+  return st; };
+window.__answer["arm-hold"] = b => b.group === 1 ? [409, {error:LOCKED, let_go:true}] :
+  (armNow ? [200, {ok:true, armed:true, text:"front row is asked for.", hold_id:3, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:3, held_s:1, needs_s:2}]);
+await h.sleep(700);
+const B = document.getElementById("b-disarm");
+const lbl = () => B.querySelector(".lbl").textContent;
+out.label_off = lbl();
+h.ev(B, "pointerdown");
+await h.sleep(350);
+out.held = [...new Set(h.posts("arm-hold").map(p => p.body.group))].sort();
+out.fill = B.querySelector(".fill").style.width;
+out.label_holding = lbl();
+armNow = true;
+await h.sleep(300);
+asked = true;
+await h.sleep(600);
+out.label_after = lbl();
+h.ev(B, "pointerup"); h.ev(B, "click");
+await h.sleep(200);
+out.disarm_all_on_release = h.posts("disarm-all").length;
+out.note = h.note();
+h.tap(B);
+await h.sleep(150);
+out.disarm_all_pressed = h.posts("disarm-all").length;
+out.released = h.posts("arm-release").map(p => p.body.group).sort();
+""".replace("LOCKED", json.dumps(locked))
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"drawn and pressed: {m!r}"):
+        check(m["label_off"] == "Arm all flame groups",
+              f"every group off: the button is Arm all: {m['label_off']!r}")
+        check(m["held"] == [0, 1],
+              f"one hold on Arm all holds every group it can (wave flamer, "
+              f"in its re-arm wait, stays out): {m['held']}")
+        check(m["fill"] == "50%" and
+              m["label_holding"] == "Arm all flame groups",
+              f"the hold's progress fills Arm all: {m['fill']} "
+              f"{m['label_holding']!r}")
+        check(m["label_after"] == "Disarm all flame groups",
+              f"a group armed: the button is Disarm all: "
+              f"{m['label_after']!r}")
+        check(m["disarm_all_on_release"] == 0,
+              "the finger that armed comes up on Disarm all: nothing is "
+              "disarmed")
+        check("front row is asked for" in m["note"] and
+              ("Not armed: cat-walk (" + locked[:-1] + ")") in m["note"] and
+              "Not armed: wave flamer (Re-arm in " in m["note"],
+              f"what Arm all did, every group left out named with why: "
+              f"{m['note']!r}")
+        check(m["disarm_all_pressed"] == 1,
+              f"a press on Disarm all disarms at once: "
+              f"{m['disarm_all_pressed']}")
+        check(m["released"] == [1],
+              f"the refused group's hold was let go: {m['released']}")
+    steps2 = r"""
+const B = document.getElementById("b-disarm");
+const lbl = () => B.querySelector(".lbl").textContent;
+window.__patch = st => { st.live_flame = {on:true, one_group_at_a_time:true, receiving:true, map:[]}; return st; };
+await h.sleep(700);
+out.label_lf = lbl();
+h.ev(B, "pointerdown"); await h.sleep(250); h.ev(B, "pointerup"); h.ev(B, "click");
+await h.sleep(100);
+out.lf_holds = h.posts("arm-hold").length;
+out.lf_note = h.note();
+window.__patch = st => { st.flames.groups[1].armed = "armed"; return st; };
+await h.sleep(700);
+out.label_mix = lbl();
+window.__patch = st => { st.arming = Object.assign({}, st.arming, {enabled:false}); return st; };
+await h.sleep(700);
+out.label_switch_off = lbl();
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps2)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"drawn and pressed: {m!r}"):
+        check(m["lf_holds"] == 0 and m["lf_note"].startswith(
+            "Not armed: Live flame programming is on, and it allows one "
+            "flame group at a time."),
+            f"live flame programming, one group at a time: Arm all holds "
+            f"nothing and says why: {m['lf_holds']} {m['lf_note']!r}")
+        check(m["label_mix"] == "Disarm all flame groups" and
+              m["label_switch_off"] == "Disarm all flame groups",
+              f"a mix armed, or screen arming off: Disarm all: "
+              f"{m['label_mix']!r} {m['label_switch_off']!r}")
+    print("  ok")
+
+
+# Every nav button the page shows, at a size, on a view: inside the window
+# and the button itself under a finger.
+_NAV_MEASURE_JS = r"""
+<script>
+(function(){
+function go(){
+  if(!document.querySelector("#fl-lamps .lamp") || document.getElementById("nav-user").textContent === "Signed out") return setTimeout(go, 100);
+  setTimeout(() => {
+    const out = {vw:innerWidth, btns:[]};
+    for(const id of ["nav-user", "nav-info", "nav-tonight", "nav-prog", "nav-morning", "nav-back"]){
+      const el = document.getElementById(id);
+      if(el.hidden) continue;
+      const r = el.getBoundingClientRect();
+      const at = document.elementFromPoint(Math.max(0, Math.min(innerWidth - 1, r.left + r.width / 2)), r.top + r.height / 2);
+      out.btns.push({id:id, left:Math.round(r.left), right:Math.round(r.right), w:Math.round(r.width),
+        inside:r.left >= 0 && r.right <= innerWidth + 0.5 && r.width > 0, hit:!!at && (at === el || el.contains(at))});
+    }
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify([out]); document.body.appendChild(pre);
+  }, 600);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_rack_screen_nav_buttons_never_cut_off():
+    section("rack screen (operator, 2026-10-26: 'the programming button "
+            "disappears'): the nav row never wrapped, so on a window "
+            "narrower than its buttons (an iPad, the 950 px Edge window, a "
+            "tall window whose buttons grow with it, a long signed-in name) "
+            "Programming, Startup and Back to the show were pushed off the "
+            "right edge and cut off without a scroll bar. Every nav button "
+            "the page shows is inside the window and pressable, on the "
+            "show screen and on Users, at the show PC's sizes and an "
+            "iPad's. Drawn in a real browser")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    nav = _css_rule(_css_rules(page), "nav") or {}
+    check(nav.get("flex-wrap") == "wrap" and nav.get("min-width") == "0",
+          f"the nav may shrink to the window and wrap its buttons: {nav}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_off()
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True}
+    st["me"] = {"user": "Andy Struthers", "role": "operator",
+                "users_active": True}
+    sizes = ((768, 1024), (834, 1194), (950, 1070), (1024, 768),
+             (1280, 720), (1920, 1080))
+    for frag, what in (("", "show screen"), ("#users", "Users")):
+        got = _rack_screen_in_chromium(chrome, page, st, sizes,
+                                       measure_js=_NAV_MEASURE_JS, frag=frag)
+        for (w, h), res in got.items():
+            if not check(isinstance(res, list) and res,
+                         f"{what} {w}x{h}: drawn: {res!r}"):
+                continue
+            m = res[0]
+            ids = [b["id"] for b in m["btns"]]
+            check("nav-prog" in ids and "nav-tonight" in ids and
+                  "nav-morning" in ids,
+                  f"{what} {w}x{h}: Programming, Schedule and Startup are "
+                  f"offered: {ids}")
+            cut = [b for b in m["btns"] if not (b["inside"] and b["hit"])]
+            check(not cut,
+                  f"{what} {w}x{h}: every nav button inside the window and "
+                  f"pressable, none cut off at the right edge: {cut}")
     print("  ok")
 
 
@@ -55706,17 +56283,18 @@ def test_rack_lasers_strip_page():
     check(flames.count("<div") == flames.count("</div>"),
           "the LASERS strip is not inside the flame block")
     check('<button id="b-disarm" class="disarm"' in flames and
-          '>Disarm all flame groups<small>' in flames and
-          "laser" not in flames.lower(),
+          '<span class="lbl">Disarm all flame groups</span><small>' in flames
+          and "laser" not in flames.lower(),
           "the flame block keeps its own Disarm all flame groups and "
           "nothing of the lasers")
     check('<button class="lzdis" id="lz-disarm">Disarm all lasers</button>'
           in page[lz:end] and 'class="disarm"' not in page[lz:end],
           "Disarm all lasers is its own button, not styled as a flame one")
     line = [ln for ln in page.splitlines()
-            if '$("b-disarm").addEventListener' in ln]
+            if 'ALL_BTN.addEventListener("click"' in ln]
     check(len(line) == 1 and 'press("disarm-all")' in line[0] and
-          "laser" not in line[0].lower(),
+          "laser" not in line[0].lower() and
+          'const ALL_BTN = $("b-disarm");' in page,
           f"Disarm every flame group presses disarm-all only: {line}")
     check("  renderLaserStrip(ST && ST.laser_arm, stale);\n  renderMode(stale);"
           in page, "the strip is drawn every 250 ms, stale or not")
@@ -56053,8 +56631,8 @@ def test_disarm_all_is_a_plain_disarm_and_never_gated():
         page = open(os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "ltcplay", "web", "remote.html"),
             encoding="utf-8").read()
-        check(">Disarm all flame groups<small>plain disarm: arm again with "
-              "a hold</small>" in page and
+        check('<span class="lbl">Disarm all flame groups</span><small>plain '
+              'disarm: arm again with a hold</small>' in page and
               'abort-sub").textContent = idle ? "Nothing to abort right '
               'now" : "Stops the show. Flames then need Arm again"' in page,
               "the page labels the plain disarm and the Abort apart")
@@ -56900,7 +57478,7 @@ def test_rack_screen_jeff_2026_10_23_page():
                  '<div class="seg" id="run-mode" role="radiogroup"',
                  '<div class="progcol" id="run-col">',
                  '<select id="se-tz"></select>',
-                 'b.addEventListener("pointerdown", e => { e.preventDefault(); armStart(i); });',
+                 'b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold") armStart(i); });',
                  '.lamp button.armb:disabled{opacity:1;filter:none;cursor:default}',
                  'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f})'):
         check(need in page, f"the page has {need!r}")
@@ -62055,6 +62633,10 @@ if __name__ == "__main__":
     test_startup_page_says_hold_space_and_this_page_selected()
     test_startup_page_readable_at_the_show_pc_sizes()
     test_rack_screen_says_the_rearm_wait()
+    test_rack_screen_abort_is_a_corner_stop_sign()
+    test_rack_screen_one_button_per_flame_group()
+    test_rack_screen_arm_all_and_disarm_all_toggle()
+    test_rack_screen_nav_buttons_never_cut_off()
     test_streamdeck_reports_rearm_wait_and_purge_refusal()
     test_rack_window_fits_the_work_area_above_the_taskbar()
     test_deck_chip_shows_live_truth()
