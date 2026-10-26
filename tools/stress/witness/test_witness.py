@@ -88,8 +88,11 @@ class WitnessRun:
     def logline(self, dt, kind, msg):
         self.log.write(f"{stamp(dt)}  {kind}: {msg}\n")
 
+    def files(self):
+        return (self.nz, self.gp, self.st, self.log)
+
     def close(self):
-        for fh in (self.nz, self.gp, self.st, self.log):
+        for fh in self.files():
             fh.close()
 
 
@@ -261,7 +264,13 @@ class TestChecker(unittest.TestCase):
         self.j = Journals(self.d)
 
     def tearDown(self):
-        shutil.rmtree(self.d, ignore_errors=True)
+        # Every file the synthetic run opened is closed before its folder
+        # goes: an open one (a test that never called close()) cannot be
+        # deleted on Windows and leaks the folder (#111, windows-latest).
+        self.w.close()
+        self.assertTrue(all(fh.closed for fh in self.w.files()),
+                        "a witness file is still open")
+        shutil.rmtree(self.d)
 
     def good_show(self):
         """A show with a proper arm, fire in SHOW, Abort and Reset."""
