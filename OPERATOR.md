@@ -124,8 +124,12 @@ to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
 let go and it stops; nothing fires while a show is live or an Abort
 stands); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
-way; a line under the machine map says what was done, with Undo for 5
-seconds; a refusal is said there in plain words; a lock stays across
+way; a line under the machine map, or under the lasers, says what was
+done, with Undo for 5 seconds; a second tap on the same L within about a
+second does nothing, so a double tap never locks and then unlocks; a
+machine cannot be unlocked while its flame group is armed or being armed:
+the line says "Disarm <group> first, then unlock <machine>"; a refusal is
+said there in plain words; a lock stays across
 restarts until unlocked here; a locked unit
 cannot be armed or fired from anywhere and show cues skip it; a banner on
 every screen says what is locked); and the Startup and Shutdown
@@ -307,10 +311,14 @@ free down its right edge, so no other button is ever under the sign. Point
 at it (or reach it with the Tab key) and a line beside it says what a press
 does now, for example "Nothing to abort right now". Abort is a DOUBLE TAP,
 with no pop-up: the first tap only makes the sign bigger and flashing, with
-TAP AGAIN TO ABORT on it, and sends nothing; a second tap anywhere on the
-big sign within 2 seconds aborts, exactly as before. Any finger works, two
+TAP AGAIN TO ABORT on it (it grows upward, inside the free strip, so it
+never covers another button), and sends nothing; a second tap anywhere on
+the big sign while it is big (2 seconds) aborts, exactly as before. Two
+taps closer together than about a sixth of a second count as one tap (a
+bounce), so tap again. Any finger works, two
 different fingers too, or the mouse twice (a double click), or Enter or
-Space twice; a finger then the mouse counts as one tap. After 2 seconds
+Space twice (holding the key down counts once); a finger then the mouse
+counts as one tap. After 2 seconds
 with no second tap the sign goes back by itself and nothing happened. It
 works signed out, and with the connection lost it still sends and says
 plainly if the engine did not answer. The Stream Deck's Abort is unchanged. If you pinch-zoom an iPad in on part of the page, the sign
@@ -326,8 +334,11 @@ way Abort does instead, and says so.
 
 The lasers have ONE pill in the status strip, one plain sentence: who is
 armed and BEYOND's laser output, for example "Lasers: all disarmed, output
-dark", "Lasers: 2 of 3 armed, output off" or "Lasers: all armed, output on"
-("not known: no contact" while the page has lost the engine). Point at it
+dark", "Lasers: 2 of 3 armed, output off" or "Lasers: all armed, output allowed" (allowed: BEYOND may light them;
+the show decides when)
+("not known: no contact" while the page has lost the engine). A warning
+about what the show last sent BEYOND is said in the sentence too, for
+example "...; lit? link unknown". Point at it
 for every detail: which lasers are armed, why the output stays off, why an
 arm would be refused, and what the show last sent BEYOND. It never says lit
 while BEYOND is not running: it reads LINK LOST first, in red, and if
@@ -377,7 +388,8 @@ The button under the groups is two-way. While every group is off it reads
 Hold to arm all flame groups, in green with a green outline: press and HOLD
 it for the full hold, and every group this screen can arm is held to arm at
 once, each by exactly the same rules as its own button. Let go early and
-every hold is let go and nothing arms. A
+every hold still under way is let go; a group the Stream Deck already armed
+during the hold stays armed (its button then reads Disarm). A
 group that is locked out, still in its re-arm wait or refused stays out, and
 the line beside it names each one and why. While live flame programming is
 on with one group at a time (or turns on during the hold), or an Abort

@@ -11897,18 +11897,18 @@ def build():
  # The Abort double tap and the one laser pill (Jeff, 2026-10-26).
  ("rack screen: one tap on the Abort sign aborts",
   "ltcplay/web/remote.html",
-  '  if(prev && nowMs - prev.at <= ABORT_TAP_MS && nowMs >= prev.at && prev.kind === kind) return {fire:true, next:null};',
-  '  return {fire:true, next:null};'),
+  '    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};\n  }\n  return {fire:false, next:{at:nowMs, kind:kind}};',
+  '    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};\n  }\n  return {fire:true, next:null};'),
 
  ("rack screen: the Abort sign's second tap counts long after the first",
   "ltcplay/web/remote.html",
-  "const ABORT_TAP_MS = 2000;",
-  "const ABORT_TAP_MS = 5000;"),
+  'const ABORT_TAP_MS = 2000, ABORT_TAP_MIN_MS = 150;',
+  'const ABORT_TAP_MS = 5000, ABORT_TAP_MIN_MS = 150;'),
 
  ("rack screen: a finger then the mouse aborts",
   "ltcplay/web/remote.html",
-  ' && nowMs >= prev.at && prev.kind === kind) return {fire:true, next:null};',
-  ' && nowMs >= prev.at) return {fire:true, next:null};'),
+  '  if(prev && prev.kind === kind && nowMs >= prev.at){',
+  '  if(prev && nowMs >= prev.at){'),
 
  ("rack screen: the Abort sign's first tap shows nothing",
   "ltcplay/web/remote.html",
@@ -11943,8 +11943,8 @@ def build():
  # One-tap lockout on the Startup page (Jeff, 2026-10-26).
  ("startup page: an L button asks before it locks again",
   "ltcplay/web/remote.html",
-  '  const j = await moPress("lock", lockBody(kind, id, !locked), msg);',
-  '  if(!(await confirmBox("Lock out " + name + "?", "", "Lock out", ""))) return;\n  const j = await moPress("lock", lockBody(kind, id, !locked), msg);'),
+  '    const j = await moPress("lock", lockBody(kind, id, on), msg);',
+  '    if(!(await confirmBox("Lock out " + name + "?", "", "Lock out", ""))) return;\n    const j = await moPress("lock", lockBody(kind, id, on), msg);'),
 
  ("startup page: an unlock is sent without saying it is confirmed",
   "ltcplay/web/remote.html",
@@ -11953,13 +11953,13 @@ def build():
 
  ("startup page: a lock or unlock offers no Undo",
   "ltcplay/web/remote.html",
-  "  if(j) lockUndoOffer(kind, id, name, !locked);",
-  ""),
+  '    if(j) lockUndoOffer(kind, id, name, on);',
+  ''),
 
  ("startup page: Undo does the same again instead of the opposite",
   "ltcplay/web/remote.html",
-  '  await moPress("lock", lockBody(u.kind, u.id, !u.on),',
-  '  await moPress("lock", lockBody(u.kind, u.id, u.on),'),
+  '  await lockClick(u.kind, u.id, u.name, !u.on);',
+  '  await lockClick(u.kind, u.id, u.name, u.on);'),
 
  ("startup page: Undo never goes away",
   "ltcplay/web/remote.html",
@@ -11970,6 +11970,72 @@ def build():
   "ltcplay/web/remote.html",
   "  }catch(e){ el.textContent = e.message; return null; }",
   "  }catch(e){ el.textContent = e.message; return {}; }"),
+
+ # Review of #122.
+ ("startup page: a second tap on L while the first is under way flips it back",
+  "ltcplay/web/remote.html",
+  "  if(LOCK_BUSY[key]) return;\n",
+  ""),
+
+ ("startup page: an L button is free again at once after its answer",
+  "ltcplay/web/remote.html",
+  "    setTimeout(() => { delete LOCK_BUSY[key]; }, LOCK_QUIET_MS);",
+  "    delete LOCK_BUSY[key];"),
+
+ ("startup page: an L tap decides from the page's old copy",
+  "ltcplay/web/remote.html",
+  "    try{ fresh = await getJSON(\"/api/remote/morning\", 1500); }catch(e){ fresh = null; }",
+  "    fresh = MO;"),
+
+ ("startup page: a machine is unlocked while its flame group is armed",
+  "ltcplay/web/remote.html",
+  '  if(g && (g.armed === "armed" || g.wanted)) return "Disarm " + m.group + " first, then unlock " + m.name + ".";',
+  ''),
+
+ ("startup page: a laser lock's Undo sits under the machine map",
+  "ltcplay/web/remote.html",
+  '  if(at && bar.previousElementSibling !== at) at.insertAdjacentElement("afterend", bar);',
+  ''),
+
+ ("rack screen: the enlarged Abort sign spills out of its gutter",
+  "ltcplay/web/remote.html",
+  "#abortbar.tap1 button{width:calc(var(--abort-size) + 10px);",
+  "#abortbar.tap1 button{width:calc(var(--abort-size) * 2.1);"),
+
+ ("rack screen: a bounce on the Abort sign is a double tap",
+  "ltcplay/web/remote.html",
+  "    if(nowMs - prev.at < ABORT_TAP_MIN_MS) return {fire:false, same:true, next:prev};\n",
+  ""),
+
+ ("rack screen: a held Enter on the Abort sign counts again and again",
+  "ltcplay/web/remote.html",
+  '$("b-abort").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });',
+  ''),
+
+ ("rack screen: a tap leaves keyboard focus on the Abort sign",
+  "ltcplay/web/remote.html",
+  '  if(kind !== "key") $("b-abort").blur();',
+  ''),
+
+ ("rack screen: a late timer turns a good second Abort tap into a first",
+  "ltcplay/web/remote.html",
+  '$("abortbar").classList.contains("tap1"));\n  if(step.same) return;',
+  'false);\n  if(step.same) return;'),
+
+ ("rack screen: the second Abort tap leaves a hold under way",
+  "ltcplay/web/remote.html",
+  '  abortTapDone();\n  armStop("Abort");',
+  '  abortTapDone();'),
+
+ ("rack screen: the laser pill says output on when it is only allowed",
+  "ltcplay/web/remote.html",
+  '  if(ls && la.output_permitted) o = "output allowed";',
+  '  if(ls && la.output_permitted) o = "output on";'),
+
+ ("rack screen: a laser warning shows only as a colour",
+  "ltcplay/web/remote.html",
+  '  const warn = out.state === "warn" ? "; " + String(out.word || "check") : "";',
+  '  const warn = "";'),
 
  ("rack screen: the nav buttons are cut off at the right edge again",
   "ltcplay/web/remote.html",

@@ -43800,13 +43800,14 @@ _RACK_DRIVE_JS = r"""
 <script>
 (function(){
 const realFetch = window.fetch.bind(window);
-window.__posts = []; window.__patch = null; window.__answer = {};
+window.__posts = []; window.__patch = null; window.__answer = {}; window.__delay = {}; window.__patchMorning = null;
 window.fetch = async function(url, opt){
   const u = String(url);
   if(opt && opt.method === "POST"){
     const route = u.replace(/^.*\/api\/remote\//, "");
     let body = {}; try{ body = JSON.parse(opt.body || "{}"); }catch(e){}
     window.__posts.push({route:route, body:body});
+    if(window.__delay[route]) await new Promise(r => setTimeout(r, window.__delay[route]));
     const f = window.__answer[route];
     const a = f ? f(body) : [200, {ok:true, text:"Done."}];
     return new Response(JSON.stringify(a[1]), {status:a[0], headers:{"Content-Type":"application/json"}});
@@ -43815,6 +43816,10 @@ window.fetch = async function(url, opt){
   if(u.indexOf("/api/remote/status") >= 0 && window.__patch){
     const st = window.__patch(await r.json());
     return new Response(JSON.stringify(st), {status:200, headers:{"Content-Type":"application/json"}});
+  }
+  if(u.indexOf("/api/remote/morning") >= 0 && window.__patchMorning){
+    const mo = window.__patchMorning(await r.json());
+    return new Response(JSON.stringify(mo), {status:200, headers:{"Content-Type":"application/json"}});
   }
   return r;
 };
@@ -43918,6 +43923,17 @@ t(abortTapStep(first, 1500, "mouse").fire === false, "another kind of pointer is
 t(abortTapStep({at:1000, kind:"key"}, 1800, "key").fire === true, "Enter or Space twice");
 t(abortTapStep(first, 900, "touch").fire === false, "a clock that went back is a first tap");
 t(abortTapKind({pointerType:"pen"}) === "pen" && abortTapKind({detail:0}) === "key" && abortTapKind({detail:1}) === "mouse", "the kinds");
+// Review of #122, P2-2 and P2-6.
+t(ABORT_TAP_MIN_MS === 150, "150 ms");
+let q = abortTapStep(first, 1100, "touch");
+t(q.fire === false && q.same === true && q.next === first, "a second tap under 150 ms is a bounce: the same tap, still waiting");
+t(abortTapStep(first, 1150, "touch").fire === true, "150 ms after: a double tap");
+t(abortTapStep(first, 3500, "touch", true).fire === true, "the sign still enlarged (a late timer): the second tap fires");
+t(abortTapStep(first, 3500, "touch", false).fire === false, "and once it has gone back: a first tap");
+t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"armed"}]}) === "Disarm ground first, then unlock G1.", "no unlock while its group is armed");
+t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"held", wanted:true}]}) === "Disarm ground first, then unlock G1.", "nor asked for");
+t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"disarmed"}]}) === "", "off: unlock");
+t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:true, groups:[]})), "flamesafe not known: no unlock");
 """)
     if bad is not None:
         check(bad == [], f"the Abort double tap, in node: {bad}")
@@ -43970,7 +43986,11 @@ h.tap(ab);
 await h.sleep(100);
 const bar = document.getElementById("abortbar");
 out.first = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, disabled:ab.disabled,
-  w:Math.round(box().width), modal:!document.getElementById("modal").hidden, posts:h.posts("abort").length};
+  h:Math.round(box().height), modal:!document.getElementById("modal").hidden, posts:h.posts("abort").length};
+// Review of #122, P2-1: the enlarged sign covers nothing either.
+out.under_enlarged = [];
+for(const y of [0, 1e6]){ scrollTo(0, y); for(const el of pressable()) if(cover(el.getBoundingClientRect())) out.under_enlarged.push((el.id || el.textContent.trim().slice(0, 20)) + " at " + scrollY); }
+scrollTo(0, 0);
 await h.sleep(2150);
 out.back = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, posts:h.posts("abort").length};
 // Two taps: the second anywhere on the enlarged sign, off its centre.
@@ -44045,11 +44065,12 @@ out.after = bar.classList.contains("tap1");
               f"{m['tip']!r}")
         f1 = m["first"]
         check(f1["tap1"] and f1["word"] == "TAP AGAIN TO ABORT" and
-              not f1["disabled"] and f1["w"] > a["w"] and not f1["modal"]
-              and f1["posts"] == 0,
+              not f1["disabled"] and f1["h"] > a["h"] and not f1["modal"]
+              and f1["posts"] == 0 and m["under_enlarged"] == [],
               f"{w}x{h}: one tap changes the sign at once (larger, TAP "
               f"AGAIN TO ABORT), never disabled, no confirm box, nothing "
-              f"sent: {f1}")
+              f"sent, and the bigger sign covers no control (review of "
+              f"#122, P2-1): {f1} {m['under_enlarged']}")
         check(not m["back"]["tap1"] and m["back"]["word"] == "ABORT" and
               m["back"]["posts"] == 0,
               f"{w}x{h}: after 2.0 s it goes back by itself, nothing sent: "
@@ -44095,13 +44116,33 @@ pclick(4, "touch"); await h.sleep(250); pclick(1, "mouse"); await h.sleep(150);
 out.mixed = n();
 pclick(1, "mouse"); await h.sleep(150);
 out.mixed_then_mouse = n();
-await h.sleep(2100);
 ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+await h.sleep(200);
 ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
 ab.dispatchEvent(new MouseEvent("dblclick", {bubbles:true, detail:2}));
 await h.sleep(150);
 out.dbl = n();
+// A bounce: two clicks at once are one tap, still waiting; a third
+// (deliberate) tap aborts.
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
+await h.sleep(60);
+out.bounce = {n:n(), tap1:document.getElementById("abortbar").classList.contains("tap1")};
+await h.sleep(250);
+ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+await h.sleep(150);
+out.bounce_then = n();
 out.bodies = h.posts("abort").map(p => p.body.confirmed);
+// A held key's repeats are swallowed; the mouse leaves no focus behind.
+const rep = new KeyboardEvent("keydown", {key:"Enter", repeat:true, bubbles:true, cancelable:true});
+ab.dispatchEvent(rep);
+out.repeat_swallowed = rep.defaultPrevented;
+const first = new KeyboardEvent("keydown", {key:"Enter", repeat:false, bubbles:true, cancelable:true});
+ab.dispatchEvent(first);
+out.first_key_kept = !first.defaultPrevented;
+ab.focus();
+h.tap(ab);
+out.focus_left = document.activeElement !== ab;
 """
     m = _rack_drive(chrome, page, _rack_status_off(), steps)
     if check(isinstance(m, dict) and not m.get("problems"),
@@ -44116,6 +44157,45 @@ out.bodies = h.posts("abort").map(p => p.body.confirmed);
               f"aborts: {m}")
         check(m["dbl"] == 4 and all(b is True for b in m["bodies"]),
               f"a real double click aborts once, every Abort confirmed: {m}")
+        check(m["bounce"] == {"n": 4, "tap1": True} and m["bounce_then"] == 5,
+              f"review of #122, P2-2: two clicks under 150 ms apart are one "
+              f"tap, still waiting; the next tap aborts: {m}")
+        check(m["repeat_swallowed"] and m["first_key_kept"] and
+              m["focus_left"],
+              f"review of #122, P2-2: a held key's repeats never count, and "
+              f"a tap leaves no keyboard focus on the sign: {m}")
+    # Review of #122, P2-6 and P2-8: a late timer, and a hold under way.
+    steps = r"""
+const ab = document.getElementById("b-abort");
+const si = window.setTimeout;
+window.setTimeout = (f, ms, ...a) => si(f, f && f.name === "abortTapDone" ? ms + 1500 : ms, ...a);
+window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:7, held_s:0.4, needs_s:2}];
+h.ev(h.lamp(1), "pointerdown");
+await h.sleep(300);
+const holds = h.posts("arm-hold").length;
+h.tap(ab);
+await h.sleep(2300);
+out.still_big = document.getElementById("abortbar").classList.contains("tap1");
+h.tap(ab);
+await h.sleep(250);
+out.aborts = h.posts("abort").length;
+out.released = h.posts("arm-release").map(p => p.body.group);
+const after = h.posts("arm-hold").length;
+await h.sleep(300);
+out.more_holds = h.posts("arm-hold").length - after;
+out.holds = holds;
+out.note = h.note();
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Abort, a late timer and a hold under way: {m!r}"):
+        check(m["still_big"] and m["aborts"] == 1,
+              f"review of #122, P2-6: a late timer never turns a good second "
+              f"tap into a first one: {m}")
+        check(m["holds"] >= 2 and m["released"] == [1] and
+              m["more_holds"] == 0 and m["note"] == "Hold stopped: Abort",
+              f"review of #122, P2-8: the second tap lets go of a hold under "
+              f"way at once: {m}")
     steps = r"""
 const ab = document.getElementById("b-abort");
 window.__patch = st => { throw new Error("the engine went away"); };
@@ -44654,7 +44734,11 @@ t(p.length === 3 && p[1].name === "Lasers" && p[1].word === "all disarmed, outpu
 p = laserPill(chips("1 of 2 armed", "warn", "dark", "ok"), L(true, false, {why_off:"not every laser is armed"}));
 t(p[1].word === "1 of 2 armed, output off" && p[1].state === "warn" && /Armed: Laser 1\./.test(p[1].title) && /stays off: not every laser is armed/.test(p[1].title) && /Laser arm: 1 of 2 armed/.test(p[1].title) && /last sent BEYOND: dark \(sent only\)/.test(p[1].title), "some armed: " + JSON.stringify(p[1]));
 p = laserPill(chips("ARMED", "warn", "lit, unconfirmed", "ok"), L(true, true, {output_permitted:true}));
-t(p[1].word === "all armed, output on" && p[1].state === "warn", "all armed: " + JSON.stringify(p[1]));
+t(p[1].word === "all armed, output allowed" && p[1].state === "warn", "all armed: BEYOND's output allowed, never said on (review of #122, P2-4): " + JSON.stringify(p[1]));
+p = laserPill(chips("ARMED", "warn", "lit? link unknown", "warn"), L(true, true, {output_permitted:true}));
+t(p[1].word === "all armed, output allowed; lit? link unknown", "a warning is in the sentence, not only the colour: " + p[1].word);
+p = laserPill(chips("disarmed", "off", "BEYOND restarted: dark until lit again", "warn"), L(false, false));
+t(p[1].word === "all disarmed, output dark; BEYOND restarted: dark until lit again" && p[1].state === "warn", "and this one: " + p[1].word);
 p = laserPill(chips("disarmed", "off", "LINK LOST", "bad"), L(false, false), {link:"lost", why:"BEYOND is not running"});
 t(p[1].word === "LINK LOST: all disarmed, output dark" && p[1].state === "bad" && /BEYOND: BEYOND is not running\./.test(p[1].title), "a fault first, red: " + JSON.stringify(p[1]));
 p = laserPill(chips("disarmed", "off", "dark", "ok"), L(false, false, {arm_here:"needs screen_arming", arm_refusal:"L2 is locked out"}));
@@ -44756,31 +44840,45 @@ def test_startup_lock_is_one_tap_with_undo():
                      "purge_enabled": True, "open": True}
     mo = _morning_view_pico()
     mo["lockout"] = {"machines": {"m2": True}, "lasers": {}}
+    # The engine's lockout is kept in the page's stub: every lock request
+    # changes it, and the Startup page's state is read from it.
     steps = r"""
 let asked = 0;
 window.confirm = () => { asked++; return true; };
+const lock = {machines:{m2:true}, lasers:{}};
+window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:Object.assign({}, lock.lasers)}; return mo; };
+window.__answer["lock"] = b => { const t = b.kind === "machine" ? lock.machines : lock.lasers; if(b.on) t[b.id] = true; else delete t[b.id];
+  return [200, {ok:true, text:(b.on ? "Locked out " : "Unlocked ") + b.id + "."}]; };
 const modal = () => !document.getElementById("modal").hidden;
 const lk = id => document.querySelector('.mach[data-id="' + id + '"] .lk');
 const locks = () => h.posts("lock").map(p => ({kind:p.body.kind, id:p.body.id, on:p.body.on, confirmed:p.body.confirmed}));
 const undo = () => { const b = document.getElementById("mo-lkundo"); return b.hidden ? null : b.querySelector("span").textContent; };
-window.__answer["lock"] = b => [200, {ok:true, text:(b.on ? "Locked out " : "Unlocked ") + b.id + "."}];
+const msg = () => document.getElementById("mo-msg").textContent;
 await h.sleep(900);
+// One tap locks out m1.
 h.tap(lk("m1"));
-await h.sleep(200);
-out.lock = {posts:locks(), modal:modal(), undo:undo(), msg:document.getElementById("mo-msg").textContent};
+await h.sleep(250);
+out.lock = {posts:locks(), modal:modal(), undo:undo(), msg:msg()};
+// Undo (after the quiet second): the opposite, through the same rules.
+await h.sleep(900);
 h.tap(document.getElementById("mo-lkundo-go"));
-await h.sleep(200);
+await h.sleep(250);
 out.undone = {posts:locks(), undo:undo()};
+await h.sleep(900);
+// One tap unlocks m2 (front row is off).
 h.tap(lk("m2"));
-await h.sleep(200);
+await h.sleep(250);
 out.unlock = {posts:locks(), modal:modal(), undo:undo()};
+// A laser's L: one tap; its Undo sits beside the lasers' message line.
 h.tap(document.querySelector('[data-llock="L1"]'));
-await h.sleep(200);
-out.laser = {posts:locks(), modal:modal(), msg:document.getElementById("mo-lmsg").textContent};
+await h.sleep(250);
+out.laser = {posts:locks(), modal:modal(), msg:document.getElementById("mo-lmsg").textContent,
+  beside:(document.getElementById("mo-lkundo").previousElementSibling || {}).id};
+// A refusal, in the engine's words, and no Undo for it.
 window.__answer["lock"] = b => [409, {error:"flamesafe would not take the lockout file: it is not trusted."}];
 h.tap(lk("m3"));
-await h.sleep(200);
-out.refused = {msg:document.getElementById("mo-msg").textContent, undo:undo(), n:h.posts("lock").length};
+await h.sleep(250);
+out.refused = {msg:msg(), n:h.posts("lock").length, undo:undo()};
 out.asked = asked;
 """
     m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
@@ -44796,9 +44894,8 @@ out.asked = asked;
               f"Undo: {m['lock']}")
         check(m["undone"]["posts"][-1] == {"kind": "machine", "id": "m1",
                                            "on": False, "confirmed": True}
-              and len(m["undone"]["posts"]) == 2 and
-              m["undone"]["undo"] is None,
-              f"Undo sends the opposite at once and goes: {m['undone']}")
+              and len(m["undone"]["posts"]) == 2,
+              f"Undo sends the opposite: {m['undone']}")
         check(m["unlock"]["posts"][-1] == {"kind": "machine", "id": "m2",
                                            "on": False, "confirmed": True}
               and len(m["unlock"]["posts"]) == 3 and
@@ -44809,13 +44906,80 @@ out.asked = asked;
         check(m["laser"]["posts"][-1] == {"kind": "laser", "id": "L1",
                                           "on": True} and
               not m["laser"]["modal"] and
-              m["laser"]["msg"] == "Locked out L1.",
-              f"a laser's lock button: one tap: {m['laser']}")
+              m["laser"]["msg"] == "Locked out L1." and
+              m["laser"]["beside"] == "mo-lmsg",
+              f"a laser's lock button: one tap, its Undo beside the lasers' "
+              f"line (review of #122, P2-5): {m['laser']}")
         check(m["refused"]["n"] == 5 and m["refused"]["msg"] ==
               "flamesafe would not take the lockout file: it is not "
-              "trusted." and m["refused"]["undo"] == "Laser 1 locked out.",
-              f"a refusal is said in the engine's words, and no Undo is "
-              f"offered for it: {m['refused']}")
+              "trusted." and m["refused"]["undo"] != "front row 3 locked out.",
+              f"a refusal is said in the engine's words, with no Undo for "
+              f"it: {m['refused']}")
+    # Review of #122, P1-1: a double tap, a tap while the request is under
+    # way, and an unlock while the machine's group is armed.
+    steps = r"""
+const lock = {machines:{}, lasers:{}};
+window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:{}}; return mo; };
+window.__answer["lock"] = b => { if(b.on) lock.machines[b.id] = true; else delete lock.machines[b.id]; return [200, {ok:true, text:"Done " + b.id + "."}]; };
+const lk = id => document.querySelector('.mach[data-id="' + id + '"] .lk');
+const sent = id => h.posts("lock").filter(p => p.body.id === id).map(p => p.body.on);
+await h.sleep(900);
+h.tap(lk("m1")); await h.sleep(180); h.tap(lk("m1"));
+await h.sleep(400);
+out.double = {sent:sent("m1"), locked:!!lock.machines.m1};
+window.__delay["lock"] = 700;
+h.tap(lk("m4")); await h.sleep(300); h.tap(lk("m4"));
+await h.sleep(800);
+out.inflight = sent("m4");
+await h.sleep(300); h.tap(lk("m4")); await h.sleep(100);
+out.quiet = sent("m4");
+"""
+    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
+                    routes={"/api/remote/morning": mo})
+    steps2 = r"""
+const lock = {machines:{m2:true}, lasers:{}};
+window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:{}}; return mo; };
+window.__answer["lock"] = b => { if(b.on) lock.machines[b.id] = true; else delete lock.machines[b.id]; return [200, {ok:true, text:"Done " + b.id + "."}]; };
+window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; return st; };
+await h.sleep(900);
+h.tap(document.querySelector('.mach[data-id="m2"] .lk'));
+await h.sleep(300);
+out.armed = {sent:h.posts("lock").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent, locked:!!lock.machines.m2};
+h.tap(document.querySelector('.mach[data-id="m4"] .lk'));
+await h.sleep(300);
+out.lock_armed_group_other = h.posts("lock").map(p => p.body.id);
+// Another device locked m5 a moment ago: the page's copy still says
+// unlocked; a tap goes by the engine's state, so it is an unlock.
+lock.machines.m5 = true;
+h.tap(document.querySelector('.mach[data-id="m5"] .lk'));
+await h.sleep(300);
+out.engine_state = h.posts("lock").filter(p => p.body.id === "m5").map(p => p.body.on);
+"""
+    m2 = _rack_drive(chrome, page, st, steps2, size=(1366, 768),
+                     frag="#morning", routes={"/api/remote/morning": mo})
+    if isinstance(m, dict) and isinstance(m2, dict):
+        m["armed"] = m2.get("armed")
+        m["lock_other"] = m2.get("lock_armed_group_other")
+        m["engine_state"] = m2.get("engine_state")
+        m["problems"] = m.get("problems", []) + m2.get("problems", [])
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"Startup page, double taps and an armed group: {m!r}"):
+        check(m["double"] == {"sent": [True], "locked": True},
+              f"P1-1: a double tap on L locks once and stays locked, never "
+              f"lock then unlock: {m['double']}")
+        check(m["inflight"] == [True] and m["quiet"] == [True],
+              f"P1-1: a tap while the lock is under way, or within 1 s of "
+              f"its answer, does nothing: {m['inflight']} {m['quiet']}")
+        check(m["armed"] == {"sent": [], "locked": True, "msg": "Disarm "
+                             "front row first, then unlock front row 2."},
+              f"P1-1: no unlock while the machine's group is armed or "
+              f"asked for, said plainly: {m['armed']}")
+        check(m["lock_other"] == ["m4"],
+              f"locking is always allowed: {m['lock_other']}")
+        check(m["engine_state"] == [False],
+              f"P1-1: a tap goes by the engine's lockout, not the page's "
+              f"copy (another device had just locked it: an unlock): "
+              f"{m['engine_state']}")
     # The 5 s itself: the timer Undo sets is read, and run ten times
     # faster so the draw fits the browser's time budget.
     steps = r"""

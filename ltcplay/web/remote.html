@@ -412,6 +412,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .lkundo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--amber);border-radius:6px;
   padding:2px 8px;font:700 14px/1.25 var(--sans);color:var(--champ);background:rgba(245,160,30,.10)}
 #mo-firebar .lkundo{grid-column:1 / -1}
+.lkundo[hidden]{display:none}
 .lkundo button{min-height:36px;padding:2px 12px;font-size:14px}
 #mo-firebar .key.firing{background:var(--red-deep);border-color:var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
 .mo-lasers{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px}
@@ -497,9 +498,11 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #abortbar button small:empty{display:none}
 /* The first tap (2026-10-26): the sign grows at once and pulses, and says
    TAP AGAIN TO ABORT; a second tap anywhere on it aborts. */
-#abortbar.tap1 button{width:calc(var(--abort-size) * 2.1);height:calc(var(--abort-size) * 2.1);
+/* It grows UP, inside the right-hand gutter (review of #122, P2-1): never
+   wider than the gutter, so it never covers a control. */
+#abortbar.tap1 button{width:calc(var(--abort-size) + 10px);height:calc(var(--abort-size) * 2.6);
   filter:drop-shadow(0 0 18px rgba(230,30,24,.8))}
-#abortbar.tap1 .w{font-size:15px;line-height:1.15;white-space:normal;width:80%;text-align:center}
+#abortbar.tap1 .w{font-size:14px;line-height:1.2;letter-spacing:0;white-space:normal;width:92%;text-align:center}
 #abortbar.tap1 .oct{animation:abortpulse .5s steps(1,end) infinite}
 @keyframes abortpulse{50%{background:#FF6A5E}}
 @media (prefers-reduced-motion:reduce){#abortbar.tap1 .oct{animation:none}}
@@ -1392,13 +1395,30 @@ function armAllWords(parts, out, names){
   return t;
 }
 // The Abort double tap (Jeff, 2026-10-26): `prev` is the first tap
-// ({at, kind}) or null. A tap within ABORT_TAP_MS of a first tap of the
-// same kind ("touch", "mouse", "pen", or "key" for Enter or Space) fires;
-// anything else is a first tap. Two fingers are both "touch".
-const ABORT_TAP_MS = 2000;
-function abortTapStep(prev, nowMs, kind){
-  if(prev && nowMs - prev.at <= ABORT_TAP_MS && nowMs >= prev.at && prev.kind === kind) return {fire:true, next:null};
+// ({at, kind}, on the page's monotonic clock) or null. A tap of the same
+// kind ("touch", "mouse", "pen", or "key" for Enter or Space) fires when
+// it comes at least ABORT_TAP_MIN_MS after the first (sooner is a bounce:
+// the SAME tap, still waiting; review of #122, P2-2) and within
+// ABORT_TAP_MS, or at any time while the sign is still `enlarged` (a late
+// timer never turns a good second tap into a first one, P2-6). Anything
+// else is a first tap. Two fingers are both "touch".
+const ABORT_TAP_MS = 2000, ABORT_TAP_MIN_MS = 150;
+function abortTapStep(prev, nowMs, kind, enlarged){
+  if(prev && prev.kind === kind && nowMs >= prev.at){
+    if(nowMs - prev.at < ABORT_TAP_MIN_MS) return {fire:false, same:true, next:prev};
+    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};
+  }
   return {fire:false, next:{at:nowMs, kind:kind}};
+}
+// Why an unlock of machine `m` ({name, group}) is refused on this page, or
+// "": its flame group armed or asked for, or flamesafe's state not known
+// (review of #122, P1-1). A lock is always allowed.
+function unlockRefusal(m, flames){
+  const fl = flames || {};
+  if(!fl.connected || fl.stale) return "flamesafe's armed groups are not known right now, so " + m.name + " stays locked out. Unlock it once the lamps are live.";
+  const g = (fl.groups || []).find(x => x.name === m.group);
+  if(g && (g.armed === "armed" || g.wanted)) return "Disarm " + m.group + " first, then unlock " + m.name + ".";
+  return "";
 }
 function abortTapKind(e){
   if(e && e.pointerType) return e.pointerType;
@@ -1425,13 +1445,18 @@ function laserPill(subs, la, bl){
   else if(!armed.length) a = "all disarmed";
   else if(armed.length === ls.length) a = "all armed";
   else a = armed.length + " of " + ls.length + " armed";
-  if(ls && la.output_permitted) o = "output on";
+  if(ls && la.output_permitted) o = "output allowed";
   else if(ls && !armed.length) o = "output dark";
   else if(ls) o = "output off";
   else o = "output not known";
   const fault = out.state === "bad" ? String(out.word || "fault") + ": " : "";
+  // A warning from what the show last sent ("lit? link unknown", "BEYOND
+  // restarted: dark until lit again") is said in the sentence too, never
+  // only in colour and a tooltip a touch screen cannot show (review of
+  // #122, P2-4).
+  const warn = out.state === "warn" ? "; " + String(out.word || "check") : "";
   const state = (CHIP_RANK[arm.state] || 0) >= (CHIP_RANK[out.state] || 0) ? arm.state : out.state;
-  const title = ["Lasers: " + fault + a + ", " + o + ".",
+  const title = ["Lasers: " + fault + a + ", " + o + warn + ".",
     "Laser arm: " + arm.word + (arm.title ? " (" + arm.title + ")" : "") + ".",
     "What the show last sent BEYOND: " + out.word + (out.title ? " (" + out.title + ")" : "") + ".",
     armed.length ? "Armed: " + armed.map(x => x.name).join(", ") + "." : "",
@@ -1440,7 +1465,7 @@ function laserPill(subs, la, bl){
     la && la.arm_refusal ? "An arm now would be refused: " + la.arm_refusal + "." : "",
     la && la.error ? "The laser arm could not be read: " + la.error + "." : "",
     bl && bl.link === "lost" && bl.why ? "BEYOND: " + bl.why + "." : ""].filter(Boolean).join(" ");
-  const pill = {name:"Lasers", state:state, word:fault + a + ", " + o, title:title, pill:"lasers"};
+  const pill = {name:"Lasers", state:state, word:fault + a + ", " + o + warn, title:title, pill:"lasers"};
   const i = Math.min(subs.indexOf(arm), subs.indexOf(out));
   const rest = subs.filter(x => x !== arm && x !== out);
   rest.splice(i, 0, pill);
@@ -2257,8 +2282,16 @@ function abortTapDone(){
   $("abortbar").classList.remove("tap1");
   $("b-abort").querySelector(".w").textContent = "ABORT";
 }
+// A key held down never counts again (review of #122, P2-2): a repeat of
+// Enter or Space on the sign is swallowed before it can click it.
+$("b-abort").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });
 $("b-abort").addEventListener("click", async e => {
-  const step = abortTapStep(ABORT_TAP, Date.now(), abortTapKind(e));
+  const kind = abortTapKind(e);
+  // A finger or the mouse leaves no keyboard focus on the sign, so a later
+  // Enter held elsewhere can never abort.
+  if(kind !== "key") $("b-abort").blur();
+  const step = abortTapStep(ABORT_TAP, monoNow(), kind, $("abortbar").classList.contains("tap1"));
+  if(step.same) return;
   if(!step.fire){
     ABORT_TAP = step.next;
     clearTimeout(ABORT_TIMER);
@@ -3099,14 +3132,40 @@ async function moPress(route, extra, msgEl){
 // words) goes in the message line, and a lock or unlock that went through
 // can be undone for LOCK_UNDO_MS. Every engine rule is as before: the tap
 // is the operator's confirm.
-const LOCK_UNDO_MS = 5000;
+// Review of #122, P1-1: a second tap (a double tap, a chattering panel)
+// never flips it back. While a lock or unlock of that unit is under way,
+// and for LOCK_QUIET_MS after its answer, its L button does nothing; the
+// choice is made from the engine's state read at the tap, never the
+// page's copy; and the request names the state wanted (on true or false),
+// so a repeat cannot turn a lock into an unlock. An unlock is refused here
+// while the machine's flame group is armed or asked for (unlockRefusal):
+// an unlocked machine in an armed group would fire on the next cue.
+const LOCK_UNDO_MS = 5000, LOCK_QUIET_MS = 1000;
 let LOCK_UNDO = null;
-async function lockClick(kind, id, name){
+const LOCK_BUSY = {};
+async function lockClick(kind, id, name, want){
   if(arrangeBlocked("lock", {})) return;        // before anything is sent
-  const locked = kind === "machine" ? !!(MO.lockout.machines || {})[id] : !!(MO.lockout.lasers || {})[id];
+  const key = kind + ":" + id;
+  if(LOCK_BUSY[key]) return;
+  LOCK_BUSY[key] = true;
   const msg = kind === "machine" ? "mo-msg" : "mo-lmsg";
-  const j = await moPress("lock", lockBody(kind, id, !locked), msg);
-  if(j) lockUndoOffer(kind, id, name, !locked);
+  try{
+    let fresh = null;
+    try{ fresh = await getJSON("/api/remote/morning", 1500); }catch(e){ fresh = null; }
+    if(!fresh || !fresh.lockout){ $(msg).textContent = "The engine's lockout could not be read, so nothing was changed. Tap again."; return; }
+    MO = fresh;
+    const locked = kind === "machine" ? !!(fresh.lockout.machines || {})[id] : !!(fresh.lockout.lasers || {})[id];
+    const on = want === undefined ? !locked : want;
+    if(on === locked){ $(msg).textContent = name + (locked ? " is already locked out." : " is already unlocked."); return; }
+    if(!on && kind === "machine"){
+      const why = unlockRefusal((fresh.machines || []).find(m => m.id === id) || {name:name}, ST && ST.flames);
+      if(why){ $(msg).textContent = why; $(msg).title = why; return; }
+    }
+    const j = await moPress("lock", lockBody(kind, id, on), msg);
+    if(j) lockUndoOffer(kind, id, name, on);
+  } finally {
+    setTimeout(() => { delete LOCK_BUSY[key]; }, LOCK_QUIET_MS);
+  }
 }
 // The lock route's body: a lock, or an unlock (the engine asks an unlock
 // to say it is confirmed; the tap is that).
@@ -3117,6 +3176,9 @@ function lockUndoOffer(kind, id, name, on){
   clearTimeout(LOCK_UNDO && LOCK_UNDO.timer);
   LOCK_UNDO = {kind:kind, id:id, name:name, on:on};
   bar.querySelector("span").textContent = name + (on ? " locked out." : " unlocked.");
+  // Beside the message line of what was locked (review of #122, P2-5).
+  const at = $(kind === "machine" ? "mo-msg" : "mo-lmsg");
+  if(at && bar.previousElementSibling !== at) at.insertAdjacentElement("afterend", bar);
   bar.hidden = false;
   LOCK_UNDO.timer = setTimeout(lockUndoGone, LOCK_UNDO_MS);
 }
@@ -3126,12 +3188,12 @@ function lockUndoGone(){
   LOCK_UNDO = null;
   if(bar) bar.hidden = true;
 }
-// Undo: the opposite press, at once, through the same route and rules.
+// Undo: the opposite press, through lockClick and every rule it has.
 async function lockUndo(){
   const u = LOCK_UNDO;
   lockUndoGone();
   if(!u) return;
-  await moPress("lock", lockBody(u.kind, u.id, !u.on), u.kind === "machine" ? "mo-msg" : "mo-lmsg");
+  await lockClick(u.kind, u.id, u.name, !u.on);
 }
 // ARRANGE BEGIN. Arrange mode on the Morning page (Jeff, 2026-10-19, after
 // bench-2026.10.19-6a32ff9: a picked-up machine followed the mouse for
