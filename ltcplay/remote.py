@@ -210,6 +210,9 @@ LOCAL_ONLY = frozenset(("network", "screen-arming"))
 # (deck-input's `refused`, streamdeck.ScreenKeys): its code, and what the
 # page says. The deck's own rules decide; the engine only passes it on.
 DECK_REFUSALS = {
+    "screenonly": ("The Stream Deck refused it: {g} has no key on the deck, "
+                   "so a purge click never arms it. Hold its Hold to arm "
+                   "button instead."),
     "refractory": ("The Stream Deck refused it: {g} was disarmed less than "
                    "2 s ago, and it waits that long before it takes a new "
                    "arm. Lift your finger, wait a moment, then hold again."),
@@ -967,6 +970,18 @@ def deck_usb_ms(query):
     if ms < 0:
         return None
     return min(ms, 600000)
+
+
+def deck_layout_default(query):
+    """True when a deck-input query says `layout=default`: the Stream Deck
+    could not use ltcplay_deck.json and keys the default layout (review of
+    PR #120, P2-1), for the Deck chip. Display only. Never raises."""
+    import urllib.parse
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("layout") or []
+    except (ValueError, TypeError):
+        return False
+    return bool(vals) and vals[-1] == "default"
 
 
 def deck_usb_fail(query):
@@ -2272,6 +2287,7 @@ class Remote:
         self._deck_seen = now
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)
+        self._deck_layout_default = deck_layout_default(query)
         self._deck_hw = deck_hw(query)
         self._deck_arm_ms = deck_arm_ms(query)
         self._deck_rearm = deck_rearm(query) + (now,)
@@ -4088,6 +4104,10 @@ class Remote:
         if state != "ok":
             # Not live, or not all there: said as it is (deck_chip).
             add("Deck", state, word)
+        elif getattr(self, "_deck_layout_default", False):
+            # ltcplay_deck.json could not be used: the keys are in the
+            # default layout, and the deck's journal says why.
+            add("Deck", "warn", "default keys: ltcplay_deck.json not used")
         elif self._deck_usb_fail:
             # Key image writes the deck did not take (review of PR #83,
             # P2-2): its keys may show an older face until a resend goes
