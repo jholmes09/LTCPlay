@@ -1166,9 +1166,8 @@ MUTATIONS = [
   "fl.age_ms === undefined || fl.age_ms > 100000)"),
 
  ("arm: the page keeps holding when it goes stale", "ltcplay/web/remote.html",
-  "  if(HOLD && !armState(ST, Date.now(), LAST_OK, HOLD.group).ok)\n"
-  "    armStop(",
-  "  if(false)\n    armStop("),
+  "  const hp = holdLapsed();\n  if(hp) armStop(hp);",
+  "  const hp = holdLapsed();\n  if(false) armStop(hp);"),
 
  ("arm: closing the page does not let go", "ltcplay/web/remote.html",
   "window.addEventListener(\"pagehide\", () => armStop(\"the page closed\"));",
@@ -11715,10 +11714,84 @@ def build():
   "  $(\"al-body\").hidden = f.fold && !ALERTS_OPEN;",
   "  $(\"al-body\").hidden = f.fold;"),
 
- ("rack screen: the Abort bar scrolls off the window",
+ ("rack screen: the Abort stop sign scrolls off the window",
   "ltcplay/web/remote.html",
-  "  position:sticky;bottom:0;z-index:15;background:var(--bg)}",
-  "  background:var(--bg)}"),
+  "#abortbar{position:fixed;z-index:15;",
+  "#abortbar{position:absolute;z-index:15;"),
+
+ # The rack screen, 2026-10-26: ABORT a stop sign in the corner, one
+ # button per flame group, Arm all and Disarm all one two-way button, and
+ # the nav buttons that were cut off (selftest.py, drawn and pressed in
+ # headless Chromium).
+ ("rack screen: the Abort stop sign shrinks under a finger's 44 px",
+  "ltcplay/web/remote.html",
+  "  --abort-size:56px;",
+  "  --abort-size:30px;"),
+
+ ("rack screen: the page keeps no room under the Abort stop sign",
+  "ltcplay/web/remote.html",
+  "clamp(10px,1.2vw,24px) var(--abort-room)}",
+  "clamp(10px,1.2vw,24px) 0}"),
+
+ ("rack screen: the Abort stop sign has no name for a screen reader",
+  "ltcplay/web/remote.html",
+  '<button id="b-abort" aria-label="Abort"',
+  '<button id="b-abort"'),
+
+ ("rack screen: the finger that armed a group disarms it on the way up",
+  "ltcplay/web/remote.html",
+  '  return downMode === "disarm" ? "disarm" : "";',
+  '  return nowMode === "disarm" ? "disarm" : "";'),
+
+ ("rack screen: an armed group's button stays Hold to arm",
+  "ltcplay/web/remote.html",
+  '  if(g && (g.armed === "armed" || g.wanted)) return "disarm";',
+  '  if(g && g.wanted) return "disarm";'),
+
+ ("rack screen: a group asked for has no Disarm",
+  "ltcplay/web/remote.html",
+  '  if(g && (g.armed === "armed" || g.wanted)) return "disarm";',
+  '  if(g && g.armed === "armed") return "disarm";'),
+
+ ("rack screen: a per-group Disarm offered with screen arming off",
+  "ltcplay/web/remote.html",
+  '  if(!on) return "lamp";\n  if(c === "unknown") return "disarm";',
+  '  if(c === "unknown") return "disarm";'),
+
+ ("rack screen: a Disarm button is held back by a stale page",
+  "ltcplay/web/remote.html",
+  '    if(el.dataset.mode === "disarm"){ el.disabled = false; return; }\n',
+  ''),
+
+ ("rack screen: a mix of armed groups shows Arm all",
+  "ltcplay/web/remote.html",
+  '  if(gs.some(g => g.wanted || (g.armed !== "disarmed" && g.armed !== "held"))) return "disarm";',
+  '  if(gs.every(g => g.wanted || (g.armed !== "disarmed" && g.armed !== "held"))) return "disarm";'),
+
+ ("rack screen: Arm all is offered with screen arming off",
+  "ltcplay/web/remote.html",
+  '  if(stale || !st || !st.arming || !st.arming.enabled) return "disarm";',
+  '  if(stale || !st) return "disarm";'),
+
+ ("rack screen: Arm all holds two groups under live flame programming's one at a time",
+  "ltcplay/web/remote.html",
+  '  if(lf.on === true && lf.one_group_at_a_time !== false) return {go:[], out:[], why:ONE_GROUP_WORDS};',
+  ''),
+
+ ("rack screen: Arm all holds a group in its re-arm wait",
+  "ltcplay/web/remote.html",
+  '    else if(w > 0) out.push({group:i, name:g.name, why:rearmText(w)});',
+  ''),
+
+ ("rack screen: Arm all holds while an Abort stands",
+  "ltcplay/web/remote.html",
+  '  if(st && st.schedule && st.schedule.aborted) return {go:[], out:[], why:REFUSED_LATCHED};',
+  ''),
+
+ ("rack screen: the nav buttons are cut off at the right edge again",
+  "ltcplay/web/remote.html",
+  "nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;flex:0 1 auto;min-width:0;max-width:100%;",
+  "nav{display:flex;gap:8px;flex:0 0 auto;"),
 
  ("rack screen: the Art-Net note is never shown",
   "ltcplay/web/remote.html",
