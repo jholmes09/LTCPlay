@@ -58119,6 +58119,9 @@ def test_video_lamp_follows_the_madmapper_watch():
     draw = _js_block(page, '$("subs").innerHTML = ', '\n\n')
     check(draw.startswith('$("subs").innerHTML'),
           "the page has its status strip drawing")
+    # The strip draws through the one laser pill (2026-10-26): its pure
+    # function comes along.
+    draw = _js_block(page, "const CHIP_RANK = {", "// LOGIC END") + "\n" + draw
     node = shutil.which("node")
     if not node:
         check(not IN_CI, "node is missing on this CI runner, so the status "
