@@ -50480,17 +50480,32 @@ def test_screen_arm_end_to_end_probes():
                 return False
             time.sleep(0.02)
         return True
+    def wait_fresh(seconds, steady=3):
+        """(True, waited) once the engine has heard flamesafe on the mirror
+        (connected, not stale) and the deck has its status, for `steady`
+        reads in a row; (False, waited, the last answer) after `seconds`.
+        A bounded poll, never a fixed sleep: a loaded runner (a mutate
+        shard) can take seconds to start flamesafe or let one report run
+        late (mutate baseline of #132, shard 27)."""
+        t0 = time.perf_counter()
+        run, last = 0, None
+        while time.perf_counter() - t0 < seconds:
+            try:
+                last = status_now()
+                fresh = bool(last["flames"].get("connected")) and \
+                    not last["flames"]["stale"] and bool(status.last)
+            except Exception as e:           # noqa: BLE001
+                fresh, last = False, f"{type(e).__name__}: {e}"
+            run = run + 1 if fresh else 0
+            if run >= steady:
+                return True, round(time.perf_counter() - t0, 2), last
+            time.sleep(0.1)
+        return False, round(time.perf_counter() - t0, 2), last
     try:
         # Wait for everything to be live.
-        end = time.perf_counter() + 10
-        while time.perf_counter() < end:
-            s = status_now()
-            if s["flames"].get("connected") and not s["flames"]["stale"] \
-                    and status.last:
-                break
-            time.sleep(0.1)
-        check(not status_now()["flames"]["stale"],
-              "setup: the engine hears flamesafe on the mirror")
+        live, waited, last = wait_fresh(30)
+        check(live, f"setup: the engine hears flamesafe on the mirror "
+                    f"(waited {waited} s; last status: {last})")
         time.sleep(1.2)                    # the deck's lows prove a cycle
         # P1: a full hold arms, through the deck and flamesafe's own rules.
         # (Once the deck has armed it the engine answers the next heartbeat
@@ -50508,11 +50523,16 @@ def test_screen_arm_end_to_end_probes():
             if armed(0):
                 break
             # Held again only when this try's hold is shown to have lapsed
-            # (the engine's own "hold was interrupted"); any other ending
-            # is the failure it looks like.
+            # (the engine's own "hold was interrupted"), or was refused
+            # because flamesafe's report ran late on a loaded runner (the
+            # engine's own "has not reported": the rule working, mutate
+            # baseline of #132); then only once flamesafe is heard again.
+            # Any other ending is the failure it looks like.
             ended = [w for _t, w in whys.get("front row", [])[k:]]
-            if not any("interrupted" in str(w) for w in ended):
+            if not any("interrupted" in str(w) or "has not reported" in
+                       str(w) for w in ended):
                 break
+            wait_fresh(10)
             time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         check(armed(0), f"P1: a full screen hold armed front row on the "
                         f"wire: {status.last and status.last['groups'][0]}; "
