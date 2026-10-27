@@ -1660,7 +1660,12 @@ class Service:
             self._marker_clear_pending = False
         self._record(out, now, plan, held, ev)
         if ev.kind == sch.RESUME and ev.actor == "operator" and \
-                not out.refused:
+                not out.refused and before is not None and \
+                before.state == sch.HOLD:
+            # Only a Resume of a schedule Hold (the operator's or the
+            # engine's) speaks for the next show; a Resume of a paused,
+            # running show says nothing about the one after it (review of
+            # PR #133).
             self._note_resumed_at_showtime(now)
         if self.dry_run and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
@@ -2296,10 +2301,16 @@ class Service:
                 return
             probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
             shows = [e.show for e in probe.effects
-                     if e.kind == sch.START_SHOW]
-            pending = m.pending()
-            if pending:
-                shows.append(pending[0].n)
+                     if e.kind == sch.START_SHOW][:1]
+            if not shows and m.delayed() is None:
+                # Nothing starts now and no delayed show waits for Start
+                # now: the Resume is for the next show (one pressed before
+                # showtime, or a guard running out inside the grace). With
+                # a delayed show waiting, the Resume is for THAT one, and
+                # never covers a show beyond it (review of PR #133).
+                pending = m.pending()
+                if pending:
+                    shows = [pending[0].n]
         except Exception:                        # noqa: BLE001
             return
         for n in set(shows):

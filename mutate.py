@@ -8720,8 +8720,24 @@ def build():
 
  ("alert hold: a Resume before showtime is not the operator's choice",
   "ltcplay/schedule_service.py",
-  "            if pending:\n                shows.append(pending[0].n)",
-  "            if False:\n                shows.append(pending[0].n)"),
+  "                if pending:\n                    shows = [pending[0].n]",
+  "                if False:\n                    shows = [pending[0].n]"),
+
+ ("alert hold: a Resume of a paused show speaks for the next show",
+  "ltcplay/schedule_service.py",
+  "                not out.refused and before is not None and \\\n"
+  "                before.state == sch.HOLD:",
+  "                not out.refused:"),
+
+ ("alert hold: a delayed show's Resume also covers the show after it",
+  "ltcplay/schedule_service.py",
+  "            if not shows and m.delayed() is None:",
+  "            if not shows:"),
+
+ ("alert hold: two ticks at once can start two hold workers",
+  "ltcplay/remote.py",
+  "        with self._alert_lock:\n            self._start_alert_workers()",
+  "        self._start_alert_workers()"),
 
  ("alert hold: an old hold clears a newer one",
   "ltcplay/alerthold.py",

@@ -17027,6 +17027,115 @@ def test_alert_hold_respects_any_operator_resume():
     print("  ok")
 
 
+def test_alert_hold_resume_covers_only_its_own_show():
+    section("alert hold (last review of PR #133), the real scheduler: a "
+            "Resume of a PAUSED running show says nothing about the next "
+            "show, which still Holds for a loud alert; the Resume and Start "
+            "now of a DELAYED show never clear the show after it")
+    S = _sched()
+    if S is None:
+        return
+    # 1. Show 1 running, an alert opens, the operator pauses and resumes
+    # it: show 2 at 18:20 still Holds.
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    try:
+        sv = R.svc
+        R.now[0] = _den(S, 18, 0)
+        sv.tick()
+        check(sv.machine.state == S.SHOW, "setup: show 1 running")
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 2)
+        with sv._locked():
+            sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(sv.machine.state == S.PAUSED, "setup: paused")
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(sv.machine.state == S.SHOW, "setup: resumed")
+        for t in ((18, 10), (18, 15), (18, 19)):
+            R.now[0] = _den(S, *t)
+            sv.tick()
+        check(sv.machine.state in (S.STANDBY, S.IDLE),
+              f"setup: show 1 over: {sv.machine.state}")
+        R.now[0] = _den(S, 18, 20)
+        sv.tick()
+        check(sv.machine.state == S.HOLD,
+              f"show 2 at 18:20 with the loud alert still open: held, the "
+              f"pause and Resume of show 1 said nothing about it: "
+              f"{sv.machine.state}")
+    finally:
+        R.close()
+    # 2. Held at 18:00, show 1 DELAYED, Resume and Start now at 18:01:
+    # show 2 at 18:20 still Holds for the same alert.
+    R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+    try:
+        sv = R.svc
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 0)
+        sv.tick()
+        check(sv.machine.state == S.HOLD, "setup: held at 18:00")
+        R.now[0] = _den(S, 18, 1)
+        sv.tick()
+        check(sv.machine.slot(1).status == S.DELAYED, "setup: show 1 delayed")
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+            sv._apply(S.Event(S.START_NOW, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(sv.machine.state == S.SHOW, f"setup: show 1 started by hand: "
+                                          f"{sv.machine.state}")
+        for t in ((18, 10), (18, 15), (18, 19)):
+            R.now[0] = _den(S, *t)
+            sv.tick()
+        R.now[0] = _den(S, 18, 20)
+        sv.tick()
+        check(sv.machine.state == S.HOLD,
+              f"show 2 at 18:20 with the same unacknowledged alert: held: "
+              f"{sv.machine.state}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_alert_workers_started_once_under_a_lock():
+    section("alert hold (last review of PR #133, 3): two ticks at once start "
+            "exactly one hold worker and one booth worker")
+    from ltcplay import remote as remote_mod
+    S = _sched()
+    if S is None:
+        return
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    real_thread = remote_mod.threading.Thread
+    made = []
+
+    class _SlowThread(real_thread):
+        def __init__(self, *a, **kw):
+            if str(kw.get("name", "")).startswith("ltcplay-alert-"):
+                made.append(kw.get("name"))
+                time.sleep(0.2)          # widen the window a race needs
+            super().__init__(*a, **kw)
+    try:
+        remote_mod.threading.Thread = _SlowThread
+        gate = threading.Barrier(2)
+
+        def go():
+            gate.wait()
+            R.remote._alert_tick()
+        ts = [real_thread(target=go) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(5)
+    finally:
+        remote_mod.threading.Thread = real_thread
+        R.close()
+    check(made.count("ltcplay-alert-hold") == 1 and
+          made.count("ltcplay-alert-booth") == 1,
+          f"exactly one of each worker: {made}")
+    print("  ok")
+
+
 def test_alert_hold_an_old_hold_never_clears_a_newer_one():
     section("alert hold (final review of PR #133, A): the scheduler's tick "
             "inside the old hold's check can start a NEW hold; dropping the "
@@ -70599,6 +70708,8 @@ if __name__ == "__main__":
     test_alert_hold_respects_any_operator_resume()
     test_alert_booth_never_waits_behind_the_delayed()
     test_alert_hold_an_old_hold_never_clears_a_newer_one()
+    test_alert_hold_resume_covers_only_its_own_show()
+    test_alert_workers_started_once_under_a_lock()
     test_alert_workers_stop_with_the_server()
     test_alert_worker_never_stalls_a_scheduler_tick()
     test_the_gpl_path_never_loads_announcements()
