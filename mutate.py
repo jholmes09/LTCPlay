@@ -8653,8 +8653,8 @@ def build():
 
  ("deck page 2: never goes back by itself when idle",
   "ltcplay/streamdeck.py",
-  "                now - self._page2_at >= PAGE2_IDLE_S and \\\n",
-  "                False and \\\n"),
+  "        if now - self._page2_at < PAGE2_IDLE_S:\n            return \"\"",
+  "        if True:\n            return \"\""),
 
  ("deck page 2: stays up through an alarm on the arm link",
   "ltcplay/streamdeck.py",
@@ -8712,29 +8712,57 @@ def build():
 
  ("deck page 2: the guard ends when page 1 is composed, not written",
   "ltcplay/streamdeck.py",
-  "        shown = self.last_shown\n        return bool(shown) and shown[0] >= f",
-  "        return True"),
+  "        if shown and shown[0] >= f:\n            return shown[1]\n        return None",
+  "        return self._guard_frame_at"),
+
+ ("deck page 2: the guard counts from the return, not from the write",
+  "ltcplay/streamdeck.py",
+  "        if at is None or now < at + PAGE1_GUARD_S:",
+  "        if at is None or now < self._guard + PAGE1_GUARD_S:"),
+
+ ("deck page 2: a stale engine answer closes page 2 for idle",
+  "ltcplay/streamdeck.py",
+  "        return (isinstance(av, dict) and not av.get(\"stale\") and\n"
+  "                not av.get(\"playing\"))",
+  "        return not (av or {}).get(\"playing\")"),
+
+ ("deck page 2: never gives way while the engine stays silent",
+  "ltcplay/streamdeck.py",
+  "        if now - max(seen, self._page2_at) >= PAGE2_STALE_CLOSE_S:",
+  "        if False:"),
+
+ ("deck page 2: a refusal shows on whichever key was pressed last",
+  "ltcplay/streamdeck.py",
+  "                refused[said[3]] = announce_refusal_word(said[1])",
+  "                refused[self._ann_pressed] = announce_refusal_word(said[1])"),
 
  ("deck page 2: closes for idle while an announcement plays",
   "ltcplay/streamdeck.py",
-  "                now - self._page2_at >= PAGE2_IDLE_S and \\\n"
-  "                not self._announcement_live():",
-  "                now - self._page2_at >= PAGE2_IDLE_S:"),
+  "        if self._fresh_and_quiet(av):\n"
+  "            return f\"no key was pressed for {PAGE2_IDLE_S:g} s\"",
+  "        if True:\n"
+  "            return f\"no key was pressed for {PAGE2_IDLE_S:g} s\""),
 
  ("deck page 2: an engine refusal is never shown on the key",
   "ltcplay/streamdeck.py",
-  "            if fresh:\n                refused[self._ann_pressed] = announce_refusal_word(said[1])",
-  "            if False:\n                refused[self._ann_pressed] = announce_refusal_word(said[1])"),
+  "            if fresh:\n                # On the key whose press it answers",
+  "            if False:\n                # On the key whose press it answers"),
 
  ("announcements: a Hold for an announcement leaves the lasers armed",
   "ltcplay/remote.py",
-  '                self._lasers_disarm_now(who, screen, "hold")\n            return refusal, epoch',
-  "                pass\n            return refusal, epoch"),
+  '                    self._lasers_disarm_now(who, screen, "announcement")',
+  "                    pass"),
+
+ ("announcements: the Hold's safety cuts are made outside the scheduler's lock",
+  "ltcplay/remote.py",
+  "            with (locked() if locked is not None\n"
+  "                  else contextlib.nullcontext()):",
+  "            with contextlib.nullcontext():"),
 
  ("announcements: a Hold for an announcement leaves live flame programming on",
   "ltcplay/remote.py",
-  "                self.live_flame_cut(why, who, screen)\n                self.scrub_flames_cut(why, who, screen)",
-  "                pass"),
+  "                    self.live_flame_cut(why, who, screen)\n                    self.scrub_flames_cut(why, who, screen)",
+  "                    pass"),
 
  ("announcements: a stale snapshot still reads as fact",
   "ltcplay/remote.py",

@@ -366,6 +366,9 @@ PAGE2_FACE = {"delayed": ["DELAYED"], "cancellation": ["CANCEL"],
 PAGE2_STOP = 4
 PAGE2_BACK = SPARE_KEY
 PAGE2_IDLE_S = 10.0     # no key pressed this long on page 2: back to page 1
+# ... but only on a fresh answer that nothing plays. With no fresh answer
+# at all for this long, page 2 gives way anyway: the arm keys come back.
+PAGE2_STALE_CLOSE_S = 60.0
 # After page 2 gives way BY ITSELF (idle, an alert, the Morning page), a
 # press meant for an announcement key must not ARM the group now under the
 # finger (review of PR #129): the group keys start no arm for
@@ -1476,7 +1479,9 @@ class EngineConductor:
             # An announcement is not a press on the rig: a refusal (a
             # recording missing, no output device) is journaled and shown
             # on page 2, never as ENGINE FAULT on the Start key.
-            self.announce_said = (bool(ok), str(text), self._clock())
+            key = (str(body.get("id") or "") if name == "announce-play"
+                   else "stop")
+            self.announce_said = (bool(ok), str(text), self._clock(), key)
         elif name != "alert":
             # An alert post is not a press on the rig: a refused or late
             # Acknowledge (two keys inside one poll) is journaled below,
@@ -2734,10 +2739,12 @@ class Controller:
         self._page2_at = None
         self._masked = set()
         self._ann_pressed = None     # the id page 2 last asked to play
+        self._ann_fresh_at = None    # clock of the last fresh engine answer
         # The guard after an automatic return (PAGE1_GUARD_S): (until,
         # hard limit) on the clock, and whether page 1 was drawn since.
         self._guard = None
         self._guard_frame = None     # first page 1 frame after the return
+        self._guard_frame_at = None
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
         # disarm-refractory clock per group key.
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
@@ -3533,18 +3540,29 @@ class Controller:
             return "the arm link alarm is up"
         if self.morning_open():
             return "the Morning page opened"
-        if now is not None and self._page2_at is not None and \
-                now - self._page2_at >= PAGE2_IDLE_S and \
-                not self._announcement_live():
+        if now is None or self._page2_at is None:
+            return ""
+        av = self.announce_view()
+        if av is not None and not av.get("stale"):
+            self._ann_fresh_at = now
+        if now - self._page2_at < PAGE2_IDLE_S:
+            return ""
+        if self._fresh_and_quiet(av):
             return f"no key was pressed for {PAGE2_IDLE_S:g} s"
+        seen = self._ann_fresh_at if self._ann_fresh_at is not None \
+            else self._page2_at
+        if now - max(seen, self._page2_at) >= PAGE2_STALE_CLOSE_S:
+            return (f"the engine's announcement status has been "
+                    f"unavailable for {PAGE2_STALE_CLOSE_S:g} s")
         return ""
 
-    def _announcement_live(self):
-        """True while one is playing, or the engine's word is stale (it
-        may be): page 2, and STOP ANNC., then stay (second review of
-        #129, 1)."""
-        av = self.announce_view() or {}
-        return bool(av.get("playing")) or bool(av.get("stale"))
+    @staticmethod
+    def _fresh_and_quiet(av):
+        """True only on a FRESH engine answer that says nothing is playing
+        (delta review of #129, 1): a stale or missing answer is "maybe
+        playing", and page 2 (with STOP ANNC.) then stays."""
+        return (isinstance(av, dict) and not av.get("stale") and
+                not av.get("playing"))
 
     def _open_page2(self, down, now, latched, morning):
         """Key 5 pressed on page 1. Opened only with nothing else going
@@ -3563,36 +3581,41 @@ class Controller:
                       f"opened: {why}.", action="page")
             return
         self.page, self._page2_at = 2, now
+        self._ann_fresh_at = None
         self._masked = {k for k in range(len(down)) if down[k]}
         self._log("Stream Deck: announcements page open. The arm keys are "
                   "back on BACK, or by themselves after "
                   f"{PAGE2_IDLE_S:g} s.", action="page")
 
     GUARDED_RETURNS = ("no key was pressed", "an alert is open",
-                       "the Morning page opened")
+                       "the Morning page opened",
+                       "the engine's announcement status")
 
-    def _page1_on_keys(self):
-        """Whether page 1 has been written to the keys since the automatic
-        return: with a display worker (display_confirms), its word that
-        the frame composed after the return was fully written; without
-        one (the frame is written on the loop itself, right after it is
-        composed), that it was composed."""
+    def _page1_written_at(self):
+        """When page 1 reached the keys after the automatic return, or
+        None: with a display worker (display_confirms), the time it says
+        it finished writing the first page 1 frame composed after the
+        return; without one (the frame is written on the loop itself,
+        right after it is composed), when it was composed."""
         f = self._guard_frame
         if f is None:
-            return False
+            return None
         if not self.display_confirms:
-            return True
+            return self._guard_frame_at
         shown = self.last_shown
-        return bool(shown) and shown[0] >= f
+        if shown and shown[0] >= f:
+            return shown[1]
+        return None
 
     def _guard_on(self, now=None):
         """True while a group key starts no ARM after page 2 gave way by
-        itself (PAGE1_GUARD_S and page 1 on the keys). Never a disarm."""
-        g = self._guard
-        if g is None:
+        itself: until PAGE1_GUARD_S after page 1 actually reached the keys
+        (delta review of #129, 2). Never a disarm."""
+        if self._guard is None:
             return False
         now = self._clock() if now is None else now
-        if now < g or not self._page1_on_keys():
+        at = self._page1_written_at()
+        if at is None or now < at + PAGE1_GUARD_S:
             return True
         self._guard = None
         return False
@@ -3602,7 +3625,7 @@ class Controller:
             self.page, self._page2_at = 1, None
             if why.startswith(self.GUARDED_RETURNS):
                 now = self._clock()
-                self._guard = now + PAGE1_GUARD_S
+                self._guard = now
                 self._guard_frame = None
             cur = down if down is not None else self._prev_keys
             # A key down at the change does nothing until it is let go.
@@ -4106,6 +4129,7 @@ class Controller:
             return canvas
         if self._guard is not None and self._guard_frame is None:
             self._guard_frame = self.frame_id
+            self._guard_frame_at = now
         # Key 5 opens the announcements page (module docstring), drawn only
         # when the engine says announcements are running.
         av = self.announce_view()
@@ -4193,14 +4217,15 @@ class Controller:
         # ANNOUNCE_SAID_S (second review of #129, 6).
         refused = {}
         said = getattr(self.conductor, "announce_said", None)
-        if said and not said[0] and self._ann_pressed:
+        if said and not said[0] and len(said) > 3:
             clk = getattr(self.conductor, "_clock", None) or self._clock
             try:
                 fresh = clk() - said[2] <= ANNOUNCE_SAID_S
             except Exception:
                 fresh = False
             if fresh:
-                refused[self._ann_pressed] = announce_refusal_word(said[1])
+                # On the key whose press it answers (delta review, 5).
+                refused[said[3]] = announce_refusal_word(said[1])
         ready = av.get("ready") if isinstance(av.get("ready"), dict) else {}
         missing = av.get("missing") if isinstance(av.get("missing"),
                                                   dict) else {}
@@ -4213,7 +4238,7 @@ class Controller:
                                BLACK if blink_on else RED,
                                bg=RED if blink_on else None, kind="sans",
                                max_size=12)
-            elif av.get("stale"):
+            elif not av or av.get("stale"):
                 fonts.show_key(d, box, lines + ["NO STATUS"], AMBER,
                                kind="sans", max_size=12)
             elif playing == aid:
@@ -4236,11 +4261,18 @@ class Controller:
             else:
                 fonts.show_key(d, box, lines, CHAMPAGNE, bg=BRONZE,
                                kind="sans", max_size=16)
-        live = bool(playing) or bool(av.get("stale"))
-        fonts.show_key(d, face_box(PAGE2_STOP), ["STOP", "ANNC."],
-                       CHAMPAGNE if live else DIM_TEXT,
-                       bg=BRONZE if live else None, kind="sans",
-                       max_size=16)
+        live = bool(playing) or bool(av.get("stale")) or not av
+        if "stop" in refused:
+            fonts.show_key(d, face_box(PAGE2_STOP),
+                           ["STOP", refused["stop"]],
+                           BLACK if blink_on else RED,
+                           bg=RED if blink_on else None, kind="sans",
+                           max_size=12)
+        else:
+            fonts.show_key(d, face_box(PAGE2_STOP), ["STOP", "ANNC."],
+                           CHAMPAGNE if live else DIM_TEXT,
+                           bg=BRONZE if live else None, kind="sans",
+                           max_size=16)
         fonts.show_key(d, face_box(PAGE2_BACK), ["BACK"], CHAMPAGNE,
                        kind="sans", max_size=16)
 

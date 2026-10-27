@@ -82,6 +82,7 @@ from anywhere, loopback included: a proxy or tunnel on the show machine
 would make the whole world look like the machine itself. NEVER put remote
 access software, a tunnel or a port forward on the show machine.
 """
+import contextlib
 import hmac
 import ipaddress
 import json
@@ -1826,7 +1827,7 @@ class Remote:
             # The view thread has not refreshed it (a hung audio query, a
             # stuck lock): never a stale PLAYING or ready (review of PR
             # #129, second round, 7). Stop stays pressable.
-            v.update(ok=False, stale=True, playing=None,
+            v.update(ok=False, stale=True, playing=None, held_failed=None,
                      error=f"Announcement status unavailable: not read for "
                            f"{age:.0f} s.")
         return v
@@ -1842,13 +1843,22 @@ class Remote:
         def hold(who, screen, detail=None):
             refusal, epoch = sched.hold_for_announcement(who, screen,
                                                          detail=detail)
-            m = getattr(sched, "machine", None)
-            if not refusal and m is not None and m.state == "HOLD":
-                why = (f"{who or 'someone'} held the schedule for an "
-                       f"announcement on the {screen}")
-                self.live_flame_cut(why, who, screen)
-                self.scrub_flames_cut(why, who, screen)
-                self._lasers_disarm_now(who, screen, "hold")
+            if refusal:
+                return refusal, epoch
+            # The state checked and the cuts made under the scheduler's
+            # own lock (re-entrant; none of them waits): a Start now
+            # landing between the Hold and here leaves a running show
+            # untouched (delta review of #129, 3).
+            locked = getattr(sched, "_locked", None)
+            with (locked() if locked is not None
+                  else contextlib.nullcontext()):
+                m = getattr(sched, "machine", None)
+                if m is not None and m.state == "HOLD":
+                    why = (f"{who or 'someone'} held the schedule for an "
+                           f"announcement on the {screen}")
+                    self.live_flame_cut(why, who, screen)
+                    self.scrub_flames_cut(why, who, screen)
+                    self._lasers_disarm_now(who, screen, "announcement")
             return refusal, epoch
         return hold
 
@@ -3247,9 +3257,16 @@ class Remote:
         if fn is None:
             return
         label = who or "An unnamed operator"
+        if what == "announcement":
+            # Said as the announcement it was, not as a Hold press (delta
+            # review of #129, 8).
+            text = (f"An announcement played by {label} on the {screen} "
+                    f"held the schedule")
+        else:
+            text = (f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
+                    f"{label} on the {screen}")
         try:
-            fn(f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
-               f"{label} on the {screen}", who, screen)
+            fn(text, who, screen)
         except Exception:                        # noqa: BLE001
             pass
 

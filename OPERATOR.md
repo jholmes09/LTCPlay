@@ -160,8 +160,10 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   deck has only six keys. It goes back to the flame keys by itself: BACK,
   ten seconds with no key pressed, an Abort, an alert, the Startup page
   opening, or a deck alarm. START / STOP is the same key on both pages.
-  It never goes back for the ten seconds while an announcement is
-  playing, so STOP ANNC. stays there. When it goes back by itself (ten
+  It goes back for the ten seconds only when LTC Player has just said
+  nothing is playing: while one plays, or while the deck has not heard
+  from LTC Player, STOP ANNC. stays there (after a whole minute with no
+  word from LTC Player the flame keys come back anyway). When it goes back by itself (ten
   seconds, an alert, the Startup page) the flame keys start no ARM for a
   second and a half and until the flame faces are really on the keys, so
   a press meant for an announcement never arms a group. A tap that

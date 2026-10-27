@@ -16113,10 +16113,31 @@ def test_streamdeck_page_two_auto_close_guard():
         t[0] += sd.PAGE2_IDLE_S * 3
         c.tick()
         check(c.page == 2, f"{live}: page 2 stays up past the idle time")
-    scr.a = dict(scr.a, playing=None, stale=False)
+    # The delta review's probe: playing, ten seconds of fresh answers,
+    # then ONE answer missing (the deck's ScreenKeys gives None for a
+    # 350 ms gap): that is "maybe playing", never "nothing plays".
+    scr.a = dict(scr.a, playing="delayed", stale=False)
+    for _ in range(20):
+        t[0] += 0.5
+        c.tick()
+    real = scr.a
+    scr.a = None
+    t[0] += 0.35
+    c.tick()
+    check(c.page == 2, "one late answer during a long announcement: page "
+                       "2 and STOP ANNC. stay")
+    # No fresh answer for PAGE2_STALE_CLOSE_S: page 2 gives way anyway.
+    t[0] += sd.PAGE2_STALE_CLOSE_S + 0.1
+    c.tick()
+    check(c.page == 1, "the engine silent for a minute: the arm keys "
+                       "come back")
+    scr.a = dict(real, playing=None, stale=False)
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2 again")
     t[0] += sd.PAGE2_IDLE_S + 0.1
     c.tick()
-    check(c.page == 1, "idle with nothing playing: page 1")
+    check(c.page == 1, "idle with a fresh answer that nothing plays: "
+                       "page 1")
     # Unarmed group: a fresh press does not even start an arm hold.
     tap(1)
     check(all(h.fraction(t[0]) == 0 for h in c._arm_holds) and
@@ -16140,8 +16161,14 @@ def test_streamdeck_page_two_auto_close_guard():
     d1 = [False] * 6
     d1[1] = True
     c.run_once(d1)
+    check(all(h._down_at is None for h in c._arm_holds),
+          "just written: PAGE1_GUARD_S counts from the write, not from "
+          "the return")
+    c.run_once([False] * 6)
+    t[0] += sd.PAGE1_GUARD_S + 0.1
+    c.run_once(d1)
     check(c._arm_holds[c._key_group[1]]._down_at is not None,
-          "written and past the guard: the key starts an arm hold again")
+          "written PAGE1_GUARD_S ago: the key starts an arm hold again")
     c.run_once([False] * 6)
     c.display_confirms = False
     # Armed group: a fresh press after an auto close does not disarm it.
@@ -16212,6 +16239,34 @@ def test_announce_hold_does_the_operator_holds_safety_cuts():
         sch.machine.state = "PAUSED"
         hold("Andy", "Rack screen")
         check(cuts == [], f"a paused show: nothing touched: {cuts}")
+        # A Start now landing between the Hold and the cuts: checked under
+        # the scheduler's own lock, so the show it started is untouched.
+        import contextlib as _cl
+        sch.machine.state = "STANDBY"
+
+        @_cl.contextmanager
+        def _locked():
+            sch.machine.state = "SHOW"      # Start now won the race
+            yield
+        sch._locked = _locked
+        hold("Andy", "Rack screen")
+        check(cuts == [], f"Start now in the gap: no laser disarm, no cut: "
+                          f"{cuts}")
+        del sch._locked
+        # The laser disarm is journaled as the announcement it was.
+        said = []
+
+        class _Mo:
+            def lasers_disarm_now(self, text, who, screen):
+                said.append(text)
+        del R.remote._lasers_disarm_now
+        R.remote.morning = _Mo()
+        sch.machine.state = "STANDBY"
+        hold("Andy", "Rack screen")
+        check(said and "announcement" in said[0] and
+              "Hold pressed" not in said[0],
+              f"journaled as an announcement, not a Hold press: {said}")
+        R.remote.morning = None
         # web.serve wires exactly this wrapper.
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "ltcplay", "web.py"), encoding="utf-8").read()
@@ -16243,16 +16298,21 @@ def test_announce_view_stale_snapshot_is_not_fact():
         ann.hold_still_claimed = lambda e: True
         R.remote.announce = ann
         ann.play(A.DELAYED, "Andy", "rack screen")
+        ann.held_failed = {"id": "cancellation", "name": "Cancellation",
+                           "why": "x"}
+        ann._held_failed_epoch = 1       # its Hold still stands
         R.remote._ann_refresh()
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
         an = out["announce"]
         check(an["playing"]["id"] == A.DELAYED and not an.get("stale") and
+              an["held_failed"]["id"] == "cancellation" and
               an["age_s"] <= RM.ANNOUNCE_STALE_S,
               f"fresh: playing, with its age: {an.get('age_s')}")
         R.mono[0] += RM.ANNOUNCE_STALE_S + 6
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
         an = out["announce"]
         check(an.get("stale") is True and an["playing"] is None and
+              an["held_failed"] is None and
               an["ok"] is False and "unavailable" in an["error"],
               f"stale: not shown as playing: {an}")
         st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
@@ -16322,10 +16382,23 @@ def test_streamdeck_page_two_shows_the_engines_refusal():
         c.run_once([False, False, True, False, False, False])
         c.run_once([False] * 6)
         eng.announce_said = (False, "The show ended while the "
-                             "announcement was loading.", t[0])
+                             "announcement was loading.", t[0],
+                             "cancellation")
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[2][0] == ["CANCEL", "SHOW ENDED"],
-              f"the pressed key says why: {faces[2]}")
+        check(faces[2][0] == ["CANCEL", "SHOW ENDED"] and
+              faces[1][0] == ["DELAYED"],
+              f"the key whose press it answers says why, no other: {faces}")
+        eng.announce_said = (False, "Delayed is already playing.", t[0],
+                             "delayed")
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[1][0] == ["DELAYED", "ONE PLAYING"] and
+              faces[2][0] == ["CANCEL"],
+              f"DELAYED's refusal never shows on CANCEL: {faces}")
+        eng.announce_said = (False, "ltc serve could not be reached",
+                             t[0], "stop")
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[4][0] == ["STOP", "NO ENGINE"],
+              f"a refused STOP ANNC. shows on STOP: {faces[4]}")
         t[0] += sd.ANNOUNCE_SAID_S + 1
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[2][0] == ["CANCEL"], f"then back: {faces[2]}")
