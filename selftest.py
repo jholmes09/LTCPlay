@@ -15678,6 +15678,10 @@ def test_streamdeck_announcements_page_two():
         def announce_stop(self, who="", screen=""):
             self.calls.append(("stop", who, screen))
             return sd.EngineResult(True, "sent")
+
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("halt", who, screen))
+            return sd.EngineResult(True, "halted")
     scr, eng = _Screen(), _Eng()
     c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
                       show_running_provider=lambda: False, conductor=eng,
@@ -15776,6 +15780,22 @@ def test_streamdeck_announcements_page_two():
     check(c.page == 2 and sd.deck_key_name(1, names, page=2) ==
           "announce delayed" and sd.deck_key_name(1, names) ==
           "arm key front row", "the audit names page 2's keys")
+    # Merged with #130: Stop is one hold on page 2 too, in every state, a
+    # scheduled show included, every flame group disarmed first.
+    for running in (True, None, False):
+        c.show_running_provider = lambda r=running: r
+        arm.set_group(0, True)
+        n = len(eng.calls)
+        key(0, True)
+        t[0] += sd.STOP_HOLD_S + 0.01
+        c.tick()
+        key(0, False)
+        check(c.page == 2 and arm.wanted == [False] * 4 and
+              ("halt", "Andy", "Stream Deck") in eng.calls[n:],
+              f"show running {running}: one Stop hold on page 2 disarms "
+              f"every group, then halts: {arm.wanted} {eng.calls[n:]}")
+        t[0] += sd.REARM_REFRACTORY_S + 1
+        c._page2_at = t[0]
     for text, kw in lines:
         _no_dashes(text, "deck page 2 line")
     fonts, faces, restore = _deck_face_recorder(sd)
