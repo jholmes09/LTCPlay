@@ -16523,17 +16523,25 @@ function go(){ if(!document.querySelector("#fl-lamps .lamp [data-arm]")) return 
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 1500);}
 go();</script>'''
-    # 544 and 558, and 488 and 502: windows whose page is as short as CI's
-    # headless 1366x600 / 1366x614 and 1366x544 / 1366x558 (the runner's
-    # Chrome leaves about 143 px less page than its window, a local one
-    # about 87), so a run here sees what the runner sees.
+    # The required sizes are 1366x600, 1366x614, 1366x544, 1366x558 and
+    # 1024x768 (the runner's Chrome leaves about 143 px less page than its
+    # window, a local one about 87, so 544 and 558 here are about what the
+    # runner sees at 600 and 614). 1366x488 and 1366x502 are drawn for
+    # information only, printed and never failed: shorter than any real
+    # show PC or iPad window (coordinator, review of PR #129).
     got = _rack_screen_in_chromium(chrome, page, st,
                                    ((1366, 600), (1366, 614), (1366, 544),
                                     (1366, 558), (1366, 488), (1366, 502),
                                     (1024, 768)),
                                    measure_js=mjs)
     SLACK = 24
+    INFO_ONLY = {(1366, 488), (1366, 502)}
     for (w, h), m in got.items():
+        if (w, h) in INFO_ONLY:
+            if isinstance(m, dict):
+                print(f"  info {w}x{h}: page {m['vh']} px, Disarm all ends "
+                      f"at {m['disarm']['bottom']:.0f}")
+            continue
         if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):
             continue
         vh = m["vh"]
