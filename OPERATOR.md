@@ -118,10 +118,37 @@ then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
 (the flame half of an Abort, so each group needs a fresh arm), playback
 stops, the outputs go dark, and no show starts until Run is pressed again.
-Unlike Abort it does not latch the rig: nothing needs a Reset. A tap does nothing; let go before
-the ring fills and nothing is sent. During a scheduled show the key keeps
-saying NOW PLAYING, PAUSED or AUDIO LOST and Stop does nothing (use Hold or
-Abort on the Rack screen). After an Abort the deck's border goes red and
+The deck's Stop is a complete halt: every laser is disarmed too.
+Unlike Abort it does not latch the rig: nothing needs a Reset. A tap does
+nothing; let go before the ring fills and nothing is sent.
+
+**Stop during a scheduled show** (Jeff, 2026-10-26). The key keeps saying
+NOW PLAYING, PAUSED or AUDIO LOST, but holding it half a second still
+stops everything: every flame group and laser is disarmed, the show ends
+(faded to dark as an Abort is, but with no latch and no Reset needed),
+playback stops, and no show starts until Run is pressed again. Stopping
+the last show of the night closes the night a moment later, as an Abort
+does. Because Run is no longer pressed, each later show that night raises
+a "The show did not start" alert when its time comes, until the last
+show's time has passed or Run is pressed again: acknowledge each one. To
+disarm just one group during a show, tap its key on the deck, or use the
+Rack screen.
+
+**If the deck cannot read the show computer** (it is down, or still
+starting), the key reads STOP ALL, and the same half second hold still
+stops: the deck turns every flame group off itself first, then asks the
+show computer for the rest, and says ENGINE FAULT if it cannot reach it
+(or CHECK RACK if it took the Stop but has not answered yet). The key also
+reads STOP ALL when nothing is running but a flame group is armed, and the
+hold turns everything off. An alert waiting on the deck never eats a
+Stop: a quick tap only acknowledges it, and a full half second hold stops
+(the key switches to HOLD TO STOP as soon as it is held, so let go to
+cancel). With the Morning page open, key 0 is FIRE for the purge, except
+whenever anything is running (a show live, or Run pressed and playback
+going), the deck cannot read the show computer, or a group is armed for
+anything but the purge (a group the purge selection wants counts as the
+purge's, even if it was armed by hand first): then it is Stop. The Rack screen's own Stop button is still refused during a show
+(use Hold or Abort there). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
 the Rack screen. If Stop stopped playback but could not send the flame
 groups off, the Rack screen says "Stopped, but the flame disarm FAILED"

@@ -593,6 +593,11 @@ class _ConductorCalls:
     conductor never has one."""
 
     URGENT_WAIT_S = 0.25
+    # What a Stop (STOP_SHOW, the Stream Deck's halt) takes out of the line
+    # if it is still waiting there: a show start, so the music and video
+    # never start only to fade (review of #130, second pass, 4). Never a
+    # Reset, Hold or Resume: Stop is not an Abort, and latches nothing.
+    STOP_DROPS = ("show_starting", "start_show")
     SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",
                            "start_show")
 
@@ -708,6 +713,23 @@ class _ConductorCalls:
             self._start()
             self._cv.notify_all()
             return True
+
+    def drop(self, methods, before_seq):
+        """Take the requests still waiting in the line whose method is in
+        `methods` and that were decided before `before_seq` out of it, and
+        return them: they are not sent. For Stop (STOP_DROPS): a show start
+        still waiting is not sent once the show has been stopped. Nothing
+        else: no latch, and the request the line is making now is left
+        alone."""
+        with self._cv:
+            gone = [c for c in self._q
+                    if c.method in methods and c.seq < before_seq]
+            for c in gone:
+                self._q.remove(c)
+                c.ok, c.sentence = False, "not sent: Stop came first"
+                c.done.set()
+            self._cv.notify_all()
+            return gone
 
     def flush(self, timeout):
         with self._cv:
@@ -1605,6 +1627,17 @@ class Service:
         # Numbered (and an Abort stamped) now, with the latch, not when
         # they are sent after the save: see _decide_conductor.
         calls = self._decide_conductor(plan, ev)
+        if ev.kind == sch.STOP_SHOW and calls:
+            # Stop: a show start still waiting in the conductor's line is
+            # not sent (review of #130, second pass, 4). No latch.
+            gone = self._calls.drop(_ConductorCalls.STOP_DROPS,
+                                    calls[0].seq)
+            for c in gone:
+                self._journal_line(
+                    "system", f"Not sent to the show conductor, {c.label}: "
+                              f"Stop was pressed first.",
+                    action="conductor", outcome="not sent",
+                    reason=f"{c.method} dropped by Stop")
         if any(c.method == "abort" for c in calls):
             # The latch is saved with the Abort itself, before the conductor
             # is asked, so a restart in between still knows (and only a
@@ -2901,7 +2934,10 @@ class Service:
     # with who and which screen, the Abort latch saved before the conductor
     # is asked (see _apply). Reset is reset_conductor, under its own name.
     PRESSES = {"start-now": sch.START_NOW, "hold": sch.HOLD_ON,
-               "resume": sch.RESUME, "abort": sch.ABORT}
+               "resume": sch.RESUME, "abort": sch.ABORT,
+               # The engine's own Stop during a show (web.py, the Stream
+               # Deck's Stop held; Jeff, 2026-10-26): never a remote route.
+               "stop-show": sch.STOP_SHOW}
     # The states in which a refused Hold or Resume found nothing to do:
     # nothing can start by itself (on hold, paused, the night over), or
     # nothing is held. BOOT is not among them: there the scheduler has not
