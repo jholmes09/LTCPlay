@@ -892,8 +892,8 @@ MUTATIONS = [
 
  ('artnet nodes: the rack screen alert is not raised',
   'ltcplay/remote.py',
-  '        self.artnet_alert()\n        self._apply_pulse()',
-  '        self._apply_pulse()'),
+  '        self.artnet_alert()\n        out["artnet_note"] = self.artnet_note()',
+  '        out["artnet_note"] = self.artnet_note()'),
 
  ('artnet nodes: a warning raises the rack screen alert',
   'ltcplay/remote.py',
@@ -6241,8 +6241,8 @@ def build():
  # Item 1: conductor calls after the save, in order, off the lock, faults.
  ('scheduler fix round: the conductor is asked before tonight is saved',
   'ltcplay/schedule_service.py',
-  '        self._record(out, now, plan)\n        if self.dry_run and self.machine.state == sch.CLOSING:',
-  '        self._queue_conductor(plan, ev)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan)\n        if self.dry_run and self.machine.state == sch.CLOSING:'),
+  '        self._record(out, now, plan, held, ev)\n        if self.dry_run and self.machine.state == sch.CLOSING:',
+  '        self._queue_conductor(plan, ev, calls)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan, held, ev)\n        if self.dry_run and self.machine.state == sch.CLOSING:'),
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
@@ -6856,7 +6856,7 @@ def build():
   "        if any(c.method in (\"abort\", \"failed_start\") for c in calls):"),
 
  ("a failed start raises no alert", "ltcplay/schedule_service.py",
-  "                    self.alert_sink(\"start\", self.FAILED_START_ALERT)",
+  "                    self.alert_sink(\"start\", alert)",
   "                    pass"),
 
  ("the failed-start line still says the groups were disarmed",
@@ -9959,8 +9959,9 @@ def build():
 
  ("multi-safety: a locked wave flamer machine does not lock its safety slot",
   "ltcplay/morning.py",
-  '''                                   pairs[s], bank=bank, safety=s))''',
-  '''                                   pairs[s], bank=bank))'''),
+  '''                                   pairs[s], bank=bank, notes=notes,
+                                   safety=s))''',
+  '''                                   pairs[s], bank=bank, notes=notes))'''),
 
  # Cold review of PR #107: P2-1, a multi-safety machine's safety is paired
  # by the slot layout; P2-3, the witness checker's multi-safety rules.
@@ -9977,8 +9978,9 @@ def build():
  ("multi-safety: a whole-group machine does not lock the safety slots",
   "ltcplay/morning.py",
   '''                                   g["name"], list(g["fire"]), bank=bank,
-                                   safeties=saf))''',
-  '''                                   g["name"], list(g["fire"]), bank=bank))'''),
+                                   notes=notes, safeties=saf))''',
+  '''                                   g["name"], list(g["fire"]), bank=bank,
+                                   notes=notes))'''),
 
  ("multi-safety: a wave flamer machine may leave out its safety slot",
   "ltcplay/morning.py",
@@ -12272,8 +12274,8 @@ def build():
 
  ("rack screen: the banners are never folded",
   "ltcplay/web/remote.html",
-  "  if(list.length < 2) return {fold:false, n:list.length};",
-  "  if(list.length < 99) return {fold:false, n:list.length};"),
+  "  if(list.length < 2) return {fold:false, n:list.length, fresh:fresh, keys:keys};",
+  "  if(list.length < 99) return {fold:false, n:list.length, fresh:fresh, keys:keys};"),
 
  ("rack screen: the fold is never drawn",
   "ltcplay/web/remote.html",
