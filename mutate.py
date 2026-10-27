@@ -14664,9 +14664,107 @@ def build():
   "                    elif morning:\n                        # An acknowledge on the Morning page that Stop does",
   "                    elif False:\n                        # An acknowledge on the Morning page that Stop does"),
 
+ ("make a show file writes over an existing show file", "ltcplay/cli.py",
+  "            if os.path.lexists(out):\n                continue\n            try:\n                os.link(tmp, out)\n                return out",
+  "            if True:\n                os.replace(tmp, out)\n                return out"),
+
+ ("make a show file is not refused while a show file runs", "ltcplay/remote.py",
+  "        if getattr(c, \"_starting\", False) or \\\n                (sess is not None and getattr(sess, \"running\", False)):",
+  "        if False:"),
+
+ ("make a show file is not refused while a scheduled show is live", "ltcplay/remote.py",
+  "        if self._show_live():\n            return 409, (\"A scheduled show is live. Make the show file \"",
+  "        if False:\n            return 409, (\"A scheduled show is live. Make the show file \""),
+
+ ("make a show file writes beside the show folder, not where the chooser lists", "ltcplay/remote.py",
+  "                made = make_show_file(folder, folder,",
+  "                made = make_show_file(folder, os.path.dirname(folder),"),
+
+ ("make a show file lists the launcher folder's renders, not the folder served", "ltcplay/remote.py",
+  "                made = make_show_file(folder, folder,",
+  "                made = make_show_file(settings_mod.folder(), folder,"),
+
+ ("make a show file never chooses the new file", "ltcplay/remote.py",
+  "        else:\n            self._save_selected_show(name)",
+  "        else:\n            pass"),
+
+ ("ltc init writes over an existing show file again", "ltcplay/cli.py",
+  "        out = write_new_show_file(settings_mod.folder(),\n                                  starter_base(args.show_dir), doc)",
+  "        out = os.path.join(settings_mod.folder(),\n                           starter_base(args.show_dir) + \"_timeline.json\")\n        with open(out, \"w\") as fh:\n            json.dump(doc, fh, indent=2)"),
+
+ ("Getting started never offers Make a show file", "ltcplay/web/remote.html",
+  "  $(\"su-make\").hidden = !makeOffered(su);",
+  "  $(\"su-make\").hidden = true;"),
+
+ ("Getting started always offers Make a show file", "ltcplay/web/remote.html",
+  "  $(\"su-make\").hidden = !makeOffered(su);",
+  "  $(\"su-make\").hidden = false;"),
+
+ ("Getting started offers Make a show file with no renders", "ltcplay/web/remote.html",
+  "  return !!su && su.show_files === 0 && su.show_folder_renders > 0;",
+  "  return !!su && su.show_files === 0;"),
+
+ ("the setup view never counts the renders for Make a show file", "ltcplay/remote.py",
+  "                \"show_folder_renders\": self._renders_in(folder) if not files",
+  "                \"show_folder_renders\": 0 if not files"),
+
+ ("make a show file writes an empty show file when no render reads", "ltcplay/cli.py",
+  "    if not doc[\"cues\"]:\n        raise ValueError(f\"None of the",
+  "    if False:\n        raise ValueError(f\"None of the"),
+
+ ("make a show file without hard links truncates a file that appeared", "ltcplay/cli.py",
+  "os.O_WRONLY | os.O_CREAT | os.O_EXCL |",
+  "os.O_WRONLY | os.O_CREAT | os.O_TRUNC |"),
+
+ ("make a show file takes a second press while one is made", "ltcplay/remote.py",
+  "        if not self._new_show_lock.acquire(blocking=False):",
+  "        if False:"),
+
+ ("make a show file leaves its temporary file behind", "ltcplay/cli.py",
+  "    finally:\n        try:\n            os.unlink(tmp)\n        except OSError:\n            pass\n\n\n# Said with every",
+  "    finally:\n        pass\n\n\n# Said with every"),
+
+ ("make a show file presents a guessed frame rate as fact", "ltcplay/cli.py",
+  "    note = (f\"Check the frame rate: it was set to {doc['fps']:g} fps \"\n            f\"because {why}. {FPS_CHECK}\")",
+  "    note = f\"{doc['fps']:g} fps.\""),
+
+ ("make a show file drops the frame rate warning from the reply", "ltcplay/remote.py",
+  "                f\"{made['rate_note']} Check the show file does not hear \"",
+  "                f\"Check the show file does not hear \""),
+
+ ("make a show file reads a [bracketed] folder name as a pattern again", "ltcplay/timeline.py",
+  "    files = [os.path.join(show_dir, n) for n in fseq_names(show_dir)]",
+  "    import glob\n    files = sorted(glob.glob(os.path.join(show_dir, \"*.fseq\")))"),
+
+ ("the show file list reads a [bracketed] folder name as a pattern again", "ltcplay/web.py",
+  "        pattern = os.path.join(glob.escape(self.folder), \"*.json\")",
+  "        pattern = os.path.join(self.folder, \"*.json\")"),
+
+ ("make a show file misses renders named .FSEQ", "ltcplay/timeline.py",
+  "    return sorted(n for n in names if n.lower().endswith(\".fseq\") and",
+  "    return sorted(n for n in names if n.endswith(\".fseq\") and"),
+
+ ("make a show file is not asked again just before the write", "ltcplay/cli.py",
+  "    if before_write is not None:\n        before_write()\n",
+  ""),
+
+ ("make a show file chooses the new file under a show that started", "ltcplay/remote.py",
+  "        late = self._new_show_refusal()",
+  "        late = None"),
+
+ ("the folder card's Make a show file does nothing", "ltcplay/web/remote.html",
+  "$(\"fo-make\").addEventListener(\"click\", makeShowFile);\n",
+  ""),
+
+ ("Getting started's Make a show file does nothing", "ltcplay/web/remote.html",
+  "$(\"su-make\").addEventListener(\"click\", async () => {\n  location.hash = \"programming\";",
+  "$(\"su-make-off\") && (async () => {\n  location.hash = \"programming\";"),
+
+ ("the folder card's Check the show file does nothing", "ltcplay/web/remote.html",
+  "$(\"fo-check\").addEventListener(\"click\", async () => {",
+  "$(\"fo-check-off\") && (async () => {"),
+
 ]
-
-
 # What the last suite run failed on, so a surprising result can be read.
 _LAST_FAILS = []
 # The last run: [seconds it took, whether it was stopped at its limit].
