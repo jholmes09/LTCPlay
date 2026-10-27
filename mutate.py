@@ -8622,6 +8622,18 @@ def build():
   "            if stop_frac > 0:\n                # Stop being held: the ring fills; let go early, nothing.\n                # During a scheduled show too",
   "            if False:\n                # Stop being held: the ring fills; let go early, nothing.\n                # During a scheduled show too"),
 
+ # Neighbours of the one above (the full sweep, 2026-10-27):
+ # test_streamdeck_stop_hold_face_and_ring_from_the_first_instant.
+ ("deck: a Stop hold never fills key 0's ring",
+  "ltcplay/streamdeck.py",
+  "        if stop_frac > 0:\n            arm_fills[TOP_START] = stop_frac",
+  "        if False:\n            arm_fills[TOP_START] = stop_frac"),
+
+ ("deck: an aborted Stop hold reads STOP RUN until STOP_FACE_AFTER_S",
+  "ltcplay/streamdeck.py",
+  "        elif latched and stop_frac > 0:",
+  "        elif False:"),
+
  ("round3: a Stop can also complete a same-pass arm-hold again",
   "ltcplay/streamdeck.py",
   """            self._do_stop()
