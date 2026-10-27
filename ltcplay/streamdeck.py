@@ -1414,7 +1414,12 @@ class EngineConductor:
         # the deck's own key, never a quiet "done"; DISARM FAILED when a
         # disarm failed. The deck's own arm link disarm went first anyway.
         fails = []
-        if name == "stop" and ok and isinstance(doc, dict):
+        # The engine answered Stop with an HTTP error (a 500 after the halt
+        # ran): its own failed steps are still read and said, never ENGINE
+        # FAULT (third review of #130, 4).
+        errored = name == "stop" and not ok and isinstance(doc, dict) and \
+            doc.get("_http_status") is not None
+        if name == "stop" and (ok or errored) and isinstance(doc, dict):
             flames = doc.get("flames")
             lasers = doc.get("lasers")
             show = doc.get("show")
@@ -1451,7 +1456,11 @@ class EngineConductor:
                                   f"): use Abort on the Rack screen or the "
                                   f"hardware e-stop"))
         disarm_failed = any(k == "disarm" for k, _t in fails)
-        if fails:
+        if errored:
+            text = (f"the engine answered Stop with an error ({text})"
+                    + ("; and " + "; and ".join(t for _k, t in fails)
+                       if fails else "") + ": check the Rack screen")
+        elif fails:
             ok = False
             text = "playback stopped, but " + "; and ".join(
                 t for _k, t in fails)
@@ -1473,8 +1482,8 @@ class EngineConductor:
         # A Stop the engine took but did not answer in STOP_POST_TIMEOUT_S
         # is not an engine that cannot be reached (review of #130, second
         # pass, 5): CHECK RACK, the halt may still be under way.
-        slow = name == "stop" and not ok and isinstance(doc, dict) and \
-            doc.get("timeout") is True
+        slow = name == "stop" and not ok and isinstance(doc, dict) and (
+            doc.get("timeout") is True or errored)
         if name != "alert":
             # An alert post is not a press on the rig: a refused or late
             # Acknowledge (two keys inside one poll) is journaled below,
@@ -1525,17 +1534,27 @@ class EngineConductor:
                 why = doc.get("text") or doc.get("error") or str(e)
             except Exception:
                 why = str(e)
-            return False, str(why), (doc if isinstance(doc, dict) else {})
-        except (OSError, ValueError, urllib.error.URLError) as e:
-            why = getattr(e, "reason", e)
-            if isinstance(e, TimeoutError) or isinstance(why, TimeoutError) \
-                    or "timed out" in str(e):
-                # The engine took the request and has not answered yet: it
-                # is not unreachable (review of #130, second pass, 5).
-                return False, (f"ltc serve took the request but did not "
-                               f"answer within {wait:g} s; it may still be "
-                               f"working on it. Check the Rack screen"), \
-                    {"timeout": True}
+            doc = doc if isinstance(doc, dict) else {}
+            # The engine answered, with an error: said apart from an engine
+            # that cannot be reached (third review of #130, 4).
+            doc.setdefault("_http_status", e.code)
+            return False, str(why), doc
+        except urllib.error.URLError as e:
+            # urllib wraps everything up to sending the request (connecting,
+            # a connect timeout, a refusal) in URLError: the engine could
+            # not be reached (third review of #130, 3).
+            return False, (f"ltc serve could not be reached at "
+                           f"{self.base_url} ({e})")
+        except TimeoutError:
+            # Only a timeout AFTER the request was sent (waiting for the
+            # answer): the engine took it and has not answered yet (review
+            # of #130, second pass, 5). If it has stopped answering its
+            # polls too, the key says ENGINE FAULT all the same.
+            return False, (f"ltc serve took the request but did not "
+                           f"answer within {wait:g} s; it may still be "
+                           f"working on it. Check the Rack screen"), \
+                {"timeout": True}
+        except (OSError, ValueError) as e:
             return False, (f"ltc serve could not be reached at "
                            f"{self.base_url} ({e})")
 
@@ -3005,7 +3024,7 @@ class Controller:
         one armed; with purge=False, not counting the groups armed for the
         Morning page's purge. Never raises."""
         try:
-            skip = set() if purge else set(self._purge_armed)
+            skip = set() if purge else self._purge_own()
             return any(w for i, w in enumerate(self.arm.wanted)
                        if i not in skip) or any(
                 self._reported_armed(i) for i in range(len(self.names))
@@ -3013,12 +3032,24 @@ class Controller:
         except Exception:                        # noqa: BLE001
             return True
 
+    def _purge_own(self):
+        """The groups that are the Morning page's purge's own: the ones the
+        purge armed (_purge_armed), and the ones its selection wants armed
+        right now (purge_wanted), even if the operator had already armed
+        one by hand so purge_pass never took it over (third review of
+        #130, 2). Never raises."""
+        try:
+            return set(self._purge_armed) | set(self.purge_wanted())
+        except Exception:                        # noqa: BLE001
+            return set(self._purge_armed)
+
     def _stop_wins(self):
-        """Key 0 is Start/Stop, never the Morning page's FIRE, while a show
-        is live, the state is not known, or a group is armed other than
-        for the purge (review of #130, second pass, 2): an open Morning
-        page never swallows a Stop."""
-        return self.start_key_mode() in ("show", "unknown") or \
+        """Key 0 is Start/Stop, never the Morning page's FIRE, whenever
+        anything is running (Jeff's rule): a show live, a run going ("stop",
+        third review of #130, 1) or the state not known; and while a group
+        is armed other than for the purge (review of #130, second pass,
+        2). An open Morning page never swallows a Stop."""
+        return self.start_key_mode() in STOP_MODES or \
             self._any_flame_armed(purge=False)
 
     def _do_stop(self):
@@ -3851,6 +3882,16 @@ class Controller:
             face = list(getattr(self.conductor, "fault_face", None) or
                         ("ENGINE", "FAULT")) if getattr(
                 self.conductor, "fault", "") else ["ENGINE", "FAULT"]
+            try:
+                gone = (hasattr(self.conductor, "unreachable") and
+                        self.conductor.unreachable())
+            except Exception:                    # noqa: BLE001
+                gone = True
+            if gone and face == ["CHECK", "RACK"]:
+                # The engine has stopped answering its polls too: a Stop
+                # that timed out was not "taken", it is an engine fault
+                # (third review of #130, 3).
+                face = ["ENGINE", "FAULT"]
             fonts.show_key(d, b0, face,
                            BLACK if blink_on else RED,
                            bg=RED if blink_on else None, kind="sans",

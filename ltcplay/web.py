@@ -1452,7 +1452,18 @@ class Handler(BaseHTTPRequestHandler):
                 # the end before playback stops.
                 if self._halt_asked():
                     out = self._halt(body)
-                    out["stopped"] = c.stop()
+                    try:
+                        out["stopped"] = c.stop()
+                    except Exception as e:       # noqa: BLE001
+                        # The halt ran; only the playback stop failed. The
+                        # answer still carries every step (third review of
+                        # #130, 4), for the deck to say.
+                        out["stopped"] = False
+                        out["failed"] = list(out.get("failed") or []) + [
+                            "playback stop"]
+                        out["error"] = c.last_error = \
+                            f"{type(e).__name__}: {e}"
+                        return self._send(500, out)
                     return self._send(200, out)
                 flames = self._stop_flames(body)
                 out = {"stopped": c.stop()}

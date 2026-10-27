@@ -144,8 +144,10 @@ hold turns everything off. An alert waiting on the deck never eats a
 Stop: a quick tap only acknowledges it, and a full half second hold stops
 (the key switches to HOLD TO STOP as soon as it is held, so let go to
 cancel). With the Morning page open, key 0 is FIRE for the purge, except
-while a show is live, the deck cannot read the show computer, or a group
-is armed for anything but the purge: then it is Stop. The Rack screen's own Stop button is still refused during a show
+whenever anything is running (a show live, or Run pressed and playback
+going), the deck cannot read the show computer, or a group is armed for
+anything but the purge (a group the purge selection wants counts as the
+purge's, even if it was armed by hand first): then it is Stop. The Rack screen's own Stop button is still refused during a show
 (use Hold or Abort there). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
 the Rack screen. If Stop stopped playback but could not send the flame

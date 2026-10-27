@@ -13907,8 +13907,8 @@ def build():
 
  ("halt: playback stops before the scheduler ends the show",
   "ltcplay/web.py",
-  "                    out = self._halt(body)\n                    out[\"stopped\"] = c.stop()\n",
-  "                    _s = c.stop()\n                    out = self._halt(body)\n                    out[\"stopped\"] = _s\n"),
+  "                    out = self._halt(body)\n                    try:\n                        out[\"stopped\"] = c.stop()\n",
+  "                    _s = c.stop()\n                    out = self._halt(body)\n                    try:\n                        out[\"stopped\"] = _s\n"),
 
  ("halt: the scheduler's Stop latches like an Abort",
   "ltcplay/schedule_service.py",
@@ -14062,7 +14062,7 @@ def build():
 
  ("deck: a purge group's own arm makes Stop win over FIRE",
   "ltcplay/streamdeck.py",
-  "            skip = set() if purge else set(self._purge_armed)\n",
+  "            skip = set() if purge else self._purge_own()\n",
   "            skip = set()\n"),
 
  ("deck: an idle armed hold is a refused Start Now (second review of #130, 6)",
@@ -14087,8 +14087,8 @@ def build():
 
  ("deck: a Stop that times out is called unreachable",
   "ltcplay/streamdeck.py",
-  "            if isinstance(e, TimeoutError) or isinstance(why, TimeoutError) \\\n                    or \"timed out\" in str(e):",
-  "            if False:"),
+  "        except TimeoutError:\n            # Only a timeout AFTER the request was sent",
+  "        except ZeroDivisionError:\n            # Only a timeout AFTER the request was sent"),
 
  ("deck: one failed scheduler poll flips the key (second review of #130, 6)",
   "ltcplay/streamdeck.py",
@@ -14124,6 +14124,43 @@ def build():
   "ltcplay/schedule_service.py",
   "                    if c.method in methods and c.seq < before_seq]",
   "                    if c.method in methods]"),
+
+
+ # Third review of #130 (fix forward).
+ ("deck: a run going does not make Stop win over FIRE (third review of #130, 1)",
+  "ltcplay/streamdeck.py",
+  "        return self.start_key_mode() in STOP_MODES or \\\n            self._any_flame_armed(purge=False)",
+  "        return self.start_key_mode() in (\"show\", \"unknown\") or \\\n            self._any_flame_armed(purge=False)"),
+
+ ("deck: a group the purge wants but the operator armed first makes Stop win (third review of #130, 2)",
+  "ltcplay/streamdeck.py",
+  "            return set(self._purge_armed) | set(self.purge_wanted())",
+  "            return set(self._purge_armed)"),
+
+ ("deck: a connect timeout reads as the engine took the Stop (third review of #130, 3)",
+  "ltcplay/streamdeck.py",
+  "        except urllib.error.URLError as e:\n            # urllib wraps everything up to sending the request (connecting,",
+  "        except urllib.error.URLError as e:\n            if \"timed out\" in str(e):\n                return False, \"took it\", {\"timeout\": True}\n            # urllib wraps everything up to sending the request (connecting,"),
+
+ ("deck: a stale CHECK RACK outranks an engine that stopped answering",
+  "ltcplay/streamdeck.py",
+  "            if gone and face == [\"CHECK\", \"RACK\"]:",
+  "            if False:"),
+
+ ("deck: an HTTP error from Stop is not read for its failed steps (third review of #130, 4)",
+  "ltcplay/streamdeck.py",
+  "        errored = name == \"stop\" and not ok and isinstance(doc, dict) and \\",
+  "        errored = False and \\"),
+
+ ("deck: an HTTP error answer is not marked as the engine's",
+  "ltcplay/streamdeck.py",
+  "            doc.setdefault(\"_http_status\", e.code)\n",
+  "            pass\n"),
+
+ ("web: a playback stop that raises loses the halt's steps (third review of #130, 4)",
+  "ltcplay/web.py",
+  "                        out[\"stopped\"] = c.stop()\n                    except Exception as e:       # noqa: BLE001\n",
+  "                        out[\"stopped\"] = c.stop()\n                    except ZeroDivisionError as e:  # noqa: BLE001\n"),
 
 ]
 

@@ -46914,6 +46914,20 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               "lasers" in [o if isinstance(o, str) else o[0]
                            for o in order],
               f"a halt between shows disarms the lasers too: {out} {order}")
+        # The playback stop raises after the halt ran: a 500 that still
+        # carries every step, for the deck to say (third review of #130, 4).
+        def _boom():
+            raise RuntimeError("the audio device is wedged")
+        R.httpd.control.stop = _boom
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 500 and out.get("flames", {}).get("disarmed") is True
+              and "playback stop" in out.get("failed", []) and
+              "wedged" in out.get("error", "") and
+              out.get("stopped") is False,
+              f"a playback stop that raises: 500 with the halt's steps: "
+              f"{st} {out}")
     finally:
         R.close()
     print("  ok")
@@ -47471,6 +47485,154 @@ def test_stop_halt_second_review_of_130():
     finally:
         sd.STOP_POST_TIMEOUT_S = keep
         srv.close()
+    # Third review of #130, 1: Stop wins whenever anything is running,
+    # the Morning page open, the purge's own group armed and a run going.
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    show[0], run[0] = False, False
+    t[0] += sd.REARM_REFRACTORY_S
+    for wanted in ([], [0]):
+        scr.mo["purge"]["wanted_groups"] = wanted
+        c.screen_pass()
+        c.tick()
+    check(c._purge_armed == {0}, f"setup: purge group 0 armed: "
+                                 f"{c._purge_armed}")
+    run[0] = True
+    check(c.start_key_mode() == "stop" and c._stop_wins(),
+          "Run pressed and playback going: Stop wins")
+    n_pf, n0 = len(pf.calls), len(stops())
+    c.run_once(down)
+    check(len(pf.calls) == n_pf and c._stop_hold._down_at is not None,
+          f"the Morning page open, the purge's group armed, a run going: "
+          f"key 0 is Stop, never FIRE: {pf.calls[n_pf:]}")
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1, f"and the hold stops: {cond.calls}")
+    # The same with an alert open: the first press acknowledges AND starts
+    # the hold, as during a show.
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    c.run_once(down)
+    check(acked and c._stop_hold._down_at is not None,
+          "a run going, an alert open: the press acknowledges and starts "
+          "the Stop hold")
+    c.run_once(up)
+    del c.alert_pending
+    del c._do_acknowledge
+    run[0] = False
+    # Third review of #130, 2: a group the purge selection wants, armed by
+    # hand before the page took it, is the purge's own: FIRE, never STOP
+    # ALL.
+    t[0] += sd.REARM_REFRACTORY_S
+    scr.mo["purge"]["wanted_groups"] = []
+    c.screen_pass()
+    c.tick()
+    arm.set_group(1, True)          # armed by hand first
+    scr.mo["purge"]["wanted_groups"] = [1]
+    c.screen_pass()
+    c.tick()
+    check(1 not in c._purge_armed and 1 in c.purge_wanted() and
+          not c._stop_wins(),
+          f"a hand-armed group the purge wants: the purge's own, Stop "
+          f"does not win: {c._purge_armed}")
+    n_pf = len(pf.calls)
+    c.run_once(down)
+    check(len(pf.calls) == n_pf + 1 and pf.calls[-1][0] == "start",
+          f"key 0 is FIRE: {pf.calls[n_pf:]}")
+    c.run_once(up)
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] != ["STOP", "ALL"],
+                  f"and its face is the purge's, never STOP ALL: "
+                  f"{faces[0]}")
+        finally:
+            restore()
+    show[0] = True
+    check(c._stop_wins(), "a show live: Stop wins all the same (rule 1)")
+    show[0] = False
+    arm.set_group(1, False)
+    scr.mo = None
+    c.screen_pass()
+    c.tick()
+    # Third review of #130, 3: only a timeout after the request was sent
+    # is "the engine took it"; a connect timeout or a refusal is an engine
+    # fault; and the engine not answering its polls outranks CHECK RACK.
+    import urllib.error
+    real_opener = sd._opener
+
+    class _Op:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def open(self, *a, **kw):
+            raise self.exc
+    try:
+        e4 = sd.EngineConductor("http://127.0.0.1:1")
+        sd._opener = lambda: _Op(urllib.error.URLError(TimeoutError(
+            "timed out")))
+        r = e4._http_post("/api/stop", {})
+        check(r[0] is False and (len(r) < 3 or not r[2].get("timeout")) and
+              "could not be reached" in r[1],
+              f"a connect timeout: the engine could not be reached: {r}")
+        sd._opener = lambda: _Op(ConnectionRefusedError("refused"))
+        r = e4._http_post("/api/stop", {})
+        check(r[0] is False and (len(r) < 3 or not r[2].get("timeout")),
+              f"refused: could not be reached: {r}")
+        sd._opener = lambda: _Op(TimeoutError("timed out"))
+        r = e4._http_post("/api/stop", {})
+        check(len(r) == 3 and r[2].get("timeout") is True,
+              f"a timeout waiting for the answer: taken: {r}")
+    finally:
+        sd._opener = real_opener
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            e5 = sd.EngineConductor("http://127.0.0.1:1",
+                                    poster=lambda p_, b_: (
+                                        False, "slow", {"timeout": True}))
+            e5._post_one("stop", {"who": ""}, path="/api/stop")
+            gone = [False]
+            e5.unreachable = lambda: gone[0]
+            c5 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                               names, show_running_provider=lambda: False,
+                               run_live_provider=lambda: False,
+                               conductor=e5, clock=lambda: t[0])
+            c5.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["CHECK", "RACK"],
+                  f"a slow Stop, the engine still polling: CHECK RACK: "
+                  f"{faces[0]}")
+            gone[0] = True
+            c5.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["ENGINE", "FAULT"],
+                  f"the engine no longer answering its polls: ENGINE FAULT "
+                  f"over the stale CHECK RACK: {faces[0]}")
+        finally:
+            restore()
+    # Third review of #130, 4: an HTTP error from /api/stop still has its
+    # failed steps read and said; never ENGINE FAULT.
+    got["a"] = (False, "RuntimeError: audio device", {
+        "_http_status": 500, "stopped": False,
+        "flames": {"disarmed": False, "text": "F"},
+        "failed": ["flames", "playback stop"],
+        "error": "RuntimeError: audio device"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check("answered Stop with an error" in e.fault and
+          "flame disarm FAILED (F)" in e.fault and
+          "playback stop step FAILED" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED"),
+          f"a 500 after the halt: its real failed steps, DISARM FAILED: "
+          f"{e.fault!r} {e.fault_face}")
+    got["a"] = (False, "boom", {"_http_status": 500, "failed": []})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("CHECK", "RACK") and
+          "answered Stop with an error" in e.fault,
+          f"a 500 with nothing else failed: CHECK RACK, not ENGINE FAULT: "
+          f"{e.fault!r}")
     # The real GET: an engine with no scheduler answers 404, said apart
     # from no answer at all.
     import http.server as _hs
@@ -47488,6 +47650,19 @@ def test_stop_halt_second_review_of_130():
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self):
+            # A Stop whose playback stop raised after the halt ran: 500.
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            body = (b'{"error": "RuntimeError: wedged", "stopped": false, '
+                    b'"flames": {"disarmed": false, "text": "F"}, '
+                    b'"failed": ["flames", "playback stop"]}')
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def log_message(self, *a):
             pass
     hs = _hs.HTTPServer(("127.0.0.1", 0), _NoSched)
@@ -47500,6 +47675,13 @@ def test_stop_halt_second_review_of_130():
         ls._poll_once()
         check(ls.show_running() is False and ls.run_live() is False,
               f"so the key is Start, never unknown: {ls.show_running()}")
+        e6 = sd.EngineConductor(f"http://127.0.0.1:{hs.server_port}")
+        e6._post_one("stop", {"who": ""}, path="/api/stop")
+        check("flame disarm FAILED (F)" in e6.fault and
+              "playback stop step FAILED" in e6.fault and
+              tuple(e6.fault_face) == ("DISARM", "FAILED"),
+              f"a real 500 from Stop: its failed steps read and said, "
+              f"never ENGINE FAULT: {e6.fault!r} {e6.fault_face}")
     finally:
         hs.shutdown()
         hs.server_close()
