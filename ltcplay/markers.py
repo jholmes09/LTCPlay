@@ -134,7 +134,12 @@ def build(markers_csv, show_dir, fps=30, start="00:00:00:00", tolerance=0.25,
     markers = read_markers(markers_csv, fps)
     if not markers:
         raise ValueError(f"{markers_csv}: no markers found")
-    files = sorted(glob.glob(os.path.join(show_dir, "*.fseq")))
+    # Escaped: a show folder named "Fire [2026]" is a name, not a pattern
+    # (review of #137). Any case of the extension (A.FSEQ too), as
+    # timeline.fseq_names lists renders for Make a show file: glob only
+    # folds case on Windows.
+    files = sorted(glob.glob(os.path.join(glob.escape(show_dir),
+                                          "*.[fF][sS][eE][qQ]")))
     # If the marker file names a set, only consider sequences from that set.
     # Without this, Set 2's opener silently borrows Set 1's opener sequence,
     # which is a different piece of music, and the timeline looks complete

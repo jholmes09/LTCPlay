@@ -2528,7 +2528,11 @@ def derive_show_length_in_folder(folder, sd=None):
     candidates = []       # [(path, length_s)]
     problems = []          # [sentence], one per candidate that could not
                            # be used
-    for path in sorted(glob.glob(_os.path.join(folder, "*.json"))):
+    # Escaped: a show folder named "Fire [2026]" is a name, not a
+    # pattern (review of #137). Only the folder is escaped; "*.json" is
+    # the same as the Show file chooser's (web.timelines).
+    for path in sorted(glob.glob(_os.path.join(glob.escape(folder),
+                                               "*.json"))):
         try:
             with open(path, encoding="utf-8") as fh:
                 doc = _json.load(fh)
