@@ -42,8 +42,10 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        mutation last time first. A run counts only when it
                        fails in that test, and that test passes when run
                        first with nothing mutated (checked once per test);
-                       anything else runs again in file order. A stale or
-                       missing hint costs time, never a verdict.
+                       anything else runs again in file order. A hinted
+                       catch is confirmed by a plain file-order run with no
+                       hint. A stale or missing hint costs time, never a
+                       verdict.
     --write-catchers F add the test each caught mutation stopped in to F
     --jobs N           N mutations at once, each worker in its own copy of
                        the tree with its own home and app-data
@@ -15188,7 +15190,7 @@ class _Report:
             out.append("")
         for title, items in (
                 ("Missed", [f"`{rel}`: {n}" for n, rel in self.missed]),
-                ("Flaky (caught once, then not)",
+                ("Flaky (red once, then green)",
                  [f"{n}: " + " | ".join(w) for n, w in self.flaky]),
                 ("Setup failed", [f"{n}: {w}" for n, w in self.setup_fails]),
                 ("Now caught, delete from the list", list(self.now_caught)),
@@ -15672,7 +15674,9 @@ def _worker_tree(base, n):
 
 def _baseline(root, env):
     """One worker's baseline, every test in file order: (green, timed out
-    twice, seconds, what failed)."""
+    twice, seconds, what failed, what failed the first time when it was
+    red once and then green, else None)."""
+    first_red = None
     green = run_suite(root=root, extra_env=env)
     if _LAST_RUN[1]:
         # Stopped at its limit with nothing mutated: the runner, not the
@@ -15690,8 +15694,10 @@ def _baseline(root, env):
         print("  baseline failed once, running it again:", flush=True)
         for _l in _LAST_FAILS:
             print("    " + _l)
+        first_red = list(_LAST_FAILS)
         green = run_suite(root=root, extra_env=env)
-    return green, bool(_LAST_RUN[1]), _LAST_RUN[0], list(_LAST_FAILS)
+    return (green, bool(_LAST_RUN[1]), _LAST_RUN[0], list(_LAST_FAILS),
+            first_red if green else None)
 
 
 def _each_worker(workers, fn):
@@ -15747,6 +15753,20 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     baseline_s = max(b[2] for b in bases)
     limit = mutant_timeout(baseline_s)
     REPORT.baseline = "green" if len(bases) == 1 else f"green x{len(bases)}"
+    # Red once and then green with nothing mutated is a flaky test, not a
+    # green baseline: it is let through (the second run was whole and
+    # green) but never silently. It is named here and in the summary.
+    shaky = [b[4] for b in bases if b[4] is not None]
+    if shaky:
+        REPORT.baseline += f", FLAKY ({len(shaky)} red once, then green)"
+        for lines in shaky:
+            REPORT.flaky.append(("baseline, nothing mutated", lines))
+        print(f"FLAKY BASELINE: {len(shaky)} of {len(bases)} baselines failed "
+              f"once with nothing mutated and passed on the second run. "
+              f"What failed:")
+        for lines in shaky:
+            for _l in lines:
+                print("    " + _l)
     REPORT.limits = f"{baseline_s:.0f} s / {limit} s"
     print(f"baseline green in {baseline_s:.0f} s"
           f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
@@ -15787,9 +15807,10 @@ def _sweep(todo, workers, expected, unknown, expected_file):
 
     def attempt(hint, root, env):
         """One run of the mutant: (green, the test it stopped in, what
-        failed). A run with a hint counts only when it failed in the hinted
-        test; any other result (green, red elsewhere, stopped without
-        saying where) is run again in file order, and that one counts."""
+        failed, the hint if the run that counts had it first). A run with a
+        hint counts only when it failed in the hinted test; any other result
+        (green, red elsewhere, stopped without saying where) is run again in
+        file order, and that one counts."""
         green = run_suite(limit, ff, hint, False, root, env)
         if hint and not (not green and _LAST_STOP[0] == hint):
             green = run_suite(limit, ff, None, False, root, env)
@@ -15815,16 +15836,25 @@ def _sweep(todo, workers, expected, unknown, expected_file):
         flaky = None
         _write(path, src.replace(old, new, 1))
         try:
-            green, stop, fails, hint = attempt(hint, root, env)
+            green, stop, fails, hinted = attempt(hint, root, env)
             # In CI a mutation counts as caught only if the suite fails under
             # it twice running. A test that fails for the runner's reasons
             # would otherwise pass itself off as coverage: an unlisted
             # mutation nothing really catches would read "caught", and a
             # listed one would read "now caught". Caught once and then not is
             # NOT CAUGHT, with what failed the first time printed.
-            if not green and expected_file:
-                green2, stop2, fails2, _h = attempt(hint, root, env)
+            # The second run is always plain file order, no hint: a red run
+            # with the hinted test first could be the order itself (state one
+            # test leaves for the next) while the real suite is green. Only a
+            # file-order run that fails confirms it, so no such catch counts
+            # or is written to --write-catchers. A hinted red is confirmed
+            # this way even outside CI.
+            if not green and (expected_file or hinted):
+                green2, stop2, fails2, _h = attempt(None, root, env)
                 if green2:
+                    if hinted:
+                        fails = ([f"red only with {hinted} run first; the "
+                                  f"suite in file order was green"] + fails)
                     green, flaky = True, fails
                 else:
                     stop = stop or stop2

@@ -42386,8 +42386,10 @@ def test_mutate_fast_path_never_turns_red_green():
     test in file order with none of the settings, a hinted run counts only
     when it failed in the hinted test after that test passed run first with
     nothing mutated, anything else runs again in file order, a mutation is
-    caught only when two runs fail, and with --jobs each copy runs its own
-    whole baseline and is proved restored. The suite runs are faked."""
+    caught only when two runs fail and the second is plain file order with
+    no hint, and with --jobs each copy runs its own whole baseline and is
+    proved restored, a baseline red once and then green named as flaky.
+    The suite runs are faked."""
     section("mutate.py: the fast path changes the time, not the verdict")
     import contextlib
     import io
@@ -42453,7 +42455,7 @@ def test_mutate_fast_path_never_turns_red_green():
     with tempfile.TemporaryDirectory() as tree:
         names = ["m one", "m two"]
 
-        def sweep(behave, hints=None, jobs=1, ci=True):
+        def sweep(behave, hints=None, jobs=1, ci=True, listed=True):
             """behave(name, failfast, first, probe) -> (green, stopped in).
             (exit, lines, calls, catchers written)."""
             for i, n in enumerate(names):
@@ -42505,9 +42507,10 @@ def test_mutate_fast_path_never_turns_red_green():
                                     for i, n in enumerate(names)]
                 mutate.CI = ci
                 mutate.run_suite = fake_suite
-                sys.argv = ["mutate.py", "--shard", "0/1",
-                            "--expected", os.devnull, "--hints", hf,
-                            "--write-catchers", wf, "--jobs", str(jobs)]
+                sys.argv = (["mutate.py", "--shard", "0/1"]
+                            + (["--expected", os.devnull] if listed else [])
+                            + ["--hints", hf, "--write-catchers", wf,
+                               "--jobs", str(jobs)])
                 with contextlib.redirect_stdout(buf):
                     code = mutate.main()
             finally:
@@ -42536,9 +42539,12 @@ def test_mutate_fast_path_never_turns_red_green():
         check([c for c in calls if c[3]] == [(None, True, "test_guard", True, True)],
               f"the hint is probed once, with nothing mutated: {calls}")
         check([c for c in calls if c[0]] == [
-                  ("m one", True, "test_guard", False, True)] * 2 + [
-                  ("m two", True, "test_guard", False, True)] * 2,
-              f"each mutation: two fail-fast runs, hint first: {calls}")
+                  ("m one", True, "test_guard", False, True),
+                  ("m one", True, None, False, True),
+                  ("m two", True, "test_guard", False, True),
+                  ("m two", True, None, False, True)],
+              f"each mutation: two fail-fast runs, the hint first, then the "
+              f"confirming one in file order with no hint: {calls}")
         check(learned == {"m one": "test_guard", "m two": "test_guard"},
               f"--write-catchers records where each was caught: {learned}")
 
@@ -42558,6 +42564,38 @@ def test_mutate_fast_path_never_turns_red_green():
               f"twice: {mine}")
         check(learned.get("m one") == "test_other",
               f"the catcher learned is where it really stopped: {learned}")
+
+        # Red only when the hinted test runs first (an order-dependent leak:
+        # the suite in file order is green under the mutation). The file
+        # order confirm run is green, so it is NOT CAUGHT, flagged flaky,
+        # and the hint is never written back as a catcher.
+        def red_only_hint_first(hit, ff, first, probe):
+            if hit is None:
+                return True, ""
+            return (first != "test_guard", "test_guard")
+        code, lines, calls, learned = sweep(
+            red_only_hint_first, {"m one": "test_guard", "m two": "test_guard"})
+        mine = [c for c in calls if c[0] == "m one"]
+        check(code == 1 and "  NOT CAUGHT  m one" in lines
+              and "  NOT CAUGHT  m two" in lines
+              and "  caught      m one" not in lines,
+              f"red only with the hint first is NOT CAUGHT: exit {code}, "
+              f"{lines}")
+        check(mine == [("m one", True, "test_guard", False, True),
+                       ("m one", True, None, False, True)],
+              f"the confirming run is file order with no hint: {mine}")
+        check(not learned,
+              f"an order-only catch is never written as a catcher: {learned}")
+        check(any("red only with test_guard run first" in l for l in lines),
+              f"the flaky line says it was the order: {lines}")
+        code, lines, calls, learned = sweep(
+            red_only_hint_first, {"m one": "test_guard"}, ci=False,
+            listed=False)
+        check([c for c in calls if c[0] == "m one"][-1:] ==
+              [("m one", True, None, False, True)]
+              and "  caught      m one" not in lines and not learned,
+              f"with no expected-miss list too, a hinted red is confirmed "
+              f"in file order: {calls} {learned}")
 
         # The hinted test does not pass run first with nothing mutated: the
         # hint is dropped, its mutations run in file order.
@@ -42612,6 +42650,25 @@ def test_mutate_fast_path_never_turns_red_green():
             with open(os.path.join(tree, f"t{i}.py"), encoding="utf-8") as fh:
                 check(fh.read() == f"ok\nGUARD{i}\n",
                       f"the tree's own t{i}.py is untouched")
+
+        # --jobs 2 with one baseline red once, then green: the sweep goes on
+        # (the second run was whole and green) but says it was flaky.
+        base_seen = {"n": 0}
+
+        def red_base_once(hit, ff, first, probe):
+            if hit is None and not probe:
+                with lock_once:
+                    base_seen["n"] += 1
+                    if base_seen["n"] == 1:
+                        return False, "test_wobbly"
+            return (hit is None, "test_guard")
+        lock_once = threading.Lock()
+        code, lines, calls, learned = sweep(red_base_once, jobs=2)
+        check(code == 0 and len(base_runs(calls)) == 3
+              and any(l.startswith("FLAKY BASELINE: 1 of 2") for l in lines)
+              and any("FAIL  in test_wobbly" in l for l in lines),
+              f"--jobs 2: a baseline red once then green is reported as "
+              f"flaky, never silently: {lines}")
 
         # A red baseline gets one more full run; red twice stops the shard.
         def red_base(hit, ff, first, probe):

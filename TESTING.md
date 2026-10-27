@@ -144,7 +144,9 @@ next fixes it first; nothing is tagged while it is red.
   mutate_catchers.json` adds the test each caught mutation stopped in. A
   stale or missing hint costs time, never a verdict: a hinted run counts
   only when it failed in that test, after that test passed run first with
-  nothing mutated; anything else runs again in file order. Refresh the file
+  nothing mutated; anything else runs again in file order. A hinted catch
+  is always confirmed by a second run in plain file order with no hint;
+  green there is NOT CAUGHT (flaky), never caught. Refresh the file
   when a sweep gets slow.
 - The rack screen drawn in a real browser (2026-10-24): the suite finds
   Chromium, Chrome or Edge by itself (set `LTCPLAY_CHROME` to one to
