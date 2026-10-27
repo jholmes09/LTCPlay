@@ -16523,26 +16523,34 @@ function go(){ if(!document.querySelector("#fl-lamps .lamp [data-arm]")) return 
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 1500);}
 go();</script>'''
-    # 544 and 558: windows whose page is as short as CI's headless
-    # 1366x600 and 1366x614 (457 and 471 px), so a run here sees what CI
-    # sees.
+    # 544 and 558, and 488 and 502: windows whose page is as short as CI's
+    # headless 1366x600 / 1366x614 and 1366x544 / 1366x558 (the runner's
+    # Chrome leaves about 143 px less page than its window, a local one
+    # about 87), so a run here sees what the runner sees.
     got = _rack_screen_in_chromium(chrome, page, st,
                                    ((1366, 600), (1366, 614), (1366, 544),
-                                    (1366, 558), (1024, 768)),
+                                    (1366, 558), (1366, 488), (1366, 502),
+                                    (1024, 768)),
                                    measure_js=mjs)
+    SLACK = 24
     for (w, h), m in got.items():
         if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):
             continue
         vh = m["vh"]
         check(m["setup"] and m["ann"], f"{w}x{h}: both shown: {m}")
-        for name in ("disarm", "abort"):
-            check(m[name]["top"] >= 0 and m[name]["bottom"] <= vh,
-                  f"{w}x{h}: {name} wholly on screen: {m[name]} vh {vh}")
+        # Abort is pinned to the bottom of the window; Disarm all and the
+        # arm buttons must clear the fold by SLACK px (review of PR #129).
+        check(m["abort"]["top"] >= 0 and m["abort"]["bottom"] <= vh,
+              f"{w}x{h}: abort wholly on screen: {m['abort']} vh {vh}")
+        check(m["disarm"]["top"] >= 0 and
+              m["disarm"]["bottom"] <= vh - SLACK,
+              f"{w}x{h}: disarm wholly on screen with {SLACK} px to "
+              f"spare: {m['disarm']} vh {vh}")
         check(len(m["arms"]) == 3 and all(
-                  a["h"] >= 44 and a["top"] >= 0 and a["bottom"] <= vh
-                  for a in m["arms"]),
-              f"{w}x{h}: every arm button on screen, at least 44 px: "
-              f"{m['arms']} vh {vh}")
+                  a["h"] >= 44 and a["top"] >= 0 and
+                  a["bottom"] <= vh - SLACK for a in m["arms"]),
+              f"{w}x{h}: every arm button on screen with {SLACK} px to "
+              f"spare, at least 44 px: {m['arms']} vh {vh}")
     print("  ok")
 
 

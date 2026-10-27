@@ -662,7 +662,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
    every group's arm button stay on screen with the Getting started card
    and the banners. The arm buttons keep 44 px; a banner reads in full
    with a tap, as before. */
-@media (max-height:520px){
+@media (max-height:540px){
   nav button{min-height:34px;padding:4px 12px}
   h1{font-size:20px}
   header img{height:30px}
@@ -678,6 +678,22 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   .alsum{padding:2px 10px}
   .alsum button,.alsum button.disarm{min-height:38px}
   #mode{min-height:0;padding-top:2px;padding-bottom:2px}
+}
+/* Shorter still (a browser with bars on a 1366x768 laptop, CI's headless
+   window: 400 to 480 px of page; review of PR #129): the show controls and
+   the flame groups with Disarm all come straight after the banners, and
+   the status cards, the Getting started card and the announcements follow
+   them (one scroll). Nothing is hidden and nothing safety-related shrinks;
+   only the order changes. */
+@media (max-height:480px){
+  #v-show .ctl{order:0}
+  #ctl-msg,#abort-said{order:1}
+  #v-show .flames{order:2;flex:0 0 auto}
+  #v-show .now{order:3}
+  #setup{order:4}
+  #ann{order:5}
+  #lz{order:6}
+  #wx{order:7}
 }
 /* A narrow window (the tester's 950 px Edge app window): the chips drop to
    their own row and the title keeps its space. Nothing overlaps. */
