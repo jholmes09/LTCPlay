@@ -31491,6 +31491,61 @@ def test_conductor_devices_instant_video_lands_after_a_running_fade():
     print("  ok")
 
 
+def test_conductor_devices_every_dark_path_fades_the_video_down_to_zero():
+    section("conductor + devices: every path that takes the video dark (a "
+            "production Hold, an announcement, Abort, a stopped or ended "
+            "show, a failed start) fades MadMapper's surfaces DOWN from the "
+            "lit picture and ends on opacity 0.0, never up")
+    # Through the real ConductorDevices and a real madmapper.Link (fake
+    # sockets, a fake clock, no real waits): what is checked is what
+    # MadMapper is actually sent, and the level the Link records as sent.
+    C = _cond_mod()
+    who = ("Andy", "rack screen")
+    cases = (
+        ("a production Hold", lambda c: c.hold(*who)),
+        ("an announcement", lambda c: c.announce("delayed", *who)),
+        ("Abort", lambda c: c.abort(*who)),
+        ("a stopped or ended show",
+         lambda c: c.show_stopped("the scheduler", "")),
+        ("a failed start", lambda c: c.failed_start("the scheduler", "")),
+    )
+    for label, press in cases:
+        c, rig, T, lines, link, bey = _cond_devices()
+        c.hold_gate = lambda _w, _s, _d: (None, 1)
+        c.announcer = lambda *a: None
+        try:
+            _cd_live(c, rig, link)
+            check(link.surfaces_level == 1.0,
+                  f"{label}: setup: the video is up before the press: "
+                  f"{link.surfaces_level}")
+            T.t = 500.0
+            r = press(c)
+            check(r.ok, f"{label}: accepted: {r}")
+            c.run_pending()
+            _mm_flush(link)
+            fades = [e[1] for e in rig.calls if e[0] == "mm_call"
+                     and e[1][0] == "fade_surfaces"]
+            check(len(fades) == 1 and fades[0][1:3] == (1.0, 0.0),
+                  f"{label}: one video fade, from 1.0 DOWN to 0.0: {fades}")
+            sent = [e[1] for e in rig.calls if e[0] == "mm"
+                    and e[1][0].startswith("/surfaces/")]
+            for s in ("Quad-1", "Quad-2"):
+                vals = [v for a, v in sent if a == f"/surfaces/{s}/opacity"]
+                check(len(vals) >= 2 and vals[0] == 1.0 and vals[-1] == 0.0
+                      and all(b <= a for a, b in zip(vals, vals[1:])),
+                      f"{label}: {s} only ever goes down, from 1.0 to "
+                      f"0.0: {vals}")
+            check(link.surfaces_level == 0.0,
+                  f"{label}: the last opacity MadMapper was sent is 0.0: "
+                  f"{link.surfaces_level}")
+            check(c.snapshot()["applied"]["video"] in ("black", "stopped"),
+                  f"{label}: the video is recorded dark: "
+                  f"{c.snapshot()['applied']}")
+        finally:
+            link.close()
+    print("  ok")
+
+
 def test_conductor_devices_unknown_video_level_never_fades_from_full():
     section("conductor + devices: with the video level unknown (nothing sent "
             "since this program started), a fade to black is opacity 0 at "
@@ -41578,6 +41633,57 @@ def test_mutate_reports_every_failure_it_can_have():
     check(mutate.annotation("a, b: c", ["p%q"]).startswith(
         "::error title=a%2C b%3A c::p%25q"),
           "the title's commas and colons are escaped, the body's percent too")
+
+
+def test_mutate_never_runs_stale_bytecode():
+    section("mutate.py: a mutant the same size as the line it replaces, "
+            "written in the same second the original was compiled, is what "
+            "runs, not the original's cached bytecode (nightly run "
+            "40469889985, shard 15)")
+    import py_compile
+    import subprocess
+    import mutate
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "fademod.py")
+        orig, mutant = "LEVEL = 0.0\n", "LEVEL = 1.0\n"
+        with open(src, "w", encoding="utf-8", newline="") as fh:
+            fh.write(orig)
+        st = os.stat(src)
+        py_compile.compile(src, doraise=True)    # the original, cached
+
+        def level():
+            r = subprocess.run([sys.executable, "-c",
+                                "import fademod; print(fademod.LEVEL)"],
+                               cwd=d, capture_output=True, text=True,
+                               timeout=60)
+            return r.stdout.strip() or r.stderr.strip()[-200:]
+
+        # The trap: same size, same whole-second mtime as the compiled
+        # original. Written plainly, Python runs the cached original.
+        with open(src, "w", encoding="utf-8", newline="") as fh:
+            fh.write(mutant)
+        os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+        check(level() == "0.0",
+              f"setup: a plain write in the same second runs the stale "
+              f"original (the trap this guards against): {level()}")
+        # mutate.py's own write, with the same mtime forced back.
+        py_compile.compile(src, doraise=True)
+        with open(src, "w", encoding="utf-8", newline="") as fh:
+            fh.write(orig)
+        os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+        py_compile.compile(src, doraise=True)    # the original, cached
+        mutate._write(src, mutant)
+        os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+        check(level() == "1.0",
+              f"mutate.py's write runs the mutant: {level()}")
+        # And the restore runs the restored source, not the mutant's
+        # bytecode.
+        mutate._write(src, orig)
+        os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+        check(level() == "0.0",
+              f"mutate.py's restore runs the original again: {level()}")
+        mutate._write(os.path.join(d, "notes.txt"), "x")   # not .py: fine
+    print("  ok")
 
 
 def test_mutate_mutant_limit_follows_the_baseline():
@@ -71401,6 +71507,7 @@ if __name__ == "__main__":
     test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
     test_conductor_devices_failures_missing_links_and_speed()
     test_conductor_devices_instant_video_lands_after_a_running_fade()
+    test_conductor_devices_every_dark_path_fades_the_video_down_to_zero()
     test_conductor_devices_unknown_video_level_never_fades_from_full()
     test_beyond_a_blank_cuts_an_unblank_short_from_any_thread()
     test_conductor_abort_is_never_held_up_by_a_slow_device()
@@ -71554,6 +71661,7 @@ if __name__ == "__main__":
     test_lasers_blanking_not_set_up_is_loud()
     test_mutate_reports_every_failure_it_can_have()
     test_mutate_mutant_limit_follows_the_baseline()
+    test_mutate_never_runs_stale_bytecode()
     test_alerts_pure_logic()
     test_alerts_route_status_and_acknowledge()
     test_boothaudio_never_holds_and_never_uses_the_pa()
