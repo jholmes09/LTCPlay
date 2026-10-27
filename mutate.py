@@ -14664,8 +14664,35 @@ def build():
   "                    elif morning:\n                        # An acknowledge on the Morning page that Stop does",
   "                    elif False:\n                        # An acknowledge on the Morning page that Stop does"),
 
-]
+ ("make a show file writes over an existing show file", "ltcplay/cli.py",
+  "            if os.path.lexists(out):\n                continue\n            try:\n                os.link(tmp, out)\n                return out",
+  "            if True:\n                os.replace(tmp, out)\n                return out"),
 
+ ("make a show file is not refused while a show file runs", "ltcplay/remote.py",
+  "        if getattr(c, \"_starting\", False) or \\\n                (sess is not None and getattr(sess, \"running\", False)):",
+  "        if False:"),
+
+ ("make a show file is not refused while a scheduled show is live", "ltcplay/remote.py",
+  "        if self._show_live():\n            return 409, {\"error\": \"A scheduled show is live. Make the show \"",
+  "        if False:\n            return 409, {\"error\": \"A scheduled show is live. Make the show \""),
+
+ ("make a show file writes beside the show folder, not where the chooser lists", "ltcplay/remote.py",
+  "                made = make_show_file(folder, folder)",
+  "                made = make_show_file(folder, os.path.dirname(folder))"),
+
+ ("make a show file lists the launcher folder's renders, not the folder served", "ltcplay/remote.py",
+  "                made = make_show_file(folder, folder)",
+  "                made = make_show_file(settings_mod.folder(), folder)"),
+
+ ("make a show file never chooses the new file", "ltcplay/remote.py",
+  "        name = made[\"file\"]\n        self._save_selected_show(name)",
+  "        name = made[\"file\"]"),
+
+ ("ltc init writes over an existing show file again", "ltcplay/cli.py",
+  "        out = write_new_show_file(settings_mod.folder(),\n                                  starter_base(args.show_dir), doc)",
+  "        out = os.path.join(settings_mod.folder(),\n                           starter_base(args.show_dir) + \"_timeline.json\")\n        with open(out, \"w\") as fh:\n            json.dump(doc, fh, indent=2)"),
+
+]
 
 # What the last suite run failed on, so a surprising result can be read.
 _LAST_FAILS = []

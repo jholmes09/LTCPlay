@@ -684,6 +684,38 @@ is live), and flamesafe with the Stream Deck (what the show PC's LTC
 Player says about each program, and why one is not running). The card
 goes away once a show file and a schedule exist.
 
+## The show file, and making one
+
+The show file is the playlist: a small `.json` file that says which
+render (`.fseq`) plays at which timecode, at which frame rate, and from
+which folder. The renders themselves stay exactly as xLights made them;
+LTC Player only reads them.
+
+To make one from a folder of renders, on the show machine:
+
+1. Render the sequences in xLights into the show folder, and export
+   `xlights_networks.xml` into the same folder.
+2. On the Programming screen's "Show folder" card, press "Make a show file
+   from this folder" (or "Make a show file" on the Getting started card,
+   which shows while the folder has renders and no show file). It lists
+   every render, alphabetically, back to back from 01:00:00:00, at 30 fps
+   unless the renders' own frame time is a timecode rate. It is written
+   into the show folder as `<folder name>_timeline.json`, or `_2`, `_3`
+   when that name is taken: an existing show file is never replaced. It is
+   chosen in the Show file chooser at once. It is refused while a show
+   file is running or a scheduled show is live, and says why when the
+   folder has no `.fseq` files or does not exist.
+3. Open the new file in Notepad (Open the show folder) and set each cue's
+   `"tc"` to the timecode that render starts at in your show. Change
+   `"fps"` if the show's timecode is not that rate.
+4. Press "Check the show file" on the same card. It says how many cues it
+   found, any render it could not find, any cue that starts before the one
+   before it has ended, and anything else wrong.
+5. Run it in Programming mode (the Show file card: Programming, then Run)
+   to rehearse it. Nothing reaches the rig until Run.
+
+On a Mac, `ltc init <ShowFolder>` makes the same file beside the launcher.
+
 The Abort confirm lists what the press will do from this screen and, in
 red, what it cannot: with no flame link in the engine, the flames are NOT
 disarmed from the screen (the Stream Deck's group keys and Stop, and the

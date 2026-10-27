@@ -816,7 +816,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
       <div class="surow"><h2>Getting started: three things to set up</h2><span class="dim" id="su-sum"></span><button class="ghost" id="su-more" aria-expanded="false">Show the steps</button></div>
       <div class="steps">
         <div class="step" id="su-folder"><b>1. The show folder</b><div class="t"></div>
-          <div class="row"><button class="ghost" data-open="show">Open the show folder</button><button class="ghost" data-go="programming">Change it</button></div></div>
+          <div class="row"><button id="su-make" hidden>Make a show file</button><button class="ghost" data-open="show">Open the show folder</button><button class="ghost" data-go="programming">Change it</button></div></div>
         <div class="step" id="su-sched"><b>2. The schedule</b><div class="t"></div>
           <div class="row"><button data-go="programming" id="su-sched-go">Set the show times</button></div></div>
         <div class="step" id="su-flames"><b>3. flamesafe and the Stream Deck</b><div class="t"></div>
@@ -1106,7 +1106,14 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
     <section class="card" id="folders" hidden>
       <h2>Show folder, on this machine</h2>
       <div class="dim" style="font-size:14px">The show folder holds the show file (a .json), the renders it names and the show's music, as stems under the folder the show file names. There is no separate music folder.</div>
+      <div class="dim" style="font-size:14px">The show file is the playlist: which render (.fseq) plays at which timecode. The renders stay exactly as xLights made them.</div>
       <div class="path" id="fo-now" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="fo-make" style="flex:1 1 0">Make a show file from this folder</button>
+        <button class="ghost" id="fo-check" style="flex:1 1 0">Check the show file</button>
+      </div>
+      <div class="path" id="fo-made" style="font-size:14px;margin-top:6px"></div>
+      <div class="path" id="fo-checked" style="font-size:14px;margin-top:6px"></div>
       <label for="fo-path">Use another folder (its full path)</label>
       <div class="row">
         <input id="fo-path" placeholder="C:\Users\show\Documents\LTC Shows" style="flex:2 1 0">
@@ -2762,9 +2769,8 @@ function renderSetup(su, pr){
   $("su-sum").textContent = done + " of 3 done";
   const fo = $("su-folder"), sc = $("su-sched"), fl = $("su-flames");
   fo.classList.toggle("done", su.show_files > 0);
-  fo.querySelector(".t").innerHTML = su.show_files > 0
-    ? `${su.show_files} show file(s) in <code>${esc(su.show_folder)}</code>.`
-    : `<code>${esc(su.show_folder)}</code> ${su.show_folder_exists ? "is empty" : "does not exist yet"}. Put the show file (.json), its renders and its music stems there, or choose another folder on the Programming screen.`;
+  fo.querySelector(".t").innerHTML = setupFolderWords(su);
+  $("su-make").hidden = !(su.show_files === 0 && su.show_folder_renders > 0);
   sc.classList.toggle("done", !!su.schedule_ok);
   sc.querySelector(".t").innerHTML = su.schedule_ok
     ? `Loaded from <code>${esc(su.schedule_path)}</code>${su.example_schedule ? " (the EXAMPLE times, written at first run: set the real ones)" : ""}.`
@@ -2779,6 +2785,62 @@ function renderSetup(su, pr){
   fl.querySelector(".t").innerHTML = t;
   $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until Run is pressed on the Programming screen, and the scheduler only performs once the Fire & Ice settings say so.";
 }
+// Step 1's sentence. Pure. A folder of renders with no show file says
+// what a show file is and how to make one (Make a show file).
+function setupFolderWords(su){
+  if(su.show_files > 0) return `${su.show_files} show file(s) in <code>${esc(su.show_folder)}</code>.`;
+  if(su.show_folder_renders > 0) return `<code>${esc(su.show_folder)}</code> has ${su.show_folder_renders} render(s) (.fseq) and no show file yet. The show file is the playlist: which render plays at which timecode. Press Make a show file to list every render in it, then set the times.`;
+  return `<code>${esc(su.show_folder)}</code> ${su.show_folder_exists ? "is empty" : "does not exist yet"}. Put the show file (.json), its renders and its music stems there, or choose another folder on the Programming screen.`;
+}
+// Make a show file from the folder the engine serves (the engine's
+// show-file-new, which never replaces a file), then choose it in the Show
+// file chooser and say what to do next.
+async function makeShowFile(){
+  if(!(await confirmBox("Make a show file from this folder?", "A new show file listing every render (.fseq) in the show folder, back to back from 01:00:00:00. No show file is replaced and the renders are not changed. Nothing reaches the rig until Run.", "Yes, make it", "start"))) return null;
+  const btn = $("fo-make");
+  btn.disabled = true;
+  $("fo-made").textContent = "Making the show file...";
+  try{
+    const j = await post("/api/remote/show-file-new", {});
+    $("fo-made").innerHTML = esc(j.text) + `<div style="margin-top:4px"><b>${esc(j.next || "")}</b></div>`;
+    $("fo-checked").textContent = "";
+    await loadShowFiles(j.file);
+    loadFolders();
+    return j;
+  }catch(e){ $("fo-made").textContent = e.message; return null; }
+  finally{ btn.disabled = false; }
+}
+$("fo-make").addEventListener("click", makeShowFile);
+$("su-make").addEventListener("click", async () => {
+  location.hash = "programming";
+  showView();
+  loadSetupCards();
+  const j = await makeShowFile();
+  if(j) $("su-foot").textContent = j.text;
+});
+// What Check found, in sentences. Pure: `j` is /api/check's answer.
+function checkWords(f, j){
+  if(j.error) return `${esc(f)} does not load: ${esc(j.error)}`;
+  const cues = j.cues || [];
+  const missing = cues.filter(c => c.missing).map(c => c.name || c.tc);
+  const over = cues.filter(c => c.overlap).map(c => c.name || c.tc);
+  const probs = (j.problems || []).slice(0, 8);
+  let t = `Check of ${esc(f)}: ${cues.length} cue(s).`;
+  if(!missing.length && !over.length && !probs.length) t += " Nothing wrong found. Next: Run in Programming mode to rehearse it.";
+  if(missing.length) t += ` <b>Render not found for:</b> ${esc(missing.slice(0, 8).join(", "))}${missing.length > 8 ? ", ..." : ""}.`;
+  if(over.length) t += ` <b>Starts before the cue before it has ended:</b> ${esc(over.slice(0, 8).join(", "))}${over.length > 8 ? ", ..." : ""}. Set its "tc" later.`;
+  if(probs.length) t += "<ul>" + probs.map(p => `<li>${esc(p)}</li>`).join("") + "</ul>";
+  const notes = (j.notes || []).slice(0, 4);
+  if(notes.length) t += `<div class="dim">${notes.map(esc).join(" ")}</div>`;
+  return t;
+}
+$("fo-check").addEventListener("click", async () => {
+  const f = $("run-file").value;
+  if(!f){ $("fo-checked").textContent = "There is no show file to check yet. Make one first."; return; }
+  $("fo-checked").textContent = "Checking " + f + "...";
+  try{ $("fo-checked").innerHTML = checkWords(f, await post("/api/check", {timeline:f})); }
+  catch(e){ $("fo-checked").textContent = e.message; }
+});
 // The show folder card (Programming, this machine only).
 async function loadFolders(){
   try{
@@ -2904,11 +2966,13 @@ $("b-start").addEventListener("click", async () => {
 });
 // Run and Stop: the show machine only, through the engine's own Run and
 // Stop (every guard they have applies), on the Programming screen.
-async function loadShowFiles(){
+async function loadShowFiles(want){
   try{
     const j = await getJSON("/api/timelines", 3000);
     const ok = (j.timelines || []).filter(t => !t.error).map(t => t.file);
     fill($("run-file"), ok, true);
+    // A show file just made: chosen here (the engine chose it too).
+    if(want && ok.includes(want)){ $("run-file").value = want; RUN_PICKED = true; }
     // The engine's selection (the picker's, or the show last Run): shown
     // here until someone picks another (2026-10-23; the Art-Net receiver
     // check judges this show).

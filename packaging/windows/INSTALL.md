@@ -112,7 +112,9 @@ started the engine alone and the Stream Deck "never connected"):
 All of them live in Start menu, LTC Player, "Settings and logs". A file that
 is already there is never touched. The rack screen's "Getting started"
 card lists what is still missing (a show folder with a show file in it,
-the schedule) and where to click; it goes away once both exist.
+the schedule) and where to click, including "Make a show file" when the
+folder has renders but no show file (see "The show file" below); it goes
+away once both exist.
 
 Arming flames from the rack screen (or an iPad) is OFF until you turn it on: on the show PC's rack screen, Programming, "Arming from a screen", Turn on (an admin once users exist; it is `"screen_arming": true` in ltcplay_remote.json in "Settings and logs"; the card lists everything it also lets iPads do: purge, unlock, laser tests and laser arming).
 
@@ -124,6 +126,25 @@ the Programming screen's "Show folder" card. LTC Player restarts the
 engine with the new folder once no show is running. That card says which
 folder the engine serves, and the rack screen says it in red while
 showpc.json names another.
+
+### The show file
+
+The show file is the playlist: a small `.json` file in the show folder
+that says which render (`.fseq`) plays at which timecode. The renders stay
+exactly as xLights made them. A fresh install has none. To make one:
+
+1. Put the xLights renders (`.fseq`) and `xlights_networks.xml` in the
+   show folder.
+2. On the rack screen, Programming, "Show folder" card: press "Make a show
+   file from this folder" (the Getting started card has the same button
+   while there is no show file). It lists every render back to back from
+   01:00:00:00, writes it into the show folder as a NEW file (an existing
+   show file is never replaced) and chooses it in the Show file chooser.
+   It is refused while a show is running.
+3. Open the show folder, open the new `.json` in Notepad, and set each
+   cue's `"tc"` to the timecode that render starts at in the show.
+4. Press "Check the show file", then Run in Programming mode to rehearse.
+   Nothing reaches the rig until Run.
 
 ## Show PC setup the soak taught us (2026-10-21)
 
