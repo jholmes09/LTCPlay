@@ -52,6 +52,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/selftest.yml
       # pillow: the Stream Deck's key drawing (ltcplay/streamdeck.py), so
       # its pixel test runs here too. The suite also passes without it.
       - run: python -m pip install numpy zstandard tzdata pillow
@@ -161,6 +163,8 @@ jobs:
         if: needs.changes.outputs.mode != 'none'
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/selftest.yml
       # The same packages as the selftest job, pillow included: without it
       # the Stream Deck pixel tests skip themselves, and the three "Deck
       # latched" mutations in streamdeck.py were NOT CAUGHT in every sweep
@@ -171,7 +175,12 @@ jobs:
         if: needs.changes.outputs.mode != 'none'
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
-      # SETUP FAIL fails the job. The step has its own limit, 15 minutes
+      # SETUP FAIL fails the job. Each mutated run stops after its first
+      # failing test, and runs the test that caught that mutation last time
+      # first (--hints; mutate.py says when such a run counts). Ubuntu runs
+      # three mutations at once (--jobs 3), each in its own copy of the tree
+      # that first runs its own whole baseline; Windows runs one at a time.
+      # The step has its own limit, 15 minutes
       # under the job's, so that when a shard runs out of time the step
       # after it still runs and can say so. pipefail (bash's default in
       # Actions) keeps mutate.py's exit code through tee.
@@ -185,7 +194,7 @@ jobs:
         run: |
           narrow=()
           if [[ "$MODE" == affected ]]; then narrow=(--changed "$BASE"); fi
-          python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt "${narrow[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+          python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} "${narrow[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
       - run: echo "nothing this change can have broken is mutated; nothing to run in this shard"
         if: needs.changes.outputs.mode == 'none'
       # Tells a shard that ran out of time apart from a missed mutation. A

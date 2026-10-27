@@ -18,8 +18,12 @@ Written 2026-10-06, after the audit that simplified it.
    show-night failure: "Abort's flame cut waits for the executor", "a new
    socket for every frame"), and requires the suite to fail under each.
    A mutation the suite does not notice is a guarantee nobody is testing.
-   Every mutation costs two full suite runs, so the whole list is about
-   100 hours of runner time, split 32 ways.
+   A mutation is caught only when the suite fails under it twice. The
+   baseline (nothing mutated) runs every test in file order; a mutated run
+   stops after its first failing test, and runs first the test that caught
+   that mutation last time (`mutate_catchers.json`), so most mutations
+   take seconds, not two whole suites. Ubuntu runs three mutations at once
+   (`--jobs 3`), each in its own copy of the tree with its own baseline.
 
 3. **The bench soak** (`packaging/windows/soak.py`, the bench build)
    runs the whole Fire & Ice stack on the show PC for hours with nothing
@@ -136,6 +140,12 @@ next fixes it first; nothing is tagged while it is red.
   shard of it is `--shard 3/32`).
 - Everything, in CI: Actions tab, `nightly mutate`, Run workflow. Choose
   `both` before a tech build.
+- The catcher hints: `python3 mutate.py --write-catchers
+  mutate_catchers.json` adds the test each caught mutation stopped in. A
+  stale or missing hint costs time, never a verdict: a hinted run counts
+  only when it failed in that test, after that test passed run first with
+  nothing mutated; anything else runs again in file order. Refresh the file
+  when a sweep gets slow.
 - The rack screen drawn in a real browser (2026-10-24): the suite finds
   Chromium, Chrome or Edge by itself (set `LTCPLAY_CHROME` to one to
   choose), draws remote.html headless at seven window sizes with five

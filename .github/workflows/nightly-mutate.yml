@@ -60,11 +60,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/nightly-mutate.yml
       - run: python -m pip install numpy zstandard tzdata pillow
       - id: sweep
         shell: bash
         timeout-minutes: 285
-        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} 2>&1 | tee "$RUNNER_TEMP/mutate.log"
       - name: Report a shard that ran out of time
         if: always() && steps.sweep.outcome != 'success'
         shell: bash
