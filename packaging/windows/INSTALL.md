@@ -142,7 +142,11 @@ exactly as xLights made them. A fresh install has none. To make one:
    show file is never replaced) and chooses it in the Show file chooser.
    It is refused while a show is running.
 3. Open the show folder, open the new `.json` in Notepad, and set each
-   cue's `"tc"` to the timecode that render starts at in the show.
+   cue's `"tc"` to the timecode that render starts at in the show. Check
+   `"fps"`: it is a starting guess, and the card says why. Set it to the
+   rate the timecode really runs at (add `"drop": true` for 29.97
+   drop-frame); 29.97 and 30 look identical but drift about 2 seconds over
+   a half hour.
 4. Press "Check the show file", then Run in Programming mode to rehearse.
    Nothing reaches the rig until Run.
 

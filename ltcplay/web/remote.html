@@ -2770,7 +2770,7 @@ function renderSetup(su, pr){
   const fo = $("su-folder"), sc = $("su-sched"), fl = $("su-flames");
   fo.classList.toggle("done", su.show_files > 0);
   fo.querySelector(".t").innerHTML = setupFolderWords(su);
-  $("su-make").hidden = !(su.show_files === 0 && su.show_folder_renders > 0);
+  $("su-make").hidden = !makeOffered(su);
   sc.classList.toggle("done", !!su.schedule_ok);
   sc.querySelector(".t").innerHTML = su.schedule_ok
     ? `Loaded from <code>${esc(su.schedule_path)}</code>${su.example_schedule ? " (the EXAMPLE times, written at first run: set the real ones)" : ""}.`
@@ -2784,6 +2784,11 @@ function renderSetup(su, pr){
   if(su.example_flamesafe) t += " The flamesafe config was written at first run as a SAFE EXAMPLE: it sends to this PC only (127.0.0.1), never to a flame controller, until it is edited and confirmed.";
   fl.querySelector(".t").innerHTML = t;
   $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until Run is pressed on the Programming screen, and the scheduler only performs once the Fire & Ice settings say so.";
+}
+// Getting started offers Make a show file only while the folder has
+// renders and no show file. Pure.
+function makeOffered(su){
+  return !!su && su.show_files === 0 && su.show_folder_renders > 0;
 }
 // Step 1's sentence. Pure. A folder of renders with no show file says
 // what a show file is and how to make one (Make a show file).

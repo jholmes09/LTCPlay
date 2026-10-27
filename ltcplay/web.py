@@ -245,7 +245,10 @@ class Control:
     def timelines(self):
         import glob
         out = []
-        for p in sorted(glob.glob(os.path.join(self.folder, "*.json"))):
+        # Escaped: a show folder named "Fire [2026]" is a name, not a
+        # pattern (review of #137).
+        pattern = os.path.join(glob.escape(self.folder), "*.json")
+        for p in sorted(glob.glob(pattern)):
             base = os.path.basename(p)
             # ltcplay's own files are not shows. They used to be listed,
             # they sort before the real ones, and the picker defaulted to

@@ -694,15 +694,16 @@ def write_new_show_file(dest, base, doc):
     appears between the look and the write: the file is written whole
     beside it first, then linked in under a name nobody has (os.link
     refuses an existing name), so a crash leaves no half-written show file
-    either."""
+    either. The temporary name is short (13 characters, shorter than any
+    final name), so a long folder name cannot fail on it first, and it is
+    always removed."""
     data = json.dumps(doc, indent=2) + "\n"
-    tmp = os.path.join(dest, f".{base}_timeline.{os.getpid()}."
-                             f"{threading.get_ident()}.new")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
+    tmp = os.path.join(dest, f"~{os.urandom(4).hex()}.new")
     try:
+        with open(tmp, "x", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
         for n in range(1, 1000):
             out = os.path.join(dest, f"{base}_timeline.json" if n == 1
                                else f"{base}_timeline_{n}.json")
@@ -740,19 +741,25 @@ def write_new_show_file(dest, base, doc):
             pass
 
 
-def renders_rate(show_dir):
-    """(fps, sentence) for a new show file from the renders' own headers.
+# Said with every new show file, whatever its rate: a guess is never
+# presented as the show's timecode rate.
+FPS_CHECK = ("29.97 and 30 look identical but drift about 2 seconds over a "
+             "half hour; set \"fps\" (and \"drop\": true for 29.97 "
+             "drop-frame) to the rate the timecode really runs at.")
 
-    The show file's fps is the TIMECODE rate. An FSEQ's frame time is the
-    render's own; it is used only when every render agrees and it IS a
-    timecode rate (40 ms is 25 fps). Otherwise INIT_FPS, said plainly."""
-    import glob
+
+def renders_rate(show_dir):
+    """(fps, reason) for a new show file. The show file's fps is the
+    TIMECODE rate, which no render records: an FSEQ's frame time is the
+    render's own. It is used only when every render agrees and it is a
+    timecode rate (40 ms is 25 fps); otherwise INIT_FPS. The reason says
+    which, and the caller always asks the operator to check it."""
     from .fseq import FSEQ
     from .tc import normalize_rate
     steps = set()
-    for p in sorted(glob.glob(os.path.join(show_dir, "*.fseq"))):
+    for n in timeline_mod.fseq_names(show_dir):
         try:
-            with FSEQ(p) as f:
+            with FSEQ(os.path.join(show_dir, n)) as f:
                 steps.add(int(f.step_time_ms))
         except Exception:                        # noqa: BLE001
             continue
@@ -760,61 +767,62 @@ def renders_rate(show_dir):
         step = steps.pop()
         try:
             fps = normalize_rate(1000.0 / step)
-            return fps, (f"{fps:g} fps, the frame rate the renders were "
-                         f"made at.")
+            return fps, (f"every render runs at {step} ms a frame "
+                         f"({fps:g} frames a second), and a render's frame "
+                         f"time is not the show's timecode rate")
         except (ValueError, ZeroDivisionError):
-            return INIT_FPS, (f"{INIT_FPS} fps. The renders run at "
+            return INIT_FPS, (f"that is the usual rate; the renders run at "
                               f"{1000.0 / step:g} frames a second, which is "
-                              f"not a timecode rate; if the show's timecode "
-                              f"is not {INIT_FPS} fps, change \"fps\" in "
-                              f"the file.")
+                              f"not a timecode rate")
     if steps:
-        return INIT_FPS, (f"{INIT_FPS} fps. The renders do not all run at "
-                          f"the same frame rate; if the show's timecode is "
-                          f"not {INIT_FPS} fps, change \"fps\" in the "
-                          f"file.")
-    return INIT_FPS, f"{INIT_FPS} fps."
+        return INIT_FPS, ("that is the usual rate; the renders do not all "
+                          "run at the same frame rate")
+    return INIT_FPS, "that is the usual rate"
 
 
 def make_show_file(show_dir, dest, fps=None, start=INIT_START,
-                   gap_seconds=INIT_GAP_S):
+                   gap_seconds=INIT_GAP_S, before_write=None):
     """A starter show file for the renders in `show_dir`, written as a NEW
     file in `dest` (the folder the show files are listed from). Never
     replaces a file. Raises ValueError with a sentence when there is
     nothing to write: the folder missing, or no .fseq that reads.
+    `before_write()`, when given, is called just before the write and may
+    raise to stop it.
 
     {"path", "file", "folder", "cues", "fps", "rate_note", "skipped",
-     "map"}."""
-    import glob
+     "map"}; rate_note always asks for the rate to be checked."""
     folder = os.path.abspath(os.path.expanduser(show_dir or ""))
     if not show_dir or not os.path.isdir(folder):
         raise ValueError(f"The show folder {folder} does not exist on this "
                          f"machine, so there are no renders to list. "
                          f"Nothing was written.")
-    found = sorted(glob.glob(os.path.join(folder, "*.fseq")))
+    found = timeline_mod.fseq_names(folder)
     if not found:
         raise ValueError(f"{folder} holds no .fseq files, so there is "
                          f"nothing to put in a show file. Render the "
                          f"sequences in xLights into this folder first. "
                          f"Nothing was written.")
-    note = ""
     if fps is None:
-        fps, note = renders_rate(folder)
+        fps, why = renders_rate(folder)
+    else:
+        why = "it was asked for"
     doc = timeline_mod.starter(folder, fps=fps, start=start,
                                gap_seconds=gap_seconds)
     used = {c["fseq"] for c in doc["cues"]}
-    skipped = [os.path.basename(p) for p in found
-               if os.path.basename(p) not in used]
+    skipped = [n for n in found if n not in used]
     if not doc["cues"]:
         raise ValueError(f"None of the {len(found)} .fseq files in {folder} "
                          f"could be read ({', '.join(skipped[:3])}"
                          f"{', ...' if len(skipped) > 3 else ''}). Render "
                          f"them again in xLights. Nothing was written.")
+    if before_write is not None:
+        before_write()
     out = write_new_show_file(dest, starter_base(folder), doc)
+    note = (f"Check the frame rate: it was set to {doc['fps']:g} fps "
+            f"because {why}. {FPS_CHECK}")
     return {"path": out, "file": os.path.basename(out), "folder": folder,
             "cues": len(doc["cues"]), "fps": doc["fps"],
-            "rate_note": note or f"{doc['fps']:g} fps.",
-            "skipped": skipped,
+            "rate_note": note, "skipped": skipped,
             "map": os.path.isfile(os.path.join(folder,
                                                "xlights_networks.xml"))}
 
