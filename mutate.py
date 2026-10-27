@@ -14850,6 +14850,35 @@ def _read(path):
 def _write(path, text):
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
+    _drop_bytecode(path)
+
+
+def _drop_bytecode(path):
+    """Delete the cached bytecode of a .py file just written.
+
+    Python trusts a .pyc whose recorded source mtime (whole seconds) and
+    size match the file. Most mutations are the same size as the line they
+    replace (0.0 -> 1.0, True -> False), so a mutant written in the same
+    second the original was last compiled ran the ORIGINAL code: the suite
+    stayed green, twice, and the mutation read NOT CAUGHT. That is how
+    "conductor: the video fade to black fades up instead" survived nightly
+    run 40469889985 shard 15 (a catcher probe compiled the restored file
+    under a second before the mutant was written), though five tests fail
+    under it. A restore can hit the same trap the other way, and leave a
+    mutant's bytecode running against restored source."""
+    if not path.endswith(".py"):
+        return
+    import glob
+    import importlib.util
+    pyc = [importlib.util.cache_from_source(path)]
+    stem = os.path.splitext(os.path.basename(path))[0]
+    pyc += glob.glob(os.path.join(os.path.dirname(path), "__pycache__",
+                                  glob.escape(stem) + ".*.pyc"))
+    for p in set(pyc):
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
 
 
 # ------------------------------------------------------- reporting to CI --
