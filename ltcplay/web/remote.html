@@ -606,6 +606,25 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #setup .surow{flex:0 0 auto}
 #setup .subody{flex:0 1 auto;min-height:0;overflow:auto}
 #setup.folded .subody{display:none}
+#setup.stepsbelow .surow{margin-bottom:0}
+#setup.stepsbelow{padding-top:4px;padding-bottom:4px}
+html.tight #setup.stepsbelow{padding-top:2px;padding-bottom:2px}
+/* The steps scroll by touch on the show PC's screen, without dragging the
+   page along at their ends. */
+.subody{overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+/* Make a show file is a full-size touch target at every window size
+   (review of #140: 32 px on a short window). */
+#setup .surow #su-make{min-height:40px}
+/* When the open steps cannot have STEPS_MIN px above the flame groups
+   without pushing Disarm all or an arm button under the slack, they open
+   in this block straight after the flame groups instead, and the page
+   scrolls to them; the card's header (and Make a show file) stays where
+   it is. */
+#setup-below .subody{max-height:none;overflow:visible}
+/* Last of all, a window too short even for the card's one line above the
+   groups: the card follows every other block, and "Show the steps" scrolls
+   the page to it. */
+html.setupafter #setup,html.setupafter #setup-below{order:9}
 #setup.folded{padding-top:4px;padding-bottom:4px}
 /* No show file: one plain line, on every screen, never folded away. */
 #nofile{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
@@ -688,6 +707,31 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   .alsum button,.alsum button.disarm{min-height:38px}
   #mode{min-height:0;padding-top:2px;padding-bottom:2px}
 }
+/* The same short-window rules, applied by fitSetup() (html.tight) on any
+   window where the Getting started card would otherwise push Disarm all
+   or an arm button under the slack (review of #140: 1024 and 1180 wide
+   windows a little taller than 660 px of page, where the status cards go
+   two by two, missed the margin). */
+html.tight #ctl-msg:empty{min-height:0}
+html.tight #arm-note{display:none}
+html.tight #arm-note.said{display:block}
+html.tight .ctl button{min-height:44px}
+html.tight .lamp button.armb{min-height:44px}
+html.tight #abort-said .altext{max-height:2.8em}
+html.tight nav button{min-height:34px;padding:4px 12px}
+html.tight h1{font-size:20px}
+html.tight header img{height:30px}
+html.tight .warnbox:not(.open){-webkit-line-clamp:1}
+html.tight .now .card{padding:3px 8px}
+html.tight .now .kicker{margin:0}
+html.tight #st-tc{font-size:24px}
+html.tight .stateword{font-size:20px}
+html.tight .lamp{padding:3px 8px;gap:2px}
+html.tight #setup.folded{padding-top:2px;padding-bottom:2px}
+html.tight #v-show{gap:4px}
+html.tight .alsum{padding:2px 10px}
+html.tight .alsum button,html.tight .alsum button.disarm{min-height:38px}
+html.tight #mode{min-height:0;padding-top:2px;padding-bottom:2px}
 /* Shorter still (a browser with bars on a 1366x768 laptop, CI's headless
    window: 400 to 480 px of page; review of PR #129): the show controls and
    the flame groups with Disarm all come straight after the banners, and
@@ -700,6 +744,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   #v-show .flames{order:2;flex:0 0 auto}
   #v-show .now{order:3}
   #setup{order:4}
+  #setup-below{order:4}
   #ann{order:5}
   #lz{order:6}
   #wx{order:7}
@@ -852,6 +897,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
          over the show and pauses nothing. Stop ends only the sound.
          BELOW the flame groups and Disarm all (review of PR #129): it
          never pushes them, the arm buttons or Abort off a small screen. -->
+    <section class="card" id="setup-below" hidden aria-label="Getting started steps"></section>
     <div class="ann" id="ann" hidden aria-label="Announcements">
       <div class="ann-head"><b id="ann-word">Announcements</b><span id="ann-dev"></span><span class="dim" id="ann-note"></span></div>
       <div class="ann-btns" id="ann-btns"></div>
@@ -2747,7 +2793,7 @@ $("info-exit").addEventListener("click", async () => {
 
 // ---- Getting started, and the show folder and schedule tools ----
 document.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", async () => {
-  const el = b.closest("#setup") ? $("su-foot") : $("fo-msg");
+  const el = b.closest("#setup, #setup-below") ? $("su-foot") : $("fo-msg");
   try{ const j = await post("/api/remote/open-folder", {which:b.dataset.open}); el.textContent = j.text || "Opened."; }
   catch(e){ el.textContent = e.message; }
 }));
@@ -2755,35 +2801,105 @@ let SETUP_KEY = "", SETUP_OPEN = null;     // null: the page decides
 $("su-more").addEventListener("click", () => {
   SETUP_OPEN = $("setup").classList.contains("folded");
   renderSetupFold();
-  // Opened: the card in view (it is, above the groups, unless a very
-  // short window put it after them).
-  if(SETUP_OPEN){ try{ $("setup").scrollIntoView({block:"nearest"}); }catch(e){} }
+  // Opened: the steps in view. Above the groups they already are; when
+  // they had to open after the groups, the PAGE scrolls to them.
+  if(SETUP_OPEN){
+    const below = !$("setup-below").hidden;
+    const after = document.documentElement.classList.contains("setupafter");
+    // The card's header (Make a show file) at the top of the window, the
+    // steps after the flame groups as far down as the window reaches.
+    try{ $("setup").scrollIntoView({block: below || after ? "start" : "nearest"}); }catch(e){}
+  }
 });
-// The Getting started card never pushes Disarm all or an arm button off
-// the screen (review of #140): its height is capped to what leaves every
-// one of them FIT_SLACK px clear of the window's bottom, never under its
-// own header. Only while the card is above them; the steps scroll inside.
-const FIT_SLACK = 30;
-function fitSetup(){
+// The Getting started card never pushes Disarm all or an arm button
+// under FIT_SLACK px from the window's bottom (reviews of #140), and its
+// open steps get at least STEPS_MIN px. In order, until one fits: as it
+// is; the card's height capped (the steps scroll inside it); the same with
+// the short-window rules (html.tight); and last the steps opened in their
+// own block straight after the flame groups (#setup-below), the card's
+// header (with Make a show file) staying where it is. Worked out again
+// only when the window, the card's content or its fold changed, so the
+// steps' own scroll is never reset by a status poll.
+const FIT_SLACK = 30, STEPS_MIN = 120;
+const SUBODY = document.querySelector("#setup .subody");
+let FIT_KEY = "";
+function fitKey(){
   const card = $("setup");
-  if(card.hidden || $("v-show").hidden) return;
+  const vis = id => { const e = document.getElementById(id); return e && !e.hidden ? 1 : 0; };
+  return JSON.stringify([innerWidth, innerHeight, card.hidden, $("v-show").hidden,
+    card.classList.contains("folded"), SETUP_KEY,
+    document.querySelectorAll("#fl-lamps .lamp").length,
+    vis("ann"), vis("lz"), vis("abort-said"), vis("nofile"),
+    (document.getElementById("alerts") || {}).childElementCount || 0,
+    ($("ctl-msg").textContent || "").length > 0]);
+}
+// How far the lowest of Disarm all and the arm buttons below the card
+// reaches past the window's bottom less FIT_SLACK, in px (<= 0: clear).
+function fitOver(){
+  const cr = $("setup").getBoundingClientRect();
+  let low = -Infinity;
+  for(const e of [$("b-disarm"), ...document.querySelectorAll("#fl-lamps .lamp [data-arm]")]){
+    if(!e || !e.getClientRects().length) continue;
+    const r = e.getBoundingClientRect();
+    if(r.top >= cr.bottom - 1) low = Math.max(low, r.bottom + scrollY);
+  }
+  return low === -Infinity ? 0 : low - (innerHeight - FIT_SLACK);
+}
+function stepsHome(inCard){
+  const card = $("setup"), below = $("setup-below");
+  if(inCard && SUBODY.parentNode !== card) card.appendChild(SUBODY);
+  if(!inCard && SUBODY.parentNode !== below) below.appendChild(SUBODY);
+  below.hidden = inCard;
+  card.classList.toggle("stepsbelow", !inCard);
+}
+// Cap the open card so fitOver() <= 0 with at least STEPS_MIN px of
+// steps; true when that worked.
+function fitCap(){
+  const card = $("setup");
   card.style.maxHeight = "";
   for(let pass = 0; pass < 3; pass++){
-    const cr = card.getBoundingClientRect();
-    let low = -Infinity;
-    for(const e of [$("b-disarm"), ...document.querySelectorAll("#fl-lamps .lamp [data-arm]")]){
-      if(!e || !e.getClientRects().length) continue;
-      const r = e.getBoundingClientRect();
-      if(r.top >= cr.bottom - 1) low = Math.max(low, r.bottom + scrollY);
-    }
-    const over = low - (innerHeight - FIT_SLACK);
-    if(!(over > 0.5)) return;
-    const hd = card.querySelector(".surow").getBoundingClientRect();
-    const floor = Math.ceil(hd.bottom - cr.top + 8);
-    const want = Math.max(floor, Math.floor(cr.height - over));
-    if(want >= cr.height - 0.5) return;
+    const over = fitOver();
+    if(over <= 0.5) return true;
+    const cr = card.getBoundingClientRect(), br = SUBODY.getBoundingClientRect();
+    const minH = Math.ceil(cr.height - br.height + Math.min(STEPS_MIN, SUBODY.scrollHeight));
+    const want = Math.floor(cr.height - over);
+    if(want < minH) return false;
     card.style.maxHeight = want + "px";
   }
+  return fitOver() <= 0.5;
+}
+function fitSetup(force){
+  const card = $("setup");
+  if(card.hidden){
+    // No card (a show file and a schedule exist): nothing of it stays.
+    const root = document.documentElement;
+    if(!$("setup-below").hidden || root.classList.contains("tight") || root.classList.contains("setupafter")){
+      stepsHome(true); root.classList.remove("tight"); root.classList.remove("setupafter"); FIT_KEY = "";
+    }
+    return;
+  }
+  if($("v-show").hidden) return;
+  const key = fitKey();
+  if(!force && key === FIT_KEY) return;
+  const open = !card.classList.contains("folded");
+  const root = document.documentElement;
+  root.classList.remove("setupafter");
+  document.documentElement.classList.remove("tight");
+  stepsHome(true);
+  card.style.maxHeight = "";
+  if(!open){
+    if(fitOver() > 0.5) document.documentElement.classList.add("tight");
+  } else if(!fitCap()){
+    document.documentElement.classList.add("tight");
+    if(!fitCap()){
+      card.style.maxHeight = "";
+      stepsHome(false);
+      document.documentElement.classList.remove("tight");
+      if(fitOver() > 0.5) document.documentElement.classList.add("tight");
+    }
+  }
+  if(fitOver() > 0.5) root.classList.add("setupafter");
+  FIT_KEY = fitKey();
 }
 window.addEventListener("resize", () => { try{ fitSetup(); }catch(e){} });
 function renderSetupFold(){

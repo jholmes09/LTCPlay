@@ -14836,8 +14836,8 @@ def build():
   "    tmp = os.path.join(dest, f\".{base}_timeline.{os.getpid()}.new\")"),
 
  ("the Getting started card pushes Disarm all off the screen when opened", "ltcplay/web/remote.html",
-  "  if(card.hidden || $(\"v-show\").hidden) return;\n  card.style.maxHeight = \"\";",
-  "  return;\n  card.style.maxHeight = \"\";"),
+  "  if($(\"v-show\").hidden) return;\n  const key = fitKey();",
+  "  return;\n  const key = fitKey();"),
 
  ("the open Getting started card is moved below the flame groups again", "ltcplay/web/remote.html",
   "#setup.folded .subody{display:none}",
@@ -14858,6 +14858,30 @@ def build():
  ("ltc init calls an asked-for 30 fps the default", "ltcplay/cli.py",
   "    why = \"it was asked for\" if args.fps is not None else \"that is the default\"",
   "    why = (\"it was asked for\" if str(fps) != str(INIT_FPS)\n           else \"that is the default\")"),
+
+ ("the Getting started fit runs on every poll and resets the steps' scroll", "ltcplay/web/remote.html",
+  "  if(!force && key === FIT_KEY) return;",
+  ""),
+
+ ("the open Getting started steps may have no room at all", "ltcplay/web/remote.html",
+  "const FIT_SLACK = 30, STEPS_MIN = 120;",
+  "const FIT_SLACK = 30, STEPS_MIN = 0;"),
+
+ ("the short-window rules are never used for the Getting started card", "ltcplay/web/remote.html",
+  "  } else if(!fitCap()){\n    document.documentElement.classList.add(\"tight\");\n    if(!fitCap()){",
+  "  } else if(!fitCap()){\n    if(true){"),
+
+ ("Show the steps leaves the page where it was", "ltcplay/web/remote.html",
+  "    try{ $(\"setup\").scrollIntoView({block: below || after ? \"start\" : \"nearest\"}); }catch(e){}",
+  ""),
+
+ ("Make a show file is 32 px tall on a short window again", "ltcplay/web/remote.html",
+  "#setup .surow #su-make{min-height:40px}",
+  ""),
+
+ ("the open steps never move after the flame groups", "ltcplay/web/remote.html",
+  "      card.style.maxHeight = \"\";\n      stepsHome(false);",
+  "      fitCap();"),
 
 ]
 
