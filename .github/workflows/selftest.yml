@@ -145,13 +145,15 @@ jobs:
         os: ${{ fromJSON(needs.changes.outputs.oses) }}
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     runs-on: ${{ matrix.os }}
-    # Sized for a full sweep of 1000 mutations in 32 shards: 32 mutations a
-    # shard, each two suite runs (a mutation is caught only if it fails
-    # twice) plus the baseline, so 65 runs of 130 to 200 s is 140 to 220
-    # minutes; 300 leaves room over the slow end. An affected run is a
-    # fraction of that. The sweep step stops itself 15 minutes before this
-    # limit so the job is never killed from outside with nothing said.
-    timeout-minutes: 300
+    # Sized for a full sweep: about 2600 mutations in 32 shards, 81 a
+    # shard. With fail fast, catcher hints and --jobs 3 a shard took 221 to
+    # 280 minutes on ubuntu in nightly run 40469889985, when only 460
+    # mutations had a hint (two shards ran out at 285 with 1 and 3 left).
+    # 355 is under GitHub's 360 cap and leaves room over that. An affected
+    # run is a fraction of it. The sweep step stops itself 15 minutes
+    # before this limit so the job is never killed from outside with
+    # nothing said.
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
         if: needs.changes.outputs.mode != 'none'
@@ -187,7 +189,7 @@ jobs:
       - id: sweep
         if: needs.changes.outputs.mode != 'none'
         shell: bash
-        timeout-minutes: 285
+        timeout-minutes: 340
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           BASE: ${{ needs.changes.outputs.base }}

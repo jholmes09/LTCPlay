@@ -118,8 +118,8 @@ forces every way it can end red and checks the sentence is there.
   shard's measured baseline, never under 300 s or over 30 minutes; a
   mutant stopped there counts as caught (it made the suite hang), and the
   job summary's "baseline time / mutant limit" column gives both numbers.
-- `shard N/32 TIMED OUT`: the shard ran out of its 300 minutes. Not a
-  miss; re-run the shard.
+- `shard N/32 TIMED OUT`: the shard ran out of its 340 minutes (the
+  step's limit; the job's is 355). Not a miss; re-run the shard.
 - `THE TREE IS NOT CLEAN`: a restore did not land. Should never happen;
   the shard's tree is thrown away, but say so.
 
