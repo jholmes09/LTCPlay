@@ -46,7 +46,7 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        missing hint costs time, never a verdict.
     --write-catchers F add the test each caught mutation stopped in to F
     --jobs N           N mutations at once, each worker in its own copy of
-                       the tree with its own home, temp and app-data
+                       the tree with its own home and app-data
                        folders, and each copy runs its own whole baseline
                        first
 """
@@ -14572,7 +14572,7 @@ def _run():
     # the copy lacks, a folder it cannot write) would otherwise make every
     # mutation it runs look caught.
     jobs = max(1, min(OPTS["jobs"], len(todo)))
-    base_dir = tempfile.mkdtemp(prefix="ltcplay_mutate_") if jobs > 1 else None
+    base_dir = tempfile.mkdtemp(prefix="ltm") if jobs > 1 else None
     try:
         if base_dir:
             print(f"{jobs} workers, each in its own copy of the tree")
@@ -14587,17 +14587,23 @@ def _run():
 
 def _worker_tree(base, n):
     """(tree, env) for --jobs worker n: a private copy of the tree, with its
-    own home, temp and app-data folders. A mutation edits a file in place,
-    and the suite takes a machine-wide output lock (found through the home
-    folder, or LOCALAPPDATA on Windows), so two workers can share neither a
-    tree nor a home."""
-    root = os.path.join(base, f"w{n}", "tree")
-    home = os.path.join(base, f"w{n}", "home")
+    own home and app-data folders. A mutation edits a file in place, and the
+    suite takes a machine-wide output lock (found through the home folder,
+    or LOCALAPPDATA on Windows), so two workers can share neither a tree nor
+    a home.
+
+    The temp folder stays the machine's own: each suite makes one private
+    folder inside it and never looks at the rest (_TempRun in selftest.py),
+    and the browser checks put Chrome's profile and scratch folder in there,
+    where Chrome cannot start once its socket path passes the 107 bytes a
+    Unix socket may have. A temp folder inside the worker's home was
+    already too long (every rack screen check red in each copy)."""
+    root = os.path.join(base, f"t{n}")
+    home = os.path.join(base, f"h{n}")
     os.makedirs(home)
     shutil.copytree(HERE, root, ignore=shutil.ignore_patterns(
         ".git", "__pycache__", ".mutating", ".claude"))
-    env = {"HOME": home, "USERPROFILE": home, "TMPDIR": home, "TEMP": home,
-           "TMP": home, "LOCALAPPDATA": os.path.join(home, "Local"),
+    env = {"HOME": home, "USERPROFILE": home, "LOCALAPPDATA": os.path.join(home, "Local"),
            "APPDATA": os.path.join(home, "Roaming"),
            "XDG_STATE_HOME": os.path.join(home, ".local", "state"),
            "XDG_CONFIG_HOME": os.path.join(home, ".config"),
