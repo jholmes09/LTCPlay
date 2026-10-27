@@ -16469,6 +16469,12 @@ def test_rack_screen_small_screens_with_announcements_and_setup():
         print("  ok")
         return
     st = _rack_status_no_show_file()
+    # The worst case CI met (review of PR #129): the Getting started card,
+    # the no-show-file line, the flame warning, a disk warning and a laser
+    # fault all showing at once.
+    st["disk"] = {"text": "The disk is nearly full: 1.2 GB left. Clear old "
+                          "logs and renders."}
+    st["laser_fault"] = "BEYOND's OSC address is not set"
     st["booth"] = {"configured": False, "device": ""}
     st["announce"] = {
         "configured": True, "ok": True, "error": None, "device": None,
@@ -16491,8 +16497,12 @@ function go(){ if(!document.querySelector("#fl-lamps .lamp [data-arm]")) return 
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 1500);}
 go();</script>'''
+    # 544 and 558: windows whose page is as short as CI's headless
+    # 1366x600 and 1366x614 (457 and 471 px), so a run here sees what CI
+    # sees.
     got = _rack_screen_in_chromium(chrome, page, st,
-                                   ((1366, 600), (1366, 614), (1024, 768)),
+                                   ((1366, 600), (1366, 614), (1366, 544),
+                                    (1366, 558), (1024, 768)),
                                    measure_js=mjs)
     for (w, h), m in got.items():
         if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):

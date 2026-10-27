@@ -656,6 +656,29 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
   .card{padding:6px 10px}
   button.disarm{min-height:40px}
 }
+/* A very short window (a 1366x768 laptop at 125 percent in a browser
+   with its own bars, about 460 px of page; CI's headless window, review
+   of PR #129): every optional row gives a little so Disarm all, Abort and
+   every group's arm button stay on screen with the Getting started card
+   and the banners. The arm buttons keep 44 px; a banner reads in full
+   with a tap, as before. */
+@media (max-height:520px){
+  nav button{min-height:34px;padding:4px 12px}
+  h1{font-size:20px}
+  header img{height:30px}
+  .warnbox:not(.open){-webkit-line-clamp:1}
+  .now .card{padding:3px 8px}
+  .now .kicker{margin:0}
+  #st-tc{font-size:24px}
+  .stateword{font-size:20px}
+  .lamp{padding:3px 8px;gap:2px}
+  #setup.folded{padding-top:2px;padding-bottom:2px}
+  #setup .surow button{min-height:32px}
+  #v-show{gap:4px}
+  .alsum{padding:2px 10px}
+  .alsum button,.alsum button.disarm{min-height:38px}
+  #mode{min-height:0;padding-top:2px;padding-bottom:2px}
+}
 /* A narrow window (the tester's 950 px Edge app window): the chips drop to
    their own row and the title keeps its space. Nothing overlaps. */
 @media (max-width:1180px){
