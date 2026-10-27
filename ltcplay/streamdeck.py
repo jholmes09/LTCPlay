@@ -287,6 +287,10 @@ STOP_HOLD_S = 0.5           # Stop's hold: the deck's old Abort key's, from
 # (review of #130, 1: Stop must work when the engine cannot be reached; it
 # always disarms the arm link first).
 STOP_MODES = ("stop", "show", "unknown")
+# How long after this deck disarmed a group flamesafe's status may still
+# report it armed without that counting as "a group armed" for Stop (review
+# of #132, 3: a purge machine deselected while FIRE is held).
+DISARM_SETTLE_S = 1.5
 # How long the Start/Stop key has to be down in a Stop hold before its face
 # says HOLD TO STOP over anything else (an open alert's ACK, a fault).
 STOP_FACE_AFTER_S = 0.15
@@ -1508,7 +1512,9 @@ class EngineConductor:
             # Acknowledge (two keys inside one poll) is journaled below,
             # never shown as ENGINE FAULT on the keys.
             self.fault = "" if (ok or noop) else f"{name.title()}: {text}"
+            show_live = any(k == "show" for k, _t in fails)
             self.fault_face = ("DISARM", "FAILED") if disarm_failed else \
+                ("SHOW NOT", "STOPPED") if show_live else \
                 ("PLAYBACK", "FAILED") if playback_only else \
                 ("CHECK", "RACK") if slow else ("ENGINE", "FAULT")
         elif "raise" in body:
@@ -2781,6 +2787,13 @@ class Controller:
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
                           for _ in self.names]
         self._disarmed_at = [None] * len(self.names)
+        # Key 0 went down as the Morning page's FIRE and has not come up
+        # (review of #132, 1): the press turns into a Stop hold the moment
+        # Stop wins, whether or not PurgeFire is still firing (the engine
+        # refuses beats the moment a show is live, which ends the press on
+        # its own before this deck's poll sees the show), and whether or
+        # not the page closed in the same pass.
+        self._key0_fire = False
         # Screen arming (2026-10-03): the remote page's holds, as remote
         # presses of the group keys. _vholds: group -> the engine's hold id
         # this deck has seen; _vpressed: the ones whose arm-hold timer it
@@ -3057,6 +3070,15 @@ class Controller:
         Morning page's purge. Never raises."""
         try:
             skip = set() if purge else self._purge_own()
+            if not purge:
+                # A group this deck itself has just disarmed (a purge
+                # machine deselected while FIRE is held) that flamesafe's
+                # status still reports armed is not a reason for Stop to
+                # win, for DISARM_SETTLE_S (review of #132, 3).
+                now = self._clock()
+                skip |= {i for i, at in enumerate(self._disarmed_at)
+                         if at is not None and not self.arm.wanted[i] and
+                         now - at < DISARM_SETTLE_S}
             return any(w for i, w in enumerate(self.arm.wanted)
                        if i not in skip) or any(
                 self._reported_armed(i) for i in range(len(self.names))
@@ -3085,13 +3107,19 @@ class Controller:
 
     def _flames_live(self):
         """True while the engine says live flame programming or fire while
-        scrubbing is on (deck-input "flames_live"). Never raises."""
+        scrubbing is on (deck-input "flames_live"), False when it says
+        neither, None when not known: a stale or missing answer, or one
+        that raised (review of #132, 4). A deck with no screen wired at
+        all (no engine) has no live flames: False. Never raises."""
         s = self.screen
         fn = getattr(s, "flames_live", None) if s is not None else None
-        try:
-            return fn is not None and fn() is True
-        except Exception:                        # noqa: BLE001
+        if fn is None:
             return False
+        try:
+            v = fn()
+        except Exception:                        # noqa: BLE001
+            return None
+        return v if isinstance(v, bool) else None
 
     def _idle_stop(self):
         """With no show or run going, key 0 is still Stop (STOP ALL) while
@@ -3099,7 +3127,10 @@ class Controller:
         programming or fire while scrubbing is on: those count as running
         (review of #130, low items, 3). The purge still works when nothing
         at all is running."""
-        return self._any_flame_armed(purge=False) or self._flames_live()
+        # Live flames not known count as on (review of #132, 4): Stop
+        # wins, as with the scheduler unknown.
+        return self._any_flame_armed(purge=False) or \
+            self._flames_live() is not False
 
     def _do_stop(self):
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
@@ -3534,6 +3565,7 @@ class Controller:
             if k == TOP_START:
                 # The FIRE key (Morning page): letting go ends the purge
                 # fire at once, whether or not the page is still open.
+                self._key0_fire = False
                 self._fire_release("the key came up")
                 # Letting go of Stop before STOP_HOLD_S sends nothing.
                 self._stop_hold.release()
@@ -3584,6 +3616,7 @@ class Controller:
                         self._stop_hold.press(now)
                 elif morning and not self._stop_wins():
                     # Re-mapped while the Morning page is open: FIRE.
+                    self._key0_fire = True
                     self._fire_press(now)
                 else:
                     # Start and Stop are one key (Jeff, 2026-10-26).
@@ -3616,13 +3649,15 @@ class Controller:
             # press right after either cannot quietly re-arm.
             self._was_latched = latched
             self._disarmed_at = [now] * len(self.names)
-        pf = self.purge_fire
-        if self._prev_keys[TOP_START] and pf is not None and \
-                getattr(pf, "firing", False) and self._stop_wins():
-            # FIRE is held and a show or run has started (or a group was
-            # armed, or live flames came on): FIRE ends now and the same
-            # held key becomes a Stop hold at once, with no second press
-            # (review of #130, low items, 4).
+        if self._prev_keys[TOP_START] and self._key0_fire and \
+                self._stop_wins():
+            # Key 0 went down as FIRE, is still held, and now a show or run
+            # has started (or a group was armed, or live flames came on):
+            # FIRE ends now and the same held key becomes a Stop hold at
+            # once, with no second press (review of #130, low items, 4).
+            # Read from the press itself, never from PurgeFire.firing,
+            # which the engine's first refusal clears (review of #132, 1).
+            self._key0_fire = False
             self._fire_release("Stop wins: something is running")
             self._stop_hold.press(now)
         if self._prev_keys[TOP_START] and self._stop_hold.fired(now):

@@ -140,7 +140,8 @@ stops: the deck turns every flame group off itself first, then asks the
 show computer for the rest, and says ENGINE FAULT if it cannot reach it
 (or CHECK RACK if it took the Stop but has not answered yet). If the
 flames and lasers went off but playback itself did not stop, the key reads
-PLAYBACK FAILED: press Stop on the Rack screen. The key also reads STOP
+PLAYBACK FAILED: press Stop on the Rack screen. If the show itself did not
+end, the key flashes SHOW NOT STOPPED: press Abort on the Rack screen. The key also reads STOP
 ALL when nothing is running but a flame group is armed, or live flame
 programming or fire while scrubbing is on, and the hold turns everything
 off. An alert waiting on the deck never eats a

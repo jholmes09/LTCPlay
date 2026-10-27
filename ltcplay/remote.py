@@ -2363,12 +2363,21 @@ class Remote:
         # Whether live flame programming or fire while scrubbing is on: the
         # deck counts either as running, so key 0 is Stop (STOP ALL), never
         # FIRE (review of #130, low items, 3).
+        # Not known (a view that raises, answers with an error, or does not
+        # say "on"): None, which the deck reads as on, so Stop wins (review
+        # of #132, 4). On wins over not known.
         live = False
         for view in (self.live_flame_view, self.scrub_flames_view):
             try:
-                live = live or bool((view() or {}).get("on"))
+                v = view()
             except Exception:                    # noqa: BLE001
-                pass
+                v = None
+            if isinstance(v, dict) and v.get("on") is True:
+                live = True
+            elif not isinstance(v, dict) or "error" in v or \
+                    not isinstance(v.get("on"), bool):
+                if live is False:
+                    live = None
         out["flames_live"] = live
         # The Morning and Shutdown page (morning.py): whether it is open
         # (the deck re-maps itself while it is), the groups the purge

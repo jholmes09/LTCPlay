@@ -47000,9 +47000,9 @@ def test_stop_says_when_its_flame_disarm_failed():
                      "show": {"ok": False, "text": "No show is running."}}
     e._post_one("stop", {"who": "Andy"}, path="/api/stop")
     check("did NOT end the show" in e.fault and "Abort" in e.fault and
-          tuple(e.fault_face) == ("ENGINE", "FAULT"),
-          f"a show the scheduler did not end is the deck's fault: "
-          f"{e.fault!r}")
+          tuple(e.fault_face) == ("SHOW NOT", "STOPPED"),
+          f"a show the scheduler did not end is the deck's fault, SHOW NOT "
+          f"STOPPED (review of #132, 2): {e.fault!r}")
     answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
                      "lasers": {"disarmed": False, "text": "x"}}
     e._post_one("stop", {"who": "Andy"}, path="/api/stop")
@@ -47970,6 +47970,213 @@ def test_stop_halt_low_items_of_130():
           f"and with the key still held, Stop goes, no second press: "
           f"{cond.calls}")
     c.run_once(up)
+    print("  ok")
+
+
+def test_stop_halt_review_of_132():
+    """Review of #132, with the REAL PurgeFire and real timing: FIRE held
+    when a show goes live becomes exactly one Stop hold, even though the
+    engine's first refusal ends the press before the deck's poll sees the
+    show, and even when the Morning page closes in the same pass; a show
+    the halt did not stop reads SHOW NOT STOPPED; a purge machine
+    deselected while FIRE is held never turns into a Stop because
+    flamesafe's status lags; and live flames not known count as on."""
+    section("Stop (review of #132): FIRE into Stop with the real PurgeFire, "
+            "SHOW NOT STOPPED, the deselect settle, live flames unknown")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    class _Cond(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen, time.monotonic()))
+            return _Result(True, "Stopped.")
+
+    def probe(close_page):
+        """FIRE held 1.5 s; the engine refuses beats once its show is live
+        (0.2 s in); the deck sees the show 0.25 s later. close_page: the
+        Morning page closes in that same pass too."""
+        engine_show = [False]
+        beats = []
+
+        def poster(path, body):
+            if path == "/api/remote/purge-fire":
+                if engine_show[0]:
+                    return (False, "a show is live: no purge", {})
+                beats.append(time.monotonic())
+                return (True, "ok", {"fire_id": "f1",
+                                     "firing": ["front row"]})
+            return (True, "ok", {})
+        arm = _FakeArmSocket(3)
+        show = [False]
+        scr = _FakeMorningScreen()
+        scr.mo = {"open": True, "purge_enabled": True,
+                  "purge": {"wanted_groups": [0], "selected": 1,
+                            "firing": False},
+                  "locks": {"groups_fully_locked": []}}
+        cond = _Cond()
+        c = sd.Controller(arm, _FakeStatusSocket(), names,
+                          operator_provider=lambda: "Andy",
+                          show_running_provider=lambda: show[0],
+                          run_live_provider=lambda: False, conductor=cond,
+                          journal=lambda t_, **kw: None,
+                          clock=time.monotonic, screen=scr)
+        pf = sd.PurgeFire(poster)
+        c.purge_fire = pf
+        c.screen_pass()
+        c.tick()
+        check(c._purge_armed == {0}, "setup: the purge group armed")
+        down, up = [True] + [False] * 5, [False] * 6
+        t0 = time.monotonic()
+        c.run_once(down)
+        seen_at = None
+        while time.monotonic() - t0 < 1.5:
+            el = time.monotonic() - t0
+            if el >= 0.2:
+                engine_show[0] = True
+            if el >= 0.45 and seen_at is None:
+                seen_at = time.monotonic()
+                show[0] = True
+                if close_page:
+                    scr.mo = None
+            c.screen_pass()
+            c.tick()
+            time.sleep(0.02)
+        c.run_once(up)
+        pf.stop()
+        pf.join(1.0)
+        stops = [x for x in cond.calls if x[0] == "stop"]
+        lag = (stops[0][3] - seen_at) if stops else None
+        how = "the page closing too" if close_page else "the page open"
+        check(beats and not pf.firing,
+              f"{how}: FIRE fired, then the engine's refusal ended it")
+        check(len(stops) == 1,
+              f"{how}: exactly one Stop, with no second press: {stops}")
+        check(lag is not None and sd.STOP_HOLD_S - 0.05 <= lag <=
+              sd.STOP_HOLD_S + 0.2,
+              f"{how}: the Stop hold completed STOP_HOLD_S after the deck "
+              f"saw the show: {lag}")
+    probe(close_page=False)
+    probe(close_page=True)
+    # 2. A show still live and playback still running: SHOW NOT STOPPED,
+    # as urgent as DISARM FAILED, never ENGINE FAULT while it answers.
+    got = {}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: None,
+                           poster=lambda p, b: got["a"])
+    got["a"] = (False, "x", {"_http_status": 500, "stopped": False,
+                             "flames": {"disarmed": True},
+                             "show": {"ok": False, "text": "S"},
+                             "failed": ["show", "playback stop"],
+                             "error": "x"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("SHOW NOT", "STOPPED") and
+          "did NOT end the show (S)" in e.fault and
+          "playback did NOT stop" in e.fault,
+          f"the show and playback still going: SHOW NOT STOPPED: "
+          f"{e.fault!r} {e.fault_face}")
+    got["a"] = (True, "done", {"stopped": True,
+                               "show": {"ok": False, "text": "S"}})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("SHOW NOT", "STOPPED"),
+          f"a 200 whose show did not end: SHOW NOT STOPPED: {e.fault_face}")
+    got["a"] = (True, "done", {"stopped": True,
+                               "flames": {"disarmed": False, "text": "F"},
+                               "show": {"ok": False, "text": "S"}})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("DISARM", "FAILED") and
+          "did NOT end the show" in e.fault,
+          "a failed disarm as well: DISARM FAILED, both said")
+    # 3. A purge machine deselected while FIRE is held: the deck disarms
+    # its group; flamesafe's status still reporting it armed for a moment
+    # is no reason for Stop to win.
+    t = [100.0]
+    arm = _FakeArmSocket(3)
+    scr = _FakeMorningScreen()
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0, 2], "selected": 2,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: False,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0],
+                      screen=scr)
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0, 2}, f"setup: both armed: {c._purge_armed}")
+    reported = {0, 2}
+    c._reported_armed = lambda i: i in reported
+    c.run_once([True] + [False] * 5)
+    check(pf.firing, "FIRE held")
+    scr.mo["purge"]["wanted_groups"] = [0]
+    t[0] += 0.05
+    c.screen_pass()
+    c.tick()
+    check(arm.wanted[2] is False and not c._stop_wins() and pf.firing and
+          c._stop_hold._down_at is None,
+          f"group 2 deselected while FIRE is held, flamesafe still saying "
+          f"it is armed: FIRE goes on, no Stop: {arm.wanted}")
+    t[0] += sd.DISARM_SETTLE_S + 0.05
+    c.tick()
+    check(c._stop_wins(),
+          "past DISARM_SETTLE_S with flamesafe still saying armed: Stop "
+          "wins")
+    c.run_once([False] * 6)
+    # 4. Live flames not known count as on: Stop wins.
+    class _Scr(_FakeMorningScreen):
+        val = False
+
+        def flames_live(self):
+            if self.val == "raise":
+                raise RuntimeError("no answer")
+            return self.val
+    scr2 = _Scr()
+    c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), names,
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: False, clock=lambda: t[0],
+                      screen=scr2)
+    for val, want in ((False, False), (True, True), (None, True),
+                      ("raise", True), ("yes", True)):
+        scr2.val = val
+        check(c._stop_wins() is want,
+              f"flames_live {val!r}: Stop wins {want}")
+    c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), names,
+                       show_running_provider=lambda: False,
+                       run_live_provider=lambda: False, clock=lambda: t[0],
+                       screen=_FakeMorningScreen())
+    check(not c2._stop_wins(),
+          "a screen that cannot say (no engine wired): no live flames")
+    sk = sd.ScreenKeys("http://127.0.0.1:1", clock=lambda: 0.0,
+                       fetcher=lambda p: {})
+    sk._last = ({}, 0.0)
+    check(sk.flames_live() is None, "an answer without flames_live: not "
+                                    "known")
+    from ltcplay import remote as RM
+
+    class _Svc:
+        conductor = None
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            pass
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   log=lambda t_: None)
+
+    def _boom():
+        raise RuntimeError("x")
+    for lv, sv, want in (
+            (lambda: {"on": False}, lambda: {"on": False}, False),
+            (_boom, lambda: {"on": False}, None),
+            (lambda: {"on": False, "error": "E"}, lambda: {"on": False},
+             None),
+            (lambda: {"available": True}, lambda: {"on": False}, None),
+            (_boom, lambda: {"on": True}, True)):
+        rm.live_flame_view, rm.scrub_flames_view = lv, sv
+        got_v = rm.deck_input("").get("flames_live", "missing")
+        check(got_v is want if want is not None else got_v is None,
+              f"deck-input flames_live: {got_v!r}, expected {want!r}")
     print("  ok")
 
 
@@ -68905,6 +69112,7 @@ if __name__ == "__main__":
     test_stop_halt_review_of_130()
     test_stop_halt_second_review_of_130()
     test_stop_halt_low_items_of_130()
+    test_stop_halt_review_of_132()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()

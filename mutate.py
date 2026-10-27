@@ -14191,13 +14191,13 @@ def build():
 
  ("deck: live flames do not count as running (review of #130, low 3)",
   "ltcplay/streamdeck.py",
-  "        return self._any_flame_armed(purge=False) or self._flames_live()",
+  "        return self._any_flame_armed(purge=False) or \\\n            self._flames_live() is not False",
   "        return self._any_flame_armed(purge=False)"),
 
  ("remote: deck-input never says live flames are on",
   "ltcplay/remote.py",
-  "                live = live or bool((view() or {}).get(\"on\"))",
-  "                live = False"),
+  "            if isinstance(v, dict) and v.get(\"on\") is True:\n                live = True\n",
+  "            if False:\n                live = True\n"),
 
  ("deck: the deck never reads flames_live",
   "ltcplay/streamdeck.py",
@@ -14206,13 +14206,55 @@ def build():
 
  ("deck: FIRE held when a show starts stays FIRE (review of #130, low 4)",
   "ltcplay/streamdeck.py",
-  "                getattr(pf, \"firing\", False) and self._stop_wins():",
-  "                getattr(pf, \"firing\", False) and False:"),
+  "        if self._prev_keys[TOP_START] and self._key0_fire and \\\n                self._stop_wins():",
+  "        if self._prev_keys[TOP_START] and self._key0_fire and \\\n                False:"),
 
  ("deck: FIRE held when a show starts needs a second press to Stop",
   "ltcplay/streamdeck.py",
   "            self._fire_release(\"Stop wins: something is running\")\n            self._stop_hold.press(now)",
   "            self._fire_release(\"Stop wins: something is running\")"),
+
+
+ # Review of #132.
+ ("deck: FIRE turns into Stop only while PurgeFire still fires (review of #132, 1)",
+  "ltcplay/streamdeck.py",
+  "        if self._prev_keys[TOP_START] and self._key0_fire and \\\n                self._stop_wins():",
+  "        if self._prev_keys[TOP_START] and getattr(self.purge_fire, \"firing\", False) and \\\n                self._stop_wins():"),
+
+ ("deck: key 0 is never remembered as FIRE",
+  "ltcplay/streamdeck.py",
+  "                    self._key0_fire = True\n",
+  ""),
+
+ ("deck: the FIRE memory outlives the key's release",
+  "ltcplay/streamdeck.py",
+  "                self._key0_fire = False\n                self._fire_release(\"the key came up\")",
+  "                self._fire_release(\"the key came up\")"),
+
+ ("deck: a show the halt did not stop reads ENGINE FAULT (review of #132, 2)",
+  "ltcplay/streamdeck.py",
+  "                (\"SHOW NOT\", \"STOPPED\") if show_live else \\",
+  "                (\"ENGINE\", \"FAULT\") if show_live else \\"),
+
+ ("deck: a deselected purge group lagging in flamesafe's status makes Stop win (review of #132, 3)",
+  "ltcplay/streamdeck.py",
+  "                         now - at < DISARM_SETTLE_S}",
+  "                         False}"),
+
+ ("deck: live flames not known read as off (review of #132, 4)",
+  "ltcplay/streamdeck.py",
+  "            self._flames_live() is not False",
+  "            self._flames_live() is True"),
+
+ ("deck: a live flame view that raises reads as off",
+  "ltcplay/streamdeck.py",
+  "        try:\n            v = fn()\n        except Exception:                        # noqa: BLE001\n            return None\n",
+  "        try:\n            v = fn()\n        except Exception:                        # noqa: BLE001\n            return False\n"),
+
+ ("remote: a live flame view that raises or errs says off (review of #132, 4)",
+  "ltcplay/remote.py",
+  "                if live is False:\n                    live = None",
+  "                pass"),
 
 ]
 
