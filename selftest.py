@@ -16626,15 +16626,22 @@ def test_rack_screen_small_screens_with_announcements_and_setup():
                                ("cancellation", "Cancellation"),
                                ("cannot_continue", "Cannot continue"))],
         "playing": None}
+    # Measured twice: as loaded (the steps folded, flame groups reported)
+    # and again with the steps opened by "Show the steps" (delta review of
+    # #137: open, the card pushed Disarm all and the arm buttons off).
     mjs = r'''<script>
 function go(){ if(!document.querySelector("#fl-lamps .lamp [data-arm]")) return setTimeout(go,50);
- setTimeout(()=>{ const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
-  const out = {vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
+ const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
+ const m = () => ({vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
     abort:r(document.getElementById("b-abort")),
     setup:!document.getElementById("setup").hidden, ann:!document.getElementById("ann").hidden,
-    arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)};
-  const pre = document.createElement("pre"); pre.id = "rack-measure";
-  pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 1500);}
+    folded:document.getElementById("setup").classList.contains("folded"),
+    arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)});
+ setTimeout(()=>{ scrollTo(0, 0); const out = m();
+  document.getElementById("su-more").click();
+  setTimeout(()=>{ scrollTo(0, 0); out.open = m();
+   const pre = document.createElement("pre"); pre.id = "rack-measure";
+   pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 800);}, 1500);}
 go();</script>'''
     # The required sizes are 1366x600, 1366x614, 1366x544, 1366x558 and
     # 1024x768 (the runner's Chrome leaves about 143 px less page than its
@@ -16657,21 +16664,32 @@ go();</script>'''
             continue
         if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):
             continue
-        vh = m["vh"]
-        check(m["setup"] and m["ann"], f"{w}x{h}: both shown: {m}")
-        # Abort is pinned to the bottom of the window; Disarm all and the
-        # arm buttons must clear the fold by SLACK px (review of PR #129).
-        check(m["abort"]["top"] >= 0 and m["abort"]["bottom"] <= vh,
-              f"{w}x{h}: abort wholly on screen: {m['abort']} vh {vh}")
-        check(m["disarm"]["top"] >= 0 and
-              m["disarm"]["bottom"] <= vh - SLACK,
-              f"{w}x{h}: disarm wholly on screen with {SLACK} px to "
-              f"spare: {m['disarm']} vh {vh}")
-        check(len(m["arms"]) == 3 and all(
-                  a["h"] >= 44 and a["top"] >= 0 and
-                  a["bottom"] <= vh - SLACK for a in m["arms"]),
-              f"{w}x{h}: every arm button on screen with {SLACK} px to "
-              f"spare, at least 44 px: {m['arms']} vh {vh}")
+        op = m.get("open") or {}
+        check(m.get("folded") is True and op.get("folded") is False,
+              f"{w}x{h}: folded as loaded, open after Show the steps: "
+              f"{m.get('folded')} {op.get('folded')}")
+        for state, mm in (("folded", m), ("steps open", op)):
+            if not mm:
+                continue
+            vh = mm["vh"]
+            check(mm["setup"] and mm["ann"],
+                  f"{w}x{h} {state}: both shown: {mm}")
+            # Abort is pinned to the bottom of the window; Disarm all and
+            # the arm buttons must clear the fold by SLACK px (review of
+            # PR #129).
+            check(mm["abort"]["top"] >= 0 and mm["abort"]["bottom"] <= vh,
+                  f"{w}x{h} {state}: abort wholly on screen: "
+                  f"{mm['abort']} vh {vh}")
+            check(mm["disarm"]["top"] >= 0 and
+                  mm["disarm"]["bottom"] <= vh - SLACK,
+                  f"{w}x{h} {state}: disarm wholly on screen with {SLACK} "
+                  f"px to spare: {mm['disarm']} vh {vh}")
+            check(len(mm["arms"]) == 3 and all(
+                      a["h"] >= 44 and a["top"] >= 0 and
+                      a["bottom"] <= vh - SLACK for a in mm["arms"]),
+                  f"{w}x{h} {state}: every arm button on screen with "
+                  f"{SLACK} px to spare, at least 44 px: {mm['arms']} "
+                  f"vh {vh}")
     print("  ok")
 
 
@@ -47903,8 +47921,8 @@ def test_remote_setup_routes_this_machine_only():
 def test_make_a_show_file_from_the_show_folder():
     section("Programming screen, Make a show file (Jeff, 2026-10-27: a "
             "fresh install pointed at a folder of renders had no way to make "
-            "a show file but `ltc init`): the engine makes one exactly as "
-            "`ltc init` does, from the folder it serves (a name with [ ] in "
+            "a show file but `ltc init`): the engine lays one out with "
+            "`ltc init`'s starter(), from the folder it serves (a name with [ ] in "
             "it, any case of .fseq), into the folder the Show file chooser "
             "lists, never over an existing file, refused while a show file "
             "runs or a scheduled show is live, always asks for the frame "
@@ -48042,7 +48060,7 @@ def test_make_a_show_file_from_the_show_folder():
               out["text"] and "29.97 and 30" in out["text"] and
               '"drop": true' in out["text"] and
               "not the show's timecode rate" in out["text"] and
-              "Programming mode" in out["text"],
+              '"Check the show file" button does not hear' in out["text"],
               f"the rate is never a guess presented as fact: {out['text']}")
         check("tc" in out["next"] and "Check" in out["next"] and
               "Programming" in out["next"] and "fps" in out["next"],
@@ -48129,13 +48147,31 @@ def test_make_a_show_file_from_the_show_folder():
                        if not n.endswith(".json")],
                   f"without hard links nothing is replaced and nothing is "
                   f"left behind: {got['file']} {os.listdir(dest)}")
-            # Very long folder names: the temporary name is never the
-            # longer one.
-            check(len(f"~{os.urandom(4).hex()}.new") <
-                  len(CLI.starter_base("a") + "_timeline.json"),
-                  "the temporary name is shorter than any show file name")
         finally:
             shutil.rmtree(dest, ignore_errors=True)
+        # A very long folder name (about 235 characters, the show file's
+        # own name about 249, under the 255 a name may have): a real show
+        # file is made, and the temporary name never fails first. On
+        # Windows without long paths the whole path must stay under 260,
+        # so the name is as long as that allows there.
+        root = tempfile.mkdtemp()
+        try:
+            L = 235
+            if os.name == "nt":
+                L = min(L, (259 - len(root) - 2 - 14) // 2)
+            long_dir = os.path.join(root, "F" * L)
+            os.makedirs(long_dir)
+            FX.write_fseq(os.path.join(long_dir, "a.fseq"), frame_count=10,
+                          step_ms=50)
+            got = CLI.make_show_file(long_dir, long_dir)
+            check(got["file"] == "F" * L + "_timeline.json" and
+                  os.path.isfile(got["path"]) and
+                  sorted(os.listdir(long_dir)) ==
+                  sorted(["a.fseq", got["file"]]),
+                  f"a {L}-character folder name: the show file is made, "
+                  f"nothing else left: {sorted(os.listdir(long_dir))}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
         # Every render unreadable: no empty show file.
         bad = tempfile.mkdtemp()
         try:
@@ -48161,10 +48197,15 @@ def test_make_a_show_file_from_the_show_folder():
             import argparse as _ap
             import contextlib as _cl
             import io as _io
-            with _cl.redirect_stdout(_io.StringIO()):
+            said = _io.StringIO()
+            with _cl.redirect_stdout(said):
                 rc = CLI.cmd_init(_ap.Namespace(
                     show_dir=d, fps=30, start="01:00:00:00", gap=0.0,
                     out=None))
+            check("Check the frame rate: it was set to 30 fps" in
+                  said.getvalue() and "29.97" in said.getvalue(),
+                  f"ltc init asks for the rate to be checked too: "
+                  f"{said.getvalue()}")
             with open(os.path.join(out_dir, name)) as fh:
                 kept = fh.read()
             check(rc == 0 and kept == "keep" and os.path.isfile(
@@ -48176,6 +48217,33 @@ def test_make_a_show_file_from_the_show_folder():
             shutil.rmtree(out_dir, ignore_errors=True)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+    # The timecode's own rate against the show file's, on the rack screen
+    # (remote.rate_mismatch, from the engine's own reading).
+    run = {"running": True, "timeline_fps": 30.0, "timeline_drop": False}
+    check(RM.rate_mismatch(dict(run, rate_in=30.0, rate_drop=False,
+                                rate_confident=True)) == "" and
+          RM.rate_mismatch(dict(run, rate_in=None)) == "" and
+          RM.rate_mismatch(dict(run, rate_in=29.97, running=False,
+                                rate_confident=True)) == "" and
+          RM.rate_mismatch(dict(run, rate_in=30.0, rate_drop=False,
+                                rate_confident=False)) == "",
+          "no note while the rates agree, nothing is heard or nothing runs")
+    n1 = RM.rate_mismatch(dict(run, rate_in=29.97, rate_drop=True,
+                               rate_confident=True))
+    n2 = RM.rate_mismatch(dict(run, rate_in=25.0, rate_drop=False,
+                               rate_confident=False))
+    check(RM.rate_mismatch({"running": True, "timeline_fps": 29.97,
+                            "timeline_drop": False, "rate_in": 30.0,
+                            "rate_drop": False,
+                            "rate_confident": False}) == "",
+          "29.97 against a 30 count not yet measured: no note")
+    n3 = RM.rate_mismatch(dict(run, rate_in=30.0, rate_drop=True,
+                               rate_confident=False))
+    check("drop-frame" in n3 and '"drop"' in n3,
+          f"a drop-frame feed against a non-drop show file: {n3!r}")
+    check("29.97 fps drop-frame" in n1 and "30 fps non-drop" in n1 and
+          '"drop"' in n1 and "25 fps" in n2 and '"drop"' not in n2,
+          f"a different rate is said, with what to set: {n1!r} {n2!r}")
     # The page: the buttons on the folder card and on Getting started,
     # wired, and its sentences, run in node.
     here = os.path.dirname(os.path.abspath(__file__))
@@ -48189,6 +48257,7 @@ def test_make_a_show_file_from_the_show_folder():
                  '$("su-make").addEventListener("click", async () => {',
                  '$("fo-check").addEventListener("click", async () => {',
                  '$("su-make").hidden = !makeOffered(su);',
+                 'id="run-rate"',
                  'if(want && ok.includes(want)){ $("run-file").value = want;'):
         check(need in page, f"the page has {need!r}")
     node = shutil.which("node")
@@ -48198,7 +48267,8 @@ def test_make_a_show_file_from_the_show_folder():
         return
     js = _js_block(page, "const esc = ", "let ME = null") + "\n" + \
         _js_fn(page, "makeOffered") + "\n" + \
-        _js_fn(page, "setupFolderWords") + "\n" + _js_fn(page, "checkWords") + r"""
+        _js_fn(page, "setupFolderWords") + "\n" + _js_fn(page, "checkWords") + \
+        "\n" + _js_fn(page, "rateNote") + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 t(makeOffered({show_files:0, show_folder_renders:2}), "renders, no show file: offered");
@@ -48214,6 +48284,7 @@ t(ok.includes("Nothing wrong found") && ok.includes("Programming"), "clean: " + 
 const bad = checkWords("a.json", {cues:[{name:"A", missing:true}, {name:"<B>", overlap:true}], problems:["p1"], notes:[]});
 t(bad.includes("Render not found for:</b> A") && bad.includes("&lt;B&gt;") && bad.includes("<li>p1</li>") && !bad.includes("Nothing wrong"), "faults: " + bad);
 t(checkWords("a.json", {error:"no map"}).includes("does not load: no map"), "a load error");
+t(rateNote({show:{rate_note:"The timecode coming in runs at 25 fps"}}) === "The timecode coming in runs at 25 fps" && rateNote({show:{}}) === "" && rateNote(null) === "", "the rate note");
 console.log(JSON.stringify(out));
 """
     r = _node_js(node, js, capture_output=True, text=True, timeout=60)
@@ -48222,6 +48293,85 @@ console.log(JSON.stringify(out));
     except (ValueError, IndexError):
         fails = [f"node said: {r.stdout} {r.stderr}"]
     check(not fails, f"the page's sentences: {fails}")
+    # The real handlers (delta review of #137): the page's own Getting
+    # started and show folder code, from `let SETUP_KEY` to the folder
+    # card's loader, run against stand-in elements, with post, confirmBox
+    # and the loaders stubbed. A press must POST, choose the new file and
+    # say what was made; renderSetup must show and hide Make a show file.
+    block = _js_block(page, "let SETUP_KEY = ", "// The show folder card (Programming")
+    check("function makeShowFile" in block and "function renderSetup(" in
+          block, "the handlers' block was found in the page")
+    harness = r"""
+const EL = {};
+function fakeEl(id){
+  const h = {}, cls = new Set(), kids = {};
+  return {id, hidden:false, textContent:"", innerHTML:"", value:"", disabled:false, dataset:{}, attrs:{},
+    classList:{toggle(c, on){ if(on === undefined) on = !cls.has(c); if(on) cls.add(c); else cls.delete(c); return on; },
+      contains:c => cls.has(c), add:c => cls.add(c), remove:c => cls.delete(c)},
+    setAttribute(k, v){ this.attrs[k] = v; }, handlers:h,
+    addEventListener(ev, fn){ (h[ev] = h[ev] || []).push(fn); },
+    querySelector(sel){ return kids[sel] = kids[sel] || fakeEl(id + " " + sel); },
+    async click(){ for(const fn of (h.click || [])) await fn({}); }};
+}
+const $ = id => (EL[id] = EL[id] || fakeEl(id));
+let ST = {flames:{connected:true, groups:[1, 2, 3]}};
+const location = {hash:""};
+const posts = [];
+let CONFIRM = true, FAIL = null, VIEWS = 0, CARDS = 0;
+const loaded = [];
+async function confirmBox(){ return CONFIRM; }
+async function post(p, b){ posts.push([p, b]); if(FAIL) throw new Error(FAIL);
+  return p === "/api/check" ? {cues:[{tc:"01:00:00:00", name:"A"}], problems:[], notes:[]}
+    : {file:"X_timeline.json", text:"Made X_timeline.json with 2 cues.", next:"Next: set the times."}; }
+async function loadShowFiles(w){ loaded.push(w); }
+function loadFolders(){}
+function showView(){ VIEWS++; }
+function loadSetupCards(){ CARDS++; }
+""" + _js_block(page, "function noFileLine(", "// How far the window reaches") + \
+        _js_block(page, "const esc = ", "let ME = null") + "\n" + block + r"""
+(async () => {
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const su = {show_files:0, show_folder_renders:2, show_folder:"C:\\Shows", show_folder_exists:true, schedule_ok:false};
+renderSetup(su, {});
+t($("su-make").hidden === false, "renderSetup shows Make a show file with renders and no show file");
+renderSetup(Object.assign({}, su, {show_files:1}), {});
+t($("su-make").hidden === true, "renderSetup hides it once a show file exists");
+renderSetup(Object.assign({}, su, {show_folder_renders:0}), {});
+t($("su-make").hidden === true, "renderSetup hides it with no renders");
+CONFIRM = false;
+await $("fo-make").click();
+t(posts.length === 0, "a refused confirm posts nothing");
+CONFIRM = true;
+await $("fo-make").click();
+t(posts.length === 1 && posts[0][0] === "/api/remote/show-file-new" && JSON.stringify(posts[0][1]) === "{}",
+  "the folder card's button POSTs show-file-new with an empty body: " + JSON.stringify(posts));
+t(loaded[0] === "X_timeline.json", "the new file is chosen in the Show file chooser: " + JSON.stringify(loaded));
+t($("fo-made").innerHTML.includes("Made X_timeline.json") && $("fo-made").innerHTML.includes("Next: set the times."),
+  "the card says what was made and what next: " + $("fo-made").innerHTML);
+t($("fo-make").disabled === false, "the button is usable again");
+await $("su-make").click();
+t(location.hash === "programming" && VIEWS > 0 && CARDS > 0, "Getting started's button opens Programming");
+t(posts.length === 2 && posts[1][0] === "/api/remote/show-file-new", "and POSTs show-file-new: " + JSON.stringify(posts));
+t($("su-foot").textContent.includes("Made X_timeline.json"), "and says what was made on the card: " + $("su-foot").textContent);
+FAIL = "A show file is running.";
+$("su-foot").textContent = "";
+await $("su-make").click();
+t($("fo-made").textContent === "A show file is running." && $("su-foot").textContent === "", "a refusal is said, nothing claimed");
+FAIL = null;
+$("run-file").value = "a.json";
+await $("fo-check").click();
+t(posts[posts.length - 1][0] === "/api/check" && posts[posts.length - 1][1].timeline === "a.json" &&
+  $("fo-checked").innerHTML.includes("Check of a.json"), "Check the show file checks the chosen file: " + $("fo-checked").innerHTML);
+console.log(JSON.stringify(out));
+})();
+"""
+    r = _node_js(node, harness, capture_output=True, text=True, timeout=60)
+    try:
+        fails = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        fails = [f"node said: {r.stdout} {r.stderr}"]
+    check(not fails, f"the page's handlers: {fails}")
     print("  ok")
 
 

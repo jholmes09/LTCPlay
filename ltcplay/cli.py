@@ -844,7 +844,12 @@ def cmd_init(args):
         # Never over an existing show file: the next free _2, _3 name.
         out = write_new_show_file(settings_mod.folder(),
                                   starter_base(args.show_dir), doc)
-    print(f"Wrote {out} with {len(doc['cues'])} cues at {args.fps} fps.")
+    fps = doc["fps"]
+    why = ("it was asked for" if str(args.fps) != str(INIT_FPS)
+           else "that is the default")
+    print(f"Wrote {out} with {len(doc['cues'])} cues at {fps:g} fps.")
+    print(f"Check the frame rate: it was set to {fps:g} fps because {why}. "
+          f"{FPS_CHECK}")
     print("It is beside the launcher, so it appears in the Run menu and on "
           "the web page.")
     print("Edit the 'tc' values to your real running order before using it.")

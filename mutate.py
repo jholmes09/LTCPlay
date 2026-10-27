@@ -6241,8 +6241,8 @@ def build():
  # Item 1: conductor calls after the save, in order, off the lock, faults.
  ('scheduler fix round: the conductor is asked before tonight is saved',
   'ltcplay/schedule_service.py',
-  '        self._record(out, now, plan, held, ev)\n        if self.dry_run and self.machine.state == sch.CLOSING:',
-  '        self._queue_conductor(plan, ev, calls)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan, held, ev)\n        if self.dry_run and self.machine.state == sch.CLOSING:'),
+  '        self._record(out, now, plan, held, ev)\n        if ev.kind == sch.RESUME and ev.actor == "operator" and \\\n',
+  '        self._queue_conductor(plan, ev, calls)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan, held, ev)\n        if ev.kind == sch.RESUME and ev.actor == "operator" and \\\n'),
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
@@ -14666,7 +14666,7 @@ def build():
 
  ("make a show file writes over an existing show file", "ltcplay/cli.py",
   "            if os.path.lexists(out):\n                continue\n            try:\n                os.link(tmp, out)\n                return out",
-  "            if True:\n                os.replace(tmp, out)\n                return out"),
+  "            try:\n                os.replace(tmp, out)\n                return out"),
 
  ("make a show file is not refused while a show file runs", "ltcplay/remote.py",
   "        if getattr(c, \"_starting\", False) or \\\n                (sess is not None and getattr(sess, \"running\", False)):",
@@ -14729,8 +14729,8 @@ def build():
   "    note = f\"{doc['fps']:g} fps.\""),
 
  ("make a show file drops the frame rate warning from the reply", "ltcplay/remote.py",
-  "                f\"{made['rate_note']} Check the show file does not hear \"",
-  "                f\"Check the show file does not hear \""),
+  "                f\"{made['rate_note']} The \\\"Check the show file\\\" button \"",
+  "                f\"The \\\"Check the show file\\\" button \""),
 
  ("make a show file reads a [bracketed] folder name as a pattern again", "ltcplay/timeline.py",
   "    files = [os.path.join(show_dir, n) for n in fseq_names(show_dir)]",
@@ -14764,8 +14764,43 @@ def build():
   "$(\"fo-check\").addEventListener(\"click\", async () => {",
   "$(\"fo-check-off\") && (async () => {"),
 
-]
-# What the last suite run failed on, so a surprising result can be read.
+ ("Make a show file's button returns before it posts", "ltcplay/web/remote.html",
+  "async function makeShowFile(){\n  if(!(await confirmBox(",
+  "async function makeShowFile(){\n  return null;\n  if(!(await confirmBox("),
+
+ ("Getting started hides Make a show file after deciding to offer it", "ltcplay/web/remote.html",
+  "  $(\"su-make\").hidden = !makeOffered(su);\n",
+  "  $(\"su-make\").hidden = !makeOffered(su);\n  $(\"su-make\").hidden = true;\n"),
+
+ ("Getting started's Make a show file never makes one", "ltcplay/web/remote.html",
+  "  const j = await makeShowFile();\n  if(j) $(\"su-foot\").textContent = j.text;",
+  "  const j = null;\n  if(j) $(\"su-foot\").textContent = j.text;"),
+
+ ("Make a show file does not choose the new file on the page", "ltcplay/web/remote.html",
+  "    await loadShowFiles(j.file);\n",
+  "    await loadShowFiles();\n"),
+
+ ("the open Getting started steps push Disarm all off a short screen again", "ltcplay/web/remote.html",
+  "@media (max-height:900px){\n  #setup:not(.folded){order:9}\n}",
+  "@media (max-height:900px){\n  #setup:not(.folded){order:0}\n}"),
+
+ ("the rack screen never says the timecode runs at another rate", "ltcplay/remote.py",
+  "        if not off:\n            return \"\"\n        shown = rate",
+  "        if True:\n            return \"\"\n        shown = rate"),
+
+ ("the rack screen calls 29.97 against 30 a mismatch before it is measured", "ltcplay/remote.py",
+  "               (sure and abs(rate - fps) > 0.01) or drop != tdrop)",
+  "               abs(rate - fps) > 0.01 or drop != tdrop)"),
+
+ ("the rack screen ignores a drop-frame mismatch", "ltcplay/remote.py",
+  "               (sure and abs(rate - fps) > 0.01) or drop != tdrop)",
+  "               (sure and abs(rate - fps) > 0.01))"),
+
+ ("ltc init no longer asks for the frame rate to be checked", "ltcplay/cli.py",
+  "    print(f\"Check the frame rate: it was set to {fps:g} fps because {why}. \"\n          f\"{FPS_CHECK}\")",
+  "    pass"),
+
+]# What the last suite run failed on, so a surprising result can be read.
 _LAST_FAILS = []
 # The last run: [seconds it took, whether it was stopped at its limit].
 _LAST_RUN = [0.0, False]

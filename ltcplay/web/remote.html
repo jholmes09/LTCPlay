@@ -597,6 +597,14 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #setup .surow button{min-height:40px;padding:4px 12px;font-size:15px}
 #setup:not(.folded) .surow{margin-bottom:8px}
 #setup.folded .steps,#setup.folded .foot{display:none}
+/* Opened ("Show the steps") on a window that is not tall, the card moves
+   below the flame groups, the show controls and the other blocks, so it
+   can never push Disarm all, an arm button or Abort off the screen (the
+   delta review of #137: open at 1366x600, 1366x614 and 1024x768 it did).
+   Folded it stays where it was, its one line above the groups. */
+@media (max-height:900px){
+  #setup:not(.folded){order:9}
+}
 #setup.folded{padding-top:4px;padding-bottom:4px}
 /* No show file: one plain line, on every screen, never folded away. */
 #nofile{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
@@ -1061,6 +1069,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
         <button type="button" role="radio" data-mode="programming">Programming</button>
       </div>
       <div class="modeline" id="run-mode-what"></div>
+      <div class="modeline locked" id="run-rate" hidden></div>
       <div class="row">
         <select id="run-file" style="flex:2 1 0" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
         <button id="b-run" class="go" style="flex:1 1 0">Run</button>
@@ -3018,7 +3027,15 @@ function runModeView(st, want){
   }
   return {now, text, locked};
 }
+// The timecode's own rate against the running show file's, from the
+// engine (remote.rate_mismatch). Pure.
+function rateNote(st){
+  return String((st && st.show && st.show.rate_note) || "");
+}
 function renderRunMode(){
+  const rn = rateNote(ST), rel = $("run-rate");
+  rel.hidden = !rn;
+  if(rel.textContent !== rn) rel.textContent = rn;
   if(RUN_MODE === null) RUN_MODE = runModeNow(ST) || "show";
   const v = runModeView(ST, RUN_MODE);
   document.querySelectorAll("#run-mode [data-mode]").forEach(b => {
