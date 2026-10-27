@@ -3123,22 +3123,26 @@ class Remote:
 
           1. every flame group disarmed through the flame link (the
              flame half of an Abort, _disarm_now), before anything else;
-          2. live flame programming and fire while scrubbing ended;
+          2. live flame programming and fire while scrubbing cut, the
+             link's slots shut at once and the rest of ending them on
+             threads of their own, exactly as an Abort does;
           3. every laser disarmed (the laser arm, told a press is under
-             way first, as for an Abort) and blanked at once;
+             way first, as for an Abort) and blanked at once
+             (_lasers_dark_now, its answer reported as "lasers_blank");
           4. every screen arm hold let go, the purge selection cleared and
              the laser tests ended (what an Abort clears);
           5. a scheduled show that is live ended: the scheduler's Stop
              (STOP_SHOW), faded to dark like an Abort, nothing latched.
              A show that ended by itself meanwhile is not a failure.
 
-        {"flames", "lasers", "show", "show_ended", "failed"}: each step's
+        {"flames", "lasers", "lasers_blank", "show", "show_ended",
+        "failed"}: each step's
         {"ok"/"disarmed", "text"} (None when there is nothing of it in
         this engine) and the names of the steps that failed. The caller
         (web.py /api/stop) stops playback after it."""
         label = who or "An unnamed operator"
-        out = {"flames": None, "lasers": None, "show": None,
-               "show_ended": False, "failed": []}
+        out = {"flames": None, "lasers": None, "lasers_blank": None,
+               "show": None, "show_ended": False, "failed": []}
         m = self.morning
         arm = getattr(m, "laser_arm", None)
         if arm is not None:
@@ -3156,9 +3160,10 @@ class Remote:
                 out["flames"] = {"disarmed": bool(f_ok), "text": f_text}
                 if not f_ok:
                     out["failed"].append("flames")
-            # 2. Live flame programming and fire while scrubbing.
+            # 2. Live flame programming and fire while scrubbing, cut as an
+            # Abort cuts them (review of #130, second pass, 3).
             why = f"{label} held Stop on the {screen}"
-            for name in ("live_flame_cut", "scrub_flames_end"):
+            for name in ("live_flame_cut", "scrub_flames_cut"):
                 fn = getattr(self, name, None)
                 try:
                     if fn is not None:
@@ -3185,9 +3190,15 @@ class Remote:
                 if not l_ok:
                     out["failed"].append("lasers")
             try:
-                self._lasers_dark_now(f"Stop held on the {screen}")
-            except Exception:                    # noqa: BLE001
-                pass
+                b_ok, b_text = self._lasers_dark_now(
+                    f"Stop held on the {screen}")
+            except Exception as e:               # noqa: BLE001
+                b_ok, b_text = False, (f"The laser blank did NOT go out "
+                                       f"({type(e).__name__}: {e}).")
+            if b_ok is not None:
+                out["lasers_blank"] = {"ok": bool(b_ok), "text": b_text}
+                if not b_ok:
+                    out["failed"].append("laser blank")
             # 4. What an Abort clears: screen holds, the purge, laser tests.
             try:
                 self.cancel_holds(f"{who or 'someone'} held Stop on the "
@@ -3233,8 +3244,8 @@ class Remote:
                     arm.press_end()
                 except Exception:                # noqa: BLE001
                     pass
-        parts = [x["text"] for x in (out["flames"], out["lasers"])
-                 if x is not None]
+        parts = [x["text"] for x in (out["flames"], out["lasers"],
+                                     out["lasers_blank"]) if x is not None]
         bad = ", ".join(out["failed"])
         self._journal(who, screen, "stop", "fault" if bad else "done",
                       f"{label} held Stop on the {screen}: a complete halt. "

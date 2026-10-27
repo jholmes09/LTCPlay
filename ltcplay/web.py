@@ -833,7 +833,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:                   # noqa: BLE001
             return {"failed": ["halt"],
                     "error": f"{type(e).__name__}: {e}"}
-        out = {k: h[k] for k in ("flames", "lasers", "show")
+        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show")
                if h.get(k) is not None}
         out["failed"] = list(h.get("failed") or [])
         if h.get("show_ended"):

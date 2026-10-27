@@ -46830,7 +46830,10 @@ def test_stop_disarms_every_flame_group_without_the_latch():
                                                      "ok": True,
                                                      "sentence": "sent"})())[1]
         R.remote.live_flame_cut = lambda *a, **kw: order.append("cut")
-        R.remote.scrub_flames_end = lambda *a, **kw: order.append("scrub")
+        # The halt cuts fire while scrubbing as an Abort does (review of
+        # #130, second pass, 3), never the slower end.
+        R.remote.scrub_flames_end = lambda *a, **kw: order.append("END")
+        R.remote.scrub_flames_cut = lambda *a, **kw: order.append("scrub")
 
         class _Lasers:
             def lasers_disarm_now(self, why, who="", screen=""):
@@ -46856,6 +46859,12 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         real_abort = R.c.abort
         R.c.abort = lambda *a, **kw: (order.append("ABORT"),
                                       real_abort(*a, **kw))[1]
+        # The scheduler's Stop drops a show start still waiting in the
+        # conductor's line (second review of #130, 4).
+        dropped = []
+        real_drop = R.svc._calls.drop
+        R.svc._calls.drop = lambda methods, seq: (
+            dropped.append(tuple(methods)), real_drop(methods, seq))[1]
         st, _h, out = _ask(R.httpd, "POST", "/api/stop",
                            {"who": "", "screen": "Stream Deck",
                             "halt": True}, client=("127.0.0.1", 50000))
@@ -46867,6 +46876,9 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               f"conductor's show_stopped, and only then playback: {st} "
               f"{out} {order}")
         check("ABORT" not in kinds, "the conductor is never asked to Abort")
+        from ltcplay import schedule_service as _SV
+        check(dropped == [_SV._ConductorCalls.STOP_DROPS],
+              f"the scheduler's Stop drops waiting show starts: {dropped}")
         check(out.get("failed") == [], f"nothing failed: {out}")
         check(out.get("show", {}).get("ok") is True and
               out.get("lasers", {}).get("disarmed") is True and
@@ -47243,6 +47255,361 @@ def test_stop_halt_review_of_130():
     print("  ok")
 
 
+def test_stop_halt_second_review_of_130():
+    """Second review of #130: a tap on the alert key only acknowledges, a
+    full hold stops, and the key says HOLD TO STOP once held; an open
+    Morning page never swallows a Stop; an armed group with nothing running
+    makes the key Stop; the halt cuts scrub flames, reports the laser
+    blank, waits for the conductor's fade, and drops a show start still in
+    the conductor's line; the deck says a halt that raised, and a slow
+    Stop is CHECK RACK, never ENGINE FAULT."""
+    section("Stop (second review of #130): the alert key, the Morning page, "
+            "an idle armed group, the fade, the laser blank, the queued "
+            "show start, a slow engine")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    class _Cond(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    arm = _FakeArmSocket(3)
+    t = [100.0]
+    show, run = [True], [False]
+    cond = _Cond()
+    scr = _FakeMorningScreen()
+    lines = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: show[0],
+                      run_live_provider=lambda: run[0], conductor=cond,
+                      journal=lambda t_, **kw: lines.append((t_, kw)),
+                      clock=lambda: t[0], screen=scr)
+    up, down = [False] * 6, [True] + [False] * 5
+
+    def stops():
+        return [x for x in cond.calls if x[0] == "stop"]
+
+    def wait(dt):
+        t[0] += dt
+        c.tick()
+    # 1. An alert open during a show: a tap only acknowledges.
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    c.run_once(down)
+    wait(0.1)
+    c.run_once(up)
+    wait(sd.STOP_HOLD_S * 2)
+    check(acked and not stops(), "an alert during a show: a tap only "
+                                 "acknowledges")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    try:
+        c.run_once(down)
+        wait(0.05)
+        if fonts is not None:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["ACK", "ALERT"],
+                  f"held under STOP_FACE_AFTER_S: still ACK ALERT: "
+                  f"{faces[0]}")
+        wait(sd.STOP_FACE_AFTER_S)
+        if fonts is not None:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["HOLD TO", "STOP"],
+                  f"held past STOP_FACE_AFTER_S: HOLD TO STOP over the "
+                  f"ACK, so a let go can cancel: {faces[0]}")
+            cond_fault = sd.EngineConductor("http://127.0.0.1:1")
+            cond_fault.fault = "Hold: refused"
+            c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                               names, show_running_provider=lambda: True,
+                               conductor=cond_fault, clock=lambda: t[0])
+            c2._stop_hold.press(t[0] - sd.STOP_FACE_AFTER_S)
+            c2._prev_keys = list(down)
+            c2.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["HOLD TO", "STOP"],
+                  f"over an engine fault too: {faces[0]}")
+        wait(sd.STOP_HOLD_S)
+        c.run_once(up)
+        check(len(stops()) == 1, f"and the full hold stops: {cond.calls}")
+    finally:
+        restore()
+    del c.alert_pending
+    del c._do_acknowledge
+    # 2. The Morning page open during a show: key 0 is Stop, never FIRE.
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    t[0] += sd.REARM_REFRACTORY_S
+    c.screen_pass()
+    c.tick()
+    check(c.morning_open(), "setup: the Morning page is open")
+    n0 = len(stops())
+    c.run_once(down)
+    check(not pf.calls and c._stop_hold._down_at is not None,
+          f"the Morning page open during a show: key 0 is Stop, never "
+          f"FIRE: {pf.calls}")
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and the hold stops: {cond.calls} {arm.wanted}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] not in (["FIRE", "HOLD"], ["PURGE", "NONE"],
+                                      ["FIRING"]),
+                  f"and its face is the show's, never FIRE or PURGE: "
+                  f"{faces[0]}")
+        finally:
+            restore()
+    # No show, only the purge's own group armed: FIRE, as before.
+    show[0] = False
+    t[0] += sd.REARM_REFRACTORY_S
+    scr.mo["purge"]["wanted_groups"] = []
+    c.screen_pass()
+    c.tick()
+    scr.mo["purge"]["wanted_groups"] = [0]
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0}, f"setup: the purge group armed again: "
+                                 f"{c._purge_armed}")
+    c.run_once(down)
+    check(pf.calls and pf.calls[-1][0] == "start",
+          f"no show, only the purge's group armed: key 0 is FIRE: "
+          f"{pf.calls}")
+    c.run_once(up)
+    # A group armed for something else: Stop wins over FIRE.
+    arm.set_group(2, True)
+    n_pf = len(pf.calls)
+    c.run_once(down)
+    check(len(pf.calls) == n_pf and c._stop_hold._down_at is not None,
+          "a group armed other than for the purge: Stop, never FIRE")
+    c.run_once(up)
+    scr.mo = None
+    c.screen_pass()
+    c.tick()
+    # 6. Nothing running, no alert, a group armed: the hold is Stop, and
+    # the key reads STOP ALL, never a refused Start Now.
+    show[0], run[0] = False, False
+    arm.set_group(1, True)
+    n0 = len(stops())
+    before = len(lines)
+    c.run_once(down)
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1 and arm.wanted == [False, False, False]
+          and not any("no real 'start" in x[0] for x in lines[before:]),
+          f"nothing running, a group armed: the hold disarms everything "
+          f"and asks for the halt, never Start Now: {cond.calls}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            arm.set_group(0, True)
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"and the key reads STOP ALL: {faces[0]}")
+            arm.set_group(0, False)
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] != ["STOP", "ALL"],
+                  f"nothing armed: not STOP ALL: {faces[0]}")
+        finally:
+            restore()
+    # 5. The deck reads the engine's own "failed" list, and a Stop the
+    # engine took but did not answer in time is CHECK RACK.
+    got = {}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: None,
+                           poster=lambda p, b: got["a"])
+    got["a"] = (True, "done", {"stopped": True, "failed": ["halt"],
+                               "error": "RuntimeError: boom"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check("halt step FAILED (RuntimeError: boom)" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED"),
+          f"a halt that raised in the engine is the deck's fault: "
+          f"{e.fault!r}")
+    got["a"] = (True, "done", {"stopped": True, "lasers_blank": {
+        "ok": False, "text": "x"}, "failed": ["laser blank"]})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check("laser blank FAILED" in e.fault and
+          e.fault.count("FAILED") == 1,
+          f"a failed laser blank said once: {e.fault!r}")
+    got["a"] = (False, "took the request but did not answer",
+                {"timeout": True})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("CHECK", "RACK"),
+          f"a slow Stop is CHECK RACK, never ENGINE FAULT: {e.fault_face}")
+    got["a"] = (False, "could not be reached")
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("ENGINE", "FAULT"),
+          "an engine that cannot be reached is ENGINE FAULT")
+    # The real POST: a server that takes the Stop and never answers.
+    import socket as _so
+    srv = _so.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    keep = sd.STOP_POST_TIMEOUT_S
+    sd.STOP_POST_TIMEOUT_S = 0.3
+    try:
+        e2 = sd.EngineConductor(f"http://127.0.0.1:{port}")
+        r = e2._http_post("/api/stop", {"halt": True})
+        check(r[0] is False and len(r) == 3 and r[2].get("timeout") is True
+              and "did not answer within 0.3 s" in r[1],
+              f"a Stop the engine does not answer in time is a timeout, "
+              f"not unreachable: {r}")
+        closed = _so.socket()
+        closed.bind(("127.0.0.1", 0))
+        cport = closed.getsockname()[1]
+        closed.close()
+        e3 = sd.EngineConductor(f"http://127.0.0.1:{cport}")
+        r = e3._http_post("/api/stop", {"halt": True})
+        check(r[0] is False and (len(r) < 3 or not r[2].get("timeout")) and
+              "could not be reached" in r[1],
+              f"nothing listening: unreachable: {r}")
+    finally:
+        sd.STOP_POST_TIMEOUT_S = keep
+        srv.close()
+    # The real GET: an engine with no scheduler answers 404, said apart
+    # from no answer at all.
+    import http.server as _hs
+
+    class _NoSched(_hs.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/api/state":
+                body = b'{"running": false}'
+                self.send_response(200)
+            else:
+                body = b'{"error": "no such thing here"}'
+                self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    hs = _hs.HTTPServer(("127.0.0.1", 0), _NoSched)
+    th = threading.Thread(target=hs.serve_forever, daemon=True)
+    th.start()
+    try:
+        ls = sd.LocalSchedule(f"http://127.0.0.1:{hs.server_port}")
+        check(ls._http_fetch("/api/schedule/state") == {"_http_status": 404},
+              "a 404 is said as the engine's answer, not as no answer")
+        ls._poll_once()
+        check(ls.show_running() is False and ls.run_live() is False,
+              f"so the key is Start, never unknown: {ls.show_running()}")
+    finally:
+        hs.shutdown()
+        hs.server_close()
+    # 3. The halt reports the laser blank; 5. the fade is waited for.
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    calls = []
+
+    class _CondB:
+        def lasers_dark_now(self, what):
+            calls.append(("blank", what))
+            return _Result(False, "BEYOND did not answer")
+
+    class _Svc:
+        conductor = _CondB()
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            calls.append(("journal",) + a[2:4])
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   log=lambda t_: None)
+    rm.scrub_flames_cut = lambda *a, **kw: calls.append(("scrub cut",))
+    rm.scrub_flames_end = lambda *a, **kw: calls.append(("scrub end",))
+    out = rm.halt("", "Stream Deck")
+    check(("scrub cut",) in calls and ("scrub end",) not in calls,
+          f"the halt cuts fire while scrubbing, as an Abort does: {calls}")
+    check(any(x[0] == "blank" for x in calls) and
+          out["lasers_blank"] == {"ok": False,
+                                  "text": "The laser blank did NOT go out "
+                                          "at the press."} and
+          "laser blank" in out["failed"],
+          f"the laser blank is reported, and its failure: {out}")
+    waits = []
+
+    class _CondW:
+        threaded = True
+
+        def wait_idle(self, timeout):
+            waits.append(("idle", timeout))
+            return True
+
+    class _SvcW:
+        conductor = _CondW()
+
+        def flush_conductor(self, timeout):
+            waits.append(("flush", timeout))
+            return True
+
+    class _RmW:
+        def halt(self, who, screen):
+            return {"flames": None, "lasers": None, "lasers_blank": None,
+                    "show": {"ok": True, "text": ""}, "show_ended": True,
+                    "failed": []}
+
+    class _Srv:
+        remote = _RmW()
+        schedule = _SvcW()
+
+    class _H:
+        server = _Srv()
+
+        def _who_where(self, body):
+            return "", "Stream Deck"
+    out = web_mod.Handler._halt(_H(), {})
+    check(waits == [("flush", web_mod.HALT_FADE_WAIT_S),
+                    ("idle", web_mod.HALT_FADE_WAIT_S)] and
+          out.get("show", {}).get("ok"),
+          f"a show ended: the conductor's calls flushed and its fade "
+          f"waited for, before playback stops: {waits}")
+    del waits[:]
+    _RmW.halt = lambda self, who, screen: {"show_ended": False,
+                                           "failed": []}
+    web_mod.Handler._halt(_H(), {})
+    check(waits == [], "no show ended: nothing to wait for")
+    _RmW.halt = lambda self, who, screen: 1 / 0
+    out = web_mod.Handler._halt(_H(), {})
+    check(out.get("failed") == ["halt"] and "ZeroDivisionError" in
+          out.get("error", ""), f"a halt that raises is said: {out}")
+    # 4. A show start still waiting in the conductor's line is dropped by
+    # Stop; nothing else, and no latch.
+    from ltcplay import schedule_service as SV
+    gate = threading.Event()
+    ran = []
+    q = SV._ConductorCalls(lambda call: (gate.wait(3), ran.append(
+        call.method)))
+    mk = [SV._ConductorCall(m_, m_, "", "", seq=i + 1) for i, m_ in
+          enumerate(("intermission", "start_show", "show_starting",
+                     "hold", "show_stopped"))]
+    later = SV._ConductorCall("start_show", "start_show", "", "", seq=9)
+    for call in mk[:4] + [later]:
+        q.put(call)
+    deadline = time.time() + 2
+    while not q.health()["stuck"] and time.time() < deadline:
+        time.sleep(0.01)
+    gone = q.drop(SV._ConductorCalls.STOP_DROPS, mk[4].seq)
+    q.put(mk[4])
+    gate.set()
+    q.flush(3)
+    check([g.method for g in gone] == ["start_show", "show_starting"] and
+          ran == ["intermission", "hold", "start_show", "show_stopped"] and
+          all(g.done.is_set() and g.ok is False for g in gone),
+          f"Stop drops only the show starts decided before it and still "
+          f"waiting (a start decided after it stays): {ran} "
+          f"{[g.method for g in gone]}")
+    check(set(SV._ConductorCalls.STOP_DROPS) ==
+          {"start_show", "show_starting"},
+          "never a Reset, Hold or Resume: Stop is not an Abort")
+    print("  ok")
+
+
 def test_stream_deck_start_stop_is_one_key():
     """Jeff (2026-10-26): Start and Stop are one key. Start when nothing is
     running (today's Start Now, unchanged), Stop while Run has been pressed
@@ -47296,6 +47663,38 @@ def test_stream_deck_start_stop_is_one_key():
     ls2 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: None)
     ls2._poll_once()
     check(ls2.run_live() is None, "unreachable: not known")
+    # One failed poll never flips the label; STATE_MISSES of them do
+    # (review of #130, second pass, 6).
+    ans = {"up": True}
+    ls3 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: (
+        None if not ans["up"] else
+        {"running": True} if p == "/api/state" else
+        {"ok": True, "state": "SHOW"} if p == "/api/schedule/state" else
+        {"current_operator": ""}))
+    ls3._poll_once()
+    ans["up"] = False
+    ls3._poll_once()
+    check(ls3.show_running() is True and ls3.run_live() is True,
+          "one failed poll: the last answer stands")
+    for _i in range(sd.STATE_MISSES - 1):
+        ls3._poll_once()
+    check(ls3.show_running() is None and ls3.run_live() is None,
+          f"{sd.STATE_MISSES} failed polls: not known")
+    # An engine with no scheduler (404) is never stuck on unknown.
+    ls4 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: (
+        {"_http_status": 404} if p == "/api/schedule/state" else
+        {"running": False} if p == "/api/state" else
+        {"_http_status": 404}))
+    ls4._poll_once()
+    check(ls4.show_running() is False and ls4.run_live() is False,
+          "no scheduler (404) with the engine answering: no show live, the "
+          "key is Start, never unknown")
+    ls5 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: (
+        {"_http_status": 404} if p == "/api/schedule/state" else None))
+    for _i in range(sd.STATE_MISSES):
+        ls5._poll_once()
+    check(ls5.show_running() is None,
+          "a 404 with the engine itself not answering: not known")
 
     class _Eng:
         def __init__(self):
@@ -56391,7 +56790,12 @@ def test_deck_hold_between_shows_is_not_an_engine_fault():
     check(sched.held() is True, "PAUSED is held too")
     st["v"] = None
     sched._poll_once()
-    check(sched.held() is None, "unreachable: not known")
+    check(sched.held() is True,
+          "one failed poll keeps the last answer (review of #130, second "
+          "pass, 6)")
+    sched._poll_once()
+    check(sched.held() is None and sched.show_running() is None,
+          "unreachable for STATE_MISSES polls: not known")
     # The deck itself has no Hold key since 2026-10-26: Hold is the Rack
     # screen's, which the engine checks above.
     print("  ok")
@@ -68136,6 +68540,7 @@ if __name__ == "__main__":
     test_stop_disarms_every_flame_group_without_the_latch()
     test_stop_says_when_its_flame_disarm_failed()
     test_stop_halt_review_of_130()
+    test_stop_halt_second_review_of_130()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()

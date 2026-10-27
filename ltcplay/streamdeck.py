@@ -287,6 +287,9 @@ STOP_HOLD_S = 0.5           # Stop's hold: the deck's old Abort key's, from
 # (review of #130, 1: Stop must work when the engine cannot be reached; it
 # always disarms the arm link first).
 STOP_MODES = ("stop", "show", "unknown")
+# How long the Start/Stop key has to be down in a Stop hold before its face
+# says HOLD TO STOP over anything else (an open alert's ACK, a fault).
+STOP_FACE_AFTER_S = 0.15
 ARM_SEND_HZ = 20.0          # >= the arm link's 10 Hz floor (CONTRACT.md)
 STATUS_STALE_S = 1.0        # CONTRACT.md: "ltcplay shows red for the safety
                             # program" past this
@@ -1057,6 +1060,12 @@ FETCH_TIMEOUT_S = 1.0    # per HTTP GET, same as before -- it just no
                          # longer matters to the main loop's own timing
 
 
+# Polls in a row that must fail before LocalSchedule says the run or the
+# scheduler is not known (review of #130, second pass, 6): one dropped poll
+# never flips the Start/Stop key's label.
+STATE_MISSES = 2
+
+
 class LocalSchedule:
     """Reads the operator and the scheduler's state from a running `ltc
     serve --schedule` on this machine, OFF the main loop (safety review of
@@ -1082,6 +1091,12 @@ class LocalSchedule:
         self._operator = ""
         self._show_running = None
         self._held = None
+        self._run_live = None
+        # Polls in a row that could not read the scheduler, or the run:
+        # one failed poll keeps the last answer (review of #130, second
+        # pass, 6), STATE_MISSES of them make it unknown.
+        self._sched_misses = 0
+        self._play_misses = 0
         self._stop = threading.Event()
         self._thread = None
 
@@ -1112,9 +1127,16 @@ class LocalSchedule:
         # Whether Run has been pressed and playback is going (the page's
         # own /api/state "running"), for the Start/Stop key (2026-10-26).
         play = self._fetch("/api/state")
+        def answered(doc):
+            return isinstance(doc, dict) and "_http_status" not in doc
         with self._lock:
-            self._run_live = (bool(play.get("running"))
-                              if isinstance(play, dict) else None)
+            if answered(play):
+                self._run_live = bool(play.get("running"))
+                self._play_misses = 0
+            else:
+                self._play_misses += 1
+                if self._play_misses >= STATE_MISSES:
+                    self._run_live = None
             if isinstance(op, dict):
                 self._operator = str(op.get("current_operator") or "")
             else:
@@ -1127,13 +1149,24 @@ class LocalSchedule:
                 # current_operator()'s own documented default and what the
                 # pre-fix-round code actually did.
                 self._operator = ""
-            if isinstance(running, dict) and running.get("ok"):
+            if answered(running) and running.get("ok"):
                 self._show_running = running.get("state") in ("SHOW",
                                                                "PAUSED")
                 self._held = running.get("state") in ("HOLD", "PAUSED")
+                self._sched_misses = 0
+            elif isinstance(running, dict) and \
+                    running.get("_http_status") == 404 and answered(play):
+                # The engine answers but runs no scheduler (ltc serve
+                # without --schedule): no show can be live, so the key is
+                # never stuck on unknown (review of #130, second pass, 6).
+                self._show_running = False
+                self._held = False
+                self._sched_misses = 0
             else:
-                self._show_running = None
-                self._held = None
+                self._sched_misses += 1
+                if self._sched_misses >= STATE_MISSES:
+                    self._show_running = None
+                    self._held = None
 
     def _http_fetch(self, path):
         """One blocking GET. Only ever called from the background thread
@@ -1142,6 +1175,10 @@ class LocalSchedule:
             with _opener().open(self.base_url + path,
                                 timeout=FETCH_TIMEOUT_S) as r:
                 return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # The engine answered, with an HTTP error: said apart from no
+            # answer at all (a 404 is an engine with no scheduler).
+            return {"_http_status": e.code}
         except (OSError, ValueError, urllib.error.URLError):
             return None
 
@@ -1157,7 +1194,7 @@ class LocalSchedule:
         serve's /api/state "running"), False when stopped, None if
         unreachable or before the first poll. Never touches the network."""
         with self._lock:
-            return getattr(self, "_run_live", None)
+            return self._run_live
 
     def show_running(self):
         """True while the scheduler's own state says a show is playing or
@@ -1178,9 +1215,11 @@ class LocalSchedule:
 
 ENGINE_POST_TIMEOUT_S = 3.0
 # Stop's halt (/api/stop) waits for a live show's fade to finish before
-# playback stops (web.HALT_FADE_WAIT_S, twice at most), so its post waits
-# longer than a press (review of #130, 5).
-STOP_POST_TIMEOUT_S = 10.0
+# playback stops (web.HALT_FADE_WAIT_S, twice at most, 6 s, plus the
+# scheduler's lock and the stop itself), so its post waits longer than a
+# press (review of #130, 5). A Stop that times out reads CHECK RACK, never
+# ENGINE FAULT: the engine took it and may still be working on it.
+STOP_POST_TIMEOUT_S = 15.0
 ENGINE_QUEUE_MAX = 50
 
 
@@ -1395,6 +1434,22 @@ class EngineConductor:
                               f"the scheduler did NOT end the show ("
                               f"{show.get('text') or 'no reason given'}): "
                               f"use Abort on the Rack screen"))
+            blank = doc.get("lasers_blank")
+            if isinstance(blank, dict) and blank.get("ok") is False:
+                fails.append(("disarm",
+                              f"the laser blank FAILED ("
+                              f"{blank.get('text') or 'no reason given'}): "
+                              f"use Disarm all lasers on the Rack screen"))
+            # Anything else the engine says failed (the halt itself
+            # raising, review of #130, second pass, 5), said too.
+            told = {"flames", "lasers", "show", "laser blank"}
+            for step in doc.get("failed") or []:
+                if step not in told:
+                    fails.append(("disarm",
+                                  f"the engine's {step} step FAILED ("
+                                  f"{doc.get('error') or 'no reason given'}"
+                                  f"): use Abort on the Rack screen or the "
+                                  f"hardware e-stop"))
         disarm_failed = any(k == "disarm" for k, _t in fails)
         if fails:
             ok = False
@@ -1415,13 +1470,18 @@ class EngineConductor:
         # the show PC: Hold showed ENGINE FAULT while the Hold had worked).
         noop = (not ok and name in ("hold", "resume") and
                 doc.get("nothing_to_do") is True)
+        # A Stop the engine took but did not answer in STOP_POST_TIMEOUT_S
+        # is not an engine that cannot be reached (review of #130, second
+        # pass, 5): CHECK RACK, the halt may still be under way.
+        slow = name == "stop" and not ok and isinstance(doc, dict) and \
+            doc.get("timeout") is True
         if name != "alert":
             # An alert post is not a press on the rig: a refused or late
             # Acknowledge (two keys inside one poll) is journaled below,
             # never shown as ENGINE FAULT on the keys.
             self.fault = "" if (ok or noop) else f"{name.title()}: {text}"
             self.fault_face = ("DISARM", "FAILED") if disarm_failed else \
-                ("ENGINE", "FAULT")
+                ("CHECK", "RACK") if slow else ("ENGINE", "FAULT")
         elif "raise" in body:
             self.alert_delivered = bool(ok)
         if noop:
@@ -1429,7 +1489,8 @@ class EngineConductor:
                     f"says: {text}")
         elif ok:
             line = f"Stream Deck {name.title()}: the engine says: {text}"
-        elif name == "stop" and not ok and doc.get("stopped") is not None:
+        elif slow or (name == "stop" and not ok and
+                      doc.get("stopped") is not None):
             line = f"Stream Deck Stop: {text}."
         else:
             line = (f"Stream Deck {name.title()}: the engine's show "
@@ -1466,6 +1527,15 @@ class EngineConductor:
                 why = str(e)
             return False, str(why), (doc if isinstance(doc, dict) else {})
         except (OSError, ValueError, urllib.error.URLError) as e:
+            why = getattr(e, "reason", e)
+            if isinstance(e, TimeoutError) or isinstance(why, TimeoutError) \
+                    or "timed out" in str(e):
+                # The engine took the request and has not answered yet: it
+                # is not unreachable (review of #130, second pass, 5).
+                return False, (f"ltc serve took the request but did not "
+                               f"answer within {wait:g} s; it may still be "
+                               f"working on it. Check the Rack screen"), \
+                    {"timeout": True}
             return False, (f"ltc serve could not be reached at "
                            f"{self.base_url} ({e})")
 
@@ -2920,22 +2990,36 @@ class Controller:
 
     def _do_start_or_stop(self, now):
         mode = self.start_key_mode()
-        if mode == "start":
+        if mode == "start" and not self._any_flame_armed(purge=False):
             self._do_start_now()
         else:
+            # Nothing running but a group armed: the hold is Stop too, a
+            # complete halt (review of #130, second pass, 6).
             # A hold, never a tap (Jeff, 2026-10-26): tick() sends Stop
             # once the key has been held STOP_HOLD_S. During a scheduled
             # show too: Stop is a complete halt, and the show ends.
             self._stop_hold.press(now)
 
-    def _any_flame_armed(self):
+    def _any_flame_armed(self, purge=True):
         """True while this deck wants any group armed or flamesafe reports
-        one armed. Never raises."""
+        one armed; with purge=False, not counting the groups armed for the
+        Morning page's purge. Never raises."""
         try:
-            return any(self.arm.wanted) or any(
-                self._reported_armed(i) for i in range(len(self.names)))
+            skip = set() if purge else set(self._purge_armed)
+            return any(w for i, w in enumerate(self.arm.wanted)
+                       if i not in skip) or any(
+                self._reported_armed(i) for i in range(len(self.names))
+                if i not in skip)
         except Exception:                        # noqa: BLE001
             return True
+
+    def _stop_wins(self):
+        """Key 0 is Start/Stop, never the Morning page's FIRE, while a show
+        is live, the state is not known, or a group is armed other than
+        for the purge (review of #130, second pass, 2): an open Morning
+        page never swallows a Stop."""
+        return self.start_key_mode() in ("show", "unknown") or \
+            self._any_flame_armed(purge=False)
 
     def _do_stop(self):
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
@@ -3411,11 +3495,14 @@ class Controller:
                     # or a run is going, the state is not known, or a flame
                     # group is armed, it is ALSO the start of a Stop hold:
                     # an alert never swallows the first Stop (review of
-                    # #130, 9).
-                    if self.start_key_mode() in STOP_MODES or \
-                            self._any_flame_armed():
+                    # #130, 9). A tap only acknowledges; a full hold stops.
+                    # The Morning page's FIRE keeps the key unless Stop
+                    # wins (_stop_wins).
+                    if (not morning or self._stop_wins()) and (
+                            self.start_key_mode() in STOP_MODES or
+                            self._any_flame_armed(purge=False)):
                         self._stop_hold.press(now)
-                elif morning:
+                elif morning and not self._stop_wins():
                     # Re-mapped while the Morning page is open: FIRE.
                     self._fire_press(now)
                 else:
@@ -3748,7 +3835,15 @@ class Controller:
                          hasattr(self.conductor, "unreachable") and
                          self.conductor.unreachable()))
         cues_fault = getattr(self.conductor, "cues_fault", "") or ""
-        if engine_fault:
+        if stop_frac * STOP_HOLD_S >= STOP_FACE_AFTER_S:
+            # A Stop hold under way for STOP_FACE_AFTER_S: HOLD TO STOP,
+            # over every other face (an engine fault, an open alert's ACK,
+            # FIRE), so the operator sees the Stop coming and can let go
+            # to cancel it (review of #130, second pass, 1). A tap shorter
+            # than this only shows what the key was.
+            fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
+                           bg=BRONZE, kind="sans", max_size=16)
+        elif engine_fault:
             # Fix round 2, E: the engine did not take a press (or cannot be
             # reached): said on the deck itself, not only its console. A
             # fault face outranks the ACK face below (review of PR #59):
@@ -3785,7 +3880,7 @@ class Controller:
                            kind="sans")
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
-        elif self.morning_open():
+        elif self.morning_open() and not self._stop_wins():
             # Re-mapped while the Morning and Shutdown page is open (Jeff,
             # 2026-10-17): this key is FIRE for the purge. Red on dark while
             # a purge group is armed, flashing while held, dim PURGE when
@@ -3830,9 +3925,11 @@ class Controller:
                 # disarmed, then the Rack screen's Stop.
                 fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
-            elif self.start_key_mode() == "unknown":
-                # The engine or the scheduler cannot be read: the key is
-                # Stop, a complete halt (review of #130, 1).
+            elif self.start_key_mode() == "unknown" or \
+                    self._any_flame_armed(purge=False):
+                # The engine or the scheduler cannot be read, or nothing
+                # is running but a group is armed: the key is Stop, a
+                # complete halt (review of #130, 1; second pass, 6).
                 fonts.show_key(d, b0, ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:
