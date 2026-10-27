@@ -8722,9 +8722,20 @@ def build():
 
  ("deck page 2: a stale engine answer closes page 2 for idle",
   "ltcplay/streamdeck.py",
-  "        return (isinstance(av, dict) and not av.get(\"stale\") and\n"
-  "                not av.get(\"playing\"))",
-  "        return not (av or {}).get(\"playing\")"),
+  "        return (isinstance(av, dict) and not av.get(\"stale\") and\n",
+  "        return (isinstance(av, dict) and\n"),
+
+ ("deck page 2: an answer that says ok false reads as nothing playing",
+  "ltcplay/streamdeck.py",
+  "                av.get(\"ok\") is not False and not av.get(\"playing\"))",
+  "                not av.get(\"playing\"))"),
+
+ ("announcements: a status that raised is not marked stale",
+  "ltcplay/remote.py",
+  "            v = {\"configured\": True, \"ok\": False, \"stale\": True,\n"
+  "                 \"error\": f\"Announcement status unavailable: it could not \"",
+  "            v = {\"configured\": True, \"ok\": False,\n"
+  "                 \"error\": f\"Announcement status unavailable: it could not \""),
 
  ("deck page 2: never gives way while the engine stays silent",
   "ltcplay/streamdeck.py",

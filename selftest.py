@@ -16131,6 +16131,20 @@ def test_streamdeck_page_two_auto_close_guard():
     c.tick()
     check(c.page == 1, "the engine silent for a minute: the arm keys "
                        "come back")
+    # The engine could not read its own announcement status (status()
+    # raised, a PortAudio error): its answer says ok false and is not a
+    # fact about what plays, so page 2 stays (final review of #129).
+    scr.a = dict(real, playing=None, stale=False)
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2 for the ok-false case")
+    scr.a = dict(real, playing=None, stale=False, ok=False)
+    t[0] += sd.PAGE2_IDLE_S + 0.1
+    c.tick()
+    check(c.page == 2, "an answer that says ok false: page 2 stays")
+    t[0] += sd.PAGE2_STALE_CLOSE_S
+    c.tick()
+    check(c.page == 1, "still bounded: a minute of such answers and the "
+                       "arm keys come back")
     scr.a = dict(real, playing=None, stale=False)
     tap(sd.ANNOUNCE_KEY)
     check(c.page == 2, "setup: page 2 again")
@@ -16308,6 +16322,33 @@ def test_announce_view_stale_snapshot_is_not_fact():
               an["held_failed"]["id"] == "cancellation" and
               an["age_s"] <= RM.ANNOUNCE_STALE_S,
               f"fresh: playing, with its age: {an.get('age_s')}")
+        # status() raising (a PortAudio error escaping): the view is
+        # stale, never "nothing is playing"; and a PortAudio error in the
+        # device query itself no longer makes status() raise at all.
+        real_status = ann.status
+        ann.status = lambda: (_ for _ in ()).throw(OSError("PortAudio"))
+        R.remote._ann_refresh()
+        st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
+                           client=loop)
+        check(din["announce"]["stale"] is True and
+              din["announce"]["ok"] is False and
+              din["announce"]["playing"] is None,
+              f"status() raised: stale, not quiet: {din['announce']}")
+        ann.status = real_status
+
+        class _PaSD:
+            default = type("D", (), {"device": (None, None)})()
+
+            def query_devices(self):
+                raise RuntimeError("PortAudioError: host error")
+        ann._sd_obj = _PaSD()
+        st2 = ann.status()
+        check(st2["device_available"] is False and
+              "could not list" in (st2["device_reason"] or ""),
+              f"a PortAudio error in the device query is said, never "
+              f"raised: {st2['device_reason']}")
+        ann._sd_obj = FakeSD()
+        R.remote._ann_refresh()
         R.mono[0] += RM.ANNOUNCE_STALE_S + 6
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
         an = out["announce"]

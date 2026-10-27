@@ -1801,10 +1801,12 @@ class Remote:
         try:
             v = self._ann_view_from(st if st is not None else ann.status())
         except Exception as e:                   # noqa: BLE001
-            v = {"configured": True, "ok": False,
-                 "error": f"The announcements could not be read "
-                          f"({type(e).__name__}: {e}).", "items": [],
-                 "playing": None}
+            # Not a fact about what plays: stale, so nothing reads it as
+            # "nothing is playing" (final review of #129).
+            v = {"configured": True, "ok": False, "stale": True,
+                 "error": f"Announcement status unavailable: it could not "
+                          f"be read ({type(e).__name__}: {e}).",
+                 "items": [], "playing": None}
         self._ann_cache = (self.clock(), v)
 
     def announce_view(self):
@@ -2587,6 +2589,7 @@ class Remote:
         out["announce"] = {
             "configured": bool(av.get("configured")),
             "stale": bool(av.get("stale")),
+            "ok": av.get("ok") is not False,
             "device_ok": bool(av.get("device_available")),
             "ready": {i["id"]: bool(i.get("available"))
                       for i in av.get("items") or []},

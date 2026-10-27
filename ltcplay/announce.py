@@ -805,6 +805,11 @@ class AnnounceService:
             resolve_output_device(sd, self.device_name)
         except ValueError as e:
             return False, str(e)
+        except Exception as e:      # noqa: BLE001  PortAudioError and kin
+            # The device query itself failed (PortAudio): said, never
+            # raised, so status() always answers (final review of #129).
+            return False, (f"The audio system could not list its outputs: "
+                           f"{_clean(str(e))}")
         return True, None
 
     def _decode(self, ann_id):

@@ -2740,8 +2740,10 @@ class Controller:
         self._masked = set()
         self._ann_pressed = None     # the id page 2 last asked to play
         self._ann_fresh_at = None    # clock of the last fresh engine answer
-        # The guard after an automatic return (PAGE1_GUARD_S): (until,
-        # hard limit) on the clock, and whether page 1 was drawn since.
+        # The arm guard after an automatic return (PAGE1_GUARD_S): the
+        # clock of the return while it stands, else None; it ends
+        # PAGE1_GUARD_S after page 1 was written to the keys
+        # (_page1_written_at). It never holds back a disarm.
         self._guard = None
         self._guard_frame = None     # first page 1 frame after the return
         self._guard_frame_at = None
@@ -3543,7 +3545,8 @@ class Controller:
         if now is None or self._page2_at is None:
             return ""
         av = self.announce_view()
-        if av is not None and not av.get("stale"):
+        if isinstance(av, dict) and not av.get("stale") and \
+                av.get("ok") is not False:
             self._ann_fresh_at = now
         if now - self._page2_at < PAGE2_IDLE_S:
             return ""
@@ -3562,7 +3565,7 @@ class Controller:
         (delta review of #129, 1): a stale or missing answer is "maybe
         playing", and page 2 (with STOP ANNC.) then stays."""
         return (isinstance(av, dict) and not av.get("stale") and
-                not av.get("playing"))
+                av.get("ok") is not False and not av.get("playing"))
 
     def _open_page2(self, down, now, latched, morning):
         """Key 5 pressed on page 1. Opened only with nothing else going
