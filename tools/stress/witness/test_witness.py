@@ -440,6 +440,134 @@ class TestChecker(unittest.TestCase):
         self.assertIn("FIRE WITHOUT ARM",
                       rules(run_check(self.d, locked_slots={401})))
 
+    # Which safety slots a fire needs, by the number of safeties and the
+    # locks. Why: flamesafe (composer._locked_safeties) leaves a locked
+    # safety slot out of "every safety up" ONLY in a multi-safety group,
+    # where each safety is one fixture of several and a locked fixture
+    # must not stop the others arming; it holds that slot at zero, and with
+    # every safety locked the group cannot arm at all. A ONE-safety group
+    # ignores a lock on its safety slot entirely and arms exactly as before
+    # (test_flamesafe: "a one-safety group is not held by a lock on its
+    # safety slot"), so the witness must keep judging that safety slot
+    # itself: armed means a clean fire, not armed means fire without arm.
+    # A checker that dropped it from the needed list (need = [] for a
+    # locked one-safety group) would then answer "every safety slot is
+    # locked out" for every fire of that group, armed or not, so the only
+    # behaviour that tells the two apart is an ARMED fire coming out
+    # clean, and a not-armed one being blamed on the safety slot itself.
+    # No lock is on record in these runs, so LOCKED SLOT does not apply.
+    TWIN_GROUPS = GROUPS + [{"name": "twin", "safety": [503, 506],
+                             "fire": [501, 502, 504, 505],
+                             "arm_value": 78}]
+
+    def twin_check(self, locked):
+        w = cw.load_witness(os.path.join(self.d, "w"))
+        return cw.check(w, cw.load_nights(self.j.dir),
+                        cw.load_flamesafe_log(self.j.fs), self.TWIN_GROUPS,
+                        78, locked_slots=locked)
+
+    def fire_without_arm(self, res):
+        return [e for e in res["episodes"] if e["rule"] == "FIRE WITHOUT ARM"]
+
+    def test_one_safety_locked_and_armed_fires_clean(self):
+        # Mutation-killer for "a locked one-safety group's safety is left
+        # out of fire without arm": flamesafe ignores the lock, so 401 at
+        # the arm value with 411 firing is a proper armed fire. Dropping
+        # 401 from the needed list leaves nothing needed and reports
+        # FIRE WITHOUT ARM ("every safety slot locked out") on all 80
+        # armed packets of the show.
+        self.good_show()
+        self.w.close()
+        res = run_check(self.d, locked_slots={401})
+        self.assertEqual(res["episodes"], [], res["episodes"])
+
+    def test_one_safety_locked_not_armed_names_its_safety(self):
+        # The same lock, 411 firing with 401 at zero: fire without arm, and
+        # blamed on safety slot 401 itself, not on "every safety locked"
+        # (which is what a checker that left 401 out would say instead).
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4), [(401, 0), (411, 255)])
+        self.w.close()
+        ep = self.fire_without_arm(run_check(self.d, locked_slots={401}))
+        self.assertEqual(len(ep), 1, ep)
+        self.assertIn("safety slot 401 = 0", ep[0]["detail"])
+        self.assertNotIn("locked out", ep[0]["detail"])
+
+    def test_one_safety_unlocked_armed_clean_not_armed_flagged(self):
+        # Nothing locked: the plain rule. (Not a killer for the locked
+        # mutation, which only differs when the safety is locked; it pins
+        # that the lock, not the group, is what the locked tests turn on.)
+        self.good_show()
+        self.w.close()
+        self.assertEqual(run_check(self.d)["episodes"], [])
+        self.w = WitnessRun(os.path.join(self.d, "w"))
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4), [(411, 255)])
+        self.w.close()
+        ep = self.fire_without_arm(run_check(self.d))
+        self.assertEqual(len(ep), 1, ep)
+        self.assertIn("safety slot 401 = 0", ep[0]["detail"])
+
+    def test_two_safeties_one_locked_needs_only_the_other(self):
+        self.good_show()
+        # 503 locked and held at zero by flamesafe, 506 up: clean.
+        self.w.packet(T0 + timedelta(seconds=4), [(506, 78), (501, 200)])
+        # 506 down a second later: fire without arm, blamed on 506.
+        self.w.packet(T0 + timedelta(seconds=6), [(506, 0), (504, 200)])
+        self.w.close()
+        ep = self.fire_without_arm(self.twin_check({503}))
+        self.assertEqual(len(ep), 1, ep)
+        self.assertEqual(ep[0]["slot"], 504, ep)
+        self.assertIn("safety slot 506 = 0", ep[0]["detail"])
+
+    def test_two_safeties_none_locked_needs_both(self):
+        # Mutation-killer for a check of only the first needed safety:
+        # 503 up and 506 down is fire without arm, blamed on 506.
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(503, 78), (506, 78), (501, 200)])
+        self.w.packet(T0 + timedelta(seconds=6),
+                      [(503, 78), (506, 0), (504, 200)])
+        self.w.close()
+        ep = self.fire_without_arm(self.twin_check(set()))
+        self.assertEqual(len(ep), 1, ep)
+        self.assertEqual(ep[0]["slot"], 504, ep)
+        self.assertIn("safety slot 506 = 0", ep[0]["detail"])
+
+    def test_two_safeties_both_locked_any_fire_is_fire_without_arm(self):
+        # Every safety of a multi-safety group locked: flamesafe cannot arm
+        # it (SAFETIES_LOCKED), so a fire is fire without arm even with
+        # both safety slots carrying the arm value on the wire.
+        self.good_show()
+        self.w.packet(T0 + timedelta(seconds=4),
+                      [(503, 78), (506, 78), (501, 200)])
+        self.w.close()
+        ep = self.fire_without_arm(self.twin_check({503, 506}))
+        self.assertEqual(len(ep), 1, ep)
+        self.assertIn("every safety slot of it is locked out",
+                      ep[0]["detail"])
+
+    def test_locked_safety_slot_is_flagged_only_while_locked_on_record(self):
+        # Mutation-killer for the safety-slot LOCKED SLOT rule losing its
+        # "a lock is on record" half: the twin's 503 is in the locked list
+        # but is unlocked again before it carries the arm value, so it is
+        # clean then and flagged only inside the lock.
+        self.good_show()
+        self.j.rec(T0 + timedelta(seconds=1), "lock",
+                   "Andy locked out twin 1 (slot 503)")
+        self.w.packet(T0 + timedelta(seconds=3),
+                      [(503, 78), (506, 78), (501, 200)])
+        self.j.rec(T0 + timedelta(seconds=4), "unlock",
+                   "Andy unlocked twin 1")
+        self.w.packet(T0 + timedelta(seconds=6),
+                      [(503, 78), (506, 78), (501, 200)])
+        self.w.close()
+        ep = [e for e in self.twin_check({503})["episodes"]
+              if e["rule"] == "LOCKED SLOT"]
+        self.assertEqual(len(ep), 1, ep)
+        self.assertEqual(ep[0]["slot"], 503, ep)
+        self.assertLess(ep[0]["first"], T0 + timedelta(seconds=4), ep)
+
     # flamesafe safety_profile (2026-10-26): the wave flamer arms at its
     # profile's value (178), not the file's 78.  Groups as flamesafe's own
     # config writes them: no group arm_value, the profile's instead.
