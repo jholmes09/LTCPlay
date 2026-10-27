@@ -8682,8 +8682,8 @@ def build():
 
  ("deck: Stop cannot be reached while aborted",
   "ltcplay/streamdeck.py",
-  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)",
-  "                    if False:\n                        self._stop_hold.press(now)"),
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if False:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
  ("deck: a held Stop never fires while aborted",
   "ltcplay/streamdeck.py",
@@ -8822,8 +8822,8 @@ def build():
 
  ("deck: a latched press with an alert open only acknowledges again (review of #130, 9)",
   "ltcplay/streamdeck.py",
-  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)",
-  "                    if not pending and self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)"),
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if not pending and (self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop()):\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
  ("deck: an alert open swallows the first Stop again (review of #130, 9)",
   "ltcplay/streamdeck.py",
@@ -8837,7 +8837,7 @@ def build():
 
  ("deck: a latched press starts a Stop hold whatever the key is (mutant P)",
   "ltcplay/streamdeck.py",
-  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
   "                    if True:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
  ("deck: Stop's disarm leaves the purge's own arms (mutant O)",
@@ -14223,8 +14223,8 @@ def build():
 
  ("deck: key 0 is never remembered as FIRE",
   "ltcplay/streamdeck.py",
-  "                    self._key0_fire = True\n",
-  ""),
+  "                    self._key0_fire = True\n                    self._fire_press(now)",
+  "                    self._fire_press(now)"),
 
  ("deck: the FIRE memory outlives the key's release",
   "ltcplay/streamdeck.py",
@@ -14255,6 +14255,38 @@ def build():
   "ltcplay/remote.py",
   "                if live is False:\n                    live = None",
   "                pass"),
+
+
+ # Delta review of #132.
+ ("deck: the settle window forgives every deck disarm again (delta review of #132, A)",
+  "ltcplay/streamdeck.py",
+  "            if not purge and self._key0_fire:\n",
+  "            if not purge:\n                self._purge_deselected = {i: at for i, at in enumerate(self._disarmed_at) if at is not None}\n"),
+
+ ("deck: the settle window works with FIRE not held",
+  "ltcplay/streamdeck.py",
+  "            if not purge and self._key0_fire:\n",
+  "            if not purge:\n"),
+
+ ("deck: a deselect disarm is not recorded for the settle window",
+  "ltcplay/streamdeck.py",
+  "                self._purge_deselected[i] = self._clock()\n",
+  ""),
+
+ ("deck: a reconnect keeps the FIRE memory (delta review of #132, B)",
+  "ltcplay/streamdeck.py",
+  "        self._key0_fire = False\n        self._fire_release(\"the deck reconnected\")",
+  "        self._fire_release(\"the deck reconnected\")"),
+
+ ("deck: latched with only a group armed, key 0 is no Stop (delta review of #132, D1)",
+  "ltcplay/streamdeck.py",
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
+
+ ("deck: an acknowledge on the Morning page never becomes Stop (delta review of #132, D2)",
+  "ltcplay/streamdeck.py",
+  "                    elif morning:\n                        # An acknowledge on the Morning page that Stop does",
+  "                    elif False:\n                        # An acknowledge on the Morning page that Stop does"),
 
 ]
 

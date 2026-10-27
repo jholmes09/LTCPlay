@@ -2794,6 +2794,10 @@ class Controller:
         # its own before this deck's poll sees the show), and whether or
         # not the page closed in the same pass.
         self._key0_fire = False
+        # The groups purge_pass itself disarmed on a deselect, and when:
+        # the only disarms the settle window (DISARM_SETTLE_S) forgives,
+        # and only while key 0 is down as FIRE (delta review of #132, A).
+        self._purge_deselected = {}
         # Screen arming (2026-10-03): the remote page's holds, as remote
         # presses of the group keys. _vholds: group -> the engine's hold id
         # this deck has seen; _vpressed: the ones whose arm-hold timer it
@@ -2955,6 +2959,7 @@ class Controller:
         self._vpressed.clear()
         self._vwho.clear()
         self._vheld.clear()
+        self._key0_fire = False
         self._fire_release("the deck reconnected")
 
     def animating(self):
@@ -3070,14 +3075,16 @@ class Controller:
         Morning page's purge. Never raises."""
         try:
             skip = set() if purge else self._purge_own()
-            if not purge:
-                # A group this deck itself has just disarmed (a purge
-                # machine deselected while FIRE is held) that flamesafe's
-                # status still reports armed is not a reason for Stop to
-                # win, for DISARM_SETTLE_S (review of #132, 3).
+            if not purge and self._key0_fire:
+                # A purge machine deselected while FIRE is held: its group,
+                # disarmed by purge_pass, that flamesafe's status still
+                # reports armed is not a reason for Stop to win, for
+                # DISARM_SETTLE_S (review of #132, 3). Only those: a Stop's
+                # or a tap's own disarm that has not shown yet still counts
+                # as armed (delta review of #132, A).
                 now = self._clock()
-                skip |= {i for i, at in enumerate(self._disarmed_at)
-                         if at is not None and not self.arm.wanted[i] and
+                skip |= {i for i, at in self._purge_deselected.items()
+                         if not self.arm.wanted[i] and
                          now - at < DISARM_SETTLE_S}
             return any(w for i, w in enumerate(self.arm.wanted)
                        if i not in skip) or any(
@@ -3381,6 +3388,7 @@ class Controller:
             if self.arm.wanted[i]:
                 self._do_disarm(i, who="the purge ended",
                                 screen="Morning page")
+                self._purge_deselected[i] = self._clock()
         if not self.morning_open():
             self._fire_release("the Morning page is not open")
 
@@ -3587,8 +3595,12 @@ class Controller:
             for k in edges(self._prev_keys, down):
                 if k == TOP_START:
                     # An open alert is acknowledged above, and never
-                    # swallows the Stop hold (review of #130, 9).
-                    if self.start_key_mode() in STOP_MODES:
+                    # swallows the Stop hold (review of #130, 9). Latched
+                    # with nothing running but a group still reported armed
+                    # or live flames on: Stop all the same (delta review of
+                    # #132, D1).
+                    if self.start_key_mode() in STOP_MODES or \
+                            self._idle_stop():
                         self._stop_hold.press(now)
                 elif k in self._key_group:
                     i = self._key_group[k]
@@ -3614,6 +3626,12 @@ class Controller:
                             self.start_key_mode() in STOP_MODES or
                             self._idle_stop()):
                         self._stop_hold.press(now)
+                    elif morning:
+                        # An acknowledge on the Morning page that Stop does
+                        # not win yet: if it starts to win during this same
+                        # hold, the hold becomes Stop (delta review of #132,
+                        # D2), as a held FIRE does.
+                        self._key0_fire = True
                 elif morning and not self._stop_wins():
                     # Re-mapped while the Morning page is open: FIRE.
                     self._key0_fire = True
@@ -4007,10 +4025,15 @@ class Controller:
         elif latched and stop_frac > 0:
             fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
                            bg=BRONZE, kind="sans", max_size=16)
-        elif latched and self.start_key_mode() in STOP_MODES:
+        elif latched and (self.start_key_mode() in STOP_MODES or
+                          self._idle_stop()):
             # Aborted with a run still going: Stop is reachable, as on the
             # Rack screen (Jeff, 2026-10-26). It never touches the latch.
-            fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
+            # Aborted with nothing running but a group armed or live
+            # flames on: STOP ALL (delta review of #132, D1).
+            fonts.show_key(d, b0, ["STOP", "RUN"]
+                           if self.start_key_mode() in STOP_MODES
+                           else ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                            kind="sans")
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)

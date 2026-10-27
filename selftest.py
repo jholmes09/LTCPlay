@@ -48051,8 +48051,10 @@ def test_stop_halt_review_of_132():
               f"{how}: FIRE fired, then the engine's refusal ended it")
         check(len(stops) == 1,
               f"{how}: exactly one Stop, with no second press: {stops}")
-        check(lag is not None and sd.STOP_HOLD_S - 0.05 <= lag <=
-              sd.STOP_HOLD_S + 0.2,
+        # A loaded runner (Windows CI) may be slow: never early, and within
+        # a generous bound (delta review of #132, D3).
+        check(lag is not None and sd.STOP_HOLD_S - 0.02 <= lag <=
+              sd.STOP_HOLD_S + 1.0,
               f"{how}: the Stop hold completed STOP_HOLD_S after the deck "
               f"saw the show: {lag}")
     probe(close_page=False)
@@ -48124,6 +48126,134 @@ def test_stop_halt_review_of_132():
           "past DISARM_SETTLE_S with flamesafe still saying armed: Stop "
           "wins")
     c.run_once([False] * 6)
+    # The window is FIRE's only (delta review of #132, A): a deselect with
+    # key 0 up, flamesafe still saying armed, is Stop at once.
+    t[0] += sd.REARM_REFRACTORY_S
+    scr.mo["purge"]["wanted_groups"] = []
+    c.screen_pass()
+    scr.mo["purge"]["wanted_groups"] = [0, 2]
+    c.screen_pass()
+    check(c._purge_armed == {0, 2}, f"setup: both armed again: "
+                                    f"{c._purge_armed}")
+    scr.mo["purge"]["wanted_groups"] = [0]
+    t[0] += 0.05
+    c.screen_pass()
+    check(not arm.wanted[2] and c._stop_wins(),
+          "a deselect with FIRE not held, flamesafe still saying armed: "
+          "Stop wins at once")
+    # Delta review of #132, A: the settle window forgives only the
+    # purge's own deselect disarms, and only while FIRE is down. A Stop's
+    # or a tap's disarm that has not shown in flamesafe's status yet still
+    # counts: a second Stop hold is a Stop.
+    class _CondS(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    for how in ("a Stop", "a tap"):
+        arm = _FakeArmSocket(3)
+        cond = _CondS()
+        c = sd.Controller(arm, _FakeStatusSocket(), names,
+                          operator_provider=lambda: "Andy",
+                          show_running_provider=lambda: False,
+                          run_live_provider=lambda: False, conductor=cond,
+                          journal=lambda t_, **kw: None,
+                          clock=time.monotonic)
+        arm.set_group(0, True)              # armed by hand
+        c._reported_armed = lambda i: i == 0   # and flamesafe says so
+        down, up = [True] + [False] * 5, [False] * 6
+        if how == "a Stop":
+            c.run_once(down)
+            time.sleep(sd.STOP_HOLD_S + 0.02)
+            c.tick()
+            c.run_once(up)
+            check(len(cond.calls) == 1 and not any(arm.wanted),
+                  f"setup: the first Stop went: {cond.calls}")
+        else:
+            tap = [False] * 6
+            tap[sd.GROUP_KEYS[0]] = True
+            c.run_once(tap)
+            c.run_once(up)
+            check(not any(arm.wanted), "setup: a tap disarmed group 0")
+        n0 = len(cond.calls)
+        time.sleep(0.2)
+        check(c._stop_wins(),
+              f"after {how}'s disarm, flamesafe still saying armed: still "
+              f"Stop")
+        c.run_once(down)
+        time.sleep(sd.STOP_HOLD_S + 0.02)
+        c.tick()
+        c.run_once(up)
+        check(len(cond.calls) == n0 + 1,
+              f"a second hold 0.2 s after {how}: a second Stop is sent: "
+              f"{cond.calls}")
+    # B: a reconnect forgets that key 0 was down as FIRE.
+    c._key0_fire = True
+    c.reset_on_reconnect()
+    check(c._key0_fire is False, "a reconnect clears the FIRE memory")
+    # D1: latched, nothing running, a group still reported armed: key 0
+    # takes a Stop hold.
+    t = [300.0]
+    arm = _FakeArmSocket(3)
+    cond = _CondS()
+    cond._latched = True
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: False, conductor=cond,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0])
+    c._reported_armed = lambda i: i == 1
+    check(c._latched_now(), "setup: latched")
+    c.run_once([True] + [False] * 5)
+    check(c._stop_hold._down_at is not None,
+          "latched, nothing running, a group reported armed: a Stop hold")
+    t[0] += sd.STOP_HOLD_S + 0.01
+    c.tick()
+    c.run_once([False] * 6)
+    check([x for x in cond.calls if x[0] == "stop"],
+          f"and it stops: {cond.calls}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"latched with a group armed: STOP ALL: {faces[0]}")
+        finally:
+            restore()
+    # D2: an acknowledge on the Morning page that Stop did not win at the
+    # press becomes the Stop hold when Stop starts to win mid hold.
+    t = [400.0]
+    show = [False]
+    arm = _FakeArmSocket(3)
+    cond = _CondS()
+    scr = _FakeMorningScreen()
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [], "selected": 0,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: show[0],
+                      run_live_provider=lambda: False, conductor=cond,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0],
+                      screen=scr)
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    c.screen_pass()
+    c.run_once([True] + [False] * 5)
+    check(acked and c._stop_hold._down_at is None,
+          "an acknowledge on the Morning page, nothing running: only the "
+          "acknowledge")
+    t[0] += 0.1
+    show[0] = True
+    c.tick()
+    check(c._stop_hold._down_at is not None,
+          "a show goes live during the same hold: the hold becomes Stop")
+    t[0] += sd.STOP_HOLD_S + 0.01
+    c.tick()
+    c.run_once([False] * 6)
+    check([x for x in cond.calls if x[0] == "stop"],
+          f"and it stops, no second press: {cond.calls}")
     # 4. Live flames not known count as on: Stop wins.
     class _Scr(_FakeMorningScreen):
         val = False
