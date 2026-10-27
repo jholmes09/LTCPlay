@@ -14868,8 +14868,8 @@ def build():
   "const FIT_SLACK = 30, STEPS_MIN = 0;"),
 
  ("the short-window rules are never used for the Getting started card", "ltcplay/web/remote.html",
-  "  } else if(!fitCap()){\n    document.documentElement.classList.add(\"tight\");\n    if(!fitCap()){",
-  "  } else if(!fitCap()){\n    if(true){"),
+  "  if(fitOver() > 0.5) root.classList.add(\"setupafter\");",
+  "  root.classList.remove(\"tight\");\n  if(fitOver() > 0.5) root.classList.add(\"setupafter\");"),
 
  ("Show the steps leaves the page where it was", "ltcplay/web/remote.html",
   "    try{ $(\"setup\").scrollIntoView({block: below || after ? \"start\" : \"nearest\"}); }catch(e){}",

@@ -16731,6 +16731,13 @@ go();</script>"""
                           a["bottom"] <= vh - SLACK for a in mm["arms"]),
                       f"{where}: every arm button on screen with {SLACK} "
                       f"px to spare, at least 44 px: {mm['arms']} vh {vh}")
+                # The card stays above the flame groups on any page of
+                # 560 px or more: the card after every block is the last
+                # resort of a window shorter than that.
+                if vh >= 560:
+                    check("setupafter" not in mm.get("root", ""),
+                          f"{where}: the card is above the flame groups: "
+                          f"{mm.get('root')}")
                 if mm.get("make"):
                     check(mm["make"]["h"] >= 40,
                           f"{where}: Make a show file is at least 40 px "
