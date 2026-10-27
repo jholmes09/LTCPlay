@@ -691,3 +691,40 @@ hardware e-stop, are), and with no BEYOND OSC address the lasers are not
 blanked from here.
 After the press, the engine's answer stays on the screen as a banner until
 it is seen, never only as a one-line note.
+
+## The show file, and making one
+
+The show file is the playlist: a small `.json` file that says which
+render (`.fseq`) plays at which timecode, at which frame rate, and from
+which folder. The renders themselves stay exactly as xLights made them;
+LTC Player only reads them.
+
+To make one from a folder of renders, on the show machine:
+
+1. Render the sequences in xLights into the show folder, and export
+   `xlights_networks.xml` into the same folder.
+2. On the Programming screen's "Show folder" card, press "Make a show file
+   from this folder" (or "Make a show file" on the Getting started card,
+   which shows while the folder has renders and no show file). It lists
+   every render, alphabetically, back to back from 01:00:00:00. It is written
+   into the show folder as `<folder name>_timeline.json`, or `_2`, `_3`
+   when that name is taken: an existing show file is never replaced. It is
+   chosen in the Show file chooser at once. It is refused while a show
+   file is running or a scheduled show is live, and says why when the
+   folder has no `.fseq` files or does not exist.
+3. Open the new file in Notepad (Open the show folder) and set each cue's
+   `"tc"` to the timecode that render starts at in your show.
+4. Check the frame rate. The file's `"fps"` is a starting guess (30, or 25
+   when every render is 40 ms a frame; a render's frame time is not the
+   show's timecode rate), and the card says so. Set `"fps"` to the rate
+   the timecode really runs at, and add `"drop": true` for 29.97
+   drop-frame: 29.97 and 30 look identical but drift about 2 seconds over
+   a half hour. The rack screen does not show the rate it hears, so read
+   it in the timecode source's own settings, then rehearse to the end of
+   the show (step 6) and compare the rack screen's timecode with the
+   source: any difference means the rate is wrong.
+5. Press "Check the show file" on the same card. It says how many cues it
+   found, any render it could not find, any cue that starts before the one
+   before it has ended, and anything else wrong.
+6. Run it in Programming mode (the Show file card: Programming, then Run)
+   to rehearse it. Nothing reaches the rig until Run.

@@ -287,7 +287,7 @@ LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1", "[::1]")
 # show; the schedule is refused while a show is live.
 SETUP_GET_ROUTES = ("setup", "schedule-file")
 SETUP_POST_ROUTES = ("schedule-file", "open-folder", "show-folder", "screen",
-                     "show-select")
+                     "show-select", "show-file-new")
 PROGRAMS_FILE = "programs.json"      # packaging/windows/supervisor.py writes
 FIRST_RUN_FILE = "first-run.json"    # what the supervisor wrote at first run
 SHOWPC_FILE = "showpc.json"          # the supervisor's own settings
@@ -4447,6 +4447,13 @@ class Remote:
     def _show_folder(self):
         return str(getattr(self.control, "folder", "") or "")
 
+    @staticmethod
+    def _renders_in(folder):
+        """How many .fseq renders are in `folder` (0 when it cannot be
+        read): the same list Make a show file uses."""
+        from . import timeline as timeline_mod
+        return len(timeline_mod.fseq_names(folder))
+
     def _show_files(self):
         """The show files the Programming screen's Run picker would offer."""
         try:
@@ -4508,6 +4515,10 @@ class Remote:
                 "show_files": files,
                 "show_file_errors": self._show_file_errors() if not files
                 else [],
+                # The renders a show file could be made from (Make a show
+                # file), counted only while there is no show file.
+                "show_folder_renders": self._renders_in(folder) if not files
+                else None,
                 "schedule_path": sched_path,
                 "schedule_exists": os.path.isfile(sched_path),
                 "schedule_ok": bool(sched_ok),
@@ -4672,6 +4683,109 @@ class Remote:
                      f"show engine now to use {path} (it refuses while a "
                      f"show is running). This page reconnects by itself."}
 
+    # One new show file at a time: a double press makes one file, not two.
+    _new_show_lock = threading.Lock()
+
+    def _new_show_refusal(self):
+        """(code, sentence) when a show file may not be made now, else
+        None: a scheduled show live, or a show file running or starting."""
+        if self._show_live():
+            return 409, ("A scheduled show is live. Make the show file "
+                         "between shows. Nothing was written.")
+        c = self.control
+        sess = getattr(c, "session", None)
+        if getattr(c, "_starting", False) or \
+                (sess is not None and getattr(sess, "running", False)):
+            return 409, ("A show file is running. Press Stop first, then "
+                         "make the new show file. Nothing was written.")
+        return None
+
+    def new_show_file(self, body):
+        """POST show-file-new: a starter show file for the renders in the
+        folder this engine serves, made exactly as `ltc init` makes one
+        (cli.make_show_file, timeline.starter): one cue per .fseq, back to
+        back from 01:00:00:00. Written as a NEW file where the Show file
+        chooser lists show files, never over one, and chosen there.
+        Refused while a show file is running or a scheduled show is live,
+        asked again just before the write and before the choice. The
+        renders are only read."""
+        folder = self._show_folder()
+        no = self._new_show_refusal()
+        if no:
+            return no[0], {"error": no[1]}
+        if not folder:
+            return 409, {"error": "This engine serves no show folder. "
+                                  "Nothing was written."}
+        from .cli import INIT_START, make_show_file
+
+        class _Refused(Exception):
+            pass
+
+        def _still_may():
+            got = self._new_show_refusal()
+            if got:
+                raise _Refused(got)
+        if not self._new_show_lock.acquire(blocking=False):
+            return 409, {"error": "A show file is being made already. "
+                                  "Nothing more was written."}
+        try:
+            try:
+                made = make_show_file(folder, folder,
+                                      before_write=_still_may)
+            except _Refused as e:
+                code, why = e.args[0]
+                return code, {"error": why}
+            except ValueError as e:
+                return 400, {"error": str(e)}
+            except OSError as e:
+                return 500, {"error": f"Could not write the show file in "
+                                      f"{folder}: {e}. Nothing was "
+                                      f"written."}
+        finally:
+            self._new_show_lock.release()
+        name = made["file"]
+        n = made["cues"]
+        text = (f"Made {name} with {n} cue{'' if n == 1 else 's'}, one for "
+                f"each render (.fseq) in {made['folder']}, back to back "
+                f"from {INIT_START}. The renders were not changed. "
+                f"{made['rate_note']} Check the show file does not hear "
+                f"the timecode, and this screen does not show the rate it "
+                f"hears: read the rate in the timecode source's own "
+                f"settings, then rehearse in Programming mode to the end "
+                f"of the show and compare this screen's timecode with the "
+                f"source; any difference means the rate is wrong.")
+        if made["skipped"]:
+            text += (f" Left out because they could not be read: "
+                     f"{', '.join(made['skipped'][:5])}"
+                     f"{', ...' if len(made['skipped']) > 5 else ''}.")
+        if not made["map"]:
+            text += (" There is no xlights_networks.xml in the folder yet, "
+                     "so Check will say there is no controller map: export "
+                     "it from xLights into this folder.")
+        nxt = (f"Next: open {name} in the show folder with Notepad and set "
+               f"each cue's \"tc\" to the timecode that render starts at "
+               f"in your show (the order is alphabetical until you change "
+               f"it), and \"fps\" to the timecode's rate. Then press "
+               f"Check the show file, then Run in Programming mode to "
+               f"rehearse it. Nothing reaches the rig until Run.")
+        late = self._new_show_refusal()
+        if late:
+            # Something started while the file was written: it is kept,
+            # and not chosen under a running or live show.
+            text += (f" It was not chosen in the Show file chooser: "
+                     f"{late[1].split('. ')[0]}.")
+        else:
+            self._save_selected_show(name)
+            self._artnet = None
+            self._checks = None
+        self._journal("", "Rack screen", "show file", "made",
+                      f"{name} was made from the renders in "
+                      f"{made['folder']} ({n} cues) on the Programming "
+                      f"screen.")
+        return 200, {"ok": True, "file": name, "cues": n,
+                     "folder": made["folder"], "fps": made["fps"],
+                     "chosen": not late, "text": text, "next": nxt}
+
     def screen(self, body):
         """POST screen {"action": "close"}: a request the Windows
         supervisor acts on, closing the rack screen window it opened. The
@@ -4697,6 +4811,8 @@ class Remote:
             return self.set_show_folder(body)
         if name == "show-select":
             return self.select_show(body)
+        if name == "show-file-new":
+            return self.new_show_file(body)
         return self.screen(body)
 
     def audio_interface_view(self):

@@ -166,7 +166,7 @@ REMOTE_ROUTES = {
     "checklist-tick": "checklist", "checklist-note": "checklist",
     "morning-open": None, "checklist-verify": None,
     "checklist-tally-retry": None, "open-folder": None, "screen": None,
-    "show-select": None,
+    "show-select": None, "show-file-new": "show_files",
     "audit-verify": None, "my-password": None,
     # Open BEYOND (windowfront.py) only moves a window on the show PC.
     "open-beyond": None,

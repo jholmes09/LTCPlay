@@ -822,7 +822,8 @@ def test_real_show(show_dir):
     section(f"real FSEQ files in {show_dir}")
     import glob
     from ltcplay.fseq import FSEQ
-    files = sorted(glob.glob(os.path.join(show_dir, "*.fseq")))
+    files = sorted(glob.glob(os.path.join(glob.escape(show_dir),
+                                          "*.[fF][sS][eE][qQ]")))
     if not files:
         print("  skipped, no .fseq files")
         return
@@ -48231,6 +48232,413 @@ def test_remote_setup_routes_this_machine_only():
     print("  ok")
 
 
+def test_a_bracketed_show_folder_is_a_name_not_a_pattern():
+    section("a show folder named with [ or ] (\"Fire [2026] été\") is a "
+            "name, never a glob pattern (review of #137): the scheduler's "
+            "show length cross-check finds the show file that names a "
+            "clock block, the audio interface watch finds the device it "
+            "names, and a marker CSV finds the renders (any case of .fseq)")
+    import glob
+    import json as _j
+    import shutil
+    import tempfile
+    import test_show_fixtures as FX
+    from ltcplay import audiowatch as AW
+    from ltcplay import clock as C
+    from ltcplay import markers as MK
+    src = FX.synthetic_show_dir()
+    opener = "GPL 2026_Set 1_Opener.fseq"     # 2000 frames at 25 ms: 50.0 s
+    ending = "GPL 2026_Set 1_Ending.fseq"     # 1300 frames at 25 ms: 32.5 s
+    root = tempfile.mkdtemp()
+    try:
+        # "[2026]" read as a pattern is one character, 2, 0 or 6: the
+        # folder itself never matches it, so an unescaped glob finds
+        # nothing at all here, on every OS.
+        sd = os.path.join(root, "Fire [2026] été")
+        os.makedirs(sd)
+        shutil.copyfile(os.path.join(src, opener), os.path.join(sd, opener))
+        # In capitals: what timeline.fseq_names (Make a show file) lists.
+        caps = ending[:-len(".fseq")] + ".FSEQ"
+        shutil.copyfile(os.path.join(src, ending), os.path.join(sd, caps))
+        for n in ("xlights_networks.xml", "xlights_rgbeffects.xml"):
+            shutil.copyfile(os.path.join(src, n), os.path.join(sd, n))
+        with open(os.path.join(sd, "x.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        check(glob.glob(os.path.join(sd, "*.json")) == [],
+              "this folder name is one an unescaped glob reads as a "
+              "pattern, so the checks below prove the escaping")
+        os.remove(os.path.join(sd, "x.json"))
+
+        # The scheduler's show length cross-check.
+        show = os.path.join(sd, "show.json")
+        with open(show, "w", encoding="utf-8") as fh:
+            _j.dump({"fps": 25, "show_dir": sd,
+                     "cues": [{"tc": "01:00:00:00", "fseq": opener}],
+                     "clock": {"source": "artnet_master",
+                               "artnet": {"nodes": {"test": "127.0.0.1"}},
+                               "zones": {"show": 1, "intermission": 2,
+                                         "forward": ["show"]}}}, fh)
+        path, length, warn = C.derive_show_length_in_folder(sd)
+        check(path == show and length is not None and
+              abs(length - 50.0) < 1e-6 and warn is None,
+              f"the cross-check sees the show file that names a clock block "
+              f"in a [bracketed] folder, and its real 50.0s, never 'no show "
+              f"file in the folder names a clock block': "
+              f"{(path, length, warn)}")
+
+        # The audio interface watch.
+        with open(os.path.join(sd, "audio show.json"), "w",
+                  encoding="utf-8") as fh:
+            _j.dump({"cues": [], "clock": {
+                "source": "audio_master",
+                "audio": {"device": "PreSonus Studio 1824c"}}}, fh)
+        want = AW.wanted_devices(sd)
+        check(want == {"PreSonus Studio 1824c": "audio show.json"},
+              f"the audio interface watch finds the device a show file in "
+              f"a [bracketed] folder names, never quietly watches nothing: "
+              f"{want}")
+
+        # A marker CSV against the renders in the folder.
+        csv_path = os.path.join(root, "cues.csv")
+        with open(csv_path, "w", encoding="utf-8") as fh:
+            fh.write("Name\tStart\nOpener\t00:00:00:00\n"
+                     "Ending\t00:00:50:00\n")
+        doc, unprogrammed, _notes, marks = MK.build(csv_path, sd, fps=30)
+        got = sorted(c["fseq"] for c in doc["cues"])
+        check(len(marks) == 2 and unprogrammed == [] and
+              got == sorted([opener, caps]),
+              f"a marker CSV finds both renders in a [bracketed] folder, "
+              f"the one named .FSEQ too: {got} unprogrammed {unprogrammed}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    print("  ok")
+
+
+def test_make_a_show_file_from_the_show_folder():
+    section("Programming screen, Make a show file (Jeff, 2026-10-27: a "
+            "fresh install pointed at a folder of renders had no way to make "
+            "a show file but `ltc init`): the engine makes one exactly as "
+            "`ltc init` does, from the folder it serves (a name with [ ] in "
+            "it, any case of .fseq), into the folder the Show file chooser "
+            "lists, never over an existing file, refused while a show file "
+            "runs or a scheduled show is live, always asks for the frame "
+            "rate to be checked, and says what to do next; the page offers "
+            "it and Check")
+    import shutil
+    import tempfile
+    import test_show_fixtures as FX
+    from ltcplay import cli as CLI
+    from ltcplay import remote as RM
+    from ltcplay import timeline as TL
+    from ltcplay import users as U
+    S = _sched()
+    if S is None:
+        return
+    check("show-file-new" in RM.SETUP_POST_ROUTES and
+          U.classify("/api/remote/show-file-new", {}) == "show_files",
+          "a setup route of the show machine, under the role matrix's Show "
+          "files, as the show folder is")
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    route = "/api/remote/show-file-new"
+    c = R.httpd.control
+    real = c.folder
+    # A folder name glob would read as a pattern.
+    sd = os.path.join(R.folder, "Fire [2026]")
+    os.makedirs(sd)
+    c.folder = sd
+    base = CLI.starter_base(sd)
+    first = os.path.join(sd, f"{base}_timeline.json")
+
+    def jsons():
+        return sorted(n for n in os.listdir(sd) if n.endswith(".json"))
+
+    def others():
+        return sorted(n for n in os.listdir(sd)
+                      if not n.endswith((".json", ".fseq", ".FSEQ")))
+    try:
+        st, _h, out = R.ask("POST", route, {})
+        check(st == 403 and not jsons(),
+              f"not from the show network, nothing written: {st} {out}")
+        # No renders: refused in a sentence.
+        st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        check(st == 400 and "no .fseq files" in out["error"] and
+              "Nothing was written" in out["error"] and not jsons(),
+              f"a folder with no renders: said, nothing written: {out}")
+        # The folder missing.
+        c.folder = os.path.join(R.folder, "not here")
+        try:
+            st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        finally:
+            c.folder = sd
+        check(st == 400 and "does not exist" in out["error"] and
+              not jsons(), f"a missing folder: said: {out}")
+        # Two renders at 40 ms a frame, one named in capitals, and a show
+        # file already holding the first name.
+        FX.write_fseq(os.path.join(sd, "B second.fseq"),
+                      frame_count=50, step_ms=40)
+        FX.write_fseq(os.path.join(sd, "A first.FSEQ"),
+                      frame_count=100, step_ms=40)
+        st, _h, su = _ask(R.httpd, "GET", "/api/remote/setup", client=loop)
+        check(su.get("show_files") == 0 and
+              su.get("show_folder_renders") == 2,
+              f"the setup view counts both renders for Getting started: "
+              f"{su.get('show_files')} {su.get('show_folder_renders')}")
+        mine = b'{"name": "mine", "fps": 30, "cues": []}\n'
+        with open(first, "wb") as fh:
+            fh.write(mine)
+        # While a show file runs (or is starting): refused.
+        class _Running:
+            running = True
+        c.session = _Running()
+        try:
+            st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        finally:
+            c.session = None
+        check(st == 409 and "running" in out["error"] and
+              jsons() == [os.path.basename(first)],
+              f"refused while a show file runs, nothing written: {out}")
+        c._starting = True
+        try:
+            st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        finally:
+            c._starting = False
+        check(st == 409 and jsons() == [os.path.basename(first)],
+              f"refused while one is starting: {out}")
+        # One being made already: the second press writes nothing.
+        R.remote._new_show_lock.acquire()
+        try:
+            st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        finally:
+            R.remote._new_show_lock.release()
+        check(st == 409 and "being made" in out["error"] and
+              jsons() == [os.path.basename(first)],
+              f"a second press while one is made: nothing: {st} {out}")
+        # A show starts during the slow pass: the write is refused.
+        real_starter = TL.starter
+
+        def _slow(*a, **k):
+            c._starting = True
+            return real_starter(*a, **k)
+        TL.starter = _slow
+        try:
+            st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        finally:
+            TL.starter = real_starter
+            c._starting = False
+        check(st == 409 and jsons() == [os.path.basename(first)] and
+              not others(),
+              f"a show starting while the renders are read: refused just "
+              f"before the write: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        made = os.path.join(sd, f"{base}_timeline_2.json")
+        check(st == 200 and out["file"] == os.path.basename(made) and
+              os.path.isfile(made), f"made as the _2 name: {st} {out}")
+        check(not others(), f"no temporary file left: {others()}")
+        with open(first, "rb") as fh:
+            check(fh.read() == mine, "the existing show file is untouched")
+        with open(made, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        want = TL.starter(sd, fps=25, start="01:00:00:00", gap_seconds=0.0)
+        check(doc == want and doc["show_dir"] == sd and
+              [x["fseq"] for x in doc["cues"]] ==
+              ["A first.FSEQ", "B second.fseq"] and
+              doc["cues"][0]["tc"] == "01:00:00:00" and
+              doc["cues"][1]["tc"] == "01:00:04:00",
+              f"the same file `ltc init` makes, from the folder served, "
+              f"back to back: {doc}")
+        check("2 cues" in out["text"] and sd in out["text"] and
+              "not changed" in out["text"] and
+              "xlights_networks.xml" in out["text"],
+              f"how many cues, from which folder, and that the controller "
+              f"map is missing: {out['text']}")
+        check("Check the frame rate: it was set to 25 fps because" in
+              out["text"] and "29.97 and 30" in out["text"] and
+              '"drop": true' in out["text"] and
+              "not the show's timecode rate" in out["text"] and
+              "Programming mode" in out["text"],
+              f"the rate is never a guess presented as fact: {out['text']}")
+        check("tc" in out["next"] and "Check" in out["next"] and
+              "Programming" in out["next"] and "fps" in out["next"],
+              f"what to do next: {out['next']}")
+        st, _h, tls = _ask(R.httpd, "GET", "/api/timelines", client=loop)
+        listed = [t["file"] for t in tls["timelines"] if not t["error"]]
+        check(os.path.basename(made) in listed and out.get("chosen") and
+              R.remote._selected_show() == os.path.basename(made),
+              f"in the Show file chooser, and chosen: {listed} "
+              f"{R.remote._selected_show()}")
+        # Again: a third name, the first two untouched.
+        with open(made, "rb") as fh:
+            made_bytes = fh.read()
+        st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        with open(made, "rb") as fh, open(first, "rb") as fh2:
+            check(st == 200 and
+                  out["file"] == f"{base}_timeline_3.json"
+                  and fh.read() == made_bytes and fh2.read() == mine,
+                  f"a second press makes _3 and replaces nothing: {out}")
+        jl = R.lines_for("show file")
+        check(bool(jl), f"journaled: {list(R.svc.journal)[-2:]}")
+        # A show starts while the file is written: kept, never chosen.
+        chosen = R.remote._selected_show()
+        real_write = CLI.write_new_show_file
+
+        def _starts(*a, **k):
+            c._starting = True
+            return real_write(*a, **k)
+        CLI.write_new_show_file = _starts
+        try:
+            st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        finally:
+            CLI.write_new_show_file = real_write
+            c._starting = False
+        check(st == 200 and out.get("chosen") is False and
+              "not chosen" in out["text"] and
+              R.remote._selected_show() == chosen,
+              f"a show started during the write: the file is not chosen: "
+              f"{st} {out.get('chosen')} {R.remote._selected_show()}")
+        # A scheduled show live: refused.
+        _live_show(R)
+        before = jsons()
+        st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+        check(st == 409 and "live" in out["error"] and jsons() == before,
+              f"refused during a live show, nothing written: {out}")
+    finally:
+        c.folder = real
+        R.close()
+    d = tempfile.mkdtemp()
+    try:
+        # The renders' rate only when it is a timecode rate, and said
+        # either way.
+        FX.write_fseq(os.path.join(d, "x.fseq"), frame_count=10, step_ms=50)
+        fps, why = CLI.renders_rate(d)
+        check(fps == 30 and "20 frames a second" in why,
+              f"20 fps renders: 30 fps, said: {fps} {why}")
+        dest = tempfile.mkdtemp()
+        try:
+            got = CLI.make_show_file(d, dest)
+            check("Check the frame rate: it was set to 30 fps" in
+                  got["rate_note"] and "29.97" in got["rate_note"],
+                  f"30 is asked to be checked too: {got['rate_note']}")
+            # No hard links on this disk, and a name that appears between
+            # the look and the write: the exclusive create moves on.
+            keep = os.path.join(dest, CLI.starter_base(d) +
+                                "_timeline_2.json")
+            with open(keep, "w") as fh:
+                fh.write("keep")
+            real_link, real_lexists = os.link, os.path.lexists
+
+            def _no_link(*a, **k):
+                raise PermissionError("no hard links here")
+            os.link = _no_link
+            os.path.lexists = lambda p: False
+            try:
+                got = CLI.make_show_file(d, dest)
+            finally:
+                os.link, os.path.lexists = real_link, real_lexists
+            with open(keep) as fh:
+                kept = fh.read()
+            check(got["file"].endswith("_timeline_3.json") and
+                  kept == "keep" and
+                  not [n for n in os.listdir(dest)
+                       if not n.endswith(".json")],
+                  f"without hard links nothing is replaced and nothing is "
+                  f"left behind: {got['file']} {os.listdir(dest)}")
+            # Very long folder names: the temporary name is never the
+            # longer one.
+            check(len(f"~{os.urandom(4).hex()}.new") <
+                  len(CLI.starter_base("a") + "_timeline.json"),
+                  "the temporary name is shorter than any show file name")
+        finally:
+            shutil.rmtree(dest, ignore_errors=True)
+        # Every render unreadable: no empty show file.
+        bad = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(bad, "broken.fseq"), "wb") as fh:
+                fh.write(b"not an fseq")
+            try:
+                CLI.make_show_file(bad, bad)
+                check(False, "a folder of unreadable renders made a file")
+            except ValueError as e:
+                check("could be read" in str(e) and not [
+                    n for n in os.listdir(bad) if n != "broken.fseq"],
+                      f"unreadable renders: said, nothing written: {e}")
+        finally:
+            shutil.rmtree(bad, ignore_errors=True)
+        # `ltc init` never writes over a show file either.
+        old_folder = CLI.settings_mod.folder
+        out_dir = tempfile.mkdtemp()
+        CLI.settings_mod.folder = lambda: out_dir
+        try:
+            name = CLI.starter_base(d) + "_timeline.json"
+            with open(os.path.join(out_dir, name), "w") as fh:
+                fh.write("keep")
+            import argparse as _ap
+            import contextlib as _cl
+            import io as _io
+            with _cl.redirect_stdout(_io.StringIO()):
+                rc = CLI.cmd_init(_ap.Namespace(
+                    show_dir=d, fps=30, start="01:00:00:00", gap=0.0,
+                    out=None))
+            with open(os.path.join(out_dir, name)) as fh:
+                kept = fh.read()
+            check(rc == 0 and kept == "keep" and os.path.isfile(
+                os.path.join(out_dir, CLI.starter_base(d) +
+                             "_timeline_2.json")),
+                  "ltc init: the _2 name, the existing file kept")
+        finally:
+            CLI.settings_mod.folder = old_folder
+            shutil.rmtree(out_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # The page: the buttons on the folder card and on Getting started,
+    # wired, and its sentences, run in node.
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('id="fo-make"', 'id="fo-check"', 'id="su-make"',
+                 'post("/api/remote/show-file-new"',
+                 'post("/api/check", {timeline:f})',
+                 "await loadShowFiles(j.file)",
+                 '$("fo-make").addEventListener("click", makeShowFile);',
+                 '$("su-make").addEventListener("click", async () => {',
+                 '$("fo-check").addEventListener("click", async () => {',
+                 '$("su-make").hidden = !makeOffered(su);',
+                 'if(want && ok.includes(want)){ $("run-file").value = want;'):
+        check(need in page, f"the page has {need!r}")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = _js_block(page, "const esc = ", "let ME = null") + "\n" + \
+        _js_fn(page, "makeOffered") + "\n" + \
+        _js_fn(page, "setupFolderWords") + "\n" + _js_fn(page, "checkWords") + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(makeOffered({show_files:0, show_folder_renders:2}), "renders, no show file: offered");
+t(!makeOffered({show_files:1, show_folder_renders:2}), "a show file: not offered");
+t(!makeOffered({show_files:0, show_folder_renders:0}), "no renders: not offered");
+t(!makeOffered(null), "no setup view: not offered");
+const w = setupFolderWords({show_files:0, show_folder:"C:\\Shows", show_folder_exists:true, show_folder_renders:3});
+t(w.includes("3 render(s)") && w.includes("playlist") && w.includes("Make a show file"), "renders, no show file: " + w);
+t(setupFolderWords({show_files:0, show_folder:"C:\\Shows", show_folder_exists:true, show_folder_renders:0}).includes("is empty"), "empty");
+t(setupFolderWords({show_files:2, show_folder:"C:\\Shows"}).includes("2 show file(s)"), "two files");
+const ok = checkWords("a.json", {cues:[{tc:"01:00:00:00", name:"A"}], problems:[], notes:[]});
+t(ok.includes("Nothing wrong found") && ok.includes("Programming"), "clean: " + ok);
+const bad = checkWords("a.json", {cues:[{name:"A", missing:true}, {name:"<B>", overlap:true}], problems:["p1"], notes:[]});
+t(bad.includes("Render not found for:</b> A") && bad.includes("&lt;B&gt;") && bad.includes("<li>p1</li>") && !bad.includes("Nothing wrong"), "faults: " + bad);
+t(checkWords("a.json", {error:"no map"}).includes("does not load: no map"), "a load error");
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        fails = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        fails = [f"node said: {r.stdout} {r.stderr}"]
+    check(not fails, f"the page's sentences: {fails}")
+    print("  ok")
+
+
 def test_windows_supervisor_first_run_defaults():
     section("Windows app, first run (Jeff, 2026-10-17: a fresh install was "
             "a shell: no flamesafe.json, so flamesafe and the Stream Deck "
@@ -72206,6 +72614,8 @@ if __name__ == "__main__":
         test_deck_chip_red_when_the_deck_loop_hangs,
         test_deck_chip_in_a_browser,
         test_remote_setup_routes_this_machine_only,
+        test_make_a_show_file_from_the_show_folder,
+        test_a_bracketed_show_folder_is_a_name_not_a_pattern,
         test_windows_supervisor_first_run_defaults,
         test_remote_page_loss_changes_nothing,
         test_remote_scrubbing_only_in_a_programming_session,

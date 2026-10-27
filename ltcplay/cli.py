@@ -673,6 +673,160 @@ class _WavSource:
 
 
 # ----------------------------------------------------------------- init ---
+# What `ltc init` and the Programming screen's "Make a show file from this
+# folder" start a show file with: every render back to back from 01:00:00:00
+# with no gap, at 30 fps unless the renders say otherwise (renders_rate).
+INIT_FPS = 30
+INIT_START = "01:00:00:00"
+INIT_GAP_S = 0.0
+
+
+def starter_base(show_dir):
+    """The show file's name, from the folder's: `<folder>_timeline`."""
+    name = os.path.basename(os.path.normpath(show_dir)) or "show"
+    return "".join(c if (c.isalnum() or c in "-_ ") else "_" for c in name)
+
+
+def write_new_show_file(dest, base, doc):
+    """Write `doc` as a NEW show file in `dest` and return its path:
+    `<base>_timeline.json`, or `<base>_timeline_2.json`, `_3`, ... when that
+    name is taken. An existing file is never replaced, not even one that
+    appears between the look and the write: the file is written whole
+    beside it first, then linked in under a name nobody has (os.link
+    refuses an existing name), so a crash leaves no half-written show file
+    either. The temporary name is short (13 characters, shorter than any
+    final name), so a long folder name cannot fail on it first, and it is
+    always removed."""
+    data = json.dumps(doc, indent=2) + "\n"
+    tmp = os.path.join(dest, f"~{os.urandom(4).hex()}.new")
+    try:
+        with open(tmp, "x", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for n in range(1, 1000):
+            out = os.path.join(dest, f"{base}_timeline.json" if n == 1
+                               else f"{base}_timeline_{n}.json")
+            if os.path.lexists(out):
+                continue
+            try:
+                os.link(tmp, out)
+                return out
+            except FileExistsError:
+                continue
+            except (OSError, NotImplementedError, AttributeError):
+                pass
+            # No hard links on this disk: create the name exclusively.
+            try:
+                fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                             getattr(os, "O_BINARY", 0), 0o644)
+            except FileExistsError:
+                continue
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(data)
+            except BaseException:
+                try:
+                    os.unlink(out)
+                except OSError:
+                    pass
+                raise
+            return out
+        raise OSError(f"{dest} already holds 999 show files named "
+                      f"{base}_timeline")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+# Said with every new show file, whatever its rate: a guess is never
+# presented as the show's timecode rate.
+FPS_CHECK = ("29.97 and 30 look identical but drift about 2 seconds over a "
+             "half hour; set \"fps\" (and \"drop\": true for 29.97 "
+             "drop-frame) to the rate the timecode really runs at.")
+
+
+def renders_rate(show_dir):
+    """(fps, reason) for a new show file. The show file's fps is the
+    TIMECODE rate, which no render records: an FSEQ's frame time is the
+    render's own. It is used only when every render agrees and it is a
+    timecode rate (40 ms is 25 fps); otherwise INIT_FPS. The reason says
+    which, and the caller always asks the operator to check it."""
+    from .fseq import FSEQ
+    from .tc import normalize_rate
+    steps = set()
+    for n in timeline_mod.fseq_names(show_dir):
+        try:
+            with FSEQ(os.path.join(show_dir, n)) as f:
+                steps.add(int(f.step_time_ms))
+        except Exception:                        # noqa: BLE001
+            continue
+    if len(steps) == 1:
+        step = steps.pop()
+        try:
+            fps = normalize_rate(1000.0 / step)
+            return fps, (f"every render runs at {step} ms a frame "
+                         f"({fps:g} frames a second), and a render's frame "
+                         f"time is not the show's timecode rate")
+        except (ValueError, ZeroDivisionError):
+            return INIT_FPS, (f"that is the usual rate; the renders run at "
+                              f"{1000.0 / step:g} frames a second, which is "
+                              f"not a timecode rate")
+    if steps:
+        return INIT_FPS, ("that is the usual rate; the renders do not all "
+                          "run at the same frame rate")
+    return INIT_FPS, "that is the usual rate"
+
+
+def make_show_file(show_dir, dest, fps=None, start=INIT_START,
+                   gap_seconds=INIT_GAP_S, before_write=None):
+    """A starter show file for the renders in `show_dir`, written as a NEW
+    file in `dest` (the folder the show files are listed from). Never
+    replaces a file. Raises ValueError with a sentence when there is
+    nothing to write: the folder missing, or no .fseq that reads.
+    `before_write()`, when given, is called just before the write and may
+    raise to stop it.
+
+    {"path", "file", "folder", "cues", "fps", "rate_note", "skipped",
+     "map"}; rate_note always asks for the rate to be checked."""
+    folder = os.path.abspath(os.path.expanduser(show_dir or ""))
+    if not show_dir or not os.path.isdir(folder):
+        raise ValueError(f"The show folder {folder} does not exist on this "
+                         f"machine, so there are no renders to list. "
+                         f"Nothing was written.")
+    found = timeline_mod.fseq_names(folder)
+    if not found:
+        raise ValueError(f"{folder} holds no .fseq files, so there is "
+                         f"nothing to put in a show file. Render the "
+                         f"sequences in xLights into this folder first. "
+                         f"Nothing was written.")
+    if fps is None:
+        fps, why = renders_rate(folder)
+    else:
+        why = "it was asked for"
+    doc = timeline_mod.starter(folder, fps=fps, start=start,
+                               gap_seconds=gap_seconds)
+    used = {c["fseq"] for c in doc["cues"]}
+    skipped = [n for n in found if n not in used]
+    if not doc["cues"]:
+        raise ValueError(f"None of the {len(found)} .fseq files in {folder} "
+                         f"could be read ({', '.join(skipped[:3])}"
+                         f"{', ...' if len(skipped) > 3 else ''}). Render "
+                         f"them again in xLights. Nothing was written.")
+    if before_write is not None:
+        before_write()
+    out = write_new_show_file(dest, starter_base(folder), doc)
+    note = (f"Check the frame rate: it was set to {doc['fps']:g} fps "
+            f"because {why}. {FPS_CHECK}")
+    return {"path": out, "file": os.path.basename(out), "folder": folder,
+            "cues": len(doc["cues"]), "fps": doc["fps"],
+            "rate_note": note, "skipped": skipped,
+            "map": os.path.isfile(os.path.join(folder,
+                                               "xlights_networks.xml"))}
+
+
 def cmd_init(args):
     doc = timeline_mod.starter(args.show_dir, fps=args.fps, start=args.start,
                                gap_seconds=args.gap)
@@ -684,17 +838,12 @@ def cmd_init(args):
     # reach it. Round 3 of the audit, 2026-09-13.
     if args.out:
         out = args.out
+        with open(out, "w") as fh:
+            json.dump(doc, fh, indent=2)
     else:
-        name = os.path.basename(os.path.normpath(args.show_dir)) or "show"
-        safe = "".join(c if (c.isalnum() or c in "-_ ") else "_" for c in name)
-        out = os.path.join(settings_mod.folder(), f"{safe}_timeline.json")
-        n = 2
-        while os.path.exists(out):
-            out = os.path.join(settings_mod.folder(),
-                               f"{safe}_timeline_{n}.json")
-            n += 1
-    with open(out, "w") as fh:
-        json.dump(doc, fh, indent=2)
+        # Never over an existing show file: the next free _2, _3 name.
+        out = write_new_show_file(settings_mod.folder(),
+                                  starter_base(args.show_dir), doc)
     print(f"Wrote {out} with {len(doc['cues'])} cues at {args.fps} fps.")
     print("It is beside the launcher, so it appears in the Run menu and on "
           "the web page.")
@@ -1932,9 +2081,9 @@ def main(argv=None):
 
     i = sub.add_parser("init", help="write a starter timeline for a show folder")
     i.add_argument("show_dir")
-    i.add_argument("--fps", default=30)
-    i.add_argument("--start", default="01:00:00:00")
-    i.add_argument("--gap", type=float, default=0.0)
+    i.add_argument("--fps", default=INIT_FPS)
+    i.add_argument("--start", default=INIT_START)
+    i.add_argument("--gap", type=float, default=INIT_GAP_S)
     i.add_argument("--out")
     i.set_defaults(func=cmd_init)
 

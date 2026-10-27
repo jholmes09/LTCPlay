@@ -42,7 +42,11 @@ def wanted_devices(folder):
     clock follows the show audio (source audio_master). Files that are not
     shows, or do not parse, are left out."""
     out = {}
-    for p in sorted(glob.glob(os.path.join(folder, "*.json"))):
+    # Escaped: a show folder named "Fire [2026]" is a name, not a
+    # pattern, or nothing is watched at all (review of #137). "*.json"
+    # is the same as the Show file chooser's (web.timelines).
+    for p in sorted(glob.glob(os.path.join(glob.escape(folder),
+                                           "*.json"))):
         try:
             with open(p, encoding="utf-8-sig") as fh:
                 doc = json.load(fh)
