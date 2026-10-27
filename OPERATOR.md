@@ -719,10 +719,11 @@ To make one from a folder of renders, on the show machine:
    show's timecode rate), and the card says so. Set `"fps"` to the rate
    the timecode really runs at, and add `"drop": true` for 29.97
    drop-frame: 29.97 and 30 look identical but drift about 2 seconds over
-   a half hour. The rack screen does not show the rate it hears, so read
-   it in the timecode source's own settings, then rehearse to the end of
-   the show (step 6) and compare the rack screen's timecode with the
-   source: any difference means the rate is wrong.
+   a half hour. Read the rate in the timecode source's own settings. Once
+   the show file is running (step 6), the Programming screen's Show file
+   card says, in amber, when the timecode coming in runs at another rate
+   or drop-frame setting than the show file's (29.97 against 30 only once
+   the engine has measured it, after a few seconds of timecode).
 5. Press "Check the show file" on the same card. It says how many cues it
    found, any render it could not find, any cue that starts before the one
    before it has ended, and anything else wrong.
