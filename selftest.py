@@ -48128,9 +48128,9 @@ def test_stop_halt_review_of_132():
     c.run_once([False] * 6)
     # The window is FIRE's only (delta review of #132, A): a deselect with
     # key 0 up, flamesafe still saying armed, is Stop at once.
-    t[0] += sd.REARM_REFRACTORY_S
     scr.mo["purge"]["wanted_groups"] = []
     c.screen_pass()
+    t[0] += sd.REARM_REFRACTORY_S + sd.DISARM_SETTLE_S
     scr.mo["purge"]["wanted_groups"] = [0, 2]
     c.screen_pass()
     check(c._purge_armed == {0, 2}, f"setup: both armed again: "
