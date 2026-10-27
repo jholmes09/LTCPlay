@@ -805,6 +805,7 @@ class Service:
         # the schedule Holds instead of starting the show (Jeff,
         # 2026-10-26). A running show is never touched. `on_alert_hold`
         # (epoch, why) is told after such a Hold, outside the lock.
+        # showtime_gate returns None or (sentence, the open alerts' ids).
         self.showtime_gate = None
         self.on_alert_hold = None
         self._alert_held = set()      # (night, show) already alert-held
@@ -1656,6 +1657,9 @@ class Service:
             self.machine = replace(self.machine, abort_latched=True)
             self._marker_clear_pending = False
         self._record(out, now, plan, held, ev)
+        if ev.kind == sch.RESUME and ev.actor == "operator" and \
+                not out.refused:
+            self._note_resumed_at_showtime(now)
         if self.dry_run and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
@@ -2030,10 +2034,12 @@ class Service:
             return True
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
-        # journal rather than dropped without a word. A tick that would
-        # start a show goes through the alert gate here too (review of
-        # PR #133, 7).
-        self._hold_at_showtime_for_alerts(now)
+        # journal rather than dropped without a word. This tick never
+        # starts a show, so it needs no alert gate: a night cannot run past
+        # midnight (schedule.parse_rule refuses it) and the reset is at
+        # NIGHT_RESET (2 AM), so every slot on yesterday's list is long
+        # past by now; BOOT_DONE below starts nothing either, and the next
+        # TICK goes through the gate (review of PR #133, 7 and 8).
         self._apply(sch.Event(sch.TICK, "scheduler"), now)
         how = self._still_open(now, d)
         if how is None:
@@ -2264,6 +2270,25 @@ class Service:
         self._after_tick()
         return m
 
+    def _note_resumed_at_showtime(self, now):
+        """An operator's Resume (from any Hold, theirs or the engine's):
+        if the next tick would start a show with alerts open, that
+        showtime is recorded as handled for those alerts, so the gate
+        never holds it again for them (review of PR #133). Never raises."""
+        gate = self.showtime_gate
+        m = self.machine
+        if gate is None or m is None:
+            return
+        try:
+            probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
+            shows = [e.show for e in probe.effects
+                     if e.kind == sch.START_SHOW]
+            got = gate() if shows else None
+        except Exception:                        # noqa: BLE001
+            return
+        if got:
+            self._alert_held.add((str(m.date), shows[0], frozenset(got[1])))
+
     # The states a show can START from on a tick; a running (SHOW) or
     # paused show, or one already held, is never touched here.
     SHOWTIME_FROM = (sch.IDLE, sch.STANDBY)
@@ -2285,16 +2310,18 @@ class Service:
                      if e.kind == sch.START_SHOW]
             if not shows:
                 return
-            # Once an operator has Resumed from an alert hold for this
-            # showtime, it is never held again for it, even with the alert
-            # still open (review of PR #133, 2): the Resume was the choice.
-            key = (str(m.date), shows[0])
-            if key in self._alert_held:
-                return
-            why = gate()
+            got = gate()
         except Exception:                        # noqa: BLE001
             return
-        if not why:
+        if not got:
+            return
+        why, ids = got
+        # Once this showtime was held for these alerts, or an operator
+        # Resumed it with these alerts open, it is never held again for
+        # them (review of PR #133): the Resume was the choice. A NEW alert
+        # at the same showtime holds again.
+        key = (str(m.date), shows[0], frozenset(ids))
+        if key in self._alert_held:
             return
         out = self._apply(sch.Event(
             sch.HOLD_ON, "system", who="LTC Player", screen="engine",

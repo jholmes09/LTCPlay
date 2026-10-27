@@ -1370,6 +1370,9 @@ class AnnounceService:
                     f"{length:.0f} s. " +
                     ("The schedule is held for it; only Resume carries on."
                      if held else
+                     "It plays while the schedule is on the alert hold; "
+                     "nothing else was changed." if automatic is not None
+                     else
                      "It plays over the running show; nothing was paused "
                      "or stopped." if over_show else
                      "Nothing was held."))

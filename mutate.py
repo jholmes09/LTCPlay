@@ -8710,8 +8710,23 @@ def build():
 
  ("alert hold: the same showtime is held again after Resume",
   "ltcplay/schedule_service.py",
-  "            if key in self._alert_held:\n                return",
-  "            if False:\n                return"),
+  "        if key in self._alert_held:\n            return",
+  "        if False:\n            return"),
+
+ ("alert hold: an operator's own Resume at showtime is not respected",
+  "ltcplay/schedule_service.py",
+  "            self._note_resumed_at_showtime(now)",
+  "            pass"),
+
+ ("alert hold: the booth re-sound has no worker of its own",
+  "ltcplay/remote.py",
+  "            self._booth_thread.start()",
+  "            pass"),
+
+ ("alert hold: the alert workers never stop",
+  "ltcplay/remote.py",
+  "        self._alert_stop.set()\n        self._alert_wake.set()",
+  "        self._alert_wake.set()"),
 
  ("alert hold: the remote never hooks the scheduler's ticks",
   "ltcplay/remote.py",
@@ -8725,8 +8740,10 @@ def build():
 
  ("alert hold: the alert work runs on the scheduler's thread",
   "ltcplay/remote.py",
-  "        self._alert_wake.set()\n        if self._alert_thread is None:",
-  "        self._alert_work()\n        if self._alert_thread is None:"),
+  "        self._alert_wake.set()\n        self._booth_wake.set()\n"
+  "        if self._alert_thread is None:",
+  "        self._alert_work()\n        self._booth_wake.set()\n"
+  "        if self._alert_thread is None:"),
 
  ("alert hold: Acknowledge does not cancel the announcement",
   "ltcplay/alerthold.py",
@@ -8748,9 +8765,9 @@ def build():
  ("alert hold: the announcement plays after the operator resumed",
   "ltcplay/alerthold.py",
   "        if h is None:\n            return\n        if not self._still_held(h):\n"
-  "            self.hold = None\n            return",
+  "            self._drop(h)\n            return",
   "        if h is None:\n            return\n        if False:\n"
-  "            self.hold = None\n            return"),
+  "            self._drop(h)\n            return"),
 
  ("alert hold: the announcement plays on every tick after the countdown",
   "ltcplay/alerthold.py",

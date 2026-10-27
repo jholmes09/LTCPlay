@@ -28,8 +28,10 @@ time comes while an alert is still open.
   so the safety cuts an operator's announcement makes (lasers disarmed,
   live flame programming ended) never run from a timer: nothing on the
   rig is changed by a timer. No flame or Tier A path is touched.
-- Once the operator Resumes, the same showtime is never held again for
-  the same alerts (schedule_service remembers the slot).
+- Once the operator Resumes (from any Hold) with a showtime due, that
+  showtime is never held again for the same open alerts
+  (schedule_service remembers night, show and the alert ids); a NEW alert
+  at the same showtime holds again.
 
 Pure logic with an injected clock; remote.Remote runs tick() on a worker
 thread of its own (never the scheduler's: a slow file read or device
@@ -61,12 +63,13 @@ class AlertHold:
 
     # -- the scheduler's side ---------------------------------------------
     def gate(self):
-        """For Service.showtime_gate: a sentence naming the open alerts,
-        or None when there is none."""
+        """For Service.showtime_gate: (a sentence naming the open alerts,
+        their ids), or None when there is none."""
         open_ = self.alerts.open()
         if not open_:
             return None
-        return "; ".join(f"{a.kind}: {a.text}" for a in open_)
+        return ("; ".join(f"{a.kind}: {a.text}" for a in open_),
+                frozenset(a.id for a in open_))
 
     def started(self, epoch, why):
         """Service.on_alert_hold: the Hold took. Sound the booth now and
@@ -97,7 +100,7 @@ class AlertHold:
         if h is None:
             return
         if not self._still_held(h):
-            self.hold = None
+            self._drop(h)
             return
         if h["state"] != "counting":
             return
@@ -125,7 +128,7 @@ class AlertHold:
                 self._cancel(h)
                 return
             if not self._still_held(h):
-                self.hold = None
+                self._drop(h)
                 return
             h["state"] = "failed"
             h["note"] = (f"The Delayed announcement could not play: {e} "
@@ -137,6 +140,12 @@ class AlertHold:
                       "acknowledged the alert within "
                       f"{COUNTDOWN_S:g} s. The show still waits for Resume.",
                       outcome="announced")
+
+    def _drop(self, h):
+        """Forget THIS hold, never a newer one started meanwhile (the
+        scheduler's tick inside _still_held can start one)."""
+        if self.hold is h:
+            self.hold = None
 
     def _cancel(self, h):
         h["state"], h["due"] = "cancelled", None
