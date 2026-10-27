@@ -808,7 +808,9 @@ class Service:
         # showtime_gate returns None or (sentence, the open alerts' ids).
         self.showtime_gate = None
         self.on_alert_hold = None
-        self._alert_held = set()      # (night, show) already alert-held
+        # (night, show) -> the open alert id sets it was held for, or that
+        # an operator Resumed it with (_alert_handled).
+        self._alert_held = {}
         # Called after every tick of the running scheduler, outside the
         # lock (_run): remote.Remote._alert_tick.
         self.tick_hooks = []
@@ -2270,24 +2272,39 @@ class Service:
         self._after_tick()
         return m
 
+    def _alert_handled(self, key, ids):
+        """True when the open alerts are all among a set this showtime was
+        already held for, or Resumed with: an Acknowledge that leaves a
+        subset open never re-holds it (final review of PR #133)."""
+        ids = frozenset(ids)
+        return any(ids <= rec for rec in self._alert_held.get(key, ()))
+
     def _note_resumed_at_showtime(self, now):
-        """An operator's Resume (from any Hold, theirs or the engine's):
-        if the next tick would start a show with alerts open, that
-        showtime is recorded as handled for those alerts, so the gate
-        never holds it again for them (review of PR #133). Never raises."""
+        """An operator's Resume (from any Hold, theirs or the engine's)
+        while alerts are open is the operator's choice (Jeff): the show the
+        next tick would start, AND the next pending show of the night
+        (a Resume pressed before showtime, or a guard running out inside
+        the grace window), are recorded as handled for those alerts, so
+        the gate never holds them again for them. Never raises."""
         gate = self.showtime_gate
         m = self.machine
         if gate is None or m is None:
             return
         try:
+            got = gate()
+            if not got:
+                return
             probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
             shows = [e.show for e in probe.effects
                      if e.kind == sch.START_SHOW]
-            got = gate() if shows else None
+            pending = m.pending()
+            if pending:
+                shows.append(pending[0].n)
         except Exception:                        # noqa: BLE001
             return
-        if got:
-            self._alert_held.add((str(m.date), shows[0], frozenset(got[1])))
+        for n in set(shows):
+            self._alert_held.setdefault((str(m.date), n), []).append(
+                frozenset(got[1]))
 
     # The states a show can START from on a tick; a running (SHOW) or
     # paused show, or one already held, is never touched here.
@@ -2320,8 +2337,8 @@ class Service:
         # Resumed it with these alerts open, it is never held again for
         # them (review of PR #133): the Resume was the choice. A NEW alert
         # at the same showtime holds again.
-        key = (str(m.date), shows[0], frozenset(ids))
-        if key in self._alert_held:
+        key = (str(m.date), shows[0])
+        if self._alert_handled(key, ids):
             return
         out = self._apply(sch.Event(
             sch.HOLD_ON, "system", who="LTC Player", screen="engine",
@@ -2329,7 +2346,7 @@ class Service:
                    f"open ({why})"), now)
         if out.refused or self.machine.state != sch.HOLD:
             return
-        self._alert_held.add(key)
+        self._alert_held.setdefault(key, []).append(frozenset(ids))
         hook = self.on_alert_hold
         if hook is not None:
             epoch = self.hold_epoch

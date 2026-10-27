@@ -1259,6 +1259,7 @@ class Remote:
         self._alert_wake = threading.Event()
         self._booth_wake = threading.Event()
         self._alert_stop = threading.Event()
+        self._alert_lock = threading.Lock()
         self._alert_thread = None
         self._booth_thread = None
         self.alert_hold = AlertHold(self.alerts, schedule,
@@ -1770,6 +1771,13 @@ class Remote:
             return
         self._alert_wake.set()
         self._booth_wake.set()
+        with self._alert_lock:
+            self._start_alert_workers()
+
+    def _start_alert_workers(self):
+        """Called with _alert_lock held: one hold worker and one booth
+        worker, ever, whichever thread ticks first (a second hold worker
+        could play the Delayed twice)."""
         if self._alert_thread is None:
             # Two workers: the booth re-sound never waits behind the
             # Delayed's file read, nor the other way round (review of PR
@@ -1786,7 +1794,7 @@ class Remote:
             self._booth_thread.start()
 
     def _worker(self, wake, work):
-        while not self._alert_stop.is_set():
+        while True:
             wake.wait()
             wake.clear()
             if self._alert_stop.is_set():

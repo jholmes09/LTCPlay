@@ -16735,8 +16735,11 @@ def test_alert_hold_at_showtime_then_one_delayed_announcement():
         check(R.cuts == [], f"the automatic Delayed made no laser or flame "
                             f"cut: {R.cuts}")
         prow = [r for r in ann.journal if r["outcome"] == "started"]
-        check(prow and prow[-1]["actor"] == "system",
-              f"the automatic play is journaled as the system: {prow[-1:]}")
+        check(prow and prow[-1]["actor"] == "system" and
+              "alert hold" in prow[-1]["text"] and
+              "nothing else was changed" in prow[-1]["text"],
+              f"the automatic play is journaled as the system, saying it "
+              f"plays during the alert hold: {prow[-1:]}")
         rows = [r for r in sv.journal if r.get("action") == "alert hold"]
         check(any(r["outcome"] == "announced" and r["actor"] == "system"
                   for r in rows), f"journaled as a system action: {rows}")
@@ -16952,22 +16955,50 @@ def test_alert_hold_respects_any_operator_resume():
                   f"not held again for it: {sv.machine.state}")
         finally:
             R.close()
-        R, booth, ann = _alert_hold_rig(S, grace=15)
+        # A Resume pressed BEFORE showtime with an alert open is the
+        # operator's choice too: at 18:00:00 the show starts, unheld.
+        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+        try:
+            sv = R.svc
+            R.now[0] = _den(S, 17, 59, 50)
+            sv.tick()
+            with sv._locked():
+                sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                                  screen="Rack screen"))
+            R.remote.alerts.raise_("video", "MadMapper is gone.")
+            R.now[0] = _den(S, 17, 59, 58)
+            with sv._locked():
+                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack screen"))
+            sv.tick()
+            R.now[0] = _den(S, 18, 0)
+            sv.tick()
+            check(sv.machine.state == S.SHOW,
+                  f"Resumed before showtime with the alert open: the show "
+                  f"starts at 18:00:00, never held again: "
+                  f"{sv.machine.state}")
+        finally:
+            R.close()
+        # Resumed with alerts {1, 2} open, then 2 acknowledged before the
+        # next tick: {1} is part of what the operator chose, never re-held.
+        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
         try:
             sv = R.svc
             R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+            R.remote.alerts.raise_("audio", "The show audio is lost.")
             R.now[0] = _den(S, 18, 0)
-            check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
-                  "held for the deck alert")
-            R.remote.alerts.clear(action="Acknowledge", who="Andy",
-                                  screen="Rack screen")
+            sv.tick()
+            check(sv.machine.state == S.HOLD, "held for both alerts")
             R.now[0] = _den(S, 18, 0, 3)
             with sv._locked():
                 sv._apply(S.Event(S.RESUME, "operator", who="Andy",
                                   screen="Rack screen"))
-            # Nothing open at the Resume: the show starts at once.
-            check(wait_for(lambda: sv.machine.state == S.SHOW, timeout=3),
-                  "acknowledged and resumed: the show starts")
+            R.remote.alerts.clear(kind="audio", action="Acknowledge",
+                                  who="Andy", screen="Rack screen")
+            sv.tick()
+            check(sv.machine.state == S.SHOW,
+                  f"a subset of the alerts Resumed with: the show starts, "
+                  f"not held again: {sv.machine.state}")
         finally:
             R.close()
         # The same alert, Acknowledge not pressed, Resume: no second Hold
@@ -16996,6 +17027,63 @@ def test_alert_hold_respects_any_operator_resume():
     print("  ok")
 
 
+def test_alert_hold_an_old_hold_never_clears_a_newer_one():
+    section("alert hold (final review of PR #133, A): the scheduler's tick "
+            "inside the old hold's check can start a NEW hold; dropping the "
+            "old one never clears the new one")
+    from ltcplay import alerts as AL, alerthold as AH
+    al = AL.Alerts(booth=None)
+    al.raise_("deck", "The Stream Deck is unplugged.")
+    ah = None
+
+    class _Svc:
+        def hold_still_claimed(self, epoch):
+            if epoch == 1:
+                ah.started(2, "deck: again")     # a new hold, mid check
+                return False
+            return True
+    ah = AH.AlertHold(al, _Svc())
+    ah.started(1, "deck: unplugged")
+    old = ah.hold
+    ah.tick()
+    check(ah.hold is not None and ah.hold is not old and
+          ah.hold["epoch"] == 2,
+          f"the newer hold survives: {ah.hold}")
+    print("  ok")
+
+
+def test_alert_workers_stop_with_the_server():
+    section("alert hold (final review of PR #133, C): the real server close "
+            "(web.serve's server_close) stops both alert workers, and a "
+            "tick after it starts none")
+    from ltcplay import web as web_mod
+    import tempfile as _tf
+    for when in ("after", "before"):
+        folder = _tf.mkdtemp()
+        httpd = web_mod.serve(folder, port=0, bind="127.0.0.1")
+        r = httpd.remote
+        try:
+            if when == "after":
+                r._alert_tick()
+                check(wait_for(lambda: r._alert_thread is not None and
+                               r._alert_thread.is_alive() and
+                               r._booth_thread.is_alive(), timeout=3),
+                      "setup: both workers running")
+        finally:
+            httpd.server_close()
+        if when == "after":
+            check(wait_for(lambda: not r._alert_thread.is_alive() and
+                           not r._booth_thread.is_alive(), timeout=5),
+                  "the server's close stopped both workers")
+        else:
+            r._alert_tick()
+            check(r._alert_thread is None and r._booth_thread is None,
+                  "a tick after the close starts no worker")
+        import shutil as _sh
+        _sh.rmtree(folder, ignore_errors=True)
+    print("  ok")
+
+
 def test_alert_booth_never_waits_behind_the_delayed():
     section("alert hold (delta review of PR #133, 3): the booth re-sound has "
             "a worker of its own: a 3 s Delayed file read never silences "
@@ -17008,7 +17096,13 @@ def test_alert_booth_never_waits_behind_the_delayed():
     AH.COUNTDOWN_S = 0.2
     R, booth, ann = _alert_hold_rig(S)
     try:
-        R.remote.alerts.booth = _CountingBooth(response_s=0.5)
+        names = []
+
+        class _NamedBooth(_CountingBooth):
+            def play(self, kind):
+                names.append(threading.current_thread().name)
+                return super().play(kind)
+        R.remote.alerts.booth = _NamedBooth(response_s=0.25)
         b = R.remote.alerts.booth
         real_decode = ann._decode
         reading = threading.Event()
@@ -17026,6 +17120,10 @@ def test_alert_booth_never_waits_behind_the_delayed():
         check(len(b.played) - n0 >= 2,
               f"the booth kept sounding during the read: "
               f"{len(b.played) - n0} notes in 2 s")
+        time.sleep(2.5)         # the read is over: both workers free
+        check("ltcplay-alert-hold" not in names,
+              f"the booth note is only ever the booth worker's: "
+              f"{sorted(set(names))}")
     finally:
         AH.COUNTDOWN_S = real_cd
         R.close()
@@ -17167,6 +17265,25 @@ def test_alert_worker_never_stalls_a_scheduler_tick():
               "the worker did the slow booth note")
         check(R.remote._alert_tick in R.svc.tick_hooks,
               "the hook is on the scheduler's own tick list")
+    finally:
+        R.close()
+    # The booth note is only ever the booth worker's: while it is busy in
+    # a slow note, the hold worker (free, no hold) never sounds one.
+    R, booth, ann = _alert_hold_rig(S)
+    try:
+        names = []
+
+        class _SlowNamedBooth(_CountingBooth):
+            def play(self, kind):
+                names.append(threading.current_thread().name)
+                time.sleep(0.8)
+                return True, "played"
+        R.remote.alerts.booth = _SlowNamedBooth(response_s=0.25)
+        R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+        time.sleep(3.0)
+        check(names.count("ltcplay-alert-booth") >= 2 and
+              "ltcplay-alert-hold" not in names,
+              f"only the booth worker sounds the booth: {names}")
     finally:
         R.close()
     print("  ok")
@@ -70481,6 +70598,8 @@ if __name__ == "__main__":
     test_alert_hold_never_re_holds_after_resume()
     test_alert_hold_respects_any_operator_resume()
     test_alert_booth_never_waits_behind_the_delayed()
+    test_alert_hold_an_old_hold_never_clears_a_newer_one()
+    test_alert_workers_stop_with_the_server()
     test_alert_worker_never_stalls_a_scheduler_tick()
     test_the_gpl_path_never_loads_announcements()
     test_arttimecode_packet_byte_for_byte()

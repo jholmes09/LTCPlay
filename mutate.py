@@ -8710,8 +8710,50 @@ def build():
 
  ("alert hold: the same showtime is held again after Resume",
   "ltcplay/schedule_service.py",
-  "        if key in self._alert_held:\n            return",
+  "        if self._alert_handled(key, ids):\n            return",
   "        if False:\n            return"),
+
+ ("alert hold: only the exact alert set Resumed with is handled, not a subset",
+  "ltcplay/schedule_service.py",
+  "        return any(ids <= rec for rec in self._alert_held.get(key, ()))",
+  "        return any(ids == rec for rec in self._alert_held.get(key, ()))"),
+
+ ("alert hold: a Resume before showtime is not the operator's choice",
+  "ltcplay/schedule_service.py",
+  "            if pending:\n                shows.append(pending[0].n)",
+  "            if False:\n                shows.append(pending[0].n)"),
+
+ ("alert hold: an old hold clears a newer one",
+  "ltcplay/alerthold.py",
+  "        if self.hold is h:\n            self.hold = None",
+  "        self.hold = None"),
+
+ ("alert hold: the automatic play's journal line hides the alert hold",
+  "ltcplay/announce.py",
+  '                     "It plays while the schedule is on the alert hold; "\n'
+  '                     "nothing else was changed." if automatic is not None\n'
+  '                     else\n',
+  ""),
+
+ ("alert hold: the server's close never stops the alert workers",
+  "ltcplay/web.py",
+  "            httpd.remote.close_alerts()",
+  "            pass"),
+
+ ("alert hold: a worker never checks for the stop",
+  "ltcplay/remote.py",
+  "            if self._alert_stop.is_set():\n                return\n            work()",
+  "            work()"),
+
+ ("alert hold: a tick after the close starts the workers again",
+  "ltcplay/remote.py",
+  "        if self._alert_stop.is_set():\n            return\n        self._alert_wake.set()",
+  "        self._alert_wake.set()"),
+
+ ("alert hold: the hold worker does the booth's work too",
+  "ltcplay/remote.py",
+  "                args=(self._alert_wake, self._hold_work),",
+  "                args=(self._alert_wake, self._alert_work),"),
 
  ("alert hold: an operator's own Resume at showtime is not respected",
   "ltcplay/schedule_service.py",
@@ -8741,9 +8783,9 @@ def build():
  ("alert hold: the alert work runs on the scheduler's thread",
   "ltcplay/remote.py",
   "        self._alert_wake.set()\n        self._booth_wake.set()\n"
-  "        if self._alert_thread is None:",
+  "        with self._alert_lock:",
   "        self._alert_work()\n        self._booth_wake.set()\n"
-  "        if self._alert_thread is None:"),
+  "        with self._alert_lock:"),
 
  ("alert hold: Acknowledge does not cancel the announcement",
   "ltcplay/alerthold.py",
