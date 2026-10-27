@@ -75,6 +75,10 @@ LATCHED_ALLOWED = ("/api/stop",)
 LATCHED_REFUSAL = ("The show was aborted. Nothing on this page may bring "
                    "the rig back up until someone presses Reset; Stop and "
                    "Blackout still work.")
+# A halt that ended a live show (the Stream Deck's Stop) waits at most this
+# long for the conductor's calls, and again for its fade, before playback
+# stops (review of #130, 5). The deck's post waits STOP_POST_TIMEOUT_S.
+HALT_FADE_WAIT_S = 3.0
 LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Hold, Resume and Abort "
                      "work during a show; this waits until the show has "
                      "ended or been aborted.")
@@ -786,6 +790,66 @@ class Handler(BaseHTTPRequestHandler):
             self._ctx_cache = ctx
         return ctx
 
+    def _halt_asked(self):
+        """The Stream Deck's Stop (Jeff, 2026-10-26): a complete halt of
+        everything, taken during a scheduled show too. Only a POST from
+        this machine with "halt": true (the deck process, over loopback);
+        the Rack screen's own Stop button does not ask for it and is still
+        refused during a show."""
+        try:
+            body = self._body()
+        except Exception:                        # noqa: BLE001
+            return False
+        return self._local() and isinstance(body, dict) and \
+            body.get("halt") is True
+
+    def _who_where(self, body):
+        """(who, screen) for a Stop's journal and audit lines."""
+        body = body if isinstance(body, dict) else {}
+        try:
+            ctx = self._ctx()
+            who = str(body.get("who") or getattr(ctx, "user", "") or "")
+            screen = str(body.get("screen") or getattr(ctx, "screen", "")
+                         or "Rack screen")
+        except Exception:                        # noqa: BLE001
+            who, screen = "", "Rack screen"
+        return who, screen
+
+    def _halt(self, body):
+        """The halt before playback stops (Remote.halt): {"flames",
+        "lasers", "show", "failed"}, the steps that are in this engine. A
+        live show that was ended fades to dark first: every conductor call
+        the scheduler decided is made, and the conductor's fade is let run
+        (HALT_FADE_WAIT_S at most), so the music fades and nothing of the
+        show_stopped sequence is cut short by the stop (review of #130,
+        5). Never raises."""
+        rm = getattr(self.server, "remote", None)
+        fn = getattr(rm, "halt", None)
+        if fn is None:
+            return {}
+        who, screen = self._who_where(body)
+        try:
+            h = fn(who, screen)
+        except Exception as e:                   # noqa: BLE001
+            return {"failed": ["halt"],
+                    "error": f"{type(e).__name__}: {e}"}
+        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show")
+               if h.get(k) is not None}
+        out["failed"] = list(h.get("failed") or [])
+        if h.get("show_ended"):
+            svc = getattr(self.server, "schedule", None)
+            try:
+                svc.flush_conductor(HALT_FADE_WAIT_S)
+            except Exception:                    # noqa: BLE001
+                pass
+            cond = getattr(svc, "conductor", None)
+            if cond is not None and getattr(cond, "threaded", False):
+                try:
+                    cond.wait_idle(HALT_FADE_WAIT_S)
+                except Exception:                # noqa: BLE001
+                    pass
+        return out
+
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
         cut, fire while scrubbing ended, then the flame link's disarm_all
@@ -1282,7 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, {"error": f"{type(e).__name__}: {e}"})
             return self._send(code, out, headers=headers)
-        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live():
+        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live() and \
+                not (route == "/api/stop" and self._halt_asked()):
             return self._send(409, {"error": LIVE_SHOW_REFUSAL})
         c = self.server.control
         # An operator action (Start, Stop, GO, autoreload, override, ...) must
@@ -1380,6 +1445,26 @@ class Handler(BaseHTTPRequestHandler):
                 # (the cues zeroed, a zero frame, the keyed disarm and its
                 # repeats: the flame half of an Abort), WITHOUT the Abort
                 # latch, which is the Abort's alone. Then playback stops.
+                # The Stream Deck's Stop is a complete halt (Jeff,
+                # 2026-10-26, "halt"): Remote.halt takes away everything
+                # an Abort does, in the Abort's order, with no latch, and
+                # ends a live scheduled show (STOP_SHOW). Its fade runs to
+                # the end before playback stops.
+                if self._halt_asked():
+                    out = self._halt(body)
+                    try:
+                        out["stopped"] = c.stop()
+                    except Exception as e:       # noqa: BLE001
+                        # The halt ran; only the playback stop failed. The
+                        # answer still carries every step (third review of
+                        # #130, 4), for the deck to say.
+                        out["stopped"] = False
+                        out["failed"] = list(out.get("failed") or []) + [
+                            "playback stop"]
+                        out["error"] = c.last_error = \
+                            f"{type(e).__name__}: {e}"
+                        return self._send(500, out)
+                    return self._send(200, out)
                 flames = self._stop_flames(body)
                 out = {"stopped": c.stop()}
                 if flames is not None:
