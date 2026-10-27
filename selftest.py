@@ -14871,6 +14871,119 @@ def test_announce_on_show_started_reason_new_vs_resume():
     print("  ok")
 
 
+def test_announce_claim_wording_is_the_hold_text():
+    section("announcements: the Hold an announcement claims reads in the "
+            "announcement's own words, exactly, between shows (the real "
+            "Play press through the real scheduler) and during a show "
+            "(the scheduler's own Hold handed that same claim); an "
+            "operator's own Hold keeps its own wording (the full mutation "
+            "sweep, 2026-10-27: the claim wording went unused, uncaught)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+
+    def service(first_start, at):
+        swork = tempfile.mkdtemp()
+        spath = os.path.join(swork, SV.RULE_FILE)
+        SV.save_rule(spath, _sched_doc(
+            weekly={"sat": {"first_start": first_start, "interval_min": 20,
+                            "last_end": "23:00"}},
+            exceptions={}))
+        now = [at]
+        svc = SV.Service(spath, clock=lambda: now[0],
+                         ntp_query=lambda: 0.0, state_dir=swork)
+        svc.tick()
+        return svc
+
+    def hold_rows(svc, since):
+        return [r for r in list(svc.journal)[since:]
+                if r.get("action") == S.HOLD_ON]
+
+    # Between shows: the real Play press claims the Hold; what it asked
+    # with is recorded on the way through, never made up here.
+    svc = service("17:30", _den(S, 17, 34))
+    check(svc.machine.state == S.STANDBY,
+          f"setup: between shows: {svc.machine.state}")
+    claims = []
+
+    def requester(who, screen, detail=None):
+        claims.append((who, screen, detail))
+        return svc.hold_for_announcement(who, screen, detail=detail)
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                            if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = requester
+    before = len(svc.journal)
+    ann.play(A.DELAYED, "Andy", "rack screen")
+    ann.stop("Andy", "rack screen")
+    check(svc.machine.state == S.HOLD,
+          f"setup: the Play press held the schedule: {svc.machine.state}")
+    check(len(claims) == 1 and claims[0][:2] == ("Andy", "rack screen")
+          and claims[0][2],
+          f"setup: the announcement claimed the Hold in its own words: "
+          f"{claims}")
+    wording = claims[0][2] if claims else ""
+    check(wording.startswith("played the ") and
+          wording.endswith(" announcement on the rack screen"),
+          f"the claim names the announcement and the screen: {wording!r}")
+    rows = hold_rows(svc, before)
+    want = (f"Andy {wording}. No show starts by itself until Resume; a "
+            f"show whose time passes meanwhile is delayed and waits for "
+            f"Start now.")
+    check(len(rows) == 1 and rows[0]["text"] == want,
+          f"between shows, the Hold reads in the announcement's own "
+          f"words, exactly:\n    want {want!r}\n    got  "
+          f"{[r['text'] for r in rows]}")
+    check(rows and "pressed Hold" not in rows[0]["text"],
+          f"never as an operator's Hold press: {rows}")
+
+    # During a show: a running show is never paused by an announcement
+    # (Jeff, 2026-10-26), so the scheduler itself is handed that same claim
+    # and must read it the same way: in the claim's words, the show named.
+    svc2 = service("19:00", _den(S, 20, 0))
+    check(svc2.machine.state == S.SHOW and svc2.machine.running,
+          f"setup: a show running: {svc2.machine.state}")
+    n = svc2.machine.running
+    before = len(svc2.journal)
+    with svc2._locked():
+        out = svc2._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                                  screen="rack screen", detail=wording))
+    check(not out.refused and svc2.machine.state == S.PAUSED,
+          f"setup: the claim pauses the show: {out.refused} "
+          f"{svc2.machine.state}")
+    rows = hold_rows(svc2, before)
+    want = (f"Andy {wording}. Show {n} is held for it: flame cues zeroed, "
+            f"lasers blanked, music fading out. Resume carries on from "
+            f"there.")
+    check(len(rows) == 1 and rows[0]["text"] == want,
+          f"during a show, the Hold reads in the announcement's own "
+          f"words, exactly:\n    want {want!r}\n    got  "
+          f"{[r['text'] for r in rows]}")
+
+    # The pure step agrees, and the operator's own Hold (no claim wording)
+    # keeps its own words in both places.
+    for first, now, claimed, plain in (
+            ("19:00", _den(S, 20, 0), "Show", "during show"),
+            ("17:30", _den(S, 17, 34), "No show starts", "No show starts")):
+        m = service(first, now).machine
+        mine = S.step(m, S.Event(S.HOLD_ON, "operator", who="Andy",
+                                 screen="rack screen"), now)
+        theirs = S.step(m, S.Event(S.HOLD_ON, "operator", who="Andy",
+                                   screen="rack screen", detail=wording),
+                        now)
+        mt = [e.text for e in mine.log if e.action == S.HOLD_ON]
+        tt = [e.text for e in theirs.log if e.action == S.HOLD_ON]
+        check(len(tt) == 1 and tt[0].startswith(f"Andy {wording}. ") and
+              claimed in tt[0] and "pressed Hold" not in tt[0],
+              f"{m.state}: the claimed Hold reads in the claim's words: "
+              f"{tt}")
+        check(len(mt) == 1 and mt[0].startswith("Andy pressed Hold") and
+              plain in mt[0] and wording not in mt[0],
+              f"{m.state}: the operator's own Hold keeps its own words: "
+              f"{mt}")
+    print("  ok")
+
+
 def test_announce_hold_for_announcement_no_noise_when_already_held():
     section("announcements: hold_for_announcement never writes a "
             "'refused' line for the routine case of asking for Hold when "
@@ -29731,6 +29844,124 @@ def _deck_face_recorder(sd):
     def restore():
         sd.arm_key_image = real_arm_key_image
     return fonts, faces, restore
+
+
+def test_streamdeck_stop_hold_face_and_ring_from_the_first_instant():
+    section("Stream Deck: a Stop hold on key 0 reads HOLD TO STOP from the "
+            "first instant it is held, its ring fills 0 to 1 over "
+            "STOP_HOLD_S, and both are gone once it is let go: during a "
+            "show, held, with a run going, with the state unknown and "
+            "while aborted (the full mutation sweep, 2026-10-27: a Stop "
+            "hold that never showed on the key went uncaught)")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    class _Cond(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  ok")
+        return
+    rings = []
+    real_marquee = sd.draw_marquee
+
+    def draw_marquee(d, chase, abort_frac, arm_fills=None):
+        rings.append(dict(arm_fills or {}))
+        return real_marquee(d, chase, abort_frac, arm_fills)
+    sd.draw_marquee = draw_marquee
+    up, down = [False] * 6, [True] + [False] * 5
+    hold_face = ["HOLD TO", "STOP"]
+    # (what, show running, run live, conductor look, latched, the face the
+    # key reads when it is not held)
+    cases = [
+        ("during a show", True, False, "PLAYING", False, ["NOW", "PLAYING"]),
+        ("a show held", True, False, "HELD", False, ["PAUSED"]),
+        ("a run going", False, True, "BETWEEN", False, ["STOP", "RUN"]),
+        ("the state unknown", None, False, "BETWEEN", False,
+         ["STOP", "ALL"]),
+        ("aborted during a show", True, False, "PLAYING", True,
+         ["STOP", "RUN"]),
+    ]
+    try:
+        for what, running, live, look, latched, calm in cases:
+            t = [100.0]
+            cond = _Cond()
+            cond._look, cond._latched = look, latched
+            c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), names,
+                              operator_provider=lambda: "Andy",
+                              show_running_provider=lambda r=running: r,
+                              run_live_provider=lambda v=live: v,
+                              conductor=cond, clock=lambda: t[0],
+                              journal=lambda *a, **kw: None)
+
+            def frame():
+                del rings[:]
+                c.draw(fonts, blink_on=True, chase=0)
+                check(len(rings) == 1, f"{what}: one ring per frame: "
+                                       f"{rings}")
+                return faces[0][0], rings[-1].get(sd.TOP_START)
+            face, fill = frame()
+            check(face == calm and fill is None,
+                  f"{what}, not held: the key reads {calm}, no Stop ring: "
+                  f"{face} {fill}")
+            c.run_once(down)
+            check(c._stop_hold.fraction(t[0]) == 0.0 and
+                  c._stop_hold._down_at == t[0],
+                  f"{what}: the press starts a Stop hold")
+            face, fill = frame()
+            check(fill is None,
+                  f"{what}: pressed this very instant, the ring has not "
+                  f"started: {fill}")
+            t0, last = t[0], 0.0
+            # The first instants, under STOP_FACE_AFTER_S, then on to the
+            # very end of the hold: HOLD TO STOP throughout, the fill the
+            # time held over STOP_HOLD_S, always growing.
+            for dt in (0.01, sd.STOP_FACE_AFTER_S / 2,
+                       sd.STOP_FACE_AFTER_S * 0.9, sd.STOP_FACE_AFTER_S,
+                       sd.STOP_HOLD_S / 2, sd.STOP_HOLD_S * 0.9,
+                       sd.STOP_HOLD_S):
+                t[0] = t0 + dt
+                face, fill = frame()
+                want = min(1.0, dt / sd.STOP_HOLD_S)
+                check(face == hold_face,
+                      f"{what}, held {dt:.3f} s: the key reads HOLD TO "
+                      f"STOP from the first instant: {face}")
+                check(fill is not None and abs(fill - want) < 1e-9
+                      and fill > last,
+                      f"{what}, held {dt:.3f} s: Stop's ring fills to "
+                      f"{want:.3f}, more than before ({last:.3f}): {fill}")
+                last = fill or last
+            check(last == 1.0, f"{what}: held STOP_HOLD_S, full: {last}")
+            check(not [x for x in cond.calls if x[0] == "stop"],
+                  f"{what}: drawing never stops anything: {cond.calls}")
+            # Let go before the hold completes (a fresh hold): the face and
+            # the ring go with it, and nothing was sent.
+            c.run_once(up)
+            face, fill = frame()
+            check(face == calm and fill is None,
+                  f"{what}, let go: {calm} again, no Stop ring: {face} "
+                  f"{fill}")
+            c.run_once(down)
+            t[0] += sd.STOP_HOLD_S * 0.1
+            face, fill = frame()
+            check(face == hold_face and fill is not None and
+                  abs(fill - 0.1) < 1e-9,
+                  f"{what}, a second hold: HOLD TO STOP, the ring from 0 "
+                  f"again: {face} {fill}")
+            c.run_once(up)
+            t[0] += sd.STOP_HOLD_S
+            c.tick()
+            face, fill = frame()
+            check(face == calm and fill is None and
+                  not [x for x in cond.calls if x[0] == "stop"],
+                  f"{what}, let go early: {calm}, no ring, nothing "
+                  f"stopped: {face} {fill} {cond.calls}")
+    finally:
+        sd.draw_marquee = real_marquee
+        restore()
+    print("  ok")
 
 
 def test_streamdeck_start_key_during_a_show():
@@ -71318,6 +71549,7 @@ if __name__ == "__main__":
     test_announce_resume_then_rehold_still_refuses()
     test_announce_on_show_started_reason_new_vs_resume()
     test_announce_hold_for_announcement_no_noise_when_already_held()
+    test_announce_claim_wording_is_the_hold_text()
     test_announce_no_scheduler_stays_inert()
     test_announce_single_flight()
     test_announce_operator_validation()
@@ -71469,6 +71701,7 @@ if __name__ == "__main__":
     test_streamdeck_look_a_marquee()
     test_streamdeck_idle_deck_draws_rarely()
     test_streamdeck_start_key_during_a_show()
+    test_streamdeck_stop_hold_face_and_ring_from_the_first_instant()
     test_streamdeck_no_flame_link_words()
     test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
     test_streamdeck_abort_same_pass_as_arm_hold_completion()
