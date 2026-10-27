@@ -16682,10 +16682,11 @@ def test_rack_screen_small_screens_with_announcements_and_setup():
     section("rack screen (second review of PR #129, 5; reviews of #140): "
             "with the announcements block AND the Getting started card, "
             "folded and opened, with and without flame groups, Disarm all, "
-            "every group's arm button and Abort are wholly on screen at "
-            "1366x600, 1366x614, 1024x768, 1280x990, 1280x1024, 1366x1050 "
-            "and 1920x1080, arm buttons at touch size; the open card's "
-            "Make a show file is on screen")
+            "every group's arm button and Abort are wholly on screen with "
+            "24 px to spare at the required sizes and every 50 px from 600 "
+            "to 1100 at 1024 to 1920 wide; the open steps get 120 px; after "
+            "Show the steps the header's Make a show file (40 px) and the "
+            "steps are on screen; a poll never resets the steps' scroll")
     here = os.path.dirname(os.path.abspath(__file__))
     page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
@@ -16722,39 +16723,58 @@ def test_rack_screen_small_screens_with_announcements_and_setup():
     bare = json.loads(json.dumps(st))
     bare["flames"] = {"connected": False, "stale": True, "age_ms": None,
                       "fault": "flamesafe is not running", "groups": []}
-    # Measured as loaded, then "Show the steps" (or "Hide the steps") is
-    # pressed: measured where the press left the page (the card in view),
-    # and again from the top.
-    mjs = r'''<script>
+    # Measured as loaded; then, when it loaded folded, "Show the steps" is
+    # pressed and the page is measured where the press left it; again from
+    # the top; and once more 700 ms after the steps' own scroll was moved
+    # (review of #140: a poll reset it within 100 ms).
+    mjs = r"""<script>
 function go(){ const su = document.getElementById("setup");
  if(su.hidden || !document.getElementById("b-disarm")) return setTimeout(go,50);
- const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
- const mk = () => { const b = document.getElementById("su-make"); return b.hidden ? null : r(b); };
+ const r = e => { if(!e || !e.getClientRects().length) return null; const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
+ const body = () => document.querySelector(".subody");
  const m = () => ({vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
     abort:r(document.getElementById("b-abort")),
     setup:!su.hidden, ann:!document.getElementById("ann").hidden,
-    folded:su.classList.contains("folded"), make:mk(),
+    folded:su.classList.contains("folded"),
+    make:document.getElementById("su-make").hidden ? null : r(document.getElementById("su-make")),
+    steps:su.classList.contains("folded") ? null : r(body()), sh:body().scrollHeight, ch:body().clientHeight,
+    st:body().scrollTop, below:!document.getElementById("setup-below").hidden,
+    root:document.documentElement.className,
     arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)});
  setTimeout(()=>{ scrollTo(0, 0); const out = m();
-  document.getElementById("su-more").click();
-  setTimeout(()=>{ out.pressed = m(); scrollTo(0, 0); out.after = m();
-   const pre = document.createElement("pre"); pre.id = "rack-measure";
-   pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 800);}, 1500);}
-go();</script>'''
+  const wasFolded = su.classList.contains("folded");
+  if(wasFolded) document.getElementById("su-more").click();
+  setTimeout(()=>{ out.pressed = wasFolded ? m() : null; scrollTo(0, 0); out.after = m();
+   const b = body(); out.set = null;
+   if(!out.after.below && b.scrollHeight > b.clientHeight + 40){ b.scrollTop = 40; out.set = b.scrollTop; }
+   setTimeout(()=>{ out.later = m();
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 700);}, 900);}, 1500);}
+go();</script>"""
     # The required sizes are 1366x600, 1366x614, 1366x544, 1366x558 and
     # 1024x768 (the runner's Chrome leaves about 143 px less page than its
     # window, a local one about 87, so 544 and 558 here are about what the
-    # runner sees at 600 and 614), and the taller ones a rack monitor or a
-    # laptop has (review of #140). 1366x488 and 1366x502 are drawn for
+    # runner sees at 600 and 614), the taller ones a rack monitor or a
+    # laptop has, and (review of #140) every 50 px from 600 to 1100 at
+    # 1024, 1180, 1280, 1366 and 1920 wide, with the narrow bands where
+    # Disarm all missed its margin. 1366x488 and 1366x502 are drawn for
     # information only, printed and never failed: shorter than any real
     # show PC or iPad window (coordinator, review of PR #129).
-    sizes = ((1366, 600), (1366, 614), (1366, 544), (1366, 558),
-             (1366, 488), (1366, 502), (1024, 768), (1280, 990),
-             (1280, 1024), (1366, 1050), (1920, 1080))
+    required = [(1366, 600), (1366, 614), (1366, 544), (1366, 558),
+                (1366, 488), (1366, 502), (1024, 768), (1366, 768),
+                (1280, 990),
+                (1280, 1024), (1366, 1050), (1920, 1080)]
+    sweep = [(w, h) for w in (1024, 1180, 1280, 1366, 1920)
+             for h in range(600, 1101, 50)]
+    bands = [(1024, 750), (1024, 758), (1024, 806), (1024, 812),
+             (1180, 730), (1180, 750), (1180, 790), (1180, 810), (1180, 820)]
+    every = list(dict.fromkeys(required + sweep + bands))
     SLACK = 24
+    STEPS_MIN = 120
     INFO_ONLY = {(1366, 488), (1366, 502)}
-    for label, status, n_arms in (("flame groups", st, 3),
-                                  ("no flame groups", bare, 0)):
+    for label, status, n_arms, sizes in (
+            ("flame groups", st, 3, every),
+            ("no flame groups", bare, 0, required)):
         got = _rack_screen_in_chromium(chrome, page, status, sizes,
                                        measure_js=mjs)
         for (w, h), m in got.items():
@@ -16766,22 +16786,23 @@ go();</script>'''
             if not check(isinstance(m, dict),
                          f"{w}x{h} {label}: drawn: {m!r}"):
                 continue
-            pr, af = m.get("pressed") or {}, m.get("after") or {}
+            pr, af, la = m.get("pressed"), m.get("after") or {}, \
+                m.get("later") or {}
             check(m.get("folded") is (n_arms > 0) and
-                  af.get("folded") is (n_arms == 0),
+                  af.get("folded") is False,
                   f"{w}x{h} {label}: folded as loaded only with flame "
-                  f"groups, and the press turns it: {m.get('folded')} "
+                  f"groups, open after Show the steps: {m.get('folded')} "
                   f"{af.get('folded')}")
-            for state, mm in (("as loaded", m), ("after the press", af)):
+            # From the top of the page, as loaded, opened and later:
+            # Abort, Disarm all and every arm button on screen.
+            for state, mm in (("as loaded", m), ("open", af),
+                              ("open, later", la)):
                 if not mm:
                     continue
                 vh = mm["vh"]
                 where = f"{w}x{h} {label} {state}"
                 check(mm["setup"] and mm["ann"],
                       f"{where}: both shown: {mm}")
-                # Abort is pinned to the bottom of the window; Disarm all
-                # and the arm buttons must clear the fold by SLACK px
-                # (review of PR #129).
                 check(mm["abort"]["top"] >= 0 and
                       mm["abort"]["bottom"] <= vh,
                       f"{where}: abort wholly on screen: {mm['abort']} "
@@ -16789,21 +16810,189 @@ go();</script>'''
                 check(mm["disarm"]["top"] >= 0 and
                       mm["disarm"]["bottom"] <= vh - SLACK,
                       f"{where}: disarm wholly on screen with {SLACK} px "
-                      f"to spare: {mm['disarm']} vh {vh}")
+                      f"to spare: {mm['disarm']} vh {vh} ({mm['root']})")
                 check(len(mm["arms"]) == n_arms and all(
                           a["h"] >= 44 and a["top"] >= 0 and
                           a["bottom"] <= vh - SLACK for a in mm["arms"]),
                       f"{where}: every arm button on screen with {SLACK} "
                       f"px to spare, at least 44 px: {mm['arms']} vh {vh}")
-            # The open card's Make a show file is on screen: as loaded
-            # when it loads open, where the press left the page when the
-            # press opened it.
-            op = m if not m.get("folded") else pr
-            mk = (op or {}).get("make")
-            check(bool(mk) and mk["top"] >= 0 and
-                  mk["bottom"] <= op["vh"],
-                  f"{w}x{h} {label}: the open card's Make a show file is on "
-                  f"screen: {mk} vh {(op or {}).get('vh')}")
+                # The card stays above the flame groups on any page of
+                # 560 px or more: the card after every block is the last
+                # resort of a window shorter than that.
+                if vh >= 560:
+                    check("setupafter" not in mm.get("root", ""),
+                          f"{where}: the card is above the flame groups: "
+                          f"{mm.get('root')}")
+                if mm.get("make"):
+                    check(mm["make"]["h"] >= 40,
+                          f"{where}: Make a show file is at least 40 px "
+                          f"tall: {mm['make']}")
+            # Open, the steps have room: STEPS_MIN px (or all of them),
+            # in the card or in their own block after the flame groups.
+            stp = af.get("steps") or {"h": 0}
+            check(stp["h"] >= min(STEPS_MIN, af.get("sh", 0)) - 1,
+                  f"{w}x{h} {label}: the open steps have at least "
+                  f"{STEPS_MIN} px: {stp} of {af.get('sh')} "
+                  f"(after the groups: {af.get('below')})")
+            # Where the press left the page, the card's header with Make a
+            # show file and the steps can both be seen; with the card open
+            # as loaded, Make a show file is on screen as loaded unless the
+            # window is too short for the card above the groups.
+            if pr:
+                mk, sp, vh = pr.get("make"), pr.get("steps"), pr["vh"]
+                check(bool(mk) and mk["top"] >= 0 and mk["bottom"] <= vh,
+                      f"{w}x{h} {label}: after Show the steps, Make a show "
+                      f"file is on screen: {mk} vh {vh}")
+                check(bool(sp) and sp["top"] <= vh - 60 and
+                      sp["bottom"] >= 60,
+                      f"{w}x{h} {label}: after Show the steps, the steps "
+                      f"are on screen: {sp} vh {vh}")
+            elif "setupafter" not in m.get("root", ""):
+                mk = m.get("make")
+                check(bool(mk) and mk["top"] >= 0 and
+                      mk["bottom"] <= m["vh"],
+                      f"{w}x{h} {label}: the open card's Make a show file "
+                      f"is on screen as loaded: {mk} vh {m['vh']}")
+            # The steps' own scroll is left alone by the status polls.
+            if m.get("set") is not None:
+                check(la.get("st") == m["set"],
+                      f"{w}x{h} {label}: the steps' scroll stays where it "
+                      f"was put: {m['set']} then {la.get('st')}")
+    print("  ok")
+
+
+def test_rack_screen_setup_card_refits_when_warnings_come():
+    section("rack screen (review of #141): with the Getting started steps "
+            "open, warnings that come up AFTER (a start check alert, the "
+            "disk, a laser fault, the live flame programming banner, the "
+            "arm note) are fitted again: 2 s and 10 s later Abort is on "
+            "screen and Disarm all and every arm button keep the 24 px "
+            "margin, or, where the warnings alone take that room, end no "
+            "lower than on the same page without the card, at 1366x640, "
+            "1366x700, 1024x768, 1180x820 and 1920x900; the steps hand a "
+            "scroll at their end on to the page")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the page was not drawn")
+        print("  ok")
+        return
+    st = _rack_status_no_show_file()
+    st["setup"]["show_folder_renders"] = 3
+    # What the next polls add once the steps are open: the status as the
+    # engine would send it, changed in the page's own fetch.
+    more = {
+        "alerts": [{"id": 99, "kind": "start", "severity": "fault",
+                    "text": ("Start check: the show audio interface is not "
+                             "answering. Check its USB cable and power, then "
+                             "press Acknowledge."),
+                    "since": 0, "options": ["Acknowledge"], "booth": "",
+                    "pulse": False}],
+        "disk": {"text": "The disk is nearly full: 1.2 GB left. Clear old "
+                         "logs and renders."},
+        "laser_fault": "BEYOND's OSC address is not set",
+        "live_flame": {"on": True, "one_group_at_a_time": True,
+                       "group": "front row", "text": "front row follows "
+                       "xLights; the other groups stay disarmed."},
+        "arming": dict(st.get("arming") or {}, enabled=False),
+    }
+    mjs = r"""<script>
+(function(){
+const MORE = __MORE__;
+const of = window.fetch;
+window.__more = false;
+window.fetch = async function(u, o){
+  const r = await of(u, o);
+  if(window.__more && String(u).indexOf("/api/remote/status") >= 0){
+    const j = await r.clone().json();
+    Object.assign(j, MORE);
+    return new Response(JSON.stringify(j), {status:r.status, headers:{"Content-Type":"application/json"}});
+  }
+  return r;
+};
+function go(){ const su = document.getElementById("setup");
+ if(su.hidden || !document.getElementById("b-disarm") || !document.querySelector("#fl-lamps .lamp [data-arm]")) return setTimeout(go, 50);
+ const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
+ const m = () => { scrollTo(0, 0); return {vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
+    abort:r(document.getElementById("b-abort")), folded:su.classList.contains("folded"),
+    lf:!document.getElementById("lf-banner").hidden, note:document.getElementById("arm-note").classList.contains("said"),
+    root:document.documentElement.className, card:r(su), below:!document.getElementById("setup-below").hidden,
+    arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)}; };
+ setTimeout(() => {
+  if(su.classList.contains("folded")) document.getElementById("su-more").click();
+  setTimeout(() => {
+   const out = {open:m()};
+   window.__more = true;
+   setTimeout(() => { out.at2 = m();
+    setTimeout(() => { out.at10 = m();
+     // The steps hand a scroll at their end on to the page. (A page
+     // cannot send itself a wheel the browser acts on, so the rule that
+     // decides it is read.)
+     const b = document.querySelector(".subody");
+     out.wheel = {overscroll: getComputedStyle(b).overscrollBehaviorY};
+     const pre = document.createElement("pre"); pre.id = "rack-measure";
+     pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
+    }, 8000);
+   }, 2000);
+  }, 900);
+ }, 1500);}
+go();
+})();
+</script>""".replace("__MORE__", json.dumps(more))
+    sizes = ((1366, 640), (1366, 700), (1024, 768), (1180, 820),
+             (1920, 900))
+    got = _rack_screen_in_chromium(chrome, page, st, sizes, measure_js=mjs,
+                                   budget_ms=16000)
+    # The same page and the same warnings with no Getting started card
+    # (the setup done; the no-show-file line stays): what the warnings
+    # alone leave.
+    base_st = json.loads(json.dumps(st))
+    base_st["setup"]["ready"] = True
+    base_mjs = mjs.replace('if(su.hidden || !document.getElementById("b-disarm")',
+                           'if(!document.getElementById("b-disarm")')
+    base = _rack_screen_in_chromium(chrome, page, base_st, sizes,
+                                    measure_js=base_mjs, budget_ms=16000)
+    SLACK = 24
+    for (w, h), m in got.items():
+        if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):
+            continue
+        bm = base.get((w, h))
+        if not check(isinstance(bm, dict),
+                     f"{w}x{h}: drawn without the card: {bm!r}"):
+            continue
+        check(m["open"]["folded"] is False and m["at2"]["lf"] and
+              m["at2"]["note"],
+              f"{w}x{h}: the steps open, then the banner and the arm note "
+              f"came: {m['open']['folded']} {m['at2']['lf']} "
+              f"{m['at2']['note']}")
+        for state in ("open", "at2", "at10"):
+            mm, bb = m[state], bm[state]
+            vh = mm["vh"]
+            where = f"{w}x{h} {state}"
+            check(mm["abort"]["top"] >= 0 and mm["abort"]["bottom"] <= vh,
+                  f"{where}: abort wholly on screen: {mm['abort']} vh {vh}")
+            lim = max(vh - SLACK, bb["disarm"]["bottom"]) + 1
+            check(mm["disarm"]["top"] >= 0 and
+                  mm["disarm"]["bottom"] <= lim,
+                  f"{where}: disarm on screen with {SLACK} px to spare, or "
+                  f"no lower than without the card "
+                  f"({bb['disarm']['bottom']:.0f}): {mm['disarm']} vh {vh} "
+                  f"({mm.get('root')})")
+            alim = max([vh - SLACK] + [a["bottom"] for a in bb["arms"]]) + 1
+            check(len(mm["arms"]) == 3 and all(
+                      a["top"] >= 0 and a["bottom"] <= alim
+                      for a in mm["arms"]),
+                  f"{where}: every arm button on screen with {SLACK} px to "
+                  f"spare, or no lower than without the card: {mm['arms']} "
+                  f"vh {vh}")
+        wh = m.get("wheel") or {}
+        check(wh.get("overscroll") == "auto",
+              f"{w}x{h}: the steps hand a scroll at their end on to the "
+              f"page: overscroll-behavior {wh.get('overscroll')!r}")
     print("  ok")
 
 
@@ -45397,7 +45586,7 @@ def _run_browser(cmd, limit, env):
 
 def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                              tries=None, measure_js=None, head_js="",
-                             frag="", routes=None):
+                             frag="", routes=None, budget_ms=6000):
     """Draw `page` (remote.html's text) in headless `chrome` (a path, or a
     command as a list) at each (width, height) in `sizes`, its engine a
     stub answering `status`, and return {(w, h): [measure, ...]} (see
@@ -45481,7 +45670,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                 "--headless=new", "--no-sandbox", "--disable-gpu",
                 "--no-first-run", "--no-default-browser-check",
                 "--hide-scrollbars", f"--user-data-dir={prof}",
-                f"--window-size={w},{h}", "--virtual-time-budget=6000",
+                f"--window-size={w},{h}",
+                f"--virtual-time-budget={int(budget_ms)}",
                 "--dump-dom",
                 f"http://127.0.0.1:{srv.server_address[1]}/remote{frag}"]
             try:
@@ -48795,6 +48985,7 @@ function fakeEl(id){
 }
 const $ = id => (EL[id] = EL[id] || fakeEl(id));
 const window = {addEventListener(){}};
+const document = {querySelector: sel => fakeEl(sel), querySelectorAll: () => [], documentElement: fakeEl("html")};
 let ST = {flames:{connected:true, groups:[1, 2, 3]}};
 const location = {hash:""};
 const posts = [];
@@ -72534,6 +72725,7 @@ if __name__ == "__main__":
         test_announce_view_stale_snapshot_is_not_fact,
         test_streamdeck_page_two_shows_the_engines_refusal,
         test_rack_screen_small_screens_with_announcements_and_setup,
+        test_rack_screen_setup_card_refits_when_warnings_come,
         test_alerts_booth_resounds_every_30_s_until_acknowledged,
         test_alert_hold_at_showtime_then_one_delayed_announcement,
         test_alert_hold_acknowledge_cancels_and_quiet_kinds,
