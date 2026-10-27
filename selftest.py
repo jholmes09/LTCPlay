@@ -756,7 +756,8 @@ def test_real_show(show_dir):
     section(f"real FSEQ files in {show_dir}")
     import glob
     from ltcplay.fseq import FSEQ
-    files = sorted(glob.glob(os.path.join(show_dir, "*.fseq")))
+    files = sorted(glob.glob(os.path.join(glob.escape(show_dir),
+                                          "*.[fF][sS][eE][qQ]")))
     if not files:
         print("  skipped, no .fseq files")
         return
@@ -47900,6 +47901,88 @@ def test_remote_setup_routes_this_machine_only():
     print("  ok")
 
 
+def test_a_bracketed_show_folder_is_a_name_not_a_pattern():
+    section("a show folder named with [ or ] (\"Fire [2026] été\") is a "
+            "name, never a glob pattern (review of #137): the scheduler's "
+            "show length cross-check finds the show file that names a "
+            "clock block, the audio interface watch finds the device it "
+            "names, and a marker CSV finds the renders (any case of .fseq)")
+    import glob
+    import json as _j
+    import shutil
+    import tempfile
+    import test_show_fixtures as FX
+    from ltcplay import audiowatch as AW
+    from ltcplay import clock as C
+    from ltcplay import markers as MK
+    src = FX.synthetic_show_dir()
+    opener = "GPL 2026_Set 1_Opener.fseq"     # 2000 frames at 25 ms: 50.0 s
+    ending = "GPL 2026_Set 1_Ending.fseq"     # 1300 frames at 25 ms: 32.5 s
+    root = tempfile.mkdtemp()
+    try:
+        # "[2026]" read as a pattern is one character, 2, 0 or 6: the
+        # folder itself never matches it, so an unescaped glob finds
+        # nothing at all here, on every OS.
+        sd = os.path.join(root, "Fire [2026] été")
+        os.makedirs(sd)
+        shutil.copyfile(os.path.join(src, opener), os.path.join(sd, opener))
+        # In capitals: what timeline.fseq_names (Make a show file) lists.
+        caps = ending[:-len(".fseq")] + ".FSEQ"
+        shutil.copyfile(os.path.join(src, ending), os.path.join(sd, caps))
+        for n in ("xlights_networks.xml", "xlights_rgbeffects.xml"):
+            shutil.copyfile(os.path.join(src, n), os.path.join(sd, n))
+        with open(os.path.join(sd, "x.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        check(glob.glob(os.path.join(sd, "*.json")) == [],
+              "this folder name is one an unescaped glob reads as a "
+              "pattern, so the checks below prove the escaping")
+        os.remove(os.path.join(sd, "x.json"))
+
+        # The scheduler's show length cross-check.
+        show = os.path.join(sd, "show.json")
+        with open(show, "w", encoding="utf-8") as fh:
+            _j.dump({"fps": 25, "show_dir": sd,
+                     "cues": [{"tc": "01:00:00:00", "fseq": opener}],
+                     "clock": {"source": "artnet_master",
+                               "artnet": {"nodes": {"test": "127.0.0.1"}},
+                               "zones": {"show": 1, "intermission": 2,
+                                         "forward": ["show"]}}}, fh)
+        path, length, warn = C.derive_show_length_in_folder(sd)
+        check(path == show and length is not None and
+              abs(length - 50.0) < 1e-6 and warn is None,
+              f"the cross-check sees the show file that names a clock block "
+              f"in a [bracketed] folder, and its real 50.0s, never 'no show "
+              f"file in the folder names a clock block': "
+              f"{(path, length, warn)}")
+
+        # The audio interface watch.
+        with open(os.path.join(sd, "audio show.json"), "w",
+                  encoding="utf-8") as fh:
+            _j.dump({"cues": [], "clock": {
+                "source": "audio_master",
+                "audio": {"device": "PreSonus Studio 1824c"}}}, fh)
+        want = AW.wanted_devices(sd)
+        check(want == {"PreSonus Studio 1824c": "audio show.json"},
+              f"the audio interface watch finds the device a show file in "
+              f"a [bracketed] folder names, never quietly watches nothing: "
+              f"{want}")
+
+        # A marker CSV against the renders in the folder.
+        csv_path = os.path.join(root, "cues.csv")
+        with open(csv_path, "w", encoding="utf-8") as fh:
+            fh.write("Name\tStart\nOpener\t00:00:00:00\n"
+                     "Ending\t00:00:50:00\n")
+        doc, unprogrammed, _notes, marks = MK.build(csv_path, sd, fps=30)
+        got = sorted(c["fseq"] for c in doc["cues"])
+        check(len(marks) == 2 and unprogrammed == [] and
+              got == sorted([opener, caps]),
+              f"a marker CSV finds both renders in a [bracketed] folder, "
+              f"the one named .FSEQ too: {got} unprogrammed {unprogrammed}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    print("  ok")
+
+
 def test_make_a_show_file_from_the_show_folder():
     section("Programming screen, Make a show file (Jeff, 2026-10-27: a "
             "fresh install pointed at a folder of renders had no way to make "
@@ -72195,6 +72278,7 @@ if __name__ == "__main__":
     test_deck_chip_in_a_browser()
     test_remote_setup_routes_this_machine_only()
     test_make_a_show_file_from_the_show_folder()
+    test_a_bracketed_show_folder_is_a_name_not_a_pattern()
     test_windows_supervisor_first_run_defaults()
     test_remote_page_loss_changes_nothing()
     test_remote_scrubbing_only_in_a_programming_session()

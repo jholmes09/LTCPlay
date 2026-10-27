@@ -22,6 +22,11 @@
 # -- macOS only
 windows | the app runs from the wrong folder | only compiling and running the macOS C launcher catches it; that cannot run on Windows
 
+# -- Windows folds case in glob itself, so "*.fseq" already finds A.FSEQ
+# there; the mutation is a real miss only on macOS and Linux, where the
+# ubuntu runs catch it.
+windows | a marker CSV misses renders named .FSEQ | glob on Windows matches without case (ntpath.normcase), so the unmutated and mutated patterns list the same files; ubuntu catches it
+
 # -- beyond.py: two guard layers by design (S5), so removing one alone is
 # not independently observable while the other still refuses the same
 # input the same way. Kept deliberately, not an untested gap: a future

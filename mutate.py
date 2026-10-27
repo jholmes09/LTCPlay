@@ -14754,6 +14754,22 @@ def build():
   "        pattern = os.path.join(glob.escape(self.folder), \"*.json\")",
   "        pattern = os.path.join(self.folder, \"*.json\")"),
 
+ ("the show length cross-check reads a [bracketed] folder name as a pattern", "ltcplay/clock.py",
+  "    for path in sorted(glob.glob(_os.path.join(glob.escape(folder),\n",
+  "    for path in sorted(glob.glob(_os.path.join(folder,\n"),
+
+ ("the audio interface watch reads a [bracketed] folder name as a pattern", "ltcplay/audiowatch.py",
+  "    for p in sorted(glob.glob(os.path.join(glob.escape(folder),\n",
+  "    for p in sorted(glob.glob(os.path.join(folder,\n"),
+
+ ("a marker CSV reads a [bracketed] folder name as a pattern", "ltcplay/markers.py",
+  "    files = sorted(glob.glob(os.path.join(glob.escape(show_dir),\n",
+  "    files = sorted(glob.glob(os.path.join(show_dir,\n"),
+
+ ("a marker CSV misses renders named .FSEQ", "ltcplay/markers.py",
+  "                                          \"*.[fF][sS][eE][qQ]\")))\n",
+  "                                          \"*.fseq\")))\n"),
+
  ("make a show file misses renders named .FSEQ", "ltcplay/timeline.py",
   "    return sorted(n for n in names if n.lower().endswith(\".fseq\") and",
   "    return sorted(n for n in names if n.endswith(\".fseq\") and"),
