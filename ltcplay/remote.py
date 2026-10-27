@@ -316,6 +316,63 @@ def _norm_folder(p):
         os.path.expanduser(str(p)))))
 
 
+def _rate_words(fps, drop):
+    fps = float(fps)
+    if round(fps) == 30:
+        return f"{fps:g} fps {'drop-frame' if drop else 'non-drop'}"
+    return f"{fps:g} fps{' drop-frame' if drop else ''}"
+
+
+# The timecode is "arriving" while its last frame is at most this old:
+# the decoder keeps its last rate reading after the feed stops, and a rate
+# is never said for a feed that is not there (review of #140).
+RATE_ARRIVING_S = 1.0
+
+
+def rate_mismatch(cs):
+    """A sentence when the timecode coming in (the engine's own reading,
+    session.snapshot's rate_in, rate_drop and rate_confident, the same one
+    display.warnings_for judges) does not match the running show file's
+    fps and drop, else "". Only while timecode is arriving (ltc_age under
+    RATE_ARRIVING_S). The frame count and the drop bit are read off every
+    frame; a rate (29.97 against 30, which count alike) is said only once
+    it is measured (rate_confident), and the show file's own rate is never
+    said as the incoming one. Display only. Never raises."""
+    try:
+        rate = cs.get("rate_in")
+        fps = cs.get("timeline_fps")
+        age = cs.get("ltc_age")
+        arriving = age is not None and float(age) <= RATE_ARRIVING_S
+        if not cs.get("running") or rate is None or fps is None or \
+                not arriving:
+            return ""
+        rate, fps = float(rate), float(fps)
+        drop = bool(cs.get("rate_drop"))
+        tdrop = bool(cs.get("timeline_drop"))
+        sure = bool(cs.get("rate_confident"))
+        count_off = round(rate) != round(fps)
+        speed_off = sure and abs(rate - fps) > 0.01
+        drop_off = drop != tdrop
+        if not (count_off or speed_off or drop_off):
+            return ""
+        dword = "drop-frame" if drop else "non-drop"
+        if count_off or speed_off:
+            if sure:
+                incoming = f"runs at {_rate_words(rate, drop)}"
+            else:
+                incoming = (f"counts {round(rate)} frames a second, "
+                            f"{dword}")
+            keys = '"fps" and "drop"' if drop_off else '"fps"'
+        else:
+            incoming = f"is {dword}"
+            keys = '"drop"'
+        return (f"The timecode coming in {incoming}; the show file says "
+                f"{_rate_words(fps, tdrop)}. Cues drift until {keys} in "
+                f"the show file match the timecode.")
+    except Exception:                            # noqa: BLE001
+        return ""
+
+
 def show_folder_mismatch(served, wanted):
     """The sentence when showpc.json's show_folder (`wanted`) is not the
     folder this engine serves (`served`, its --folder); "" when they are
@@ -4702,9 +4759,11 @@ class Remote:
 
     def new_show_file(self, body):
         """POST show-file-new: a starter show file for the renders in the
-        folder this engine serves, made exactly as `ltc init` makes one
-        (cli.make_show_file, timeline.starter): one cue per .fseq, back to
-        back from 01:00:00:00. Written as a NEW file where the Show file
+        folder this engine serves, laid out by the same timeline.starter()
+        as `ltc init` (cli.make_show_file): one cue per .fseq, back to back
+        from 01:00:00:00. Unlike `ltc init` it writes into the show folder,
+        not beside the launcher, and starts from the renders' rate guess
+        (cli.renders_rate) rather than a fixed 30 fps. Written as a NEW file where the Show file
         chooser lists show files, never over one, and chosen there.
         Refused while a show file is running or a scheduled show is live,
         asked again just before the write and before the choice. The
@@ -4748,12 +4807,13 @@ class Remote:
         text = (f"Made {name} with {n} cue{'' if n == 1 else 's'}, one for "
                 f"each render (.fseq) in {made['folder']}, back to back "
                 f"from {INIT_START}. The renders were not changed. "
-                f"{made['rate_note']} Check the show file does not hear "
-                f"the timecode, and this screen does not show the rate it "
-                f"hears: read the rate in the timecode source's own "
-                f"settings, then rehearse in Programming mode to the end "
-                f"of the show and compare this screen's timecode with the "
-                f"source; any difference means the rate is wrong.")
+                f"{made['rate_note']} The \"Check the show file\" button "
+                f"does not hear the timecode. Read the rate in the "
+                f"timecode source's own settings; once a show file is "
+                f"running, the Show file card on the Programming screen "
+                f"says when the "
+                f"timecode coming in runs at another rate than the show "
+                f"file's.")
         if made["skipped"]:
             text += (f" Left out because they could not be read: "
                      f"{', '.join(made['skipped'][:5])}"
@@ -5078,7 +5138,8 @@ class Remote:
                            "show": cs.get("show"),
                            "timeline": cs.get("timeline"),
                            "timecode": cs.get("playing") or cs.get("ltc_in"),
-                           "state": cs.get("state")}
+                           "state": cs.get("state"),
+                           "rate_note": rate_mismatch(cs)}
             cue_now = cs.get("now")
             out["subsystems"] = self.subsystems(cs)
         except Exception as e:

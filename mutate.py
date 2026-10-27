@@ -327,11 +327,10 @@ MUTATIONS = [
   "  if(andFolder !== false) loadShowDir();",
   "  if(false) loadShowDir();"),
 
- ("output loop exception guard removed", "ltcplay/player.py",
-  '''try:
-                frame = self._alert_mix(self._tick())''',
-  '''if True:
-                frame = self._alert_mix(self._tick())'''),
+ ('output loop exception guard removed',
+  'ltcplay/player.py',
+  '            except Exception as e:\n                # Nothing raised in here may be allowed to end this thread.',
+  '            except ZeroDivisionError as e:\n                # Nothing raised in here may be allowed to end this thread.'),
 
  ("supervisor never restarts a dead thread", "ltcplay/player.py",
   "if self._running and (t is None or not t.is_alive()):", "if False:"),
@@ -1258,8 +1257,9 @@ MUTATIONS = [
   "ltcplay/cli.py",
   "        if majority and mine and mine != maj_starts:", "        if False:"),
 
- ("the layout report stops saying which props go dark", "ltcplay/cli.py",
-  '                detail.append(f"    does not contain ch {s0+1}..{s0+maj_starts[s0]}"',
+ ('the layout report stops saying which props go dark',
+  'ltcplay/cli.py',
+  '                detail.append(f"    does not contain ch {s0+1}..{s0+maj_starts[s0]}"\n                              f"{prop(s0 + 1)} -- it stays dark")',
   '                pass  # noqa'),
 
  ("a track number makes every numbered render look mislabelled",
@@ -1543,9 +1543,10 @@ MUTATIONS = [
   "    except ZeroDivisionError as e:\n"
   "        # A stack trace at a console at 8pm helps nobody."),
 
- ("verify dies instead of reporting when it cannot write", "ltcplay/cli.py",
-  "        try:\n            with open(mpath, \"w\") as fh:",
-  "        if True:\n            with open(mpath, \"w\") as fh:"),
+ ('verify dies instead of reporting when it cannot write',
+  'ltcplay/cli.py',
+  '        except OSError as e:\n            print(f"\\n  Could not record the fingerprints',
+  '        except ZeroDivisionError as e:\n            print(f"\\n  Could not record the fingerprints'),
 
  ("the chase engine's clock regresses to the coarse one on Windows",
   "ltcplay/player.py",
@@ -6241,8 +6242,8 @@ def build():
  # Item 1: conductor calls after the save, in order, off the lock, faults.
  ('scheduler fix round: the conductor is asked before tonight is saved',
   'ltcplay/schedule_service.py',
-  '        self._record(out, now, plan, held, ev)\n        if self.dry_run and self.machine.state == sch.CLOSING:',
-  '        self._queue_conductor(plan, ev, calls)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan, held, ev)\n        if self.dry_run and self.machine.state == sch.CLOSING:'),
+  '        self._record(out, now, plan, held, ev)\n        if ev.kind == sch.RESUME and ev.actor == "operator" and \\\n',
+  '        self._queue_conductor(plan, ev, calls)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan, held, ev)\n        if ev.kind == sch.RESUME and ev.actor == "operator" and \\\n'),
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
@@ -9199,10 +9200,10 @@ def build():
   "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
   "                    if not pending and (self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop()):\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
- ("deck: an alert open swallows the first Stop again (review of #130, 9)",
-  "ltcplay/streamdeck.py",
-  "                    if (not morning or self._stop_wins()) and (\n                            self.start_key_mode() in STOP_MODES or\n                            self._idle_stop()):\n                        self._stop_hold.press(now)",
-  "                    pass"),
+ ('deck: an alert open swallows the first Stop again (review of #130, 9)',
+  'ltcplay/streamdeck.py',
+  '                    if (not morning or self._stop_wins()) and (\n                            self.start_key_mode() in STOP_MODES or\n                            self._idle_stop()):\n                        self._stop_hold.press(now)',
+  '                    if False:\n                        self._stop_hold.press(now)'),
 
  ("deck: an alert open with a group armed but nothing running swallows the Stop",
   "ltcplay/streamdeck.py",
@@ -14680,7 +14681,7 @@ def build():
 
  ("make a show file writes over an existing show file", "ltcplay/cli.py",
   "            if os.path.lexists(out):\n                continue\n            try:\n                os.link(tmp, out)\n                return out",
-  "            if True:\n                os.replace(tmp, out)\n                return out"),
+  "            try:\n                os.replace(tmp, out)\n                return out"),
 
  ("make a show file is not refused while a show file runs", "ltcplay/remote.py",
   "        if getattr(c, \"_starting\", False) or \\\n                (sess is not None and getattr(sess, \"running\", False)):",
@@ -14743,8 +14744,8 @@ def build():
   "    note = f\"{doc['fps']:g} fps.\""),
 
  ("make a show file drops the frame rate warning from the reply", "ltcplay/remote.py",
-  "                f\"{made['rate_note']} Check the show file does not hear \"",
-  "                f\"Check the show file does not hear \""),
+  "                f\"{made['rate_note']} The \\\"Check the show file\\\" button \"",
+  "                f\"The \\\"Check the show file\\\" button \""),
 
  ("make a show file reads a [bracketed] folder name as a pattern again", "ltcplay/timeline.py",
   "    files = [os.path.join(show_dir, n) for n in fseq_names(show_dir)]",
@@ -14794,7 +14795,73 @@ def build():
   "$(\"fo-check\").addEventListener(\"click\", async () => {",
   "$(\"fo-check-off\") && (async () => {"),
 
+ ("Make a show file's button returns before it posts", "ltcplay/web/remote.html",
+  "async function makeShowFile(){\n  if(!(await confirmBox(",
+  "async function makeShowFile(){\n  return null;\n  if(!(await confirmBox("),
+
+ ("Getting started hides Make a show file after deciding to offer it", "ltcplay/web/remote.html",
+  "  $(\"su-make\").hidden = !makeOffered(su);\n",
+  "  $(\"su-make\").hidden = !makeOffered(su);\n  $(\"su-make\").hidden = true;\n"),
+
+ ("Getting started's Make a show file never makes one",
+  'ltcplay/web/remote.html',
+  '  // Show folder card (fo-made), where this press has gone.\n  await makeShowFile();',
+  '  // Show folder card (fo-made), where this press has gone.\n  const j = null;'),
+
+ ("Make a show file does not choose the new file on the page", "ltcplay/web/remote.html",
+  "    await loadShowFiles(j.file);\n",
+  "    await loadShowFiles();\n"),
+
+ ('the rack screen never says the timecode runs at another rate',
+  'ltcplay/remote.py',
+  '        if not (count_off or speed_off or drop_off):\n            return ""',
+  '        if True:\n            return ""'),
+
+ ('the rack screen calls 29.97 against 30 a mismatch before it is measured',
+  'ltcplay/remote.py',
+  '        speed_off = sure and abs(rate - fps) > 0.01',
+  '        speed_off = abs(rate - fps) > 0.01'),
+
+ ('the rack screen ignores a drop-frame mismatch',
+  'ltcplay/remote.py',
+  '        drop_off = drop != tdrop',
+  '        drop_off = False'),
+
+ ("ltc init no longer asks for the frame rate to be checked", "ltcplay/cli.py",
+  "    print(f\"Check the frame rate: it was set to {fps:g} fps because {why}. \"\n          f\"{FPS_CHECK}\")",
+  "    pass"),
+
+ ("make a show file's temporary name grows with the folder name again", "ltcplay/cli.py",
+  "    tmp = os.path.join(dest, f\"~{os.urandom(4).hex()}.new\")",
+  "    tmp = os.path.join(dest, f\".{base}_timeline.{os.getpid()}.new\")"),
+
+ ("the Getting started card pushes Disarm all off the screen when opened", "ltcplay/web/remote.html",
+  "  if(card.hidden || $(\"v-show\").hidden) return;\n  card.style.maxHeight = \"\";",
+  "  return;\n  card.style.maxHeight = \"\";"),
+
+ ("the open Getting started card is moved below the flame groups again", "ltcplay/web/remote.html",
+  "#setup.folded .subody{display:none}",
+  "#setup.folded .subody{display:none}\n@media (max-height:900px){#setup:not(.folded){order:9}}"),
+
+ ("Make a show file is only in the steps, not the card's header", "ltcplay/web/remote.html",
+  "<button id=\"su-make\" hidden>Make a show file</button><button class=\"ghost\" id=\"su-more\"",
+  "<button class=\"ghost\" id=\"su-more\""),
+
+ ("the rate note states a rate after the timecode stops", "ltcplay/remote.py",
+  "        if not cs.get(\"running\") or rate is None or fps is None or \\\n                not arriving:",
+  "        if not cs.get(\"running\") or rate is None or fps is None:"),
+
+ ("the rate note states the show file's rate as the incoming one", "ltcplay/remote.py",
+  "        if count_off or speed_off:",
+  "        if True:"),
+
+ ("ltc init calls an asked-for 30 fps the default", "ltcplay/cli.py",
+  "    why = \"it was asked for\" if args.fps is not None else \"that is the default\"",
+  "    why = (\"it was asked for\" if str(fps) != str(INIT_FPS)\n           else \"that is the default\")"),
+
 ]
+
+
 # What the last suite run failed on, so a surprising result can be read.
 _LAST_FAILS = []
 # The last run: [seconds it took, whether it was stopped at its limit].
