@@ -212,16 +212,23 @@ Rack screen.
 starting), the key reads STOP ALL, and the same half second hold still
 stops: the deck turns every flame group off itself first, then asks the
 show computer for the rest, and says ENGINE FAULT if it cannot reach it
-(or CHECK RACK if it took the Stop but has not answered yet). The key also
-reads STOP ALL when nothing is running but a flame group is armed, and the
-hold turns everything off. An alert waiting on the deck never eats a
+(or CHECK RACK if it took the Stop but has not answered yet). If the
+flames and lasers went off but playback itself did not stop, the key reads
+PLAYBACK FAILED: press Stop on the Rack screen. If the show itself did not
+end, the key flashes SHOW NOT STOPPED: press Abort on the Rack screen. The key also reads STOP
+ALL when nothing is running but a flame group is armed, or live flame
+programming or fire while scrubbing is on, and the hold turns everything
+off. An alert waiting on the deck never eats a
 Stop: a quick tap only acknowledges it, and a full half second hold stops
 (the key switches to HOLD TO STOP as soon as it is held, so let go to
 cancel). With the Morning page open, key 0 is FIRE for the purge, except
-whenever anything is running (a show live, or Run pressed and playback
-going), the deck cannot read the show computer, or a group is armed for
+whenever anything is running (a show live, Run pressed and playback
+going, or live flame programming or fire while scrubbing on), the deck
+cannot read the show computer, or a group is armed for
 anything but the purge (a group the purge selection wants counts as the
-purge's, even if it was armed by hand first): then it is Stop. The Rack screen's own Stop button is still refused during a show
+purge's, even if it was armed by hand first): then it is Stop. If FIRE is
+being held when a show or run starts, FIRE ends and the same held key
+becomes a Stop hold at once: keep holding to stop, let go to cancel. The Rack screen's own Stop button is still refused during a show
 (use Hold or Abort there). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
 the Rack screen. If Stop stopped playback but could not send the flame

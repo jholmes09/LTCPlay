@@ -8871,8 +8871,8 @@ def build():
 
  ("deck: Stop cannot be reached while aborted",
   "ltcplay/streamdeck.py",
-  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)",
-  "                    if False:\n                        self._stop_hold.press(now)"),
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if False:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
  ("deck: a held Stop never fires while aborted",
   "ltcplay/streamdeck.py",
@@ -9011,22 +9011,22 @@ def build():
 
  ("deck: a latched press with an alert open only acknowledges again (review of #130, 9)",
   "ltcplay/streamdeck.py",
-  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)",
-  "                    if not pending and self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)"),
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if not pending and (self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop()):\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
  ("deck: an alert open swallows the first Stop again (review of #130, 9)",
   "ltcplay/streamdeck.py",
-  "                    if (not morning or self._stop_wins()) and (\n                            self.start_key_mode() in STOP_MODES or\n                            self._any_flame_armed(purge=False)):\n                        self._stop_hold.press(now)",
+  "                    if (not morning or self._stop_wins()) and (\n                            self.start_key_mode() in STOP_MODES or\n                            self._idle_stop()):\n                        self._stop_hold.press(now)",
   "                    pass"),
 
  ("deck: an alert open with a group armed but nothing running swallows the Stop",
   "ltcplay/streamdeck.py",
-  "                            self.start_key_mode() in STOP_MODES or\n                            self._any_flame_armed(purge=False)):\n                        self._stop_hold.press(now)",
+  "                            self.start_key_mode() in STOP_MODES or\n                            self._idle_stop()):\n                        self._stop_hold.press(now)",
   "                            self.start_key_mode() in STOP_MODES):\n                        self._stop_hold.press(now)"),
 
  ("deck: a latched press starts a Stop hold whatever the key is (mutant P)",
   "ltcplay/streamdeck.py",
-  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
   "                    if True:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
  ("deck: Stop's disarm leaves the purge's own arms (mutant O)",
@@ -14204,7 +14204,7 @@ def build():
 
  ("deck: the key never reads STOP ALL with the scheduler unknown",
   "ltcplay/streamdeck.py",
-  "            elif self.start_key_mode() == \"unknown\" or \\\n                    self._any_flame_armed(purge=False):\n",
+  "            elif self.start_key_mode() == \"unknown\" or \\\n                    self._idle_stop():\n",
   "            elif False:\n"),
 
 
@@ -14256,7 +14256,7 @@ def build():
 
  ("deck: an idle armed hold is a refused Start Now (second review of #130, 6)",
   "ltcplay/streamdeck.py",
-  "        if mode == \"start\" and not self._any_flame_armed(purge=False):\n",
+  "        if mode == \"start\" and not self._idle_stop():\n",
   "        if mode == \"start\":\n"),
 
  ("deck: the engine's failed list is ignored (second review of #130, 5)",
@@ -14318,8 +14318,8 @@ def build():
  # Third review of #130 (fix forward).
  ("deck: a run going does not make Stop win over FIRE (third review of #130, 1)",
   "ltcplay/streamdeck.py",
-  "        return self.start_key_mode() in STOP_MODES or \\\n            self._any_flame_armed(purge=False)",
-  "        return self.start_key_mode() in (\"show\", \"unknown\") or \\\n            self._any_flame_armed(purge=False)"),
+  "        return self.start_key_mode() in STOP_MODES or self._idle_stop()",
+  "        return self.start_key_mode() in (\"show\", \"unknown\") or self._idle_stop()"),
 
  ("deck: a group the purge wants but the operator armed first makes Stop win (third review of #130, 2)",
   "ltcplay/streamdeck.py",
@@ -14350,6 +14350,132 @@ def build():
   "ltcplay/web.py",
   "                        out[\"stopped\"] = c.stop()\n                    except Exception as e:       # noqa: BLE001\n",
   "                        out[\"stopped\"] = c.stop()\n                    except ZeroDivisionError as e:  # noqa: BLE001\n"),
+
+
+ # Review of #130, low items.
+ ("deck: a playback stop that alone failed reads CHECK RACK (review of #130, low 1)",
+  "ltcplay/streamdeck.py",
+  "                (\"PLAYBACK\", \"FAILED\") if playback_only else \\",
+  "                (\"CHECK\", \"RACK\") if playback_only else \\"),
+
+ ("deck: a failed playback stop counts as a failed disarm",
+  "ltcplay/streamdeck.py",
+  "            told = {\"flames\", \"lasers\", \"show\", \"laser blank\",\n                    \"playback stop\"}",
+  "            told = {\"flames\", \"lasers\", \"show\", \"laser blank\"}"),
+
+ ("deck: a playback stop failure does not say the flames were disarmed",
+  "ltcplay/streamdeck.py",
+  "        if errored and playback_only:\n",
+  "        if False:\n"),
+
+ ("web: the playback stop's error overwrites the halt's (review of #130, low 2)",
+  "ltcplay/web.py",
+  "                        out[\"error\"] = (f\"{out['error']}; and the playback \"\n                                        f\"stop: {said}\" if out.get(\"error\")\n                                        else said)",
+  "                        out[\"error\"] = said"),
+
+ ("web: the playback stop's own error is not said apart",
+  "ltcplay/web.py",
+  "                        out[\"playback_error\"] = said\n",
+  ""),
+
+ ("deck: live flames do not count as running (review of #130, low 3)",
+  "ltcplay/streamdeck.py",
+  "        return self._any_flame_armed(purge=False) or \\\n            self._flames_live() is not False",
+  "        return self._any_flame_armed(purge=False)"),
+
+ ("remote: deck-input never says live flames are on",
+  "ltcplay/remote.py",
+  "            if isinstance(v, dict) and v.get(\"on\") is True:\n                live = True\n",
+  "            if False:\n                live = True\n"),
+
+ ("deck: the deck never reads flames_live",
+  "ltcplay/streamdeck.py",
+  "        v = last[0].get(\"flames_live\")",
+  "        v = None"),
+
+ ("deck: FIRE held when a show starts stays FIRE (review of #130, low 4)",
+  "ltcplay/streamdeck.py",
+  "        if self._prev_keys[TOP_START] and self._key0_fire and \\\n                self._stop_wins():",
+  "        if self._prev_keys[TOP_START] and self._key0_fire and \\\n                False:"),
+
+ ("deck: FIRE held when a show starts needs a second press to Stop",
+  "ltcplay/streamdeck.py",
+  "            self._fire_release(\"Stop wins: something is running\")\n            self._stop_hold.press(now)",
+  "            self._fire_release(\"Stop wins: something is running\")"),
+
+
+ # Review of #132.
+ ("deck: FIRE turns into Stop only while PurgeFire still fires (review of #132, 1)",
+  "ltcplay/streamdeck.py",
+  "        if self._prev_keys[TOP_START] and self._key0_fire and \\\n                self._stop_wins():",
+  "        if self._prev_keys[TOP_START] and getattr(self.purge_fire, \"firing\", False) and \\\n                self._stop_wins():"),
+
+ ("deck: key 0 is never remembered as FIRE",
+  "ltcplay/streamdeck.py",
+  "                    self._key0_fire = True\n                    self._fire_press(now)",
+  "                    self._fire_press(now)"),
+
+ ("deck: the FIRE memory outlives the key's release",
+  "ltcplay/streamdeck.py",
+  "                self._key0_fire = False\n                self._fire_release(\"the key came up\")",
+  "                self._fire_release(\"the key came up\")"),
+
+ ("deck: a show the halt did not stop reads ENGINE FAULT (review of #132, 2)",
+  "ltcplay/streamdeck.py",
+  "                (\"SHOW NOT\", \"STOPPED\") if show_live else \\",
+  "                (\"ENGINE\", \"FAULT\") if show_live else \\"),
+
+ ("deck: a deselected purge group lagging in flamesafe's status makes Stop win (review of #132, 3)",
+  "ltcplay/streamdeck.py",
+  "                         now - at < DISARM_SETTLE_S}",
+  "                         False}"),
+
+ ("deck: live flames not known read as off (review of #132, 4)",
+  "ltcplay/streamdeck.py",
+  "            self._flames_live() is not False",
+  "            self._flames_live() is True"),
+
+ ("deck: a live flame view that raises reads as off",
+  "ltcplay/streamdeck.py",
+  "        try:\n            v = fn()\n        except Exception:                        # noqa: BLE001\n            return None\n",
+  "        try:\n            v = fn()\n        except Exception:                        # noqa: BLE001\n            return False\n"),
+
+ ("remote: a live flame view that raises or errs says off (review of #132, 4)",
+  "ltcplay/remote.py",
+  "                if live is False:\n                    live = None",
+  "                pass"),
+
+
+ # Delta review of #132.
+ ("deck: the settle window forgives every deck disarm again (delta review of #132, A)",
+  "ltcplay/streamdeck.py",
+  "            if not purge and self._key0_fire:\n",
+  "            if not purge:\n                self._purge_deselected = {i: at for i, at in enumerate(self._disarmed_at) if at is not None}\n"),
+
+ ("deck: the settle window works with FIRE not held",
+  "ltcplay/streamdeck.py",
+  "            if not purge and self._key0_fire:\n",
+  "            if not purge:\n"),
+
+ ("deck: a deselect disarm is not recorded for the settle window",
+  "ltcplay/streamdeck.py",
+  "                self._purge_deselected[i] = self._clock()\n",
+  ""),
+
+ ("deck: a reconnect keeps the FIRE memory (delta review of #132, B)",
+  "ltcplay/streamdeck.py",
+  "        self._key0_fire = False\n        self._fire_release(\"the deck reconnected\")",
+  "        self._fire_release(\"the deck reconnected\")"),
+
+ ("deck: latched with only a group armed, key 0 is no Stop (delta review of #132, D1)",
+  "ltcplay/streamdeck.py",
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._idle_stop():\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
+
+ ("deck: an acknowledge on the Morning page never becomes Stop (delta review of #132, D2)",
+  "ltcplay/streamdeck.py",
+  "                    elif morning:\n                        # An acknowledge on the Morning page that Stop does",
+  "                    elif False:\n                        # An acknowledge on the Morning page that Stop does"),
 
 ]
 

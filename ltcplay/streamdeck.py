@@ -315,6 +315,10 @@ STOP_HOLD_S = 0.5           # Stop's hold: the deck's old Abort key's, from
 # (review of #130, 1: Stop must work when the engine cannot be reached; it
 # always disarms the arm link first).
 STOP_MODES = ("stop", "show", "unknown")
+# How long after this deck disarmed a group flamesafe's status may still
+# report it armed without that counting as "a group armed" for Stop (review
+# of #132, 3: a purge machine deselected while FIRE is held).
+DISARM_SETTLE_S = 1.5
 # How long the Start/Stop key has to be down in a Stop hold before its face
 # says HOLD TO STOP over anything else (an open alert's ACK, a fault).
 STOP_FACE_AFTER_S = 0.15
@@ -1557,7 +1561,15 @@ class EngineConductor:
                               f"use Disarm all lasers on the Rack screen"))
             # Anything else the engine says failed (the halt itself
             # raising, review of #130, second pass, 5), said too.
-            told = {"flames", "lasers", "show", "laser blank"}
+            told = {"flames", "lasers", "show", "laser blank",
+                    "playback stop"}
+            if "playback stop" in (doc.get("failed") or []):
+                # Only playback did not stop: the flames and lasers were
+                # disarmed (said apart, review of #130, low items, 1).
+                fails.append(("playback",
+                              f"playback did NOT stop ("
+                              f"{doc.get('playback_error') or doc.get('error') or 'no reason given'}"
+                              f"): press Stop on the Rack screen"))
             for step in doc.get("failed") or []:
                 if step not in told:
                     fails.append(("disarm",
@@ -1566,7 +1578,18 @@ class EngineConductor:
                                   f"): use Abort on the Rack screen or the "
                                   f"hardware e-stop"))
         disarm_failed = any(k == "disarm" for k, _t in fails)
-        if errored:
+        playback_only = bool(fails) and all(k == "playback" for k, _t in fails)
+        if errored and playback_only:
+            # The halt worked; only the playback stop did not: say what
+            # was disarmed, apart from a disarm that failed (review of
+            # #130, low items, 1).
+            done = [w for k, w in (("flames", "every flame group"),
+                                   ("lasers", "every laser"))
+                    if isinstance(doc.get(k), dict) and
+                    doc[k].get("disarmed") is True]
+            text = ((f"Stop disarmed {' and '.join(done)}, but "
+                     if done else "") + fails[0][1])
+        elif errored:
             text = (f"the engine answered Stop with an error ({text})"
                     + ("; and " + "; and ".join(t for _k, t in fails)
                        if fails else "") + ": check the Rack screen")
@@ -1606,7 +1629,10 @@ class EngineConductor:
             # Acknowledge (two keys inside one poll) is journaled below,
             # never shown as ENGINE FAULT on the keys.
             self.fault = "" if (ok or noop) else f"{name.title()}: {text}"
+            show_live = any(k == "show" for k, _t in fails)
             self.fault_face = ("DISARM", "FAILED") if disarm_failed else \
+                ("SHOW NOT", "STOPPED") if show_live else \
+                ("PLAYBACK", "FAILED") if playback_only else \
                 ("CHECK", "RACK") if slow else ("ENGINE", "FAULT")
         elif "raise" in body:
             self.alert_delivered = bool(ok)
@@ -2018,6 +2044,18 @@ class ScreenKeys:
             return None
         m = last[0].get("morning")
         return m if isinstance(m, dict) else None
+
+    def flames_live(self):
+        """True while the engine's last fresh answer says live flame
+        programming or fire while scrubbing is on (deck-input
+        "flames_live"), False when it says neither, None when the engine
+        has not answered within SCREEN_STALE_S."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        v = last[0].get("flames_live")
+        return v if isinstance(v, bool) else None
 
     def alerts(self):
         """The engine's open alerts (alerts.py), as its last fresh answer
@@ -2893,6 +2931,17 @@ class Controller:
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
                           for _ in self.names]
         self._disarmed_at = [None] * len(self.names)
+        # Key 0 went down as the Morning page's FIRE and has not come up
+        # (review of #132, 1): the press turns into a Stop hold the moment
+        # Stop wins, whether or not PurgeFire is still firing (the engine
+        # refuses beats the moment a show is live, which ends the press on
+        # its own before this deck's poll sees the show), and whether or
+        # not the page closed in the same pass.
+        self._key0_fire = False
+        # The groups purge_pass itself disarmed on a deselect, and when:
+        # the only disarms the settle window (DISARM_SETTLE_S) forgives,
+        # and only while key 0 is down as FIRE (delta review of #132, A).
+        self._purge_deselected = {}
         # Screen arming (2026-10-03): the remote page's holds, as remote
         # presses of the group keys. _vholds: group -> the engine's hold id
         # this deck has seen; _vpressed: the ones whose arm-hold timer it
@@ -3059,6 +3108,7 @@ class Controller:
         self._vpressed.clear()
         self._vwho.clear()
         self._vheld.clear()
+        self._key0_fire = False
         self._fire_release("the deck reconnected")
 
     def animating(self):
@@ -3158,7 +3208,7 @@ class Controller:
 
     def _do_start_or_stop(self, now):
         mode = self.start_key_mode()
-        if mode == "start" and not self._any_flame_armed(purge=False):
+        if mode == "start" and not self._idle_stop():
             self._do_start_now()
         else:
             # Nothing running but a group armed: the hold is Stop too, a
@@ -3174,6 +3224,17 @@ class Controller:
         Morning page's purge. Never raises."""
         try:
             skip = set() if purge else self._purge_own()
+            if not purge and self._key0_fire:
+                # A purge machine deselected while FIRE is held: its group,
+                # disarmed by purge_pass, that flamesafe's status still
+                # reports armed is not a reason for Stop to win, for
+                # DISARM_SETTLE_S (review of #132, 3). Only those: a Stop's
+                # or a tap's own disarm that has not shown yet still counts
+                # as armed (delta review of #132, A).
+                now = self._clock()
+                skip |= {i for i, at in self._purge_deselected.items()
+                         if not self.arm.wanted[i] and
+                         now - at < DISARM_SETTLE_S}
             return any(w for i, w in enumerate(self.arm.wanted)
                        if i not in skip) or any(
                 self._reported_armed(i) for i in range(len(self.names))
@@ -3198,8 +3259,34 @@ class Controller:
         third review of #130, 1) or the state not known; and while a group
         is armed other than for the purge (review of #130, second pass,
         2). An open Morning page never swallows a Stop."""
-        return self.start_key_mode() in STOP_MODES or \
-            self._any_flame_armed(purge=False)
+        return self.start_key_mode() in STOP_MODES or self._idle_stop()
+
+    def _flames_live(self):
+        """True while the engine says live flame programming or fire while
+        scrubbing is on (deck-input "flames_live"), False when it says
+        neither, None when not known: a stale or missing answer, or one
+        that raised (review of #132, 4). A deck with no screen wired at
+        all (no engine) has no live flames: False. Never raises."""
+        s = self.screen
+        fn = getattr(s, "flames_live", None) if s is not None else None
+        if fn is None:
+            return False
+        try:
+            v = fn()
+        except Exception:                        # noqa: BLE001
+            return None
+        return v if isinstance(v, bool) else None
+
+    def _idle_stop(self):
+        """With no show or run going, key 0 is still Stop (STOP ALL) while
+        a group is armed other than for the purge, or live flame
+        programming or fire while scrubbing is on: those count as running
+        (review of #130, low items, 3). The purge still works when nothing
+        at all is running."""
+        # Live flames not known count as on (review of #132, 4): Stop
+        # wins, as with the scheduler unknown.
+        return self._any_flame_armed(purge=False) or \
+            self._flames_live() is not False
 
     def _do_stop(self):
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
@@ -3450,6 +3537,7 @@ class Controller:
             if self.arm.wanted[i]:
                 self._do_disarm(i, who="the purge ended",
                                 screen="Morning page")
+                self._purge_deselected[i] = self._clock()
         if not self.morning_open():
             self._fire_release("the Morning page is not open")
 
@@ -3642,6 +3730,7 @@ class Controller:
             if k == TOP_START:
                 # The FIRE key (Morning page): letting go ends the purge
                 # fire at once, whether or not the page is still open.
+                self._key0_fire = False
                 self._fire_release("the key came up")
                 # Letting go of Stop before STOP_HOLD_S sends nothing.
                 self._stop_hold.release()
@@ -3663,8 +3752,12 @@ class Controller:
             for k in edges(self._prev_keys, down):
                 if k == TOP_START:
                     # An open alert is acknowledged above, and never
-                    # swallows the Stop hold (review of #130, 9).
-                    if self.start_key_mode() in STOP_MODES:
+                    # swallows the Stop hold (review of #130, 9). Latched
+                    # with nothing running but a group still reported armed
+                    # or live flames on: Stop all the same (delta review of
+                    # #132, D1).
+                    if self.start_key_mode() in STOP_MODES or \
+                            self._idle_stop():
                         self._stop_hold.press(now)
                 elif k in self._key_group:
                     i = self._key_group[k]
@@ -3688,10 +3781,17 @@ class Controller:
                     # wins (_stop_wins).
                     if (not morning or self._stop_wins()) and (
                             self.start_key_mode() in STOP_MODES or
-                            self._any_flame_armed(purge=False)):
+                            self._idle_stop()):
                         self._stop_hold.press(now)
+                    elif morning:
+                        # An acknowledge on the Morning page that Stop does
+                        # not win yet: if it starts to win during this same
+                        # hold, the hold becomes Stop (delta review of #132,
+                        # D2), as a held FIRE does.
+                        self._key0_fire = True
                 elif morning and not self._stop_wins():
                     # Re-mapped while the Morning page is open: FIRE.
+                    self._key0_fire = True
                     self._fire_press(now)
                 else:
                     # Start and Stop are one key (Jeff, 2026-10-26).
@@ -3917,6 +4017,17 @@ class Controller:
             # press right after either cannot quietly re-arm.
             self._was_latched = latched
             self._disarmed_at = [now] * len(self.names)
+        if self._prev_keys[TOP_START] and self._key0_fire and \
+                self._stop_wins():
+            # Key 0 went down as FIRE, is still held, and now a show or run
+            # has started (or a group was armed, or live flames came on):
+            # FIRE ends now and the same held key becomes a Stop hold at
+            # once, with no second press (review of #130, low items, 4).
+            # Read from the press itself, never from PurgeFire.firing,
+            # which the engine's first refusal clears (review of #132, 1).
+            self._key0_fire = False
+            self._fire_release("Stop wins: something is running")
+            self._stop_hold.press(now)
         if self._prev_keys[TOP_START] and self._stop_hold.fired(now):
             # A Stop hold that completes always stops (review of #130, 1):
             # every group disarmed on the arm link first, then the engine's
@@ -4267,10 +4378,15 @@ class Controller:
         elif latched and stop_frac > 0:
             fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
                            bg=BRONZE, kind="sans", max_size=16)
-        elif latched and self.start_key_mode() in STOP_MODES:
+        elif latched and (self.start_key_mode() in STOP_MODES or
+                          self._idle_stop()):
             # Aborted with a run still going: Stop is reachable, as on the
             # Rack screen (Jeff, 2026-10-26). It never touches the latch.
-            fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
+            # Aborted with nothing running but a group armed or live
+            # flames on: STOP ALL (delta review of #132, D1).
+            fonts.show_key(d, b0, ["STOP", "RUN"]
+                           if self.start_key_mode() in STOP_MODES
+                           else ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                            kind="sans")
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
@@ -4320,10 +4436,11 @@ class Controller:
                 fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif self.start_key_mode() == "unknown" or \
-                    self._any_flame_armed(purge=False):
+                    self._idle_stop():
                 # The engine or the scheduler cannot be read, or nothing
-                # is running but a group is armed: the key is Stop, a
-                # complete halt (review of #130, 1; second pass, 6).
+                # is running but a group is armed or live flames are on:
+                # the key is Stop, a complete halt (review of #130, 1;
+                # second pass, 6; low items, 3).
                 fonts.show_key(d, b0, ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:
