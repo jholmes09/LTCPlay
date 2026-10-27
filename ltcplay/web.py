@@ -1916,7 +1916,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # The third direction: every announcement Holds the scheduler
         # first, through the same path an operator's own Hold uses. See
         # Service.hold_for_announcement and announce.py's play().
-        httpd.announce.hold_requester = sched.hold_for_announcement
+        # Wrapped by the remote (Remote.announce_hold): when it really
+        # holds, the operator Hold's safety cuts go with it.
+        httpd.announce.hold_requester = httpd.remote.announce_hold(sched)
         # The read-only partner to the above, for the second check right
         # before the stream opens: never re-Holds, so an operator's own
         # Resume during the file read always wins (review round 2,

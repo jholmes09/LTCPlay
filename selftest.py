@@ -15886,6 +15886,32 @@ def test_announce_held_then_failed_says_so():
                            screen="Rack"))
     check(ann.status()["held_failed"] is None,
           "once Resume ends the Hold the banner goes")
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
+    check(svc.machine.state == S.HOLD and
+          ann.status()["held_failed"] is None,
+          "a later, different Hold never brings it back")
+    # And it is keyed to its own Hold even while the state reads HOLD
+    # again: fail, Resume and Hold again in one breath.
+    try:
+        with svc._locked():
+            svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                               screen="Rack"))
+        ann.play(A.DELAYED, "Andy", "rack screen")
+    except ValueError:
+        pass
+    check(ann.held_failed is not None, "setup: failed again, held")
+    with svc._locked():
+        svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                           screen="Rack"))
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
+    check(svc.machine.state == S.HOLD and
+          ann.status()["held_failed"] is None,
+          "Resume then a new Hold before any look: still cleared, the "
+          "banner belongs to its own Hold")
     print("  ok")
 
 
@@ -16080,24 +16106,44 @@ def test_streamdeck_page_two_auto_close_guard():
         c.run_once(list(down))
     tap(sd.ANNOUNCE_KEY)
     check(c.page == 2, "setup: page 2")
+    # Never closed for idle while an announcement plays, or while the
+    # engine's word is stale: STOP ANNC. stays reachable.
+    for live in ({"playing": "delayed"}, {"stale": True}):
+        scr.a = dict(dict(scr.a, playing=None, stale=False), **live)
+        t[0] += sd.PAGE2_IDLE_S * 3
+        c.tick()
+        check(c.page == 2, f"{live}: page 2 stays up past the idle time")
+    scr.a = dict(scr.a, playing=None, stale=False)
     t[0] += sd.PAGE2_IDLE_S + 0.1
     c.tick()
-    check(c.page == 1, "idle: page 1")
+    check(c.page == 1, "idle with nothing playing: page 1")
     # Unarmed group: a fresh press does not even start an arm hold.
     tap(1)
     check(all(h.fraction(t[0]) == 0 for h in c._arm_holds) and
           arm.wanted == [False] * 4 and
-          "ignored" in lines[-1][0],
+          "not armed" in lines[-1][0],
           f"a fresh press right after: no arm hold: {lines[-1:]}")
-    # Past PAGE1_GUARD_S but page 1 not drawn yet: still guarded.
+    # Past PAGE1_GUARD_S but page 1 not on the keys yet: still guarded.
+    # With a display worker, "on the keys" is the worker's word that the
+    # first page 1 frame after the return was fully written.
     t[0] += sd.PAGE1_GUARD_S + 0.1
-    tap(1)
-    check(all(h.fraction(t[0]) == 0 for h in c._arm_holds),
-          "not drawn yet: still guarded")
-    c._page1_drawn = True          # what draw() sets once page 1 is shown
-    tap(1)
-    check(c._arm_holds[c._key_group[1]].fraction(t[0]) >= 0,
-          "drawn and past the guard: the key works again")
+    c.display_confirms = True
+    c._guard_frame = 7             # what draw() records for that frame
+    c.last_shown = (6, t[0])       # an older frame: the USB write stalled
+    d1 = [False] * 6
+    d1[1] = True
+    c.run_once(d1)
+    check(all(h._down_at is None for h in c._arm_holds),
+          "composed but not written yet (a USB stall): still guarded")
+    c.run_once([False] * 6)
+    c.frame_shown((7, t[0]))
+    d1 = [False] * 6
+    d1[1] = True
+    c.run_once(d1)
+    check(c._arm_holds[c._key_group[1]]._down_at is not None,
+          "written and past the guard: the key starts an arm hold again")
+    c.run_once([False] * 6)
+    c.display_confirms = False
     # Armed group: a fresh press after an auto close does not disarm it.
     arm.wanted = [True, False, False, False]
     tap(sd.ANNOUNCE_KEY)
@@ -16107,14 +16153,9 @@ def test_streamdeck_page_two_auto_close_guard():
     check(c.page == 1, "an alert: page 1")
     scr.al = ()
     tap(1)
-    check(arm.wanted[c._key_group[1]] is True,
-          f"the armed group is not disarmed by a press meant for page 2: "
-          f"{arm.wanted}")
-    t[0] += sd.PAGE1_GUARD_S + 0.1
-    c._page1_drawn = True
-    tap(1)
     check(arm.wanted[c._key_group[1]] is False,
-          f"after the guard a tap disarms as always: {arm.wanted}")
+          f"a DISARM is never gated (Jeff): a tap on the armed group "
+          f"disarms it even inside the guard: {arm.wanted}")
     # BACK: no guard.
     t[0] += 10
     arm.wanted = [True, False, False, False]
@@ -16125,6 +16166,233 @@ def test_streamdeck_page_two_auto_close_guard():
           "after BACK the arm keys work at once")
     for text, _kw in lines:
         _no_dashes(text, "deck guard line")
+    print("  ok")
+
+
+def test_announce_hold_does_the_operator_holds_safety_cuts():
+    section("announcements (second review of PR #129, 3): when an "
+            "announcement really puts the schedule on Hold (between "
+            "shows), live flame programming and fire while scrubbing are "
+            "cut and every laser disarmed, as the operator's own Hold "
+            "does; a running show is never touched")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        cuts = []
+        R.remote.live_flame_cut = lambda why, who="", screen="": \
+            cuts.append("live")
+        R.remote.scrub_flames_cut = lambda why, who="", screen="": \
+            cuts.append("scrub")
+        R.remote._lasers_disarm_now = lambda who, screen, what: \
+            cuts.append("lasers")
+
+        class _M:
+            state = "STANDBY"
+
+        class _Sched:
+            machine = _M()
+            asked = 0
+
+            def hold_for_announcement(self, who, screen, detail=None):
+                self.asked += 1
+                if self.machine.state in ("STANDBY", "IDLE"):
+                    self.machine.state = "HOLD"
+                return None, 1
+        sch = _Sched()
+        hold = R.remote.announce_hold(sch)
+        r = hold("Andy", "Rack screen", detail="played the Delayed one")
+        check(r == (None, 1) and sorted(cuts) == ["lasers", "live", "scrub"],
+              f"held between shows: every cut made: {r} {cuts}")
+        cuts.clear()
+        sch.machine.state = "SHOW"
+        hold("Andy", "Rack screen")
+        check(cuts == [], f"a running show: nothing touched: {cuts}")
+        sch.machine.state = "PAUSED"
+        hold("Andy", "Rack screen")
+        check(cuts == [], f"a paused show: nothing touched: {cuts}")
+        # web.serve wires exactly this wrapper.
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ltcplay", "web.py"), encoding="utf-8").read()
+        check("httpd.announce.hold_requester = httpd.remote.announce_hold("
+              "sched)" in src, "web.serve gives the announcements the "
+              "wrapped Hold")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_announce_view_stale_snapshot_is_not_fact():
+    section("announcements (second review of PR #129, 7): the snapshot "
+            "carries its age; older than ANNOUNCE_STALE_S it reads "
+            "\"Announcement status unavailable\", never a stale PLAYING or "
+            "ready, on the rack screen and the deck")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        work, cfg, _l = _ann_workdir()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda: "STANDBY")
+        ann.hold_requester = lambda who, screen, detail=None: (None, 1)
+        ann.hold_still_claimed = lambda e: True
+        R.remote.announce = ann
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        R.remote._ann_refresh()
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
+        an = out["announce"]
+        check(an["playing"]["id"] == A.DELAYED and not an.get("stale") and
+              an["age_s"] <= RM.ANNOUNCE_STALE_S,
+              f"fresh: playing, with its age: {an.get('age_s')}")
+        R.mono[0] += RM.ANNOUNCE_STALE_S + 6
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
+        an = out["announce"]
+        check(an.get("stale") is True and an["playing"] is None and
+              an["ok"] is False and "unavailable" in an["error"],
+              f"stale: not shown as playing: {an}")
+        st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
+                           client=loop)
+        check(din["announce"]["stale"] is True and
+              din["announce"]["playing"] is None,
+              f"the deck reads it stale too: {din['announce']}")
+        ann.stop("Andy", "rack screen")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_streamdeck_page_two_shows_the_engines_refusal():
+    section("Stream Deck page 2 (second review of PR #129, 6): the "
+            "engine's refusal of an announcement press shows on the "
+            "pressed key for ANNOUNCE_SAID_S, in a word")
+    from ltcplay import streamdeck as sd
+    for text, word in (("Recording missing: x is not on this PC yet.",
+                        "NO FILE"),
+                       ("Delayed is already playing.", "ONE PLAYING"),
+                       ("The show ended while the announcement was "
+                        "loading", "SHOW ENDED"),
+                       ("The page was showing a status 3.0 s old", "PAGE STALE"),
+                       ("something else", "REFUSED")):
+        check(sd.announce_refusal_word(text) == word,
+              f"{text!r} -> {sd.announce_refusal_word(text)}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  ok")
+        return
+    t = [50.0]
+
+    class _Screen:
+        a = {"configured": True, "device_ok": True,
+             "ready": {"delayed": True, "cancellation": True,
+                       "cannot_continue": True}, "missing": {},
+             "playing": None}
+
+        def announce(self):
+            return self.a
+
+        def alerts(self):
+            return ()
+
+        def morning(self):
+            return None
+
+    class _Eng:
+        announce_said = None
+        _clock = staticmethod(lambda: t[0])
+
+        def snapshot(self):
+            return {"latched": False}
+
+        def announce(self, aid, who="", screen=""):
+            return sd.EngineResult(True, "sent")
+    eng = _Eng()
+    c = sd.Controller(_FakeArmSocket(4), _FakeStatusSocket(),
+                      ["front row", "cat-walk", "wave flamer", "fireball"],
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False, conductor=eng,
+                      clock=lambda: t[0], screen=_Screen())
+    try:
+        c.run_once([False] * 5 + [True])
+        c.run_once([False] * 6)
+        c.run_once([False, False, True, False, False, False])
+        c.run_once([False] * 6)
+        eng.announce_said = (False, "The show ended while the "
+                             "announcement was loading.", t[0])
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[2][0] == ["CANCEL", "SHOW ENDED"],
+              f"the pressed key says why: {faces[2]}")
+        t[0] += sd.ANNOUNCE_SAID_S + 1
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[2][0] == ["CANCEL"], f"then back: {faces[2]}")
+        _Screen.a = dict(_Screen.a, stale=True)
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[1][0] == ["DELAYED", "NO STATUS"] and
+              faces[4][1] == sd.CHAMPAGNE,
+              f"a stale engine word: NO STATUS, STOP ANNC. lit: {faces}")
+    finally:
+        restore()
+    print("  ok")
+
+
+def test_rack_screen_small_screens_with_announcements_and_setup():
+    section("rack screen (second review of PR #129, 5): with the "
+            "announcements block AND the Getting started card, Disarm all, "
+            "every group's arm button and Abort are wholly on screen at "
+            "1366x600, 1366x614 and 1024x768, arm buttons at touch size")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the page was not drawn")
+        print("  ok")
+        return
+    st = _rack_status_no_show_file()
+    st["booth"] = {"configured": False, "device": ""}
+    st["announce"] = {
+        "configured": True, "ok": True, "error": None, "device": None,
+        "device_set": False, "device_available": False,
+        "device_reason": "No output device is set for announcements yet.",
+        "blocked": None, "over_show": False, "age_s": 0.2,
+        "items": [{"id": i, "name": n, "available": False, "missing": True,
+                   "reason": "Recording missing", "length_s": None}
+                  for i, n in (("delayed", "Delayed"),
+                               ("cancellation", "Cancellation"),
+                               ("cannot_continue", "Cannot continue"))],
+        "playing": None}
+    mjs = r'''<script>
+function go(){ if(!document.querySelector("#fl-lamps .lamp [data-arm]")) return setTimeout(go,50);
+ setTimeout(()=>{ const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
+  const out = {vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
+    abort:r(document.getElementById("b-abort")),
+    setup:!document.getElementById("setup").hidden, ann:!document.getElementById("ann").hidden,
+    arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)};
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 1500);}
+go();</script>'''
+    got = _rack_screen_in_chromium(chrome, page, st,
+                                   ((1366, 600), (1366, 614), (1024, 768)),
+                                   measure_js=mjs)
+    for (w, h), m in got.items():
+        if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):
+            continue
+        vh = m["vh"]
+        check(m["setup"] and m["ann"], f"{w}x{h}: both shown: {m}")
+        for name in ("disarm", "abort"):
+            check(m[name]["top"] >= 0 and m[name]["bottom"] <= vh,
+                  f"{w}x{h}: {name} wholly on screen: {m[name]} vh {vh}")
+        check(len(m["arms"]) == 3 and all(
+                  a["h"] >= 44 and a["top"] >= 0 and a["bottom"] <= vh
+                  for a in m["arms"]),
+              f"{w}x{h}: every arm button on screen, at least 44 px: "
+              f"{m['arms']} vh {vh}")
     print("  ok")
 
 
@@ -68316,6 +68584,10 @@ if __name__ == "__main__":
     test_announce_play_goes_through_the_laser_press_interlock()
     test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop()
     test_streamdeck_page_two_auto_close_guard()
+    test_announce_hold_does_the_operator_holds_safety_cuts()
+    test_announce_view_stale_snapshot_is_not_fact()
+    test_streamdeck_page_two_shows_the_engines_refusal()
+    test_rack_screen_small_screens_with_announcements_and_setup()
     test_the_gpl_path_never_loads_announcements()
     test_arttimecode_packet_byte_for_byte()
     test_artnet_timecode_holds_30fps_under_load()

@@ -218,6 +218,8 @@ ANNOUNCE_ROUTES = ("announce-play", "announce-stop")
 # service is asked again (it asks the audio system for the device): the
 # page polls four times a second. A press always asks at once.
 ANNOUNCE_VIEW_S = 1.0
+# A snapshot older than this is not shown as fact (announce_view).
+ANNOUNCE_STALE_S = 4.0
 # What the Stream Deck reports back about a screen hold it would not take
 # (deck-input's `refused`, streamdeck.ScreenKeys): its code, and what the
 # page says. The deck's own rules decide; the engine only passes it on.
@@ -1815,10 +1817,40 @@ class Remote:
             return {"configured": False, "why": self.ANNOUNCE_OFF}
         c = self._ann_cache
         if c is None:
-            return {"configured": True, "ok": False,
-                    "error": "The announcements are still being read.",
-                    "items": [], "playing": None}
-        return c[1]
+            return {"configured": True, "ok": False, "stale": True,
+                    "error": "Announcement status unavailable: still being "
+                             "read.", "items": [], "playing": None}
+        age = max(0.0, self.clock() - c[0])
+        v = dict(c[1], age_s=round(age, 1))
+        if age > ANNOUNCE_STALE_S:
+            # The view thread has not refreshed it (a hung audio query, a
+            # stuck lock): never a stale PLAYING or ready (review of PR
+            # #129, second round, 7). Stop stays pressable.
+            v.update(ok=False, stale=True, playing=None,
+                     error=f"Announcement status unavailable: not read for "
+                           f"{age:.0f} s.")
+        return v
+
+    def announce_hold(self, sched):
+        """The hold_requester web.serve gives the announcements: the
+        scheduler's hold_for_announcement (which, under its own lock and
+        after its own tick, holds nothing while a show is running), then,
+        only when the schedule really is on Hold, what the operator's own
+        Hold does for safety at once: live flame programming and fire
+        while scrubbing cut, every laser disarmed (press(); review of PR
+        #129, second round, 3). A running show is never touched."""
+        def hold(who, screen, detail=None):
+            refusal, epoch = sched.hold_for_announcement(who, screen,
+                                                         detail=detail)
+            m = getattr(sched, "machine", None)
+            if not refusal and m is not None and m.state == "HOLD":
+                why = (f"{who or 'someone'} held the schedule for an "
+                       f"announcement on the {screen}")
+                self.live_flame_cut(why, who, screen)
+                self.scrub_flames_cut(why, who, screen)
+                self._lasers_disarm_now(who, screen, "hold")
+            return refusal, epoch
+        return hold
 
     def _ann_press_begin(self, name):
         """The laser arm told a Hold-like press is under way (a Play), or
@@ -2544,6 +2576,7 @@ class Remote:
         av = self.announce_view()
         out["announce"] = {
             "configured": bool(av.get("configured")),
+            "stale": bool(av.get("stale")),
             "device_ok": bool(av.get("device_available")),
             "ready": {i["id"]: bool(i.get("available"))
                       for i in av.get("items") or []},

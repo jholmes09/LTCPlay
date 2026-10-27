@@ -704,6 +704,7 @@ class AnnounceService:
         # until the schedule leaves Hold (only Resume does that) or an
         # announcement plays. See _note_held_failed.
         self.held_failed = None
+        self._held_failed_epoch = None
         self._player = None
         self._stream = None
         self._load()
@@ -892,12 +893,23 @@ class AnnounceService:
         except Exception:
             return False
 
-    def _note_held_failed(self, ann_id, why):
+    def _note_held_failed(self, ann_id, why, epoch=None):
         """The schedule was Held for this press and then the file could not
         play. The Hold stays (only Resume ends it); the rack screen says so
-        in a banner rather than leave a held schedule unexplained."""
+        in a banner rather than leave a held schedule unexplained. Keyed to
+        THIS press's own Hold (its claim epoch): the banner goes once that
+        Hold is gone, and a later, different Hold never brings it back
+        (review of PR #129, second round, 8)."""
         self.held_failed = {"id": ann_id, "name": LABELS[ann_id],
                             "why": _clean(why)}
+        self._held_failed_epoch = epoch
+
+    def _held_failed_gone(self, state):
+        """True once the Hold the failed press made is over."""
+        if self.hold_still_claimed is not None and \
+                self._held_failed_epoch is not None:
+            return not self._check_still_held(self._held_failed_epoch)
+        return state != "HOLD"
 
     @staticmethod
     def _operator_problem(who, screen):
@@ -1195,7 +1207,8 @@ class AnnounceService:
                 if self._claim_gen == my_gen and self.playing == ann_id:
                     self.playing = None
                     if held:
-                        self._note_held_failed(ann_id, _clean(str(e)))
+                        self._note_held_failed(ann_id, _clean(str(e)),
+                                               claim_epoch)
                     text = (f"{who} pressed Play on {label}{screen_txt}. "
                             f"It failed: {_clean(str(e))}")
                     self._emit(actor="operator", action="play",
@@ -1299,7 +1312,8 @@ class AnnounceService:
             except Exception as e:
                 self.playing = None
                 if held:
-                    self._note_held_failed(ann_id, _clean(str(e)))
+                    self._note_held_failed(ann_id, _clean(str(e)),
+                                           claim_epoch)
                 text = (f"{who} pressed Play on {label}{screen_txt}. It "
                         f"failed to open {_clean(self.device_name)}: "
                         f"{_clean(str(e))}")
@@ -1370,8 +1384,9 @@ class AnnounceService:
         with self.lock:
             self._settle()
             state = self._current_state()
-            if self.held_failed is not None and state != "HOLD":
-                self.held_failed = None     # Resumed: nothing left to say
+            if self.held_failed is not None and \
+                    self._held_failed_gone(state):
+                self.held_failed = None     # its own Hold is over
             device_ok, device_reason = self._probe_device()
             items = []
             for aid in IDS:

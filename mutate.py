@@ -2921,7 +2921,7 @@ MUTATIONS = [
 
  ("announcements never Hold the scheduler in production, web.py never "
   "wires it", "ltcplay/web.py",
-  '        httpd.announce.hold_requester = sched.hold_for_announcement',
+  '        httpd.announce.hold_requester = httpd.remote.announce_hold(sched)',
   '        pass'),
 
  # ---------------------------------------------------------------------
@@ -8653,8 +8653,8 @@ def build():
 
  ("deck page 2: never goes back by itself when idle",
   "ltcplay/streamdeck.py",
-  "                now - self._page2_at >= PAGE2_IDLE_S:",
-  "                False:"),
+  "                now - self._page2_at >= PAGE2_IDLE_S and \\\n",
+  "                False and \\\n"),
 
  ("deck page 2: stays up through an alarm on the arm link",
   "ltcplay/streamdeck.py",
@@ -8699,10 +8699,53 @@ def build():
   '            if name == "announce-play" else None\n        if la is None:',
   '            if False else None\n        if la is None:'),
 
- ("deck page 2: a press right after an automatic close lands on a group",
+ ("deck page 2: a press right after an automatic close arms a group",
   "ltcplay/streamdeck.py",
-  "                elif self._guard_on(now):",
-  "                elif False:"),
+  "                elif self._guard_on(now) and \\\n",
+  "                elif False and \\\n"),
+
+ ("deck page 2: the guard after an automatic close also swallows a disarm",
+  "ltcplay/streamdeck.py",
+  "                elif self._guard_on(now) and \\\n"
+  "                        not self.arm.wanted[self._key_group[k]]:",
+  "                elif self._guard_on(now):"),
+
+ ("deck page 2: the guard ends when page 1 is composed, not written",
+  "ltcplay/streamdeck.py",
+  "        shown = self.last_shown\n        return bool(shown) and shown[0] >= f",
+  "        return True"),
+
+ ("deck page 2: closes for idle while an announcement plays",
+  "ltcplay/streamdeck.py",
+  "                now - self._page2_at >= PAGE2_IDLE_S and \\\n"
+  "                not self._announcement_live():",
+  "                now - self._page2_at >= PAGE2_IDLE_S:"),
+
+ ("deck page 2: an engine refusal is never shown on the key",
+  "ltcplay/streamdeck.py",
+  "            if fresh:\n                refused[self._ann_pressed] = announce_refusal_word(said[1])",
+  "            if False:\n                refused[self._ann_pressed] = announce_refusal_word(said[1])"),
+
+ ("announcements: a Hold for an announcement leaves the lasers armed",
+  "ltcplay/remote.py",
+  '                self._lasers_disarm_now(who, screen, "hold")\n            return refusal, epoch',
+  "                pass\n            return refusal, epoch"),
+
+ ("announcements: a Hold for an announcement leaves live flame programming on",
+  "ltcplay/remote.py",
+  "                self.live_flame_cut(why, who, screen)\n                self.scrub_flames_cut(why, who, screen)",
+  "                pass"),
+
+ ("announcements: a stale snapshot still reads as fact",
+  "ltcplay/remote.py",
+  "        if age > ANNOUNCE_STALE_S:",
+  "        if False:"),
+
+ ("announcements: held-then-failed is cleared by state, not its own Hold",
+  "ltcplay/announce.py",
+  "        if self.hold_still_claimed is not None and \\\n"
+  "                self._held_failed_epoch is not None:",
+  "        if False:"),
 
  ("deck: announcement presses share Stop's queue",
   "ltcplay/streamdeck.py",
@@ -8712,11 +8755,9 @@ def build():
  ("announcements: a Hold whose announcement failed is never said",
   "ltcplay/announce.py",
   "                    if held:\n"
-  "                        self._note_held_failed(ann_id, _clean(str(e)))\n"
-  "                    text = (f\"{who} pressed Play on {label}{screen_txt}. \"",
+  "                        self._note_held_failed(ann_id, _clean(str(e)),\n",
   "                    if False:\n"
-  "                        self._note_held_failed(ann_id, _clean(str(e)))\n"
-  "                    text = (f\"{who} pressed Play on {label}{screen_txt}. \""),
+  "                        self._note_held_failed(ann_id, _clean(str(e)),\n"),
 
  # The rack screen's announcement routes (remote.announce_post).
  ("announcements: an iPad can play one",

@@ -116,8 +116,8 @@ deck writes its key map to the journal every time it starts.
 
 **Announcements** (Jeff, 2026-10-26). Three recorded messages: Delayed,
 Cancellation and Cannot continue. On the rack screen they are three buttons
-under Start now, Hold, Resume and Reset, with Stop announcement beside
-them; on the Stream Deck they are page 2 (press ANNOUNCE):
+on the show screen below the flame groups and Disarm all (so they never
+push those off a small screen), with Stop announcement beside them; on the Stream Deck they are page 2 (press ANNOUNCE):
 
 | START / STOP | DELAYED | CANCEL |
 |---|---|---|
@@ -126,7 +126,9 @@ them; on the Stream Deck they are page 2 (press ANNOUNCE):
 - One press plays. There is no double tap and no hold. Only one plays at
   a time; a second press while one plays is refused.
 - **Between shows** a press puts the schedule on Hold first, so the next
-  show does not start while you are away. The rack screen says HELD FOR
+  show does not start while you are away. That Hold does what your own
+  Hold does: live flame programming and fire while scrubbing end, and
+  every laser is disarmed (arm them again by hand). The rack screen says HELD FOR
   ANNOUNCEMENT, with a Stop button, while it plays. When it ends the
   schedule STAYS on Hold: press Resume when you are ready to carry on.
 - **During a show** the announcement plays over the show and pauses,
@@ -158,11 +160,18 @@ them; on the Stream Deck they are page 2 (press ANNOUNCE):
   deck has only six keys. It goes back to the flame keys by itself: BACK,
   ten seconds with no key pressed, an Abort, an alert, the Startup page
   opening, or a deck alarm. START / STOP is the same key on both pages.
-  When it goes back by itself (ten seconds, an alert, the Startup page),
-  the flame keys ignore presses for a second and a half, until they are
-  drawn again, so a press meant for an announcement never arms or
-  disarms a group. Press again once the flame keys show. Stop, the rack
-  screen's Disarm buttons and the e-stop are never held back.
+  It never goes back for the ten seconds while an announcement is
+  playing, so STOP ANNC. stays there. When it goes back by itself (ten
+  seconds, an alert, the Startup page) the flame keys start no ARM for a
+  second and a half and until the flame faces are really on the keys, so
+  a press meant for an announcement never arms a group. A tap that
+  DISARMS an armed group always works at once (a disarm is never held
+  back). A press the engine refused shows on its key for a few seconds
+  in a word (NO FILE, ONE PLAYING, SHOW ENDED, PAGE STALE, NO OUTPUT).
+- If the engine's announcement status has not been read for a few
+  seconds, the rack screen says "Announcement status unavailable" and the
+  deck says NO STATUS, rather than show an old PLAYING; Stop stays
+  pressable.
 - Announcements are pressed on the show PC itself (the rack screen and the
   Stream Deck), not from an iPad.
 
