@@ -46845,14 +46845,29 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         real_stop = R.httpd.control.stop
         R.httpd.control.stop = lambda: (order.append("stop"),
                                         real_stop())[1]
+        # The conductor's own show_stopped (dark, no latch) must be asked,
+        # and its fade begun, BEFORE playback stops (review of #130, 5).
+        # A slow conductor (0.3 s to take the request): the halt still
+        # waits for it, so playback never stops first.
+        real_ss = R.c.show_stopped
+        R.c.show_stopped = lambda *a, **kw: (time.sleep(0.3),
+                                             order.append("show_stopped"),
+                                             real_ss(*a, **kw))[2]
+        real_abort = R.c.abort
+        R.c.abort = lambda *a, **kw: (order.append("ABORT"),
+                                      real_abort(*a, **kw))[1]
         st, _h, out = _ask(R.httpd, "POST", "/api/stop",
                            {"who": "", "screen": "Stream Deck",
                             "halt": True}, client=("127.0.0.1", 50000))
         kinds = [o if isinstance(o, str) else o[0] for o in order]
-        check(st == 200 and kinds == ["cut", "scrub", "disarm", "lasers",
-                                      "show", "stop"],
-              f"the deck's halt during a show: flames, lasers, the show, "
-              f"then playback, in that order: {st} {out} {order}")
+        check(st == 200 and kinds == ["disarm", "cut", "scrub", "lasers",
+                                      "show", "show_stopped", "stop"],
+              f"the deck's halt during a show: the flames first (as an "
+              f"Abort), then live flames, the lasers, the show, the "
+              f"conductor's show_stopped, and only then playback: {st} "
+              f"{out} {order}")
+        check("ABORT" not in kinds, "the conductor is never asked to Abort")
+        check(out.get("failed") == [], f"nothing failed: {out}")
         check(out.get("show", {}).get("ok") is True and
               out.get("lasers", {}).get("disarmed") is True and
               out.get("flames", {}).get("disarmed") is True,
@@ -46955,6 +46970,21 @@ def test_stop_says_when_its_flame_disarm_failed():
                      "lasers": {"disarmed": True}, "show": {"ok": True}}
     e._post_one("stop", {"who": "Andy"}, path="/api/stop")
     check(e.fault == "", "a halt that all went: no fault")
+    # Every failed step is said, never only the first (review of #130, 3).
+    answer["doc"] = {"stopped": True,
+                     "flames": {"disarmed": False, "text": "F"},
+                     "lasers": {"disarmed": False, "text": "L"},
+                     "show": {"ok": False, "text": "S"}}
+    del lines[:]
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check("flame disarm FAILED (F)" in e.fault and
+          "laser disarm FAILED (L)" in e.fault and
+          "did NOT end the show (S)" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED") and
+          any("flame disarm FAILED" in t and "laser disarm FAILED" in t and
+              "did NOT end the show" in t and f for t, f in lines),
+          f"all three failures said, on the key and in the journal: "
+          f"{e.fault!r} {lines}")
     # And the deck's Stop asks the engine for the halt.
     import threading as _th
     got, seen = [], _th.Event()
@@ -47005,6 +47035,214 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+def test_stop_halt_review_of_130():
+    """Review of #130: the deck's halt ends the LAST show of the night as an
+    Abort leaves it (STANDBY, then the next tick closes the night), every
+    step of Remote.halt runs even when one raises, the loopback check on
+    "halt" is the engine's own, and a Stop hold with the engine down still
+    disarms the arm link first and says the engine fault."""
+    section("Stop (review of #130): the last show, a step that raises, the "
+            "loopback check, the engine down")
+    S = _sched()
+    if S is None:
+        return
+    # 2. The last show of the night: STANDBY, as after an Abort, then the
+    # next tick closes the night. Never latched.
+    rule = _one_night_rule(S, last="18:10")
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    check(n.m.state == S.SHOW and n.m.running == 1 and
+          not [x for x in n.m.slots if x.status == S.PENDING],
+          f"setup: the night's only show is running: {n.m.state}")
+    o = n.op(S.STOP_SHOW, _den(S, 18, 2), confirmed=True, who="",
+             screen="Stream Deck")
+    check(o.accepted and n.m.state == S.STANDBY and
+          n.m.slot(1).reason == "STOPPED (operator Stop)" and
+          not n.m.abort_latched,
+          f"Stop on the last show: STANDBY as after an Abort, no latch: "
+          f"{n.m.state} {o.refused}")
+    said = " ".join(le.text for le in o.log)
+    check("Nothing is latched" in said and "disarmed" not in said,
+          f"its line claims only what the scheduler does: {said}")
+    n.tick(_den(S, 18, 3))
+    check(n.m.state == S.CLOSING,
+          f"and the next tick closes the night: {n.m.state}")
+    n.audit("Stop on the last show")
+    # 6 and the tests: every step of Remote.halt runs whatever one before
+    # it did; a laser disarm that raises is said, and the show still ends.
+    from ltcplay import remote as RM
+    calls = []
+
+    class _M:
+        state = "SHOW"
+
+    class _Svc:
+        machine = _M()
+        conductor = None
+
+        def operator_press(self, what, who, screen, confirmed=False):
+            calls.append(("press", what, confirmed))
+            self.machine.state = "STANDBY"
+            return {"ok": True, "text": "Stopped."}
+
+        def journal_press(self, who, screen, action, outcome, text,
+                          fault=False):
+            calls.append(("journal", action, outcome, fault, text))
+
+    class _Arm:
+        def press_begin(self):
+            calls.append(("press_begin",))
+
+        def press_end(self):
+            calls.append(("press_end",))
+
+    class _Purge:
+        def clear(self, why):
+            calls.append(("purge clear", why))
+
+    class _Tests:
+        def all_off(self, why):
+            calls.append(("laser tests off", why))
+
+    class _Morning:
+        laser_arm = _Arm()
+        purge = _Purge()
+        lasers = _Tests()
+
+        def lasers_disarm_now(self, why, who="", screen=""):
+            calls.append(("lasers",))
+            raise RuntimeError("BEYOND is not answering")
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   flame_disarm=lambda reason: (calls.append(("flames",)),
+                                                type("_R", (), {
+                                                    "ok": True,
+                                                    "sentence": "sent"})())[1],
+                   log=lambda t: None)
+    rm.morning = _Morning()
+    rm.cancel_holds = lambda why: calls.append(("holds", why)) or 0
+    out = rm.halt("", "Stream Deck")
+    kinds = [c_[0] for c_ in calls]
+    check(kinds[:3] == ["press_begin", "flames", "lasers"] and
+          "holds" in kinds and "purge clear" in kinds and
+          "laser tests off" in kinds and ("press", "stop-show", True)
+          in calls and kinds.index("press_end") > kinds.index("press"),
+          f"the laser arm told first, the flames first of the steps, and "
+          f"every step after the one that raised still runs: {calls}")
+    check(out["failed"] == ["lasers"] and out["show"]["ok"] and
+          out["show_ended"] and out["flames"]["disarmed"] and
+          "BEYOND is not answering" in out["lasers"]["text"],
+          f"the failed step is said, the others are not: {out}")
+    j = [c_ for c_ in calls if c_[0] == "journal"]
+    check(j and j[-1][2] == "fault" and j[-1][3] and "lasers" in j[-1][4],
+          f"journaled as a fault naming the step: {j}")
+    # An Abort or a Hold from a screen tells the laser arm a press is under
+    # way before any of its work, and that it is over after (review of PR
+    # #87, P2-2, the wiring in Remote.press; Stop does the same, above).
+    del calls[:]
+    rm.morning = _Morning()
+    rm._press = lambda name, body, ctx: (calls.append(("pressing", name)),
+                                         (200, {}))[1]
+    for what in ("abort", "hold", "resume"):
+        del calls[:]
+        rm.press(what, {}, None)
+        want = ([("press_begin",), ("pressing", what), ("press_end",)]
+                if what != "resume" else [("pressing", what)])
+        check(calls == want,
+              f"{what}: the laser arm told a press is under way around it "
+              f"(Abort and Hold only): {calls}")
+    del rm._press
+    # 8: the show ended by itself while the halt was on its way: not a
+    # failure.
+    del calls[:]
+
+    class _Svc2(_Svc):
+        def operator_press(self, what, who, screen, confirmed=False):
+            self.machine.state = "STANDBY"
+            return {"ok": False, "text": "No show is running."}
+    svc2 = _Svc2()
+    svc2.machine = _M()
+    rm.schedule = svc2
+    rm.morning = None
+    out = rm.halt("", "Stream Deck")
+    check(out["failed"] == [] and out["show"]["ok"] and
+          not out["show_ended"] and "already ended" in out["show"]["text"],
+          f"a show that ended by itself meanwhile: no failure: {out}")
+    # The loopback check on "halt" is the engine's own (_halt_asked).
+    from ltcplay import web as web_mod
+
+    class _H:
+        def __init__(self, local, body):
+            self._l, self._b = local, body
+
+        def _local(self):
+            return self._l
+
+        def _body(self):
+            return self._b
+    ha = web_mod.Handler._halt_asked
+    check(ha(_H(True, {"halt": True})) is True and
+          ha(_H(False, {"halt": True})) is False and
+          ha(_H(True, {"halt": "yes"})) is False and
+          ha(_H(True, {})) is False and ha(_H(True, None)) is False,
+          "halt is taken only from this machine, and only as true")
+    # 1: the engine down. A Stop hold disarms the arm link first, then the
+    # halt is tried; the engine's silence is the deck's fault.
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [100.0]
+    lines = []
+    seen = []
+    eng = sd.EngineConductor(
+        "http://127.0.0.1:1", fetcher=lambda path: None,
+        poster=lambda path, body: (seen.append((path, list(arm.wanted))),
+                                   (False, "ltc serve could not be "
+                                           "reached"))[1])
+    eng.start()
+    try:
+        c = sd.Controller(arm, _FakeStatusSocket(), names,
+                          show_running_provider=lambda: None,
+                          run_live_provider=lambda: None, conductor=eng,
+                          clock=lambda: t[0],
+                          journal=lambda t_, **kw: lines.append((t_, kw)))
+        check(c.start_key_mode() == "unknown",
+              "the engine down: the key's mode is unknown")
+        arm.set_group(0, True)
+        arm.set_group(2, True)
+        c.run_once([True] + [False] * 5)
+        t[0] += sd.STOP_HOLD_S + 0.01
+        c.tick()
+        c.run_once([False] * 6)
+        check(arm.wanted == [False, False, False],
+              f"the arm link disarmed at once, the engine down: "
+              f"{arm.wanted}")
+        deadline = time.time() + 3
+        while not eng.fault and time.time() < deadline:
+            time.sleep(0.01)
+        check(seen and seen[0][0] == "/api/stop" and
+              seen[0][1] == [False, False, False],
+              f"the halt was still tried, after the arm link went false: "
+              f"{seen}")
+        check("could not be reached" in eng.fault,
+              f"and the engine's silence is the deck's fault: {eng.fault!r}")
+    finally:
+        eng.stop()
+    if not _pillow_missing("the deck's STOP ALL key"):
+        fonts, faces, restore = _deck_face_recorder(sd)
+        try:
+            c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                               names, show_running_provider=lambda: None,
+                               clock=lambda: t[0])
+            c2.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"the scheduler not known: the key reads STOP ALL: "
+                  f"{faces[0]}")
+        finally:
+            restore()
+    print("  ok")
+
+
 def test_stream_deck_start_stop_is_one_key():
     """Jeff (2026-10-26): Start and Stop are one key. Start when nothing is
     running (today's Start Now, unchanged), Stop while Run has been pressed
@@ -47015,23 +47253,32 @@ def test_stream_deck_start_stop_is_one_key():
     setting the Abort latch, and is reachable while an Abort is latched,
     as on the Rack screen. During a scheduled show the same hold is a
     complete halt and the show ends (Jeff, 2026-10-26); while the
-    scheduler cannot be read, the key never reads STOP RUN and sends
-    nothing. The deck has no Hold or Abort key since 2026-10-26."""
+    scheduler cannot be read the key reads STOP ALL and a hold is Stop too
+    (review of #130, 1). A completed hold always disarms the arm link and
+    asks for the halt. An open alert is acknowledged by the press and
+    never swallows the Stop (review of #130, 9). The deck has no Hold or
+    Abort key since 2026-10-26."""
     section("Stream Deck: Start and Stop are one key; Stop is a 0.5 s hold, "
             "never a tap, never gated; it disarms every flame group and "
-            "never latches; reachable while aborted and during a scheduled "
-            "show (a complete halt); never with the scheduler unknown")
+            "never latches; reachable while aborted, during a scheduled "
+            "show (a complete halt), with the engine unknown, and with an "
+            "alert open")
     from ltcplay import streamdeck as sd
     posted = []
     eng = sd.EngineConductor("http://127.0.0.1:1",
                              poster=lambda p, b: (posted.append((p, b)) or
                                                   (True, "done",
                                                    {"stopped": True})))
+    # Stop goes on a thread of its own, never the press queue (review of
+    # #130, 7): it never waits behind a slow Hold.
     r = eng.stop_run(who="", screen="Stream Deck")
-    eng._post_one(*eng._q.get_nowait())
+    deadline = time.time() + 3
+    while not posted and time.time() < deadline:
+        time.sleep(0.01)
     check(r.ok and posted and posted[0][0] == "/api/stop" and
-          eng.fault == "", f"Stop posts the Rack screen's /api/stop: "
-                           f"{posted}")
+          eng._q.empty() and eng.fault == "",
+          f"Stop posts the Rack screen's /api/stop, at once and not on the "
+          f"press queue: {posted}")
     eng2 = sd.EngineConductor("http://127.0.0.1:1",
                               poster=lambda p, b: (posted.append((p, b)) or
                                                    (True, "ok")))
@@ -47143,13 +47390,17 @@ def test_stream_deck_start_stop_is_one_key():
     wait(sd.STOP_HOLD_S * 3)
     up()
     check(len(e.calls) == 1, "still held: it does not send twice")
-    # The run ends during the hold: nothing sent.
+    # The run ends during the hold: a hold that completes always stops
+    # (review of #130, 1): the arm link first, then the engine's halt.
+    n0 = len(e.calls)
+    arm.set_group(2, True)
     down()
     run[0] = False
     wait(sd.STOP_HOLD_S + 0.05)
     up()
-    check(len(e.calls) == 1 and "Nothing was sent" in lines[-1][0],
-          f"the run ended mid hold: nothing sent: {lines[-1]}")
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"the run ended mid hold: still every group disarmed and the "
+          f"halt asked for: {e.calls} {arm.wanted}")
     run[0] = True
     # A scheduled show (Jeff, 2026-10-26): Stop is a complete halt of
     # everything and the show ends. A tap or an early let go sends
@@ -47157,63 +47408,101 @@ def test_stream_deck_start_stop_is_one_key():
     show[0] = True
     check(c.start_key_mode() == "show", "a scheduled show live: show")
     arm.set_group(0, True)
+    n0 = len(e.calls)
     tap()
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 1 and arm.wanted[0],
+    check(len(e.calls) == n0 and arm.wanted[0],
           "during a scheduled show a tap sends nothing")
     down()
     wait(sd.STOP_HOLD_S * 0.5)
     up()
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 1, "during a show an early let go sends nothing")
+    check(len(e.calls) == n0, "during a show an early let go sends nothing")
     e.seen = None
     down()
     wait(sd.STOP_HOLD_S + 0.01)
-    check(len(e.calls) == 2 and e.calls[-1] == ("stop", "", "Stream Deck")
-          and arm.wanted == [False, False, False] and
+    check(len(e.calls) == n0 + 1 and
+          e.calls[-1] == ("stop", "", "Stream Deck") and
+          arm.wanted == [False, False, False] and
           e.seen == [False, False, False] and not c._latched_now(),
           f"during a scheduled show a full hold disarms every group, then "
           f"Stop, with no latch: {e.calls} {arm.wanted} {e.seen}")
     up()
-    # A show that ended during the hold, and no run going: nothing sent.
+    # An alert open during the show: the press acknowledges it AND starts
+    # the Stop hold, so the first full hold stops (review of #130, 9).
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    n0 = len(e.calls)
+    check(not any(arm.wanted), "setup: nothing armed")
     down()
-    show[0] = False
-    run[0] = False
-    wait(sd.STOP_HOLD_S + 0.05)
+    check(acked and c._stop_hold._down_at is not None,
+          "an alert open during a show, nothing armed: the press "
+          "acknowledges it and starts the Stop hold")
+    arm.set_group(1, True)
+    wait(sd.STOP_HOLD_S + 0.01)
     up()
-    check(len(e.calls) == 2 and "Nothing was sent" in lines[-1][0],
-          f"the show ended mid hold: nothing sent: {lines[-1]}")
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and the first full hold stops: {e.calls} {arm.wanted}")
+    # Nothing running, but a flame group armed, with an alert open: the
+    # same (an alert never swallows the Stop while flames are armed).
+    show[0], run[0] = False, False
+    arm.set_group(0, True)
+    n0 = len(e.calls)
+    down()
+    check(c._stop_hold._down_at is not None,
+          "an alert open, nothing running, a group armed: a Stop hold")
+    wait(sd.STOP_HOLD_S + 0.01)
+    up()
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and it stops: {e.calls} {arm.wanted}")
+    # Nothing running, nothing armed, an alert open: only the acknowledge.
+    n0 = len(e.calls)
+    down()
+    check(c._stop_hold._down_at is None,
+          "an alert open, nothing running or armed: only the acknowledge")
+    up()
+    del c.alert_pending
+    del c._do_acknowledge
     run[0] = True
-    # The scheduler cannot be read (review of PR #120, P2-4): never Stop.
+    # The scheduler cannot be read (the engine down; review of #130, 1):
+    # the key is Stop too, STOP ALL, and a hold disarms the arm link and
+    # asks for the halt.
     show[0] = None
-    check(c.start_key_mode() == "start",
-          "the scheduler not known: the key is not STOP RUN")
+    check(c.start_key_mode() == "unknown",
+          "the scheduler not known: the key is Stop (unknown)")
+    arm.set_group(2, True)
+    n0 = len(e.calls)
     down()
-    wait(sd.STOP_HOLD_S * 3)
+    wait(sd.STOP_HOLD_S + 0.01)
     up()
-    check(len(e.calls) == 2, "and a hold sends nothing")
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and a full hold disarms and asks for the halt: {e.calls} "
+          f"{arm.wanted}")
     show[0] = False
     # Aborted from a screen: Stop is still reachable (Jeff, 2026-10-26, as
     # on the Rack screen), and the latch stands.
     e.latched = True
     arm.set_group(1, True)
+    n0 = len(e.calls)
     tap()
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 2, "aborted: a tap still sends nothing")
+    check(len(e.calls) == n0, "aborted: a tap still sends nothing")
     down()
     wait(sd.STOP_HOLD_S + 0.01)
     up()
-    check(len(e.calls) == 3 and arm.wanted == [False, False, False] and
-          c._latched_now(),
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False]
+          and c._latched_now(),
           f"aborted: a full Stop hold disarms and stops, the latch stays: "
           f"{e.calls} {arm.wanted}")
-    # Aborted with an alert open: the key only acknowledges, it never
-    # starts a Stop hold (review of #126, P2-6, mutant C).
+    # Aborted with an alert open: the press acknowledges AND starts the
+    # Stop hold (review of #130, 9; this was #126's mutant C, reversed).
+    acked = []
     c.alert_pending = lambda: ({"kind": "deck"},)
-    c._do_acknowledge = lambda pending: None
+    c._do_acknowledge = lambda pending: acked.append(pending)
     down()
-    check(c._stop_hold._down_at is None,
-          "aborted with an alert open: a press only acknowledges")
+    check(c._stop_hold._down_at is not None,
+          "aborted with an alert open: the press starts the Stop hold")
     up()
     del c.alert_pending
     del c._do_acknowledge
@@ -47227,19 +47516,20 @@ def test_stream_deck_start_stop_is_one_key():
     run[0] = True
     # Let go early while aborted: nothing (the latched branch takes the
     # release too, review of PR #120, P2-3).
+    n0 = len(e.calls)
     down()
     wait(sd.STOP_HOLD_S * 0.5)
     up()
     check(c._stop_hold.fraction(t[0]) == 0.0,
           "aborted: letting go empties the hold")
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 3, "aborted: an early let go sends nothing")
+    check(len(e.calls) == n0, "aborted: an early let go sends nothing")
     e.latched = False
     # The key's own state is read on every tick (review of PR #120,
     # P2-3): a hold timer with the key up never sends Stop.
     c._stop_hold.press(t[0])
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 3,
+    check(len(e.calls) == n0,
           "a Stop hold timer running with the key up sends nothing")
     c._stop_hold.release()
     check(sd.deck_key_name(sd.TOP_START, []) == "Start now",
@@ -67845,6 +68135,7 @@ if __name__ == "__main__":
     test_stream_deck_start_stop_is_one_key()
     test_stop_disarms_every_flame_group_without_the_latch()
     test_stop_says_when_its_flame_disarm_failed()
+    test_stop_halt_review_of_130()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()

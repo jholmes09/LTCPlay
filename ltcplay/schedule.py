@@ -1822,18 +1822,24 @@ def _abort(m, ev, now):
 def _stop_show(m, ev, now):
     """Stop during a show (the Stream Deck's Stop held; Jeff, 2026-10-26):
     the show ends now, faded to dark as an Abort is, and the night carries
-    on as after an Abort (STANDBY, dark), but nothing is latched: no Reset
-    is needed, and with Run no longer pressed no later show starts. The
-    flame groups and lasers were disarmed by the engine before this."""
+    on exactly as after an Abort: STANDBY and dark, and after the last show
+    of the night the next tick closes the night (review of #130, 2). But
+    nothing is latched: no Reset is needed, and with Run no longer pressed
+    no later show starts. The engine disarms the flame groups and lasers
+    itself before this and journals how that went, so this line claims
+    only what the scheduler does."""
     n = m.running
     return _show_stopped(
         m, ev, now, ABORTED, "STOPPED (operator Stop)",
-        f"{_pressed(ev, 'Stop')} during show {n}. Every flame group and "
-        f"laser disarmed; flame cues zeroed and lasers blanked; music, "
-        f"video and pixels fading to black over {ABORT_FADE_S:g} s, then "
-        f"MadMapper stopped. Nothing is latched: no Reset is needed, and "
-        f"no show starts until Run is pressed again.",
-        _abort_effects(n))
+        f"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and "
+        f"lasers blanked; music, video and pixels fading to black over "
+        f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched: "
+        f"no Reset is needed, and no show starts until Run is pressed "
+        f"again.",
+        # As an Abort leaves the night: STANDBY, never straight to closing
+        # (the latch is not set here; only an Abort's conductor call sets
+        # it, schedule_service).
+        _abort_effects(n), abort=True)
 
 
 def _end_night(m, ev, now):

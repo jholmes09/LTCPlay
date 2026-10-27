@@ -452,7 +452,13 @@ laser and stops playback; nothing latches the rig. During a scheduled show
 the key keeps saying NOW PLAYING, PAUSED or AUDIO LOST, and the same hold
 is a complete halt (Jeff, 2026-10-26): all of the above, and the show
 ends through the scheduler's Stop (faded like an Abort, no latch, no
-Reset). The Rack screen's own Stop button is still refused during a show.
+Reset; after the last show of the night the night closes a moment later,
+as after an Abort). The flames go first, then live flames, the lasers
+(disarmed and blanked), screen arm holds, the purge and the laser tests,
+then the show, whose fade runs to the end before playback stops. With
+the engine down the key reads STOP ALL and the hold still disarms the arm
+link first. The Rack screen's own Stop button is still refused during a
+show.
 After an Abort from any screen
 the deck border stays solid red and every key with nothing to do is
 greyed; a group that flamesafe still reports armed keeps showing ARMED (and

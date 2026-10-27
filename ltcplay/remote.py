@@ -3099,7 +3099,7 @@ class Remote:
             return "the night is closing"
         return ""
 
-    def _lasers_dark_now(self):
+    def _lasers_dark_now(self, what="Abort pressed on a screen"):
         """(ok or None, sentence): the conductor's laser blank, on this
         thread, at once. None when no conductor is attached."""
         cond = getattr(self.schedule, "conductor", None)
@@ -3107,13 +3107,141 @@ class Remote:
         if fn is None:
             return None, ""
         try:
-            r = fn("Abort pressed on a screen")
+            r = fn(what)
             ok = bool(getattr(r, "ok", False))
         except Exception as e:
             return False, (f"The laser blank did NOT go out at the press "
                            f"({type(e).__name__}: {e}).")
         return ok, ("Lasers blanked at the press." if ok else
                     "The laser blank did NOT go out at the press.")
+
+    def halt(self, who, screen):
+        """The Stream Deck's Stop, a complete halt of everything (Jeff,
+        2026-10-26), during a scheduled show too: everything a screen's
+        Abort takes away, in the Abort's order, WITHOUT the Abort latch.
+        Each step runs whatever the one before it did, and none raises:
+
+          1. every flame group disarmed through the flame link (the
+             flame half of an Abort, _disarm_now), before anything else;
+          2. live flame programming and fire while scrubbing ended;
+          3. every laser disarmed (the laser arm, told a press is under
+             way first, as for an Abort) and blanked at once;
+          4. every screen arm hold let go, the purge selection cleared and
+             the laser tests ended (what an Abort clears);
+          5. a scheduled show that is live ended: the scheduler's Stop
+             (STOP_SHOW), faded to dark like an Abort, nothing latched.
+             A show that ended by itself meanwhile is not a failure.
+
+        {"flames", "lasers", "show", "show_ended", "failed"}: each step's
+        {"ok"/"disarmed", "text"} (None when there is nothing of it in
+        this engine) and the names of the steps that failed. The caller
+        (web.py /api/stop) stops playback after it."""
+        label = who or "An unnamed operator"
+        out = {"flames": None, "lasers": None, "show": None,
+               "show_ended": False, "failed": []}
+        m = self.morning
+        arm = getattr(m, "laser_arm", None)
+        if arm is not None:
+            try:
+                arm.press_begin()
+            except Exception:                    # noqa: BLE001
+                arm = None
+        try:
+            # 1. The flames first, every time (the Abort's rule).
+            try:
+                f_ok, f_text = self._disarm_now(who, screen, "Stop")
+            except Exception as e:               # noqa: BLE001
+                f_ok, f_text = False, f"{type(e).__name__}: {e}"
+            if f_ok is not None:
+                out["flames"] = {"disarmed": bool(f_ok), "text": f_text}
+                if not f_ok:
+                    out["failed"].append("flames")
+            # 2. Live flame programming and fire while scrubbing.
+            why = f"{label} held Stop on the {screen}"
+            for name in ("live_flame_cut", "scrub_flames_end"):
+                fn = getattr(self, name, None)
+                try:
+                    if fn is not None:
+                        fn(why, who, screen)
+                except Exception:                # noqa: BLE001
+                    pass
+            # 3. Every laser: disarmed on the arm, and blanked at once.
+            fn = getattr(m, "lasers_disarm_now", None)
+            if fn is not None:
+                try:
+                    r = fn(f"Stop held by {label} on the {screen}", who,
+                           screen)
+                    if isinstance(r, tuple) and len(r) == 2:
+                        l_ok, l_text = r
+                    else:
+                        l_ok = getattr(r, "ok", True)
+                        l_text = getattr(r, "sentence", "")
+                    l_ok = bool(l_ok)
+                    l_text = str(l_text or "Every laser: a disarm was sent.")
+                except Exception as e:           # noqa: BLE001
+                    l_ok, l_text = False, (f"The laser disarm did NOT go "
+                                           f"out ({type(e).__name__}: {e}).")
+                out["lasers"] = {"disarmed": l_ok, "text": l_text}
+                if not l_ok:
+                    out["failed"].append("lasers")
+            try:
+                self._lasers_dark_now(f"Stop held on the {screen}")
+            except Exception:                    # noqa: BLE001
+                pass
+            # 4. What an Abort clears: screen holds, the purge, laser tests.
+            try:
+                self.cancel_holds(f"{who or 'someone'} held Stop on the "
+                                  f"{screen}")
+            except Exception:                    # noqa: BLE001
+                pass
+            for obj, meth, arg in (
+                    (getattr(m, "purge", None), "clear",
+                     f"Stop held by {who or screen or 'someone'}"),
+                    (getattr(m, "lasers", None), "all_off", "Stop held")):
+                fn = getattr(obj, meth, None)
+                try:
+                    if fn is not None:
+                        fn(arg)
+                except Exception:                # noqa: BLE001
+                    pass
+            # 5. A live scheduled show ends, with no latch.
+            svc = self.schedule
+            state = getattr(getattr(svc, "machine", None), "state", None)
+            if svc is not None and state in ("SHOW", "PAUSED"):
+                try:
+                    r = svc.operator_press("stop-show", who, screen,
+                                           confirmed=True)
+                    s_ok, s_text = bool(r.get("ok")), str(r.get("text")
+                                                          or "")
+                except Exception as e:           # noqa: BLE001
+                    s_ok, s_text = False, f"{type(e).__name__}: {e}"
+                now_state = getattr(getattr(svc, "machine", None), "state",
+                                    None)
+                if not s_ok and now_state not in ("SHOW", "PAUSED"):
+                    # The show ended by itself while Stop was on its way
+                    # (third review of #130, 8): nothing left to stop.
+                    s_ok, s_text = True, ("The show had already ended, so "
+                                          "there was no show to stop.")
+                else:
+                    out["show_ended"] = s_ok
+                out["show"] = {"ok": s_ok, "text": s_text}
+                if not s_ok:
+                    out["failed"].append("show")
+        finally:
+            if arm is not None:
+                try:
+                    arm.press_end()
+                except Exception:                # noqa: BLE001
+                    pass
+        parts = [x["text"] for x in (out["flames"], out["lasers"])
+                 if x is not None]
+        bad = ", ".join(out["failed"])
+        self._journal(who, screen, "stop", "fault" if bad else "done",
+                      f"{label} held Stop on the {screen}: a complete halt. "
+                      + " ".join(parts)
+                      + (f" These did NOT work: {bad}." if bad else ""),
+                      fault=bool(bad))
+        return out
 
     def abort(self, who, screen, flames, lasers=(None, ""), pressed=None):
         """A screen's Abort (the deck has no Abort key since 2026-10-26).

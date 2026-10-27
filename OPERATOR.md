@@ -126,9 +126,17 @@ nothing; let go before the ring fills and nothing is sent.
 NOW PLAYING, PAUSED or AUDIO LOST, but holding it half a second still
 stops everything: every flame group and laser is disarmed, the show ends
 (faded to dark as an Abort is, but with no latch and no Reset needed),
-playback stops, and no show starts until Run is pressed again. To disarm
-just one group during a show, tap its key on the deck, or use the Rack
-screen. The Rack screen's own Stop button is still refused during a show
+playback stops, and no show starts until Run is pressed again. Stopping
+the last show of the night closes the night a moment later, as an Abort
+does. To disarm just one group during a show, tap its key on the deck, or
+use the Rack screen.
+
+**If the deck cannot read the show computer** (it is down, or still
+starting), the key reads STOP ALL, and the same half second hold still
+stops: the deck turns every flame group off itself first, then asks the
+show computer for the rest, and says ENGINE FAULT if it cannot. An alert
+waiting on the deck never eats a Stop: the first press both acknowledges
+the alert and starts the hold. The Rack screen's own Stop button is still refused during a show
 (use Hold or Abort there). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
 the Rack screen. If Stop stopped playback but could not send the flame

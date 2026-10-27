@@ -5330,12 +5330,10 @@ def build():
   "            self._do_acknowledge(pending)\n"),
 
  ("the Start key still starts while an alert is open", "ltcplay/streamdeck.py",
-  "                if pending:\n"
-  "                    pass\n"
-  "                elif morning:\n",
-  "                if False:\n"
-  "                    pass\n"
-  "                elif morning:\n"),
+  "            if k == TOP_START:\n"
+  "                if pending:\n",
+  "            if k == TOP_START:\n"
+  "                if False:\n"),
 
  ("the ACK key never changes while an alert is open", "ltcplay/streamdeck.py",
   "        elif self.alert_pending():\n"
@@ -8592,10 +8590,10 @@ def build():
             return
         fn = getattr(self.conductor, "stop_run", None)'''),
 
- ("deck: a Stop hold stops though the run ended during it",
+ ("deck: a Stop hold that completes after the run ended sends nothing (review of #130, 1)",
   "ltcplay/streamdeck.py",
-  "            if self.start_key_mode() in STOP_MODES:\n                self._do_stop()",
-  "            if True:\n                self._do_stop()"),
+  "            self._do_stop()\n            # Never ALSO complete an arm-hold",
+  "            if self.start_key_mode() in (\"stop\", \"show\"):\n                self._do_stop()\n            # Never ALSO complete an arm-hold"),
 
  ("deck: a Stop hold never shows on the key",
   "ltcplay/streamdeck.py",
@@ -8604,14 +8602,14 @@ def build():
 
  ("round3: a Stop can also complete a same-pass arm-hold again",
   "ltcplay/streamdeck.py",
-  """                self._do_stop()
-                # Never ALSO complete an arm-hold in the SAME pass Stop just
-                # disarmed every group in (the ordering rule Abort had on
-                # the deck); _do_arm_fire's refractory check, set by the
-                # disarm, is the second, independent backstop.
-                return
+  """            self._do_stop()
+            # Never ALSO complete an arm-hold in the SAME pass Stop just
+            # disarmed every group in (the ordering rule Abort had on the
+            # deck); _do_arm_fire's refractory check, set by the disarm, is
+            # the second, independent backstop.
+            return
 """,
-  """                self._do_stop()
+  """            self._do_stop()
 """),
 
  ("round4: reset_on_reconnect skips only the Stop hold",
@@ -8636,13 +8634,13 @@ def build():
 
  ("deck: the Start/Stop key never becomes Stop",
   "ltcplay/streamdeck.py",
-  "            if running is False and self.run_live_provider() is True:",
-  "            if False:"),
+  "            if self.run_live_provider() is True:\n                return \"stop\"",
+  "            if False:\n                return \"stop\""),
 
- ("deck: STOP RUN shows with the scheduler unknown (review of #120, P2-4)",
+ ("deck: the scheduler unknown is not Stop (review of #130, 1)",
   "ltcplay/streamdeck.py",
-  "            if running is False and self.run_live_provider() is True:",
-  "            if running is not True and self.run_live_provider() is True:"),
+  "        if running is None:\n            return \"unknown\"\n",
+  ""),
 
  ("deck: Stop is sent during a scheduled show",
   "ltcplay/streamdeck.py",
@@ -8681,7 +8679,7 @@ def build():
 
  ("deck: Stop cannot be reached while aborted",
   "ltcplay/streamdeck.py",
-  "                    if not pending and self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)",
+  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)",
   "                    if False:\n                        self._stop_hold.press(now)"),
 
  ("deck: a held Stop never fires while aborted",
@@ -8811,23 +8809,33 @@ def build():
 
  ("Stop: the engine stops playback before the flames are disarmed",
   "ltcplay/web.py",
-  "                flames = self._stop_flames(body)\n                lasers = self._stop_lasers(body) if halt else None\n                show = self._stop_show(body) if halt else None\n                out = {\"stopped\": c.stop()}",
-  "                out = {\"stopped\": c.stop()}\n                flames = self._stop_flames(body)\n                lasers = self._stop_lasers(body) if halt else None\n                show = self._stop_show(body) if halt else None"),
+  "                flames = self._stop_flames(body)\n                out = {\"stopped\": c.stop()}",
+  "                out = {\"stopped\": c.stop()}\n                flames = self._stop_flames(body)"),
 
  ("Stop: live flame programming carries on through a Stop",
   "ltcplay/web.py",
   "        for name in (\"live_flame_cut\", \"scrub_flames_end\"):",
   "        for name in ():"),
 
- ("deck: a latched press with an alert open starts a Stop hold (mutant C)",
+ ("deck: a latched press with an alert open only acknowledges again (review of #130, 9)",
   "ltcplay/streamdeck.py",
-  "                    if not pending and self.start_key_mode() in STOP_MODES:",
+  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)",
+  "                    if not pending and self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)"),
+
+ ("deck: an alert open swallows the first Stop again (review of #130, 9)",
+  "ltcplay/streamdeck.py",
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._any_flame_armed():\n                        self._stop_hold.press(now)",
+  "                    pass"),
+
+ ("deck: an alert open with a group armed but nothing running swallows the Stop",
+  "ltcplay/streamdeck.py",
+  "                    if self.start_key_mode() in STOP_MODES or \\\n                            self._any_flame_armed():",
   "                    if self.start_key_mode() in STOP_MODES:"),
 
  ("deck: a latched press starts a Stop hold whatever the key is (mutant P)",
   "ltcplay/streamdeck.py",
-  "                    if not pending and self.start_key_mode() in STOP_MODES:",
-  "                    if not pending:"),
+  "                    if self.start_key_mode() in STOP_MODES:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:",
+  "                    if True:\n                        self._stop_hold.press(now)\n                elif k in self._key_group:"),
 
  ("deck: Stop's disarm leaves the purge's own arms (mutant O)",
   "ltcplay/streamdeck.py",
@@ -11113,12 +11121,12 @@ def build():
   '            return ("an Abort or Hold is being pressed'),
  ('lasers: the remote never tells the arm an Abort or Hold is under way',
   'ltcplay/remote.py',
-  '                arm.press_begin()',
-  '                pass'),
+  '                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            return self._press(',
+  '                pass\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            return self._press('),
  ('lasers: the remote never says the Abort or Hold press is over',
   'ltcplay/remote.py',
-  '                    arm.press_end()',
-  '                    pass'),
+  '            return self._press(name, body, ctx)\n        finally:\n            if arm is not None:\n                try:\n                    arm.press_end()',
+  '            return self._press(name, body, ctx)\n        finally:\n            if arm is not None:\n                try:\n                    pass'),
  ('lasers: the night over does not disarm when CLOSING was never seen',
   'ltcplay/laserarm.py',
   '        off_in = state in OFF_STATES and self._last_state not in OFF_STATES',
@@ -13793,8 +13801,8 @@ def build():
 
  ("deck: a failed Stop disarm is a quiet done",
   "ltcplay/streamdeck.py",
-  "        disarm_failed = (name == \"stop\" and ok and isinstance(flames, dict)",
-  "        disarm_failed = (False and isinstance(flames, dict)"),
+  "            if isinstance(flames, dict) and flames.get(\"disarmed\") is False:",
+  "            if False:"),
 
  ("deck: a failed Stop disarm reads ENGINE FAULT, not DISARM FAILED",
   "ltcplay/streamdeck.py",
@@ -13880,24 +13888,24 @@ def build():
   "        return self._local() and isinstance(body, dict)"),
 
  ("halt: a halt during a show does not end the show",
-  "ltcplay/web.py",
-  "                show = self._stop_show(body) if halt else None\n",
-  "                show = None\n"),
+  "ltcplay/remote.py",
+  "            if svc is not None and state in (\"SHOW\", \"PAUSED\"):\n                try:\n                    r = svc.operator_press(\"stop-show\"",
+  "            if False:\n                try:\n                    r = svc.operator_press(\"stop-show\""),
 
  ("halt: a halt ends the show with the scheduler's Abort",
-  "ltcplay/web.py",
-  "            r = svc.operator_press(\"stop-show\", who, screen, confirmed=True)",
-  "            r = svc.operator_press(\"abort\", who, screen, confirmed=True)"),
+  "ltcplay/remote.py",
+  "                    r = svc.operator_press(\"stop-show\", who, screen,",
+  "                    r = svc.operator_press(\"abort\", who, screen,"),
 
  ("halt: a halt leaves the lasers armed",
-  "ltcplay/web.py",
-  "                lasers = self._stop_lasers(body) if halt else None\n",
-  "                lasers = None\n"),
+  "ltcplay/remote.py",
+  "            fn = getattr(m, \"lasers_disarm_now\", None)\n            if fn is not None:\n                try:\n                    r = fn(f\"Stop held",
+  "            fn = None\n            if fn is not None:\n                try:\n                    r = fn(f\"Stop held"),
 
  ("halt: playback stops before the scheduler ends the show",
   "ltcplay/web.py",
-  "                show = self._stop_show(body) if halt else None\n                out = {\"stopped\": c.stop()}\n",
-  "                out = {\"stopped\": c.stop()}\n                show = self._stop_show(body) if halt else None\n"),
+  "                    out = self._halt(body)\n                    out[\"stopped\"] = c.stop()\n",
+  "                    _s = c.stop()\n                    out = self._halt(body)\n                    out[\"stopped\"] = _s\n"),
 
  ("halt: the scheduler's Stop latches like an Abort",
   "ltcplay/schedule_service.py",
@@ -13921,8 +13929,8 @@ def build():
 
  ("halt: the deck's Stop hold does nothing during a scheduled show",
   "ltcplay/streamdeck.py",
-  "STOP_MODES = (\"stop\", \"show\")",
-  "STOP_MODES = (\"stop\",)"),
+  "STOP_MODES = (\"stop\", \"show\", \"unknown\")",
+  "STOP_MODES = (\"stop\", \"unknown\")"),
 
  ("halt: the deck's Stop does not ask for a halt",
   "ltcplay/streamdeck.py",
@@ -13931,14 +13939,81 @@ def build():
 
  ("halt: a show the scheduler did not end is no deck fault",
   "ltcplay/streamdeck.py",
-  "        if name == \"stop\" and ok and isinstance(show, dict) and \\",
-  "        if False and isinstance(show, dict) and \\"),
+  "            if isinstance(show, dict) and show.get(\"ok\") is False:",
+  "            if False:"),
 
  ("halt: a failed laser disarm is no deck fault",
   "ltcplay/streamdeck.py",
-  "        if name == \"stop\" and ok and isinstance(lasers, dict) and \\",
-  "        if False and isinstance(lasers, dict) and \\"),
+  "            if isinstance(lasers, dict) and lasers.get(\"disarmed\") is False:",
+  "            if False:"),
 
+
+
+ # Review of #130 (fix forward).
+ ("halt: playback stops before the conductor's fade (review of #130, 5)",
+  "ltcplay/web.py",
+  "        if h.get(\"show_ended\"):\n            svc = getattr(self.server, \"schedule\", None)",
+  "        if False:\n            svc = getattr(self.server, \"schedule\", None)"),
+
+ ("halt: the flames are not first (review of #130, 6)",
+  "ltcplay/remote.py",
+  "            try:\n                f_ok, f_text = self._disarm_now(who, screen, \"Stop\")\n            except Exception as e:               # noqa: BLE001\n                f_ok, f_text = False, f\"{type(e).__name__}: {e}\"\n",
+  "            f_ok, f_text = None, \"\"\n"),
+
+ ("halt: the laser arm is not told a press is under way",
+  "ltcplay/remote.py",
+  "        if arm is not None:\n            try:\n                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # 1. The flames first",
+  "        if arm is not None:\n            try:\n                pass\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # 1. The flames first"),
+
+ ("halt: screen arm holds survive a halt",
+  "ltcplay/remote.py",
+  "                self.cancel_holds(f\"{who or 'someone'} held Stop on the \"",
+  "                (lambda *a: 0)(f\"{who or 'someone'} held Stop on the \""),
+
+ ("halt: the purge selection and laser tests survive a halt",
+  "ltcplay/remote.py",
+  "                    if fn is not None:\n                        fn(arg)\n",
+  "                    pass\n"),
+
+ ("halt: a step that raises stops the rest",
+  "ltcplay/remote.py",
+  "                except Exception as e:           # noqa: BLE001\n                    l_ok, l_text = False, (f\"The laser disarm did NOT go \"",
+  "                except ZeroDivisionError as e:   # noqa: BLE001\n                    l_ok, l_text = False, (f\"The laser disarm did NOT go \""),
+
+ ("halt: a show that ended by itself is a failure (review of #130, 8)",
+  "ltcplay/remote.py",
+  "                if not s_ok and now_state not in (\"SHOW\", \"PAUSED\"):",
+  "                if False:"),
+
+ ("halt: the journal line hides a failed step (review of #130, 4)",
+  "ltcplay/remote.py",
+  "        self._journal(who, screen, \"stop\", \"fault\" if bad else \"done\",",
+  "        self._journal(who, screen, \"stop\", \"done\","),
+
+ ("halt: the scheduler's Stop line claims the disarms again (review of #130, 4)",
+  "ltcplay/schedule.py",
+  "        f\"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and \"",
+  "        f\"{_pressed(ev, 'Stop')} during show {n}. Every flame group and laser disarmed. Flame cues zeroed and \""),
+
+ ("halt: Stop on the last show goes straight to closing (review of #130, 2)",
+  "ltcplay/schedule.py",
+  "        _abort_effects(n), abort=True)\n\n\ndef _end_night",
+  "        _abort_effects(n))\n\n\ndef _end_night"),
+
+ ("deck: only the first failed Stop step is said (review of #130, 3)",
+  "ltcplay/streamdeck.py",
+  "            text = \"playback stopped, but \" + \"; and \".join(\n                t for _k, t in fails)",
+  "            text = \"playback stopped, but \" + fails[0][1]"),
+
+ ("deck: Stop waits on the press queue again (review of #130, 7)",
+  "ltcplay/streamdeck.py",
+  "        if name == \"stop\":\n            # Stop never waits behind another press either",
+  "        if False:\n            # Stop never waits behind another press either"),
+
+ ("deck: the key never reads STOP ALL with the scheduler unknown",
+  "ltcplay/streamdeck.py",
+  "            elif self.start_key_mode() == \"unknown\":\n",
+  "            elif False:\n"),
 
 ]
 

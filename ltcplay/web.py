@@ -75,6 +75,10 @@ LATCHED_ALLOWED = ("/api/stop",)
 LATCHED_REFUSAL = ("The show was aborted. Nothing on this page may bring "
                    "the rig back up until someone presses Reset; Stop and "
                    "Blackout still work.")
+# A halt that ended a live show (the Stream Deck's Stop) waits at most this
+# long for the conductor's calls, and again for its fade, before playback
+# stops (review of #130, 5). The deck's post waits STOP_POST_TIMEOUT_S.
+HALT_FADE_WAIT_S = 3.0
 LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Hold, Resume and Abort "
                      "work during a show; this waits until the show has "
                      "ended or been aborted.")
@@ -811,44 +815,40 @@ class Handler(BaseHTTPRequestHandler):
             who, screen = "", "Rack screen"
         return who, screen
 
-    def _stop_lasers(self, body):
-        """A halt's lasers (Jeff, 2026-10-26: Stop disarms everything):
-        every laser disarmed at once, as an Abort or Hold does
-        (morning.Morning.lasers_disarm_now). {"disarmed": True/False,
-        "text"}, or None with no Morning page (no laser arm) in this
-        engine. Never raises."""
+    def _halt(self, body):
+        """The halt before playback stops (Remote.halt): {"flames",
+        "lasers", "show", "failed"}, the steps that are in this engine. A
+        live show that was ended fades to dark first: every conductor call
+        the scheduler decided is made, and the conductor's fade is let run
+        (HALT_FADE_WAIT_S at most), so the music fades and nothing of the
+        show_stopped sequence is cut short by the stop (review of #130,
+        5). Never raises."""
         rm = getattr(self.server, "remote", None)
-        m = getattr(rm, "morning", None) if rm is not None else None
-        fn = getattr(m, "lasers_disarm_now", None)
+        fn = getattr(rm, "halt", None)
         if fn is None:
-            return None
+            return {}
         who, screen = self._who_where(body)
         try:
-            r = fn(f"Stop pressed by {who or 'an unnamed operator'} on the "
-                   f"{screen}", who, screen)
+            h = fn(who, screen)
         except Exception as e:                   # noqa: BLE001
-            return {"disarmed": False, "text": f"{type(e).__name__}: {e}"}
-        if isinstance(r, tuple) and len(r) == 2:
-            ok, said = r
-        else:
-            ok, said = getattr(r, "ok", True), getattr(r, "sentence", "")
-        return {"disarmed": bool(ok),
-                "text": str(said or "Every laser: a disarm was sent.")}
-
-    def _stop_show(self, body):
-        """A halt during a scheduled show (Jeff, 2026-10-26: the show
-        ends): the scheduler's Stop (STOP_SHOW), which fades the show to
-        dark like an Abort but latches nothing. {"ok", "text"}, or None
-        when no scheduled show is live. Never raises."""
-        if not self._scheduled_show_live():
-            return None
-        svc = getattr(self.server, "schedule", None)
-        who, screen = self._who_where(body)
-        try:
-            r = svc.operator_press("stop-show", who, screen, confirmed=True)
-        except Exception as e:                   # noqa: BLE001
-            return {"ok": False, "text": f"{type(e).__name__}: {e}"}
-        return {"ok": bool(r.get("ok")), "text": str(r.get("text") or "")}
+            return {"failed": ["halt"],
+                    "error": f"{type(e).__name__}: {e}"}
+        out = {k: h[k] for k in ("flames", "lasers", "show")
+               if h.get(k) is not None}
+        out["failed"] = list(h.get("failed") or [])
+        if h.get("show_ended"):
+            svc = getattr(self.server, "schedule", None)
+            try:
+                svc.flush_conductor(HALT_FADE_WAIT_S)
+            except Exception:                    # noqa: BLE001
+                pass
+            cond = getattr(svc, "conductor", None)
+            if cond is not None and getattr(cond, "threaded", False):
+                try:
+                    cond.wait_idle(HALT_FADE_WAIT_S)
+                except Exception:                # noqa: BLE001
+                    pass
+        return out
 
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
@@ -1446,20 +1446,18 @@ class Handler(BaseHTTPRequestHandler):
                 # repeats: the flame half of an Abort), WITHOUT the Abort
                 # latch, which is the Abort's alone. Then playback stops.
                 # The Stream Deck's Stop is a complete halt (Jeff,
-                # 2026-10-26, "halt"): the lasers are disarmed too, and a
-                # scheduled show that is live ends (STOP_SHOW, no latch)
-                # before playback stops.
-                halt = self._halt_asked()
+                # 2026-10-26, "halt"): Remote.halt takes away everything
+                # an Abort does, in the Abort's order, with no latch, and
+                # ends a live scheduled show (STOP_SHOW). Its fade runs to
+                # the end before playback stops.
+                if self._halt_asked():
+                    out = self._halt(body)
+                    out["stopped"] = c.stop()
+                    return self._send(200, out)
                 flames = self._stop_flames(body)
-                lasers = self._stop_lasers(body) if halt else None
-                show = self._stop_show(body) if halt else None
                 out = {"stopped": c.stop()}
                 if flames is not None:
                     out["flames"] = flames
-                if lasers is not None:
-                    out["lasers"] = lasers
-                if show is not None:
-                    out["show"] = show
                 return self._send(200, out)
         except USER_ERRORS as e:
             c.last_error = str(e)

@@ -70,8 +70,13 @@ is disarmed, a live scheduled show ends with no latch, playback stops,
 the outputs go dark), never behind the operator gate. Stop is a complete
 halt of everything, during a scheduled show too, and the show ends (Jeff,
 2026-10-26); to disarm one group mid-show, tap its key, or use the Rack
-screen. It is reachable while an Abort is latched, as on the Rack screen,
-and never touches the latch. See Controller.start_key_mode.
+screen. While the scheduler cannot be read (the engine down) the key reads
+STOP ALL and a hold is Stop too; a hold that completes always disarms the
+arm link first, then asks for the halt (review of #130, 1). An open alert
+is acknowledged by the press, which still starts the Stop hold while a
+show or run is going, the state is unknown, or a group is armed (review of
+#130, 9). It is reachable while an Abort is latched, as on the Rack
+screen, and never touches the latch. See Controller.start_key_mode.
 
 NOT REAL unless this module is given a `conductor` (EngineConductor, or
 anything shaped like it) by whoever starts it:
@@ -276,10 +281,12 @@ NO_FLAME_LINK = ("NO", "FLAME", "LINK")
 STOP_HOLD_S = 0.5           # Stop's hold: the deck's old Abort key's, from
                             # the demo (Jeff, 2026-10-26). Disarm itself (a
                             # group key) has NO hold; see module doc.
-# The Start/Stop key's modes in which a hold is Stop: a run going, and a
+# The Start/Stop key's modes in which a hold is Stop: a run going, a
 # scheduled show live (Jeff, 2026-10-26: Stop is a complete halt of
-# everything, and the show ends).
-STOP_MODES = ("stop", "show")
+# everything, and the show ends), and the engine or the scheduler not known
+# (review of #130, 1: Stop must work when the engine cannot be reached; it
+# always disarms the arm link first).
+STOP_MODES = ("stop", "show", "unknown")
 ARM_SEND_HZ = 20.0          # >= the arm link's 10 Hz floor (CONTRACT.md)
 STATUS_STALE_S = 1.0        # CONTRACT.md: "ltcplay shows red for the safety
                             # program" past this
@@ -1170,6 +1177,10 @@ class LocalSchedule:
 
 
 ENGINE_POST_TIMEOUT_S = 3.0
+# Stop's halt (/api/stop) waits for a live show's fade to finish before
+# playback stops (web.HALT_FADE_WAIT_S, twice at most), so its post waits
+# longer than a press (review of #130, 5).
+STOP_POST_TIMEOUT_S = 10.0
 ENGINE_QUEUE_MAX = 50
 
 
@@ -1317,6 +1328,15 @@ class EngineConductor:
             return EngineResult(True, "abort sent to the engine's show "
                                       "conductor at once; the engine's "
                                       "journal says what it did.")
+        if name == "stop":
+            # Stop never waits behind another press either (review of
+            # #130, 7): a thread of its own, at once.
+            threading.Thread(target=self._post_one,
+                             args=(name, body, path), daemon=True,
+                             name="ltcplay-deck-engine-stop").start()
+            return EngineResult(True, "Stop sent to the engine at once; "
+                                      "the engine's journal says what it "
+                                      "did.")
         try:
             self._q.put_nowait((name, body) if path is None
                                else (name, body, path))
@@ -1348,37 +1368,38 @@ class EngineConductor:
                 doc = got[2]
         except Exception as e:
             ok, text = False, f"{type(e).__name__}: {e}"
-        # Stop (/api/stop) also disarms every flame group on the flame link
-        # (review of #126, P2-1). Playback stopped but that disarm failed:
-        # a fault on the deck's own key, never a quiet "done" (third review
-        # of #126, P2-2). The deck's own arm link disarm went first anyway.
-        flames = doc.get("flames") if isinstance(doc, dict) else None
-        disarm_failed = (name == "stop" and ok and isinstance(flames, dict)
-                         and flames.get("disarmed") is False)
-        if disarm_failed:
+        # Stop (/api/stop) is a complete halt (review of #126, P2-1; Jeff,
+        # 2026-10-26). Every step of it that failed is said, all of them,
+        # never only the first (review of #130, 3): the flame disarm, the
+        # laser disarm, a live show the scheduler did not end. A fault on
+        # the deck's own key, never a quiet "done"; DISARM FAILED when a
+        # disarm failed. The deck's own arm link disarm went first anyway.
+        fails = []
+        if name == "stop" and ok and isinstance(doc, dict):
+            flames = doc.get("flames")
+            lasers = doc.get("lasers")
+            show = doc.get("show")
+            if isinstance(flames, dict) and flames.get("disarmed") is False:
+                fails.append(("disarm",
+                              f"the flame disarm FAILED ("
+                              f"{flames.get('text') or 'no reason given'}): "
+                              f"use Disarm all flame groups on the Rack "
+                              f"screen or the hardware e-stop"))
+            if isinstance(lasers, dict) and lasers.get("disarmed") is False:
+                fails.append(("disarm",
+                              f"the laser disarm FAILED ("
+                              f"{lasers.get('text') or 'no reason given'}): "
+                              f"use Disarm all lasers on the Rack screen"))
+            if isinstance(show, dict) and show.get("ok") is False:
+                fails.append(("show",
+                              f"the scheduler did NOT end the show ("
+                              f"{show.get('text') or 'no reason given'}): "
+                              f"use Abort on the Rack screen"))
+        disarm_failed = any(k == "disarm" for k, _t in fails)
+        if fails:
             ok = False
-            text = (f"playback stopped, but the flame disarm FAILED "
-                    f"({flames.get('text') or 'no reason given'}): use "
-                    f"Disarm all flame groups on the Rack screen or the "
-                    f"hardware e-stop")
-        # A halt during a scheduled show the scheduler did not take, or a
-        # laser disarm that failed (Jeff, 2026-10-26: Stop halts
-        # everything): a fault on the deck's own key too.
-        show = doc.get("show") if isinstance(doc, dict) else None
-        lasers = doc.get("lasers") if isinstance(doc, dict) else None
-        if name == "stop" and ok and isinstance(show, dict) and \
-                show.get("ok") is False:
-            ok = False
-            text = (f"playback stopped, but the scheduler did NOT end the "
-                    f"show ({show.get('text') or 'no reason given'}): use "
-                    f"Abort on the Rack screen")
-        if name == "stop" and ok and isinstance(lasers, dict) and \
-                lasers.get("disarmed") is False:
-            disarm_failed = True
-            ok = False
-            text = (f"playback stopped, but the laser disarm FAILED "
-                    f"({lasers.get('text') or 'no reason given'}): use "
-                    f"Disarm all lasers on the Rack screen")
+            text = "playback stopped, but " + "; and ".join(
+                t for _k, t in fails)
         if name == "abort" and doc.get("stopped") is False:
             # The engine disarmed every flame group but had no show to stop
             # (review of PR #43, P0-1), so nothing is latched: the Abort key
@@ -1427,8 +1448,10 @@ class EngineConductor:
             self.base_url + path, data=json.dumps(body).encode("utf-8"),
             method="POST", headers={"Content-Type": "application/json"})
         opener = _opener()
+        wait = STOP_POST_TIMEOUT_S if path == "/api/stop" else \
+            ENGINE_POST_TIMEOUT_S
         try:
-            with opener.open(req, timeout=ENGINE_POST_TIMEOUT_S) as r:
+            with opener.open(req, timeout=wait) as r:
                 doc = json.loads(r.read().decode("utf-8") or "{}")
             if not isinstance(doc, dict):
                 doc = {}
@@ -2874,16 +2897,22 @@ class Controller:
         complete halt: the show ends, Jeff's ruling of 2026-10-26),
         "stop" while Run has been pressed and playback is going AND the
         scheduler is known to have no show live (review of PR #120, P2-4:
-        an unknown scheduler never shows STOP RUN), else "start". Stop
-        holds in "show" and "stop" (STOP_MODES)."""
+        an unknown scheduler never shows STOP RUN), else as below. Stop
+        holds in "show" and "stop" (STOP_MODES), and in "unknown": the
+        scheduler cannot be read (the engine down, or not heard from yet;
+        LocalSchedule reads the run and the show in one poll). Then the
+        key reads STOP ALL and a hold is Stop: the arm link is disarmed
+        first whatever the engine does (review of #130, 1)."""
         try:
             running = self.show_running_provider()
         except Exception:                        # noqa: BLE001
             running = None
         if running is True:
             return "show"
+        if running is None:
+            return "unknown"
         try:
-            if running is False and self.run_live_provider() is True:
+            if self.run_live_provider() is True:
                 return "stop"
         except Exception:                        # noqa: BLE001
             pass
@@ -2898,6 +2927,15 @@ class Controller:
             # once the key has been held STOP_HOLD_S. During a scheduled
             # show too: Stop is a complete halt, and the show ends.
             self._stop_hold.press(now)
+
+    def _any_flame_armed(self):
+        """True while this deck wants any group armed or flamesafe reports
+        one armed. Never raises."""
+        try:
+            return any(self.arm.wanted) or any(
+                self._reported_armed(i) for i in range(len(self.names)))
+        except Exception:                        # noqa: BLE001
+            return True
 
     def _do_stop(self):
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
@@ -3352,7 +3390,9 @@ class Controller:
             #   touches the latch.
             for k in edges(self._prev_keys, down):
                 if k == TOP_START:
-                    if not pending and self.start_key_mode() in STOP_MODES:
+                    # An open alert is acknowledged above, and never
+                    # swallows the Stop hold (review of #130, 9).
+                    if self.start_key_mode() in STOP_MODES:
                         self._stop_hold.press(now)
                 elif k in self._key_group:
                     i = self._key_group[k]
@@ -3367,7 +3407,14 @@ class Controller:
         for k in edges(self._prev_keys, down):
             if k == TOP_START:
                 if pending:
-                    pass
+                    # The press acknowledged the alert above. While a show
+                    # or a run is going, the state is not known, or a flame
+                    # group is armed, it is ALSO the start of a Stop hold:
+                    # an alert never swallows the first Stop (review of
+                    # #130, 9).
+                    if self.start_key_mode() in STOP_MODES or \
+                            self._any_flame_armed():
+                        self._stop_hold.press(now)
                 elif morning:
                     # Re-mapped while the Morning page is open: FIRE.
                     self._fire_press(now)
@@ -3403,19 +3450,17 @@ class Controller:
             self._was_latched = latched
             self._disarmed_at = [now] * len(self.names)
         if self._prev_keys[TOP_START] and self._stop_hold.fired(now):
-            # Stop only if it is still a run to stop: a run that ended, or
-            # a scheduled show that went live, during the hold is not.
-            # Checked before the latch: Stop is reachable while aborted.
-            if self.start_key_mode() in STOP_MODES:
-                self._do_stop()
-                # Never ALSO complete an arm-hold in the SAME pass Stop just
-                # disarmed every group in (the ordering rule Abort had on
-                # the deck); _do_arm_fire's refractory check, set by the
-                # disarm, is the second, independent backstop.
-                return
-            self._log("Stream Deck Stop held, but by then no run or show "
-                      "was live to stop. Nothing was sent.", action="stop",
-                      screen="Stream Deck")
+            # A Stop hold that completes always stops (review of #130, 1):
+            # every group disarmed on the arm link first, then the engine's
+            # halt, whatever the engine or the run did during the hold (a
+            # halt with nothing running still disarms everything). Checked
+            # before the latch: Stop is reachable while aborted.
+            self._do_stop()
+            # Never ALSO complete an arm-hold in the SAME pass Stop just
+            # disarmed every group in (the ordering rule Abort had on the
+            # deck); _do_arm_fire's refractory check, set by the disarm, is
+            # the second, independent backstop.
+            return
         if latched:
             # While latched, run_once's own latched branch releases every
             # arm hold; nothing here arms.
@@ -3784,6 +3829,11 @@ class Controller:
                 # 2026-10-26), held STOP_HOLD_S: every flame group
                 # disarmed, then the Rack screen's Stop.
                 fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
+                               kind="sans")
+            elif self.start_key_mode() == "unknown":
+                # The engine or the scheduler cannot be read: the key is
+                # Stop, a complete halt (review of #130, 1).
+                fonts.show_key(d, b0, ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:
                 # The demo's idle hold: START NOW dims while held.
