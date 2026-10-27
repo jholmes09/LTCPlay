@@ -227,19 +227,25 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 /* Operator announcements (announce.py, Jeff 2026-10-26): one press plays,
    no double tap. A recording not on this PC yet reads Recording missing
    and its button is off. */
-.ann{flex:0 0 auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,.8fr);gap:8px;align-items:stretch}
+.ann{flex:0 0 auto;display:grid;grid-template-columns:minmax(120px,1.15fr) repeat(3,minmax(0,1fr)) minmax(0,.9fr);
+  gap:8px;align-items:stretch}
 .ann[hidden]{display:none}
-.ann-head{grid-column:1 / -1;display:flex;gap:12px;align-items:baseline;min-width:0;
-  font-size:clamp(13px,1.6vh,16px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ann-head b{font:700 clamp(11px,1.4vh,13px)/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;color:var(--champ)}
+.ann-head{display:flex;flex-direction:column;justify-content:center;gap:1px;min-width:0;
+  font-size:clamp(11px,1.35vh,13px);line-height:1.15}
+.ann-head>*{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ann-head b{font:700 clamp(10px,1.3vh,12px)/1.2 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--champ)}
 .ann-head .bad{color:var(--amber)}
 .ann-btns{display:contents}
-.ann button{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,22px);line-height:1.1;padding:4px 8px}
-.ann button small{display:block;font-size:clamp(11px,1.4vh,14px);opacity:.85;font-weight:400}
-.ann button.on{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
+.ann button{min-height:44px;font-size:clamp(14px,2vh,19px);line-height:1.1;padding:2px 8px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ann button small{display:block;font-size:clamp(10px,1.3vh,12px);line-height:1.1;opacity:.85;font-weight:400;
+  overflow:hidden;text-overflow:ellipsis}
+.ann button.on,.ann button.on:disabled{background:var(--amber);border-color:#FFC266;color:var(--amber-ink);opacity:1;filter:none}
 .ann button.missing:disabled{opacity:1;filter:none;background:transparent;border:1px dashed var(--amber);color:var(--muted)}
 .ann button.missing small{color:var(--amber);font-weight:700}
 .ann .toast{grid-column:1 / -1}
+@media (max-width:900px){.ann{grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,.9fr)}
+  .ann-head{grid-column:1 / -1;flex-direction:row;gap:10px}}
 .ann .toast:empty{display:none}
 #ctl-msg{margin-top:-2px}
 /* The flame groups never give their room (2026-10-24): neither the block
@@ -762,7 +768,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
          shows a press holds the schedule first; during a show it plays
          over the show and pauses nothing. Stop ends only the sound. -->
     <div class="ann" id="ann" hidden aria-label="Announcements">
-      <div class="ann-head"><b>Announcements</b><span id="ann-dev"></span><span class="dim" id="ann-note"></span></div>
+      <div class="ann-head"><b id="ann-word">Announcements</b><span id="ann-dev"></span><span class="dim" id="ann-note"></span></div>
       <div class="ann-btns" id="ann-btns"></div>
       <button id="ann-stop" title="Stops the announcement's sound only. A held schedule stays held until Resume.">Stop announcement</button>
       <div class="toast" id="ann-msg"></div>
@@ -1689,6 +1695,12 @@ function announceLook(an, booth){
     const len = (typeof playing.length_s === "number") ? Math.round(playing.length_s) : null;
     banner = String(playing.name || "") + (el !== null && len !== null ? " (" + el + " s of " + len + " s)" : "") +
       (playing.held_schedule ? ". The schedule stays held until Resume." : ". It plays over the show; nothing was paused.");
+  } else if(a.held_failed){
+    // The schedule was held for a press whose sound then failed: it stays
+    // held until Resume, and this says why (review of PR #129, 4).
+    word = "HELD, ANNOUNCEMENT FAILED";
+    banner = String(a.held_failed.name || "The announcement") + " did not play: " +
+      String(a.held_failed.why || "no reason given") + ". The schedule stays held until Resume.";
   }
   let device = "";
   if(!a.device_set) device = "Output device: not set";
@@ -1772,6 +1784,7 @@ function showView(){
   $("nav-prog").hidden = v === "programming";
   $("nav-back").hidden = v === "show";
   if(v === "show") lampColumns();
+  try{ renderAnnounce(); }catch(e){}
   if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); }
   morningView(v === "morning");
   fuelView(v === "fuel");
@@ -2505,13 +2518,22 @@ function renderAnnounce(){
   const s = ST || {};
   const L = announceLook(s.announce, s.booth);
   $("ann").hidden = !L.show;
-  $("ann-banner").hidden = !L.banner;
+  // On the show screen the block itself says it (its first line and its
+  // lit Stop), so the banner is not drawn there too: a second bar would
+  // push the flame groups down (review of PR #129, the 1366x600 screen).
+  // Every other screen gets the banner.
+  const onShow = !$("v-show").hidden;
+  $("ann-banner").hidden = !L.banner || onShow;
   $("ann-banner-word").textContent = L.word || "HELD FOR ANNOUNCEMENT";
   $("ann-banner-text").textContent = L.banner;
+  $("ann-banner-stop").hidden = L.stopOff;
   if(!L.show) return;
-  $("ann-dev").textContent = L.device; $("ann-dev").title = L.device;
-  $("ann-dev").className = L.devBad ? "bad" : "";
-  $("ann-note").textContent = L.note; $("ann-note").title = L.note;
+  $("ann-word").textContent = L.word || "Announcements";
+  $("ann-word").className = L.word ? "bad" : "";
+  const line1 = L.banner || L.device, line2 = L.banner ? L.device : L.note;
+  $("ann-dev").textContent = line1; $("ann-dev").title = line1;
+  $("ann-dev").className = (L.banner || L.devBad) ? "bad" : "";
+  $("ann-note").textContent = line2; $("ann-note").title = line2;
   const sig = JSON.stringify([L.buttons, ANN_BUSY]);
   if(sig !== ANN_SIG){
     ANN_SIG = sig;

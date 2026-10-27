@@ -29,7 +29,10 @@ while page 2 is up, and page 2 gives way to page 1 by itself: BACK, no key
 pressed for PAGE2_IDLE_S, an Abort latch, an open alert, the Morning page
 opening, a spoof alarm, or a deck reconnect. It cannot even be opened
 while any of those is true or any other key is down or an arm hold is
-filling. Key 0 is the same START / STOP on both pages, so Stop (every
+filling. After page 2 gives way BY ITSELF (idle, an alert, the Morning
+page) the group keys take no press for PAGE1_GUARD_S and until page 1 has
+been drawn, so a press meant for an announcement never lands on an arm
+key (review of PR #129). Key 0 is the same START / STOP on both pages, so Stop (every
 group disarmed, then the run stopped) is never more than one hold away,
 and an Abort on any screen still disarms everything. A key that is down
 when the page changes does nothing until it is let go.
@@ -363,6 +366,16 @@ PAGE2_FACE = {"delayed": ["DELAYED"], "cancellation": ["CANCEL"],
 PAGE2_STOP = 4
 PAGE2_BACK = SPARE_KEY
 PAGE2_IDLE_S = 10.0     # no key pressed this long on page 2: back to page 1
+# After page 2 gives way BY ITSELF (idle, an alert, the Morning page), a
+# press meant for an announcement key must not land on the arm key that is
+# now under the finger (review of PR #129, 2): the group keys take no
+# press for PAGE1_GUARD_S AND until page 1's faces have been drawn (at
+# most PAGE1_GUARD_MAX_S). Not after BACK (the operator chose it), an Abort
+# latch (every group is disarmed already; a group key then only disarms)
+# or an arm link alarm (disarm is the answer to it). Stop on key 0, the
+# rack screen's disarms and the hardware e-stop are never held back.
+PAGE1_GUARD_S = 1.5
+PAGE1_GUARD_MAX_S = 5.0
 
 # Which flame group sits on which key, and what the key calls it (Jeff,
 # 2026-10-26): ltcplay_deck.json in the settings folder, optional.
@@ -1254,6 +1267,11 @@ class EngineConductor:
         self._engine = None        # (snapshot dict, monotonic time it came)
         self._local = (False, None)   # (latched, monotonic time of press)
         self._q = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
+        # Announcement presses have a queue and a thread of their own: a
+        # Play can take a while at the engine (it reads the file), and it
+        # must never delay or crowd out Stop, an Acknowledge or anything
+        # else on the main queue.
+        self._aq = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
         self._stop = threading.Event()
         self._threads = []
         self.dropped = 0
@@ -1280,6 +1298,8 @@ class EngineConductor:
         self._started_at = self._clock()
         self._stop.clear()
         for target, name in ((self._post_loop, "ltcplay-deck-engine-press"),
+                             (self._announce_loop,
+                              "ltcplay-deck-engine-announce"),
                              (self._poll_loop, "ltcplay-deck-engine-poll")):
             t = threading.Thread(target=target, daemon=True, name=name)
             t.start()
@@ -1287,10 +1307,11 @@ class EngineConductor:
 
     def stop(self):
         self._stop.set()
-        try:
-            self._q.put_nowait(None)
-        except queue.Full:
-            pass
+        for q in (self._q, self._aq):
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
         for t in self._threads:
             t.join(timeout=2.0)
         self._threads = []
@@ -1363,9 +1384,10 @@ class EngineConductor:
             return EngineResult(True, "abort sent to the engine's show "
                                       "conductor at once; the engine's "
                                       "journal says what it did.")
+        q = self._aq if name.startswith("announce-") else self._q
         try:
-            self._q.put_nowait((name, body) if path is None
-                               else (name, body, path))
+            q.put_nowait((name, body) if path is None
+                         else (name, body, path))
         except queue.Full:
             self.dropped += 1
             return EngineResult(False, f"{name} could NOT be sent to the "
@@ -1378,6 +1400,13 @@ class EngineConductor:
     def _post_loop(self):
         while not self._stop.is_set():
             item = self._q.get()
+            if item is None:
+                return
+            self._post_one(*item)
+
+    def _announce_loop(self):
+        while not self._stop.is_set():
+            item = self._aq.get()
             if item is None:
                 return
             self._post_one(*item)
@@ -2683,6 +2712,10 @@ class Controller:
         self.page = 1
         self._page2_at = None
         self._masked = set()
+        # The guard after an automatic return (PAGE1_GUARD_S): (until,
+        # hard limit) on the clock, and whether page 1 was drawn since.
+        self._guard = None
+        self._page1_drawn = True
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
         # disarm-refractory clock per group key.
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
@@ -2850,6 +2883,7 @@ class Controller:
         self._vholds.clear()
         self.page, self._page2_at = 1, None
         self._masked = set()
+        self._guard = None
         self._vpressed.clear()
         self._vwho.clear()
         self._vheld.clear()
@@ -3443,7 +3477,16 @@ class Controller:
                     # Start and Stop are one key (Jeff, 2026-10-26).
                     self._do_start_or_stop(now)
             elif k in self._key_group:
-                if k not in self._masked:
+                if k in self._masked:
+                    pass
+                elif self._guard_on(now):
+                    self._log(f"Stream Deck: {self.labels[self._key_group[k]]}"
+                              f" key pressed just after the announcements "
+                              f"page closed by itself: ignored, so a press "
+                              f"meant for an announcement never arms or "
+                              f"disarms a group. Press it again.",
+                              action="arm-refused")
+                else:
                     self._on_group_press(self._key_group[k], now)
             elif k == ANNOUNCE_KEY and not pending and \
                     (self.announce_view() or {}).get("configured"):
@@ -3492,9 +3535,28 @@ class Controller:
                   "back on BACK, or by themselves after "
                   f"{PAGE2_IDLE_S:g} s.", action="page")
 
+    GUARDED_RETURNS = ("no key was pressed", "an alert is open",
+                       "the Morning page opened")
+
+    def _guard_on(self, now=None):
+        """True while the group keys take no press after page 2 gave way
+        by itself (PAGE1_GUARD_S)."""
+        g = self._guard
+        if g is None:
+            return False
+        now = self._clock() if now is None else now
+        if now < g[0] or (not self._page1_drawn and now < g[1]):
+            return True
+        self._guard = None
+        return False
+
     def _to_page1(self, why, down=None):
         if self.page != 1:
             self.page, self._page2_at = 1, None
+            if why.startswith(self.GUARDED_RETURNS):
+                now = self._clock()
+                self._guard = (now + PAGE1_GUARD_S, now + PAGE1_GUARD_MAX_S)
+                self._page1_drawn = False
             cur = down if down is not None else self._prev_keys
             # A key down at the change does nothing until it is let go.
             self._masked = {k for k in range(len(cur)) if cur[k]}
@@ -3994,6 +4056,7 @@ class Controller:
         if self.page == 2:
             self._draw_page2(fonts, d, blink_on)
             return canvas
+        self._page1_drawn = True
         # Key 5 opens the announcements page (module docstring), drawn only
         # when the engine says announcements are running.
         av = self.announce_view()

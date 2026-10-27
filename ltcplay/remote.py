@@ -1225,9 +1225,13 @@ class Remote:
         # web.serve. Display only; None: the block says it is not running.
         self.weather = None
         # announce.AnnounceService, set by web.serve when announcements are
-        # configured; None: the rack screen's block says they are not.
-        self.announce = None
+        # configured (the `announce` property); None: the rack screen's
+        # block says they are not. Its view is refreshed on a thread of its
+        # own (_ann_loop), never on a status or deck-input request: those
+        # never take the service's lock or ask the audio system.
+        self._announce = None
         self._ann_cache = None       # (clock(), view)
+        self._ann_thread = None
         # The Windows supervisor's word on the disk (housekeeping.py writes
         # disk-low.txt in the settings folder while it is low or critical,
         # and removes it when it is fine again). Read at most every 30 s.
@@ -1741,39 +1745,102 @@ class Remote:
                     "Player starts them with ltcplay_announce.json in the "
                     "settings folder; restart LTC Player once it is there.")
 
-    def announce_view(self, force=False):
-        """The rack screen's and the Stream Deck's view of the three
-        announcements: each one ready, or "recording missing", or why not;
-        the output device; what is playing and whether it Held the
-        schedule. Reused for ANNOUNCE_VIEW_S. Display only; never raises."""
-        ann = self.announce
+    @property
+    def announce(self):
+        return self._announce
+
+    @announce.setter
+    def announce(self, ann):
+        """Attach the announcements service: its view is read once now (at
+        startup, not on a request) and then every ANNOUNCE_VIEW_S on a
+        thread of its own."""
+        self._announce = ann
+        self._ann_cache = None
         if ann is None:
-            return {"configured": False, "why": self.ANNOUNCE_OFF}
-        now = self.clock()
-        c = self._ann_cache
-        if not force and c is not None and now - c[0] < ANNOUNCE_VIEW_S:
-            return c[1]
+            return
+        self._ann_refresh()
+        if self._ann_thread is None:
+            self._ann_thread = threading.Thread(
+                target=self._ann_loop, daemon=True,
+                name="ltcplay-announce-view")
+            self._ann_thread.start()
+
+    def _ann_loop(self):
+        while True:
+            time.sleep(ANNOUNCE_VIEW_S)
+            if self._announce is not None:
+                self._ann_refresh()
+
+    @staticmethod
+    def _ann_view_from(st):
+        return {"configured": True, "ok": bool(st.get("ok")),
+                "error": st.get("error"), "device": st.get("device"),
+                "device_set": bool(st.get("device_set")),
+                "device_available": bool(st.get("device_available")),
+                "device_reason": st.get("device_reason"),
+                "blocked": st.get("blocked"),
+                "over_show": bool(st.get("over_show")),
+                "held_failed": st.get("held_failed"),
+                "items": [{k: i.get(k) for k in
+                           ("id", "name", "available", "missing", "reason",
+                            "length_s")}
+                          for i in st.get("announcements") or []],
+                "playing": st.get("playing")}
+
+    def _ann_refresh(self, st=None):
+        """The view, from the service's own status (which takes its lock
+        and asks the audio system for the device): only ever called off
+        the status and deck-input paths (the view thread, attaching, and a
+        press's own route). Never raises."""
+        ann = self._announce
+        if ann is None:
+            return
         try:
-            st = ann.status()
-            v = {"configured": True, "ok": bool(st.get("ok")),
-                 "error": st.get("error"), "device": st.get("device"),
-                 "device_set": bool(st.get("device_set")),
-                 "device_available": bool(st.get("device_available")),
-                 "device_reason": st.get("device_reason"),
-                 "blocked": st.get("blocked"),
-                 "over_show": bool(st.get("over_show")),
-                 "items": [{k: i.get(k) for k in
-                            ("id", "name", "available", "missing", "reason",
-                             "length_s")}
-                           for i in st.get("announcements") or []],
-                 "playing": st.get("playing")}
+            v = self._ann_view_from(st if st is not None else ann.status())
         except Exception as e:                   # noqa: BLE001
             v = {"configured": True, "ok": False,
                  "error": f"The announcements could not be read "
                           f"({type(e).__name__}: {e}).", "items": [],
                  "playing": None}
-        self._ann_cache = (now, v)
-        return v
+        self._ann_cache = (self.clock(), v)
+
+    def announce_view(self):
+        """The rack screen's and the Stream Deck's view of the three
+        announcements: each one ready, or "recording missing", or why not;
+        the output device; what is playing and whether it Held the
+        schedule; a Hold whose announcement then failed. The last snapshot
+        the view thread made: never the service's lock, never the audio
+        system, on this path. Display only; never raises."""
+        if self._announce is None:
+            return {"configured": False, "why": self.ANNOUNCE_OFF}
+        c = self._ann_cache
+        if c is None:
+            return {"configured": True, "ok": False,
+                    "error": "The announcements are still being read.",
+                    "items": [], "playing": None}
+        return c[1]
+
+    def _ann_press_begin(self, name):
+        """The laser arm told a Hold-like press is under way (a Play), or
+        None. Never raises."""
+        la = getattr(self.morning, "laser_arm", None) \
+            if name == "announce-play" else None
+        if la is None:
+            return None
+        try:
+            la.press_begin()
+            return la
+        except Exception:                        # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _ann_press_end(la):
+        if la is None:
+            return
+        try:
+            la.press_end()
+        except Exception:                        # noqa: BLE001
+            pass
 
     def announce_post(self, name, body, ctx):
         """POST announce-play {"id"} and announce-stop: one press each, from
@@ -1802,6 +1869,12 @@ class Remote:
             why = self._stale(body)
             if why:
                 return 409, {"error": why, "stale": True}
+        # A Play may put the schedule on Hold, and a Hold disarms every
+        # laser: the laser arm is told a Hold-like press is under way before
+        # any work and until its answer is made, exactly as for the
+        # operator's own Hold (press(); review of PR #87, P2-2), so an arm
+        # confirmed in that window is refused.
+        arm = self._ann_press_begin(name)
         try:
             if name == "announce-play":
                 st = ann.play(str(body.get("id") or ""), who, screen,
@@ -1814,20 +1887,22 @@ class Remote:
                            "It plays over the show; nothing was paused or "
                            "stopped."))
             else:
-                ann.stop(who, screen, surface=surface)
+                st = ann.stop(who, screen, surface=surface)
                 text = ("The announcement was stopped. Nothing else was "
                         "changed.")
         except ValueError as e:
-            self._ann_cache = None
-            return 409, {"error": str(e),
-                         "announce": self.announce_view(force=True)}
+            self._ann_refresh()
+            return 409, {"error": str(e), "announce": self.announce_view()}
         except Exception as e:                   # noqa: BLE001
-            self._ann_cache = None
+            self._ann_refresh()
             return 500, {"error": f"The announcement press failed "
                                   f"({type(e).__name__}: {e}). Nothing "
                                   f"else was changed."}
+        finally:
+            self._ann_press_end(arm)
+        self._ann_refresh(st if isinstance(st, dict) else None)
         return 200, {"ok": True, "text": text,
-                     "announce": self.announce_view(force=True)}
+                     "announce": self.announce_view()}
 
     # -- presses -----------------------------------------------------------
     def _stale(self, body):

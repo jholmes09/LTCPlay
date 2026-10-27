@@ -14884,11 +14884,26 @@ def test_announce_hold_for_announcement_no_noise_when_already_held():
     svc.tick()
     check(svc.machine.state == S.SHOW, "setup: a show fired at boot")
 
+    # A running show is never paused by an announcement (Jeff,
+    # 2026-10-26): the claim succeeds, holds nothing, writes nothing.
+    before = len(svc.journal)
+    r0, _e0 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Delayed "
+        "announcement on the Announce Panel")
+    check(r0 is None and svc.machine.state == S.SHOW and
+          len(svc.journal) == before,
+          f"a claim on a running show holds nothing: {r0} "
+          f"{svc.machine.state} {list(svc.journal)[before:]}")
+    # The operator's own Hold pauses it; claims on the paused show are
+    # routine.
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
     r1, epoch1 = svc.hold_for_announcement(
         "Jeff", "Announce Panel", detail="played the Cancellation "
         "announcement on the Announce Panel")
     check(r1 is None and svc.machine.state == S.PAUSED,
-          f"setup: the first claim must pause the show: {r1} "
+          f"setup: a claim on the paused show succeeds: {r1} "
           f"{svc.machine.state}")
     before = len(svc.journal)
     r2, epoch2 = svc.hold_for_announcement(
@@ -15427,7 +15442,6 @@ def test_announce_remote_routes_rack_screen():
         ann.hold_requester = sv.hold_for_announcement
         ann.hold_still_claimed = sv.hold_still_claimed
         R.remote.announce = ann
-        R.remote._ann_cache = None
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
                            client=loop)
         an = out.get("announce") or {}
@@ -15556,6 +15570,8 @@ t(L.word === "HELD FOR ANNOUNCEMENT" && /Delayed \(3 s of 12 s\)/.test(L.banner)
 t(!L.stopOff && L.buttons.every(b => b.off) && L.buttons[0].on, "while one plays: Stop on, the rest off, it lit");
 L = announceLook(Object.assign({}, base, {over_show:true, playing:{id:"cancellation", name:"Cancellation", held_schedule:false}}), {});
 t(L.word === "ANNOUNCEMENT PLAYING" && /nothing was paused/.test(L.banner), "over a show: " + L.word + " " + L.banner);
+L = announceLook(Object.assign({}, base, {held_failed:{id:"delayed", name:"Delayed", why:"the file could not be read"}}), {});
+t(L.word === "HELD, ANNOUNCEMENT FAILED" && /Delayed did not play: the file could not be read/.test(L.banner) && /until Resume/.test(L.banner) && L.stopOff, "held then failed: " + L.word + " " + L.banner);
 L = announceLook(Object.assign({}, base, {ok:false, error:"The announcements file is not valid JSON."}), {});
 t(L.buttons.every(b => b.off) && /not valid JSON/.test(L.note), "a bad file: every button off, said");
 const all = JSON.stringify([announceLook(base, {}), announceLook(Object.assign({}, base, {playing:{id:"delayed", name:"Delayed", held_schedule:true}}), {})]);
@@ -15780,6 +15796,335 @@ def test_streamdeck_announcements_page_two():
         check(5 not in faces, "no announcements: key 5 stays blank")
     finally:
         restore()
+    print("  ok")
+
+
+def test_announce_at_showtime_never_pauses_the_show_that_just_started():
+    section("announcements (review of PR #129, 1): pressed at showtime, "
+            "with the page and the service still reading STANDBY, the "
+            "scheduler's own tick inside the Hold request starts the show; "
+            "it is then NOT held, the announcement plays over it, and the "
+            "show keeps running")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 49, 59)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: 17:49:59 is between shows: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+    # The press lands at 17:50:00.5; nobody has ticked since 17:49:59.
+    import datetime as _dt
+    now[0] = now[0] + _dt.timedelta(seconds=1.5)
+    check(svc.machine.state == S.STANDBY,
+          "setup: the unlocked read still says STANDBY at the press")
+    r = ann.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.machine.state == S.SHOW,
+          f"the show that started at 17:50 keeps running, never paused by "
+          f"the announcement: {svc.machine.state}")
+    check(r["playing"]["id"] == A.DELAYED and
+          r["playing"]["held_schedule"] is False,
+          f"the announcement plays over the show, holding nothing: {r}")
+    check(not [row for row in svc.journal if row.get("action") == S.HOLD_ON],
+          "no Hold line at all")
+    ann.stop("Andy", "rack screen")
+    check(svc.machine.state == S.SHOW, "Stop leaves the show running")
+    print("  ok")
+
+
+def test_announce_held_then_failed_says_so():
+    section("announcements (review of PR #129, 4): a press that Held the "
+            "schedule and then could not play leaves the schedule held "
+            "(only Resume ends it) and says \"Held, announcement failed\" "
+            "until then")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    def broken(aid):
+        raise ValueError("the file could not be read")
+    ann._decode = broken
+    try:
+        ann.play(A.CANCELLATION, "Andy", "rack screen")
+        check(False, "the failed play is refused")
+    except ValueError:
+        pass
+    st = ann.status()
+    check(svc.machine.state == S.HOLD and st["playing"] is None and
+          st["held_failed"] and st["held_failed"]["id"] == A.CANCELLATION
+          and "could not be read" in st["held_failed"]["why"],
+          f"held, and the failure is said: {svc.machine.state} "
+          f"{st['held_failed']}")
+    with svc._locked():
+        svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                           screen="Rack"))
+    check(ann.status()["held_failed"] is None,
+          "once Resume ends the Hold the banner goes")
+    print("  ok")
+
+
+def test_announce_view_never_on_the_status_path():
+    section("announcements (review of PR #129, 3): the rack screen's status "
+            "and the deck's deck-input never take the service's lock or "
+            "ask the audio system; a background thread keeps the view")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        work, cfg, _l = _ann_workdir()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda: "STANDBY")
+        R.remote.announce = ann
+        calls = []
+        real = ann.status
+
+        def counted():
+            calls.append(threading.current_thread().name)
+            return real()
+        ann.status = counted
+        lock_held = threading.Event()
+        release = threading.Event()
+
+        def hog():
+            with ann.lock:
+                lock_held.set()
+                release.wait(10)
+        hogger = threading.Thread(target=hog, daemon=True)
+        hogger.start()
+        lock_held.wait(5)
+        try:
+            t0 = time.monotonic()
+            for path in ("/api/remote/status", "/api/remote/deck-input"):
+                for _ in range(3):
+                    st, _h, out = _ask(R.httpd, "GET", path, client=loop)
+                    check(st == 200 and out.get("announce", {}).get(
+                              "configured") is True,
+                          f"{path} answers from the snapshot: {st}")
+            check(time.monotonic() - t0 < 5,
+                  "with the service's lock held elsewhere, both still "
+                  "answer at once")
+        finally:
+            release.set()
+            hogger.join(5)
+        check(not [c for c in calls
+                   if c != "ltcplay-announce-view"],
+              f"status() ran only on the view thread: {calls}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_announce_play_goes_through_the_laser_press_interlock():
+    section("announcements (review of PR #129, 4): a Play, which may Hold "
+            "the schedule (and a Hold disarms the lasers), tells the laser "
+            "arm a Hold-like press is under way before any work, and until "
+            "its answer, like the operator's own Hold")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    seen = []
+
+    class _Arm:
+        def press_begin(self):
+            seen.append("begin")
+
+        def press_end(self):
+            seen.append("end")
+
+    class _M:
+        laser_arm = _Arm()
+    try:
+        work, cfg, _l = _ann_workdir()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+        sv = R.svc
+        ann.state_provider = (lambda: sv.machine.state
+                              if sv.machine is not None else None)
+        real_hold = sv.hold_for_announcement
+
+        def hold(who, screen, detail=None):
+            seen.append("hold")
+            return real_hold(who, screen, detail=detail)
+        ann.hold_requester = hold
+        ann.hold_still_claimed = sv.hold_still_claimed
+        R.remote.announce = ann
+        R.remote.morning = _M()
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-play",
+                           {"id": A.DELAYED, "seen": R.seen()}, client=loop)
+        check(st == 200, f"played: {st} {out}")
+        check(seen and seen[0] == "begin" and seen[-1] == "end" and
+              seen.count("begin") == 1,
+              f"press_begin before the work, press_end after: {seen}")
+        seen.clear()
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-stop",
+                           {}, client=loop)
+        check(st == 200 and seen == [], f"Stop needs no interlock: {seen}")
+    finally:
+        R.remote.morning = None
+        R.close()
+    print("  ok")
+
+
+def test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop():
+    section("Stream Deck (review of PR #129, 4): announcement presses go "
+            "to the engine on a queue and thread of their own, so a slow "
+            "Play never delays or drops Stop")
+    from ltcplay import streamdeck as sd
+    gate = threading.Event()
+    posted = []
+
+    def poster(path, body):
+        if path.endswith("announce-play"):
+            gate.wait(10)
+        posted.append(path)
+        return True, "ok", {}
+    eng = sd.EngineConductor("http://127.0.0.1:1", poster=poster,
+                             fetcher=lambda p: None)
+    eng.start()
+    try:
+        eng.announce("delayed", who="Andy")
+        eng.stop_run(who="Andy")
+        check(wait_for(lambda: "/api/stop" in posted, timeout=5),
+              f"Stop went out while the Play was still waiting: {posted}")
+        check("/api/remote/announce-play" not in posted,
+              "the Play was indeed still waiting")
+        gate.set()
+        check(wait_for(lambda: "/api/remote/announce-play" in posted,
+                       timeout=5), f"then the Play: {posted}")
+        check(eng.fault == "", f"no ENGINE FAULT from either: {eng.fault}")
+    finally:
+        gate.set()
+        eng.stop()
+    print("  ok")
+
+
+def test_streamdeck_page_two_auto_close_guard():
+    section("Stream Deck page 2 (review of PR #129, 2): after page 2 gives "
+            "way by itself (idle, an alert, the Morning page), a fresh "
+            "press on keys 1 to 4 neither arms nor disarms a group for "
+            "PAGE1_GUARD_S and until page 1 has been drawn; after BACK "
+            "the keys work at once")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer", "fireball"]
+    arm = _FakeArmSocket(4)
+    status = _FakeStatusSocket()
+    lines = []
+    t = [100.0]
+
+    class _Screen:
+        a = {"configured": True, "device_ok": True, "ready": {},
+             "missing": {}, "playing": None}
+        al = ()
+
+        def announce(self):
+            return self.a
+
+        def alerts(self):
+            return self.al
+
+        def morning(self):
+            return None
+
+    class _Eng:
+        def snapshot(self):
+            return {"latched": False}
+
+        def announce(self, aid, who="", screen=""):
+            return sd.EngineResult(True, "sent")
+
+        def acknowledge(self, who="", screen=""):
+            return sd.EngineResult(True, "ack")
+    scr = _Screen()
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False, conductor=_Eng(),
+                      journal=lambda x, **kw: lines.append((x, kw)),
+                      clock=lambda: t[0], screen=scr)
+    down = [False] * 6
+
+    def tap(k):
+        nonlocal down
+        d2 = list(down)
+        d2[k] = True
+        c.run_once(d2)
+        c.run_once(list(down))
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2")
+    t[0] += sd.PAGE2_IDLE_S + 0.1
+    c.tick()
+    check(c.page == 1, "idle: page 1")
+    # Unarmed group: a fresh press does not even start an arm hold.
+    tap(1)
+    check(all(h.fraction(t[0]) == 0 for h in c._arm_holds) and
+          arm.wanted == [False] * 4 and
+          "ignored" in lines[-1][0],
+          f"a fresh press right after: no arm hold: {lines[-1:]}")
+    # Past PAGE1_GUARD_S but page 1 not drawn yet: still guarded.
+    t[0] += sd.PAGE1_GUARD_S + 0.1
+    tap(1)
+    check(all(h.fraction(t[0]) == 0 for h in c._arm_holds),
+          "not drawn yet: still guarded")
+    c._page1_drawn = True          # what draw() sets once page 1 is shown
+    tap(1)
+    check(c._arm_holds[c._key_group[1]].fraction(t[0]) >= 0,
+          "drawn and past the guard: the key works again")
+    # Armed group: a fresh press after an auto close does not disarm it.
+    arm.wanted = [True, False, False, False]
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2 again")
+    scr.al = ({"id": 1, "kind": "deck"},)
+    c.tick()
+    check(c.page == 1, "an alert: page 1")
+    scr.al = ()
+    tap(1)
+    check(arm.wanted[c._key_group[1]] is True,
+          f"the armed group is not disarmed by a press meant for page 2: "
+          f"{arm.wanted}")
+    t[0] += sd.PAGE1_GUARD_S + 0.1
+    c._page1_drawn = True
+    tap(1)
+    check(arm.wanted[c._key_group[1]] is False,
+          f"after the guard a tap disarms as always: {arm.wanted}")
+    # BACK: no guard.
+    t[0] += 10
+    arm.wanted = [True, False, False, False]
+    tap(sd.ANNOUNCE_KEY)
+    tap(sd.PAGE2_BACK)
+    tap(1)
+    check(arm.wanted[c._key_group[1]] is False,
+          "after BACK the arm keys work at once")
+    for text, _kw in lines:
+        _no_dashes(text, "deck guard line")
     print("  ok")
 
 
@@ -67965,6 +68310,12 @@ if __name__ == "__main__":
     test_announce_remote_routes_rack_screen()
     test_announce_rack_screen_page_logic()
     test_streamdeck_announcements_page_two()
+    test_announce_at_showtime_never_pauses_the_show_that_just_started()
+    test_announce_held_then_failed_says_so()
+    test_announce_view_never_on_the_status_path()
+    test_announce_play_goes_through_the_laser_press_interlock()
+    test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop()
+    test_streamdeck_page_two_auto_close_guard()
     test_the_gpl_path_never_loads_announcements()
     test_arttimecode_packet_byte_for_byte()
     test_artnet_timecode_holds_30fps_under_load()

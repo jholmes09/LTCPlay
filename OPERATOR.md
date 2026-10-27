@@ -130,8 +130,15 @@ them; on the Stream Deck they are page 2 (press ANNOUNCE):
   ANNOUNCEMENT, with a Stop button, while it plays. When it ends the
   schedule STAYS on Hold: press Resume when you are ready to carry on.
 - **During a show** the announcement plays over the show and pauses,
-  holds and stops nothing. If the show has to end, press Stop (or Abort)
-  yourself. The banner then reads ANNOUNCEMENT PLAYING.
+  holds and stops nothing, even when it is pressed the very second a show
+  starts. If the show has to end, press Stop (or Abort) yourself. The
+  banner then reads ANNOUNCEMENT PLAYING.
+- On the show screen the Announcements line itself says HELD FOR
+  ANNOUNCEMENT (or ANNOUNCEMENT PLAYING) and Stop announcement lights;
+  every other screen shows it as a banner with Stop.
+- If a press held the schedule and then the recording could not play, it
+  says **HELD, ANNOUNCEMENT FAILED** and why. The schedule stays held
+  until you press Resume.
 - **Stop announcement** (and STOP ANNC. on the deck) ends only the sound.
   A Hold it made stays until Resume. An announcement never disarms, stops
   or latches anything by itself.
@@ -151,6 +158,11 @@ them; on the Stream Deck they are page 2 (press ANNOUNCE):
   deck has only six keys. It goes back to the flame keys by itself: BACK,
   ten seconds with no key pressed, an Abort, an alert, the Startup page
   opening, or a deck alarm. START / STOP is the same key on both pages.
+  When it goes back by itself (ten seconds, an alert, the Startup page),
+  the flame keys ignore presses for a second and a half, until they are
+  drawn again, so a press meant for an announcement never arms or
+  disarms a group. Press again once the flame keys show. Stop, the rack
+  screen's Disarm buttons and the e-stop are never held back.
 - Announcements are pressed on the show PC itself (the rack screen and the
   Stream Deck), not from an iPad.
 

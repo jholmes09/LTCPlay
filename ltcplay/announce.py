@@ -27,7 +27,9 @@ announcement just plays. When it ends, nothing resumes the schedule by
 itself; only an operator's own Resume does.
 
 While a show is running (SHOW, or PAUSED by an operator's own Hold), an
-announcement plays WITHOUT pausing, holding or stopping anything: pausing a
+announcement plays WITHOUT pausing, holding or stopping anything, decided
+by the scheduler under its own lock, after its own tick, so a press at
+the second a show starts never pauses it (review of PR #129): pausing a
 show mid-way makes no sense for a cancellation or a cannot-continue, and
 the operator ends the show with Stop (or Abort) when that is what is meant.
 An announcement never disarms, stops or latches anything itself; see
@@ -697,6 +699,11 @@ class AnnounceService:
         # True while the playing announcement Held the schedule (pressed
         # between shows); False while it plays over a running show.
         self.held_schedule = False
+        # {"id", "name", "why"} while a press Held the schedule and then
+        # could not play: the rack screen says "Held, announcement failed"
+        # until the schedule leaves Hold (only Resume does that) or an
+        # announcement plays. See _note_held_failed.
+        self.held_failed = None
         self._player = None
         self._stream = None
         self._load()
@@ -884,6 +891,13 @@ class AnnounceService:
             return bool(self.hold_still_claimed(claim_epoch))
         except Exception:
             return False
+
+    def _note_held_failed(self, ann_id, why):
+        """The schedule was Held for this press and then the file could not
+        play. The Hold stays (only Resume ends it); the rack screen says so
+        in a banner rather than leave a held schedule unexplained."""
+        self.held_failed = {"id": ann_id, "name": LABELS[ann_id],
+                            "why": _clean(why)}
 
     @staticmethod
     def _operator_problem(who, screen):
@@ -1139,8 +1153,16 @@ class AnnounceService:
                               text=text, ann_id=ann_id, who=who,
                               screen=screen, state=state)
                     raise ValueError(text)
-                held = True
+                # Read again under no assumption: the scheduler's own tick,
+                # inside hold_for_announcement, may have started a show
+                # this very moment (pressed at showtime). It then held
+                # nothing, and the announcement plays over the show; a
+                # running show is never paused by one (Jeff, 2026-10-26).
                 state = self._current_state()
+                if state in SHOW_STATES:
+                    over_show = True
+                else:
+                    held = True
             # Claim the slot now, before the lock is released for the file
             # read below: a second press must be refused as "already
             # playing" even while this one is still decoding, and nothing
@@ -1172,6 +1194,8 @@ class AnnounceService:
                 # over.
                 if self._claim_gen == my_gen and self.playing == ann_id:
                     self.playing = None
+                    if held:
+                        self._note_held_failed(ann_id, _clean(str(e)))
                     text = (f"{who} pressed Play on {label}{screen_txt}. "
                             f"It failed: {_clean(str(e))}")
                     self._emit(actor="operator", action="play",
@@ -1274,6 +1298,8 @@ class AnnounceService:
                 stream.start()
             except Exception as e:
                 self.playing = None
+                if held:
+                    self._note_held_failed(ann_id, _clean(str(e)))
                 text = (f"{who} pressed Play on {label}{screen_txt}. It "
                         f"failed to open {_clean(self.device_name)}: "
                         f"{_clean(str(e))}")
@@ -1284,6 +1310,7 @@ class AnnounceService:
                 raise ValueError(f"{label} could not be played: "
                                  f"{_clean(str(e))}")
             self.last_good_device = dev["name"]
+            self.held_failed = None
             self._player = player
             self._stream = stream
             length = st.get("length_s") or 0.0
@@ -1343,6 +1370,8 @@ class AnnounceService:
         with self.lock:
             self._settle()
             state = self._current_state()
+            if self.held_failed is not None and state != "HOLD":
+                self.held_failed = None     # Resumed: nothing left to say
             device_ok, device_reason = self._probe_device()
             items = []
             for aid in IDS:
@@ -1370,6 +1399,7 @@ class AnnounceService:
                     "announcements": items, "playing": playing,
                     "show_state": state, "blocked": interlock_refusal(state),
                     "over_show": state in SHOW_STATES,
+                    "held_failed": self.held_failed,
                     "journal": list(self.journal)[-40:][::-1]}
 
     def close(self):

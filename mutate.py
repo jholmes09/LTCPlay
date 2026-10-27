@@ -8679,6 +8679,45 @@ def build():
   '                    (self.announce_view() or {}).get("configured"):',
   "                    True:"),
 
+ # Review of PR #129 (cold review, 2026-10-27).
+ ("an announcement pressed at showtime pauses the show that just started",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state == sch.SHOW:\n"
+  "                # A show is running, possibly one this very tick just",
+  "            if False:\n"
+  "                # A show is running, possibly one this very tick just"),
+
+ ("announcements: the rack status asks the service on the request path",
+  "ltcplay/remote.py",
+  "        c = self._ann_cache\n        if c is None:\n"
+  '            return {"configured": True, "ok": False,',
+  "        self._ann_refresh()\n        c = self._ann_cache\n        if c is None:\n"
+  '            return {"configured": True, "ok": False,'),
+
+ ("announcements: a Play skips the laser arm's press interlock",
+  "ltcplay/remote.py",
+  '            if name == "announce-play" else None\n        if la is None:',
+  '            if False else None\n        if la is None:'),
+
+ ("deck page 2: a press right after an automatic close lands on a group",
+  "ltcplay/streamdeck.py",
+  "                elif self._guard_on(now):",
+  "                elif False:"),
+
+ ("deck: announcement presses share Stop's queue",
+  "ltcplay/streamdeck.py",
+  '        q = self._aq if name.startswith("announce-") else self._q',
+  "        q = self._q"),
+
+ ("announcements: a Hold whose announcement failed is never said",
+  "ltcplay/announce.py",
+  "                    if held:\n"
+  "                        self._note_held_failed(ann_id, _clean(str(e)))\n"
+  "                    text = (f\"{who} pressed Play on {label}{screen_txt}. \"",
+  "                    if False:\n"
+  "                        self._note_held_failed(ann_id, _clean(str(e)))\n"
+  "                    text = (f\"{who} pressed Play on {label}{screen_txt}. \""),
+
  # The rack screen's announcement routes (remote.announce_post).
  ("announcements: an iPad can play one",
   "ltcplay/remote.py",
