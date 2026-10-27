@@ -828,8 +828,10 @@ def make_show_file(show_dir, dest, fps=None, start=INIT_START,
 
 
 def cmd_init(args):
-    doc = timeline_mod.starter(args.show_dir, fps=args.fps, start=args.start,
-                               gap_seconds=args.gap)
+    asked = getattr(args, "fps", None)
+    doc = timeline_mod.starter(args.show_dir,
+                               fps=INIT_FPS if asked is None else asked,
+                               start=args.start, gap_seconds=args.gap)
     if not doc["cues"]:
         return _err(f"no .fseq files found in {args.show_dir}")
     # Beside the launcher, not inside the show folder. The Run menu and the
@@ -845,13 +847,16 @@ def cmd_init(args):
         out = write_new_show_file(settings_mod.folder(),
                                   starter_base(args.show_dir), doc)
     fps = doc["fps"]
-    why = ("it was asked for" if str(args.fps) != str(INIT_FPS)
-           else "that is the default")
+    why = "it was asked for" if args.fps is not None else "that is the default"
     print(f"Wrote {out} with {len(doc['cues'])} cues at {fps:g} fps.")
     print(f"Check the frame rate: it was set to {fps:g} fps because {why}. "
           f"{FPS_CHECK}")
-    print("It is beside the launcher, so it appears in the Run menu and on "
-          "the web page.")
+    if args.out:
+        print("The Run menu and the web page list the show files in the "
+              "folder they serve; move it there if it is not.")
+    else:
+        print("It is beside the launcher, so it appears in the Run menu and "
+              "on the web page.")
     print("Edit the 'tc' values to your real running order before using it.")
     return 0
 
@@ -2086,7 +2091,8 @@ def main(argv=None):
 
     i = sub.add_parser("init", help="write a starter timeline for a show folder")
     i.add_argument("show_dir")
-    i.add_argument("--fps", default=INIT_FPS)
+    i.add_argument("--fps", default=None,
+                   help=f"the timecode rate (default {INIT_FPS})")
     i.add_argument("--start", default=INIT_START)
     i.add_argument("--gap", type=float, default=INIT_GAP_S)
     i.add_argument("--out")

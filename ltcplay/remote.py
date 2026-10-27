@@ -323,33 +323,52 @@ def _rate_words(fps, drop):
     return f"{fps:g} fps{' drop-frame' if drop else ''}"
 
 
+# The timecode is "arriving" while its last frame is at most this old:
+# the decoder keeps its last rate reading after the feed stops, and a rate
+# is never said for a feed that is not there (review of #140).
+RATE_ARRIVING_S = 1.0
+
+
 def rate_mismatch(cs):
     """A sentence when the timecode coming in (the engine's own reading,
     session.snapshot's rate_in, rate_drop and rate_confident, the same one
-    display.warnings_for judges) runs at another rate than the running
-    show file's fps and drop, else "". The frame count and the drop bit
-    are read off every frame; 29.97 against 30, which count alike, only
-    once the rate is measured (rate_confident). Display only. Never
-    raises."""
+    display.warnings_for judges) does not match the running show file's
+    fps and drop, else "". Only while timecode is arriving (ltc_age under
+    RATE_ARRIVING_S). The frame count and the drop bit are read off every
+    frame; a rate (29.97 against 30, which count alike) is said only once
+    it is measured (rate_confident), and the show file's own rate is never
+    said as the incoming one. Display only. Never raises."""
     try:
         rate = cs.get("rate_in")
         fps = cs.get("timeline_fps")
-        if not cs.get("running") or rate is None or fps is None:
+        age = cs.get("ltc_age")
+        arriving = age is not None and float(age) <= RATE_ARRIVING_S
+        if not cs.get("running") or rate is None or fps is None or \
+                not arriving:
             return ""
         rate, fps = float(rate), float(fps)
         drop = bool(cs.get("rate_drop"))
         tdrop = bool(cs.get("timeline_drop"))
         sure = bool(cs.get("rate_confident"))
-        off = (round(rate) != round(fps) or
-               (sure and abs(rate - fps) > 0.01) or drop != tdrop)
-        if not off:
+        count_off = round(rate) != round(fps)
+        speed_off = sure and abs(rate - fps) > 0.01
+        drop_off = drop != tdrop
+        if not (count_off or speed_off or drop_off):
             return ""
-        shown = rate if (sure or round(rate) != round(fps)) else fps
-        also = ' and "drop"' if drop != tdrop else ""
-        return (f"The timecode coming in runs at "
-                f"{_rate_words(shown, drop)}; the show file says "
-                f"{_rate_words(fps, tdrop)}. Cues drift until \"fps\""
-                f"{also} in the show file match the timecode.")
+        dword = "drop-frame" if drop else "non-drop"
+        if count_off or speed_off:
+            if sure:
+                incoming = f"runs at {_rate_words(rate, drop)}"
+            else:
+                incoming = (f"counts {round(rate)} frames a second, "
+                            f"{dword}")
+            keys = '"fps" and "drop"' if drop_off else '"fps"'
+        else:
+            incoming = f"is {dword}"
+            keys = '"drop"'
+        return (f"The timecode coming in {incoming}; the show file says "
+                f"{_rate_words(fps, tdrop)}. Cues drift until {keys} in "
+                f"the show file match the timecode.")
     except Exception:                            # noqa: BLE001
         return ""
 
@@ -4791,7 +4810,8 @@ class Remote:
                 f"{made['rate_note']} The \"Check the show file\" button "
                 f"does not hear the timecode. Read the rate in the "
                 f"timecode source's own settings; once a show file is "
-                f"running, the Show file card on this screen says when the "
+                f"running, the Show file card on the Programming screen "
+                f"says when the "
                 f"timecode coming in runs at another rate than the show "
                 f"file's.")
         if made["skipped"]:
