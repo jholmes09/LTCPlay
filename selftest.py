@@ -10408,6 +10408,12 @@ def test_schedule_state_machine_every_state_every_event():
         (E(S.ABORT, "operator"), {}),                  # not confirmed
         (E(S.ABORT, "operator", confirmed=True),
          {SH: (SB, STOPPED), P: (SB, STOPPED)}),
+        # Stop during a show (the Stream Deck's Stop held; Jeff,
+        # 2026-10-26): faded like an Abort, and the latch is the service's
+        # (only an Abort's conductor call sets it), never Stop's.
+        (E(S.STOP_SHOW, "operator"), {}),              # not confirmed
+        (E(S.STOP_SHOW, "operator", confirmed=True),
+         {SH: (SB, STOPPED), P: (SB, STOPPED)}),
         (E(S.END_NIGHT, "operator"), {}),              # not confirmed
         (E(S.END_NIGHT, "operator", confirmed=True),
          {k: (C, CLOSE) for k in (I, SB, H, HD, SD)}),
@@ -14550,8 +14556,9 @@ def test_announce_hold_between_shows():
 
 
 def test_announce_hold_during_show():
-    section("announcements: during a show, Play Holds it (pauses it in "
-            "place, the section 5 Hold actions), then plays")
+    section("announcements: during a show, Play plays over the show and "
+            "Holds, pauses and stops nothing (Jeff, 2026-10-26: Hold is a "
+            "schedule pause; the operator ends a show with Stop)")
     A, S, SV = _ann(), *_sched_and_service_modules()
     work, cfg, _lengths = _ann_workdir()
     swork = tempfile.mkdtemp()
@@ -14570,23 +14577,47 @@ def test_announce_hold_during_show():
                             state_provider=lambda: svc.machine.state
                                 if svc.machine else None)
     svc.on_show_started = ann.on_show_started
-    ann.hold_requester = svc.hold_for_announcement
+    asked = []
+
+    def hold(who, screen, detail=None):
+        asked.append((who, screen, detail))
+        return svc.hold_for_announcement(who, screen, detail=detail)
+    ann.hold_requester = hold
+    ann.hold_still_claimed = svc.hold_still_claimed
+    journal_before = len(svc.journal)
 
     r = ann.play(A.CANCELLATION, "Andy", "rack screen")
-    check(r["playing"]["id"] == A.CANCELLATION,
-          f"the announcement must actually play over the paused show: {r}")
-    check(svc.machine.state == S.PAUSED,
-          f"during a show, Hold must pause it in place, not refuse the "
-          f"announcement (the old 'locked during a show' rule is gone): "
+    check(r["playing"]["id"] == A.CANCELLATION
+          and r["playing"]["held_schedule"] is False,
+          f"the announcement must play over the running show: {r}")
+    check(svc.machine.state == S.SHOW,
+          f"during a show nothing is paused: {svc.machine.state}")
+    check(asked == [], f"no Hold may even be asked for during a show: "
+                       f"{asked}")
+    check(not [row for row in list(svc.journal)[journal_before:]
+               if row.get("action") == S.HOLD_ON],
+          "no Hold line in the schedule's journal")
+    started = [row for row in r["journal"] if row["outcome"] == "started"]
+    check(started and "nothing was paused or stopped" in
+          started[0]["text"], f"the journal says it played over the "
+                              f"show: {started}")
+    _no_dashes(started[0]["text"] if started else "", "play over show")
+    ann.stop("Andy", "rack screen")
+    check(svc.machine.state == S.SHOW,
+          f"Stop on the announcement stops only its audio: "
           f"{svc.machine.state}")
-    # The journal line for THIS Hold also reads as held for the
-    # announcement, not just a plain operator Hold press (review round 2,
-    # 2026-09-26: audit15_journal_noise2.py).
-    hold_lines = [row for row in svc.journal if row.get("action") == S.HOLD_ON]
-    check(hold_lines and "played the Cancellation announcement" in
-          hold_lines[0]["text"] and "is held for it" in hold_lines[0]["text"],
-          f"the Hold's own journal line, during a show, must name the "
-          f"announcement: {hold_lines}")
+
+    # Paused by the operator's own Hold: still a show; it plays, and the
+    # show stays exactly as paused as the operator left it.
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
+    check(svc.machine.state == S.PAUSED, "setup: the operator paused it")
+    r = ann.play(A.DELAYED, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.DELAYED and asked == []
+          and svc.machine.state == S.PAUSED,
+          f"over a paused show: plays, asks no Hold: {asked} "
+          f"{svc.machine.state}")
     ann.stop("Andy", "rack screen")
     print("  ok")
 
@@ -14638,11 +14669,11 @@ def test_announce_stays_held_after_it_ends():
         weekly={"sat": {"first_start": "17:30", "interval_min": 20,
                         "last_end": "22:00"}},
         exceptions={}))
-    now = [_den(S, 17, 30, 0)]
+    now = [_den(S, 17, 34, 0)]
     svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
                      state_dir=swork)
     svc.tick()
-    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    check(svc.machine.state == S.STANDBY, "setup: between shows")
     ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
                             state_provider=lambda: svc.machine.state
                                 if svc.machine else None)
@@ -14650,25 +14681,25 @@ def test_announce_stays_held_after_it_ends():
     ann.hold_requester = svc.hold_for_announcement
 
     ann.play(A.CANCELLATION, "Andy", "rack screen")
-    check(svc.machine.state == S.PAUSED, "setup: the show is paused")
+    check(svc.machine.state == S.HOLD, "setup: the schedule is held")
     # The announcement finishes on its own (a natural end, not a Stop).
     ann._player.done = True
     ann._settle()
     check(ann.playing is None, "the announcement itself must clear")
-    check(svc.machine.state == S.PAUSED,
+    check(svc.machine.state == S.HOLD,
           f"the schedule must STAY held after the announcement ends: "
           f"{svc.machine.state}")
     # More time passing changes nothing by itself.
     now[0] = _den(S, 18, 5)
     svc.tick()
-    check(svc.machine.state == S.PAUSED,
+    check(svc.machine.state == S.HOLD,
           f"nothing resumes by itself, however much time passes: "
           f"{svc.machine.state}")
     # Only an operator's own Resume moves it on.
     svc._apply(S.Event(S.RESUME, "operator", who="Andy",
                        screen="rack screen"))
-    check(svc.machine.state == S.SHOW,
-          f"an operator's Resume, and only that, carries the show on: "
+    check(svc.machine.state != S.HOLD,
+          f"an operator's Resume, and only that, carries the schedule on: "
           f"{svc.machine.state}")
     print("  ok")
 
@@ -14687,11 +14718,11 @@ def test_announce_resume_wins_over_second_hold_request():
         weekly={"sat": {"first_start": "17:30", "interval_min": 20,
                         "last_end": "22:00"}},
         exceptions={}))
-    now = [_den(S, 17, 30, 0)]
+    now = [_den(S, 17, 34, 0)]
     svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
                      state_dir=swork)
     svc.tick()
-    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    check(svc.machine.state == S.STANDBY, "setup: between shows")
     ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
                             state_provider=lambda: svc.machine.state
                                 if svc.machine else None)
@@ -14723,8 +14754,8 @@ def test_announce_resume_wins_over_second_hold_request():
     try:
         check(decode_paused.wait(timeout=5),
               "setup: the announcement thread must reach the file read")
-        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
-              f"setup: the FIRST Hold request must pause the show: "
+        check(wait_for(lambda: svc.machine.state == S.HOLD, timeout=2.0),
+              f"setup: the FIRST Hold request must hold the schedule: "
               f"{svc.machine.state}")
         # The operator, on a different screen, presses Resume -- a real,
         # independent action -- while the announcement is still mid-decode.
@@ -14733,7 +14764,7 @@ def test_announce_resume_wins_over_second_hold_request():
                                      screen="Rack"))
         check(not out.refused, f"setup: Resume must be accepted: "
                                f"{out.refused}")
-        check(svc.machine.state == S.SHOW,
+        check(svc.machine.state != S.HOLD,
               f"the operator's Resume must take effect immediately, not "
               f"wait for the announcement: {svc.machine.state}")
     finally:
@@ -14746,7 +14777,7 @@ def test_announce_resume_wins_over_second_hold_request():
     if "error" in result:
         check("resumed while the announcement was loading" in
               result["error"], f"the refusal must say why: {result}")
-    check(svc.machine.state == S.SHOW,
+    check(svc.machine.state != S.HOLD,
           f"the operator's Resume must still hold, never silently undone "
           f"by the announcement's own second check: {svc.machine.state}")
     check(ann.playing is None, "the refused announcement must not play")
@@ -14769,11 +14800,11 @@ def test_announce_resume_then_rehold_still_refuses():
         weekly={"sat": {"first_start": "17:30", "interval_min": 20,
                         "last_end": "22:00"}},
         exceptions={}))
-    now = [_den(S, 17, 30, 0)]
+    now = [_den(S, 17, 34, 0)]
     svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
                      state_dir=swork)
     svc.tick()
-    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    check(svc.machine.state == S.STANDBY, "setup: between shows")
     ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
                             state_provider=lambda: svc.machine.state
                                 if svc.machine else None)
@@ -14804,8 +14835,8 @@ def test_announce_resume_then_rehold_still_refuses():
     t.start()
     try:
         check(decode_paused.wait(timeout=5), "setup: reached the file read")
-        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
-              "setup: the first Hold request must pause the show")
+        check(wait_for(lambda: svc.machine.state == S.HOLD, timeout=2.0),
+              "setup: the first Hold request must hold the schedule")
         # Resume, then IMMEDIATELY Hold again from someone else (a real
         # scenario: an operator's own Hold press, back to back with the
         # Resume, both real actions the announcement never asked for).
@@ -14818,8 +14849,8 @@ def test_announce_resume_then_rehold_still_refuses():
         with svc._locked():
             svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
                                screen="Rack"))
-        check(svc.machine.state == S.PAUSED,
-              f"setup: the state must look the same again (PAUSED), which "
+        check(svc.machine.state == S.HOLD,
+              f"setup: the state must look the same again (HOLD), which "
               f"is exactly what makes this case need the epoch, not just "
               f"the state: {svc.machine.state}")
     finally:
@@ -14893,10 +14924,15 @@ def test_announce_on_show_started_reason_new_vs_resume():
           f"the journal must say 'a show started' for a genuinely new "
           f"show: {status['journal']}")
 
-    # Now the resume case: hold DURING a show (pauses it), play another
-    # announcement, then Resume while it is still playing.
+    # Now the resume case: the operator's own Hold DURING a show (pauses
+    # it; an announcement no longer does, Jeff 2026-10-26), play another
+    # announcement over the paused show, then Resume while it is still
+    # playing.
     now2_ok = svc.machine.state == S.SHOW
     check(now2_ok, "setup: a show is running for the resume case")
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
     ann.play(A.CANCELLATION, "Andy", "rack screen")
     check(svc.machine.state == S.PAUSED, "setup: Hold paused the show")
     stream_b = sd.output_streams[-1]
@@ -14939,11 +14975,26 @@ def test_announce_hold_for_announcement_no_noise_when_already_held():
     svc.tick()
     check(svc.machine.state == S.SHOW, "setup: a show fired at boot")
 
+    # A running show is never paused by an announcement (Jeff,
+    # 2026-10-26): the claim succeeds, holds nothing, writes nothing.
+    before = len(svc.journal)
+    r0, _e0 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Delayed "
+        "announcement on the Announce Panel")
+    check(r0 is None and svc.machine.state == S.SHOW and
+          len(svc.journal) == before,
+          f"a claim on a running show holds nothing: {r0} "
+          f"{svc.machine.state} {list(svc.journal)[before:]}")
+    # The operator's own Hold pauses it; claims on the paused show are
+    # routine.
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
     r1, epoch1 = svc.hold_for_announcement(
         "Jeff", "Announce Panel", detail="played the Cancellation "
         "announcement on the Announce Panel")
     check(r1 is None and svc.machine.state == S.PAUSED,
-          f"setup: the first claim must pause the show: {r1} "
+          f"setup: a claim on the paused show succeeds: {r1} "
           f"{svc.machine.state}")
     before = len(svc.journal)
     r2, epoch2 = svc.hold_for_announcement(
@@ -15102,8 +15153,10 @@ def test_announce_missing_files_at_startup():
           f"a broken WAV must be unavailable with a reason: "
           f"{by_id[A.CANCELLATION]}")
     check(not by_id[A.CANNOT_CONTINUE]["available"]
-          and "does not exist" in by_id[A.CANNOT_CONTINUE]["reason"],
-          f"a missing file must say it does not exist: "
+          and by_id[A.CANNOT_CONTINUE]["missing"] is True
+          and by_id[A.CANNOT_CONTINUE]["reason"].startswith(
+              "Recording missing:"),
+          f"a missing file must say plainly the recording is missing: "
           f"{by_id[A.CANNOT_CONTINUE]}")
     for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
         try:
@@ -15330,12 +15383,13 @@ def test_announce_routes():
         code, ok = call(base, "/api/announce/play",
                         {"id": A.DELAYED, "who": "Andy",
                          "screen": "rack screen"})
-        check(code == 200 and ok.get("playing", {}).get("id") == A.DELAYED,
-              f"a show running is Held first, through the live link, then "
-              f"the announcement plays: {code} {ok}")
-        check(svc.machine.state == S.PAUSED,
-              f"the show must end up paused: the announcement Held it, "
-              f"through hold_requester, before it played: "
+        check(code == 200 and ok.get("playing", {}).get("id") == A.DELAYED
+              and ok["playing"]["held_schedule"] is False,
+              f"a show running: the announcement plays over it, through "
+              f"the live link, and Holds nothing: {code} {ok}")
+        check(svc.machine.state == S.SHOW,
+              f"the show must carry on: an announcement during a show "
+              f"never pauses or stops it (Jeff, 2026-10-26): "
               f"{svc.machine.state}")
     finally:
         httpd.shutdown()
@@ -15360,6 +15414,2152 @@ def test_announce_routes():
     finally:
         httpd.shutdown()
         httpd.server_close()
+    print("  ok")
+
+
+def test_announce_device_not_set_and_device_missing_refuse_before_hold():
+    section("announcements: no output device set yet (the first run's "
+            "file) or the device not attached: every press is refused "
+            "with a sentence BEFORE any Hold, and the system default is "
+            "never used (Jeff, 2026-10-26)")
+    A = _ann()
+    asked = []
+
+    def hold(who, screen, detail=None):
+        asked.append(who)
+        return None, 1
+    for device, words in (("", "No output device is set"),
+                          ("Nothing Called This", "is not attached")):
+        work, cfg, _l = _ann_workdir(device=device)
+        svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda: "STANDBY")
+        svc.hold_requester = hold
+        svc.hold_still_claimed = lambda epoch: True
+        st = svc.status()
+        check(svc.error == "" and st["device_set"] is bool(device) and
+              st["device_available"] is False and
+              all(i["available"] for i in st["announcements"]),
+              f"{device!r}: the file loads and the recordings are there; "
+              f"only the device is not: {st}")
+        try:
+            svc.play(A.DELAYED, "Andy", "Rack screen")
+            check(False, f"{device!r}: the press must be refused")
+        except ValueError as e:
+            check(words in str(e), f"{device!r}: said plainly: {e}")
+            _no_dashes(str(e), "device refusal")
+        check(asked == [] and svc.playing is None,
+              f"{device!r}: nothing was held and nothing plays: {asked}")
+    print("  ok")
+
+
+def test_announce_surface_press_and_show_ending_while_loading():
+    section("announcements: a surface press (the rack screen or the "
+            "Stream Deck, through remote.py) is not looked up on the "
+            "operator list; a press over a running show whose show ends "
+            "while the file loads is refused, never played unheld")
+    A = _ann()
+    work, cfg, _l = _ann_workdir()
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    svc.hold_requester = lambda who, screen, detail=None: (None, 1)
+    svc.hold_still_claimed = lambda epoch: True
+    try:
+        svc.play(A.DELAYED, "Rack screen", "Rack screen")
+        check(False, "not a surface: the operator list still applies")
+    except ValueError as e:
+        check("operator list" in str(e), f"{e}")
+    r = svc.play(A.DELAYED, "Rack screen", "Rack screen", surface=True)
+    check(r["playing"]["id"] == A.DELAYED and r["playing"]["held_schedule"],
+          f"a surface press plays, between shows holding the schedule: {r}")
+    try:
+        svc.stop("Stream Deck", "Stream Deck")
+        check(False, "a Stop not from a surface still needs a listed name")
+    except ValueError:
+        pass
+    svc.stop("Stream Deck", "Stream Deck", surface=True)
+    check(svc.playing is None, "a surface Stop stops it")
+
+    state = ["SHOW"]
+    asked = []
+    svc2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                             state_provider=lambda: state[0])
+    svc2.hold_requester = lambda who, screen, detail=None: (
+        asked.append(who) or (None, 1))
+    svc2.hold_still_claimed = lambda epoch: True
+    real = svc2._decode
+
+    def decode_then_show_ends(aid):
+        state[0] = "STANDBY"
+        return real(aid)
+    svc2._decode = decode_then_show_ends
+    try:
+        svc2.play(A.CANNOT_CONTINUE, "Andy", "Rack screen")
+        check(False, "the show ended while loading: refused")
+    except ValueError as e:
+        check("show ended while the announcement was loading" in str(e),
+              f"{e}")
+    check(svc2.playing is None and asked == [],
+          f"nothing plays and nothing was held: {asked}")
+    print("  ok")
+
+
+def test_announce_remote_routes_rack_screen():
+    section("announcements on the rack screen (remote.py): the status "
+            "carries the block on the show machine only; one press plays; "
+            "a recording missing is a plain refusal; Stop stops only the "
+            "sound; never from the network, never on a stale page")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    from ltcplay import users as U
+    check(U.classify("/api/remote/announce-stop") == "safety" and
+          U.classify("/api/remote/announce-play") == "show",
+          "Stop is a safety press; Play a show press")
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                           client=loop)
+        check(st == 200 and out["announce"] == {
+                  "configured": False, "why": R.remote.ANNOUNCE_OFF},
+              f"not configured: the block says so: {out.get('announce')}")
+        work, cfg, _l = _ann_workdir()
+        os.remove(os.path.join(work, "cannot_continue.wav"))
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+        sv = R.svc
+        ann.state_provider = (lambda: sv.machine.state
+                              if sv.machine is not None else None)
+        ann.hold_requester = sv.hold_for_announcement
+        ann.hold_still_claimed = sv.hold_still_claimed
+        R.remote.announce = ann
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                           client=loop)
+        an = out.get("announce") or {}
+        by = {i["id"]: i for i in an.get("items") or []}
+        check(an.get("configured") and an.get("device_set") and
+              an.get("device_available") and
+              by[A.CANNOT_CONTINUE]["missing"] is True and
+              by[A.DELAYED]["available"] is True,
+              f"the block: device there, Cannot continue missing: {an}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check("announce" not in out, "an iPad's status has no block")
+        st, _h, out = R.ask("POST", "/api/remote/announce-play",
+                            {"id": A.DELAYED, "seen": R.seen()})
+        check(st == 403 and ann.playing is None,
+              f"never from the network: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-play",
+                           {"id": A.DELAYED, "seen": R.seen() - 60_000},
+                           client=loop)
+        check(st == 409 and out.get("stale") and ann.playing is None,
+              f"a stale page's Play is refused: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-play",
+                           {"id": A.CANNOT_CONTINUE, "seen": R.seen()},
+                           client=loop)
+        check(st == 409 and "Recording missing" in out.get("error", "")
+              and ann.playing is None,
+              f"a missing recording is refused plainly: {st} {out}")
+        before = sv.machine.state
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-play",
+                           {"id": A.DELAYED, "seen": R.seen()},
+                           client=loop)
+        check(st == 200 and ann.playing == A.DELAYED and
+              out["announce"]["playing"]["id"] == A.DELAYED,
+              f"one press plays: {st} {out}")
+        live = before in ("SHOW", "PAUSED")
+        check((sv.machine.state == before) if live else
+              (sv.machine.state == "HOLD"),
+              f"between shows the schedule is held, during a show nothing "
+              f"changes: {before} -> {sv.machine.state}")
+        check(("Held" not in out["text"]) and (
+                  "Resume" in out["text"] if not live else
+                  "nothing was paused" in out["text"]),
+              f"the toast says what happened: {out['text']}")
+        rows = [r for r in ann.journal if r["outcome"] == "started"]
+        check(rows and rows[-1]["who"] == "Rack screen" and
+              rows[-1]["screen"] == "Rack screen",
+              f"journaled as the surface: {rows[-1:]}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-play",
+                           {"id": A.CANCELLATION, "seen": R.seen()},
+                           client=loop)
+        check(st == 409 and "already playing" in out.get("error", ""),
+              f"a second press while one plays is refused: {st} {out}")
+        held_state = sv.machine.state
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-stop",
+                           {"seen": 0}, client=loop)
+        check(st == 200 and ann.playing is None and
+              sv.machine.state == held_state and
+              not sv.machine.abort_latched,
+              f"Stop: only the sound, even from a stale page; the "
+              f"schedule stays as it was, nothing latched: {st} {out} "
+              f"{sv.machine.state}")
+        st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
+                           client=loop)
+        da = din.get("announce") or {}
+        check(da.get("configured") and da.get("device_ok") and
+              da["missing"].get(A.CANNOT_CONTINUE) and
+              da["ready"].get(A.DELAYED) and da.get("playing") is None,
+              f"the deck reads the same block: {da}")
+        for t in (out.get("text", ""), R.remote.ANNOUNCE_OFF):
+            _no_dashes(t, "announce route text")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_announce_rack_screen_page_logic():
+    section("announcements on the rack screen page: three buttons and "
+            "Stop, Recording missing on a button whose file is not on the "
+            "PC, Held for announcement while one plays between shows, no "
+            "double tap anywhere")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for el in ('id="ann"', 'id="ann-btns"', 'id="ann-stop"',
+               'id="ann-banner"', 'id="ann-banner-stop"'):
+        check(el in page, f"the page has {el}")
+    check('annPress("announce-play", {id: b.dataset.ann})' in page and
+          'annPress("announce-stop")' in page,
+          "one click posts announce-play; Stop posts announce-stop")
+    a = page.find("// LOGIC BEGIN")
+    b = page.find("// LOGIC END")
+    logic = page[a:b]
+    check("function announceLook" in logic, "announceLook is pure logic")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        print("  note: node is not here; announceLook checked by reading "
+              "only (CI runs it)")
+        print("  ok")
+        return
+    js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const items = [
+  {id:"delayed", name:"Delayed", available:true, missing:false, length_s:12.4},
+  {id:"cancellation", name:"Cancellation", available:true, missing:false, length_s:9},
+  {id:"cannot_continue", name:"Cannot continue", available:false, missing:true, reason:"Recording missing: x"}];
+let L = announceLook(null, null);
+t(L.show === false, "no announcements: no block");
+L = announceLook({configured:false}, {});
+t(L.show === false, "not configured: no block");
+const base = {configured:true, ok:true, device:"MOTU M4", device_set:true, device_available:true, items:items, playing:null, over_show:false};
+L = announceLook(base, {configured:true, device:"Booth 16R"});
+t(L.show && L.buttons.length === 3, "three buttons");
+t(!L.buttons[0].off && L.buttons[0].sub === "12 s", "a ready one is on, with its length: " + JSON.stringify(L.buttons[0]));
+t(L.buttons[2].off && L.buttons[2].sub === "Recording missing" && L.buttons[2].missing, "missing: Recording missing, off");
+t(L.stopOff && L.banner === "", "nothing playing: Stop off, no banner");
+t(/holds the schedule first/.test(L.note), "between shows the note says it holds: " + L.note);
+t(/Booth speaker: Booth 16R/.test(L.device), "the booth speaker is named: " + L.device);
+L = announceLook(Object.assign({}, base, {over_show:true}), {});
+t(/plays over it and pauses nothing/.test(L.note), "during a show: " + L.note);
+t(/Booth speaker: not set/.test(L.device), "no booth: said");
+L = announceLook(Object.assign({}, base, {device_set:false, device:null, device_available:false, device_reason:"No output device is set for announcements yet."}), {});
+t(L.buttons.every(b => b.off) && L.devBad && /not set/.test(L.device) && /No output device/.test(L.note), "no device: every button off, said");
+L = announceLook(Object.assign({}, base, {playing:{id:"delayed", name:"Delayed", held_schedule:true, elapsed_s:3.2, length_s:12.4}}), {});
+t(L.word === "HELD FOR ANNOUNCEMENT" && /Delayed \(3 s of 12 s\)/.test(L.banner) && /until Resume/.test(L.banner), "held: " + L.word + " " + L.banner);
+t(!L.stopOff && L.buttons.every(b => b.off) && L.buttons[0].on, "while one plays: Stop on, the rest off, it lit");
+L = announceLook(Object.assign({}, base, {over_show:true, playing:{id:"cancellation", name:"Cancellation", held_schedule:false}}), {});
+t(L.word === "ANNOUNCEMENT PLAYING" && /nothing was paused/.test(L.banner), "over a show: " + L.word + " " + L.banner);
+L = announceLook(Object.assign({}, base, {held_failed:{id:"delayed", name:"Delayed", why:"the file could not be read"}}), {});
+t(L.word === "HELD, ANNOUNCEMENT FAILED" && /Delayed did not play: the file could not be read/.test(L.banner) && /until Resume/.test(L.banner) && L.stopOff, "held then failed: " + L.word + " " + L.banner);
+L = announceLook(Object.assign({}, base, {ok:false, error:"The announcements file is not valid JSON."}), {});
+t(L.buttons.every(b => b.off) && /not valid JSON/.test(L.note), "a bad file: every button off, said");
+const all = JSON.stringify([announceLook(base, {}), announceLook(Object.assign({}, base, {playing:{id:"delayed", name:"Delayed", held_schedule:true}}), {})]);
+t(!/[–—]/.test(all), "no em or en dashes");
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = [f"node failed: {r.stderr[-500:]}"]
+    for m in bad:
+        check(False, f"announceLook: {m}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the block was not drawn")
+        print("  ok")
+        return
+    # Drawn: the block and its banner never squeeze or cover the flame
+    # groups' buttons, Abort or the disarms, at every rack size.
+    st = _rack_status_pico()
+    st["booth"] = {"configured": False, "device": ""}
+    st["announce"] = {
+        "configured": True, "ok": True, "error": None, "device": "MOTU M4",
+        "device_set": True, "device_available": True, "device_reason": None,
+        "blocked": None, "over_show": False,
+        "items": [{"id": "delayed", "name": "Delayed", "available": True,
+                   "missing": False, "reason": None, "length_s": 12.0},
+                  {"id": "cancellation", "name": "Cancellation",
+                   "available": True, "missing": False, "reason": None,
+                   "length_s": 9.0},
+                  {"id": "cannot_continue", "name": "Cannot continue",
+                   "available": False, "missing": True,
+                   "reason": "Recording missing: x", "length_s": None}],
+        "playing": {"id": "delayed", "name": "Delayed",
+                    "held_schedule": True, "elapsed_s": 3.0,
+                    "length_s": 12.0}}
+    got = _rack_screen_in_chromium(chrome, page, st, RACK_SIZES)
+    for (w, h), res in got.items():
+        if not check(isinstance(res, list) and res,
+                     f"{w}x{h}: drawn: {res!r}"):
+            continue
+        for m in res:
+            check(not m["problems"],
+                  f"{w}x{h} {m['tag']}: with the announcements block and "
+                  f"its banner, nothing is squeezed or covered: "
+                  f"{m['problems'][:6]}")
+            if m["tag"] == "collapsed" and h >= 600:
+                check(m["flames_visible_at_load"],
+                      f"{w}x{h}: the flame groups are still on the screen "
+                      f"without scrolling")
+    print("  ok")
+
+
+def test_streamdeck_announcements_page_two():
+    section("Stream Deck page 2 (Jeff, 2026-10-26): key 5 opens it only "
+            "while the engine runs announcements; one press plays; Stop "
+            "and BACK; the arm keys come back by themselves (idle, Abort "
+            "latch, alert, spoof alarm, Morning page, reconnect); nothing "
+            "on page 2 arms or disarms; a key down at a page change does "
+            "nothing until let go")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer", "fireball"]
+    arm = _FakeArmSocket(4)
+    status = _FakeStatusSocket()
+    lines = []
+    t = [100.0]
+
+    class _Screen:
+        a = None
+        al = ()
+        mo = None
+
+        def announce(self):
+            return self.a
+
+        def alerts(self):
+            return self.al
+
+        def morning(self):
+            return self.mo
+
+    class _Eng:
+        latched = False
+
+        def __init__(self):
+            self.calls = []
+
+        def snapshot(self):
+            return {"latched": self.latched}
+
+        def announce(self, aid, who="", screen=""):
+            self.calls.append(("play", aid, who, screen))
+            return sd.EngineResult(True, "sent")
+
+        def announce_stop(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return sd.EngineResult(True, "sent")
+
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("halt", who, screen))
+            return sd.EngineResult(True, "halted")
+    scr, eng = _Screen(), _Eng()
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False, conductor=eng,
+                      journal=lambda x, **kw: lines.append((x, kw)),
+                      clock=lambda: t[0], screen=scr)
+    down = [False] * 6
+
+    def key(k, on):
+        nonlocal down
+        d2 = list(down)
+        d2[k] = on
+        c.run_once(d2)
+        down = d2
+
+    def tap(k):
+        key(k, True)
+        key(k, False)
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 1, "no announcements running: key 5 does nothing")
+    scr.a = {"configured": True, "device_ok": True,
+             "ready": {"delayed": True, "cancellation": True,
+                       "cannot_continue": False},
+             "missing": {"cannot_continue": True}, "playing": None}
+    key(1, True)
+    key(sd.ANNOUNCE_KEY, True)
+    check(c.page == 1, "another key down: page 2 is not opened")
+    key(sd.ANNOUNCE_KEY, False)
+    key(1, False)
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "key 5 opens page 2")
+    check(sd.PAGE2_PLAY == {1: "delayed", 2: "cancellation",
+                            3: "cannot_continue"} and
+          sd.PAGE2_STOP == 4 and sd.PAGE2_BACK == 5,
+          "the page 2 keys")
+    wanted0 = list(arm.wanted)
+    key(1, True)
+    check(eng.calls == [("play", "delayed", "Andy", "Stream Deck")],
+          f"ONE press plays, at the press, no hold, no second tap: "
+          f"{eng.calls}")
+    t[0] += sd.ARM_HOLD_S + 1
+    c.tick()
+    key(1, False)
+    check(arm.wanted == wanted0 and all(
+              h.fraction(t[0]) == 0 for h in c._arm_holds),
+          "a long press on page 2 arms nothing")
+    tap(sd.PAGE2_STOP)
+    check(eng.calls[-1] == ("stop", "Andy", "Stream Deck"), eng.calls)
+    tap(sd.PAGE2_BACK)
+    check(c.page == 1, "BACK returns to the arm keys")
+    # Idle: back by itself.
+    tap(sd.ANNOUNCE_KEY)
+    t[0] += sd.PAGE2_IDLE_S + 0.1
+    c.tick()
+    check(c.page == 1, "no key pressed for PAGE2_IDLE_S: back by itself")
+    # A key down at the change is masked until let go.
+    tap(sd.ANNOUNCE_KEY)
+    key(2, True)
+    n = len(eng.calls)
+    t[0] += sd.PAGE2_IDLE_S + 0.1
+    c.tick()
+    check(c.page == 1 and len(eng.calls) == n, "back on page 1")
+    t[0] += sd.ARM_HOLD_S + 1
+    c.tick()
+    key(2, True)
+    check(arm.wanted == wanted0 and not c._key_down(1),
+          "the key still down from page 2 does nothing on page 1")
+    key(2, False)
+    # An Abort latch, an alert, a spoof alarm, the Morning page: back.
+    for what in ("latch", "alert", "spoof", "morning"):
+        tap(sd.ANNOUNCE_KEY)
+        check(c.page == 2, f"setup {what}: page 2")
+        if what == "latch":
+            eng.latched = True
+        elif what == "alert":
+            scr.al = ({"id": 1, "kind": "deck"},)
+        elif what == "spoof":
+            c._spoof_alarm = "test"
+        else:
+            scr.mo = {"open": True}
+        c.tick()
+        check(c.page == 1, f"{what}: back to the arm keys at once")
+        eng.latched, scr.al, scr.mo = False, (), None
+        c._spoof_alarm = ""
+    # Not opened while latched; a reconnect closes it.
+    eng.latched = True
+    c.tick()
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 1, "latched: page 2 does not open")
+    eng.latched = False
+    c.tick()
+    tap(sd.ANNOUNCE_KEY)
+    c.reset_on_reconnect()
+    check(c.page == 1, "a reconnect starts on page 1")
+    # Key 0 is the same START / STOP on page 2.
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2 and sd.deck_key_name(1, names, page=2) ==
+          "announce delayed" and sd.deck_key_name(1, names) ==
+          "arm key front row", "the audit names page 2's keys")
+    # Merged with #130: Stop is one hold on page 2 too, in every state, a
+    # scheduled show included, every flame group disarmed first.
+    for running in (True, None, False):
+        c.show_running_provider = lambda r=running: r
+        arm.set_group(0, True)
+        n = len(eng.calls)
+        key(0, True)
+        t[0] += sd.STOP_HOLD_S + 0.01
+        c.tick()
+        key(0, False)
+        check(c.page == 2 and arm.wanted == [False] * 4 and
+              ("halt", "Andy", "Stream Deck") in eng.calls[n:],
+              f"show running {running}: one Stop hold on page 2 disarms "
+              f"every group, then halts: {arm.wanted} {eng.calls[n:]}")
+        t[0] += sd.REARM_REFRACTORY_S + 1
+        c._page2_at = t[0]
+    for text, kw in lines:
+        _no_dashes(text, "deck page 2 line")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  ok")
+        return
+    try:
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[1][0] == ["DELAYED"] and faces[2][0] == ["CANCEL"] and
+              faces[3][0] == ["CANNOT", "CONTINUE", "NO FILE"] and
+              faces[4][0] == ["STOP", "ANNC."] and faces[5][0] == ["BACK"],
+              f"page 2's faces, NO FILE for a missing recording: {faces}")
+        scr.a = dict(scr.a, playing="delayed")
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[1][0] == ["DELAYED", "PLAYING"], faces[1])
+        tap(sd.PAGE2_BACK)
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[5][0] == ["ANNOUNCE"] and
+              faces[1][0] == "front row",
+              f"page 1: the arm keys, and key 5 reads ANNOUNCE: {faces}")
+        scr.a = None
+        faces.clear()
+        c.draw(fonts, blink_on=True, chase=0)
+        check(5 not in faces, "no announcements: key 5 stays blank")
+    finally:
+        restore()
+    print("  ok")
+
+
+def test_announce_at_showtime_never_pauses_the_show_that_just_started():
+    section("announcements (review of PR #129, 1): pressed at showtime, "
+            "with the page and the service still reading STANDBY, the "
+            "scheduler's own tick inside the Hold request starts the show; "
+            "it is then NOT held, the announcement plays over it, and the "
+            "show keeps running")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 49, 59)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: 17:49:59 is between shows: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+    # The press lands at 17:50:00.5; nobody has ticked since 17:49:59.
+    import datetime as _dt
+    now[0] = now[0] + _dt.timedelta(seconds=1.5)
+    check(svc.machine.state == S.STANDBY,
+          "setup: the unlocked read still says STANDBY at the press")
+    r = ann.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.machine.state == S.SHOW,
+          f"the show that started at 17:50 keeps running, never paused by "
+          f"the announcement: {svc.machine.state}")
+    check(r["playing"]["id"] == A.DELAYED and
+          r["playing"]["held_schedule"] is False,
+          f"the announcement plays over the show, holding nothing: {r}")
+    check(not [row for row in svc.journal if row.get("action") == S.HOLD_ON],
+          "no Hold line at all")
+    ann.stop("Andy", "rack screen")
+    check(svc.machine.state == S.SHOW, "Stop leaves the show running")
+    print("  ok")
+
+
+def test_announce_held_then_failed_says_so():
+    section("announcements (review of PR #129, 4): a press that Held the "
+            "schedule and then could not play leaves the schedule held "
+            "(only Resume ends it) and says \"Held, announcement failed\" "
+            "until then")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    def broken(aid):
+        raise ValueError("the file could not be read")
+    ann._decode = broken
+    try:
+        ann.play(A.CANCELLATION, "Andy", "rack screen")
+        check(False, "the failed play is refused")
+    except ValueError:
+        pass
+    st = ann.status()
+    check(svc.machine.state == S.HOLD and st["playing"] is None and
+          st["held_failed"] and st["held_failed"]["id"] == A.CANCELLATION
+          and "could not be read" in st["held_failed"]["why"],
+          f"held, and the failure is said: {svc.machine.state} "
+          f"{st['held_failed']}")
+    with svc._locked():
+        svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                           screen="Rack"))
+    check(ann.status()["held_failed"] is None,
+          "once Resume ends the Hold the banner goes")
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
+    check(svc.machine.state == S.HOLD and
+          ann.status()["held_failed"] is None,
+          "a later, different Hold never brings it back")
+    # And it is keyed to its own Hold even while the state reads HOLD
+    # again: fail, Resume and Hold again in one breath.
+    try:
+        with svc._locked():
+            svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                               screen="Rack"))
+        ann.play(A.DELAYED, "Andy", "rack screen")
+    except ValueError:
+        pass
+    check(ann.held_failed is not None, "setup: failed again, held")
+    with svc._locked():
+        svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                           screen="Rack"))
+    with svc._locked():
+        svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                           screen="Rack"))
+    check(svc.machine.state == S.HOLD and
+          ann.status()["held_failed"] is None,
+          "Resume then a new Hold before any look: still cleared, the "
+          "banner belongs to its own Hold")
+    print("  ok")
+
+
+def test_announce_view_never_on_the_status_path():
+    section("announcements (review of PR #129, 3): the rack screen's status "
+            "and the deck's deck-input never take the service's lock or "
+            "ask the audio system; a background thread keeps the view")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        work, cfg, _l = _ann_workdir()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda: "STANDBY")
+        R.remote.announce = ann
+        calls = []
+        real = ann.status
+
+        def counted():
+            calls.append(threading.current_thread().name)
+            return real()
+        ann.status = counted
+        lock_held = threading.Event()
+        release = threading.Event()
+
+        def hog():
+            with ann.lock:
+                lock_held.set()
+                release.wait(10)
+        hogger = threading.Thread(target=hog, daemon=True)
+        hogger.start()
+        lock_held.wait(5)
+        try:
+            t0 = time.monotonic()
+            for path in ("/api/remote/status", "/api/remote/deck-input"):
+                for _ in range(3):
+                    st, _h, out = _ask(R.httpd, "GET", path, client=loop)
+                    check(st == 200 and out.get("announce", {}).get(
+                              "configured") is True,
+                          f"{path} answers from the snapshot: {st}")
+            check(time.monotonic() - t0 < 5,
+                  "with the service's lock held elsewhere, both still "
+                  "answer at once")
+        finally:
+            release.set()
+            hogger.join(5)
+        check(not [c for c in calls
+                   if c != "ltcplay-announce-view"],
+              f"status() ran only on the view thread: {calls}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_announce_play_goes_through_the_laser_press_interlock():
+    section("announcements (review of PR #129, 4): a Play, which may Hold "
+            "the schedule (and a Hold disarms the lasers), tells the laser "
+            "arm a Hold-like press is under way before any work, and until "
+            "its answer, like the operator's own Hold")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    seen = []
+
+    class _Arm:
+        def press_begin(self):
+            seen.append("begin")
+
+        def press_end(self):
+            seen.append("end")
+
+    class _M:
+        laser_arm = _Arm()
+    try:
+        work, cfg, _l = _ann_workdir()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+        sv = R.svc
+        ann.state_provider = (lambda: sv.machine.state
+                              if sv.machine is not None else None)
+        real_hold = sv.hold_for_announcement
+
+        def hold(who, screen, detail=None):
+            seen.append("hold")
+            return real_hold(who, screen, detail=detail)
+        ann.hold_requester = hold
+        ann.hold_still_claimed = sv.hold_still_claimed
+        R.remote.announce = ann
+        R.remote.morning = _M()
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-play",
+                           {"id": A.DELAYED, "seen": R.seen()}, client=loop)
+        check(st == 200, f"played: {st} {out}")
+        check(seen and seen[0] == "begin" and seen[-1] == "end" and
+              seen.count("begin") == 1,
+              f"press_begin before the work, press_end after: {seen}")
+        seen.clear()
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-stop",
+                           {}, client=loop)
+        check(st == 200 and seen == [], f"Stop needs no interlock: {seen}")
+    finally:
+        R.remote.morning = None
+        R.close()
+    print("  ok")
+
+
+def test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop():
+    section("Stream Deck (review of PR #129, 4): announcement presses go "
+            "to the engine on a queue and thread of their own, so a slow "
+            "Play never delays or drops Stop")
+    from ltcplay import streamdeck as sd
+    gate = threading.Event()
+    posted = []
+
+    def poster(path, body):
+        if path.endswith("announce-play"):
+            gate.wait(10)
+        posted.append(path)
+        return True, "ok", {}
+    eng = sd.EngineConductor("http://127.0.0.1:1", poster=poster,
+                             fetcher=lambda p: None)
+    eng.start()
+    try:
+        eng.announce("delayed", who="Andy")
+        eng.stop_run(who="Andy")
+        check(wait_for(lambda: "/api/stop" in posted, timeout=5),
+              f"Stop went out while the Play was still waiting: {posted}")
+        check("/api/remote/announce-play" not in posted,
+              "the Play was indeed still waiting")
+        gate.set()
+        check(wait_for(lambda: "/api/remote/announce-play" in posted,
+                       timeout=5), f"then the Play: {posted}")
+        check(eng.fault == "", f"no ENGINE FAULT from either: {eng.fault}")
+    finally:
+        gate.set()
+        eng.stop()
+    print("  ok")
+
+
+def test_streamdeck_page_two_auto_close_guard():
+    section("Stream Deck page 2 (review of PR #129, 2): after page 2 gives "
+            "way by itself (idle, an alert, the Morning page), a fresh "
+            "press on keys 1 to 4 neither arms nor disarms a group for "
+            "PAGE1_GUARD_S and until page 1 has been drawn; after BACK "
+            "the keys work at once")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer", "fireball"]
+    arm = _FakeArmSocket(4)
+    status = _FakeStatusSocket()
+    lines = []
+    t = [100.0]
+
+    class _Screen:
+        a = {"configured": True, "device_ok": True, "ready": {},
+             "missing": {}, "playing": None}
+        al = ()
+
+        def announce(self):
+            return self.a
+
+        def alerts(self):
+            return self.al
+
+        def morning(self):
+            return None
+
+    class _Eng:
+        def snapshot(self):
+            return {"latched": False}
+
+        def announce(self, aid, who="", screen=""):
+            return sd.EngineResult(True, "sent")
+
+        def acknowledge(self, who="", screen=""):
+            return sd.EngineResult(True, "ack")
+    scr = _Screen()
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False, conductor=_Eng(),
+                      journal=lambda x, **kw: lines.append((x, kw)),
+                      clock=lambda: t[0], screen=scr)
+    down = [False] * 6
+
+    def tap(k):
+        nonlocal down
+        d2 = list(down)
+        d2[k] = True
+        c.run_once(d2)
+        c.run_once(list(down))
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2")
+    # Never closed for idle while an announcement plays, or while the
+    # engine's word is stale: STOP ANNC. stays reachable.
+    for live in ({"playing": "delayed"}, {"stale": True}):
+        scr.a = dict(dict(scr.a, playing=None, stale=False), **live)
+        t[0] += sd.PAGE2_IDLE_S * 3
+        c.tick()
+        check(c.page == 2, f"{live}: page 2 stays up past the idle time")
+    # The delta review's probe: playing, ten seconds of fresh answers,
+    # then ONE answer missing (the deck's ScreenKeys gives None for a
+    # 350 ms gap): that is "maybe playing", never "nothing plays".
+    scr.a = dict(scr.a, playing="delayed", stale=False)
+    for _ in range(20):
+        t[0] += 0.5
+        c.tick()
+    real = scr.a
+    scr.a = None
+    t[0] += 0.35
+    c.tick()
+    check(c.page == 2, "one late answer during a long announcement: page "
+                       "2 and STOP ANNC. stay")
+    # No fresh answer for PAGE2_STALE_CLOSE_S: page 2 gives way anyway.
+    t[0] += sd.PAGE2_STALE_CLOSE_S + 0.1
+    c.tick()
+    check(c.page == 1, "the engine silent for a minute: the arm keys "
+                       "come back")
+    # The engine could not read its own announcement status (status()
+    # raised, a PortAudio error): its answer says ok false and is not a
+    # fact about what plays, so page 2 stays (final review of #129).
+    scr.a = dict(real, playing=None, stale=False)
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2 for the ok-false case")
+    scr.a = dict(real, playing=None, stale=False, ok=False)
+    t[0] += sd.PAGE2_IDLE_S + 0.1
+    c.tick()
+    check(c.page == 2, "an answer that says ok false: page 2 stays")
+    t[0] += sd.PAGE2_STALE_CLOSE_S
+    c.tick()
+    check(c.page == 1, "still bounded: a minute of such answers and the "
+                       "arm keys come back")
+    scr.a = dict(real, playing=None, stale=False)
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2 again")
+    t[0] += sd.PAGE2_IDLE_S + 0.1
+    c.tick()
+    check(c.page == 1, "idle with a fresh answer that nothing plays: "
+                       "page 1")
+    # Unarmed group: a fresh press does not even start an arm hold.
+    tap(1)
+    check(all(h.fraction(t[0]) == 0 for h in c._arm_holds) and
+          arm.wanted == [False] * 4 and
+          "not armed" in lines[-1][0],
+          f"a fresh press right after: no arm hold: {lines[-1:]}")
+    # Past PAGE1_GUARD_S but page 1 not on the keys yet: still guarded.
+    # With a display worker, "on the keys" is the worker's word that the
+    # first page 1 frame after the return was fully written.
+    t[0] += sd.PAGE1_GUARD_S + 0.1
+    c.display_confirms = True
+    c._guard_frame = 7             # what draw() records for that frame
+    c.last_shown = (6, t[0])       # an older frame: the USB write stalled
+    d1 = [False] * 6
+    d1[1] = True
+    c.run_once(d1)
+    check(all(h._down_at is None for h in c._arm_holds),
+          "composed but not written yet (a USB stall): still guarded")
+    c.run_once([False] * 6)
+    c.frame_shown((7, t[0]))
+    d1 = [False] * 6
+    d1[1] = True
+    c.run_once(d1)
+    check(all(h._down_at is None for h in c._arm_holds),
+          "just written: PAGE1_GUARD_S counts from the write, not from "
+          "the return")
+    c.run_once([False] * 6)
+    t[0] += sd.PAGE1_GUARD_S + 0.1
+    c.run_once(d1)
+    check(c._arm_holds[c._key_group[1]]._down_at is not None,
+          "written PAGE1_GUARD_S ago: the key starts an arm hold again")
+    c.run_once([False] * 6)
+    c.display_confirms = False
+    # Armed group: a fresh press after an auto close does not disarm it.
+    arm.wanted = [True, False, False, False]
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "setup: page 2 again")
+    scr.al = ({"id": 1, "kind": "deck"},)
+    c.tick()
+    check(c.page == 1, "an alert: page 1")
+    scr.al = ()
+    tap(1)
+    check(arm.wanted[c._key_group[1]] is False,
+          f"a DISARM is never gated (Jeff): a tap on the armed group "
+          f"disarms it even inside the guard: {arm.wanted}")
+    # BACK: no guard.
+    t[0] += 10
+    arm.wanted = [True, False, False, False]
+    tap(sd.ANNOUNCE_KEY)
+    tap(sd.PAGE2_BACK)
+    tap(1)
+    check(arm.wanted[c._key_group[1]] is False,
+          "after BACK the arm keys work at once")
+    for text, _kw in lines:
+        _no_dashes(text, "deck guard line")
+    print("  ok")
+
+
+def test_announce_hold_does_the_operator_holds_safety_cuts():
+    section("announcements (second review of PR #129, 3): when an "
+            "announcement really puts the schedule on Hold (between "
+            "shows), live flame programming and fire while scrubbing are "
+            "cut and every laser disarmed, as the operator's own Hold "
+            "does; a running show is never touched")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        cuts = []
+        R.remote.live_flame_cut = lambda why, who="", screen="": \
+            cuts.append("live")
+        R.remote.scrub_flames_cut = lambda why, who="", screen="": \
+            cuts.append("scrub")
+        R.remote._lasers_disarm_now = lambda who, screen, what: \
+            cuts.append("lasers")
+
+        class _M:
+            state = "STANDBY"
+
+        class _Sched:
+            machine = _M()
+            asked = 0
+
+            def hold_for_announcement(self, who, screen, detail=None):
+                self.asked += 1
+                if self.machine.state in ("STANDBY", "IDLE"):
+                    self.machine.state = "HOLD"
+                return None, 1
+        sch = _Sched()
+        hold = R.remote.announce_hold(sch)
+        r = hold("Andy", "Rack screen", detail="played the Delayed one")
+        check(r == (None, 1) and sorted(cuts) == ["lasers", "live", "scrub"],
+              f"held between shows: every cut made: {r} {cuts}")
+        cuts.clear()
+        sch.machine.state = "SHOW"
+        hold("Andy", "Rack screen")
+        check(cuts == [], f"a running show: nothing touched: {cuts}")
+        sch.machine.state = "PAUSED"
+        hold("Andy", "Rack screen")
+        check(cuts == [], f"a paused show: nothing touched: {cuts}")
+        # A Start now landing between the Hold and the cuts: checked under
+        # the scheduler's own lock, so the show it started is untouched.
+        import contextlib as _cl
+        sch.machine.state = "STANDBY"
+
+        @_cl.contextmanager
+        def _locked():
+            sch.machine.state = "SHOW"      # Start now won the race
+            yield
+        sch._locked = _locked
+        hold("Andy", "Rack screen")
+        check(cuts == [], f"Start now in the gap: no laser disarm, no cut: "
+                          f"{cuts}")
+        del sch._locked
+        # The laser disarm is journaled as the announcement it was.
+        said = []
+
+        class _Mo:
+            def lasers_disarm_now(self, text, who, screen):
+                said.append(text)
+        del R.remote._lasers_disarm_now
+        R.remote.morning = _Mo()
+        sch.machine.state = "STANDBY"
+        hold("Andy", "Rack screen")
+        check(said and "announcement" in said[0] and
+              "Hold pressed" not in said[0],
+              f"journaled as an announcement, not a Hold press: {said}")
+        R.remote.morning = None
+        # web.serve wires exactly this wrapper.
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ltcplay", "web.py"), encoding="utf-8").read()
+        check("httpd.announce.hold_requester = httpd.remote.announce_hold("
+              "sched)" in src, "web.serve gives the announcements the "
+              "wrapped Hold")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_announce_view_stale_snapshot_is_not_fact():
+    section("announcements (second review of PR #129, 7): the snapshot "
+            "carries its age; older than ANNOUNCE_STALE_S it reads "
+            "\"Announcement status unavailable\", never a stale PLAYING or "
+            "ready, on the rack screen and the deck")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        work, cfg, _l = _ann_workdir()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda: "STANDBY")
+        ann.hold_requester = lambda who, screen, detail=None: (None, 1)
+        ann.hold_still_claimed = lambda e: True
+        R.remote.announce = ann
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        ann.held_failed = {"id": "cancellation", "name": "Cancellation",
+                           "why": "x"}
+        ann._held_failed_epoch = 1       # its Hold still stands
+        R.remote._ann_refresh()
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
+        an = out["announce"]
+        check(an["playing"]["id"] == A.DELAYED and not an.get("stale") and
+              an["held_failed"]["id"] == "cancellation" and
+              an["age_s"] <= RM.ANNOUNCE_STALE_S,
+              f"fresh: playing, with its age: {an.get('age_s')}")
+        # status() raising (a PortAudio error escaping): the view is
+        # stale, never "nothing is playing"; and a PortAudio error in the
+        # device query itself no longer makes status() raise at all.
+        real_status = ann.status
+        ann.status = lambda: (_ for _ in ()).throw(OSError("PortAudio"))
+        R.remote._ann_refresh()
+        st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
+                           client=loop)
+        check(din["announce"]["stale"] is True and
+              din["announce"]["ok"] is False and
+              din["announce"]["playing"] is None,
+              f"status() raised: stale, not quiet: {din['announce']}")
+        ann.status = real_status
+
+        class _PaSD:
+            default = type("D", (), {"device": (None, None)})()
+
+            def query_devices(self):
+                raise RuntimeError("PortAudioError: host error")
+        ann._sd_obj = _PaSD()
+        st2 = ann.status()
+        check(st2["device_available"] is False and
+              "could not list" in (st2["device_reason"] or ""),
+              f"a PortAudio error in the device query is said, never "
+              f"raised: {st2['device_reason']}")
+        ann._sd_obj = FakeSD()
+        R.remote._ann_refresh()
+        R.mono[0] += RM.ANNOUNCE_STALE_S + 6
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
+        an = out["announce"]
+        check(an.get("stale") is True and an["playing"] is None and
+              an["held_failed"] is None and
+              an["ok"] is False and "unavailable" in an["error"],
+              f"stale: not shown as playing: {an}")
+        st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
+                           client=loop)
+        check(din["announce"]["stale"] is True and
+              din["announce"]["playing"] is None,
+              f"the deck reads it stale too: {din['announce']}")
+        ann.stop("Andy", "rack screen")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_streamdeck_page_two_shows_the_engines_refusal():
+    section("Stream Deck page 2 (second review of PR #129, 6): the "
+            "engine's refusal of an announcement press shows on the "
+            "pressed key for ANNOUNCE_SAID_S, in a word")
+    from ltcplay import streamdeck as sd
+    for text, word in (("Recording missing: x is not on this PC yet.",
+                        "NO FILE"),
+                       ("Delayed is already playing.", "ONE PLAYING"),
+                       ("The show ended while the announcement was "
+                        "loading", "SHOW ENDED"),
+                       ("The page was showing a status 3.0 s old", "PAGE STALE"),
+                       ("something else", "REFUSED")):
+        check(sd.announce_refusal_word(text) == word,
+              f"{text!r} -> {sd.announce_refusal_word(text)}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  ok")
+        return
+    t = [50.0]
+
+    class _Screen:
+        a = {"configured": True, "device_ok": True,
+             "ready": {"delayed": True, "cancellation": True,
+                       "cannot_continue": True}, "missing": {},
+             "playing": None}
+
+        def announce(self):
+            return self.a
+
+        def alerts(self):
+            return ()
+
+        def morning(self):
+            return None
+
+    class _Eng:
+        announce_said = None
+        _clock = staticmethod(lambda: t[0])
+
+        def snapshot(self):
+            return {"latched": False}
+
+        def announce(self, aid, who="", screen=""):
+            return sd.EngineResult(True, "sent")
+    eng = _Eng()
+    c = sd.Controller(_FakeArmSocket(4), _FakeStatusSocket(),
+                      ["front row", "cat-walk", "wave flamer", "fireball"],
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False, conductor=eng,
+                      clock=lambda: t[0], screen=_Screen())
+    try:
+        c.run_once([False] * 5 + [True])
+        c.run_once([False] * 6)
+        c.run_once([False, False, True, False, False, False])
+        c.run_once([False] * 6)
+        eng.announce_said = (False, "The show ended while the "
+                             "announcement was loading.", t[0],
+                             "cancellation")
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[2][0] == ["CANCEL", "SHOW ENDED"] and
+              faces[1][0] == ["DELAYED"],
+              f"the key whose press it answers says why, no other: {faces}")
+        eng.announce_said = (False, "Delayed is already playing.", t[0],
+                             "delayed")
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[1][0] == ["DELAYED", "ONE PLAYING"] and
+              faces[2][0] == ["CANCEL"],
+              f"DELAYED's refusal never shows on CANCEL: {faces}")
+        eng.announce_said = (False, "ltc serve could not be reached",
+                             t[0], "stop")
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[4][0] == ["STOP", "NO ENGINE"],
+              f"a refused STOP ANNC. shows on STOP: {faces[4]}")
+        t[0] += sd.ANNOUNCE_SAID_S + 1
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[2][0] == ["CANCEL"], f"then back: {faces[2]}")
+        _Screen.a = dict(_Screen.a, stale=True)
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[1][0] == ["DELAYED", "NO STATUS"] and
+              faces[4][1] == sd.CHAMPAGNE,
+              f"a stale engine word: NO STATUS, STOP ANNC. lit: {faces}")
+    finally:
+        restore()
+    print("  ok")
+
+
+def test_rack_screen_small_screens_with_announcements_and_setup():
+    section("rack screen (second review of PR #129, 5): with the "
+            "announcements block AND the Getting started card, Disarm all, "
+            "every group's arm button and Abort are wholly on screen at "
+            "1366x600, 1366x614 and 1024x768, arm buttons at touch size")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the page was not drawn")
+        print("  ok")
+        return
+    st = _rack_status_no_show_file()
+    # The worst case CI met (review of PR #129): the Getting started card,
+    # the no-show-file line, the flame warning, a disk warning and a laser
+    # fault all showing at once.
+    st["disk"] = {"text": "The disk is nearly full: 1.2 GB left. Clear old "
+                          "logs and renders."}
+    st["laser_fault"] = "BEYOND's OSC address is not set"
+    st["booth"] = {"configured": False, "device": ""}
+    st["announce"] = {
+        "configured": True, "ok": True, "error": None, "device": None,
+        "device_set": False, "device_available": False,
+        "device_reason": "No output device is set for announcements yet.",
+        "blocked": None, "over_show": False, "age_s": 0.2,
+        "items": [{"id": i, "name": n, "available": False, "missing": True,
+                   "reason": "Recording missing", "length_s": None}
+                  for i, n in (("delayed", "Delayed"),
+                               ("cancellation", "Cancellation"),
+                               ("cannot_continue", "Cannot continue"))],
+        "playing": None}
+    mjs = r'''<script>
+function go(){ if(!document.querySelector("#fl-lamps .lamp [data-arm]")) return setTimeout(go,50);
+ setTimeout(()=>{ const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
+  const out = {vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
+    abort:r(document.getElementById("b-abort")),
+    setup:!document.getElementById("setup").hidden, ann:!document.getElementById("ann").hidden,
+    arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)};
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 1500);}
+go();</script>'''
+    # The required sizes are 1366x600, 1366x614, 1366x544, 1366x558 and
+    # 1024x768 (the runner's Chrome leaves about 143 px less page than its
+    # window, a local one about 87, so 544 and 558 here are about what the
+    # runner sees at 600 and 614). 1366x488 and 1366x502 are drawn for
+    # information only, printed and never failed: shorter than any real
+    # show PC or iPad window (coordinator, review of PR #129).
+    got = _rack_screen_in_chromium(chrome, page, st,
+                                   ((1366, 600), (1366, 614), (1366, 544),
+                                    (1366, 558), (1366, 488), (1366, 502),
+                                    (1024, 768)),
+                                   measure_js=mjs)
+    SLACK = 24
+    INFO_ONLY = {(1366, 488), (1366, 502)}
+    for (w, h), m in got.items():
+        if (w, h) in INFO_ONLY:
+            if isinstance(m, dict):
+                print(f"  info {w}x{h}: page {m['vh']} px, Disarm all ends "
+                      f"at {m['disarm']['bottom']:.0f}")
+            continue
+        if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):
+            continue
+        vh = m["vh"]
+        check(m["setup"] and m["ann"], f"{w}x{h}: both shown: {m}")
+        # Abort is pinned to the bottom of the window; Disarm all and the
+        # arm buttons must clear the fold by SLACK px (review of PR #129).
+        check(m["abort"]["top"] >= 0 and m["abort"]["bottom"] <= vh,
+              f"{w}x{h}: abort wholly on screen: {m['abort']} vh {vh}")
+        check(m["disarm"]["top"] >= 0 and
+              m["disarm"]["bottom"] <= vh - SLACK,
+              f"{w}x{h}: disarm wholly on screen with {SLACK} px to "
+              f"spare: {m['disarm']} vh {vh}")
+        check(len(m["arms"]) == 3 and all(
+                  a["h"] >= 44 and a["top"] >= 0 and
+                  a["bottom"] <= vh - SLACK for a in m["arms"]),
+              f"{w}x{h}: every arm button on screen with {SLACK} px to "
+              f"spare, at least 44 px: {m['arms']} vh {vh}")
+    print("  ok")
+
+
+class _CountingBooth:
+    """A booth player that counts its notes (alerts.Alerts.booth)."""
+
+    def __init__(self, response_s=None, ok=True):
+        self.played = []
+        self.ok = ok
+        self.config = ({"response_s": response_s}
+                       if response_s is not None else {})
+
+    def play(self, kind):
+        self.played.append(kind)
+        return self.ok, ("played" if self.ok else "device missing")
+
+
+def test_alerts_booth_resounds_every_30_s_until_acknowledged():
+    section("alerts (Jeff, 2026-10-26): the booth note sounds again every "
+            "30 s (the booth's response_s) until the alert is "
+            "acknowledged, and never after; sound only, nothing else")
+    from ltcplay import alerts as AL
+    check(AL.RESOUND_S == 30.0, f"RESOUND_S is 30 s: {AL.RESOUND_S}")
+    t = [100.0]
+    booth = _CountingBooth()
+    al = AL.Alerts(booth=booth, clock=lambda: t[0])
+    al.raise_("audio", "The show audio is lost.")
+    check(booth.played == ["audio"], f"sounded once on raise: {booth.played}")
+    t[0] += 10
+    al.tick()
+    check(booth.played == ["audio"], "10 s later: quiet")
+    t[0] += 20.5
+    al.tick()
+    check(booth.played == ["audio", "audio"],
+          f"30 s after the last note: again: {booth.played}")
+    t[0] += 5
+    al.tick()
+    check(len(booth.played) == 2, "and not on every tick")
+    al.clear(action="Acknowledge", who="Andy", screen="Rack screen")
+    t[0] += 120
+    al.tick()
+    check(len(booth.played) == 2, "acknowledged: never again")
+    # The booth's own response_s sets the pace.
+    t2 = [0.0]
+    b2 = _CountingBooth(response_s=20)
+    a2 = AL.Alerts(booth=b2, clock=lambda: t2[0])
+    a2.raise_("deck", "The Stream Deck is unplugged.")
+    t2[0] += 20.5
+    a2.tick()
+    check(b2.played == ["deck", "deck"] and a2.resound_s() == 20.0,
+          f"response_s 20: again after 20 s: {b2.played}")
+    # A device that is missing is asked once per interval, not per tick.
+    t3 = [0.0]
+    b3 = _CountingBooth(ok=False)
+    a3 = AL.Alerts(booth=b3, clock=lambda: t3[0])
+    a3.raise_("video", "MadMapper is not answering.")
+    for _ in range(40):
+        t3[0] += 0.25
+        a3.tick()
+    check(len(b3.played) == 1, f"a missing device: one try in 10 s after "
+                               f"the raise: {b3.played}")
+    print("  ok")
+
+
+def _alert_hold_rig(S, recordings=True, announce=True, grace=None,
+                    run=True):
+    """A real scheduler RUNNING on its own thread (Service.start: its _run
+    loop and tick hooks), a Remote, a real AnnounceService wired as
+    web.serve wires it, a counting booth, recorders in place of the
+    laser and flame cuts, and the alert hold on the REAL clock."""
+    A = _ann()
+    from ltcplay import schedule_service as SV
+    R = _RemoteRig(S, at=_den(S, 17, 55))
+    if grace is not None:
+        SV.save_rule(os.path.join(R.work, SV.RULE_FILE), _sched_doc(
+            weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                            "last_end": "22:00"}},
+            exceptions={}, late_grace_s=grace))
+        R.svc.reload()
+        R.svc.tick()
+        # Tonight's machine was loaded before the new rule: its own late
+        # grace is what the tick uses, so it is set there too.
+        from dataclasses import replace as _replace
+        with R.svc._locked():
+            R.svc.machine = _replace(R.svc.machine, late_grace_s=grace)
+    booth = _CountingBooth()
+    R.remote.alerts.booth = booth
+    R.remote.alert_hold._clock = time.monotonic
+    R.remote.alerts._clock = time.monotonic
+    R.cuts = []
+    R.remote.live_flame_cut = lambda why, who="", screen="": \
+        R.cuts.append("live")
+    R.remote.scrub_flames_cut = lambda why, who="", screen="": \
+        R.cuts.append("scrub")
+    R.remote._lasers_disarm_now = lambda who, screen, what: \
+        R.cuts.append("lasers")
+    ann = None
+    if announce:
+        work, cfg, _l = _ann_workdir()
+        if not recordings:
+            os.remove(os.path.join(work, "delayed.wav"))
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+        sv = R.svc
+        ann.state_provider = (lambda: sv.machine.state
+                              if sv.machine is not None else None)
+        ann.hold_requester = R.remote.announce_hold(sv)
+        ann.hold_still_claimed = sv.hold_still_claimed
+        R.remote.announce = ann
+    if run:
+        R.svc.start()
+    return R, booth, ann
+
+
+def _set_time(R, t, settle=0.6):
+    """Move the scheduler's clock and give its own thread time to tick."""
+    R.now[0] = t
+    time.sleep(settle)
+
+
+def test_alert_hold_at_showtime_then_one_delayed_announcement():
+    section("alert hold (Jeff, 2026-10-26), the real scheduler RUNNING (its "
+            "own thread, tick hooks and the alert worker) and the real "
+            "clock: idle does nothing; at showtime the schedule Holds at "
+            "once (system action), the booth sounds, the rack screen says "
+            "Held: alert open with a countdown; then ONE Delayed, made "
+            "with no laser or flame cut (nothing on the rig changes by a "
+            "timer); the show waits for Resume")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import alerthold as AH
+    real_cd = AH.COUNTDOWN_S
+    AH.COUNTDOWN_S = 0.8
+    R, booth, ann = _alert_hold_rig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        check(AH.ANNOUNCE_KINDS == {"audio", "video", "flames", "link",
+                                    "timecode", "start"},
+              "the announcing kinds are Jeff's")
+        sv = R.svc
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        state0 = sv.machine.state
+        _set_time(R, _den(S, 17, 58))
+        check(sv.machine.state == state0 and R.remote.alert_hold.hold is None
+              and not R.remote.alert_hold.view()["held"],
+              f"idle: no hold, no timer: {sv.machine.state}")
+        played_before = len(booth.played)
+        R.now[0] = _den(S, 18, 0)
+        check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
+              f"showtime with an alert open: held, the show not started: "
+              f"{sv.machine.state}")
+        rows = [r for r in sv.journal if r.get("action") == S.HOLD_ON]
+        check(rows and rows[-1]["actor"] == "system" and
+              "alert is open" in rows[-1]["text"],
+              f"journaled as the engine's system action: {rows[-1:]}")
+        check(wait_for(lambda: R.remote.alert_hold.hold is not None,
+                       timeout=3), "the alert hold started")
+        check(len(booth.played) > played_before,
+              f"the booth sounds at the Hold: {booth.played}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
+        ah = out.get("alert_hold") or {}
+        check(ah.get("held") and ah.get("state") == "counting" and
+              isinstance(ah.get("countdown_s"), int) and
+              ah["text"].startswith("Held: alert open."),
+              f"the rack screen: Held: alert open, with the countdown: {ah}")
+        _no_dashes(ah.get("text", ""), "alert hold text")
+        check(ann.playing is None, "before the countdown ends: nothing")
+        check(wait_for(lambda: R.remote.alert_hold.view().get("state") ==
+                       "announced", timeout=5) and any(
+                  r["outcome"] == "started" for r in ann.journal),
+              "after it, through the scheduler's own ticks: the Delayed "
+              "announcement, really started")
+        check(sv.machine.state == S.HOLD, "still held")
+        check(R.cuts == [], f"the automatic Delayed made no laser or flame "
+                            f"cut: {R.cuts}")
+        prow = [r for r in ann.journal if r["outcome"] == "started"]
+        check(prow and prow[-1]["actor"] == "system" and
+              "alert hold" in prow[-1]["text"] and
+              "nothing else was changed" in prow[-1]["text"],
+              f"the automatic play is journaled as the system, saying it "
+              f"plays during the alert hold: {prow[-1:]}")
+        rows = [r for r in sv.journal if r.get("action") == "alert hold"]
+        check(any(r["outcome"] == "announced" and r["actor"] == "system"
+                  for r in rows), f"journaled as a system action: {rows}")
+        ann.stop("x", "y", surface=True)
+        time.sleep(1.2)
+        check(ann.playing is None,
+              "once per Hold: it never plays a second time")
+        R.remote.alerts.clear(action="Acknowledge", who="Andy",
+                              screen="Rack screen")
+        time.sleep(0.5)
+        check(sv.machine.state == S.HOLD, "acknowledged: still held")
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(sv.machine.state != S.HOLD and
+              not R.remote.alert_hold.view()["held"],
+              "only Resume carries on, and the state card clears")
+    finally:
+        AH.COUNTDOWN_S = real_cd
+        R.close()
+    print("  ok")
+
+
+def test_alert_hold_acknowledge_cancels_and_quiet_kinds():
+    section("alert hold, the scheduler running: Acknowledge cancels (and "
+            "does not resume); with two loud alerts one Acknowledge is not "
+            "enough; deck and gate hold quietly; a missing recording holds "
+            "silently and says so; a Resume before the end means none")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import alerthold as AH
+    real_cd = AH.COUNTDOWN_S
+    AH.COUNTDOWN_S = 0.6
+    try:
+        for case in ("ack", "two", "deck", "gate", "missing", "resumed"):
+            kind = case if case in ("deck", "gate") else "flames"
+            R, booth, ann = _alert_hold_rig(
+                S, recordings=(case != "missing"))
+            try:
+                sv = R.svc
+                R.remote.alerts.raise_(kind, f"A {kind} problem.")
+                if case == "two":
+                    R.remote.alerts.raise_("video", "MadMapper is gone.")
+                R.now[0] = _den(S, 18, 0)
+                check(wait_for(lambda: R.remote.alert_hold.hold is not None,
+                               timeout=3) and sv.machine.state == S.HOLD,
+                      f"{case}: held")
+                if case in ("ack", "two"):
+                    R.remote.alerts.clear(kind=kind, action="Acknowledge",
+                                          who="Andy", screen="Rack screen")
+                if case == "resumed":
+                    with sv._locked():
+                        sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                          screen="Rack screen"))
+                time.sleep(1.5)
+                v = R.remote.alert_hold.view()
+                if case == "two":
+                    check(wait_for(lambda: R.remote.alert_hold.view().get(
+                              "state") == "announced", timeout=4),
+                          f"two: the other loud alert is still open, so "
+                          f"it plays: {v}")
+                    continue
+                check(ann.playing is None,
+                      f"{case}: no announcement: {ann.playing}")
+                if case in ("ack", "resumed", "deck", "gate"):
+                    tried = [r for r in ann.journal
+                             if r.get("action") == "play"]
+                    check(not tried,
+                          f"{case}: the Delayed was never even tried "
+                          f"(cancelled at the countdown, not refused by "
+                          f"the last-moment check): {tried}")
+                if case == "ack":
+                    check(sv.machine.state == S.HOLD and
+                          v.get("state") == "cancelled",
+                          f"ack: cancelled, still held: {v}")
+                elif case in ("deck", "gate"):
+                    check(v.get("state") == "quiet" and
+                          v.get("countdown_s") is None and
+                          v.get("text", "").startswith("Held: alert open."),
+                          f"{case}: held quietly: {v}")
+                elif case == "missing":
+                    check(sv.machine.state == S.HOLD and
+                          v.get("state") == "failed" and
+                          "could not play" in v.get("text", ""),
+                          f"missing recording: held, said on screen: {v}")
+                else:
+                    check(not v.get("held"),
+                          f"resumed before the end: nothing more: {v}")
+                check(R.cuts == [], f"{case}: no cut: {R.cuts}")
+            finally:
+                R.close()
+    finally:
+        AH.COUNTDOWN_S = real_cd
+    print("  ok")
+
+
+def test_alert_hold_acknowledge_during_the_file_read():
+    section("alert hold (review of PR #133, 3): an Acknowledge 0.15 s into "
+            "a 0.5 s file read stops the Delayed from starting; one after "
+            "it has started lets it finish")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import alerthold as AH
+    real_cd = AH.COUNTDOWN_S
+    AH.COUNTDOWN_S = 0.3
+    try:
+        for when in ("during", "after"):
+            R, booth, ann = _alert_hold_rig(S)
+            try:
+                sv = R.svc
+                real_decode = ann._decode
+                loading = threading.Event()
+
+                def slow(aid, _real=real_decode):
+                    loading.set()
+                    time.sleep(0.5)
+                    return _real(aid)
+                ann._decode = slow
+                R.remote.alerts.raise_("audio", "The show audio is lost.")
+                R.now[0] = _den(S, 18, 0)
+                check(loading.wait(5), f"{when}: the Delayed started loading")
+                check(R.remote.alert_hold.view().get("state") == "announcing",
+                      f"{when}: while it loads the card says it is "
+                      f"starting: {R.remote.alert_hold.view()}")
+                if when == "during":
+                    time.sleep(0.15)
+                    R.remote.alerts.clear(action="Acknowledge", who="Andy",
+                                          screen="Rack screen")
+                    time.sleep(0.8)
+                    check(ann.playing is None and
+                          R.remote.alert_hold.view().get("state") ==
+                          "cancelled",
+                          f"acknowledged during the read: never started: "
+                          f"{ann.playing} {R.remote.alert_hold.view()}")
+                else:
+                    check(wait_for(lambda: any(
+                              r["outcome"] == "started"
+                              for r in ann.journal), timeout=3),
+                          "setup: it started")
+                    R.remote.alerts.clear(action="Acknowledge", who="Andy",
+                                          screen="Rack screen")
+                    time.sleep(0.3)
+                    check(ann.playing == "delayed",
+                          "acknowledged after it started: it finishes")
+            finally:
+                R.close()
+    finally:
+        AH.COUNTDOWN_S = real_cd
+    print("  ok")
+
+
+def test_alert_hold_respects_any_operator_resume():
+    section("alert hold (delta review of PR #133, 1 and 2), the real "
+            "scheduler with a 15 s late grace on tonight's machine: the "
+            "operator's OWN Hold at 17:59:50, an alert opens, Resume at "
+            "18:00:04: the next tick neither re-Holds nor plays the "
+            "Delayed. A NEW alert after an Acknowledge and Resume at the "
+            "same showtime holds again; the same alert does not")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import alerthold as AH
+    real_cd = AH.COUNTDOWN_S
+    AH.COUNTDOWN_S = 0.3
+    try:
+        R, booth, ann = _alert_hold_rig(S, grace=15)
+        try:
+            sv = R.svc
+            check(sv.machine.late_grace_s == 15, "setup: grace 15 tonight")
+            R.now[0] = _den(S, 17, 59, 50)
+            time.sleep(0.4)
+            with sv._locked():
+                sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                                  screen="Rack screen"))
+            R.remote.alerts.raise_("video", "MadMapper is gone.")
+            R.now[0] = _den(S, 18, 0, 4)
+            time.sleep(0.4)
+            with sv._locked():
+                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack screen"))
+            check(wait_for(lambda: sv.machine.state == S.SHOW, timeout=3),
+                  f"the operator's Resume starts the show: "
+                  f"{sv.machine.state}")
+            time.sleep(0.8)
+            holds = [r for r in sv.journal if r.get("action") == S.HOLD_ON
+                     and r.get("actor") == "system"]
+            check(not holds and ann.playing is None and
+                  R.remote.alert_hold.hold is None,
+                  f"no engine Hold, no Delayed: {holds}")
+        finally:
+            R.close()
+        # A new alert after an Acknowledge and a Resume holds again.
+        R, booth, ann = _alert_hold_rig(S, grace=15)
+        try:
+            sv = R.svc
+            R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+            R.now[0] = _den(S, 18, 0)
+            check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
+                  "held for the deck alert")
+            R.remote.alerts.clear(action="Acknowledge", who="Andy",
+                                  screen="Rack screen")
+            R.remote.alerts.raise_("audio", "The show audio is lost.")
+            R.now[0] = _den(S, 18, 0, 3)
+            with sv._locked():
+                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack screen"))
+            # Resumed with the audio alert open: that one is handled.
+            time.sleep(0.6)
+            check(sv.machine.state == S.SHOW,
+                  f"Resumed with the audio alert open: the show starts, "
+                  f"not held again for it: {sv.machine.state}")
+        finally:
+            R.close()
+        # A Resume pressed BEFORE showtime with an alert open is the
+        # operator's choice too: at 18:00:00 the show starts, unheld.
+        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+        try:
+            sv = R.svc
+            R.now[0] = _den(S, 17, 59, 50)
+            sv.tick()
+            with sv._locked():
+                sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                                  screen="Rack screen"))
+            R.remote.alerts.raise_("video", "MadMapper is gone.")
+            R.now[0] = _den(S, 17, 59, 58)
+            with sv._locked():
+                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack screen"))
+            sv.tick()
+            R.now[0] = _den(S, 18, 0)
+            sv.tick()
+            check(sv.machine.state == S.SHOW,
+                  f"Resumed before showtime with the alert open: the show "
+                  f"starts at 18:00:00, never held again: "
+                  f"{sv.machine.state}")
+        finally:
+            R.close()
+        # Resumed with alerts {1, 2} open, then 2 acknowledged before the
+        # next tick: {1} is part of what the operator chose, never re-held.
+        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+        try:
+            sv = R.svc
+            R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+            R.remote.alerts.raise_("audio", "The show audio is lost.")
+            R.now[0] = _den(S, 18, 0)
+            sv.tick()
+            check(sv.machine.state == S.HOLD, "held for both alerts")
+            R.now[0] = _den(S, 18, 0, 3)
+            with sv._locked():
+                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack screen"))
+            R.remote.alerts.clear(kind="audio", action="Acknowledge",
+                                  who="Andy", screen="Rack screen")
+            sv.tick()
+            check(sv.machine.state == S.SHOW,
+                  f"a subset of the alerts Resumed with: the show starts, "
+                  f"not held again: {sv.machine.state}")
+        finally:
+            R.close()
+        # The same alert, Acknowledge not pressed, Resume: no second Hold
+        # (test_alert_hold_never_re_holds_after_resume). A NEW alert in the
+        # tick right after the Resume: held again.
+        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+        try:
+            sv = R.svc
+            R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+            R.now[0] = _den(S, 18, 0)
+            sv.tick()
+            check(sv.machine.state == S.HOLD, "held for the deck alert")
+            R.now[0] = _den(S, 18, 0, 3)
+            with sv._locked():
+                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack screen"))
+            R.remote.alerts.raise_("audio", "The show audio is lost.")
+            sv.tick()
+            check(sv.machine.state == S.HOLD,
+                  f"a NEW alert at the same showtime holds again: "
+                  f"{sv.machine.state}")
+        finally:
+            R.close()
+    finally:
+        AH.COUNTDOWN_S = real_cd
+    print("  ok")
+
+
+def test_alert_hold_resume_covers_only_its_own_show():
+    section("alert hold (last review of PR #133), the real scheduler: a "
+            "Resume of a PAUSED running show says nothing about the next "
+            "show, which still Holds for a loud alert; the Resume and Start "
+            "now of a DELAYED show never clear the show after it")
+    S = _sched()
+    if S is None:
+        return
+    # 1. Show 1 running, an alert opens, the operator pauses and resumes
+    # it: show 2 at 18:20 still Holds.
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    try:
+        sv = R.svc
+        R.now[0] = _den(S, 18, 0)
+        sv.tick()
+        check(sv.machine.state == S.SHOW, "setup: show 1 running")
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 2)
+        with sv._locked():
+            sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(sv.machine.state == S.PAUSED, "setup: paused")
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(sv.machine.state == S.SHOW, "setup: resumed")
+        for t in ((18, 10), (18, 15), (18, 19)):
+            R.now[0] = _den(S, *t)
+            sv.tick()
+        check(sv.machine.state in (S.STANDBY, S.IDLE),
+              f"setup: show 1 over: {sv.machine.state}")
+        R.now[0] = _den(S, 18, 20)
+        sv.tick()
+        check(sv.machine.state == S.HOLD,
+              f"show 2 at 18:20 with the loud alert still open: held, the "
+              f"pause and Resume of show 1 said nothing about it: "
+              f"{sv.machine.state}")
+    finally:
+        R.close()
+    # 2. Held at 18:00, show 1 DELAYED, Resume and Start now at 18:01:
+    # show 2 at 18:20 still Holds for the same alert.
+    R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+    try:
+        sv = R.svc
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 0)
+        sv.tick()
+        check(sv.machine.state == S.HOLD, "setup: held at 18:00")
+        R.now[0] = _den(S, 18, 1)
+        sv.tick()
+        check(sv.machine.slot(1).status == S.DELAYED, "setup: show 1 delayed")
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+            sv._apply(S.Event(S.START_NOW, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(sv.machine.state == S.SHOW, f"setup: show 1 started by hand: "
+                                          f"{sv.machine.state}")
+        for t in ((18, 10), (18, 15), (18, 19)):
+            R.now[0] = _den(S, *t)
+            sv.tick()
+        R.now[0] = _den(S, 18, 20)
+        sv.tick()
+        check(sv.machine.state == S.HOLD,
+              f"show 2 at 18:20 with the same unacknowledged alert: held: "
+              f"{sv.machine.state}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_alert_workers_started_once_under_a_lock():
+    section("alert hold (last review of PR #133, 3): two ticks at once start "
+            "exactly one hold worker and one booth worker")
+    from ltcplay import remote as remote_mod
+    S = _sched()
+    if S is None:
+        return
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    real_thread = remote_mod.threading.Thread
+    made = []
+
+    class _SlowThread(real_thread):
+        def __init__(self, *a, **kw):
+            if str(kw.get("name", "")).startswith("ltcplay-alert-"):
+                made.append(kw.get("name"))
+                time.sleep(0.2)          # widen the window a race needs
+            super().__init__(*a, **kw)
+    try:
+        remote_mod.threading.Thread = _SlowThread
+        gate = threading.Barrier(2)
+
+        def go():
+            gate.wait()
+            R.remote._alert_tick()
+        ts = [real_thread(target=go) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(5)
+    finally:
+        remote_mod.threading.Thread = real_thread
+        R.close()
+    check(made.count("ltcplay-alert-hold") == 1 and
+          made.count("ltcplay-alert-booth") == 1,
+          f"exactly one of each worker: {made}")
+    print("  ok")
+
+
+def test_alert_hold_an_old_hold_never_clears_a_newer_one():
+    section("alert hold (final review of PR #133, A): the scheduler's tick "
+            "inside the old hold's check can start a NEW hold; dropping the "
+            "old one never clears the new one")
+    from ltcplay import alerts as AL, alerthold as AH
+    al = AL.Alerts(booth=None)
+    al.raise_("deck", "The Stream Deck is unplugged.")
+    ah = None
+
+    class _Svc:
+        def hold_still_claimed(self, epoch):
+            if epoch == 1:
+                ah.started(2, "deck: again")     # a new hold, mid check
+                return False
+            return True
+    ah = AH.AlertHold(al, _Svc())
+    ah.started(1, "deck: unplugged")
+    old = ah.hold
+    ah.tick()
+    check(ah.hold is not None and ah.hold is not old and
+          ah.hold["epoch"] == 2,
+          f"the newer hold survives: {ah.hold}")
+    print("  ok")
+
+
+def test_alert_workers_stop_with_the_server():
+    section("alert hold (final review of PR #133, C): the real server close "
+            "(web.serve's server_close) stops both alert workers, and a "
+            "tick after it starts none")
+    from ltcplay import web as web_mod
+    import tempfile as _tf
+    for when in ("after", "before"):
+        folder = _tf.mkdtemp()
+        httpd = web_mod.serve(folder, port=0, bind="127.0.0.1")
+        r = httpd.remote
+        try:
+            if when == "after":
+                r._alert_tick()
+                check(wait_for(lambda: r._alert_thread is not None and
+                               r._alert_thread.is_alive() and
+                               r._booth_thread.is_alive(), timeout=3),
+                      "setup: both workers running")
+        finally:
+            httpd.server_close()
+        if when == "after":
+            check(wait_for(lambda: not r._alert_thread.is_alive() and
+                           not r._booth_thread.is_alive(), timeout=5),
+                  "the server's close stopped both workers")
+        else:
+            r._alert_tick()
+            check(r._alert_thread is None and r._booth_thread is None,
+                  "a tick after the close starts no worker")
+        import shutil as _sh
+        _sh.rmtree(folder, ignore_errors=True)
+    print("  ok")
+
+
+def test_alert_booth_never_waits_behind_the_delayed():
+    section("alert hold (delta review of PR #133, 3): the booth re-sound has "
+            "a worker of its own: a 3 s Delayed file read never silences "
+            "the booth note; the workers stop with the Remote")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import alerthold as AH
+    real_cd = AH.COUNTDOWN_S
+    AH.COUNTDOWN_S = 0.2
+    R, booth, ann = _alert_hold_rig(S)
+    try:
+        names = []
+
+        class _NamedBooth(_CountingBooth):
+            def play(self, kind):
+                names.append(threading.current_thread().name)
+                return super().play(kind)
+        R.remote.alerts.booth = _NamedBooth(response_s=0.25)
+        b = R.remote.alerts.booth
+        real_decode = ann._decode
+        reading = threading.Event()
+
+        def slow(aid, _real=real_decode):
+            reading.set()
+            time.sleep(3.0)
+            return _real(aid)
+        ann._decode = slow
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 0)
+        check(reading.wait(5), "the Delayed is reading its file")
+        n0 = len(b.played)
+        time.sleep(2.0)
+        check(len(b.played) - n0 >= 2,
+              f"the booth kept sounding during the read: "
+              f"{len(b.played) - n0} notes in 2 s")
+        time.sleep(2.5)         # the read is over: both workers free
+        check("ltcplay-alert-hold" not in names,
+              f"the booth note is only ever the booth worker's: "
+              f"{sorted(set(names))}")
+    finally:
+        AH.COUNTDOWN_S = real_cd
+        R.close()
+    check(wait_for(lambda: not (R.remote._booth_thread and
+                                R.remote._booth_thread.is_alive()),
+                   timeout=5),
+          "the booth worker stopped with the Remote")
+    # A night cannot run past midnight, so nothing on yesterday's list can
+    # be due at the 2 AM reset: the new-day tick never starts a show.
+    try:
+        S.parse_rule(_sched_doc(
+            weekly={"sat": {"first_start": "23:30", "interval_min": 20,
+                            "last_end": "01:30"}}, exceptions={}))
+        check(False, "a night past midnight must be refused")
+    except S.RuleError as e:
+        check("past midnight" in str(e), f"{e}")
+    print("  ok")
+
+
+def test_alert_hold_never_re_holds_after_resume():
+    section("alert hold (review of PR #133, 2): Hold at 18:00:00, Resume at "
+            "18:00:05 with a 15 s late grace and the alert still open: no "
+            "second Hold, no second announcement; the show starts")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import alerthold as AH
+    real_cd = AH.COUNTDOWN_S
+    AH.COUNTDOWN_S = 0.3
+    R, booth, ann = _alert_hold_rig(S, grace=15)
+    try:
+        sv = R.svc
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 0)
+        check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
+              "held at 18:00:00")
+        check(wait_for(lambda: R.remote.alert_hold.view().get("state") ==
+                       "announced", timeout=5),
+              "the Delayed played once")
+        ann.stop("x", "y", surface=True)
+        R.now[0] = _den(S, 18, 0, 5)
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        time.sleep(1.0)
+        holds = [r for r in sv.journal if r.get("action") == S.HOLD_ON]
+        check(len(holds) == 1 and sv.machine.state != S.HOLD,
+              f"no second Hold: {[r['text'] for r in holds]} "
+              f"{sv.machine.state}")
+        check(ann.playing is None, "no second announcement")
+    finally:
+        AH.COUNTDOWN_S = real_cd
+        R.close()
+    print("  ok")
+
+
+def test_alert_hold_never_touches_a_running_show():
+    section("alert hold, the scheduler running: a running or paused show "
+            "is never held, stopped, disarmed or announced over; with no "
+            "alert open the show starts as always; an alert opened in the "
+            "same tick as showtime holds; BOOT_DONE never starts a show by "
+            "itself, so the gate on TICK covers a restart at showtime")
+    S = _sched()
+    if S is None:
+        return
+    R, booth, ann = _alert_hold_rig(S)
+    try:
+        sv = R.svc
+        R.now[0] = _den(S, 18, 0)
+        check(wait_for(lambda: sv.machine.state == S.SHOW, timeout=3),
+              f"no alert: the show starts: {sv.machine.state}")
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        for sec in (5, 30, 59):
+            _set_time(R, _den(S, 18, 1, sec), settle=0.4)
+        check(sv.machine.state == S.SHOW and R.remote.alert_hold.hold is None
+              and ann.playing is None and R.cuts == [],
+              f"mid-show: nothing automatic: {sv.machine.state}")
+        with sv._locked():
+            sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                              screen="Rack screen"))
+        _set_time(R, _den(S, 18, 3), settle=0.5)
+        check(sv.machine.state == S.PAUSED and
+              R.remote.alert_hold.hold is None,
+              "paused by the operator: the alert hold adds nothing")
+    finally:
+        R.close()
+    # An alert raised in the very tick the show comes due (no tick with
+    # the scheduler thread in between): the gate sees it and holds.
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    try:
+        sv = R.svc
+        R.now[0] = _den(S, 18, 0)
+        R.remote.alerts.raise_("timecode", "No timecode.")
+        sv.tick()
+        check(sv.machine.state == S.HOLD, f"same tick: held: "
+                                          f"{sv.machine.state}")
+    finally:
+        R.close()
+    # A restart at showtime: BOOT_DONE never starts a show itself (the
+    # first TICK does), so it is gated like any other showtime.
+    from ltcplay import schedule as sch
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    try:
+        boot = sch.step(R.svc.machine, sch.Event(sch.BOOT_DONE, "system"),
+                        _den(S, 18, 0))
+        check(not any(e.kind == sch.START_SHOW for e in boot.effects),
+              "BOOT_DONE at showtime starts no show by itself")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_alert_worker_never_stalls_a_scheduler_tick():
+    section("alert hold (review of PR #133, 4): the booth re-sound and the "
+            "Delayed run on the alert worker, never on the scheduler's "
+            "thread: a booth note that takes 1 s leaves the tick hook "
+            "returning at once")
+    S = _sched()
+    if S is None:
+        return
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    try:
+        slow = []
+
+        class _SlowBooth(_CountingBooth):
+            def play(self, kind):
+                slow.append(kind)
+                time.sleep(1.0)
+                return True, "played"
+        R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+        R.remote.alerts.booth = _SlowBooth()
+        R.remote.alerts._sounded.clear()
+        R.remote.alerts._tried.clear()
+        t0 = time.monotonic()
+        R.remote._alert_tick()
+        took = time.monotonic() - t0
+        check(took < 0.1, f"the scheduler's hook returned in {took:.3f} s")
+        check(wait_for(lambda: slow, timeout=3),
+              "the worker did the slow booth note")
+        check(R.remote._alert_tick in R.svc.tick_hooks,
+              "the hook is on the scheduler's own tick list")
+    finally:
+        R.close()
+    # The booth note is only ever the booth worker's: while it is busy in
+    # a slow note, the hold worker (free, no hold) never sounds one.
+    R, booth, ann = _alert_hold_rig(S)
+    try:
+        names = []
+
+        class _SlowNamedBooth(_CountingBooth):
+            def play(self, kind):
+                names.append(threading.current_thread().name)
+                time.sleep(0.8)
+                return True, "played"
+        R.remote.alerts.booth = _SlowNamedBooth(response_s=0.25)
+        R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+        time.sleep(3.0)
+        check(names.count("ltcplay-alert-booth") >= 2 and
+              "ltcplay-alert-hold" not in names,
+              f"only the booth worker sounds the booth: {names}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_deck_stop_works_while_held_for_an_alert():
+    section("alert hold: Stop on the Stream Deck (key 0, a 0.5 s hold) "
+            "still works while the schedule is held for an open alert: "
+            "every group disarmed, then the halt")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import streamdeck as sd
+    R, booth, ann = _alert_hold_rig(S)
+    try:
+        sv = R.svc
+        R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+        R.now[0] = _den(S, 18, 0)
+        check(wait_for(lambda: R.remote.alert_hold.hold is not None,
+                       timeout=3), "setup: held for an alert")
+        arm = _FakeArmSocket(3)
+        calls = []
+
+        class _Eng:
+            def snapshot(self):
+                return {"latched": False}
+
+            def stop_run(self, who="", screen=""):
+                calls.append("halt")
+                return sd.EngineResult(True, "halted")
+        t = [10.0]
+        c = sd.Controller(
+            arm, _FakeStatusSocket(),
+            ["front row", "cat-walk", "wave flamer"],
+            operator_provider=lambda: "Andy",
+            show_running_provider=lambda: sv.machine.state in
+            ("SHOW", "PAUSED"),
+            held_provider=lambda: sv.machine.state in ("HOLD", "PAUSED"),
+            conductor=_Eng(), clock=lambda: t[0])
+        arm.set_group(0, True)
+        c.run_once([True] + [False] * 5)
+        t[0] += sd.STOP_HOLD_S + 0.01
+        c.tick()
+        c.run_once([False] * 6)
+        check(sv.machine.state == S.HOLD and
+              arm.wanted == [False, False, False] and calls == ["halt"],
+              f"held for an alert: Stop disarms every group, then halts: "
+              f"{arm.wanted} {calls}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_alert_hold_rack_screen_words():
+    section("alert hold on the rack screen: the state card says Held and "
+            "the sentence; nothing new is drawn anywhere else")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function alertHoldLook" in logic, "alertHoldLook is pure logic")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(alertHoldLook(null) === null && alertHoldLook({held:false}) === null, "not held: nothing");
+const L = alertHoldLook({held:true, state:"counting", countdown_s:42, text:"Held: alert open. The Delayed announcement plays in 42 s unless the alert is acknowledged."});
+t(L && L.word === "Held" && /42 s/.test(L.label), "held: Held and the sentence");
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = [f"node failed: {r.stderr[-400:]}"]
+    for m in bad:
+        check(False, f"alertHoldLook: {m}")
     print("  ok")
 
 
@@ -15453,10 +17653,21 @@ def test_the_gpl_path_never_loads_announcements():
             continue        # compiled copies of the files checked here
         files += [os.path.join(dirpath, n) for n in names
                   if not n.endswith(".pyc")]
+    # The Windows show PC (Fire & Ice, not GPL) runs announcements in its
+    # fire_ice mode (Jeff, 2026-10-26): supervisor.py, and only there.
+    win = os.path.join(root, "packaging", "windows")
     for f in files:
         try:
             text = open(f, errors="replace", encoding="utf-8").read()
         except OSError:
+            continue
+        if os.path.normcase(f) == os.path.normcase(
+                os.path.join(win, "supervisor.py")):
+            check(text.count('"--announce"') == 3 and
+                  'if mode == "fire_ice":' in text.split(
+                      'engine += ["--announce"')[0][-900:],
+                  "supervisor.py turns announcements on in fire_ice mode "
+                  "only (and its self-check says so)")
             continue
         check("--announce" not in text,
               f"{os.path.relpath(f, root)} turns announcements on")
@@ -27187,16 +29398,19 @@ def test_streamdeck_controller_with_fakes():
           "a hold again")
     release(sd.GROUP_KEYS[0])
 
-    # Start/Stop: no conductor connected, journaled, nothing done. A show
-    # is running here, so the key is Stop, refused as on the Rack screen
-    # (Jeff, 2026-10-26).
+    # Start/Stop: a show is running here, so the key is Stop, a complete
+    # halt (Jeff, 2026-10-26), and so a hold: a tap journals nothing and
+    # sends nothing.
+    n = len(events)
     press(sd.TOP_START)
-    check("Stop pressed while a scheduled show is live" in events[-1][0]
-          and "Nothing was stopped" in events[-1][0], events[-1])
+    check(c._stop_hold._down_at is not None and len(events) == n,
+          f"a press during a show starts a Stop hold: {events[n:]}")
     release(sd.TOP_START)
+    check(len(events) == n and c._stop_hold.fraction(t[0]) == 0.0,
+          f"a tap during a show sends nothing: {events[n:]}")
 
     # The deck has no Hold and no Abort key (Jeff, 2026-10-26): keys 1 to
-    # 4 are arm keys, key 5 is spare and does nothing.
+    # 4 are arm keys, key 5 does nothing while the engine runs no announcements.
     check(sd.GROUP_KEYS == (1, 2, 3, 4) and not hasattr(sd, "TOP_HOLD")
           and not hasattr(sd, "TOP_ABORT"),
           "keys 1 to 4 arm groups; no Hold or Abort key on the deck")
@@ -27643,15 +29857,16 @@ def test_streamdeck_start_key_during_a_show():
                       show_running_provider=lambda: running[0],
                       conductor=eng, clock=lambda: t[0],
                       journal=lambda text, **kw: lines.append((text, kw)))
-    # Pressing the Start/Stop key during the show: it is Stop, refused as
-    # on the Rack screen (only Hold, Resume and Abort during a show), in
-    # the journal; nothing asked of the engine. NOW PLAYING is honest.
+    # Pressing the Start/Stop key during the show: it is Stop, a complete
+    # halt (Jeff, 2026-10-26: the show ends), and so a HOLD: a tap sends
+    # nothing and asks nothing of the engine. NOW PLAYING is honest.
     c.run_once([True, False, False, False, False, False])
+    check(c._stop_hold._down_at is not None,
+          "a press during the show starts a Stop hold")
     c.run_once([False] * 6)
-    check(len(lines) == 1 and "Nothing was stopped" in lines[0][0]
-          and lines[0][1].get("action") == "stop" and not eng.calls,
-          f"Start/Stop during a show journals a refusal and does nothing: "
-          f"{lines}")
+    check(not lines and not eng.calls and
+          c._stop_hold.fraction(t[0]) == 0.0,
+          f"a tap on Start/Stop during a show sends nothing: {lines}")
     fonts, faces, restore = _deck_face_recorder(sd)
     if fonts is None:
         print("  note: Pillow is not installed here, so the Start key's "
@@ -27672,6 +29887,16 @@ def test_streamdeck_start_key_during_a_show():
         check(sd.PLAYING_ON == ((50, 205, 95), (4, 28, 10))
               and sd.PLAYING_OFF == ((8, 40, 16), (60, 200, 100)),
               "the green is the approved demo's")
+        # Held during the show: Stop's hold fills, HOLD TO STOP (Jeff,
+        # 2026-10-26: Stop is a complete halt, the show ends).
+        c.run_once([True, False, False, False, False, False])
+        t[0] += sd.STOP_HOLD_S / 2
+        c.tick()
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["HOLD TO", "STOP"],
+              f"held during a show: HOLD TO STOP: {faces[0]}")
+        c.run_once([False] * 6)
+        check(not eng.calls, "let go early: nothing")
         eng.look = "HELD"
         c.draw(fonts, blink_on=True, chase=0)
         check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
@@ -40059,6 +42284,7 @@ class _RemoteRig:
 
     def close(self):
         self.httpd.server_close()
+        self.remote.close_alerts()
         self.svc.stop()
         # A show selection still being written (off the request) lands
         # before its folder goes.
@@ -45689,8 +47915,48 @@ def test_windows_supervisor_first_run_defaults():
         settings["flamesafe_config"] = os.path.join(work, "fs", "flamesafe.json")
         settings["schedule"] = os.path.join(work, "sc", "ltcplay_schedule.json")
         written = SUP.first_run_defaults(settings)
-        check(set(written) == {"flamesafe", "schedule", "fire_ice"},
-              f"all three were written: {written}")
+        check(set(written) == {"flamesafe", "schedule", "fire_ice",
+                               "announce", "booth"},
+              f"all five were written: {written}")
+        # The announcements file (Jeff, 2026-10-26): no output device yet,
+        # never the system default; the three recordings in Announcements
+        # beside it, missing until copied there. The engine loads it and
+        # refuses every press, cleanly, before anything is held.
+        from ltcplay import announce as ANN
+        ann_path = os.path.join(work, "sc", "ltcplay_announce.json")
+        with open(ann_path, encoding="utf-8") as fh:
+            dev, files = ANN.parse_config(json.load(fh), ann_path)
+        check(dev == "" and set(files) == set(ANN.IDS) and
+              os.path.isdir(os.path.join(work, "sc", "Announcements")),
+              f"the announcements file names no device and the three "
+              f"recordings, with their folder made: {dev!r} {files}")
+        asvc = ANN.AnnounceService(ann_path, sd=FakeSD(),
+                                   operators_folder=work,
+                                   state_provider=lambda: "IDLE")
+        ast = asvc.status()
+        check(asvc.error == "" and ast["device_set"] is False and
+              not ast["device_available"] and
+              "never used" in (ast["device_reason"] or "") and
+              all(i["missing"] and not i["available"]
+                  for i in ast["announcements"]),
+              f"it loads: no device set, every recording missing: {ast}")
+        asvc.hold_requester = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("a Hold was asked for"))
+        try:
+            asvc.play(ANN.DELAYED, "Andy", "Rack screen")
+            check(False, "a press with the recording missing is refused")
+        except ValueError as e:
+            check("Recording missing" in str(e), f"said plainly: {e}")
+        # The booth speaker block (boothaudio.py), off until set.
+        from ltcplay import remote as RM
+        bpath = os.path.join(work, "ltcplay", "ltcplay_remote.json")
+        with open(bpath, encoding="utf-8") as fh:
+            rs = RM.settings_from_doc(json.load(fh), bpath)
+        check(rs["booth_alert"]["device"] == "" and
+              rs["show_network_address"] is None and
+              rs["screen_arming"] is False,
+              f"the rack screen settings carry only the booth block, off: "
+              f"{rs}")
         # flamesafe's own loader, in its own interpreter: selftest.py never
         # imports flamesafe (the wall, handoff section 15).
         import subprocess as _sp
@@ -45743,6 +48009,12 @@ def test_windows_supervisor_first_run_defaults():
         check(want["flamesafe"][0] is not None and
               want["deck"][0] is not None and want["engine"][0] is not None,
               f"with the defaults every program is started: {want}")
+        eng = want["engine"][0]
+        check("--announce" in eng and os.path.normcase(
+                  eng[eng.index("--announce") + 1]) ==
+              os.path.normcase(ann_path),
+              f"the engine runs announcements from that file, with no flag "
+              f"typed by anyone: {eng}")
         # programs.json: running, or why not, written on change only.
         pf = SUP.ProgramsFile(os.path.join(work, "p.json"))
 
@@ -46964,7 +49236,8 @@ def test_stream_deck_review_of_120():
                   "Stream Deck: the keys are key 0 Start/Stop, key 1 "
                   "Floor G (front row), key 2 Cat-Walk G (cat-walk), key 3 "
                   "Blue Flames (wave flamer), key 4 Fireball (fireball); "
-                  "no key: pump (pump); key 5 is spare.") and
+                  "no key: pump (pump); key 5 opens the announcements "
+                  "page.") and
               "no Hold or Abort key" in lines[0][0] and
               all(kw.get("action") == "config" for _t, kw in lines),
               f"Jeff's four by name whatever flamesafe's order, and the key "
@@ -47123,6 +49396,139 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               f"a live show: Stop refused, and no cut, scrub end or flame "
               f"disarm sent: {st} {out} {sent}")
         check(R.svc.machine.state == S.SHOW, "the show plays on")
+        # The same from the show network with "halt": still refused.
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"who": "Andy", "screen": "Stream Deck",
+                            "halt": True}, client=("10.20.0.44", 50000))
+        check(st in (403, 409) and sent == [] and
+              R.svc.machine.state == S.SHOW,
+              f"a halt from the show network is not taken: {st} {out}")
+        # The Stream Deck's Stop is a complete halt (Jeff, 2026-10-26):
+        # "halt" from this machine, taken during a scheduled show. Every
+        # flame group and laser disarmed, the show ended through the
+        # scheduler's Stop (faded like an Abort), playback stopped, and
+        # nothing latched anywhere.
+        order = []
+        R.remote._flame_disarm = lambda reason: (order.append("disarm"),
+                                                 type("_R", (), {
+                                                     "ok": True,
+                                                     "sentence": "sent"})())[1]
+        R.remote.live_flame_cut = lambda *a, **kw: order.append("cut")
+        # The halt cuts fire while scrubbing as an Abort does (review of
+        # #130, second pass, 3), never the slower end.
+        R.remote.scrub_flames_end = lambda *a, **kw: order.append("END")
+        R.remote.scrub_flames_cut = lambda *a, **kw: order.append("scrub")
+
+        class _Lasers:
+            def lasers_disarm_now(self, why, who="", screen=""):
+                order.append(("lasers", why, who, screen))
+                return True, "Every laser disarmed."
+        R.remote.morning = _Lasers()
+        presses = []
+        real_press = R.svc.operator_press
+        R.svc.operator_press = lambda what, *a, **kw: (
+            presses.append((what, R.svc.machine.state)),
+            order.append("show"), real_press(what, *a, **kw))[2]
+        real_stop = R.httpd.control.stop
+        R.httpd.control.stop = lambda: (order.append("stop"),
+                                        real_stop())[1]
+        # The conductor's own show_stopped (dark, no latch) must be asked,
+        # and its fade begun, BEFORE playback stops (review of #130, 5).
+        # A slow conductor (0.3 s to take the request): the halt still
+        # waits for it, so playback never stops first.
+        real_ss = R.c.show_stopped
+        R.c.show_stopped = lambda *a, **kw: (time.sleep(0.3),
+                                             order.append("show_stopped"),
+                                             real_ss(*a, **kw))[2]
+        real_abort = R.c.abort
+        R.c.abort = lambda *a, **kw: (order.append("ABORT"),
+                                      real_abort(*a, **kw))[1]
+        # The scheduler's Stop drops a show start still waiting in the
+        # conductor's line (second review of #130, 4).
+        dropped = []
+        real_drop = R.svc._calls.drop
+        R.svc._calls.drop = lambda methods, seq: (
+            dropped.append(tuple(methods)), real_drop(methods, seq))[1]
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"who": "", "screen": "Stream Deck",
+                            "halt": True}, client=("127.0.0.1", 50000))
+        kinds = [o if isinstance(o, str) else o[0] for o in order]
+        check(st == 200 and kinds == ["disarm", "cut", "scrub", "lasers",
+                                      "show", "show_stopped", "stop"],
+              f"the deck's halt during a show: the flames first (as an "
+              f"Abort), then live flames, the lasers, the show, the "
+              f"conductor's show_stopped, and only then playback: {st} "
+              f"{out} {order}")
+        check("ABORT" not in kinds, "the conductor is never asked to Abort")
+        from ltcplay import schedule_service as _SV
+        check(dropped == [_SV._ConductorCalls.STOP_DROPS],
+              f"the scheduler's Stop drops waiting show starts: {dropped}")
+        check(out.get("failed") == [], f"nothing failed: {out}")
+        check(out.get("show", {}).get("ok") is True and
+              out.get("lasers", {}).get("disarmed") is True and
+              out.get("flames", {}).get("disarmed") is True,
+              f"and the answer says each went: {out}")
+        check(presses == [("stop-show", S.SHOW)] and
+              "abort" not in [p_[0] for p_ in presses],
+              f"the scheduler's Stop, never its Abort: {presses}")
+        R.settle()
+        m = R.svc.machine
+        slot = [x for x in m.slots if x.n == 1][0] if hasattr(m, "slots") \
+            else m.slot(1)
+        check(m.state == S.STANDBY and m.running == 0 and
+              slot.reason == "STOPPED (operator Stop)" and
+              not m.abort_latched,
+              f"the show ended, the scheduler is in STANDBY, nothing "
+              f"latched: {m.state} {slot.status} {slot.reason} "
+              f"{m.abort_latched}")
+        check(R.c is None or not R.c.snapshot().get("latched"),
+              "and the conductor is not latched: no Reset is needed")
+        said = [r for r in R.svc.journal
+                if r.get("action") == S.STOP_SHOW]
+        check(said and "Stop" in said[-1].get("text", "") and
+              "Nothing is latched" in said[-1].get("text", ""),
+              f"the journal says the show was stopped, with no latch: "
+              f"{said[-1:]}")
+        # A halt with no show live: the lasers too, and no show to end.
+        del order[:]
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 200 and "show" not in out and
+              "lasers" in [o if isinstance(o, str) else o[0]
+                           for o in order],
+              f"a halt between shows disarms the lasers too: {out} {order}")
+        # The playback stop raises after the halt ran: a 500 that still
+        # carries every step, for the deck to say (third review of #130, 4).
+        def _boom():
+            raise RuntimeError("the audio device is wedged")
+        R.httpd.control.stop = _boom
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 500 and out.get("flames", {}).get("disarmed") is True
+              and "playback stop" in out.get("failed", []) and
+              "wedged" in out.get("error", "") and
+              out.get("stopped") is False,
+              f"a playback stop that raises: 500 with the halt's steps: "
+              f"{st} {out}")
+        # The halt itself raised too: both errors kept, never overwritten
+        # (review of #130, low items, 2).
+        real_halt = R.remote.halt
+
+        def _halt_boom(who, screen):
+            raise ValueError("the halt broke")
+        R.remote.halt = _halt_boom
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 500 and "the halt broke" in out.get("error", "") and
+              "wedged" in out.get("error", "") and
+              "wedged" in out.get("playback_error", "") and
+              out.get("failed") == ["halt", "playback stop"],
+              f"the halt's error and the playback stop's, both kept: "
+              f"{out}")
+        R.remote.halt = real_halt
     finally:
         R.close()
     print("  ok")
@@ -47172,6 +49578,55 @@ def test_stop_says_when_its_flame_disarm_failed():
     e._post_one("hold", {"who": "Andy"})
     check(tuple(e.fault_face) == ("ENGINE", "FAULT"),
           "only Stop's answer is read for its flames")
+    # The deck's Stop is a complete halt (Jeff, 2026-10-26): a show the
+    # scheduler did not end, or lasers not disarmed, is a fault too.
+    answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
+                     "show": {"ok": False, "text": "No show is running."}}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check("did NOT end the show" in e.fault and "Abort" in e.fault and
+          tuple(e.fault_face) == ("SHOW NOT", "STOPPED"),
+          f"a show the scheduler did not end is the deck's fault, SHOW NOT "
+          f"STOPPED (review of #132, 2): {e.fault!r}")
+    answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
+                     "lasers": {"disarmed": False, "text": "x"}}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check("laser disarm FAILED" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED"),
+          f"a failed laser disarm: DISARM FAILED: {e.fault!r}")
+    answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
+                     "lasers": {"disarmed": True}, "show": {"ok": True}}
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check(e.fault == "", "a halt that all went: no fault")
+    # Every failed step is said, never only the first (review of #130, 3).
+    answer["doc"] = {"stopped": True,
+                     "flames": {"disarmed": False, "text": "F"},
+                     "lasers": {"disarmed": False, "text": "L"},
+                     "show": {"ok": False, "text": "S"}}
+    del lines[:]
+    e._post_one("stop", {"who": "Andy"}, path="/api/stop")
+    check("flame disarm FAILED (F)" in e.fault and
+          "laser disarm FAILED (L)" in e.fault and
+          "did NOT end the show (S)" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED") and
+          any("flame disarm FAILED" in t and "laser disarm FAILED" in t and
+              "did NOT end the show" in t and f for t, f in lines),
+          f"all three failures said, on the key and in the journal: "
+          f"{e.fault!r} {lines}")
+    # And the deck's Stop asks the engine for the halt.
+    import threading as _th
+    got, seen = [], _th.Event()
+    e3 = sd.EngineConductor(
+        "http://127.0.0.1:1", fetcher=lambda path: None,
+        poster=lambda path, body: (got.append((path, dict(body))),
+                                   seen.set(), (True, "done", {}))[2])
+    e3.start()
+    try:
+        e3.stop_run("Andy")
+        seen.wait(3)
+    finally:
+        e3.stop()
+    check(got and got[0][0] == "/api/stop" and got[0][1].get("halt") is True,
+          f"the deck's Stop posts /api/stop with halt: {got}")
     if not _pillow_missing("the deck's DISARM FAILED key"):
         src = open(sd.__file__, encoding="utf-8").read()
         check('getattr(self.conductor, "fault_face", None)' in src,
@@ -47207,6 +49662,1238 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+def test_stop_halt_review_of_130():
+    """Review of #130: the deck's halt ends the LAST show of the night as an
+    Abort leaves it (STANDBY, then the next tick closes the night), every
+    step of Remote.halt runs even when one raises, the loopback check on
+    "halt" is the engine's own, and a Stop hold with the engine down still
+    disarms the arm link first and says the engine fault."""
+    section("Stop (review of #130): the last show, a step that raises, the "
+            "loopback check, the engine down")
+    S = _sched()
+    if S is None:
+        return
+    # 2. The last show of the night: STANDBY, as after an Abort, then the
+    # next tick closes the night. Never latched.
+    rule = _one_night_rule(S, last="18:10")
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    check(n.m.state == S.SHOW and n.m.running == 1 and
+          not [x for x in n.m.slots if x.status == S.PENDING],
+          f"setup: the night's only show is running: {n.m.state}")
+    o = n.op(S.STOP_SHOW, _den(S, 18, 2), confirmed=True, who="",
+             screen="Stream Deck")
+    check(o.accepted and n.m.state == S.STANDBY and
+          n.m.slot(1).reason == "STOPPED (operator Stop)" and
+          not n.m.abort_latched,
+          f"Stop on the last show: STANDBY as after an Abort, no latch: "
+          f"{n.m.state} {o.refused}")
+    said = " ".join(le.text for le in o.log)
+    check("Nothing is latched" in said and "disarmed" not in said,
+          f"its line claims only what the scheduler does: {said}")
+    n.tick(_den(S, 18, 3))
+    check(n.m.state == S.CLOSING,
+          f"and the next tick closes the night: {n.m.state}")
+    n.audit("Stop on the last show")
+    # 6 and the tests: every step of Remote.halt runs whatever one before
+    # it did; a laser disarm that raises is said, and the show still ends.
+    from ltcplay import remote as RM
+    calls = []
+
+    class _M:
+        state = "SHOW"
+
+    class _Svc:
+        machine = _M()
+        conductor = None
+
+        def operator_press(self, what, who, screen, confirmed=False):
+            calls.append(("press", what, confirmed))
+            self.machine.state = "STANDBY"
+            return {"ok": True, "text": "Stopped."}
+
+        def journal_press(self, who, screen, action, outcome, text,
+                          fault=False):
+            calls.append(("journal", action, outcome, fault, text))
+
+    class _Arm:
+        def press_begin(self):
+            calls.append(("press_begin",))
+
+        def press_end(self):
+            calls.append(("press_end",))
+
+    class _Purge:
+        def clear(self, why):
+            calls.append(("purge clear", why))
+
+    class _Tests:
+        def all_off(self, why):
+            calls.append(("laser tests off", why))
+
+    class _Morning:
+        laser_arm = _Arm()
+        purge = _Purge()
+        lasers = _Tests()
+
+        def lasers_disarm_now(self, why, who="", screen=""):
+            calls.append(("lasers",))
+            raise RuntimeError("BEYOND is not answering")
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   flame_disarm=lambda reason: (calls.append(("flames",)),
+                                                type("_R", (), {
+                                                    "ok": True,
+                                                    "sentence": "sent"})())[1],
+                   log=lambda t: None)
+    rm.morning = _Morning()
+    rm.cancel_holds = lambda why: calls.append(("holds", why)) or 0
+    out = rm.halt("", "Stream Deck")
+    kinds = [c_[0] for c_ in calls]
+    check(kinds[:3] == ["press_begin", "flames", "lasers"] and
+          "holds" in kinds and "purge clear" in kinds and
+          "laser tests off" in kinds and ("press", "stop-show", True)
+          in calls and kinds.index("press_end") > kinds.index("press"),
+          f"the laser arm told first, the flames first of the steps, and "
+          f"every step after the one that raised still runs: {calls}")
+    check(out["failed"] == ["lasers"] and out["show"]["ok"] and
+          out["show_ended"] and out["flames"]["disarmed"] and
+          "BEYOND is not answering" in out["lasers"]["text"],
+          f"the failed step is said, the others are not: {out}")
+    j = [c_ for c_ in calls if c_[0] == "journal"]
+    check(j and j[-1][2] == "fault" and j[-1][3] and "lasers" in j[-1][4],
+          f"journaled as a fault naming the step: {j}")
+    # An Abort or a Hold from a screen tells the laser arm a press is under
+    # way before any of its work, and that it is over after (review of PR
+    # #87, P2-2, the wiring in Remote.press; Stop does the same, above).
+    del calls[:]
+    rm.morning = _Morning()
+    rm._press = lambda name, body, ctx: (calls.append(("pressing", name)),
+                                         (200, {}))[1]
+    for what in ("abort", "hold", "resume"):
+        del calls[:]
+        rm.press(what, {}, None)
+        want = ([("press_begin",), ("pressing", what), ("press_end",)]
+                if what != "resume" else [("pressing", what)])
+        check(calls == want,
+              f"{what}: the laser arm told a press is under way around it "
+              f"(Abort and Hold only): {calls}")
+    del rm._press
+    # 8: the show ended by itself while the halt was on its way: not a
+    # failure.
+    del calls[:]
+
+    class _Svc2(_Svc):
+        def operator_press(self, what, who, screen, confirmed=False):
+            self.machine.state = "STANDBY"
+            return {"ok": False, "text": "No show is running."}
+    svc2 = _Svc2()
+    svc2.machine = _M()
+    rm.schedule = svc2
+    rm.morning = None
+    out = rm.halt("", "Stream Deck")
+    check(out["failed"] == [] and out["show"]["ok"] and
+          not out["show_ended"] and "already ended" in out["show"]["text"],
+          f"a show that ended by itself meanwhile: no failure: {out}")
+    # The loopback check on "halt" is the engine's own (_halt_asked).
+    from ltcplay import web as web_mod
+
+    class _H:
+        def __init__(self, local, body):
+            self._l, self._b = local, body
+
+        def _local(self):
+            return self._l
+
+        def _body(self):
+            return self._b
+    ha = web_mod.Handler._halt_asked
+    check(ha(_H(True, {"halt": True})) is True and
+          ha(_H(False, {"halt": True})) is False and
+          ha(_H(True, {"halt": "yes"})) is False and
+          ha(_H(True, {})) is False and ha(_H(True, None)) is False,
+          "halt is taken only from this machine, and only as true")
+    # 1: the engine down. A Stop hold disarms the arm link first, then the
+    # halt is tried; the engine's silence is the deck's fault.
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [100.0]
+    lines = []
+    seen = []
+    eng = sd.EngineConductor(
+        "http://127.0.0.1:1", fetcher=lambda path: None,
+        poster=lambda path, body: (seen.append((path, list(arm.wanted))),
+                                   (False, "ltc serve could not be "
+                                           "reached"))[1])
+    eng.start()
+    try:
+        c = sd.Controller(arm, _FakeStatusSocket(), names,
+                          show_running_provider=lambda: None,
+                          run_live_provider=lambda: None, conductor=eng,
+                          clock=lambda: t[0],
+                          journal=lambda t_, **kw: lines.append((t_, kw)))
+        check(c.start_key_mode() == "unknown",
+              "the engine down: the key's mode is unknown")
+        arm.set_group(0, True)
+        arm.set_group(2, True)
+        c.run_once([True] + [False] * 5)
+        t[0] += sd.STOP_HOLD_S + 0.01
+        c.tick()
+        c.run_once([False] * 6)
+        check(arm.wanted == [False, False, False],
+              f"the arm link disarmed at once, the engine down: "
+              f"{arm.wanted}")
+        deadline = time.time() + 3
+        while not eng.fault and time.time() < deadline:
+            time.sleep(0.01)
+        check(seen and seen[0][0] == "/api/stop" and
+              seen[0][1] == [False, False, False],
+              f"the halt was still tried, after the arm link went false: "
+              f"{seen}")
+        check("could not be reached" in eng.fault,
+              f"and the engine's silence is the deck's fault: {eng.fault!r}")
+    finally:
+        eng.stop()
+    if not _pillow_missing("the deck's STOP ALL key"):
+        fonts, faces, restore = _deck_face_recorder(sd)
+        try:
+            c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                               names, show_running_provider=lambda: None,
+                               clock=lambda: t[0])
+            c2.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"the scheduler not known: the key reads STOP ALL: "
+                  f"{faces[0]}")
+        finally:
+            restore()
+    print("  ok")
+
+
+def test_stop_halt_second_review_of_130():
+    """Second review of #130: a tap on the alert key only acknowledges, a
+    full hold stops, and the key says HOLD TO STOP once held; an open
+    Morning page never swallows a Stop; an armed group with nothing running
+    makes the key Stop; the halt cuts scrub flames, reports the laser
+    blank, waits for the conductor's fade, and drops a show start still in
+    the conductor's line; the deck says a halt that raised, and a slow
+    Stop is CHECK RACK, never ENGINE FAULT."""
+    section("Stop (second review of #130): the alert key, the Morning page, "
+            "an idle armed group, the fade, the laser blank, the queued "
+            "show start, a slow engine")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    class _Cond(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    arm = _FakeArmSocket(3)
+    t = [100.0]
+    show, run = [True], [False]
+    cond = _Cond()
+    scr = _FakeMorningScreen()
+    lines = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: show[0],
+                      run_live_provider=lambda: run[0], conductor=cond,
+                      journal=lambda t_, **kw: lines.append((t_, kw)),
+                      clock=lambda: t[0], screen=scr)
+    up, down = [False] * 6, [True] + [False] * 5
+
+    def stops():
+        return [x for x in cond.calls if x[0] == "stop"]
+
+    def wait(dt):
+        t[0] += dt
+        c.tick()
+    # 1. An alert open during a show: a tap only acknowledges.
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    c.run_once(down)
+    wait(0.1)
+    c.run_once(up)
+    wait(sd.STOP_HOLD_S * 2)
+    check(acked and not stops(), "an alert during a show: a tap only "
+                                 "acknowledges")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    try:
+        c.run_once(down)
+        wait(0.05)
+        if fonts is not None:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["ACK", "ALERT"],
+                  f"held under STOP_FACE_AFTER_S: still ACK ALERT: "
+                  f"{faces[0]}")
+        wait(sd.STOP_FACE_AFTER_S)
+        if fonts is not None:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["HOLD TO", "STOP"],
+                  f"held past STOP_FACE_AFTER_S: HOLD TO STOP over the "
+                  f"ACK, so a let go can cancel: {faces[0]}")
+            cond_fault = sd.EngineConductor("http://127.0.0.1:1")
+            cond_fault.fault = "Hold: refused"
+            c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                               names, show_running_provider=lambda: True,
+                               conductor=cond_fault, clock=lambda: t[0])
+            c2._stop_hold.press(t[0] - sd.STOP_FACE_AFTER_S)
+            c2._prev_keys = list(down)
+            c2.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["HOLD TO", "STOP"],
+                  f"over an engine fault too: {faces[0]}")
+        wait(sd.STOP_HOLD_S)
+        c.run_once(up)
+        check(len(stops()) == 1, f"and the full hold stops: {cond.calls}")
+    finally:
+        restore()
+    del c.alert_pending
+    del c._do_acknowledge
+    # 2. The Morning page open during a show: key 0 is Stop, never FIRE.
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    t[0] += sd.REARM_REFRACTORY_S
+    c.screen_pass()
+    c.tick()
+    check(c.morning_open(), "setup: the Morning page is open")
+    n0 = len(stops())
+    c.run_once(down)
+    check(not pf.calls and c._stop_hold._down_at is not None,
+          f"the Morning page open during a show: key 0 is Stop, never "
+          f"FIRE: {pf.calls}")
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and the hold stops: {cond.calls} {arm.wanted}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] not in (["FIRE", "HOLD"], ["PURGE", "NONE"],
+                                      ["FIRING"]),
+                  f"and its face is the show's, never FIRE or PURGE: "
+                  f"{faces[0]}")
+        finally:
+            restore()
+    # No show, only the purge's own group armed: FIRE, as before.
+    show[0] = False
+    t[0] += sd.REARM_REFRACTORY_S
+    scr.mo["purge"]["wanted_groups"] = []
+    c.screen_pass()
+    c.tick()
+    scr.mo["purge"]["wanted_groups"] = [0]
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0}, f"setup: the purge group armed again: "
+                                 f"{c._purge_armed}")
+    c.run_once(down)
+    check(pf.calls and pf.calls[-1][0] == "start",
+          f"no show, only the purge's group armed: key 0 is FIRE: "
+          f"{pf.calls}")
+    c.run_once(up)
+    # A group armed for something else: Stop wins over FIRE.
+    arm.set_group(2, True)
+    n_pf = len(pf.calls)
+    c.run_once(down)
+    check(len(pf.calls) == n_pf and c._stop_hold._down_at is not None,
+          "a group armed other than for the purge: Stop, never FIRE")
+    c.run_once(up)
+    scr.mo = None
+    c.screen_pass()
+    c.tick()
+    # 6. Nothing running, no alert, a group armed: the hold is Stop, and
+    # the key reads STOP ALL, never a refused Start Now.
+    show[0], run[0] = False, False
+    arm.set_group(1, True)
+    n0 = len(stops())
+    before = len(lines)
+    c.run_once(down)
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1 and arm.wanted == [False, False, False]
+          and not any("no real 'start" in x[0] for x in lines[before:]),
+          f"nothing running, a group armed: the hold disarms everything "
+          f"and asks for the halt, never Start Now: {cond.calls}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            arm.set_group(0, True)
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"and the key reads STOP ALL: {faces[0]}")
+            arm.set_group(0, False)
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] != ["STOP", "ALL"],
+                  f"nothing armed: not STOP ALL: {faces[0]}")
+        finally:
+            restore()
+    # 5. The deck reads the engine's own "failed" list, and a Stop the
+    # engine took but did not answer in time is CHECK RACK.
+    got = {}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: None,
+                           poster=lambda p, b: got["a"])
+    got["a"] = (True, "done", {"stopped": True, "failed": ["halt"],
+                               "error": "RuntimeError: boom"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check("halt step FAILED (RuntimeError: boom)" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED"),
+          f"a halt that raised in the engine is the deck's fault: "
+          f"{e.fault!r}")
+    got["a"] = (True, "done", {"stopped": True, "lasers_blank": {
+        "ok": False, "text": "x"}, "failed": ["laser blank"]})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check("laser blank FAILED" in e.fault and
+          e.fault.count("FAILED") == 1,
+          f"a failed laser blank said once: {e.fault!r}")
+    got["a"] = (False, "took the request but did not answer",
+                {"timeout": True})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("CHECK", "RACK"),
+          f"a slow Stop is CHECK RACK, never ENGINE FAULT: {e.fault_face}")
+    got["a"] = (False, "could not be reached")
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("ENGINE", "FAULT"),
+          "an engine that cannot be reached is ENGINE FAULT")
+    # The real POST: a server that takes the Stop and never answers.
+    import socket as _so
+    srv = _so.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    keep = sd.STOP_POST_TIMEOUT_S
+    sd.STOP_POST_TIMEOUT_S = 0.3
+    try:
+        e2 = sd.EngineConductor(f"http://127.0.0.1:{port}")
+        r = e2._http_post("/api/stop", {"halt": True})
+        check(r[0] is False and len(r) == 3 and r[2].get("timeout") is True
+              and "did not answer within 0.3 s" in r[1],
+              f"a Stop the engine does not answer in time is a timeout, "
+              f"not unreachable: {r}")
+        closed = _so.socket()
+        closed.bind(("127.0.0.1", 0))
+        cport = closed.getsockname()[1]
+        closed.close()
+        e3 = sd.EngineConductor(f"http://127.0.0.1:{cport}")
+        r = e3._http_post("/api/stop", {"halt": True})
+        check(r[0] is False and (len(r) < 3 or not r[2].get("timeout")) and
+              "could not be reached" in r[1],
+              f"nothing listening: unreachable: {r}")
+    finally:
+        sd.STOP_POST_TIMEOUT_S = keep
+        srv.close()
+    # Third review of #130, 1: Stop wins whenever anything is running,
+    # the Morning page open, the purge's own group armed and a run going.
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    show[0], run[0] = False, False
+    t[0] += sd.REARM_REFRACTORY_S
+    for wanted in ([], [0]):
+        scr.mo["purge"]["wanted_groups"] = wanted
+        c.screen_pass()
+        c.tick()
+    check(c._purge_armed == {0}, f"setup: purge group 0 armed: "
+                                 f"{c._purge_armed}")
+    run[0] = True
+    check(c.start_key_mode() == "stop" and c._stop_wins(),
+          "Run pressed and playback going: Stop wins")
+    n_pf, n0 = len(pf.calls), len(stops())
+    c.run_once(down)
+    check(len(pf.calls) == n_pf and c._stop_hold._down_at is not None,
+          f"the Morning page open, the purge's group armed, a run going: "
+          f"key 0 is Stop, never FIRE: {pf.calls[n_pf:]}")
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1, f"and the hold stops: {cond.calls}")
+    # The same with an alert open: the first press acknowledges AND starts
+    # the hold, as during a show.
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    c.run_once(down)
+    check(acked and c._stop_hold._down_at is not None,
+          "a run going, an alert open: the press acknowledges and starts "
+          "the Stop hold")
+    c.run_once(up)
+    del c.alert_pending
+    del c._do_acknowledge
+    run[0] = False
+    # Third review of #130, 2: a group the purge selection wants, armed by
+    # hand before the page took it, is the purge's own: FIRE, never STOP
+    # ALL.
+    t[0] += sd.REARM_REFRACTORY_S
+    scr.mo["purge"]["wanted_groups"] = []
+    c.screen_pass()
+    c.tick()
+    arm.set_group(1, True)          # armed by hand first
+    scr.mo["purge"]["wanted_groups"] = [1]
+    c.screen_pass()
+    c.tick()
+    check(1 not in c._purge_armed and 1 in c.purge_wanted() and
+          not c._stop_wins(),
+          f"a hand-armed group the purge wants: the purge's own, Stop "
+          f"does not win: {c._purge_armed}")
+    n_pf = len(pf.calls)
+    c.run_once(down)
+    check(len(pf.calls) == n_pf + 1 and pf.calls[-1][0] == "start",
+          f"key 0 is FIRE: {pf.calls[n_pf:]}")
+    c.run_once(up)
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] != ["STOP", "ALL"],
+                  f"and its face is the purge's, never STOP ALL: "
+                  f"{faces[0]}")
+        finally:
+            restore()
+    show[0] = True
+    check(c._stop_wins(), "a show live: Stop wins all the same (rule 1)")
+    show[0] = False
+    arm.set_group(1, False)
+    scr.mo = None
+    c.screen_pass()
+    c.tick()
+    # Third review of #130, 3: only a timeout after the request was sent
+    # is "the engine took it"; a connect timeout or a refusal is an engine
+    # fault; and the engine not answering its polls outranks CHECK RACK.
+    import urllib.error
+    real_opener = sd._opener
+
+    class _Op:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def open(self, *a, **kw):
+            raise self.exc
+    try:
+        e4 = sd.EngineConductor("http://127.0.0.1:1")
+        sd._opener = lambda: _Op(urllib.error.URLError(TimeoutError(
+            "timed out")))
+        r = e4._http_post("/api/stop", {})
+        check(r[0] is False and (len(r) < 3 or not r[2].get("timeout")) and
+              "could not be reached" in r[1],
+              f"a connect timeout: the engine could not be reached: {r}")
+        sd._opener = lambda: _Op(ConnectionRefusedError("refused"))
+        r = e4._http_post("/api/stop", {})
+        check(r[0] is False and (len(r) < 3 or not r[2].get("timeout")),
+              f"refused: could not be reached: {r}")
+        sd._opener = lambda: _Op(TimeoutError("timed out"))
+        r = e4._http_post("/api/stop", {})
+        check(len(r) == 3 and r[2].get("timeout") is True,
+              f"a timeout waiting for the answer: taken: {r}")
+    finally:
+        sd._opener = real_opener
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            e5 = sd.EngineConductor("http://127.0.0.1:1",
+                                    poster=lambda p_, b_: (
+                                        False, "slow", {"timeout": True}))
+            e5._post_one("stop", {"who": ""}, path="/api/stop")
+            gone = [False]
+            e5.unreachable = lambda: gone[0]
+            c5 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                               names, show_running_provider=lambda: False,
+                               run_live_provider=lambda: False,
+                               conductor=e5, clock=lambda: t[0])
+            c5.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["CHECK", "RACK"],
+                  f"a slow Stop, the engine still polling: CHECK RACK: "
+                  f"{faces[0]}")
+            gone[0] = True
+            c5.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["ENGINE", "FAULT"],
+                  f"the engine no longer answering its polls: ENGINE FAULT "
+                  f"over the stale CHECK RACK: {faces[0]}")
+        finally:
+            restore()
+    # Third review of #130, 4: an HTTP error from /api/stop still has its
+    # failed steps read and said; never ENGINE FAULT.
+    got["a"] = (False, "RuntimeError: audio device", {
+        "_http_status": 500, "stopped": False,
+        "flames": {"disarmed": False, "text": "F"},
+        "failed": ["flames", "playback stop"],
+        "error": "RuntimeError: audio device"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check("answered Stop with an error" in e.fault and
+          "flame disarm FAILED (F)" in e.fault and
+          "playback did NOT stop" in e.fault and
+          tuple(e.fault_face) == ("DISARM", "FAILED"),
+          f"a 500 after the halt: its real failed steps, DISARM FAILED: "
+          f"{e.fault!r} {e.fault_face}")
+    got["a"] = (False, "boom", {"_http_status": 500, "failed": []})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("CHECK", "RACK") and
+          "answered Stop with an error" in e.fault,
+          f"a 500 with nothing else failed: CHECK RACK, not ENGINE FAULT: "
+          f"{e.fault!r}")
+    # The real GET: an engine with no scheduler answers 404, said apart
+    # from no answer at all.
+    import http.server as _hs
+
+    class _NoSched(_hs.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/api/state":
+                body = b'{"running": false}'
+                self.send_response(200)
+            else:
+                body = b'{"error": "no such thing here"}'
+                self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            # A Stop whose playback stop raised after the halt ran: 500.
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            body = (b'{"error": "RuntimeError: wedged", "stopped": false, '
+                    b'"flames": {"disarmed": false, "text": "F"}, '
+                    b'"failed": ["flames", "playback stop"]}')
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    hs = _hs.HTTPServer(("127.0.0.1", 0), _NoSched)
+    th = threading.Thread(target=hs.serve_forever, daemon=True)
+    th.start()
+    try:
+        ls = sd.LocalSchedule(f"http://127.0.0.1:{hs.server_port}")
+        check(ls._http_fetch("/api/schedule/state") == {"_http_status": 404},
+              "a 404 is said as the engine's answer, not as no answer")
+        ls._poll_once()
+        check(ls.show_running() is False and ls.run_live() is False,
+              f"so the key is Start, never unknown: {ls.show_running()}")
+        e6 = sd.EngineConductor(f"http://127.0.0.1:{hs.server_port}")
+        e6._post_one("stop", {"who": ""}, path="/api/stop")
+        check("flame disarm FAILED (F)" in e6.fault and
+              "playback did NOT stop" in e6.fault and
+              tuple(e6.fault_face) == ("DISARM", "FAILED"),
+              f"a real 500 from Stop: its failed steps read and said, "
+              f"never ENGINE FAULT: {e6.fault!r} {e6.fault_face}")
+    finally:
+        hs.shutdown()
+        hs.server_close()
+    # 3. The halt reports the laser blank; 5. the fade is waited for.
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    calls = []
+
+    class _CondB:
+        def lasers_dark_now(self, what):
+            calls.append(("blank", what))
+            return _Result(False, "BEYOND did not answer")
+
+    class _Svc:
+        conductor = _CondB()
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            calls.append(("journal",) + a[2:4])
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   log=lambda t_: None)
+    rm.scrub_flames_cut = lambda *a, **kw: calls.append(("scrub cut",))
+    rm.scrub_flames_end = lambda *a, **kw: calls.append(("scrub end",))
+    out = rm.halt("", "Stream Deck")
+    check(("scrub cut",) in calls and ("scrub end",) not in calls,
+          f"the halt cuts fire while scrubbing, as an Abort does: {calls}")
+    check(any(x[0] == "blank" for x in calls) and
+          out["lasers_blank"] == {"ok": False,
+                                  "text": "The laser blank did NOT go out "
+                                          "at the press."} and
+          "laser blank" in out["failed"],
+          f"the laser blank is reported, and its failure: {out}")
+    waits = []
+
+    class _CondW:
+        threaded = True
+
+        def wait_idle(self, timeout):
+            waits.append(("idle", timeout))
+            return True
+
+    class _SvcW:
+        conductor = _CondW()
+
+        def flush_conductor(self, timeout):
+            waits.append(("flush", timeout))
+            return True
+
+    class _RmW:
+        def halt(self, who, screen):
+            return {"flames": None, "lasers": None, "lasers_blank": None,
+                    "show": {"ok": True, "text": ""}, "show_ended": True,
+                    "failed": []}
+
+    class _Srv:
+        remote = _RmW()
+        schedule = _SvcW()
+
+    class _H:
+        server = _Srv()
+
+        def _who_where(self, body):
+            return "", "Stream Deck"
+    out = web_mod.Handler._halt(_H(), {})
+    check(waits == [("flush", web_mod.HALT_FADE_WAIT_S),
+                    ("idle", web_mod.HALT_FADE_WAIT_S)] and
+          out.get("show", {}).get("ok"),
+          f"a show ended: the conductor's calls flushed and its fade "
+          f"waited for, before playback stops: {waits}")
+    del waits[:]
+    _RmW.halt = lambda self, who, screen: {"show_ended": False,
+                                           "failed": []}
+    web_mod.Handler._halt(_H(), {})
+    check(waits == [], "no show ended: nothing to wait for")
+    _RmW.halt = lambda self, who, screen: 1 / 0
+    out = web_mod.Handler._halt(_H(), {})
+    check(out.get("failed") == ["halt"] and "ZeroDivisionError" in
+          out.get("error", ""), f"a halt that raises is said: {out}")
+    # 4. A show start still waiting in the conductor's line is dropped by
+    # Stop; nothing else, and no latch.
+    from ltcplay import schedule_service as SV
+    gate = threading.Event()
+    ran = []
+    q = SV._ConductorCalls(lambda call: (gate.wait(3), ran.append(
+        call.method)))
+    mk = [SV._ConductorCall(m_, m_, "", "", seq=i + 1) for i, m_ in
+          enumerate(("intermission", "start_show", "show_starting",
+                     "hold", "show_stopped"))]
+    later = SV._ConductorCall("start_show", "start_show", "", "", seq=9)
+    for call in mk[:4] + [later]:
+        q.put(call)
+    deadline = time.time() + 2
+    while not q.health()["stuck"] and time.time() < deadline:
+        time.sleep(0.01)
+    gone = q.drop(SV._ConductorCalls.STOP_DROPS, mk[4].seq)
+    q.put(mk[4])
+    gate.set()
+    q.flush(3)
+    check([g.method for g in gone] == ["start_show", "show_starting"] and
+          ran == ["intermission", "hold", "start_show", "show_stopped"] and
+          all(g.done.is_set() and g.ok is False for g in gone),
+          f"Stop drops only the show starts decided before it and still "
+          f"waiting (a start decided after it stays): {ran} "
+          f"{[g.method for g in gone]}")
+    check(set(SV._ConductorCalls.STOP_DROPS) ==
+          {"start_show", "show_starting"},
+          "never a Reset, Hold or Resume: Stop is not an Abort")
+    print("  ok")
+
+
+def test_stop_halt_low_items_of_130():
+    """The low items from the last review of #130: a 500 where only the
+    playback stop failed reads PLAYBACK FAILED and says the flames were
+    disarmed; the halt's own error is kept beside the playback stop's; live
+    flame programming and fire while scrubbing count as running (key 0 is
+    Stop, never FIRE) while the purge still works when nothing at all runs;
+    and FIRE held when a show or run starts becomes a Stop hold at once."""
+    section("Stop (review of #130, low items): playback stop failed, both "
+            "errors kept, live flames count as running, FIRE yields to Stop")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    # 1. Only the playback stop failed (a 500 after the halt ran).
+    got = {}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: None,
+                           poster=lambda p, b: got["a"])
+    got["a"] = (False, "RuntimeError: wedged", {
+        "_http_status": 500, "stopped": False,
+        "flames": {"disarmed": True, "text": "sent"},
+        "lasers": {"disarmed": True, "text": "sent"},
+        "failed": ["playback stop"], "error": "RuntimeError: wedged",
+        "playback_error": "RuntimeError: wedged"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("PLAYBACK", "FAILED") and
+          "every flame group and every laser" in e.fault and
+          "playback did NOT stop (RuntimeError: wedged)" in e.fault and
+          "DISARM" not in e.fault and "step FAILED" not in e.fault,
+          f"only the playback stop failed: PLAYBACK FAILED, the flames "
+          f"said disarmed: {e.fault!r} {e.fault_face}")
+    got["a"] = (False, "x", {
+        "_http_status": 500, "stopped": False,
+        "flames": {"disarmed": False, "text": "F"},
+        "failed": ["flames", "playback stop"], "error": "x"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("DISARM", "FAILED") and
+          "playback did NOT stop" in e.fault and
+          "flame disarm FAILED (F)" in e.fault,
+          f"a disarm failed as well: DISARM FAILED, both said: {e.fault!r}")
+    # 3. Live flames count as running; the purge works when nothing runs.
+    arm = _FakeArmSocket(3)
+    t = [100.0]
+    show, run = [False], [False]
+
+    class _Scr(_FakeMorningScreen):
+        live = False
+
+        def flames_live(self):
+            return self.live
+
+    class _Cond(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    scr = _Scr()
+    cond = _Cond()
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: show[0],
+                      run_live_provider=lambda: run[0], conductor=cond,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0],
+                      screen=scr)
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+    up, down = [False] * 6, [True] + [False] * 5
+
+    def stops():
+        return [x for x in cond.calls if x[0] == "stop"]
+
+    def wait(dt):
+        t[0] += dt
+        c.tick()
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0} and not c._stop_wins(),
+          "setup: the purge's group armed, nothing running: FIRE")
+    c.run_once(down)
+    check(pf.calls and pf.calls[-1][0] == "start",
+          f"nothing at all running: the purge's FIRE works: {pf.calls}")
+    c.run_once(up)
+    scr.live = True
+    check(c._stop_wins(), "live flame programming on: Stop wins")
+    n_pf, n0 = len(pf.calls), len(stops())
+    c.run_once(down)
+    check(len(pf.calls) == n_pf and c._stop_hold._down_at is not None,
+          f"live flames on: key 0 is Stop, never FIRE: {pf.calls[n_pf:]}")
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and the hold stops: {cond.calls}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            scr.mo = None
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"live flames on, nothing else running: STOP ALL: "
+                  f"{faces[0]}")
+            scr.live = False
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] != ["STOP", "ALL"],
+                  f"live flames off: not STOP ALL: {faces[0]}")
+        finally:
+            restore()
+    scr.live = False
+    # The engine says so: deck-input carries flames_live.
+    from ltcplay import remote as RM
+
+    class _Svc:
+        conductor = None
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            pass
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   log=lambda t_: None)
+    check(rm.deck_input("").get("flames_live") is False,
+          "deck-input: flames_live false with neither on")
+    rm.live_flame_view = lambda: {"available": True, "on": True}
+    check(rm.deck_input("").get("flames_live") is True,
+          "live flame programming on: flames_live true")
+    rm.live_flame_view = lambda: {"on": False}
+    rm.scrub_flames_view = lambda: {"on": True}
+    check(rm.deck_input("").get("flames_live") is True,
+          "fire while scrubbing on: flames_live true")
+    tt = [0.0]
+    sk = sd.ScreenKeys("http://127.0.0.1:1", clock=lambda: tt[0],
+                       fetcher=lambda p: {"flames_live": True})
+    check(sk.flames_live() is None, "before an answer: not known")
+    sk._last = ({"flames_live": True}, 0.0)
+    check(sk.flames_live() is True, "the deck reads flames_live")
+    tt[0] = sd.SCREEN_STALE_S + 1
+    check(sk.flames_live() is None, "a stale answer: not known")
+    # 4. FIRE held when a show starts: FIRE ends, and the same held key is
+    # a Stop hold at once, with no second press.
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    t[0] += sd.REARM_REFRACTORY_S
+    c.screen_pass()
+    c.tick()
+    scr.mo["purge"]["wanted_groups"] = [0]
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0}, f"setup: purge armed: {c._purge_armed}")
+    c.run_once(down)
+    check(pf.firing, "FIRE held")
+    n0 = len(stops())
+    show[0] = True
+    wait(0.01)
+    check(not pf.firing and c._stop_hold._down_at is not None,
+          "a show started while FIRE was held: FIRE ends and the held key "
+          "starts the Stop hold at once")
+    wait(sd.STOP_HOLD_S + 0.01)
+    check(len(stops()) == n0 + 1,
+          f"and with the key still held, Stop goes, no second press: "
+          f"{cond.calls}")
+    c.run_once(up)
+    print("  ok")
+
+
+def test_stop_halt_review_of_132():
+    """Review of #132, with the REAL PurgeFire and real timing: FIRE held
+    when a show goes live becomes exactly one Stop hold, even though the
+    engine's first refusal ends the press before the deck's poll sees the
+    show, and even when the Morning page closes in the same pass; a show
+    the halt did not stop reads SHOW NOT STOPPED; a purge machine
+    deselected while FIRE is held never turns into a Stop because
+    flamesafe's status lags; and live flames not known count as on."""
+    section("Stop (review of #132): FIRE into Stop with the real PurgeFire, "
+            "SHOW NOT STOPPED, the deselect settle, live flames unknown")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    class _Cond(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen, time.monotonic()))
+            return _Result(True, "Stopped.")
+
+    def probe(close_page):
+        """FIRE held 1.5 s; the engine refuses beats once its show is live
+        (0.2 s in); the deck sees the show 0.25 s later. close_page: the
+        Morning page closes in that same pass too."""
+        engine_show = [False]
+        beats = []
+
+        def poster(path, body):
+            if path == "/api/remote/purge-fire":
+                if engine_show[0]:
+                    return (False, "a show is live: no purge", {})
+                beats.append(time.monotonic())
+                return (True, "ok", {"fire_id": "f1",
+                                     "firing": ["front row"]})
+            return (True, "ok", {})
+        arm = _FakeArmSocket(3)
+        show = [False]
+        scr = _FakeMorningScreen()
+        scr.mo = {"open": True, "purge_enabled": True,
+                  "purge": {"wanted_groups": [0], "selected": 1,
+                            "firing": False},
+                  "locks": {"groups_fully_locked": []}}
+        cond = _Cond()
+        c = sd.Controller(arm, _FakeStatusSocket(), names,
+                          operator_provider=lambda: "Andy",
+                          show_running_provider=lambda: show[0],
+                          run_live_provider=lambda: False, conductor=cond,
+                          journal=lambda t_, **kw: None,
+                          clock=time.monotonic, screen=scr)
+        pf = sd.PurgeFire(poster)
+        c.purge_fire = pf
+        c.screen_pass()
+        c.tick()
+        check(c._purge_armed == {0}, "setup: the purge group armed")
+        down, up = [True] + [False] * 5, [False] * 6
+        t0 = time.monotonic()
+        c.run_once(down)
+        seen_at = None
+        while time.monotonic() - t0 < 1.5:
+            el = time.monotonic() - t0
+            if el >= 0.2:
+                engine_show[0] = True
+            if el >= 0.45 and seen_at is None:
+                seen_at = time.monotonic()
+                show[0] = True
+                if close_page:
+                    scr.mo = None
+            c.screen_pass()
+            c.tick()
+            time.sleep(0.02)
+        c.run_once(up)
+        pf.stop()
+        pf.join(1.0)
+        stops = [x for x in cond.calls if x[0] == "stop"]
+        lag = (stops[0][3] - seen_at) if stops else None
+        how = "the page closing too" if close_page else "the page open"
+        check(beats and not pf.firing,
+              f"{how}: FIRE fired, then the engine's refusal ended it")
+        check(len(stops) == 1,
+              f"{how}: exactly one Stop, with no second press: {stops}")
+        # A loaded runner (Windows CI) may be slow: never early, and within
+        # a generous bound (delta review of #132, D3).
+        check(lag is not None and sd.STOP_HOLD_S - 0.02 <= lag <=
+              sd.STOP_HOLD_S + 1.0,
+              f"{how}: the Stop hold completed STOP_HOLD_S after the deck "
+              f"saw the show: {lag}")
+    probe(close_page=False)
+    probe(close_page=True)
+    # 2. A show still live and playback still running: SHOW NOT STOPPED,
+    # as urgent as DISARM FAILED, never ENGINE FAULT while it answers.
+    got = {}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: None,
+                           poster=lambda p, b: got["a"])
+    got["a"] = (False, "x", {"_http_status": 500, "stopped": False,
+                             "flames": {"disarmed": True},
+                             "show": {"ok": False, "text": "S"},
+                             "failed": ["show", "playback stop"],
+                             "error": "x"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("SHOW NOT", "STOPPED") and
+          "did NOT end the show (S)" in e.fault and
+          "playback did NOT stop" in e.fault,
+          f"the show and playback still going: SHOW NOT STOPPED: "
+          f"{e.fault!r} {e.fault_face}")
+    got["a"] = (True, "done", {"stopped": True,
+                               "show": {"ok": False, "text": "S"}})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("SHOW NOT", "STOPPED"),
+          f"a 200 whose show did not end: SHOW NOT STOPPED: {e.fault_face}")
+    got["a"] = (True, "done", {"stopped": True,
+                               "flames": {"disarmed": False, "text": "F"},
+                               "show": {"ok": False, "text": "S"}})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("DISARM", "FAILED") and
+          "did NOT end the show" in e.fault,
+          "a failed disarm as well: DISARM FAILED, both said")
+    # 3. A purge machine deselected while FIRE is held: the deck disarms
+    # its group; flamesafe's status still reporting it armed for a moment
+    # is no reason for Stop to win.
+    t = [100.0]
+    arm = _FakeArmSocket(3)
+    scr = _FakeMorningScreen()
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0, 2], "selected": 2,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: False,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0],
+                      screen=scr)
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0, 2}, f"setup: both armed: {c._purge_armed}")
+    reported = {0, 2}
+    c._reported_armed = lambda i: i in reported
+    c.run_once([True] + [False] * 5)
+    check(pf.firing, "FIRE held")
+    scr.mo["purge"]["wanted_groups"] = [0]
+    t[0] += 0.05
+    c.screen_pass()
+    c.tick()
+    check(arm.wanted[2] is False and not c._stop_wins() and pf.firing and
+          c._stop_hold._down_at is None,
+          f"group 2 deselected while FIRE is held, flamesafe still saying "
+          f"it is armed: FIRE goes on, no Stop: {arm.wanted}")
+    t[0] += sd.DISARM_SETTLE_S + 0.05
+    c.tick()
+    check(c._stop_wins(),
+          "past DISARM_SETTLE_S with flamesafe still saying armed: Stop "
+          "wins")
+    c.run_once([False] * 6)
+    # The window is FIRE's only (delta review of #132, A): a deselect with
+    # key 0 up, flamesafe still saying armed, is Stop at once.
+    scr.mo["purge"]["wanted_groups"] = []
+    c.screen_pass()
+    t[0] += sd.REARM_REFRACTORY_S + sd.DISARM_SETTLE_S
+    scr.mo["purge"]["wanted_groups"] = [0, 2]
+    c.screen_pass()
+    check(c._purge_armed == {0, 2}, f"setup: both armed again: "
+                                    f"{c._purge_armed}")
+    scr.mo["purge"]["wanted_groups"] = [0]
+    t[0] += 0.05
+    c.screen_pass()
+    check(not arm.wanted[2] and c._stop_wins(),
+          "a deselect with FIRE not held, flamesafe still saying armed: "
+          "Stop wins at once")
+    # Delta review of #132, A: the settle window forgives only the
+    # purge's own deselect disarms, and only while FIRE is down. A Stop's
+    # or a tap's disarm that has not shown in flamesafe's status yet still
+    # counts: a second Stop hold is a Stop.
+    class _CondS(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    for how in ("a Stop", "a tap"):
+        arm = _FakeArmSocket(3)
+        cond = _CondS()
+        c = sd.Controller(arm, _FakeStatusSocket(), names,
+                          operator_provider=lambda: "Andy",
+                          show_running_provider=lambda: False,
+                          run_live_provider=lambda: False, conductor=cond,
+                          journal=lambda t_, **kw: None,
+                          clock=time.monotonic)
+        arm.set_group(0, True)              # armed by hand
+        c._reported_armed = lambda i: i == 0   # and flamesafe says so
+        down, up = [True] + [False] * 5, [False] * 6
+        if how == "a Stop":
+            c.run_once(down)
+            time.sleep(sd.STOP_HOLD_S + 0.02)
+            c.tick()
+            c.run_once(up)
+            check(len(cond.calls) == 1 and not any(arm.wanted),
+                  f"setup: the first Stop went: {cond.calls}")
+        else:
+            tap = [False] * 6
+            tap[sd.GROUP_KEYS[0]] = True
+            c.run_once(tap)
+            c.run_once(up)
+            check(not any(arm.wanted), "setup: a tap disarmed group 0")
+        n0 = len(cond.calls)
+        time.sleep(0.2)
+        check(c._stop_wins(),
+              f"after {how}'s disarm, flamesafe still saying armed: still "
+              f"Stop")
+        c.run_once(down)
+        time.sleep(sd.STOP_HOLD_S + 0.02)
+        c.tick()
+        c.run_once(up)
+        check(len(cond.calls) == n0 + 1,
+              f"a second hold 0.2 s after {how}: a second Stop is sent: "
+              f"{cond.calls}")
+    # B: a reconnect forgets that key 0 was down as FIRE.
+    c._key0_fire = True
+    c.reset_on_reconnect()
+    check(c._key0_fire is False, "a reconnect clears the FIRE memory")
+    # D1: latched, nothing running, a group still reported armed: key 0
+    # takes a Stop hold.
+    t = [300.0]
+    arm = _FakeArmSocket(3)
+    cond = _CondS()
+    cond._latched = True
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: False, conductor=cond,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0])
+    c._reported_armed = lambda i: i == 1
+    check(c._latched_now(), "setup: latched")
+    c.run_once([True] + [False] * 5)
+    check(c._stop_hold._down_at is not None,
+          "latched, nothing running, a group reported armed: a Stop hold")
+    t[0] += sd.STOP_HOLD_S + 0.01
+    c.tick()
+    c.run_once([False] * 6)
+    check([x for x in cond.calls if x[0] == "stop"],
+          f"and it stops: {cond.calls}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"latched with a group armed: STOP ALL: {faces[0]}")
+        finally:
+            restore()
+    # D2: an acknowledge on the Morning page that Stop did not win at the
+    # press becomes the Stop hold when Stop starts to win mid hold.
+    t = [400.0]
+    show = [False]
+    arm = _FakeArmSocket(3)
+    cond = _CondS()
+    scr = _FakeMorningScreen()
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [], "selected": 0,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: show[0],
+                      run_live_provider=lambda: False, conductor=cond,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0],
+                      screen=scr)
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    c.screen_pass()
+    c.run_once([True] + [False] * 5)
+    check(acked and c._stop_hold._down_at is None,
+          "an acknowledge on the Morning page, nothing running: only the "
+          "acknowledge")
+    t[0] += 0.1
+    show[0] = True
+    c.tick()
+    check(c._stop_hold._down_at is not None,
+          "a show goes live during the same hold: the hold becomes Stop")
+    t[0] += sd.STOP_HOLD_S + 0.01
+    c.tick()
+    c.run_once([False] * 6)
+    check([x for x in cond.calls if x[0] == "stop"],
+          f"and it stops, no second press: {cond.calls}")
+    # 4. Live flames not known count as on: Stop wins.
+    class _Scr(_FakeMorningScreen):
+        val = False
+
+        def flames_live(self):
+            if self.val == "raise":
+                raise RuntimeError("no answer")
+            return self.val
+    scr2 = _Scr()
+    c = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), names,
+                      show_running_provider=lambda: False,
+                      run_live_provider=lambda: False, clock=lambda: t[0],
+                      screen=scr2)
+    for val, want in ((False, False), (True, True), (None, True),
+                      ("raise", True), ("yes", True)):
+        scr2.val = val
+        check(c._stop_wins() is want,
+              f"flames_live {val!r}: Stop wins {want}")
+    c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), names,
+                       show_running_provider=lambda: False,
+                       run_live_provider=lambda: False, clock=lambda: t[0],
+                       screen=_FakeMorningScreen())
+    check(not c2._stop_wins(),
+          "a screen that cannot say (no engine wired): no live flames")
+    sk = sd.ScreenKeys("http://127.0.0.1:1", clock=lambda: 0.0,
+                       fetcher=lambda p: {})
+    sk._last = ({}, 0.0)
+    check(sk.flames_live() is None, "an answer without flames_live: not "
+                                    "known")
+    from ltcplay import remote as RM
+
+    class _Svc:
+        conductor = None
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            pass
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   log=lambda t_: None)
+
+    def _boom():
+        raise RuntimeError("x")
+    for lv, sv, want in (
+            (lambda: {"on": False}, lambda: {"on": False}, False),
+            (_boom, lambda: {"on": False}, None),
+            (lambda: {"on": False, "error": "E"}, lambda: {"on": False},
+             None),
+            (lambda: {"available": True}, lambda: {"on": False}, None),
+            (_boom, lambda: {"on": True}, True)):
+        rm.live_flame_view, rm.scrub_flames_view = lv, sv
+        got_v = rm.deck_input("").get("flames_live", "missing")
+        check(got_v is want if want is not None else got_v is None,
+              f"deck-input flames_live: {got_v!r}, expected {want!r}")
+    print("  ok")
+
+
 def test_stream_deck_start_stop_is_one_key():
     """Jeff (2026-10-26): Start and Stop are one key. Start when nothing is
     running (today's Start Now, unchanged), Stop while Run has been pressed
@@ -47215,24 +50902,34 @@ def test_stream_deck_start_stop_is_one_key():
     of STOP_HOLD_S, never a tap (the Rack screen asks for a confirm). A
     completed Stop first disarms every flame group on the arm link, never
     setting the Abort latch, and is reachable while an Abort is latched,
-    as on the Rack screen. During a scheduled show, or while the scheduler
-    cannot be read, the key never reads STOP RUN and sends nothing. The
-    deck has no Hold or Abort key since 2026-10-26."""
+    as on the Rack screen. During a scheduled show the same hold is a
+    complete halt and the show ends (Jeff, 2026-10-26); while the
+    scheduler cannot be read the key reads STOP ALL and a hold is Stop too
+    (review of #130, 1). A completed hold always disarms the arm link and
+    asks for the halt. An open alert is acknowledged by the press and
+    never swallows the Stop (review of #130, 9). The deck has no Hold or
+    Abort key since 2026-10-26."""
     section("Stream Deck: Start and Stop are one key; Stop is a 0.5 s hold, "
             "never a tap, never gated; it disarms every flame group and "
-            "never latches; reachable while aborted; never during a "
-            "scheduled show or with the scheduler unknown")
+            "never latches; reachable while aborted, during a scheduled "
+            "show (a complete halt), with the engine unknown, and with an "
+            "alert open")
     from ltcplay import streamdeck as sd
     posted = []
     eng = sd.EngineConductor("http://127.0.0.1:1",
                              poster=lambda p, b: (posted.append((p, b)) or
                                                   (True, "done",
                                                    {"stopped": True})))
+    # Stop goes on a thread of its own, never the press queue (review of
+    # #130, 7): it never waits behind a slow Hold.
     r = eng.stop_run(who="", screen="Stream Deck")
-    eng._post_one(*eng._q.get_nowait())
+    deadline = time.time() + 3
+    while not posted and time.time() < deadline:
+        time.sleep(0.01)
     check(r.ok and posted and posted[0][0] == "/api/stop" and
-          eng.fault == "", f"Stop posts the Rack screen's /api/stop: "
-                           f"{posted}")
+          eng._q.empty() and eng.fault == "",
+          f"Stop posts the Rack screen's /api/stop, at once and not on the "
+          f"press queue: {posted}")
     eng2 = sd.EngineConductor("http://127.0.0.1:1",
                               poster=lambda p, b: (posted.append((p, b)) or
                                                    (True, "ok")))
@@ -47250,6 +50947,38 @@ def test_stream_deck_start_stop_is_one_key():
     ls2 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: None)
     ls2._poll_once()
     check(ls2.run_live() is None, "unreachable: not known")
+    # One failed poll never flips the label; STATE_MISSES of them do
+    # (review of #130, second pass, 6).
+    ans = {"up": True}
+    ls3 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: (
+        None if not ans["up"] else
+        {"running": True} if p == "/api/state" else
+        {"ok": True, "state": "SHOW"} if p == "/api/schedule/state" else
+        {"current_operator": ""}))
+    ls3._poll_once()
+    ans["up"] = False
+    ls3._poll_once()
+    check(ls3.show_running() is True and ls3.run_live() is True,
+          "one failed poll: the last answer stands")
+    for _i in range(sd.STATE_MISSES - 1):
+        ls3._poll_once()
+    check(ls3.show_running() is None and ls3.run_live() is None,
+          f"{sd.STATE_MISSES} failed polls: not known")
+    # An engine with no scheduler (404) is never stuck on unknown.
+    ls4 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: (
+        {"_http_status": 404} if p == "/api/schedule/state" else
+        {"running": False} if p == "/api/state" else
+        {"_http_status": 404}))
+    ls4._poll_once()
+    check(ls4.show_running() is False and ls4.run_live() is False,
+          "no scheduler (404) with the engine answering: no show live, the "
+          "key is Start, never unknown")
+    ls5 = sd.LocalSchedule("http://127.0.0.1:1", fetcher=lambda p: (
+        {"_http_status": 404} if p == "/api/schedule/state" else None))
+    for _i in range(sd.STATE_MISSES):
+        ls5._poll_once()
+    check(ls5.show_running() is None,
+          "a 404 with the engine itself not answering: not known")
 
     class _Eng:
         def __init__(self):
@@ -47344,52 +51073,119 @@ def test_stream_deck_start_stop_is_one_key():
     wait(sd.STOP_HOLD_S * 3)
     up()
     check(len(e.calls) == 1, "still held: it does not send twice")
-    # The run ends during the hold: nothing sent.
+    # The run ends during the hold: a hold that completes always stops
+    # (review of #130, 1): the arm link first, then the engine's halt.
+    n0 = len(e.calls)
+    arm.set_group(2, True)
     down()
     run[0] = False
     wait(sd.STOP_HOLD_S + 0.05)
     up()
-    check(len(e.calls) == 1 and "Nothing was sent" in lines[-1][0],
-          f"the run ended mid hold: nothing sent: {lines[-1]}")
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"the run ended mid hold: still every group disarmed and the "
+          f"halt asked for: {e.calls} {arm.wanted}")
     run[0] = True
-    # A scheduled show: nothing is sent, held or tapped.
+    # A scheduled show (Jeff, 2026-10-26): Stop is a complete halt of
+    # everything and the show ends. A tap or an early let go sends
+    # nothing; a full hold disarms every group first, then Stop.
     show[0] = True
     check(c.start_key_mode() == "show", "a scheduled show live: show")
-    down()
+    arm.set_group(0, True)
+    n0 = len(e.calls)
+    tap()
     wait(sd.STOP_HOLD_S * 3)
+    check(len(e.calls) == n0 and arm.wanted[0],
+          "during a scheduled show a tap sends nothing")
+    down()
+    wait(sd.STOP_HOLD_S * 0.5)
     up()
-    check(len(e.calls) == 1 and "Nothing was stopped" in lines[-1][0],
-          "during a scheduled show Stop is refused as on the Rack screen")
-    # The scheduler cannot be read (review of PR #120, P2-4): never Stop.
+    wait(sd.STOP_HOLD_S * 3)
+    check(len(e.calls) == n0, "during a show an early let go sends nothing")
+    e.seen = None
+    down()
+    wait(sd.STOP_HOLD_S + 0.01)
+    check(len(e.calls) == n0 + 1 and
+          e.calls[-1] == ("stop", "", "Stream Deck") and
+          arm.wanted == [False, False, False] and
+          e.seen == [False, False, False] and not c._latched_now(),
+          f"during a scheduled show a full hold disarms every group, then "
+          f"Stop, with no latch: {e.calls} {arm.wanted} {e.seen}")
+    up()
+    # An alert open during the show: the press acknowledges it AND starts
+    # the Stop hold, so the first full hold stops (review of #130, 9).
+    acked = []
+    c.alert_pending = lambda: ({"kind": "deck"},)
+    c._do_acknowledge = lambda pending: acked.append(pending)
+    n0 = len(e.calls)
+    check(not any(arm.wanted), "setup: nothing armed")
+    down()
+    check(acked and c._stop_hold._down_at is not None,
+          "an alert open during a show, nothing armed: the press "
+          "acknowledges it and starts the Stop hold")
+    arm.set_group(1, True)
+    wait(sd.STOP_HOLD_S + 0.01)
+    up()
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and the first full hold stops: {e.calls} {arm.wanted}")
+    # Nothing running, but a flame group armed, with an alert open: the
+    # same (an alert never swallows the Stop while flames are armed).
+    show[0], run[0] = False, False
+    arm.set_group(0, True)
+    n0 = len(e.calls)
+    down()
+    check(c._stop_hold._down_at is not None,
+          "an alert open, nothing running, a group armed: a Stop hold")
+    wait(sd.STOP_HOLD_S + 0.01)
+    up()
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and it stops: {e.calls} {arm.wanted}")
+    # Nothing running, nothing armed, an alert open: only the acknowledge.
+    n0 = len(e.calls)
+    down()
+    check(c._stop_hold._down_at is None,
+          "an alert open, nothing running or armed: only the acknowledge")
+    up()
+    del c.alert_pending
+    del c._do_acknowledge
+    run[0] = True
+    # The scheduler cannot be read (the engine down; review of #130, 1):
+    # the key is Stop too, STOP ALL, and a hold disarms the arm link and
+    # asks for the halt.
     show[0] = None
-    check(c.start_key_mode() == "start",
-          "the scheduler not known: the key is not STOP RUN")
+    check(c.start_key_mode() == "unknown",
+          "the scheduler not known: the key is Stop (unknown)")
+    arm.set_group(2, True)
+    n0 = len(e.calls)
     down()
-    wait(sd.STOP_HOLD_S * 3)
+    wait(sd.STOP_HOLD_S + 0.01)
     up()
-    check(len(e.calls) == 1, "and a hold sends nothing")
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and a full hold disarms and asks for the halt: {e.calls} "
+          f"{arm.wanted}")
     show[0] = False
     # Aborted from a screen: Stop is still reachable (Jeff, 2026-10-26, as
     # on the Rack screen), and the latch stands.
     e.latched = True
     arm.set_group(1, True)
+    n0 = len(e.calls)
     tap()
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 1, "aborted: a tap still sends nothing")
+    check(len(e.calls) == n0, "aborted: a tap still sends nothing")
     down()
     wait(sd.STOP_HOLD_S + 0.01)
     up()
-    check(len(e.calls) == 2 and arm.wanted == [False, False, False] and
-          c._latched_now(),
+    check(len(e.calls) == n0 + 1 and arm.wanted == [False, False, False]
+          and c._latched_now(),
           f"aborted: a full Stop hold disarms and stops, the latch stays: "
           f"{e.calls} {arm.wanted}")
-    # Aborted with an alert open: the key only acknowledges, it never
-    # starts a Stop hold (review of #126, P2-6, mutant C).
+    # Aborted with an alert open: the press acknowledges AND starts the
+    # Stop hold (review of #130, 9; this was #126's mutant C, reversed).
+    acked = []
     c.alert_pending = lambda: ({"kind": "deck"},)
-    c._do_acknowledge = lambda pending: None
+    c._do_acknowledge = lambda pending: acked.append(pending)
     down()
-    check(c._stop_hold._down_at is None,
-          "aborted with an alert open: a press only acknowledges")
+    check(c._stop_hold._down_at is not None,
+          "aborted with an alert open: the press starts the Stop hold")
     up()
     del c.alert_pending
     del c._do_acknowledge
@@ -47403,19 +51199,20 @@ def test_stream_deck_start_stop_is_one_key():
     run[0] = True
     # Let go early while aborted: nothing (the latched branch takes the
     # release too, review of PR #120, P2-3).
+    n0 = len(e.calls)
     down()
     wait(sd.STOP_HOLD_S * 0.5)
     up()
     check(c._stop_hold.fraction(t[0]) == 0.0,
           "aborted: letting go empties the hold")
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 2, "aborted: an early let go sends nothing")
+    check(len(e.calls) == n0, "aborted: an early let go sends nothing")
     e.latched = False
     # The key's own state is read on every tick (review of PR #120,
     # P2-3): a hold timer with the key up never sends Stop.
     c._stop_hold.press(t[0])
     wait(sd.STOP_HOLD_S * 3)
-    check(len(e.calls) == 2,
+    check(len(e.calls) == n0,
           "a Stop hold timer running with the key up sends nothing")
     c._stop_hold.release()
     check(sd.deck_key_name(sd.TOP_START, []) == "Start now",
@@ -47931,17 +51728,32 @@ def test_screen_arm_end_to_end_probes():
                 return False
             time.sleep(0.02)
         return True
+    def wait_fresh(seconds, steady=3):
+        """(True, waited) once the engine has heard flamesafe on the mirror
+        (connected, not stale) and the deck has its status, for `steady`
+        reads in a row; (False, waited, the last answer) after `seconds`.
+        A bounded poll, never a fixed sleep: a loaded runner (a mutate
+        shard) can take seconds to start flamesafe or let one report run
+        late (mutate baseline of #132, shard 27)."""
+        t0 = time.perf_counter()
+        run, last = 0, None
+        while time.perf_counter() - t0 < seconds:
+            try:
+                last = status_now()
+                fresh = bool(last["flames"].get("connected")) and \
+                    not last["flames"]["stale"] and bool(status.last)
+            except Exception as e:           # noqa: BLE001
+                fresh, last = False, f"{type(e).__name__}: {e}"
+            run = run + 1 if fresh else 0
+            if run >= steady:
+                return True, round(time.perf_counter() - t0, 2), last
+            time.sleep(0.1)
+        return False, round(time.perf_counter() - t0, 2), last
     try:
         # Wait for everything to be live.
-        end = time.perf_counter() + 10
-        while time.perf_counter() < end:
-            s = status_now()
-            if s["flames"].get("connected") and not s["flames"]["stale"] \
-                    and status.last:
-                break
-            time.sleep(0.1)
-        check(not status_now()["flames"]["stale"],
-              "setup: the engine hears flamesafe on the mirror")
+        live, waited, last = wait_fresh(30)
+        check(live, f"setup: the engine hears flamesafe on the mirror "
+                    f"(waited {waited} s; last status: {last})")
         time.sleep(1.2)                    # the deck's lows prove a cycle
         # P1: a full hold arms, through the deck and flamesafe's own rules.
         # (Once the deck has armed it the engine answers the next heartbeat
@@ -47959,11 +51771,16 @@ def test_screen_arm_end_to_end_probes():
             if armed(0):
                 break
             # Held again only when this try's hold is shown to have lapsed
-            # (the engine's own "hold was interrupted"); any other ending
-            # is the failure it looks like.
+            # (the engine's own "hold was interrupted"), or was refused
+            # because flamesafe's report ran late on a loaded runner (the
+            # engine's own "has not reported": the rule working, mutate
+            # baseline of #132); then only once flamesafe is heard again.
+            # Any other ending is the failure it looks like.
             ended = [w for _t, w in whys.get("front row", [])[k:]]
-            if not any("interrupted" in str(w) for w in ended):
+            if not any("interrupted" in str(w) or "has not reported" in
+                       str(w) for w in ended):
                 break
+            wait_fresh(10)
             time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         check(armed(0), f"P1: a full screen hold armed front row on the "
                         f"wire: {status.last and status.last['groups'][0]}; "
@@ -48830,19 +52647,20 @@ def test_alerts_pure_logic():
           and lines[-1][1].get("outcome") == "raised"
           and "unplugged" in lines[-1][0],
           f"a raise is journaled as a fault: {lines[-1]}")
-    t[0] = 130.0
+    t[0] = 120.0
     b = A.raise_("deck", "The Stream Deck is back.")
     check(b is a and a.text == "The Stream Deck is back."
           and len(A.open()) == 1,
           f"one open alert per kind: a re-raise updates the sentence: "
           f"{[x.view() for x in A.open()]}")
     check(len(booth_calls) == 1,
-          f"and does not re-sound the booth within 60 s: {booth_calls}")
+          f"and does not re-sound the booth within 30 s (Jeff, "
+          f"2026-10-26; it was 60): {booth_calls}")
     check(lines[-1][1]["outcome"] == "updated" and lines[-1][1]["fault"],
           f"the update is a fault line too: {lines[-1]}")
-    t[0] = 161.0
+    t[0] = 131.0
     A.raise_("deck", "Still unplugged.")
-    check(len(booth_calls) == 2, f"after 60 s a raise sounds again: "
+    check(len(booth_calls) == 2, f"after 30 s a raise sounds again: "
                                  f"{booth_calls}")
     c = A.raise_("video", "A video feed is gone.", ["Stop"])
     check(c.options == ("Acknowledge", "Stop"),
@@ -56277,7 +60095,12 @@ def test_deck_hold_between_shows_is_not_an_engine_fault():
     check(sched.held() is True, "PAUSED is held too")
     st["v"] = None
     sched._poll_once()
-    check(sched.held() is None, "unreachable: not known")
+    check(sched.held() is True,
+          "one failed poll keeps the last answer (review of #130, second "
+          "pass, 6)")
+    sched._poll_once()
+    check(sched.held() is None and sched.show_running() is None,
+          "unreachable for STATE_MISSES polls: not known")
     # The deck itself has no Hold key since 2026-10-26: Hold is the Rack
     # screen's, which the engine checks above.
     print("  ok")
@@ -67734,6 +71557,36 @@ if __name__ == "__main__":
         test_announce_progress_and_stop,
         test_announce_logging_fields,
         test_announce_routes,
+        test_announce_device_not_set_and_device_missing_refuse_before_hold,
+        test_announce_surface_press_and_show_ending_while_loading,
+        test_announce_remote_routes_rack_screen,
+        test_announce_rack_screen_page_logic,
+        test_streamdeck_announcements_page_two,
+        test_announce_at_showtime_never_pauses_the_show_that_just_started,
+        test_announce_held_then_failed_says_so,
+        test_announce_view_never_on_the_status_path,
+        test_announce_play_goes_through_the_laser_press_interlock,
+        test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop,
+        test_streamdeck_page_two_auto_close_guard,
+        test_announce_hold_does_the_operator_holds_safety_cuts,
+        test_announce_view_stale_snapshot_is_not_fact,
+        test_streamdeck_page_two_shows_the_engines_refusal,
+        test_rack_screen_small_screens_with_announcements_and_setup,
+        test_alerts_booth_resounds_every_30_s_until_acknowledged,
+        test_alert_hold_at_showtime_then_one_delayed_announcement,
+        test_alert_hold_acknowledge_cancels_and_quiet_kinds,
+        test_alert_hold_never_touches_a_running_show,
+        test_alert_hold_rack_screen_words,
+        test_deck_stop_works_while_held_for_an_alert,
+        test_alert_hold_acknowledge_during_the_file_read,
+        test_alert_hold_never_re_holds_after_resume,
+        test_alert_hold_respects_any_operator_resume,
+        test_alert_booth_never_waits_behind_the_delayed,
+        test_alert_hold_an_old_hold_never_clears_a_newer_one,
+        test_alert_hold_resume_covers_only_its_own_show,
+        test_alert_workers_started_once_under_a_lock,
+        test_alert_workers_stop_with_the_server,
+        test_alert_worker_never_stalls_a_scheduler_tick,
         test_the_gpl_path_never_loads_announcements,
         test_arttimecode_packet_byte_for_byte,
         test_artnet_timecode_holds_30fps_under_load,
@@ -68027,6 +71880,10 @@ if __name__ == "__main__":
         test_stream_deck_start_stop_is_one_key,
         test_stop_disarms_every_flame_group_without_the_latch,
         test_stop_says_when_its_flame_disarm_failed,
+        test_stop_halt_review_of_130,
+        test_stop_halt_second_review_of_130,
+        test_stop_halt_low_items_of_130,
+        test_stop_halt_review_of_132,
         test_screen_arm_end_to_end_probes,
         test_screen_arming_switch_and_refusals,
         test_engine_stall_probe_memory_is_bounded,

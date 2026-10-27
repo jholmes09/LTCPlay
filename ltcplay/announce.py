@@ -15,36 +15,51 @@ web.py's job, once both are configured; this module never imports
 schedule.py or schedule_service.py. See `interlock_refusal` for exactly what
 that provider is used for.
 
-Every announcement triggers a Hold first (Jeff, 2026-09-26: "an announcement
-is a cancellation, hold, or abort... any announcement actually just auto
-triggers a hold"). Pressing Play asks the scheduler to Hold, through the
-SAME path the operator's own Hold uses, with this press's own who and screen,
-before the file ever reaches the output device: between shows that delays
-the next show; during a show it pauses the show in place, exactly as if the
-operator had pressed Hold. If Hold is refused, the announcement is refused
-with the same sentence. If the schedule is already on Hold, or the show is
-already paused, that counts as success and the announcement just plays. When
-it ends, nothing resumes the schedule by itself; only an operator's own
-Resume does. This is the second, one-method coupling to the scheduler
+An announcement Holds the SCHEDULE only between shows (Jeff, 2026-10-26,
+replacing 2026-09-26's "any announcement actually just auto triggers a
+hold"): Hold is a schedule pause, so the next show does not start until the
+operator is back. Pressing Play while no show is running asks the scheduler
+to Hold, through the SAME path the operator's own Hold uses, with this
+press's own who and screen, before the file ever reaches the output device.
+If Hold is refused, the announcement is refused with the same sentence. If
+the schedule is already on Hold, that counts as success and the
+announcement just plays. When it ends, nothing resumes the schedule by
+itself; only an operator's own Resume does.
+
+While a show is running (SHOW, or PAUSED by an operator's own Hold), an
+announcement plays WITHOUT pausing, holding or stopping anything, decided
+by the scheduler under its own lock, after its own tick, so a press at
+the second a show starts never pauses it (review of PR #129): pausing a
+show mid-way makes no sense for a cancellation or a cannot-continue, and
+the operator ends the show with Stop (or Abort) when that is what is meant.
+An announcement never disarms, stops or latches anything itself; see
+SHOW_STATES and play().
+
+The Hold request is the second, one-method coupling to the scheduler
 (`hold_requester`, a plain callable `(who, screen) -> refusal or None`),
 wired by web.py alongside `state_provider`, for the same reason: with no
 scheduler configured, `hold_requester` is never set, and an announcement
 stays exactly as inert as `interlock_refusal(None)` already makes it.
 
-A show starting while an announcement is playing used to be a real question;
-now it is moot, because playing an announcement Holds the show first, and a
+A show starting while an announcement is playing is mostly moot between
+shows, because playing an announcement Holds the schedule first, and a
 held schedule never starts one. `on_show_started` stays anyway, as a
 backstop from PR 13: the scheduler ticks on a thread of its own, with no lock
-shared with this service, so if a show ever did start while an announcement
-was going (a hand-edited race, a future bug), the announcement's own audio
-still stops rather than run under it. It is a push hook web.py wires the
-scheduler to call the moment it starts a show; it is not something this
-module polls for. See SHOW_START_STOPS_ANNOUNCEMENT.
+shared with this service, so if a show ever did start (or resume) while an
+announcement was going (an operator's Resume or Start now, a race), the
+announcement's own audio still stops rather than run under it. It is a push
+hook web.py wires the scheduler to call the moment it starts a show; it is
+not something this module polls for. See SHOW_START_STOPS_ANNOUNCEMENT.
 
 Both the interlock and the Hold request are check-then-act around real work
-(a device query, a file read), so play() re-checks and re-Holds a second
-time immediately before the output stream actually starts, inside the same
+(a device query, a file read), so play() checks a second time, read-only,
+immediately before the output stream actually starts, inside the same
 locked section: see the comment in play() beside that second check.
+
+A config written by the installer's first run names no device yet
+(`"device": ""`): the service loads, says plainly that no output device is
+set, shows each recording as present or missing, and refuses every press
+before anything is Held. It never falls back to the system default.
 
 The output device is never the system default. A show's device is picked by
 config, by an EXACT name (never a substring: a substring can silently land on
@@ -78,6 +93,13 @@ OPERATORS_FILE = "ltcplay_operators.json"
 DEFAULT_OPERATORS = ("Andy", "Jeff")
 
 JOURNAL = 400
+
+# The scheduler states in which a show is running (schedule.SHOW and
+# schedule.PAUSED, by name, so this module never imports schedule.py). An
+# announcement pressed in one of these plays over the show and Holds
+# nothing (Jeff, 2026-10-26); in any other state it Holds the schedule
+# first.
+SHOW_STATES = ("SHOW", "PAUSED")
 
 # Jeff has not signed off on this (see the PR's Questions section): the
 # coordinator's default, implemented here, is that a show starting stops a
@@ -178,16 +200,20 @@ def load_operators(folder=None):
 # ------------------------------------------------------------- the config --
 def parse_config(doc, where):
     """{"device": name, "files": {"delayed": path, "cancellation": path,
-    "cannot_continue": path}}. Raises ValueError with a sentence."""
+    "cannot_continue": path}}. Raises ValueError with a sentence. device
+    "" means not set yet: ("", files) comes back, and nothing can play."""
     where = _clean(where)
     if not isinstance(doc, dict) or set(doc) != {"device", "files"}:
         raise ValueError(f'{where} has to be {{"device": name, "files": '
                          f'{{...}}}} and nothing else.')
     device = doc.get("device")
-    if not isinstance(device, str) or not device.strip():
+    if not isinstance(device, str):
         raise ValueError(f"{where}: device has to be a named output "
                          f"device. There is no default; announcements "
                          f"never use the system output.")
+    # "" is allowed: not set yet (the installer's first run writes it that
+    # way). Nothing plays until it is set; it is never read as "the system
+    # default". See AnnounceService.device_set.
     files = doc.get("files")
     if not isinstance(files, dict) or set(files) != set(IDS):
         raise ValueError(f"{where}: files has to name exactly "
@@ -259,10 +285,10 @@ def interlock_refusal(state):
     knowing whether a show is running is worse than one that never plays at
     all, so announcements are inert until a scheduler is wired in.
 
-    A show running or paused no longer refuses here (Jeff, 2026-09-26): Play
-    Holds the show first, through hold_requester, so by the time a file
-    would actually play the schedule is on Hold, or the show is paused, one
-    way or another. See AnnounceService.play and _request_hold.
+    A show running or paused does not refuse here: an announcement plays
+    over a running show and Holds nothing (Jeff, 2026-10-26), and between
+    shows Play Holds the schedule first, through hold_requester. See
+    AnnounceService.play and _request_hold.
     """
     if state is None:
         return ("No scheduler is configured, so ltcplay does not know "
@@ -670,6 +696,15 @@ class AnnounceService:
         self.operators = DEFAULT_OPERATORS
         self.last_good_device = None
         self.playing = None
+        # True while the playing announcement Held the schedule (pressed
+        # between shows); False while it plays over a running show.
+        self.held_schedule = False
+        # {"id", "name", "why"} while a press Held the schedule and then
+        # could not play: the rack screen says "Held, announcement failed"
+        # until the schedule leaves Hold (only Resume does that) or an
+        # announcement plays. See _note_held_failed.
+        self.held_failed = None
+        self._held_failed_epoch = None
         self._player = None
         self._stream = None
         self._load()
@@ -722,14 +757,21 @@ class AnnounceService:
         reported available here and then fail at the press (review:
         audit13_probe_weaker_than_open.py)."""
         if not os.path.exists(path):
-            return {"available": False,
-                    "reason": f"{_clean(path)} does not exist.",
+            # The recordings may not be on this PC yet (Jeff, 2026-10-26):
+            # a plain "recording missing", never a crash, and the press is
+            # refused before anything is Held.
+            return {"available": False, "missing": True,
+                    "reason": f"Recording missing: {_clean(path)} is not "
+                              f"on this PC yet. Copy it there, then "
+                              f"restart LTC Player.",
                     "length_s": None}
         try:
             _pcm, _channels, _rate, length_s = _wav_info(path, decode=False)
         except ValueError as e:
-            return {"available": False, "reason": str(e), "length_s": None}
-        return {"available": True, "reason": None, "length_s": length_s}
+            return {"available": False, "missing": False, "reason": str(e),
+                    "length_s": None}
+        return {"available": True, "missing": False, "reason": None,
+                "length_s": length_s}
 
     # -- audio ------------------------------------------------------------
     def _sd(self):
@@ -738,9 +780,22 @@ class AnnounceService:
             self._sd_obj = _import_sounddevice()
         return self._sd_obj
 
+    @property
+    def device_set(self):
+        """False while the config names no output device yet (the first
+        run's "device": ""). Never read as the system default."""
+        return bool((self.device_name or "").strip())
+
+    DEVICE_NOT_SET = ("No output device is set for announcements yet. Put "
+                      "the output's exact name in \"device\" in "
+                      "ltcplay_announce.json; the system default is never "
+                      "used.")
+
     def _probe_device(self):
         if self.error:
             return False, self.error
+        if not self.device_set:
+            return False, self.DEVICE_NOT_SET
         try:
             sd = self._sd()
         except Exception as e:
@@ -750,6 +805,11 @@ class AnnounceService:
             resolve_output_device(sd, self.device_name)
         except ValueError as e:
             return False, str(e)
+        except Exception as e:      # noqa: BLE001  PortAudioError and kin
+            # The device query itself failed (PortAudio): said, never
+            # raised, so status() always answers (final review of #129).
+            return False, (f"The audio system could not list its outputs: "
+                           f"{_clean(str(e))}")
         return True, None
 
     def _decode(self, ann_id):
@@ -838,6 +898,24 @@ class AnnounceService:
         except Exception:
             return False
 
+    def _note_held_failed(self, ann_id, why, epoch=None):
+        """The schedule was Held for this press and then the file could not
+        play. The Hold stays (only Resume ends it); the rack screen says so
+        in a banner rather than leave a held schedule unexplained. Keyed to
+        THIS press's own Hold (its claim epoch): the banner goes once that
+        Hold is gone, and a later, different Hold never brings it back
+        (review of PR #129, second round, 8)."""
+        self.held_failed = {"id": ann_id, "name": LABELS[ann_id],
+                            "why": _clean(why)}
+        self._held_failed_epoch = epoch
+
+    def _held_failed_gone(self, state):
+        """True once the Hold the failed press made is over."""
+        if self.hold_still_claimed is not None and \
+                self._held_failed_epoch is not None:
+            return not self._check_still_held(self._held_failed_epoch)
+        return state != "HOLD"
+
     @staticmethod
     def _operator_problem(who, screen):
         missing = " and ".join(
@@ -855,6 +933,7 @@ class AnnounceService:
         stream, self._stream = self._stream, None
         self._player = None
         self.playing = None
+        self.held_schedule = False
         if stream is not None:
             try:
                 stream.stop()
@@ -968,7 +1047,30 @@ class AnnounceService:
                                         "a show started")
             self._player.start_fade(fade_frames)
 
-    def play(self, ann_id, who, screen):
+    def play(self, ann_id, who, screen, surface=False, automatic=None):
+        """Play one announcement. `surface` True: the press came from a
+        screen or the Stream Deck through the remote routes (remote.py),
+        and `who` names the person signed in there or the surface itself,
+        so it is not looked up on the operator list (the same rule as the
+        scheduler's own surface presses, Jeff, 2026-10-07). Every other
+        rule still applies.
+
+        Between shows the schedule is Held first; while a show is running
+        (SHOW_STATES) nothing is Held, paused or stopped and the file just
+        plays (Jeff, 2026-10-26). Nothing here ever disarms, stops or
+        latches anything.
+
+        `automatic`: a play nobody pressed (the alert hold's Delayed,
+        alerthold.py): a callable returning None while it may still play,
+        or the sentence why not. Such a play never asks for a Hold (so the
+        hold_requester's safety cuts never run: nothing on the rig is
+        changed by a timer), is journaled with actor "system", and asks
+        `automatic()` once before anything is claimed and again in the
+        same locked section that starts the stream, so an Acknowledge or a
+        Resume during the file read always wins."""
+        actor = "system" if automatic is not None else "operator"
+        if automatic is not None:
+            surface = True
         who = _clean((who or "").strip())
         screen = _clean((screen or "").strip())
         if ann_id not in IDS:
@@ -983,18 +1085,19 @@ class AnnounceService:
             if missing:
                 text = (f"A Play press on {label} did not say {missing}. "
                         f"Nothing was changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=missing, text=text,
                           ann_id=ann_id, who=who or None,
                           screen=screen or None, state=state)
                 raise ValueError(text)
-            if who.lower() not in {n.lower() for n in self.operators}:
+            if not surface and \
+                    who.lower() not in {n.lower() for n in self.operators}:
                 reason = (f"{who!r} is not on the operator list "
                          f"({', '.join(self.operators) or 'empty'}).")
                 text = (f"{who} pressed Play on {label} on the {screen}, "
                         f"but is not on the operator list. Nothing was "
                         f"changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=reason, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(reason + " Pick a name from the list. "
@@ -1005,7 +1108,7 @@ class AnnounceService:
                         f"{other} is already playing. Only one "
                         f"announcement plays at a time. Nothing was "
                         f"changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused",
                           reason="another announcement is already playing",
                           text=text, ann_id=ann_id, who=who, screen=screen,
@@ -1015,7 +1118,7 @@ class AnnounceService:
             if not st.get("available"):
                 text = (f"{who} pressed Play on {label}{screen_txt}, but "
                         f"it is not available: {st.get('reason')}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=st.get("reason"),
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
@@ -1024,47 +1127,81 @@ class AnnounceService:
             if refusal:
                 text = (f"{who} pressed Play on {label}{screen_txt}. "
                         f"Refused: {refusal}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
-            # Every announcement Holds the show first, through the same
-            # path the operator's own Hold uses (Jeff, 2026-09-26). Between
-            # shows that delays the next show; during a show it pauses the
-            # show in place. Already on Hold, or already paused, counts as
-            # success. No scheduler wired (hold_requester is None) means
-            # interlock_refusal(None) above already refused, so this is
-            # never reached inert. claim_epoch is captured here and
-            # checked again, read-only, right before the stream opens
-            # (_check_still_held): it is what lets an operator's Resume,
-            # pressed during the file read below, win outright rather than
-            # being silently undone (review round 2, 2026-09-26:
-            # audit15_resume_race.py).
-            claim_epoch = None
-            if self.hold_requester is not None:
-                hold_refusal, claim_epoch = self._request_hold(
-                    who, screen,
-                    detail=f"played the {label} announcement{screen_txt}")
-                if hold_refusal:
-                    text = (f"{who} pressed Play on {label}{screen_txt}. "
-                            f"Refused: {hold_refusal}")
-                    self._emit(actor="operator", action="play",
-                              outcome="refused", reason=hold_refusal,
-                              text=text, ann_id=ann_id, who=who,
-                              screen=screen, state=state)
-                    raise ValueError(text)
-                state = self._current_state()
+            # The output device BEFORE any Hold: a press that cannot play
+            # (no device set, or the device not attached) must not hold
+            # the schedule for nothing.
+            if not self.device_set:
+                text = (f"{who} pressed Play on {label}{screen_txt}. "
+                        f"Refused: {self.DEVICE_NOT_SET}")
+                self._emit(actor=actor, action="play",
+                          outcome="refused", reason="no output device set",
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(text)
             try:
                 sd = self._sd()
                 dev = resolve_output_device(sd, self.device_name)
             except Exception as e:
                 text = (f"{who} pressed Play on {label}{screen_txt}. It "
                         f"failed: {_clean(str(e))}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="failed", reason=_clean(str(e)),
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
                 raise ValueError(_clean(str(e)))
+            # Between shows, every announcement Holds the SCHEDULE first,
+            # through the same path the operator's own Hold uses, so the
+            # next show does not start until the operator is back (Jeff,
+            # 2026-10-26). Already on Hold counts as success. While a show
+            # is running (SHOW_STATES) nothing is Held: the announcement
+            # plays over the show, and the operator ends the show with
+            # Stop if that is what is meant. No scheduler wired
+            # (hold_requester is None) means interlock_refusal(None) above
+            # already refused, so this is never reached inert.
+            # claim_epoch is captured here and checked again, read-only,
+            # right before the stream opens (_check_still_held): it is
+            # what lets an operator's Resume, pressed during the file read
+            # below, win outright rather than being silently undone
+            # (review round 2, 2026-09-26: audit15_resume_race.py).
+            claim_epoch = None
+            over_show = state in SHOW_STATES
+            held = False
+            if automatic is not None:
+                why = self._automatic_refusal(automatic)
+                if why:
+                    text = (f"The {label} announcement was not played: "
+                            f"{why}")
+                    self._emit(actor=actor, action="play",
+                              outcome="refused", reason=why, text=text,
+                              ann_id=ann_id, who=who, screen=screen,
+                              state=state)
+                    raise ValueError(text)
+            elif self.hold_requester is not None and not over_show:
+                hold_refusal, claim_epoch = self._request_hold(
+                    who, screen,
+                    detail=f"played the {label} announcement{screen_txt}")
+                if hold_refusal:
+                    text = (f"{who} pressed Play on {label}{screen_txt}. "
+                            f"Refused: {hold_refusal}")
+                    self._emit(actor=actor, action="play",
+                              outcome="refused", reason=hold_refusal,
+                              text=text, ann_id=ann_id, who=who,
+                              screen=screen, state=state)
+                    raise ValueError(text)
+                # Read again under no assumption: the scheduler's own tick,
+                # inside hold_for_announcement, may have started a show
+                # this very moment (pressed at showtime). It then held
+                # nothing, and the announcement plays over the show; a
+                # running show is never paused by one (Jeff, 2026-10-26).
+                state = self._current_state()
+                if state in SHOW_STATES:
+                    over_show = True
+                else:
+                    held = True
             # Claim the slot now, before the lock is released for the file
             # read below: a second press must be refused as "already
             # playing" even while this one is still decoding, and nothing
@@ -1078,6 +1215,7 @@ class AnnounceService:
             self._claim_gen += 1
             my_gen = self._claim_gen
             self.playing = ann_id
+            self.held_schedule = held
 
         # The file read happens WITHOUT the lock held: self.files never
         # changes after startup, so this is safe to do unlocked, and it is
@@ -1095,9 +1233,12 @@ class AnnounceService:
                 # over.
                 if self._claim_gen == my_gen and self.playing == ann_id:
                     self.playing = None
+                    if held:
+                        self._note_held_failed(ann_id, _clean(str(e)),
+                                               claim_epoch)
                     text = (f"{who} pressed Play on {label}{screen_txt}. "
                             f"It failed: {_clean(str(e))}")
-                    self._emit(actor="operator", action="play",
+                    self._emit(actor=actor, action="play",
                               outcome="failed", reason=_clean(str(e)),
                               text=text, ann_id=ann_id, who=who,
                               screen=screen, state=self._current_state())
@@ -1115,7 +1256,7 @@ class AnnounceService:
                         f"it was stopped and played again before this "
                         f"press finished reading its file. Nothing was "
                         f"changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused",
                           reason="a later claim already started",
                           text=text, ann_id=ann_id, who=who, screen=screen,
@@ -1142,17 +1283,42 @@ class AnnounceService:
                 self.playing = None
                 text = (f"{who} pressed Play on {label}{screen_txt}. "
                         f"Refused: {refusal}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
-            if self.hold_requester is not None \
-                    and not self._check_still_held(claim_epoch):
+            if not held and over_show and state not in SHOW_STATES:
+                # Pressed over a running show, and the show ended while
+                # the file was read: with no show and no Hold, the next
+                # show could start under it. Refused; press again and it
+                # Holds the schedule first.
+                self.playing = None
+                text = (f"{who} pressed Play on {label}{screen_txt}. The "
+                        f"show ended while the announcement was loading, "
+                        f"so it did not play. Press it again.")
+                self._emit(actor=actor, action="play",
+                          outcome="refused",
+                          reason="the show ended while loading",
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(text)
+            if automatic is not None:
+                why = self._automatic_refusal(automatic)
+                if why:
+                    self.playing = None
+                    text = (f"The {label} announcement was not played: "
+                            f"{why}")
+                    self._emit(actor=actor, action="play",
+                              outcome="refused", reason=why, text=text,
+                              ann_id=ann_id, who=who, screen=screen,
+                              state=state)
+                    raise ValueError(text)
+            if held and not self._check_still_held(claim_epoch):
                 self.playing = None
                 text = (f"{who} pressed Play on {label}{screen_txt}. The "
                         f"show was resumed while the announcement was "
                         f"loading, so it did not play.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused",
                           reason="the show was resumed while loading",
                           text=text, ann_id=ann_id, who=who, screen=screen,
@@ -1183,28 +1349,53 @@ class AnnounceService:
                 stream.start()
             except Exception as e:
                 self.playing = None
+                if held:
+                    self._note_held_failed(ann_id, _clean(str(e)),
+                                           claim_epoch)
                 text = (f"{who} pressed Play on {label}{screen_txt}. It "
                         f"failed to open {_clean(self.device_name)}: "
                         f"{_clean(str(e))}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="failed", reason=_clean(str(e)),
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
                 raise ValueError(f"{label} could not be played: "
                                  f"{_clean(str(e))}")
             self.last_good_device = dev["name"]
+            self.held_failed = None
             self._player = player
             self._stream = stream
             length = st.get("length_s") or 0.0
             text = (f"{who} played {label}{screen_txt}. It runs "
-                    f"{length:.0f} s.")
-            self._emit(actor="operator", action="play", outcome="started",
+                    f"{length:.0f} s. " +
+                    ("The schedule is held for it; only Resume carries on."
+                     if held else
+                     "It plays while the schedule is on the alert hold; "
+                     "nothing else was changed." if automatic is not None
+                     else
+                     "It plays over the running show; nothing was paused "
+                     "or stopped." if over_show else
+                     "Nothing was held."))
+            self._emit(actor=actor, action="play", outcome="started",
                       reason=f"show state {state or 'no scheduler'}",
                       text=text, ann_id=ann_id, who=who, screen=screen,
                       state=state)
             return self.status()
 
-    def stop(self, who, screen):
+    @staticmethod
+    def _automatic_refusal(check):
+        """The sentence why an automatic play may not go on, or None. A
+        check that raises is a no."""
+        try:
+            why = check()
+        except Exception as e:                   # noqa: BLE001
+            return f"its check could not be made ({_clean(str(e))})."
+        return _clean(why) if why else None
+
+    def stop(self, who, screen, surface=False):
+        """Stop the playing announcement's audio. Only the audio: the
+        schedule's Hold (if it held one) stays until an operator's Resume,
+        and nothing is disarmed, stopped or latched. `surface`: as play()."""
         with self.lock:
             self._settle()
             who = _clean((who or "").strip())
@@ -1214,7 +1405,8 @@ class AnnounceService:
             if missing:
                 raise ValueError(f"The Stop press does not say {missing}. "
                                  f"Nothing was changed.")
-            if who.lower() not in {n.lower() for n in self.operators}:
+            if not surface and \
+                    who.lower() not in {n.lower() for n in self.operators}:
                 raise ValueError(
                     f"{who!r} is not on the operator list "
                     f"({', '.join(self.operators) or 'empty'}). Pick a "
@@ -1243,6 +1435,9 @@ class AnnounceService:
         with self.lock:
             self._settle()
             state = self._current_state()
+            if self.held_failed is not None and \
+                    self._held_failed_gone(state):
+                self.held_failed = None     # its own Hold is over
             device_ok, device_reason = self._probe_device()
             items = []
             for aid in IDS:
@@ -1251,20 +1446,26 @@ class AnnounceService:
                          "length_s": None})
                 items.append({"id": aid, "name": LABELS[aid],
                              "available": bool(st.get("available")),
+                             "missing": bool(st.get("missing")),
                              "reason": st.get("reason"),
                              "length_s": st.get("length_s")})
             playing = None
             if self.playing is not None and self._player is not None:
                 playing = {"id": self.playing, "name": LABELS[self.playing],
+                          "held_schedule": bool(self.held_schedule),
                           "elapsed_s": self._player.elapsed_s,
                           "length_s": self.status_by_id[self.playing]
                                             .get("length_s")}
             return {"ok": not self.error, "error": self.error or None,
-                    "device": self.device_name, "device_available": device_ok,
+                    "device": self.device_name or None,
+                    "device_set": self.device_set,
+                    "device_available": device_ok,
                     "device_reason": device_reason,
                     "last_good_device": self.last_good_device,
                     "announcements": items, "playing": playing,
                     "show_state": state, "blocked": interlock_refusal(state),
+                    "over_show": state in SHOW_STATES,
+                    "held_failed": self.held_failed,
                     "journal": list(self.journal)[-40:][::-1]}
 
     def close(self):

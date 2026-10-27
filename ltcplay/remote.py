@@ -82,6 +82,7 @@ from anywhere, loopback included: a proxy or tunnel on the show machine
 would make the whole world look like the machine itself. NEVER put remote
 access software, a tunnel or a port forward on the show machine.
 """
+import contextlib
 import hmac
 import ipaddress
 import json
@@ -207,6 +208,19 @@ SCRUB_FLAMES_ENABLES = (
 # screen-arming (2026-10-22): the switch for arming from a screen, set on
 # the show machine itself, never from the network.
 LOCAL_ONLY = frozenset(("network", "screen-arming"))
+# Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
+# three buttons and its Stop, and the Stream Deck's page 2 keys, which post
+# here from this machine. One press plays (no double tap). From the show
+# machine only: a public announcement is not an iPad press. Between shows
+# a Play Holds the schedule first; during a show it plays over the show and
+# Holds, pauses and stops nothing. Stop ends the announcement's audio only.
+ANNOUNCE_ROUTES = ("announce-play", "announce-stop")
+# How long the rack screen's announcement block is reused before the
+# service is asked again (it asks the audio system for the device): the
+# page polls four times a second. A press always asks at once.
+ANNOUNCE_VIEW_S = 1.0
+# A snapshot older than this is not shown as fact (announce_view).
+ANNOUNCE_STALE_S = 4.0
 # What the Stream Deck reports back about a screen hold it would not take
 # (deck-input's `refused`, streamdeck.ScreenKeys): its code, and what the
 # page says. The deck's own rules decide; the engine only passes it on.
@@ -1213,6 +1227,14 @@ class Remote:
         # The rack screen's Weather block (weather.py, WEATHER.md), set by
         # web.serve. Display only; None: the block says it is not running.
         self.weather = None
+        # announce.AnnounceService, set by web.serve when announcements are
+        # configured (the `announce` property); None: the rack screen's
+        # block says they are not. Its view is refreshed on a thread of its
+        # own (_ann_loop), never on a status or deck-input request: those
+        # never take the service's lock or ask the audio system.
+        self._announce = None
+        self._ann_cache = None       # (clock(), view)
+        self._ann_thread = None
         # The Windows supervisor's word on the disk (housekeeping.py writes
         # disk-low.txt in the settings folder while it is low or critical,
         # and removes it when it is fine again). Read at most every 30 s.
@@ -1229,6 +1251,24 @@ class Remote:
         self.alert_pixels = None     # (start0, count, order) or None
         if schedule is not None and hasattr(schedule, "alert_sink"):
             schedule.alert_sink = self.alerts.raise_
+        # The alert hold (alerthold.py, Jeff 2026-10-26): at showtime with
+        # an alert open the schedule Holds, and a Delayed announcement
+        # follows unless acknowledged. Ticked with the booth re-sound
+        # after every scheduler tick (_alert_tick), on its thread.
+        from .alerthold import AlertHold
+        self._alert_wake = threading.Event()
+        self._booth_wake = threading.Event()
+        self._alert_stop = threading.Event()
+        self._alert_lock = threading.Lock()
+        self._alert_thread = None
+        self._booth_thread = None
+        self.alert_hold = AlertHold(self.alerts, schedule,
+                                    announce=lambda: self._announce,
+                                    clock=clock)
+        if schedule is not None and hasattr(schedule, "showtime_gate"):
+            schedule.showtime_gate = self.alert_hold.gate
+            schedule.on_alert_hold = self.alert_hold.started
+            schedule.tick_hooks.append(self._alert_tick)
         # Users and the audit log (users.py, audit.py, auditsend.py; Jeff,
         # 2026-10-20), set by web.serve. None: no sign-in, nothing logged,
         # every press as before.
@@ -1407,6 +1447,8 @@ class Remote:
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
                                          self.users),) + ({},)
+        if name in ANNOUNCE_ROUTES:
+            return (*self.announce_post(name, body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -1718,6 +1760,276 @@ class Remote:
                       f"{who} switched arming from a screen "
                       f"{'ON' if on else 'OFF'} on the {screen}.")
         return 200, {"ok": True, "enabled": on, "text": text}
+
+    def _alert_tick(self):
+        """After each scheduler tick, on the scheduler's thread: wakes the
+        alert worker and returns at once. The work itself (the booth
+        re-sound's device lookup and file read, the Delayed's file read
+        and stream open) is the worker's, so a slow disk or device never
+        stalls a scheduler tick (review of PR #133, 4)."""
+        if self._alert_stop.is_set():
+            return
+        self._alert_wake.set()
+        self._booth_wake.set()
+        with self._alert_lock:
+            self._start_alert_workers()
+
+    def _start_alert_workers(self):
+        """Called with _alert_lock held: one hold worker and one booth
+        worker, ever, whichever thread ticks first (a second hold worker
+        could play the Delayed twice)."""
+        if self._alert_thread is None:
+            # Two workers: the booth re-sound never waits behind the
+            # Delayed's file read, nor the other way round (review of PR
+            # #133).
+            self._alert_thread = threading.Thread(
+                target=self._worker, daemon=True,
+                args=(self._alert_wake, self._hold_work),
+                name="ltcplay-alert-hold")
+            self._booth_thread = threading.Thread(
+                target=self._worker, daemon=True,
+                args=(self._booth_wake, self._booth_work),
+                name="ltcplay-alert-booth")
+            self._alert_thread.start()
+            self._booth_thread.start()
+
+    def _worker(self, wake, work):
+        while True:
+            wake.wait()
+            wake.clear()
+            if self._alert_stop.is_set():
+                return
+            work()
+
+    def close_alerts(self):
+        """Stop the alert workers (web.serve's server_close)."""
+        self._alert_stop.set()
+        self._alert_wake.set()
+        self._booth_wake.set()
+
+    def _alert_work(self):
+        """Both at once, on the caller's thread (tests)."""
+        self._booth_work()
+        self._hold_work()
+
+    def _booth_work(self):
+        """The booth note again for alerts still open. Never raises."""
+        try:
+            self.alerts.tick()
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def _hold_work(self):
+        """The alert hold's countdown and its Delayed. Never raises."""
+        try:
+            self.alert_hold.tick()
+        except Exception:                        # noqa: BLE001
+            pass
+
+    # -- announcements (announce.py) ----------------------------------------
+    ANNOUNCE_OFF = ("Announcements are not running in this engine. LTC "
+                    "Player starts them with ltcplay_announce.json in the "
+                    "settings folder; restart LTC Player once it is there.")
+
+    @property
+    def announce(self):
+        return self._announce
+
+    @announce.setter
+    def announce(self, ann):
+        """Attach the announcements service: its view is read once now (at
+        startup, not on a request) and then every ANNOUNCE_VIEW_S on a
+        thread of its own."""
+        self._announce = ann
+        self._ann_cache = None
+        if ann is None:
+            return
+        self._ann_refresh()
+        if self._ann_thread is None:
+            self._ann_thread = threading.Thread(
+                target=self._ann_loop, daemon=True,
+                name="ltcplay-announce-view")
+            self._ann_thread.start()
+
+    def _ann_loop(self):
+        while True:
+            time.sleep(ANNOUNCE_VIEW_S)
+            if self._announce is not None:
+                self._ann_refresh()
+
+    @staticmethod
+    def _ann_view_from(st):
+        return {"configured": True, "ok": bool(st.get("ok")),
+                "error": st.get("error"), "device": st.get("device"),
+                "device_set": bool(st.get("device_set")),
+                "device_available": bool(st.get("device_available")),
+                "device_reason": st.get("device_reason"),
+                "blocked": st.get("blocked"),
+                "over_show": bool(st.get("over_show")),
+                "held_failed": st.get("held_failed"),
+                "items": [{k: i.get(k) for k in
+                           ("id", "name", "available", "missing", "reason",
+                            "length_s")}
+                          for i in st.get("announcements") or []],
+                "playing": st.get("playing")}
+
+    def _ann_refresh(self, st=None):
+        """The view, from the service's own status (which takes its lock
+        and asks the audio system for the device): only ever called off
+        the status and deck-input paths (the view thread, attaching, and a
+        press's own route). Never raises."""
+        ann = self._announce
+        if ann is None:
+            return
+        try:
+            v = self._ann_view_from(st if st is not None else ann.status())
+        except Exception as e:                   # noqa: BLE001
+            # Not a fact about what plays: stale, so nothing reads it as
+            # "nothing is playing" (final review of #129).
+            v = {"configured": True, "ok": False, "stale": True,
+                 "error": f"Announcement status unavailable: it could not "
+                          f"be read ({type(e).__name__}: {e}).",
+                 "items": [], "playing": None}
+        self._ann_cache = (self.clock(), v)
+
+    def announce_view(self):
+        """The rack screen's and the Stream Deck's view of the three
+        announcements: each one ready, or "recording missing", or why not;
+        the output device; what is playing and whether it Held the
+        schedule; a Hold whose announcement then failed. The last snapshot
+        the view thread made: never the service's lock, never the audio
+        system, on this path. Display only; never raises."""
+        if self._announce is None:
+            return {"configured": False, "why": self.ANNOUNCE_OFF}
+        c = self._ann_cache
+        if c is None:
+            return {"configured": True, "ok": False, "stale": True,
+                    "error": "Announcement status unavailable: still being "
+                             "read.", "items": [], "playing": None}
+        age = max(0.0, self.clock() - c[0])
+        v = dict(c[1], age_s=round(age, 1))
+        if age > ANNOUNCE_STALE_S:
+            # The view thread has not refreshed it (a hung audio query, a
+            # stuck lock): never a stale PLAYING or ready (review of PR
+            # #129, second round, 7). Stop stays pressable.
+            v.update(ok=False, stale=True, playing=None, held_failed=None,
+                     error=f"Announcement status unavailable: not read for "
+                           f"{age:.0f} s.")
+        return v
+
+    def announce_hold(self, sched):
+        """The hold_requester web.serve gives the announcements: the
+        scheduler's hold_for_announcement (which, under its own lock and
+        after its own tick, holds nothing while a show is running), then,
+        only when the schedule really is on Hold, what the operator's own
+        Hold does for safety at once: live flame programming and fire
+        while scrubbing cut, every laser disarmed (press(); review of PR
+        #129, second round, 3). A running show is never touched."""
+        def hold(who, screen, detail=None):
+            refusal, epoch = sched.hold_for_announcement(who, screen,
+                                                         detail=detail)
+            if refusal:
+                return refusal, epoch
+            # The state checked and the cuts made under the scheduler's
+            # own lock (re-entrant; none of them waits): a Start now
+            # landing between the Hold and here leaves a running show
+            # untouched (delta review of #129, 3).
+            locked = getattr(sched, "_locked", None)
+            with (locked() if locked is not None
+                  else contextlib.nullcontext()):
+                m = getattr(sched, "machine", None)
+                if m is not None and m.state == "HOLD":
+                    why = (f"{who or 'someone'} held the schedule for an "
+                           f"announcement on the {screen}")
+                    self.live_flame_cut(why, who, screen)
+                    self.scrub_flames_cut(why, who, screen)
+                    self._lasers_disarm_now(who, screen, "announcement")
+            return refusal, epoch
+        return hold
+
+    def _ann_press_begin(self, name):
+        """The laser arm told a Hold-like press is under way (a Play), or
+        None. Never raises."""
+        la = getattr(self.morning, "laser_arm", None) \
+            if name == "announce-play" else None
+        if la is None:
+            return None
+        try:
+            la.press_begin()
+            return la
+        except Exception:                        # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _ann_press_end(la):
+        if la is None:
+            return
+        try:
+            la.press_end()
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def announce_post(self, name, body, ctx):
+        """POST announce-play {"id"} and announce-stop: one press each, from
+        the show machine (the rack screen, or the Stream Deck process, which
+        names itself and its chosen operator). Who is the signed-in person,
+        the deck's operator, or the surface itself. Every refusal is a
+        sentence; nothing here ever disarms, stops or latches anything, and
+        Stop ends only the announcement's audio (the schedule's Hold, if it
+        held one, stays until Resume)."""
+        if not ctx.local:
+            return 403, {"error": "Announcements are played from the show "
+                                  "machine itself (the rack screen or the "
+                                  "Stream Deck), not from here. Nothing was "
+                                  "changed."}
+        ann = self.announce
+        if ann is None:
+            return 409, {"error": self.ANNOUNCE_OFF + " Nothing was "
+                                                      "changed."}
+        who, screen, surface = self._actor(ctx, body)
+        if not who:
+            who, surface = screen, True
+        if name == "announce-play":
+            # A Play acts on what the page shows (which recordings are
+            # there, what is playing): refused on a stale page, like Start
+            # now. Stop only takes something away and is never refused.
+            why = self._stale(body)
+            if why:
+                return 409, {"error": why, "stale": True}
+        # A Play may put the schedule on Hold, and a Hold disarms every
+        # laser: the laser arm is told a Hold-like press is under way before
+        # any work and until its answer is made, exactly as for the
+        # operator's own Hold (press(); review of PR #87, P2-2), so an arm
+        # confirmed in that window is refused.
+        arm = self._ann_press_begin(name)
+        try:
+            if name == "announce-play":
+                st = ann.play(str(body.get("id") or ""), who, screen,
+                              surface=surface)
+                p = st.get("playing") or {}
+                text = (f"{p.get('name') or 'The announcement'} is playing. "
+                        + ("The schedule is held for it; press Resume when "
+                           "you are ready to carry on."
+                           if p.get("held_schedule") else
+                           "It plays over the show; nothing was paused or "
+                           "stopped."))
+            else:
+                st = ann.stop(who, screen, surface=surface)
+                text = ("The announcement was stopped. Nothing else was "
+                        "changed.")
+        except ValueError as e:
+            self._ann_refresh()
+            return 409, {"error": str(e), "announce": self.announce_view()}
+        except Exception as e:                   # noqa: BLE001
+            self._ann_refresh()
+            return 500, {"error": f"The announcement press failed "
+                                  f"({type(e).__name__}: {e}). Nothing "
+                                  f"else was changed."}
+        finally:
+            self._ann_press_end(arm)
+        self._ann_refresh(st if isinstance(st, dict) else None)
+        return 200, {"ok": True, "text": text,
+                     "announce": self.announce_view()}
 
     # -- presses -----------------------------------------------------------
     def _stale(self, body):
@@ -2355,11 +2667,42 @@ class Remote:
         # open, and any key press acknowledges (alerts.py).
         out = {"enabled": enabled, "holds": holds if enabled else [],
                "disarms": disarms, "alerts": self.alerts.view()}
+        # The announcements, for the deck's page 2 keys (display only).
+        av = self.announce_view()
+        out["announce"] = {
+            "configured": bool(av.get("configured")),
+            "stale": bool(av.get("stale")),
+            "ok": av.get("ok") is not False,
+            "device_ok": bool(av.get("device_available")),
+            "ready": {i["id"]: bool(i.get("available"))
+                      for i in av.get("items") or []},
+            "missing": {i["id"]: bool(i.get("missing"))
+                        for i in av.get("items") or []},
+            "playing": (av.get("playing") or {}).get("id")}
         # Who is signed in on this machine (users.py): the deck shows it
         # and acts as them.
         uv = self.user_view_for_deck()
         if uv is not None:
             out["user"] = uv
+        # Whether live flame programming or fire while scrubbing is on: the
+        # deck counts either as running, so key 0 is Stop (STOP ALL), never
+        # FIRE (review of #130, low items, 3).
+        # Not known (a view that raises, answers with an error, or does not
+        # say "on"): None, which the deck reads as on, so Stop wins (review
+        # of #132, 4). On wins over not known.
+        live = False
+        for view in (self.live_flame_view, self.scrub_flames_view):
+            try:
+                v = view()
+            except Exception:                    # noqa: BLE001
+                v = None
+            if isinstance(v, dict) and v.get("on") is True:
+                live = True
+            elif not isinstance(v, dict) or "error" in v or \
+                    not isinstance(v.get("on"), bool):
+                if live is False:
+                    live = None
+        out["flames_live"] = live
         # The Morning and Shutdown page (morning.py): whether it is open
         # (the deck re-maps itself while it is), the groups the purge
         # selection needs armed, and the locks. The deck arms a purge
@@ -3019,9 +3362,16 @@ class Remote:
         if fn is None:
             return
         label = who or "An unnamed operator"
+        if what == "announcement":
+            # Said as the announcement it was, not as a Hold press (delta
+            # review of #129, 8).
+            text = (f"An announcement played by {label} on the {screen} "
+                    f"held the schedule")
+        else:
+            text = (f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
+                    f"{label} on the {screen}")
         try:
-            fn(f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
-               f"{label} on the {screen}", who, screen)
+            fn(text, who, screen)
         except Exception:                        # noqa: BLE001
             pass
 
@@ -3099,7 +3449,7 @@ class Remote:
             return "the night is closing"
         return ""
 
-    def _lasers_dark_now(self):
+    def _lasers_dark_now(self, what="Abort pressed on a screen"):
         """(ok or None, sentence): the conductor's laser blank, on this
         thread, at once. None when no conductor is attached."""
         cond = getattr(self.schedule, "conductor", None)
@@ -3107,13 +3457,152 @@ class Remote:
         if fn is None:
             return None, ""
         try:
-            r = fn("Abort pressed on a screen")
+            r = fn(what)
             ok = bool(getattr(r, "ok", False))
         except Exception as e:
             return False, (f"The laser blank did NOT go out at the press "
                            f"({type(e).__name__}: {e}).")
         return ok, ("Lasers blanked at the press." if ok else
                     "The laser blank did NOT go out at the press.")
+
+    def halt(self, who, screen):
+        """The Stream Deck's Stop, a complete halt of everything (Jeff,
+        2026-10-26), during a scheduled show too: everything a screen's
+        Abort takes away, in the Abort's order, WITHOUT the Abort latch.
+        Each step runs whatever the one before it did, and none raises:
+
+          1. every flame group disarmed through the flame link (the
+             flame half of an Abort, _disarm_now), before anything else;
+          2. live flame programming and fire while scrubbing cut, the
+             link's slots shut at once and the rest of ending them on
+             threads of their own, exactly as an Abort does;
+          3. every laser disarmed (the laser arm, told a press is under
+             way first, as for an Abort) and blanked at once
+             (_lasers_dark_now, its answer reported as "lasers_blank");
+          4. every screen arm hold let go, the purge selection cleared and
+             the laser tests ended (what an Abort clears);
+          5. a scheduled show that is live ended: the scheduler's Stop
+             (STOP_SHOW), faded to dark like an Abort, nothing latched.
+             A show that ended by itself meanwhile is not a failure.
+
+        {"flames", "lasers", "lasers_blank", "show", "show_ended",
+        "failed"}: each step's
+        {"ok"/"disarmed", "text"} (None when there is nothing of it in
+        this engine) and the names of the steps that failed. The caller
+        (web.py /api/stop) stops playback after it."""
+        label = who or "An unnamed operator"
+        out = {"flames": None, "lasers": None, "lasers_blank": None,
+               "show": None, "show_ended": False, "failed": []}
+        m = self.morning
+        arm = getattr(m, "laser_arm", None)
+        if arm is not None:
+            try:
+                arm.press_begin()
+            except Exception:                    # noqa: BLE001
+                arm = None
+        try:
+            # 1. The flames first, every time (the Abort's rule).
+            try:
+                f_ok, f_text = self._disarm_now(who, screen, "Stop")
+            except Exception as e:               # noqa: BLE001
+                f_ok, f_text = False, f"{type(e).__name__}: {e}"
+            if f_ok is not None:
+                out["flames"] = {"disarmed": bool(f_ok), "text": f_text}
+                if not f_ok:
+                    out["failed"].append("flames")
+            # 2. Live flame programming and fire while scrubbing, cut as an
+            # Abort cuts them (review of #130, second pass, 3).
+            why = f"{label} held Stop on the {screen}"
+            for name in ("live_flame_cut", "scrub_flames_cut"):
+                fn = getattr(self, name, None)
+                try:
+                    if fn is not None:
+                        fn(why, who, screen)
+                except Exception:                # noqa: BLE001
+                    pass
+            # 3. Every laser: disarmed on the arm, and blanked at once.
+            fn = getattr(m, "lasers_disarm_now", None)
+            if fn is not None:
+                try:
+                    r = fn(f"Stop held by {label} on the {screen}", who,
+                           screen)
+                    if isinstance(r, tuple) and len(r) == 2:
+                        l_ok, l_text = r
+                    else:
+                        l_ok = getattr(r, "ok", True)
+                        l_text = getattr(r, "sentence", "")
+                    l_ok = bool(l_ok)
+                    l_text = str(l_text or "Every laser: a disarm was sent.")
+                except Exception as e:           # noqa: BLE001
+                    l_ok, l_text = False, (f"The laser disarm did NOT go "
+                                           f"out ({type(e).__name__}: {e}).")
+                out["lasers"] = {"disarmed": l_ok, "text": l_text}
+                if not l_ok:
+                    out["failed"].append("lasers")
+            try:
+                b_ok, b_text = self._lasers_dark_now(
+                    f"Stop held on the {screen}")
+            except Exception as e:               # noqa: BLE001
+                b_ok, b_text = False, (f"The laser blank did NOT go out "
+                                       f"({type(e).__name__}: {e}).")
+            if b_ok is not None:
+                out["lasers_blank"] = {"ok": bool(b_ok), "text": b_text}
+                if not b_ok:
+                    out["failed"].append("laser blank")
+            # 4. What an Abort clears: screen holds, the purge, laser tests.
+            try:
+                self.cancel_holds(f"{who or 'someone'} held Stop on the "
+                                  f"{screen}")
+            except Exception:                    # noqa: BLE001
+                pass
+            for obj, meth, arg in (
+                    (getattr(m, "purge", None), "clear",
+                     f"Stop held by {who or screen or 'someone'}"),
+                    (getattr(m, "lasers", None), "all_off", "Stop held")):
+                fn = getattr(obj, meth, None)
+                try:
+                    if fn is not None:
+                        fn(arg)
+                except Exception:                # noqa: BLE001
+                    pass
+            # 5. A live scheduled show ends, with no latch.
+            svc = self.schedule
+            state = getattr(getattr(svc, "machine", None), "state", None)
+            if svc is not None and state in ("SHOW", "PAUSED"):
+                try:
+                    r = svc.operator_press("stop-show", who, screen,
+                                           confirmed=True)
+                    s_ok, s_text = bool(r.get("ok")), str(r.get("text")
+                                                          or "")
+                except Exception as e:           # noqa: BLE001
+                    s_ok, s_text = False, f"{type(e).__name__}: {e}"
+                now_state = getattr(getattr(svc, "machine", None), "state",
+                                    None)
+                if not s_ok and now_state not in ("SHOW", "PAUSED"):
+                    # The show ended by itself while Stop was on its way
+                    # (third review of #130, 8): nothing left to stop.
+                    s_ok, s_text = True, ("The show had already ended, so "
+                                          "there was no show to stop.")
+                else:
+                    out["show_ended"] = s_ok
+                out["show"] = {"ok": s_ok, "text": s_text}
+                if not s_ok:
+                    out["failed"].append("show")
+        finally:
+            if arm is not None:
+                try:
+                    arm.press_end()
+                except Exception:                # noqa: BLE001
+                    pass
+        parts = [x["text"] for x in (out["flames"], out["lasers"],
+                                     out["lasers_blank"]) if x is not None]
+        bad = ", ".join(out["failed"])
+        self._journal(who, screen, "stop", "fault" if bad else "done",
+                      f"{label} held Stop on the {screen}: a complete halt. "
+                      + " ".join(parts)
+                      + (f" These did NOT work: {bad}." if bad else ""),
+                      fault=bool(bad))
+        return out
 
     def abort(self, who, screen, flames, lasers=(None, ""), pressed=None):
         """A screen's Abort (the deck has no Abort key since 2026-10-26).
@@ -4539,6 +5028,14 @@ class Remote:
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""
         out["booth"] = {"configured": bool(booth), "device": booth}
+        try:
+            out["alert_hold"] = self.alert_hold.view()
+        except Exception as e:                   # noqa: BLE001
+            out["alert_hold"] = {"held": False,
+                                 "error": f"{type(e).__name__}: {e}"}
+        if ctx.local:
+            # Operator announcements: the rack screen's block (announce.py).
+            out["announce"] = self.announce_view()
         # The lock banner and the purge, on every screen (morning.py).
         m = self.morning
         if m is not None:

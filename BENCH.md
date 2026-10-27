@@ -159,12 +159,12 @@ needs its stems under `clock.audio.cues`.
   is plugged in. Until then the bench can test the
   scheduled preshow, show start, show end and closing; Hold, Resume and
   Abort are proven by the selftest with fake devices.
-- **Announcements hold the show for real now.** If ltcplay is also started
-  with announcements, playing one during a show puts the show on Hold
-  (lasers dark, music frozen, video and pixels black), as Jeff decided. With
-  no Resume button on this branch, nothing here can bring the show back
-  from that Hold, so on this branch do not play an announcement during a
-  show.
+- **Announcements** (Jeff, 2026-10-26): the rack screen's three buttons and
+  the Stream Deck's page 2. Between shows a press holds the schedule first
+  (Resume carries on); during a show it plays over the show and pauses,
+  holds and stops nothing. The show PC starts them by itself from
+  ltcplay_announce.json, which the first run writes with no output device:
+  set the exact name, copy the recordings, restart. OPERATOR.md says how.
 - **Stream Deck**: not on this branch. It plugs in later through the
   conductor this branch builds.
 - **Start now**: when PR #30's next fix lands, Start now runs an extra show

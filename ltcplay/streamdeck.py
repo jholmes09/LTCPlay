@@ -7,7 +7,35 @@ THE KEYS (Jeff, 2026-10-26; a Stream Deck Mini, 3 by 2)
 =======================================================
 
   key 0  START / STOP   key 1  Floor G      key 2  Cat-Walk G
-  key 3  Blue Flames    key 4  Fireball     key 5  spare, blank
+  key 3  Blue Flames    key 4  Fireball     key 5  ANNOUNCE (page 2)
+
+PAGE 2, ANNOUNCEMENTS (Jeff, 2026-10-26; announce.py), one press of key 5
+(only while the engine says announcements are running; otherwise key 5 is
+blank and does nothing):
+
+  key 0  START / STOP   key 1  DELAYED      key 2  CANCEL
+  key 3  CANNOT CONT.   key 4  STOP ANNC.   key 5  BACK
+
+One press plays (no double tap), through the engine's
+/api/remote/announce-play, on this process's press thread. Between shows
+the engine Holds the schedule first; during a show the announcement plays
+over it and pauses nothing. STOP ANNC. ends only the announcement's sound.
+A recording not on the PC yet reads NO FILE and its press is refused by
+the engine. Nothing on page 2 arms, disarms, stops or latches anything.
+
+KEYS RAN OUT, said honestly: the Mini has 6 keys and keys 1 to 4 are the
+four arm keys, so page 2 has to cover them. The arm keys are hidden ONLY
+while page 2 is up, and page 2 gives way to page 1 by itself: BACK, no key
+pressed for PAGE2_IDLE_S, an Abort latch, an open alert, the Morning page
+opening, a spoof alarm, or a deck reconnect. It cannot even be opened
+while any of those is true or any other key is down or an arm hold is
+filling. After page 2 gives way BY ITSELF (idle, an alert, the Morning
+page) the group keys take no press for PAGE1_GUARD_S and until page 1 has
+been drawn, so a press meant for an announcement never lands on an arm
+key (review of PR #129). Key 0 is the same START / STOP on both pages, so Stop (every
+group disarmed, then the run stopped) is never more than one hold away,
+and an Abort on any screen still disarms everything. A key that is down
+when the page changes does nothing until it is let go.
 
 Keys 1 to 4 arm and disarm the first four flame groups in the deck's key
 order (ltcplay_deck.json, deck_layout: by default flamesafe's own order,
@@ -28,13 +56,16 @@ REAL, unconditionally, the moment this runs against the real hardware:
     dwell, chatter and edge-quiet rules are untouched; this module only
     says what is WANTED, exactly like the test driver.
   - STOP (a STOP_HOLD_S hold, 0.5 s, the old Abort key's) while a run is
-    going sends every group's wanted state to false on that SAME link, at
-    once, before anything else (_disarm_all_groups: the arm link half the
-    deck's Abort key had), then posts the Rack screen's Stop (POST
-    /api/stop), which in the engine ends live flame programming, sends
-    the flame link's disarm_all (cues zeroed, a zero frame, the keyed
-    disarm and its repeats: the flame half of a screen's Abort) and stops
-    playback. Nothing sets the Abort latch.
+    going or a scheduled show is live sends every group's wanted state to
+    false on that SAME link, at once, before anything else
+    (_disarm_all_groups: the arm link half the deck's Abort key had), then
+    posts the Rack screen's Stop route (POST /api/stop) with "halt": a
+    complete halt (Jeff, 2026-10-26). In the engine it ends live flame
+    programming, sends the flame link's disarm_all (cues zeroed, a zero
+    frame, the keyed disarm and its repeats: the flame half of a screen's
+    Abort), disarms every laser, ends a live scheduled show (the
+    scheduler's Stop, faded like an Abort) and stops playback. Nothing
+    sets the Abort latch.
   - Disarm (pressing an armed or held group key) is INSTANT: this module
     never adds a hold-down or confirm step to a disarm press (Jeff,
     2026-10-01), and never waits on anything else either -- not the
@@ -56,16 +87,24 @@ REAL, unconditionally, the moment this runs against the real hardware:
 THE START/STOP KEY (Jeff, 2026-10-26): key 0 is Start Now while nothing is
 running (unchanged: it journals a refusal, there is no start entry point)
 and STOP RUN while Run has been pressed and playback is going and the
-scheduler is known to have no show live. Stop is a HOLD of STOP_HOLD_S,
+scheduler is known to have no show live; during a scheduled show it says
+what the show is doing (NOW PLAYING, PAUSED, AUDIO LOST) and is Stop too.
+Stop is a HOLD of STOP_HOLD_S,
 never a tap (the Rack screen asks for a confirm); letting go early sends
 nothing, and the key ring fills while it is held. It disarms every flame
-group on the arm link (above), then posts /api/stop (live flame
-programming ends, the flame link's disarm_all goes out, playback stops,
-the outputs go dark; the lasers get exactly what the Rack screen's Stop
-gives them, the same route), never behind the operator gate. It is reachable while an
-Abort is latched, as on the Rack screen, and never touches the latch.
-During a scheduled show the key keeps NOW PLAYING, PAUSED or AUDIO LOST
-and a press sends nothing. See Controller.start_key_mode.
+group on the arm link (above), then posts /api/stop with "halt" (live
+flame programming ends, the flame link's disarm_all goes out, every laser
+is disarmed, a live scheduled show ends with no latch, playback stops,
+the outputs go dark), never behind the operator gate. Stop is a complete
+halt of everything, during a scheduled show too, and the show ends (Jeff,
+2026-10-26); to disarm one group mid-show, tap its key, or use the Rack
+screen. While the scheduler cannot be read (the engine down) the key reads
+STOP ALL and a hold is Stop too; a hold that completes always disarms the
+arm link first, then asks for the halt (review of #130, 1). An open alert
+is acknowledged by the press, which still starts the Stop hold while a
+show or run is going, the state is unknown, or a group is armed (review of
+#130, 9). It is reachable while an Abort is latched, as on the Rack
+screen, and never touches the latch. See Controller.start_key_mode.
 
 NOT REAL unless this module is given a `conductor` (EngineConductor, or
 anything shaped like it) by whoever starts it:
@@ -270,6 +309,19 @@ NO_FLAME_LINK = ("NO", "FLAME", "LINK")
 STOP_HOLD_S = 0.5           # Stop's hold: the deck's old Abort key's, from
                             # the demo (Jeff, 2026-10-26). Disarm itself (a
                             # group key) has NO hold; see module doc.
+# The Start/Stop key's modes in which a hold is Stop: a run going, a
+# scheduled show live (Jeff, 2026-10-26: Stop is a complete halt of
+# everything, and the show ends), and the engine or the scheduler not known
+# (review of #130, 1: Stop must work when the engine cannot be reached; it
+# always disarms the arm link first).
+STOP_MODES = ("stop", "show", "unknown")
+# How long after this deck disarmed a group flamesafe's status may still
+# report it armed without that counting as "a group armed" for Stop (review
+# of #132, 3: a purge machine deselected while FIRE is held).
+DISARM_SETTLE_S = 1.5
+# How long the Start/Stop key has to be down in a Stop hold before its face
+# says HOLD TO STOP over anything else (an open alert's ACK, a fault).
+STOP_FACE_AFTER_S = 0.15
 ARM_SEND_HZ = 20.0          # >= the arm link's 10 Hz floor (CONTRACT.md)
 STATUS_STALE_S = 1.0        # CONTRACT.md: "ltcplay shows red for the safety
                             # program" past this
@@ -322,12 +374,38 @@ SPOOF_GRACE_S = 0.5
 RECONNECT_GRACE_S = 1.0
 
 # The keys (Jeff, 2026-10-26): key 0 is Start/Stop; keys 1 to 4 arm and
-# disarm the first four flame groups in the deck's key order; key 5 is
-# spare and stays blank. The deck has no Hold and no Abort key any more:
+# disarm the first four flame groups in the deck's key order; key 5 opens
+# the announcements page while the engine runs announcements, and is blank
+# and does nothing otherwise. The deck has no Hold and no Abort key any more:
 # Hold and Abort are the Rack screen's (and the hardware e-stop's).
 TOP_START = 0
 GROUP_KEYS = (1, 2, 3, 4)
 SPARE_KEY = 5
+# Page 2, the announcements (module docstring). Key 5 opens it and is BACK
+# on it; keys 1 to 3 play, key 4 stops the sound.
+ANNOUNCE_KEY = SPARE_KEY
+PAGE2_PLAY = {1: "delayed", 2: "cancellation", 3: "cannot_continue"}
+PAGE2_FACE = {"delayed": ["DELAYED"], "cancellation": ["CANCEL"],
+              "cannot_continue": ["CANNOT", "CONTINUE"]}
+PAGE2_STOP = 4
+PAGE2_BACK = SPARE_KEY
+PAGE2_IDLE_S = 10.0     # no key pressed this long on page 2: back to page 1
+# ... but only on a fresh answer that nothing plays. With no fresh answer
+# at all for this long, page 2 gives way anyway: the arm keys come back.
+PAGE2_STALE_CLOSE_S = 60.0
+# After page 2 gives way BY ITSELF (idle, an alert, the Morning page), a
+# press meant for an announcement key must not ARM the group now under the
+# finger (review of PR #129): the group keys start no arm for
+# PAGE1_GUARD_S AND until page 1's faces have actually been written to the
+# keys (the display worker's word, not merely composed: a stalled USB
+# write keeps the guard on). A tap that DISARMS an armed group always goes
+# through (Jeff: a disarm is never gated). Not after BACK (the operator
+# chose it), an Abort latch or an arm link alarm. Page 2 never closes for
+# idle while an announcement plays (STOP ANNC. stays reachable).
+PAGE1_GUARD_S = 1.5
+# A deck refusal of an announcement press (the engine's sentence) shows on
+# the pressed key this long (page 2's faces).
+ANNOUNCE_SAID_S = 4.0
 
 # Which flame group sits on which key, and what the key calls it (Jeff,
 # 2026-10-26): ltcplay_deck.json in the settings folder, optional.
@@ -926,17 +1004,43 @@ def role_gate(user, action):
             f"change the matrix on the Users screen. Nothing was done.")
 
 
-def deck_key_name(k, names, latched=False, morning=False, ack=False):
+def announce_refusal_word(text):
+    """The engine's refusal of an announcement press, in a word or two for
+    the pressed key (page 2). Display only."""
+    t = str(text or "").lower()
+    for needle, word in (("recording missing", "NO FILE"),
+                         ("already playing", "ONE PLAYING"),
+                         ("show ended", "SHOW ENDED"),
+                         ("resumed while", "RESUMED"),
+                         ("status", "PAGE STALE"),
+                         ("output device", "NO OUTPUT"),
+                         ("not attached", "NO OUTPUT"),
+                         ("not running", "NOT SET UP"),
+                         ("could not be reached", "NO ENGINE")):
+        if needle in t:
+            return word
+    return "REFUSED"
+
+
+def deck_key_name(k, names, latched=False, morning=False, ack=False,
+                  page=1):
     """What the audit log calls a deck key (audit.py). The Start key keeps
     its old name, "Start now", whatever it reads (review of PR #120, P2-6:
     the name an audit search finds stays the same); what a Stop hold did
     is its own audit line (action "stop")."""
     if k == TOP_START:
         return "ACK" if ack else ("FIRE" if morning else "Start now")
+    if page == 2:
+        if k in PAGE2_PLAY:
+            return f"announce {PAGE2_PLAY[k]}"
+        if k == PAGE2_STOP:
+            return "announce stop"
+        if k == PAGE2_BACK:
+            return "announce back"
     if k in GROUP_KEYS and k - GROUP_KEYS[0] < len(names):
         return f"arm key {names[k - GROUP_KEYS[0]]}"
     if k == SPARE_KEY:
-        return "spare key"
+        return "announce key"
     return f"key {k}"
 
 
@@ -1040,6 +1144,12 @@ FETCH_TIMEOUT_S = 1.0    # per HTTP GET, same as before -- it just no
                          # longer matters to the main loop's own timing
 
 
+# Polls in a row that must fail before LocalSchedule says the run or the
+# scheduler is not known (review of #130, second pass, 6): one dropped poll
+# never flips the Start/Stop key's label.
+STATE_MISSES = 2
+
+
 class LocalSchedule:
     """Reads the operator and the scheduler's state from a running `ltc
     serve --schedule` on this machine, OFF the main loop (safety review of
@@ -1065,6 +1175,12 @@ class LocalSchedule:
         self._operator = ""
         self._show_running = None
         self._held = None
+        self._run_live = None
+        # Polls in a row that could not read the scheduler, or the run:
+        # one failed poll keeps the last answer (review of #130, second
+        # pass, 6), STATE_MISSES of them make it unknown.
+        self._sched_misses = 0
+        self._play_misses = 0
         self._stop = threading.Event()
         self._thread = None
 
@@ -1095,9 +1211,16 @@ class LocalSchedule:
         # Whether Run has been pressed and playback is going (the page's
         # own /api/state "running"), for the Start/Stop key (2026-10-26).
         play = self._fetch("/api/state")
+        def answered(doc):
+            return isinstance(doc, dict) and "_http_status" not in doc
         with self._lock:
-            self._run_live = (bool(play.get("running"))
-                              if isinstance(play, dict) else None)
+            if answered(play):
+                self._run_live = bool(play.get("running"))
+                self._play_misses = 0
+            else:
+                self._play_misses += 1
+                if self._play_misses >= STATE_MISSES:
+                    self._run_live = None
             if isinstance(op, dict):
                 self._operator = str(op.get("current_operator") or "")
             else:
@@ -1110,13 +1233,24 @@ class LocalSchedule:
                 # current_operator()'s own documented default and what the
                 # pre-fix-round code actually did.
                 self._operator = ""
-            if isinstance(running, dict) and running.get("ok"):
+            if answered(running) and running.get("ok"):
                 self._show_running = running.get("state") in ("SHOW",
                                                                "PAUSED")
                 self._held = running.get("state") in ("HOLD", "PAUSED")
+                self._sched_misses = 0
+            elif isinstance(running, dict) and \
+                    running.get("_http_status") == 404 and answered(play):
+                # The engine answers but runs no scheduler (ltc serve
+                # without --schedule): no show can be live, so the key is
+                # never stuck on unknown (review of #130, second pass, 6).
+                self._show_running = False
+                self._held = False
+                self._sched_misses = 0
             else:
-                self._show_running = None
-                self._held = None
+                self._sched_misses += 1
+                if self._sched_misses >= STATE_MISSES:
+                    self._show_running = None
+                    self._held = None
 
     def _http_fetch(self, path):
         """One blocking GET. Only ever called from the background thread
@@ -1125,6 +1259,10 @@ class LocalSchedule:
             with _opener().open(self.base_url + path,
                                 timeout=FETCH_TIMEOUT_S) as r:
                 return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # The engine answered, with an HTTP error: said apart from no
+            # answer at all (a 404 is an engine with no scheduler).
+            return {"_http_status": e.code}
         except (OSError, ValueError, urllib.error.URLError):
             return None
 
@@ -1140,7 +1278,7 @@ class LocalSchedule:
         serve's /api/state "running"), False when stopped, None if
         unreachable or before the first poll. Never touches the network."""
         with self._lock:
-            return getattr(self, "_run_live", None)
+            return self._run_live
 
     def show_running(self):
         """True while the scheduler's own state says a show is playing or
@@ -1160,6 +1298,12 @@ class LocalSchedule:
 
 
 ENGINE_POST_TIMEOUT_S = 3.0
+# Stop's halt (/api/stop) waits for a live show's fade to finish before
+# playback stops (web.HALT_FADE_WAIT_S, twice at most, 6 s, plus the
+# scheduler's lock and the stop itself), so its post waits longer than a
+# press (review of #130, 5). A Stop that times out reads CHECK RACK, never
+# ENGINE FAULT: the engine took it and may still be working on it.
+STOP_POST_TIMEOUT_S = 15.0
 ENGINE_QUEUE_MAX = 50
 
 
@@ -1211,6 +1355,11 @@ class EngineConductor:
         self._engine = None        # (snapshot dict, monotonic time it came)
         self._local = (False, None)   # (latched, monotonic time of press)
         self._q = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
+        # Announcement presses have a queue and a thread of their own: a
+        # Play can take a while at the engine (it reads the file), and it
+        # must never delay or crowd out Stop, an Acknowledge or anything
+        # else on the main queue.
+        self._aq = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
         self._stop = threading.Event()
         self._threads = []
         self.dropped = 0
@@ -1227,6 +1376,9 @@ class EngineConductor:
         # #43, P1-3), "" when none: shown on the deck's own keys.
         self.cues_fault = ""
         self._last_ok = None      # when the engine last answered a poll
+        # The engine's answer to the last announcement press: (ok,
+        # sentence, clock()), or None. Page 2's own faces show it.
+        self.announce_said = None
 
     def start(self):
         if self._threads:
@@ -1234,6 +1386,8 @@ class EngineConductor:
         self._started_at = self._clock()
         self._stop.clear()
         for target, name in ((self._post_loop, "ltcplay-deck-engine-press"),
+                             (self._announce_loop,
+                              "ltcplay-deck-engine-announce"),
                              (self._poll_loop, "ltcplay-deck-engine-poll")):
             t = threading.Thread(target=target, daemon=True, name=name)
             t.start()
@@ -1241,10 +1395,11 @@ class EngineConductor:
 
     def stop(self):
         self._stop.set()
-        try:
-            self._q.put_nowait(None)
-        except queue.Full:
-            pass
+        for q in (self._q, self._aq):
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
         for t in self._threads:
             t.join(timeout=2.0)
         self._threads = []
@@ -1282,14 +1437,26 @@ class EngineConductor:
         return self._press("reset", who, screen)
 
     def stop_run(self, who="", screen="Stream Deck"):
-        """The Start/Stop key's Stop (Jeff, 2026-10-26): exactly the Rack
-        screen's Stop button, POST /api/stop on ltc serve. The engine's own
-        rules decide, as for that button: refused while a scheduled show
-        is live (SHOW or PAUSED; only Hold, Resume and Abort then), taken
-        while aborted, never behind a role ("safety", users.WEB_ROUTES).
-        It stops playback and blacks the outputs out; no show starts until
-        Run is pressed again. On the queue, like Hold."""
-        return self._press("stop", who, screen, path="/api/stop")
+        """The Start/Stop key's Stop (Jeff, 2026-10-26): POST /api/stop on
+        ltc serve, the Rack screen's Stop route, with "halt": the deck's
+        Stop is a complete halt of everything. The engine disarms every
+        flame group and every laser, ends a scheduled show that is live
+        (the scheduler's Stop: faded to dark like an Abort, never the Abort
+        latch), stops playback and blacks the outputs out; no show starts
+        until Run is pressed again. Taken while aborted, never behind a
+        role ("safety", users.WEB_ROUTES). On the queue, like Hold."""
+        return self._press("stop", who, screen, path="/api/stop", halt=True)
+
+    def announce(self, ann_id, who="", screen="Stream Deck"):
+        """Page 2's play key: one press, POST /api/remote/announce-play on
+        the press thread. The engine decides (a recording missing, no
+        output device, one already playing) and journals it; a refusal is
+        never an ENGINE FAULT on the Start key."""
+        return self._press("announce-play", who, screen, id=str(ann_id))
+
+    def announce_stop(self, who="", screen="Stream Deck"):
+        """Page 2's STOP ANNC.: the announcement's sound only."""
+        return self._press("announce-stop", who, screen)
 
     def _press(self, name, who, screen, path=None, **extra):
         body = {"who": who, "screen": screen or "Stream Deck",
@@ -1306,9 +1473,19 @@ class EngineConductor:
             return EngineResult(True, "abort sent to the engine's show "
                                       "conductor at once; the engine's "
                                       "journal says what it did.")
+        if name == "stop":
+            # Stop never waits behind another press either (review of
+            # #130, 7): a thread of its own, at once.
+            threading.Thread(target=self._post_one,
+                             args=(name, body, path), daemon=True,
+                             name="ltcplay-deck-engine-stop").start()
+            return EngineResult(True, "Stop sent to the engine at once; "
+                                      "the engine's journal says what it "
+                                      "did.")
+        q = self._aq if name.startswith("announce-") else self._q
         try:
-            self._q.put_nowait((name, body) if path is None
-                               else (name, body, path))
+            q.put_nowait((name, body) if path is None
+                         else (name, body, path))
         except queue.Full:
             self.dropped += 1
             return EngineResult(False, f"{name} could NOT be sent to the "
@@ -1325,6 +1502,13 @@ class EngineConductor:
                 return
             self._post_one(*item)
 
+    def _announce_loop(self):
+        while not self._stop.is_set():
+            item = self._aq.get()
+            if item is None:
+                return
+            self._post_one(*item)
+
     def _post_one(self, name, body, path=None):
         """One press to the engine; its answer journaled, and kept as
         the deck's engine fault when the engine did not take it. `path`:
@@ -1337,19 +1521,82 @@ class EngineConductor:
                 doc = got[2]
         except Exception as e:
             ok, text = False, f"{type(e).__name__}: {e}"
-        # Stop (/api/stop) also disarms every flame group on the flame link
-        # (review of #126, P2-1). Playback stopped but that disarm failed:
-        # a fault on the deck's own key, never a quiet "done" (third review
-        # of #126, P2-2). The deck's own arm link disarm went first anyway.
-        flames = doc.get("flames") if isinstance(doc, dict) else None
-        disarm_failed = (name == "stop" and ok and isinstance(flames, dict)
-                         and flames.get("disarmed") is False)
-        if disarm_failed:
+        # Stop (/api/stop) is a complete halt (review of #126, P2-1; Jeff,
+        # 2026-10-26). Every step of it that failed is said, all of them,
+        # never only the first (review of #130, 3): the flame disarm, the
+        # laser disarm, a live show the scheduler did not end. A fault on
+        # the deck's own key, never a quiet "done"; DISARM FAILED when a
+        # disarm failed. The deck's own arm link disarm went first anyway.
+        fails = []
+        # The engine answered Stop with an HTTP error (a 500 after the halt
+        # ran): its own failed steps are still read and said, never ENGINE
+        # FAULT (third review of #130, 4).
+        errored = name == "stop" and not ok and isinstance(doc, dict) and \
+            doc.get("_http_status") is not None
+        if name == "stop" and (ok or errored) and isinstance(doc, dict):
+            flames = doc.get("flames")
+            lasers = doc.get("lasers")
+            show = doc.get("show")
+            if isinstance(flames, dict) and flames.get("disarmed") is False:
+                fails.append(("disarm",
+                              f"the flame disarm FAILED ("
+                              f"{flames.get('text') or 'no reason given'}): "
+                              f"use Disarm all flame groups on the Rack "
+                              f"screen or the hardware e-stop"))
+            if isinstance(lasers, dict) and lasers.get("disarmed") is False:
+                fails.append(("disarm",
+                              f"the laser disarm FAILED ("
+                              f"{lasers.get('text') or 'no reason given'}): "
+                              f"use Disarm all lasers on the Rack screen"))
+            if isinstance(show, dict) and show.get("ok") is False:
+                fails.append(("show",
+                              f"the scheduler did NOT end the show ("
+                              f"{show.get('text') or 'no reason given'}): "
+                              f"use Abort on the Rack screen"))
+            blank = doc.get("lasers_blank")
+            if isinstance(blank, dict) and blank.get("ok") is False:
+                fails.append(("disarm",
+                              f"the laser blank FAILED ("
+                              f"{blank.get('text') or 'no reason given'}): "
+                              f"use Disarm all lasers on the Rack screen"))
+            # Anything else the engine says failed (the halt itself
+            # raising, review of #130, second pass, 5), said too.
+            told = {"flames", "lasers", "show", "laser blank",
+                    "playback stop"}
+            if "playback stop" in (doc.get("failed") or []):
+                # Only playback did not stop: the flames and lasers were
+                # disarmed (said apart, review of #130, low items, 1).
+                fails.append(("playback",
+                              f"playback did NOT stop ("
+                              f"{doc.get('playback_error') or doc.get('error') or 'no reason given'}"
+                              f"): press Stop on the Rack screen"))
+            for step in doc.get("failed") or []:
+                if step not in told:
+                    fails.append(("disarm",
+                                  f"the engine's {step} step FAILED ("
+                                  f"{doc.get('error') or 'no reason given'}"
+                                  f"): use Abort on the Rack screen or the "
+                                  f"hardware e-stop"))
+        disarm_failed = any(k == "disarm" for k, _t in fails)
+        playback_only = bool(fails) and all(k == "playback" for k, _t in fails)
+        if errored and playback_only:
+            # The halt worked; only the playback stop did not: say what
+            # was disarmed, apart from a disarm that failed (review of
+            # #130, low items, 1).
+            done = [w for k, w in (("flames", "every flame group"),
+                                   ("lasers", "every laser"))
+                    if isinstance(doc.get(k), dict) and
+                    doc[k].get("disarmed") is True]
+            text = ((f"Stop disarmed {' and '.join(done)}, but "
+                     if done else "") + fails[0][1])
+        elif errored:
+            text = (f"the engine answered Stop with an error ({text})"
+                    + ("; and " + "; and ".join(t for _k, t in fails)
+                       if fails else "") + ": check the Rack screen")
+        elif fails:
             ok = False
-            text = (f"playback stopped, but the flame disarm FAILED "
-                    f"({flames.get('text') or 'no reason given'}): use "
-                    f"Disarm all flame groups on the Rack screen or the "
-                    f"hardware e-stop")
+            text = "playback stopped, but " + "; and ".join(
+                t for _k, t in fails)
         if name == "abort" and doc.get("stopped") is False:
             # The engine disarmed every flame group but had no show to stop
             # (review of PR #43, P0-1), so nothing is latched: the Abort key
@@ -1365,13 +1612,28 @@ class EngineConductor:
         # the show PC: Hold showed ENGINE FAULT while the Hold had worked).
         noop = (not ok and name in ("hold", "resume") and
                 doc.get("nothing_to_do") is True)
-        if name != "alert":
+        # A Stop the engine took but did not answer in STOP_POST_TIMEOUT_S
+        # is not an engine that cannot be reached (review of #130, second
+        # pass, 5): CHECK RACK, the halt may still be under way.
+        slow = name == "stop" and not ok and isinstance(doc, dict) and (
+            doc.get("timeout") is True or errored)
+        if name in ("announce-play", "announce-stop"):
+            # An announcement is not a press on the rig: a refusal (a
+            # recording missing, no output device) is journaled and shown
+            # on page 2, never as ENGINE FAULT on the Start key.
+            key = (str(body.get("id") or "") if name == "announce-play"
+                   else "stop")
+            self.announce_said = (bool(ok), str(text), self._clock(), key)
+        elif name != "alert":
             # An alert post is not a press on the rig: a refused or late
             # Acknowledge (two keys inside one poll) is journaled below,
             # never shown as ENGINE FAULT on the keys.
             self.fault = "" if (ok or noop) else f"{name.title()}: {text}"
+            show_live = any(k == "show" for k, _t in fails)
             self.fault_face = ("DISARM", "FAILED") if disarm_failed else \
-                ("ENGINE", "FAULT")
+                ("SHOW NOT", "STOPPED") if show_live else \
+                ("PLAYBACK", "FAILED") if playback_only else \
+                ("CHECK", "RACK") if slow else ("ENGINE", "FAULT")
         elif "raise" in body:
             self.alert_delivered = bool(ok)
         if noop:
@@ -1379,7 +1641,8 @@ class EngineConductor:
                     f"says: {text}")
         elif ok:
             line = f"Stream Deck {name.title()}: the engine says: {text}"
-        elif disarm_failed:
+        elif slow or (name == "stop" and not ok and
+                      doc.get("stopped") is not None):
             line = f"Stream Deck Stop: {text}."
         else:
             line = (f"Stream Deck {name.title()}: the engine's show "
@@ -1398,8 +1661,10 @@ class EngineConductor:
             self.base_url + path, data=json.dumps(body).encode("utf-8"),
             method="POST", headers={"Content-Type": "application/json"})
         opener = _opener()
+        wait = STOP_POST_TIMEOUT_S if path == "/api/stop" else \
+            ENGINE_POST_TIMEOUT_S
         try:
-            with opener.open(req, timeout=ENGINE_POST_TIMEOUT_S) as r:
+            with opener.open(req, timeout=wait) as r:
                 doc = json.loads(r.read().decode("utf-8") or "{}")
             if not isinstance(doc, dict):
                 doc = {}
@@ -1412,8 +1677,27 @@ class EngineConductor:
                 why = doc.get("text") or doc.get("error") or str(e)
             except Exception:
                 why = str(e)
-            return False, str(why), (doc if isinstance(doc, dict) else {})
-        except (OSError, ValueError, urllib.error.URLError) as e:
+            doc = doc if isinstance(doc, dict) else {}
+            # The engine answered, with an error: said apart from an engine
+            # that cannot be reached (third review of #130, 4).
+            doc.setdefault("_http_status", e.code)
+            return False, str(why), doc
+        except urllib.error.URLError as e:
+            # urllib wraps everything up to sending the request (connecting,
+            # a connect timeout, a refusal) in URLError: the engine could
+            # not be reached (third review of #130, 3).
+            return False, (f"ltc serve could not be reached at "
+                           f"{self.base_url} ({e})")
+        except TimeoutError:
+            # Only a timeout AFTER the request was sent (waiting for the
+            # answer): the engine took it and has not answered yet (review
+            # of #130, second pass, 5). If it has stopped answering its
+            # polls too, the key says ENGINE FAULT all the same.
+            return False, (f"ltc serve took the request but did not "
+                           f"answer within {wait:g} s; it may still be "
+                           f"working on it. Check the Rack screen"), \
+                {"timeout": True}
+        except (OSError, ValueError) as e:
             return False, (f"ltc serve could not be reached at "
                            f"{self.base_url} ({e})")
 
@@ -1761,6 +2045,18 @@ class ScreenKeys:
         m = last[0].get("morning")
         return m if isinstance(m, dict) else None
 
+    def flames_live(self):
+        """True while the engine's last fresh answer says live flame
+        programming or fire while scrubbing is on (deck-input
+        "flames_live"), False when it says neither, None when the engine
+        has not answered within SCREEN_STALE_S."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        v = last[0].get("flames_live")
+        return v if isinstance(v, bool) else None
+
     def alerts(self):
         """The engine's open alerts (alerts.py), as its last fresh answer
         listed them; () when none, or when the engine has not answered
@@ -1772,6 +2068,18 @@ class ScreenKeys:
             return ()
         return tuple(a for a in (last[0].get("alerts") or [])
                      if isinstance(a, dict))
+
+    def announce(self):
+        """The engine's announcements, as its last fresh deck-input answer
+        carried them ({"configured", "device_ok", "ready", "missing",
+        "playing"}), or None when stale or not there. Display only: page
+        2's faces. The engine decides every press."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        a = last[0].get("announce")
+        return a if isinstance(a, dict) else None
 
     def user(self):
         """Who is signed in on this machine, as the engine's last fresh
@@ -2603,11 +2911,37 @@ class Controller:
         self.run_live_provider = run_live_provider or (lambda: None)
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
+        # Page 2, the announcements (module docstring): 1 or 2, when page 2
+        # last saw a key pressed, and the keys that were down at the last
+        # page change, which do nothing until they are let go.
+        self.page = 1
+        self._page2_at = None
+        self._masked = set()
+        self._ann_pressed = None     # the id page 2 last asked to play
+        self._ann_fresh_at = None    # clock of the last fresh engine answer
+        # The arm guard after an automatic return (PAGE1_GUARD_S): the
+        # clock of the return while it stands, else None; it ends
+        # PAGE1_GUARD_S after page 1 was written to the keys
+        # (_page1_written_at). It never holds back a disarm.
+        self._guard = None
+        self._guard_frame = None     # first page 1 frame after the return
+        self._guard_frame_at = None
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
         # disarm-refractory clock per group key.
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
                           for _ in self.names]
         self._disarmed_at = [None] * len(self.names)
+        # Key 0 went down as the Morning page's FIRE and has not come up
+        # (review of #132, 1): the press turns into a Stop hold the moment
+        # Stop wins, whether or not PurgeFire is still firing (the engine
+        # refuses beats the moment a show is live, which ends the press on
+        # its own before this deck's poll sees the show), and whether or
+        # not the page closed in the same pass.
+        self._key0_fire = False
+        # The groups purge_pass itself disarmed on a deselect, and when:
+        # the only disarms the settle window (DISARM_SETTLE_S) forgives,
+        # and only while key 0 is down as FIRE (delta review of #132, A).
+        self._purge_deselected = {}
         # Screen arming (2026-10-03): the remote page's holds, as remote
         # presses of the group keys. _vholds: group -> the engine's hold id
         # this deck has seen; _vpressed: the ones whose arm-hold timer it
@@ -2681,6 +3015,8 @@ class Controller:
     def _key_down(self, i):
         """Whether group `i`'s own deck key is down. Always False for a
         screen-only group (module docstring 5): it has no key."""
+        if self.page != 1 or self._group_key.get(i) in self._masked:
+            return False    # page 2 is up, or the key is masked till let go
         k = self._group_key.get(i)
         return k is not None and bool(self._prev_keys[k])
 
@@ -2719,7 +3055,7 @@ class Controller:
             self._audit_event(what, deck_key_name(
                 k, [self.names[g] for g in
                     self.key_order[:len(GROUP_KEYS)]], latched=latched,
-                morning=morning, ack=bool(pending)))
+                morning=morning, ack=bool(pending), page=self.page))
 
     def _log(self, text, **kw):
         try:
@@ -2766,9 +3102,13 @@ class Controller:
             h.release()
         self._stop_hold.release()
         self._vholds.clear()
+        self.page, self._page2_at = 1, None
+        self._masked = set()
+        self._guard = None
         self._vpressed.clear()
         self._vwho.clear()
         self._vheld.clear()
+        self._key0_fire = False
         self._fire_release("the deck reconnected")
 
     def animating(self):
@@ -2840,20 +3180,27 @@ class Controller:
 
     def start_key_mode(self):
         """What the Start/Stop key is right now (Jeff, 2026-10-26: Start
-        and Stop are one key): "show" while a scheduled show is live (Stop
-        is refused then, as on the Rack screen: only Hold, Resume and Abort
-        work during a show; the key keeps saying what the show is doing),
+        and Stop are one key): "show" while a scheduled show is live (the
+        key keeps saying what the show is doing, and a Stop hold is a
+        complete halt: the show ends, Jeff's ruling of 2026-10-26),
         "stop" while Run has been pressed and playback is going AND the
         scheduler is known to have no show live (review of PR #120, P2-4:
-        an unknown scheduler never shows STOP RUN), else "start"."""
+        an unknown scheduler never shows STOP RUN), else as below. Stop
+        holds in "show" and "stop" (STOP_MODES), and in "unknown": the
+        scheduler cannot be read (the engine down, or not heard from yet;
+        LocalSchedule reads the run and the show in one poll). Then the
+        key reads STOP ALL and a hold is Stop: the arm link is disarmed
+        first whatever the engine does (review of #130, 1)."""
         try:
             running = self.show_running_provider()
         except Exception:                        # noqa: BLE001
             running = None
         if running is True:
             return "show"
+        if running is None:
+            return "unknown"
         try:
-            if running is False and self.run_live_provider() is True:
+            if self.run_live_provider() is True:
                 return "stop"
         except Exception:                        # noqa: BLE001
             pass
@@ -2861,19 +3208,85 @@ class Controller:
 
     def _do_start_or_stop(self, now):
         mode = self.start_key_mode()
-        if mode == "start":
+        if mode == "start" and not self._idle_stop():
             self._do_start_now()
-        elif mode == "stop":
-            # A hold, never a tap (Jeff, 2026-10-26): tick() sends Stop
-            # once the key has been held STOP_HOLD_S.
-            self._stop_hold.press(now)
         else:
-            self._log("Stream Deck Stop pressed while a scheduled show is "
-                      "live: refused, as on the Rack screen. Only Hold, "
-                      "Resume and Abort work during a show. Nothing was "
-                      "stopped.", action="stop",
-                      who=self.operator_provider() or "",
-                      screen="Stream Deck")
+            # Nothing running but a group armed: the hold is Stop too, a
+            # complete halt (review of #130, second pass, 6).
+            # A hold, never a tap (Jeff, 2026-10-26): tick() sends Stop
+            # once the key has been held STOP_HOLD_S. During a scheduled
+            # show too: Stop is a complete halt, and the show ends.
+            self._stop_hold.press(now)
+
+    def _any_flame_armed(self, purge=True):
+        """True while this deck wants any group armed or flamesafe reports
+        one armed; with purge=False, not counting the groups armed for the
+        Morning page's purge. Never raises."""
+        try:
+            skip = set() if purge else self._purge_own()
+            if not purge and self._key0_fire:
+                # A purge machine deselected while FIRE is held: its group,
+                # disarmed by purge_pass, that flamesafe's status still
+                # reports armed is not a reason for Stop to win, for
+                # DISARM_SETTLE_S (review of #132, 3). Only those: a Stop's
+                # or a tap's own disarm that has not shown yet still counts
+                # as armed (delta review of #132, A).
+                now = self._clock()
+                skip |= {i for i, at in self._purge_deselected.items()
+                         if not self.arm.wanted[i] and
+                         now - at < DISARM_SETTLE_S}
+            return any(w for i, w in enumerate(self.arm.wanted)
+                       if i not in skip) or any(
+                self._reported_armed(i) for i in range(len(self.names))
+                if i not in skip)
+        except Exception:                        # noqa: BLE001
+            return True
+
+    def _purge_own(self):
+        """The groups that are the Morning page's purge's own: the ones the
+        purge armed (_purge_armed), and the ones its selection wants armed
+        right now (purge_wanted), even if the operator had already armed
+        one by hand so purge_pass never took it over (third review of
+        #130, 2). Never raises."""
+        try:
+            return set(self._purge_armed) | set(self.purge_wanted())
+        except Exception:                        # noqa: BLE001
+            return set(self._purge_armed)
+
+    def _stop_wins(self):
+        """Key 0 is Start/Stop, never the Morning page's FIRE, whenever
+        anything is running (Jeff's rule): a show live, a run going ("stop",
+        third review of #130, 1) or the state not known; and while a group
+        is armed other than for the purge (review of #130, second pass,
+        2). An open Morning page never swallows a Stop."""
+        return self.start_key_mode() in STOP_MODES or self._idle_stop()
+
+    def _flames_live(self):
+        """True while the engine says live flame programming or fire while
+        scrubbing is on (deck-input "flames_live"), False when it says
+        neither, None when not known: a stale or missing answer, or one
+        that raised (review of #132, 4). A deck with no screen wired at
+        all (no engine) has no live flames: False. Never raises."""
+        s = self.screen
+        fn = getattr(s, "flames_live", None) if s is not None else None
+        if fn is None:
+            return False
+        try:
+            v = fn()
+        except Exception:                        # noqa: BLE001
+            return None
+        return v if isinstance(v, bool) else None
+
+    def _idle_stop(self):
+        """With no show or run going, key 0 is still Stop (STOP ALL) while
+        a group is armed other than for the purge, or live flame
+        programming or fire while scrubbing is on: those count as running
+        (review of #130, low items, 3). The purge still works when nothing
+        at all is running."""
+        # Live flames not known count as on (review of #132, 4): Stop
+        # wins, as with the scheduler unknown.
+        return self._any_flame_armed(purge=False) or \
+            self._flames_live() is not False
 
     def _do_stop(self):
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
@@ -3124,6 +3537,7 @@ class Controller:
             if self.arm.wanted[i]:
                 self._do_disarm(i, who="the purge ended",
                                 screen="Morning page")
+                self._purge_deselected[i] = self._clock()
         if not self.morning_open():
             self._fire_release("the Morning page is not open")
 
@@ -3304,10 +3718,19 @@ class Controller:
         self._audit_keys(down, latched, pending)
         if pending and edges(self._prev_keys, down):
             self._do_acknowledge(pending)
+        self._masked -= set(releases(self._prev_keys, down))
+        if self.page == 2:
+            why = self._page2_must_close(latched, pending)
+            if why:
+                self._to_page1(why, down)
+            else:
+                self._page2_run(down, now)
+                return
         for k in releases(self._prev_keys, down):
             if k == TOP_START:
                 # The FIRE key (Morning page): letting go ends the purge
                 # fire at once, whether or not the page is still open.
+                self._key0_fire = False
                 self._fire_release("the key came up")
                 # Letting go of Stop before STOP_HOLD_S sends nothing.
                 self._stop_hold.release()
@@ -3328,7 +3751,13 @@ class Controller:
             #   touches the latch.
             for k in edges(self._prev_keys, down):
                 if k == TOP_START:
-                    if not pending and self.start_key_mode() == "stop":
+                    # An open alert is acknowledged above, and never
+                    # swallows the Stop hold (review of #130, 9). Latched
+                    # with nothing running but a group still reported armed
+                    # or live flames on: Stop all the same (delta review of
+                    # #132, D1).
+                    if self.start_key_mode() in STOP_MODES or \
+                            self._idle_stop():
                         self._stop_hold.press(now)
                 elif k in self._key_group:
                     i = self._key_group[k]
@@ -3343,16 +3772,222 @@ class Controller:
         for k in edges(self._prev_keys, down):
             if k == TOP_START:
                 if pending:
-                    pass
-                elif morning:
+                    # The press acknowledged the alert above. While a show
+                    # or a run is going, the state is not known, or a flame
+                    # group is armed, it is ALSO the start of a Stop hold:
+                    # an alert never swallows the first Stop (review of
+                    # #130, 9). A tap only acknowledges; a full hold stops.
+                    # The Morning page's FIRE keeps the key unless Stop
+                    # wins (_stop_wins).
+                    if (not morning or self._stop_wins()) and (
+                            self.start_key_mode() in STOP_MODES or
+                            self._idle_stop()):
+                        self._stop_hold.press(now)
+                    elif morning:
+                        # An acknowledge on the Morning page that Stop does
+                        # not win yet: if it starts to win during this same
+                        # hold, the hold becomes Stop (delta review of #132,
+                        # D2), as a held FIRE does.
+                        self._key0_fire = True
+                elif morning and not self._stop_wins():
                     # Re-mapped while the Morning page is open: FIRE.
+                    self._key0_fire = True
                     self._fire_press(now)
                 else:
                     # Start and Stop are one key (Jeff, 2026-10-26).
                     self._do_start_or_stop(now)
             elif k in self._key_group:
-                self._on_group_press(self._key_group[k], now)
+                if k in self._masked:
+                    pass
+                elif self._guard_on(now) and \
+                        not self.arm.wanted[self._key_group[k]]:
+                    # Only an ARM is held back; a tap on an armed group
+                    # disarms it as always (a disarm is never gated).
+                    self._log(f"Stream Deck: {self.labels[self._key_group[k]]}"
+                              f" key pressed just after the announcements "
+                              f"page closed by itself: not armed, so a "
+                              f"press meant for an announcement never arms "
+                              f"a group. Hold it again once the flame keys "
+                              f"show.", action="arm-refused")
+                else:
+                    self._on_group_press(self._key_group[k], now)
+            elif k == ANNOUNCE_KEY and not pending and \
+                    (self.announce_view() or {}).get("configured"):
+                # Only while the engine says announcements are running:
+                # otherwise key 5 stays the blank key that does nothing.
+                self._open_page2(down, now, latched, morning)
         self._prev_keys = list(down)
+
+    # -- page 2, the announcements (module docstring) ------------------------
+    def _page2_must_close(self, latched, pending, now=None):
+        """Why page 2 has to give way to page 1 right now, or "". Every
+        one of these needs the arm keys (or the Start key's own face)
+        back in front of the operator."""
+        if latched:
+            return "an Abort is latched"
+        if pending:
+            return "an alert is open"
+        if self._spoof_alarm:
+            return "the arm link alarm is up"
+        if self.morning_open():
+            return "the Morning page opened"
+        if now is None or self._page2_at is None:
+            return ""
+        av = self.announce_view()
+        if isinstance(av, dict) and not av.get("stale") and \
+                av.get("ok") is not False:
+            self._ann_fresh_at = now
+        if now - self._page2_at < PAGE2_IDLE_S:
+            return ""
+        if self._fresh_and_quiet(av):
+            return f"no key was pressed for {PAGE2_IDLE_S:g} s"
+        seen = self._ann_fresh_at if self._ann_fresh_at is not None \
+            else self._page2_at
+        if now - max(seen, self._page2_at) >= PAGE2_STALE_CLOSE_S:
+            return (f"the engine's announcement status has been "
+                    f"unavailable for {PAGE2_STALE_CLOSE_S:g} s")
+        return ""
+
+    @staticmethod
+    def _fresh_and_quiet(av):
+        """True only on a FRESH engine answer that says nothing is playing
+        (delta review of #129, 1): a stale or missing answer is "maybe
+        playing", and page 2 (with STOP ANNC.) then stays."""
+        return (isinstance(av, dict) and not av.get("stale") and
+                av.get("ok") is not False and not av.get("playing"))
+
+    def _open_page2(self, down, now, latched, morning):
+        """Key 5 pressed on page 1. Opened only with nothing else going
+        on: no latch, no alert, no Morning page, no spoof alarm, no other
+        key down, no arm hold filling, no Stop hold filling."""
+        why = ""
+        if latched or morning or self._spoof_alarm:
+            why = "the deck is busy with something more important"
+        elif any(down[k] for k in range(len(down)) if k != ANNOUNCE_KEY):
+            why = "another key is down"
+        elif any(h.fraction(now) > 0 for h in self._arm_holds) or \
+                self._stop_hold.fraction(now) > 0:
+            why = "a hold is filling"
+        if why:
+            self._log(f"Stream Deck: the announcements page was not "
+                      f"opened: {why}.", action="page")
+            return
+        self.page, self._page2_at = 2, now
+        self._ann_fresh_at = None
+        self._masked = {k for k in range(len(down)) if down[k]}
+        self._log("Stream Deck: announcements page open. The arm keys are "
+                  "back on BACK, or by themselves after "
+                  f"{PAGE2_IDLE_S:g} s.", action="page")
+
+    GUARDED_RETURNS = ("no key was pressed", "an alert is open",
+                       "the Morning page opened",
+                       "the engine's announcement status")
+
+    def _page1_written_at(self):
+        """When page 1 reached the keys after the automatic return, or
+        None: with a display worker (display_confirms), the time it says
+        it finished writing the first page 1 frame composed after the
+        return; without one (the frame is written on the loop itself,
+        right after it is composed), when it was composed."""
+        f = self._guard_frame
+        if f is None:
+            return None
+        if not self.display_confirms:
+            return self._guard_frame_at
+        shown = self.last_shown
+        if shown and shown[0] >= f:
+            return shown[1]
+        return None
+
+    def _guard_on(self, now=None):
+        """True while a group key starts no ARM after page 2 gave way by
+        itself: until PAGE1_GUARD_S after page 1 actually reached the keys
+        (delta review of #129, 2). Never a disarm."""
+        if self._guard is None:
+            return False
+        now = self._clock() if now is None else now
+        at = self._page1_written_at()
+        if at is None or now < at + PAGE1_GUARD_S:
+            return True
+        self._guard = None
+        return False
+
+    def _to_page1(self, why, down=None):
+        if self.page != 1:
+            self.page, self._page2_at = 1, None
+            if why.startswith(self.GUARDED_RETURNS):
+                now = self._clock()
+                self._guard = now
+                self._guard_frame = None
+            cur = down if down is not None else self._prev_keys
+            # A key down at the change does nothing until it is let go.
+            self._masked = {k for k in range(len(cur)) if cur[k]}
+            self._log(f"Stream Deck: back to the arm keys ({why}).",
+                      action="page")
+
+    def _page2_run(self, down, now):
+        """run_once on page 2. Key 0 is the same START / STOP as page 1;
+        keys 1 to 3 play, key 4 stops the sound, key 5 is BACK. No group
+        key exists on this page: nothing here arms or disarms."""
+        for k in releases(self._prev_keys, down):
+            if k == TOP_START:
+                self._fire_release("the key came up")
+                self._stop_hold.release()
+        for k in edges(self._prev_keys, down):
+            if k in self._masked:
+                continue
+            self._page2_at = now
+            if k == TOP_START:
+                self._do_start_or_stop(now)
+            elif k in PAGE2_PLAY:
+                self._announce_press(PAGE2_PLAY[k])
+            elif k == PAGE2_STOP:
+                self._announce_stop()
+            elif k == PAGE2_BACK:
+                self._to_page1("BACK pressed", down)
+        self._prev_keys = list(down)
+
+    def _announce_press(self, ann_id):
+        """One press, one announcement (no double tap, no hold). Not behind
+        the operator gate: the engine names the deck's chosen operator, or
+        the Stream Deck, and decides every rule itself."""
+        who = self.operator_provider() or ""
+        fn = getattr(self.conductor, "announce", None)
+        if fn is None:
+            self._log("Stream Deck announcement pressed: no engine is "
+                      "connected in this build. Nothing was played.",
+                      fault=True, action="announce", who=who,
+                      screen="Stream Deck")
+            return
+        self._ann_pressed = ann_id
+        r = fn(ann_id, who=who, screen="Stream Deck")
+        self._log(f"Stream Deck {ann_id} announcement: {r.sentence}",
+                  fault=not r.ok, action="announce", who=who,
+                  screen="Stream Deck")
+
+    def _announce_stop(self):
+        who = self.operator_provider() or ""
+        fn = getattr(self.conductor, "announce_stop", None)
+        if fn is None:
+            self._log("Stream Deck announcement Stop pressed: no engine is "
+                      "connected in this build.", fault=True,
+                      action="announce", who=who, screen="Stream Deck")
+            return
+        r = fn(who=who, screen="Stream Deck")
+        self._log(f"Stream Deck announcement Stop: {r.sentence}",
+                  fault=not r.ok, action="announce", who=who,
+                  screen="Stream Deck")
+
+    def announce_view(self):
+        """The engine's announcements for page 2's faces, or None."""
+        s = self.screen
+        fn = getattr(s, "announce", None) if s is not None else None
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
 
     def tick(self):
         """Called once per MAIN-LOOP pass, UNCONDITIONALLY -- whether or
@@ -3370,6 +4005,10 @@ class Controller:
         on CHANGE rather than continuously."""
         now = self._clock()
         latched = self._latched_now()
+        if self.page == 2:
+            why = self._page2_must_close(latched, self.alert_pending(), now)
+            if why:
+                self._to_page1(why)
         if latched != self._was_latched:
             # An Abort or a Reset from a screen (the deck has neither key
             # since 2026-10-26): every group's re-arm refractory window
@@ -3378,20 +4017,29 @@ class Controller:
             # press right after either cannot quietly re-arm.
             self._was_latched = latched
             self._disarmed_at = [now] * len(self.names)
+        if self._prev_keys[TOP_START] and self._key0_fire and \
+                self._stop_wins():
+            # Key 0 went down as FIRE, is still held, and now a show or run
+            # has started (or a group was armed, or live flames came on):
+            # FIRE ends now and the same held key becomes a Stop hold at
+            # once, with no second press (review of #130, low items, 4).
+            # Read from the press itself, never from PurgeFire.firing,
+            # which the engine's first refusal clears (review of #132, 1).
+            self._key0_fire = False
+            self._fire_release("Stop wins: something is running")
+            self._stop_hold.press(now)
         if self._prev_keys[TOP_START] and self._stop_hold.fired(now):
-            # Stop only if it is still a run to stop: a run that ended, or
-            # a scheduled show that went live, during the hold is not.
-            # Checked before the latch: Stop is reachable while aborted.
-            if self.start_key_mode() == "stop":
-                self._do_stop()
-                # Never ALSO complete an arm-hold in the SAME pass Stop just
-                # disarmed every group in (the ordering rule Abort had on
-                # the deck); _do_arm_fire's refractory check, set by the
-                # disarm, is the second, independent backstop.
-                return
-            self._log("Stream Deck Stop held, but by then no run was "
-                      "live to stop (or a scheduled show was). Nothing "
-                      "was sent.", action="stop", screen="Stream Deck")
+            # A Stop hold that completes always stops (review of #130, 1):
+            # every group disarmed on the arm link first, then the engine's
+            # halt, whatever the engine or the run did during the hold (a
+            # halt with nothing running still disarms everything). Checked
+            # before the latch: Stop is reachable while aborted.
+            self._do_stop()
+            # Never ALSO complete an arm-hold in the SAME pass Stop just
+            # disarmed every group in (the ordering rule Abort had on the
+            # deck); _do_arm_fire's refractory check, set by the disarm, is
+            # the second, independent backstop.
+            return
         if latched:
             # While latched, run_once's own latched branch releases every
             # arm hold; nothing here arms.
@@ -3670,6 +4318,9 @@ class Controller:
         # Stop's hold fills its own ring, latched or not (Stop stays
         # reachable while aborted, as on the Rack screen).
         stop_frac = self._stop_hold.fraction(now)
+        if self.page == 2:
+            # No arm key on page 2: only Stop's ring can fill.
+            arm_fills = {}
         if stop_frac > 0:
             arm_fills[TOP_START] = stop_frac
         draw_marquee(d, chase, abort_frac, arm_fills)
@@ -3679,7 +4330,15 @@ class Controller:
                          hasattr(self.conductor, "unreachable") and
                          self.conductor.unreachable()))
         cues_fault = getattr(self.conductor, "cues_fault", "") or ""
-        if engine_fault:
+        if stop_frac * STOP_HOLD_S >= STOP_FACE_AFTER_S:
+            # A Stop hold under way for STOP_FACE_AFTER_S: HOLD TO STOP,
+            # over every other face (an engine fault, an open alert's ACK,
+            # FIRE), so the operator sees the Stop coming and can let go
+            # to cancel it (review of #130, second pass, 1). A tap shorter
+            # than this only shows what the key was.
+            fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
+                           bg=BRONZE, kind="sans", max_size=16)
+        elif engine_fault:
             # Fix round 2, E: the engine did not take a press (or cannot be
             # reached): said on the deck itself, not only its console. A
             # fault face outranks the ACK face below (review of PR #59):
@@ -3687,6 +4346,16 @@ class Controller:
             face = list(getattr(self.conductor, "fault_face", None) or
                         ("ENGINE", "FAULT")) if getattr(
                 self.conductor, "fault", "") else ["ENGINE", "FAULT"]
+            try:
+                gone = (hasattr(self.conductor, "unreachable") and
+                        self.conductor.unreachable())
+            except Exception:                    # noqa: BLE001
+                gone = True
+            if gone and face == ["CHECK", "RACK"]:
+                # The engine has stopped answering its polls too: a Stop
+                # that timed out was not "taken", it is an engine fault
+                # (third review of #130, 3).
+                face = ["ENGINE", "FAULT"]
             fonts.show_key(d, b0, face,
                            BLACK if blink_on else RED,
                            bg=RED if blink_on else None, kind="sans",
@@ -3709,14 +4378,19 @@ class Controller:
         elif latched and stop_frac > 0:
             fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
                            bg=BRONZE, kind="sans", max_size=16)
-        elif latched and self.start_key_mode() == "stop":
+        elif latched and (self.start_key_mode() in STOP_MODES or
+                          self._idle_stop()):
             # Aborted with a run still going: Stop is reachable, as on the
             # Rack screen (Jeff, 2026-10-26). It never touches the latch.
-            fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
+            # Aborted with nothing running but a group armed or live
+            # flames on: STOP ALL (delta review of #132, D1).
+            fonts.show_key(d, b0, ["STOP", "RUN"]
+                           if self.start_key_mode() in STOP_MODES
+                           else ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                            kind="sans")
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
-        elif self.morning_open():
+        elif self.morning_open() and not self._stop_wins():
             # Re-mapped while the Morning and Shutdown page is open (Jeff,
             # 2026-10-17): this key is FIRE for the purge. Red on dark while
             # a purge group is armed, flashing while held, dim PURGE when
@@ -3734,7 +4408,12 @@ class Controller:
             running = self.show_running_provider() is True
             held = self._held_hint()
             op = self.operator_provider()
-            if running and held:
+            if stop_frac > 0:
+                # Stop being held: the ring fills; let go early, nothing.
+                # During a scheduled show too (Jeff, 2026-10-26).
+                fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
+                               bg=BRONZE, kind="sans", max_size=16)
+            elif running and held:
                 # The approved demo's PAUSED: the operator's own Hold.
                 fonts.show_key(d, b0, ["PAUSED"], CHAMPAGNE, bg=PAUSED_BG,
                                kind="sans")
@@ -3744,22 +4423,25 @@ class Controller:
                 fonts.show_key(d, b0, ["AUDIO", "LOST"], text, bg=bg,
                                kind="sans")
             elif running:
-                # Stop is refused during a scheduled show (only Hold,
-                # Resume and Abort, on the Rack screen), so the key says
-                # what the show is doing: NOW PLAYING, flashing green on
-                # the engine's own answers.
+                # The key says what the show is doing: NOW PLAYING,
+                # flashing green on the engine's own answers. A hold is
+                # still Stop, a complete halt (Jeff, 2026-10-26).
                 bg, text = PLAYING_ON if blink_on else PLAYING_OFF
                 fonts.show_key(d, b0, ["NOW", "PLAYING"], text, bg=bg,
                                kind="sans")
-            elif stop_frac > 0:
-                # Stop being held: the ring fills; let go early, nothing.
-                fonts.show_key(d, b0, ["HOLD TO", "STOP"], CHAMPAGNE,
-                               bg=BRONZE, kind="sans", max_size=16)
             elif self.start_key_mode() == "stop":
                 # Run pressed and playback going: this key is Stop (Jeff,
                 # 2026-10-26), held STOP_HOLD_S: every flame group
                 # disarmed, then the Rack screen's Stop.
                 fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
+                               kind="sans")
+            elif self.start_key_mode() == "unknown" or \
+                    self._idle_stop():
+                # The engine or the scheduler cannot be read, or nothing
+                # is running but a group is armed or live flames are on:
+                # the key is Stop, a complete halt (review of #130, 1;
+                # second pass, 6; low items, 3).
+                fonts.show_key(d, b0, ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:
                 # The demo's idle hold: START NOW dims while held.
@@ -3774,7 +4456,18 @@ class Controller:
                               max_size=16)
             else:
                 fonts.show_key(d, b0, ["START", "NOW"], CHAMPAGNE)
-        # Key 5 is spare (Jeff, 2026-10-26): left blank, nothing drawn.
+        if self.page == 2:
+            self._draw_page2(fonts, d, blink_on)
+            return canvas
+        if self._guard is not None and self._guard_frame is None:
+            self._guard_frame = self.frame_id
+            self._guard_frame_at = now
+        # Key 5 opens the announcements page (module docstring), drawn only
+        # when the engine says announcements are running.
+        av = self.announce_view()
+        if av and av.get("configured") and not latched:
+            fonts.show_key(d, face_box(ANNOUNCE_KEY), ["ANNOUNCE"],
+                           CHAMPAGNE, bg=BRONZE, kind="sans", max_size=14)
         fault, _confirmed = self._top_fault_confirmed()
         # Only the groups with a key are drawn, in key order, each under
         # its label: a screen-only group (module docstring 5) has none.
@@ -3846,6 +4539,74 @@ class Controller:
                 arm_key_image(fonts, d, face_box(GROUP_KEYS[i]), "",
                               group_look(None, slot=i), group_blink)
         return canvas
+
+    def _draw_page2(self, fonts, d, blink_on):
+        """Page 2's faces (keys 1 to 5; key 0 is drawn as on page 1): each
+        announcement READY, NO FILE (the recording is not on the PC yet),
+        NO OUTPUT, or PLAYING; STOP ANNC.; BACK. Display only."""
+        av = self.announce_view() or {}
+        # The engine's refusal of the last press, on the pressed key, for
+        # ANNOUNCE_SAID_S (second review of #129, 6).
+        refused = {}
+        said = getattr(self.conductor, "announce_said", None)
+        if said and not said[0] and len(said) > 3:
+            clk = getattr(self.conductor, "_clock", None) or self._clock
+            try:
+                fresh = clk() - said[2] <= ANNOUNCE_SAID_S
+            except Exception:
+                fresh = False
+            if fresh:
+                # On the key whose press it answers (delta review, 5).
+                refused[said[3]] = announce_refusal_word(said[1])
+        ready = av.get("ready") if isinstance(av.get("ready"), dict) else {}
+        missing = av.get("missing") if isinstance(av.get("missing"),
+                                                  dict) else {}
+        playing = av.get("playing")
+        for k, aid in PAGE2_PLAY.items():
+            box = face_box(k)
+            lines = list(PAGE2_FACE[aid])
+            if aid in refused:
+                fonts.show_key(d, box, lines + [refused[aid]],
+                               BLACK if blink_on else RED,
+                               bg=RED if blink_on else None, kind="sans",
+                               max_size=12)
+            elif not av or av.get("stale"):
+                fonts.show_key(d, box, lines + ["NO STATUS"], AMBER,
+                               kind="sans", max_size=12)
+            elif playing == aid:
+                fonts.show_key(d, box, lines + ["PLAYING"],
+                               BLACK if blink_on else AMBER,
+                               bg=AMBER if blink_on else BRONZE,
+                               kind="sans", max_size=14)
+            elif not av.get("configured"):
+                fonts.show_key(d, box, lines + ["NOT SET UP"], DIM_TEXT,
+                               kind="sans", max_size=12)
+            elif missing.get(aid):
+                fonts.show_key(d, box, lines + ["NO FILE"], AMBER,
+                               kind="sans", max_size=12)
+            elif not ready.get(aid):
+                fonts.show_key(d, box, lines + ["CANNOT PLAY"], AMBER,
+                               kind="sans", max_size=12)
+            elif not av.get("device_ok"):
+                fonts.show_key(d, box, lines + ["NO OUTPUT"], AMBER,
+                               kind="sans", max_size=12)
+            else:
+                fonts.show_key(d, box, lines, CHAMPAGNE, bg=BRONZE,
+                               kind="sans", max_size=16)
+        live = bool(playing) or bool(av.get("stale")) or not av
+        if "stop" in refused:
+            fonts.show_key(d, face_box(PAGE2_STOP),
+                           ["STOP", refused["stop"]],
+                           BLACK if blink_on else RED,
+                           bg=RED if blink_on else None, kind="sans",
+                           max_size=12)
+        else:
+            fonts.show_key(d, face_box(PAGE2_STOP), ["STOP", "ANNC."],
+                           CHAMPAGNE if live else DIM_TEXT,
+                           bg=BRONZE if live else None, kind="sans",
+                           max_size=16)
+        fonts.show_key(d, face_box(PAGE2_BACK), ["BACK"], CHAMPAGNE,
+                       kind="sans", max_size=16)
 
     def user_toast(self, now):
         """The Start key's lines naming who is signed in on this machine,
@@ -4854,7 +5615,8 @@ def deck_layout_at_start(names, folder, journal, settings_folder=None):
                      f"and key by name, and {t!r} keeps its own name.")
     ok = ok and bool(folder)
     notes.append(f"the keys are key 0 Start/Stop, "
-                 f"{_keys_text(order, labels, list(names))}; key 5 is spare. "
+                 f"{_keys_text(order, labels, list(names))}; key 5 opens "
+                 f"the announcements page. "
                  f"Unless {DECK_CONFIG_FILE} says otherwise, front row, "
                  f"cat-walk, wave flamer and fireball go on keys 1 to 4 by "
                  f"name and every other group follows in flamesafe's order "

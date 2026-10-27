@@ -210,6 +210,12 @@ DELAY_NEXT = "DELAY_NEXT"
 DELAY_REST = "DELAY_REST"
 ABORT = "ABORT"
 END_NIGHT = "END_NIGHT"
+# The Stream Deck's Stop held during a scheduled show (Jeff, 2026-10-26:
+# Stop is a complete halt of everything, the show ends): the show is cut
+# short and faded to dark like an Abort, but NOTHING is latched, so no
+# Reset is needed; Run brings the rig back. The engine disarms every flame
+# group and laser itself before it sends this.
+STOP_SHOW = "STOP_SHOW"
 EDIT_MOVE = "EDIT_MOVE"
 EDIT_ADD = "EDIT_ADD"
 EDIT_REMOVE = "EDIT_REMOVE"
@@ -225,13 +231,16 @@ EVENT_ACTORS = {
     CLEAR_FAULT: ("operator", "system"),
     CLOSING_DONE: ("system",),
     START_NOW: ("operator",),
-    HOLD_ON: ("operator",),
+    # "system": the engine's own Hold at showtime while an alert is open
+    # (Jeff, 2026-10-26; schedule_service.Service.tick, alerthold.py).
+    HOLD_ON: ("operator", "system"),
     RESUME: ("operator",),
     SKIP_NEXT: ("operator",),
     DELAY_NEXT: ("operator",),
     DELAY_REST: ("operator",),
     ABORT: ("operator",),
     END_NIGHT: ("operator",),
+    STOP_SHOW: ("operator",),
     EDIT_MOVE: ("operator",),
     EDIT_ADD: ("operator",),
     EDIT_REMOVE: ("operator",),
@@ -701,7 +710,9 @@ class Slot:
 
 
 # The presses that are taken whoever pressed them and wherever: see step().
-ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON))
+# Stop (STOP_SHOW) is a halt like them: the deck's Stop with no operator
+# chosen still stops the show.
+ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))
 
 
 @dataclass(frozen=True)
@@ -987,6 +998,7 @@ def _verb(ev):
         DELAY_NEXT: f"Delay next +{ev.minutes}",
         DELAY_REST: f"Delay the rest of the night +{ev.minutes}",
         ABORT: "Abort show", END_NIGHT: "Close for the night",
+        STOP_SHOW: "Stop",
         EDIT_MOVE: "move of a show", EDIT_ADD: "added show",
         EDIT_REMOVE: "removal of a show",
     }[ev.kind]
@@ -1809,6 +1821,29 @@ def _abort(m, ev, now):
         _abort_effects(n), abort=True)
 
 
+def _stop_show(m, ev, now):
+    """Stop during a show (the Stream Deck's Stop held; Jeff, 2026-10-26):
+    the show ends now, faded to dark as an Abort is, and the night carries
+    on exactly as after an Abort: STANDBY and dark, and after the last show
+    of the night the next tick closes the night (review of #130, 2). But
+    nothing is latched: no Reset is needed, and with Run no longer pressed
+    no later show starts. The engine disarms the flame groups and lasers
+    itself before this and journals how that went, so this line claims
+    only what the scheduler does."""
+    n = m.running
+    return _show_stopped(
+        m, ev, now, ABORTED, "STOPPED (operator Stop)",
+        f"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and "
+        f"lasers blanked; music, video and pixels fading to black over "
+        f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched: "
+        f"no Reset is needed, and no show starts until Run is pressed "
+        f"again.",
+        # As an Abort leaves the night: STANDBY, never straight to closing
+        # (the latch is not set here; only an Abort's conductor call sets
+        # it, schedule_service).
+        _abort_effects(n), abort=True)
+
+
 def _end_night(m, ev, now):
     tx = _Tx(m, ev, now)
     skipped = []
@@ -1972,6 +2007,7 @@ ALLOWED = {
     DELAY_REST: _LIVE,
     ABORT: frozenset((SHOW, PAUSED)),
     END_NIGHT: frozenset((IDLE, STANDBY, HOLD)),
+    STOP_SHOW: frozenset((SHOW, PAUSED)),
     EDIT_MOVE: _LIVE,
     EDIT_ADD: _LIVE,
     EDIT_REMOVE: _LIVE,
@@ -1985,7 +2021,7 @@ _HANDLERS = {
     START_NOW: _start_now, HOLD_ON: _hold, RESUME: _resume,
     SKIP_NEXT: _skip_next, DELAY_NEXT: lambda m, e, n: _delay(m, e, n, False),
     DELAY_REST: lambda m, e, n: _delay(m, e, n, True), ABORT: _abort,
-    END_NIGHT: _end_night, EDIT_MOVE: _edit_move, EDIT_ADD: _edit_add,
+    END_NIGHT: _end_night, STOP_SHOW: _stop_show, EDIT_MOVE: _edit_move, EDIT_ADD: _edit_add,
     EDIT_REMOVE: _edit_remove,
 }
 
@@ -2001,7 +2037,7 @@ def _why_not(m, ev):
     if st == PAUSED and k in (SHOW_ENDED, SHOW_FAILED):
         return (f"Show {m.running} is paused, so it has neither ended nor "
                 f"failed to start. Resume or Abort it first.")
-    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, ABORT):
+    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, ABORT, STOP_SHOW):
         return f"No show is running; the scheduler is in {st}."
     if k == CLOSING_DONE:
         return f"The scheduler is not closing; it is in {st}."
@@ -2066,7 +2102,7 @@ def step(m, ev, now):
                        f"from the list. Nothing was changed.")
     if m.state not in ALLOWED[ev.kind]:
         return _refuse(m, ev, now, _why_not(m, ev))
-    if ev.kind in (ABORT, END_NIGHT) and not ev.confirmed:
+    if ev.kind in (ABORT, END_NIGHT, STOP_SHOW) and not ev.confirmed:
         return _refuse(m, ev, now, f"{_verb(ev)} has to be confirmed first. "
                                    f"Nothing was changed.")
     if ev.kind == CLEAR_FAULT and not m.faults:
