@@ -4,10 +4,14 @@ degraded-mode rulings, 2026-10-07 and 2026-10-12; the spec's section 2).
 An alert is a plain sentence about something wrong, with the few things a
 person may press about it. It is raised by the engine (the scheduler, the
 Stream Deck process over loopback, later the pre-start gate), shown on the
-rack screen's status strip and on every remote page, sounded ONCE in the
-booth over a private speaker (boothaudio.py), and journaled as a fault. It
-stays until a person clears it with a deliberate press: Acknowledge on the
-rack screen or any page, or any key on the Stream Deck. There is no timer.
+rack screen's status strip and on every remote page, sounded in the booth
+over a private speaker (boothaudio.py) when raised and again every
+resound_s (RESOUND_S, 30 s, or the booth's own response_s) until it is
+acknowledged (Jeff, 2026-10-26), and journaled as a fault. It stays until
+a person clears it with a deliberate press: Acknowledge on the rack screen
+or any page, or any key on the Stream Deck. Nothing on the rig is ever
+changed by a timer here; what happens at showtime with an alert open is
+alerthold.py's.
 
 Pure logic, injected clocks, no sockets, no threads: web.py's Remote owns
 one Alerts and gives it the journal, the booth player and the show state.
@@ -48,7 +52,10 @@ OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
 # The presses that clear an alert and change nothing on the rig. Any
 # other option chooses something and is somebody else's route.
 CLEARING = frozenset(("Acknowledge", "Confirm", "Continue"))
-RESOUND_S = 60.0
+# The booth note again every this many seconds while an alert stays open
+# (Jeff, 2026-10-26: 60 -> 30, the booth's response_s). A booth config's
+# own response_s wins (resound_s()).
+RESOUND_S = 30.0
 BOOTH_UNAVAILABLE = "Booth speaker not available"
 # The kinds whose pulse also runs during a show (section 2).
 PULSE_DURING_SHOW = frozenset(("audio",))
@@ -97,6 +104,7 @@ class Alerts:
         self._on_change = on_change
         self._open = {}            # kind -> Alert
         self._sounded = {}         # kind -> clock() of the last booth note
+        self._tried = {}           # kind -> clock() tick() last tried it
         self._ids = 0
 
     # -- raise -------------------------------------------------------------
@@ -135,17 +143,50 @@ class Alerts:
         self._changed()
         return a
 
+    def resound_s(self):
+        """The re-sound interval: the booth config's response_s when there
+        is one, else RESOUND_S."""
+        cfg = getattr(self.booth, "config", None)
+        try:
+            v = float((cfg or {}).get("response_s") or RESOUND_S)
+        except (TypeError, ValueError, AttributeError):
+            v = RESOUND_S
+        return v if v > 0 else RESOUND_S
+
+    def tick(self):
+        """The booth note again for every open alert whose last note is
+        resound_s() old: until it is acknowledged (Jeff, 2026-10-26).
+        Sound only; nothing else. Called by the remote's alert thread."""
+        now = self._clock()
+        every = self.resound_s()
+        for a in list(self._open.values()):
+            # A note that could not play is tried again at the same pace,
+            # never on every tick (a missing device is asked once per
+            # interval, not four times a second).
+            tried = self._tried.get(a.kind)
+            if tried is not None and now - tried < every:
+                continue
+            self._sound(a)
+
+    def sound_now(self):
+        """Every open alert's booth note at once (the showtime Hold,
+        alerthold.py), whatever the interval."""
+        for a in list(self._open.values()):
+            self._sounded.pop(a.kind, None)
+            self._sound(a)
+
     def _sound(self, a):
-        """The booth note, once per raise, never twice within RESOUND_S
-        for one kind. The pulse flag follows whether it could play."""
+        """The booth note, never twice within resound_s() for one kind.
+        The pulse flag follows whether it could play."""
         now = self._clock()
         last = self._sounded.get(a.kind)
-        if last is not None and now - last < RESOUND_S:
-            a.booth = a.booth or "quiet: sounded less than a minute ago"
+        if last is not None and now - last < self.resound_s():
+            a.booth = a.booth or "quiet: sounded less than 30 s ago"
             return
         if self.booth is None:
             a.booth_ok, a.booth = False, "No booth speaker is configured."
             return
+        self._tried[a.kind] = now
         try:
             ok, why = self.booth.play(a.kind)
         except Exception as e:           # noqa: BLE001  never the caller's

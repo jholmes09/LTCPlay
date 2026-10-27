@@ -1251,6 +1251,18 @@ class Remote:
         self.alert_pixels = None     # (start0, count, order) or None
         if schedule is not None and hasattr(schedule, "alert_sink"):
             schedule.alert_sink = self.alerts.raise_
+        # The alert hold (alerthold.py, Jeff 2026-10-26): at showtime with
+        # an alert open the schedule Holds, and a Delayed announcement
+        # follows unless acknowledged. Ticked with the booth re-sound
+        # after every scheduler tick (_alert_tick), on its thread.
+        from .alerthold import AlertHold
+        self.alert_hold = AlertHold(self.alerts, schedule,
+                                    announce=lambda: self._announce,
+                                    clock=clock)
+        if schedule is not None and hasattr(schedule, "showtime_gate"):
+            schedule.showtime_gate = self.alert_hold.gate
+            schedule.on_alert_hold = self.alert_hold.started
+            schedule.tick_hooks.append(self._alert_tick)
         # Users and the audit log (users.py, audit.py, auditsend.py; Jeff,
         # 2026-10-20), set by web.serve. None: no sign-in, nothing logged,
         # every press as before.
@@ -1742,6 +1754,19 @@ class Remote:
                       f"{who} switched arming from a screen "
                       f"{'ON' if on else 'OFF'} on the {screen}.")
         return 200, {"ok": True, "enabled": on, "text": text}
+
+    def _alert_tick(self):
+        """After each scheduler tick: the booth note again for alerts still
+        open (alerts.Alerts.tick) and the alert hold's countdown. Never
+        raises."""
+        try:
+            self.alerts.tick()
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            self.alert_hold.tick()
+        except Exception:                        # noqa: BLE001
+            pass
 
     # -- announcements (announce.py) ----------------------------------------
     ANNOUNCE_OFF = ("Announcements are not running in this engine. LTC "
@@ -4926,6 +4951,11 @@ class Remote:
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""
         out["booth"] = {"configured": bool(booth), "device": booth}
+        try:
+            out["alert_hold"] = self.alert_hold.view()
+        except Exception as e:                   # noqa: BLE001
+            out["alert_hold"] = {"held": False,
+                                 "error": f"{type(e).__name__}: {e}"}
         if ctx.local:
             # Operator announcements: the rack screen's block (announce.py).
             out["announce"] = self.announce_view()

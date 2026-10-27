@@ -85,8 +85,25 @@ disarmed, and nothing can arm until it is gone.
 that did not start), a banner appears at the top of the rack screen and on
 every remote page, in plain words, and a short note plays on the booth
 speaker if one is set up (ltcplay_remote.json, booth_alert; off until it
-is). It stays until you press Acknowledge on the banner or any key on the
-Stream Deck. Acknowledge only clears the banner: nothing on the rig changes.
+is), and plays again every 30 seconds (the booth's response_s) until
+someone acknowledges it. It stays until you press Acknowledge on the
+banner or any key on the Stream Deck. Acknowledge only clears the banner:
+nothing on the rig changes.
+
+**An alert still open when a show is due** (Jeff, 2026-10-26). Between
+shows an alert does nothing automatic. But if a show's time comes while
+any alert is open, the schedule goes on Hold at once instead of starting
+the show: the booth note sounds and the state card on the rack screen
+says "Held: alert open". For an audio, video, flames, flame link,
+timecode or start alert, a 60 second countdown shows there; if nobody
+acknowledges the alert by then, the Delayed announcement plays once on
+the PA. A Stream Deck or gate alert holds quietly, with no announcement.
+Acknowledging cancels the countdown and the announcement, but does NOT
+start the show: it waits until you press Resume (then Start now for the
+delayed show, as after any Hold). If the recording or the announcement
+output is missing, it stays held and the state card says so. A show that
+is already running is never held, stopped, disarmed or announced over by
+this. Stop on the Stream Deck works the same while held.
 While an alert is open the Stream Deck's Start key reads ACK / ALERT in
 blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels

@@ -800,6 +800,16 @@ class Service:
         # (Jeff, 2026-10-12: the groups are left as they are, so a person
         # has to be told). None: journaled only, as before.
         self.alert_sink = None
+        # () -> a sentence naming the open alerts, or None, set by
+        # remote.Remote (alerthold.py): at showtime, with an alert open,
+        # the schedule Holds instead of starting the show (Jeff,
+        # 2026-10-26). A running show is never touched. `on_alert_hold`
+        # (epoch, why) is told after such a Hold, outside the lock.
+        self.showtime_gate = None
+        self.on_alert_hold = None
+        # Called after every tick of the running scheduler, outside the
+        # lock (_run): remote.Remote._alert_tick.
+        self.tick_hooks = []
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -2243,11 +2253,47 @@ class Service:
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
+            self._hold_at_showtime_for_alerts(now)
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
             self._sync_latch_marker()
             m = self.machine
         self._after_tick()
         return m
+
+    # The states a show can START from on a tick; a running (SHOW) or
+    # paused show, or one already held, is never touched here.
+    SHOWTIME_FROM = (sch.IDLE, sch.STANDBY)
+
+    def _hold_at_showtime_for_alerts(self, now):
+        """With the lock held, just before the tick: if this tick would
+        start a show and an alert is open (showtime_gate), the schedule
+        Holds instead, as the engine's own system action, and the show
+        waits for an operator's Resume (Jeff, 2026-10-26). sch.step is
+        pure, so the tick is tried on the side first. Never mid-show:
+        only from IDLE or STANDBY. Never raises."""
+        gate = self.showtime_gate
+        m = self.machine
+        if gate is None or m is None or m.state not in self.SHOWTIME_FROM:
+            return
+        try:
+            probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
+            if not any(e.kind == sch.START_SHOW for e in probe.effects):
+                return
+            why = gate()
+        except Exception:                        # noqa: BLE001
+            return
+        if not why:
+            return
+        out = self._apply(sch.Event(
+            sch.HOLD_ON, "system", who="LTC Player", screen="engine",
+            detail=f"held the schedule at showtime because an alert is "
+                   f"open ({why})"), now)
+        if out.refused or self.machine.state != sch.HOLD:
+            return
+        hook = self.on_alert_hold
+        if hook is not None:
+            epoch = self.hold_epoch
+            self._pending_hooks.append(lambda: hook(epoch, why))
 
     # A conductor request with no answer after this long is a fault: they
     # are meant to return at once (the conductor does its fades on its own
@@ -2578,6 +2624,14 @@ class Service:
     def _run(self):
         while not self._stop.is_set():
             self._safe_tick()
+            # After the tick, outside the lock: the alert thread's work
+            # (remote.Remote._alert_tick: the booth re-sound and the alert
+            # hold's countdown). A hook that raises never stops the ticks.
+            for hook in list(self.tick_hooks):
+                try:
+                    hook()
+                except Exception:                # noqa: BLE001
+                    pass
             self._stop.wait(self.TICK_S)
 
     def halt(self):

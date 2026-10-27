@@ -1713,6 +1713,12 @@ function stopWords(j){
   if(f && f.disarmed === false) return STOP_DISARM_FAILED;
   return "Stopped.";
 }
+// The alert hold (alerthold.py): the state card's word and sentence while
+// the schedule is held at showtime because an alert is open, or null.
+function alertHoldLook(ah){
+  if(!ah || ah.held !== true) return null;
+  return {word:"Held", label:String(ah.text || "Held: alert open.")};
+}
 // Operator announcements (announce.py, Jeff 2026-10-26): what the rack
 // screen's Announcements block and its banner show, from the status's
 // "announce". One press plays. A recording not on this PC yet says
@@ -1992,6 +1998,10 @@ function render(){
     else { word = sch.state || "..."; label = ""; }
     if(sch.error) label += (label ? ". " : "") + sch.error;
   }
+  // The alert hold (alerthold.py, Jeff 2026-10-26): held at showtime with
+  // an alert open, and the Delayed countdown, said on the state card.
+  const ah = alertHoldLook(s.alert_hold);
+  if(ah){ word = ah.word; label = ah.label; cls = "warn"; }
   $("st-word").textContent = word;
   $("st-word").className = "stateword " + cls;
   $("st-state").textContent = label; $("st-state").title = label;
