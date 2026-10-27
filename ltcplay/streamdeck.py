@@ -1447,7 +1447,15 @@ class EngineConductor:
                               f"use Disarm all lasers on the Rack screen"))
             # Anything else the engine says failed (the halt itself
             # raising, review of #130, second pass, 5), said too.
-            told = {"flames", "lasers", "show", "laser blank"}
+            told = {"flames", "lasers", "show", "laser blank",
+                    "playback stop"}
+            if "playback stop" in (doc.get("failed") or []):
+                # Only playback did not stop: the flames and lasers were
+                # disarmed (said apart, review of #130, low items, 1).
+                fails.append(("playback",
+                              f"playback did NOT stop ("
+                              f"{doc.get('playback_error') or doc.get('error') or 'no reason given'}"
+                              f"): press Stop on the Rack screen"))
             for step in doc.get("failed") or []:
                 if step not in told:
                     fails.append(("disarm",
@@ -1456,7 +1464,18 @@ class EngineConductor:
                                   f"): use Abort on the Rack screen or the "
                                   f"hardware e-stop"))
         disarm_failed = any(k == "disarm" for k, _t in fails)
-        if errored:
+        playback_only = bool(fails) and all(k == "playback" for k, _t in fails)
+        if errored and playback_only:
+            # The halt worked; only the playback stop did not: say what
+            # was disarmed, apart from a disarm that failed (review of
+            # #130, low items, 1).
+            done = [w for k, w in (("flames", "every flame group"),
+                                   ("lasers", "every laser"))
+                    if isinstance(doc.get(k), dict) and
+                    doc[k].get("disarmed") is True]
+            text = ((f"Stop disarmed {' and '.join(done)}, but "
+                     if done else "") + fails[0][1])
+        elif errored:
             text = (f"the engine answered Stop with an error ({text})"
                     + ("; and " + "; and ".join(t for _k, t in fails)
                        if fails else "") + ": check the Rack screen")
@@ -1490,6 +1509,7 @@ class EngineConductor:
             # never shown as ENGINE FAULT on the keys.
             self.fault = "" if (ok or noop) else f"{name.title()}: {text}"
             self.fault_face = ("DISARM", "FAILED") if disarm_failed else \
+                ("PLAYBACK", "FAILED") if playback_only else \
                 ("CHECK", "RACK") if slow else ("ENGINE", "FAULT")
         elif "raise" in body:
             self.alert_delivered = bool(ok)
@@ -1901,6 +1921,18 @@ class ScreenKeys:
             return None
         m = last[0].get("morning")
         return m if isinstance(m, dict) else None
+
+    def flames_live(self):
+        """True while the engine's last fresh answer says live flame
+        programming or fire while scrubbing is on (deck-input
+        "flames_live"), False when it says neither, None when the engine
+        has not answered within SCREEN_STALE_S."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        v = last[0].get("flames_live")
+        return v if isinstance(v, bool) else None
 
     def alerts(self):
         """The engine's open alerts (alerts.py), as its last fresh answer
@@ -3009,7 +3041,7 @@ class Controller:
 
     def _do_start_or_stop(self, now):
         mode = self.start_key_mode()
-        if mode == "start" and not self._any_flame_armed(purge=False):
+        if mode == "start" and not self._idle_stop():
             self._do_start_now()
         else:
             # Nothing running but a group armed: the hold is Stop too, a
@@ -3049,8 +3081,25 @@ class Controller:
         third review of #130, 1) or the state not known; and while a group
         is armed other than for the purge (review of #130, second pass,
         2). An open Morning page never swallows a Stop."""
-        return self.start_key_mode() in STOP_MODES or \
-            self._any_flame_armed(purge=False)
+        return self.start_key_mode() in STOP_MODES or self._idle_stop()
+
+    def _flames_live(self):
+        """True while the engine says live flame programming or fire while
+        scrubbing is on (deck-input "flames_live"). Never raises."""
+        s = self.screen
+        fn = getattr(s, "flames_live", None) if s is not None else None
+        try:
+            return fn is not None and fn() is True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def _idle_stop(self):
+        """With no show or run going, key 0 is still Stop (STOP ALL) while
+        a group is armed other than for the purge, or live flame
+        programming or fire while scrubbing is on: those count as running
+        (review of #130, low items, 3). The purge still works when nothing
+        at all is running."""
+        return self._any_flame_armed(purge=False) or self._flames_live()
 
     def _do_stop(self):
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
@@ -3531,7 +3580,7 @@ class Controller:
                     # wins (_stop_wins).
                     if (not morning or self._stop_wins()) and (
                             self.start_key_mode() in STOP_MODES or
-                            self._any_flame_armed(purge=False)):
+                            self._idle_stop()):
                         self._stop_hold.press(now)
                 elif morning and not self._stop_wins():
                     # Re-mapped while the Morning page is open: FIRE.
@@ -3567,6 +3616,15 @@ class Controller:
             # press right after either cannot quietly re-arm.
             self._was_latched = latched
             self._disarmed_at = [now] * len(self.names)
+        pf = self.purge_fire
+        if self._prev_keys[TOP_START] and pf is not None and \
+                getattr(pf, "firing", False) and self._stop_wins():
+            # FIRE is held and a show or run has started (or a group was
+            # armed, or live flames came on): FIRE ends now and the same
+            # held key becomes a Stop hold at once, with no second press
+            # (review of #130, low items, 4).
+            self._fire_release("Stop wins: something is running")
+            self._stop_hold.press(now)
         if self._prev_keys[TOP_START] and self._stop_hold.fired(now):
             # A Stop hold that completes always stops (review of #130, 1):
             # every group disarmed on the arm link first, then the engine's
@@ -3967,10 +4025,11 @@ class Controller:
                 fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif self.start_key_mode() == "unknown" or \
-                    self._any_flame_armed(purge=False):
+                    self._idle_stop():
                 # The engine or the scheduler cannot be read, or nothing
-                # is running but a group is armed: the key is Stop, a
-                # complete halt (review of #130, 1; second pass, 6).
+                # is running but a group is armed or live flames are on:
+                # the key is Stop, a complete halt (review of #130, 1;
+                # second pass, 6; low items, 3).
                 fonts.show_key(d, b0, ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif held:

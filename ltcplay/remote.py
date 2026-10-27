@@ -2360,6 +2360,16 @@ class Remote:
         uv = self.user_view_for_deck()
         if uv is not None:
             out["user"] = uv
+        # Whether live flame programming or fire while scrubbing is on: the
+        # deck counts either as running, so key 0 is Stop (STOP ALL), never
+        # FIRE (review of #130, low items, 3).
+        live = False
+        for view in (self.live_flame_view, self.scrub_flames_view):
+            try:
+                live = live or bool((view() or {}).get("on"))
+            except Exception:                    # noqa: BLE001
+                pass
+        out["flames_live"] = live
         # The Morning and Shutdown page (morning.py): whether it is open
         # (the deck re-maps itself while it is), the groups the purge
         # selection needs armed, and the locks. The deck arms a purge

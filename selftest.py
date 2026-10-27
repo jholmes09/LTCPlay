@@ -46928,6 +46928,23 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               out.get("stopped") is False,
               f"a playback stop that raises: 500 with the halt's steps: "
               f"{st} {out}")
+        # The halt itself raised too: both errors kept, never overwritten
+        # (review of #130, low items, 2).
+        real_halt = R.remote.halt
+
+        def _halt_boom(who, screen):
+            raise ValueError("the halt broke")
+        R.remote.halt = _halt_boom
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 500 and "the halt broke" in out.get("error", "") and
+              "wedged" in out.get("error", "") and
+              "wedged" in out.get("playback_error", "") and
+              out.get("failed") == ["halt", "playback stop"],
+              f"the halt's error and the playback stop's, both kept: "
+              f"{out}")
+        R.remote.halt = real_halt
     finally:
         R.close()
     print("  ok")
@@ -47623,7 +47640,7 @@ def test_stop_halt_second_review_of_130():
     e._post_one("stop", {"who": ""}, path="/api/stop")
     check("answered Stop with an error" in e.fault and
           "flame disarm FAILED (F)" in e.fault and
-          "playback stop step FAILED" in e.fault and
+          "playback did NOT stop" in e.fault and
           tuple(e.fault_face) == ("DISARM", "FAILED"),
           f"a 500 after the halt: its real failed steps, DISARM FAILED: "
           f"{e.fault!r} {e.fault_face}")
@@ -47678,7 +47695,7 @@ def test_stop_halt_second_review_of_130():
         e6 = sd.EngineConductor(f"http://127.0.0.1:{hs.server_port}")
         e6._post_one("stop", {"who": ""}, path="/api/stop")
         check("flame disarm FAILED (F)" in e6.fault and
-              "playback stop step FAILED" in e6.fault and
+              "playback did NOT stop" in e6.fault and
               tuple(e6.fault_face) == ("DISARM", "FAILED"),
               f"a real 500 from Stop: its failed steps read and said, "
               f"never ENGINE FAULT: {e6.fault!r} {e6.fault_face}")
@@ -47789,6 +47806,170 @@ def test_stop_halt_second_review_of_130():
     check(set(SV._ConductorCalls.STOP_DROPS) ==
           {"start_show", "show_starting"},
           "never a Reset, Hold or Resume: Stop is not an Abort")
+    print("  ok")
+
+
+def test_stop_halt_low_items_of_130():
+    """The low items from the last review of #130: a 500 where only the
+    playback stop failed reads PLAYBACK FAILED and says the flames were
+    disarmed; the halt's own error is kept beside the playback stop's; live
+    flame programming and fire while scrubbing count as running (key 0 is
+    Stop, never FIRE) while the purge still works when nothing at all runs;
+    and FIRE held when a show or run starts becomes a Stop hold at once."""
+    section("Stop (review of #130, low items): playback stop failed, both "
+            "errors kept, live flames count as running, FIRE yields to Stop")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    # 1. Only the playback stop failed (a 500 after the halt ran).
+    got = {}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: None,
+                           poster=lambda p, b: got["a"])
+    got["a"] = (False, "RuntimeError: wedged", {
+        "_http_status": 500, "stopped": False,
+        "flames": {"disarmed": True, "text": "sent"},
+        "lasers": {"disarmed": True, "text": "sent"},
+        "failed": ["playback stop"], "error": "RuntimeError: wedged",
+        "playback_error": "RuntimeError: wedged"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("PLAYBACK", "FAILED") and
+          "every flame group and every laser" in e.fault and
+          "playback did NOT stop (RuntimeError: wedged)" in e.fault and
+          "DISARM" not in e.fault and "step FAILED" not in e.fault,
+          f"only the playback stop failed: PLAYBACK FAILED, the flames "
+          f"said disarmed: {e.fault!r} {e.fault_face}")
+    got["a"] = (False, "x", {
+        "_http_status": 500, "stopped": False,
+        "flames": {"disarmed": False, "text": "F"},
+        "failed": ["flames", "playback stop"], "error": "x"})
+    e._post_one("stop", {"who": ""}, path="/api/stop")
+    check(tuple(e.fault_face) == ("DISARM", "FAILED") and
+          "playback did NOT stop" in e.fault and
+          "flame disarm FAILED (F)" in e.fault,
+          f"a disarm failed as well: DISARM FAILED, both said: {e.fault!r}")
+    # 3. Live flames count as running; the purge works when nothing runs.
+    arm = _FakeArmSocket(3)
+    t = [100.0]
+    show, run = [False], [False]
+
+    class _Scr(_FakeMorningScreen):
+        live = False
+
+        def flames_live(self):
+            return self.live
+
+    class _Cond(_FakeConductor):
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("stop", who, screen))
+            return _Result(True, "Stopped.")
+    scr = _Scr()
+    cond = _Cond()
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: show[0],
+                      run_live_provider=lambda: run[0], conductor=cond,
+                      journal=lambda t_, **kw: None, clock=lambda: t[0],
+                      screen=scr)
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+    up, down = [False] * 6, [True] + [False] * 5
+
+    def stops():
+        return [x for x in cond.calls if x[0] == "stop"]
+
+    def wait(dt):
+        t[0] += dt
+        c.tick()
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [0], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0} and not c._stop_wins(),
+          "setup: the purge's group armed, nothing running: FIRE")
+    c.run_once(down)
+    check(pf.calls and pf.calls[-1][0] == "start",
+          f"nothing at all running: the purge's FIRE works: {pf.calls}")
+    c.run_once(up)
+    scr.live = True
+    check(c._stop_wins(), "live flame programming on: Stop wins")
+    n_pf, n0 = len(pf.calls), len(stops())
+    c.run_once(down)
+    check(len(pf.calls) == n_pf and c._stop_hold._down_at is not None,
+          f"live flames on: key 0 is Stop, never FIRE: {pf.calls[n_pf:]}")
+    wait(sd.STOP_HOLD_S + 0.01)
+    c.run_once(up)
+    check(len(stops()) == n0 + 1 and arm.wanted == [False, False, False],
+          f"and the hold stops: {cond.calls}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is not None:
+        try:
+            scr.mo = None
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["STOP", "ALL"],
+                  f"live flames on, nothing else running: STOP ALL: "
+                  f"{faces[0]}")
+            scr.live = False
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] != ["STOP", "ALL"],
+                  f"live flames off: not STOP ALL: {faces[0]}")
+        finally:
+            restore()
+    scr.live = False
+    # The engine says so: deck-input carries flames_live.
+    from ltcplay import remote as RM
+
+    class _Svc:
+        conductor = None
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            pass
+    rm = RM.Remote(None, _Svc(), folder=tempfile.mkdtemp(),
+                   log=lambda t_: None)
+    check(rm.deck_input("").get("flames_live") is False,
+          "deck-input: flames_live false with neither on")
+    rm.live_flame_view = lambda: {"available": True, "on": True}
+    check(rm.deck_input("").get("flames_live") is True,
+          "live flame programming on: flames_live true")
+    rm.live_flame_view = lambda: {"on": False}
+    rm.scrub_flames_view = lambda: {"on": True}
+    check(rm.deck_input("").get("flames_live") is True,
+          "fire while scrubbing on: flames_live true")
+    tt = [0.0]
+    sk = sd.ScreenKeys("http://127.0.0.1:1", clock=lambda: tt[0],
+                       fetcher=lambda p: {"flames_live": True})
+    check(sk.flames_live() is None, "before an answer: not known")
+    sk._last = ({"flames_live": True}, 0.0)
+    check(sk.flames_live() is True, "the deck reads flames_live")
+    tt[0] = sd.SCREEN_STALE_S + 1
+    check(sk.flames_live() is None, "a stale answer: not known")
+    # 4. FIRE held when a show starts: FIRE ends, and the same held key is
+    # a Stop hold at once, with no second press.
+    scr.mo = {"open": True, "purge_enabled": True,
+              "purge": {"wanted_groups": [], "selected": 1,
+                        "firing": False},
+              "locks": {"groups_fully_locked": []}}
+    t[0] += sd.REARM_REFRACTORY_S
+    c.screen_pass()
+    c.tick()
+    scr.mo["purge"]["wanted_groups"] = [0]
+    c.screen_pass()
+    c.tick()
+    check(c._purge_armed == {0}, f"setup: purge armed: {c._purge_armed}")
+    c.run_once(down)
+    check(pf.firing, "FIRE held")
+    n0 = len(stops())
+    show[0] = True
+    wait(0.01)
+    check(not pf.firing and c._stop_hold._down_at is not None,
+          "a show started while FIRE was held: FIRE ends and the held key "
+          "starts the Stop hold at once")
+    wait(sd.STOP_HOLD_S + 0.01)
+    check(len(stops()) == n0 + 1,
+          f"and with the key still held, Stop goes, no second press: "
+          f"{cond.calls}")
+    c.run_once(up)
     print("  ok")
 
 
@@ -68723,6 +68904,7 @@ if __name__ == "__main__":
     test_stop_says_when_its_flame_disarm_failed()
     test_stop_halt_review_of_130()
     test_stop_halt_second_review_of_130()
+    test_stop_halt_low_items_of_130()
     test_screen_arm_end_to_end_probes()
     test_screen_arming_switch_and_refusals()
     test_engine_stall_probe_memory_is_bounded()

@@ -1461,8 +1461,15 @@ class Handler(BaseHTTPRequestHandler):
                         out["stopped"] = False
                         out["failed"] = list(out.get("failed") or []) + [
                             "playback stop"]
-                        out["error"] = c.last_error = \
-                            f"{type(e).__name__}: {e}"
+                        said = f"{type(e).__name__}: {e}"
+                        out["playback_error"] = said
+                        # The halt's own error, if it had one, is kept
+                        # beside this one, never overwritten (review of
+                        # #130, low items, 2).
+                        out["error"] = (f"{out['error']}; and the playback "
+                                        f"stop: {said}" if out.get("error")
+                                        else said)
+                        c.last_error = said
                         return self._send(500, out)
                     return self._send(200, out)
                 flames = self._stop_flames(body)
