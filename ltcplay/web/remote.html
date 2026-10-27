@@ -609,9 +609,9 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #setup.stepsbelow .surow{margin-bottom:0}
 #setup.stepsbelow{padding-top:4px;padding-bottom:4px}
 html.tight #setup.stepsbelow{padding-top:2px;padding-bottom:2px}
-/* The steps scroll by touch on the show PC's screen, without dragging the
-   page along at their ends. */
-.subody{overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+/* The steps scroll by touch on the show PC's screen; at their ends the
+   page takes over (review of #141: "contain" left a dead zone). */
+.subody{overscroll-behavior:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y}
 /* Make a show file is a full-size touch target at every window size
    (review of #140: 32 px on a short window). */
 #setup .surow #su-make{min-height:40px}
@@ -678,6 +678,34 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
   .lz-chips button{min-height:30px}
   button.lzdis{min-height:34px}
 }
+/* The same short-window rules, applied by fitSetup() (html.tight) on any
+   window where the Getting started card would otherwise push Disarm all
+   or an arm button under the slack (review of #140: 1024 and 1180 wide
+   windows a little taller than 660 px of page, where the status cards go
+   two by two, missed the margin). :where() keeps them at the media rules'
+   own weight, and they come before the 600 px rules, so on a window that
+   short those still win (review of #141: tight made the controls taller
+   there). */
+:where(html.tight) #ctl-msg:empty{min-height:0}
+:where(html.tight) #arm-note{display:none}
+:where(html.tight) #arm-note.said{display:block}
+:where(html.tight) .ctl button{min-height:44px}
+:where(html.tight) .lamp button.armb{min-height:44px}
+:where(html.tight) #abort-said .altext{max-height:2.8em}
+:where(html.tight) nav button{min-height:34px;padding:4px 12px}
+:where(html.tight) h1{font-size:20px}
+:where(html.tight) header img{height:30px}
+:where(html.tight) .warnbox:not(.open){-webkit-line-clamp:1}
+:where(html.tight) .now .card{padding:3px 8px}
+:where(html.tight) .now .kicker{margin:0}
+:where(html.tight) #st-tc{font-size:24px}
+:where(html.tight) .stateword{font-size:20px}
+:where(html.tight) .lamp{padding:3px 8px;gap:2px}
+:where(html.tight) #setup.folded{padding-top:2px;padding-bottom:2px}
+:where(html.tight) #v-show{gap:4px}
+:where(html.tight) .alsum{padding:2px 10px}
+:where(html.tight) .alsum button,:where(html.tight) .alsum button.disarm{min-height:38px}
+:where(html.tight) #mode{min-height:0;padding-top:2px;padding-bottom:2px}
 @media (max-height:600px){
   .ctl button{min-height:40px;font-size:18px}
   #abort-said .altext{max-height:1.4em}
@@ -707,31 +735,6 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
   .alsum button,.alsum button.disarm{min-height:38px}
   #mode{min-height:0;padding-top:2px;padding-bottom:2px}
 }
-/* The same short-window rules, applied by fitSetup() (html.tight) on any
-   window where the Getting started card would otherwise push Disarm all
-   or an arm button under the slack (review of #140: 1024 and 1180 wide
-   windows a little taller than 660 px of page, where the status cards go
-   two by two, missed the margin). */
-html.tight #ctl-msg:empty{min-height:0}
-html.tight #arm-note{display:none}
-html.tight #arm-note.said{display:block}
-html.tight .ctl button{min-height:44px}
-html.tight .lamp button.armb{min-height:44px}
-html.tight #abort-said .altext{max-height:2.8em}
-html.tight nav button{min-height:34px;padding:4px 12px}
-html.tight h1{font-size:20px}
-html.tight header img{height:30px}
-html.tight .warnbox:not(.open){-webkit-line-clamp:1}
-html.tight .now .card{padding:3px 8px}
-html.tight .now .kicker{margin:0}
-html.tight #st-tc{font-size:24px}
-html.tight .stateword{font-size:20px}
-html.tight .lamp{padding:3px 8px;gap:2px}
-html.tight #setup.folded{padding-top:2px;padding-bottom:2px}
-html.tight #v-show{gap:4px}
-html.tight .alsum{padding:2px 10px}
-html.tight .alsum button,html.tight .alsum button.disarm{min-height:38px}
-html.tight #mode{min-height:0;padding-top:2px;padding-bottom:2px}
 /* Shorter still (a browser with bars on a 1366x768 laptop, CI's headless
    window: 400 to 480 px of page; review of PR #129): the show controls and
    the flame groups with Disarm all come straight after the banners, and
@@ -2824,14 +2827,23 @@ const FIT_SLACK = 30, STEPS_MIN = 120;
 const SUBODY = document.querySelector("#setup .subody");
 let FIT_KEY = "";
 function fitKey(){
+  // What decides the fit, measured on every tick (no style is changed, so
+  // nothing is scrolled): the window, the card's fold and content, where
+  // the card starts on the page (everything above it: the warnings, the
+  // banners, the status cards), and how far below the card's bottom
+  // Disarm all and the lowest arm button end (the groups, the arm note).
+  // Review of #141: warnings that came up with the card open changed
+  // none of the old key, and the page was never fitted again.
   const card = $("setup");
-  const vis = id => { const e = document.getElementById(id); return e && !e.hidden ? 1 : 0; };
+  const cr = card.getBoundingClientRect();
+  let arm = 0;
+  for(const e of document.querySelectorAll("#fl-lamps .lamp [data-arm]")){
+    if(e.getClientRects().length) arm = Math.max(arm, Math.round(e.getBoundingClientRect().bottom - cr.bottom));
+  }
+  const d = $("b-disarm");
+  const dis = d && d.getClientRects().length ? Math.round(d.getBoundingClientRect().bottom - cr.bottom) : 0;
   return JSON.stringify([innerWidth, innerHeight, card.hidden, $("v-show").hidden,
-    card.classList.contains("folded"), SETUP_KEY,
-    document.querySelectorAll("#fl-lamps .lamp").length,
-    vis("ann"), vis("lz"), vis("abort-said"), vis("nofile"),
-    (document.getElementById("alerts") || {}).childElementCount || 0,
-    ($("ctl-msg").textContent || "").length > 0]);
+    card.classList.contains("folded"), SETUP_KEY, Math.round(cr.top + scrollY), dis, arm]);
 }
 // How far the lowest of Disarm all and the arm buttons below the card
 // reaches past the window's bottom less FIT_SLACK, in px (<= 0: clear).
@@ -2857,6 +2869,13 @@ function stepsHome(inCard){
 function fitCap(){
   const card = $("setup");
   card.style.maxHeight = "";
+  // The card's own 40 percent cap never leaves the steps under STEPS_MIN
+  // (review of #141: on the CI runner's 400 px page it left 98).
+  {
+    const cr = card.getBoundingClientRect(), br = SUBODY.getBoundingClientRect();
+    const minH = Math.ceil(cr.height - br.height + Math.min(STEPS_MIN, SUBODY.scrollHeight));
+    if(cr.height < minH - 0.5) card.style.maxHeight = minH + "px";
+  }
   for(let pass = 0; pass < 3; pass++){
     const over = fitOver();
     if(over <= 0.5) return true;

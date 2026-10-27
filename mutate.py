@@ -14883,6 +14883,18 @@ def build():
   "      card.style.maxHeight = \"\";\n      stepsHome(false);",
   "      fitCap();"),
 
+ ("warnings that come with the Getting started steps open are never fitted", "ltcplay/web/remote.html",
+  "    card.classList.contains(\"folded\"), SETUP_KEY, Math.round(cr.top + scrollY), dis, arm]);",
+  "    card.classList.contains(\"folded\"), SETUP_KEY, 0, 0, 0]);"),
+
+ ("the card's 40 percent cap starves the open steps again", "ltcplay/web/remote.html",
+  "    if(cr.height < minH - 0.5) card.style.maxHeight = minH + \"px\";",
+  ""),
+
+ ("the short-window rules make the controls taller on a short window", "ltcplay/web/remote.html",
+  ":where(html.tight) .ctl button{min-height:44px}",
+  "html.tight .ctl button{min-height:44px}"),
+
 ]
 
 
