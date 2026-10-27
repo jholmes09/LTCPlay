@@ -231,7 +231,9 @@ EVENT_ACTORS = {
     CLEAR_FAULT: ("operator", "system"),
     CLOSING_DONE: ("system",),
     START_NOW: ("operator",),
-    HOLD_ON: ("operator",),
+    # "system": the engine's own Hold at showtime while an alert is open
+    # (Jeff, 2026-10-26; schedule_service.Service.tick, alerthold.py).
+    HOLD_ON: ("operator", "system"),
     RESUME: ("operator",),
     SKIP_NEXT: ("operator",),
     DELAY_NEXT: ("operator",),

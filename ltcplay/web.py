@@ -1962,6 +1962,15 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             httpd.server_close = _close_wx
     except Exception as e:                           # noqa: BLE001
         print(f"The weather block could not start: {type(e).__name__}: {e}")
+    # The alert workers (alerthold.py) stop with the server.
+    _close_before_alerts = httpd.server_close
+
+    def _close_alerts():
+        try:
+            httpd.remote.close_alerts()
+        finally:
+            _close_before_alerts()
+    httpd.server_close = _close_alerts
     httpd.audio_watch = None
     if fire_ice is not None and not os.environ.get("LTCPLAY_BENCH_FAKE_AUDIO"):
         # Fire & Ice: is the show's audio interface attached, before anyone

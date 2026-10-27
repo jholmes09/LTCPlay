@@ -1251,6 +1251,24 @@ class Remote:
         self.alert_pixels = None     # (start0, count, order) or None
         if schedule is not None and hasattr(schedule, "alert_sink"):
             schedule.alert_sink = self.alerts.raise_
+        # The alert hold (alerthold.py, Jeff 2026-10-26): at showtime with
+        # an alert open the schedule Holds, and a Delayed announcement
+        # follows unless acknowledged. Ticked with the booth re-sound
+        # after every scheduler tick (_alert_tick), on its thread.
+        from .alerthold import AlertHold
+        self._alert_wake = threading.Event()
+        self._booth_wake = threading.Event()
+        self._alert_stop = threading.Event()
+        self._alert_lock = threading.Lock()
+        self._alert_thread = None
+        self._booth_thread = None
+        self.alert_hold = AlertHold(self.alerts, schedule,
+                                    announce=lambda: self._announce,
+                                    clock=clock)
+        if schedule is not None and hasattr(schedule, "showtime_gate"):
+            schedule.showtime_gate = self.alert_hold.gate
+            schedule.on_alert_hold = self.alert_hold.started
+            schedule.tick_hooks.append(self._alert_tick)
         # Users and the audit log (users.py, audit.py, auditsend.py; Jeff,
         # 2026-10-20), set by web.serve. None: no sign-in, nothing logged,
         # every press as before.
@@ -1742,6 +1760,71 @@ class Remote:
                       f"{who} switched arming from a screen "
                       f"{'ON' if on else 'OFF'} on the {screen}.")
         return 200, {"ok": True, "enabled": on, "text": text}
+
+    def _alert_tick(self):
+        """After each scheduler tick, on the scheduler's thread: wakes the
+        alert worker and returns at once. The work itself (the booth
+        re-sound's device lookup and file read, the Delayed's file read
+        and stream open) is the worker's, so a slow disk or device never
+        stalls a scheduler tick (review of PR #133, 4)."""
+        if self._alert_stop.is_set():
+            return
+        self._alert_wake.set()
+        self._booth_wake.set()
+        with self._alert_lock:
+            self._start_alert_workers()
+
+    def _start_alert_workers(self):
+        """Called with _alert_lock held: one hold worker and one booth
+        worker, ever, whichever thread ticks first (a second hold worker
+        could play the Delayed twice)."""
+        if self._alert_thread is None:
+            # Two workers: the booth re-sound never waits behind the
+            # Delayed's file read, nor the other way round (review of PR
+            # #133).
+            self._alert_thread = threading.Thread(
+                target=self._worker, daemon=True,
+                args=(self._alert_wake, self._hold_work),
+                name="ltcplay-alert-hold")
+            self._booth_thread = threading.Thread(
+                target=self._worker, daemon=True,
+                args=(self._booth_wake, self._booth_work),
+                name="ltcplay-alert-booth")
+            self._alert_thread.start()
+            self._booth_thread.start()
+
+    def _worker(self, wake, work):
+        while True:
+            wake.wait()
+            wake.clear()
+            if self._alert_stop.is_set():
+                return
+            work()
+
+    def close_alerts(self):
+        """Stop the alert workers (web.serve's server_close)."""
+        self._alert_stop.set()
+        self._alert_wake.set()
+        self._booth_wake.set()
+
+    def _alert_work(self):
+        """Both at once, on the caller's thread (tests)."""
+        self._booth_work()
+        self._hold_work()
+
+    def _booth_work(self):
+        """The booth note again for alerts still open. Never raises."""
+        try:
+            self.alerts.tick()
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def _hold_work(self):
+        """The alert hold's countdown and its Delayed. Never raises."""
+        try:
+            self.alert_hold.tick()
+        except Exception:                        # noqa: BLE001
+            pass
 
     # -- announcements (announce.py) ----------------------------------------
     ANNOUNCE_OFF = ("Announcements are not running in this engine. LTC "
@@ -4945,6 +5028,11 @@ class Remote:
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""
         out["booth"] = {"configured": bool(booth), "device": booth}
+        try:
+            out["alert_hold"] = self.alert_hold.view()
+        except Exception as e:                   # noqa: BLE001
+            out["alert_hold"] = {"held": False,
+                                 "error": f"{type(e).__name__}: {e}"}
         if ctx.local:
             # Operator announcements: the rack screen's block (announce.py).
             out["announce"] = self.announce_view()

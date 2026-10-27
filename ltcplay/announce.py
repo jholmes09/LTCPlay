@@ -1047,7 +1047,7 @@ class AnnounceService:
                                         "a show started")
             self._player.start_fade(fade_frames)
 
-    def play(self, ann_id, who, screen, surface=False):
+    def play(self, ann_id, who, screen, surface=False, automatic=None):
         """Play one announcement. `surface` True: the press came from a
         screen or the Stream Deck through the remote routes (remote.py),
         and `who` names the person signed in there or the surface itself,
@@ -1058,7 +1058,19 @@ class AnnounceService:
         Between shows the schedule is Held first; while a show is running
         (SHOW_STATES) nothing is Held, paused or stopped and the file just
         plays (Jeff, 2026-10-26). Nothing here ever disarms, stops or
-        latches anything."""
+        latches anything.
+
+        `automatic`: a play nobody pressed (the alert hold's Delayed,
+        alerthold.py): a callable returning None while it may still play,
+        or the sentence why not. Such a play never asks for a Hold (so the
+        hold_requester's safety cuts never run: nothing on the rig is
+        changed by a timer), is journaled with actor "system", and asks
+        `automatic()` once before anything is claimed and again in the
+        same locked section that starts the stream, so an Acknowledge or a
+        Resume during the file read always wins."""
+        actor = "system" if automatic is not None else "operator"
+        if automatic is not None:
+            surface = True
         who = _clean((who or "").strip())
         screen = _clean((screen or "").strip())
         if ann_id not in IDS:
@@ -1073,7 +1085,7 @@ class AnnounceService:
             if missing:
                 text = (f"A Play press on {label} did not say {missing}. "
                         f"Nothing was changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=missing, text=text,
                           ann_id=ann_id, who=who or None,
                           screen=screen or None, state=state)
@@ -1085,7 +1097,7 @@ class AnnounceService:
                 text = (f"{who} pressed Play on {label} on the {screen}, "
                         f"but is not on the operator list. Nothing was "
                         f"changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=reason, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(reason + " Pick a name from the list. "
@@ -1096,7 +1108,7 @@ class AnnounceService:
                         f"{other} is already playing. Only one "
                         f"announcement plays at a time. Nothing was "
                         f"changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused",
                           reason="another announcement is already playing",
                           text=text, ann_id=ann_id, who=who, screen=screen,
@@ -1106,7 +1118,7 @@ class AnnounceService:
             if not st.get("available"):
                 text = (f"{who} pressed Play on {label}{screen_txt}, but "
                         f"it is not available: {st.get('reason')}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=st.get("reason"),
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
@@ -1115,7 +1127,7 @@ class AnnounceService:
             if refusal:
                 text = (f"{who} pressed Play on {label}{screen_txt}. "
                         f"Refused: {refusal}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
@@ -1125,7 +1137,7 @@ class AnnounceService:
             if not self.device_set:
                 text = (f"{who} pressed Play on {label}{screen_txt}. "
                         f"Refused: {self.DEVICE_NOT_SET}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason="no output device set",
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
@@ -1136,7 +1148,7 @@ class AnnounceService:
             except Exception as e:
                 text = (f"{who} pressed Play on {label}{screen_txt}. It "
                         f"failed: {_clean(str(e))}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="failed", reason=_clean(str(e)),
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
@@ -1158,14 +1170,24 @@ class AnnounceService:
             claim_epoch = None
             over_show = state in SHOW_STATES
             held = False
-            if self.hold_requester is not None and not over_show:
+            if automatic is not None:
+                why = self._automatic_refusal(automatic)
+                if why:
+                    text = (f"The {label} announcement was not played: "
+                            f"{why}")
+                    self._emit(actor=actor, action="play",
+                              outcome="refused", reason=why, text=text,
+                              ann_id=ann_id, who=who, screen=screen,
+                              state=state)
+                    raise ValueError(text)
+            elif self.hold_requester is not None and not over_show:
                 hold_refusal, claim_epoch = self._request_hold(
                     who, screen,
                     detail=f"played the {label} announcement{screen_txt}")
                 if hold_refusal:
                     text = (f"{who} pressed Play on {label}{screen_txt}. "
                             f"Refused: {hold_refusal}")
-                    self._emit(actor="operator", action="play",
+                    self._emit(actor=actor, action="play",
                               outcome="refused", reason=hold_refusal,
                               text=text, ann_id=ann_id, who=who,
                               screen=screen, state=state)
@@ -1216,7 +1238,7 @@ class AnnounceService:
                                                claim_epoch)
                     text = (f"{who} pressed Play on {label}{screen_txt}. "
                             f"It failed: {_clean(str(e))}")
-                    self._emit(actor="operator", action="play",
+                    self._emit(actor=actor, action="play",
                               outcome="failed", reason=_clean(str(e)),
                               text=text, ann_id=ann_id, who=who,
                               screen=screen, state=self._current_state())
@@ -1234,7 +1256,7 @@ class AnnounceService:
                         f"it was stopped and played again before this "
                         f"press finished reading its file. Nothing was "
                         f"changed.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused",
                           reason="a later claim already started",
                           text=text, ann_id=ann_id, who=who, screen=screen,
@@ -1261,7 +1283,7 @@ class AnnounceService:
                 self.playing = None
                 text = (f"{who} pressed Play on {label}{screen_txt}. "
                         f"Refused: {refusal}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
@@ -1274,18 +1296,29 @@ class AnnounceService:
                 text = (f"{who} pressed Play on {label}{screen_txt}. The "
                         f"show ended while the announcement was loading, "
                         f"so it did not play. Press it again.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused",
                           reason="the show ended while loading",
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
                 raise ValueError(text)
+            if automatic is not None:
+                why = self._automatic_refusal(automatic)
+                if why:
+                    self.playing = None
+                    text = (f"The {label} announcement was not played: "
+                            f"{why}")
+                    self._emit(actor=actor, action="play",
+                              outcome="refused", reason=why, text=text,
+                              ann_id=ann_id, who=who, screen=screen,
+                              state=state)
+                    raise ValueError(text)
             if held and not self._check_still_held(claim_epoch):
                 self.playing = None
                 text = (f"{who} pressed Play on {label}{screen_txt}. The "
                         f"show was resumed while the announcement was "
                         f"loading, so it did not play.")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="refused",
                           reason="the show was resumed while loading",
                           text=text, ann_id=ann_id, who=who, screen=screen,
@@ -1322,7 +1355,7 @@ class AnnounceService:
                 text = (f"{who} pressed Play on {label}{screen_txt}. It "
                         f"failed to open {_clean(self.device_name)}: "
                         f"{_clean(str(e))}")
-                self._emit(actor="operator", action="play",
+                self._emit(actor=actor, action="play",
                           outcome="failed", reason=_clean(str(e)),
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
@@ -1337,14 +1370,27 @@ class AnnounceService:
                     f"{length:.0f} s. " +
                     ("The schedule is held for it; only Resume carries on."
                      if held else
+                     "It plays while the schedule is on the alert hold; "
+                     "nothing else was changed." if automatic is not None
+                     else
                      "It plays over the running show; nothing was paused "
                      "or stopped." if over_show else
                      "Nothing was held."))
-            self._emit(actor="operator", action="play", outcome="started",
+            self._emit(actor=actor, action="play", outcome="started",
                       reason=f"show state {state or 'no scheduler'}",
                       text=text, ann_id=ann_id, who=who, screen=screen,
                       state=state)
             return self.status()
+
+    @staticmethod
+    def _automatic_refusal(check):
+        """The sentence why an automatic play may not go on, or None. A
+        check that raises is a no."""
+        try:
+            why = check()
+        except Exception as e:                   # noqa: BLE001
+            return f"its check could not be made ({_clean(str(e))})."
+        return _clean(why) if why else None
 
     def stop(self, who, screen, surface=False):
         """Stop the playing announcement's audio. Only the audio: the

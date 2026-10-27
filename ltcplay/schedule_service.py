@@ -800,6 +800,20 @@ class Service:
         # (Jeff, 2026-10-12: the groups are left as they are, so a person
         # has to be told). None: journaled only, as before.
         self.alert_sink = None
+        # () -> a sentence naming the open alerts, or None, set by
+        # remote.Remote (alerthold.py): at showtime, with an alert open,
+        # the schedule Holds instead of starting the show (Jeff,
+        # 2026-10-26). A running show is never touched. `on_alert_hold`
+        # (epoch, why) is told after such a Hold, outside the lock.
+        # showtime_gate returns None or (sentence, the open alerts' ids).
+        self.showtime_gate = None
+        self.on_alert_hold = None
+        # (night, show) -> the open alert id sets it was held for, or that
+        # an operator Resumed it with (_alert_handled).
+        self._alert_held = {}
+        # Called after every tick of the running scheduler, outside the
+        # lock (_run): remote.Remote._alert_tick.
+        self.tick_hooks = []
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -1645,6 +1659,14 @@ class Service:
             self.machine = replace(self.machine, abort_latched=True)
             self._marker_clear_pending = False
         self._record(out, now, plan, held, ev)
+        if ev.kind == sch.RESUME and ev.actor == "operator" and \
+                not out.refused and before is not None and \
+                before.state == sch.HOLD:
+            # Only a Resume of a schedule Hold (the operator's or the
+            # engine's) speaks for the next show; a Resume of a paused,
+            # running show says nothing about the one after it (review of
+            # PR #133).
+            self._note_resumed_at_showtime(now)
         if self.dry_run and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
@@ -2019,7 +2041,12 @@ class Service:
             return True
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
-        # journal rather than dropped without a word.
+        # journal rather than dropped without a word. This tick never
+        # starts a show, so it needs no alert gate: a night cannot run past
+        # midnight (schedule.parse_rule refuses it) and the reset is at
+        # NIGHT_RESET (2 AM), so every slot on yesterday's list is long
+        # past by now; BOOT_DONE below starts nothing either, and the next
+        # TICK goes through the gate (review of PR #133, 7 and 8).
         self._apply(sch.Event(sch.TICK, "scheduler"), now)
         how = self._still_open(now, d)
         if how is None:
@@ -2243,11 +2270,98 @@ class Service:
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
+            self._hold_at_showtime_for_alerts(now)
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
             self._sync_latch_marker()
             m = self.machine
         self._after_tick()
         return m
+
+    def _alert_handled(self, key, ids):
+        """True when the open alerts are all among a set this showtime was
+        already held for, or Resumed with: an Acknowledge that leaves a
+        subset open never re-holds it (final review of PR #133)."""
+        ids = frozenset(ids)
+        return any(ids <= rec for rec in self._alert_held.get(key, ()))
+
+    def _note_resumed_at_showtime(self, now):
+        """An operator's Resume (from any Hold, theirs or the engine's)
+        while alerts are open is the operator's choice (Jeff): the show the
+        next tick would start, AND the next pending show of the night
+        (a Resume pressed before showtime, or a guard running out inside
+        the grace window), are recorded as handled for those alerts, so
+        the gate never holds them again for them. Never raises."""
+        gate = self.showtime_gate
+        m = self.machine
+        if gate is None or m is None:
+            return
+        try:
+            got = gate()
+            if not got:
+                return
+            probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
+            shows = [e.show for e in probe.effects
+                     if e.kind == sch.START_SHOW][:1]
+            if not shows and m.delayed() is None:
+                # Nothing starts now and no delayed show waits for Start
+                # now: the Resume is for the next show (one pressed before
+                # showtime, or a guard running out inside the grace). With
+                # a delayed show waiting, the Resume is for THAT one, and
+                # never covers a show beyond it (review of PR #133).
+                pending = m.pending()
+                if pending:
+                    shows = [pending[0].n]
+        except Exception:                        # noqa: BLE001
+            return
+        for n in set(shows):
+            self._alert_held.setdefault((str(m.date), n), []).append(
+                frozenset(got[1]))
+
+    # The states a show can START from on a tick; a running (SHOW) or
+    # paused show, or one already held, is never touched here.
+    SHOWTIME_FROM = (sch.IDLE, sch.STANDBY)
+
+    def _hold_at_showtime_for_alerts(self, now):
+        """With the lock held, just before the tick: if this tick would
+        start a show and an alert is open (showtime_gate), the schedule
+        Holds instead, as the engine's own system action, and the show
+        waits for an operator's Resume (Jeff, 2026-10-26). sch.step is
+        pure, so the tick is tried on the side first. Never mid-show:
+        only from IDLE or STANDBY. Never raises."""
+        gate = self.showtime_gate
+        m = self.machine
+        if gate is None or m is None or m.state not in self.SHOWTIME_FROM:
+            return
+        try:
+            probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
+            shows = [e.show for e in probe.effects
+                     if e.kind == sch.START_SHOW]
+            if not shows:
+                return
+            got = gate()
+        except Exception:                        # noqa: BLE001
+            return
+        if not got:
+            return
+        why, ids = got
+        # Once this showtime was held for these alerts, or an operator
+        # Resumed it with these alerts open, it is never held again for
+        # them (review of PR #133): the Resume was the choice. A NEW alert
+        # at the same showtime holds again.
+        key = (str(m.date), shows[0])
+        if self._alert_handled(key, ids):
+            return
+        out = self._apply(sch.Event(
+            sch.HOLD_ON, "system", who="LTC Player", screen="engine",
+            detail=f"held the schedule at showtime because an alert is "
+                   f"open ({why})"), now)
+        if out.refused or self.machine.state != sch.HOLD:
+            return
+        self._alert_held.setdefault(key, []).append(frozenset(ids))
+        hook = self.on_alert_hold
+        if hook is not None:
+            epoch = self.hold_epoch
+            self._pending_hooks.append(lambda: hook(epoch, why))
 
     # A conductor request with no answer after this long is a fault: they
     # are meant to return at once (the conductor does its fades on its own
@@ -2578,6 +2692,14 @@ class Service:
     def _run(self):
         while not self._stop.is_set():
             self._safe_tick()
+            # After the tick, outside the lock: the alert thread's work
+            # (remote.Remote._alert_tick: the booth re-sound and the alert
+            # hold's countdown). A hook that raises never stops the ticks.
+            for hook in list(self.tick_hooks):
+                try:
+                    hook()
+                except Exception:                # noqa: BLE001
+                    pass
             self._stop.wait(self.TICK_S)
 
     def halt(self):
