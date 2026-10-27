@@ -10198,6 +10198,20 @@ def build():
                     else sl''',
   '''                need = [s for s in sl if s not in locked]'''),
 
+ ("witness: only the first needed safety slot is checked for fire without arm",
+  "tools/stress/witness/check_witness.py",
+  '''                down = [(s, values.get(s, 0)) for s in need
+''',
+  '''                down = [(s, values.get(s, 0)) for s in need[:1]
+'''),
+
+ ("witness: a locked safety slot is flagged with no lock on record",
+  "tools/stress/witness/check_witness.py",
+  '''                if slot in locked and st["locked"]:
+                    # flamesafe holds''',
+  '''                if slot in locked:
+                    # flamesafe holds'''),
+
  ("flamesafe: rubbish lock data locks nothing (T6)",
   "flamesafe/composer.py",
   '''            got = frozenset(range(1, rules.UNIVERSE_SIZE + 1))
