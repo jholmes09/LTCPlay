@@ -146,6 +146,10 @@ REMOTE_ROUTES = {
     "group-disarm": "safety", "arm-release": "safety", "alert": "safety",
     "purge-stop": "safety", "purge-clear": "safety",
     "signin": "safety", "signout": "safety",
+    # Operator announcements (remote.ANNOUNCE_ROUTES): a Play is a show
+    # press; Stop ends only the announcement's audio, so it only takes
+    # something away and is never restricted.
+    "announce-stop": "safety", "announce-play": "show",
     "start-now": "show", "resume": "show", "reset": "show",
     "play-from": "show", "jump": "show", "pause": "show",
     "continue": "show", "mark-a": "show", "mark-b": "show",

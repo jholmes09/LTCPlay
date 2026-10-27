@@ -2777,6 +2777,13 @@ class Service:
                     self.hold_epoch
             if self.machine.state in (sch.HOLD, sch.PAUSED):
                 return None, self.hold_epoch
+            if self.machine.state == sch.SHOW:
+                # A show is running, possibly one this very tick just
+                # started (an announcement pressed at showtime): it is
+                # never paused by an announcement (Jeff, 2026-10-26). No
+                # Hold; the caller reads the state again and plays over
+                # the show (announce.AnnounceService.play).
+                return None, self.hold_epoch
             out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,
                                         screen=screen, detail=detail or ""))
             return out.refused or None, self.hold_epoch

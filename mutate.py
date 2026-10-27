@@ -2855,19 +2855,38 @@ MUTATIONS = [
   "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
   "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
- ("an announcement never holds the show first", "ltcplay/announce.py",
-  '            claim_epoch = None\n'
-  '            if self.hold_requester is not None:\n'
-  '                hold_refusal, claim_epoch = self._request_hold(\n'
-  '                    who, screen,\n'
-  '                    detail=f"played the {label} announcement{screen_txt}")\n'
-  '                if hold_refusal:',
-  '            claim_epoch = None\n'
+ ("an announcement never holds the schedule first between shows",
+  "ltcplay/announce.py",
+  '            if self.hold_requester is not None and not over_show:\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n',
   '            if False:\n'
-  '                hold_refusal, claim_epoch = self._request_hold(\n'
-  '                    who, screen,\n'
-  '                    detail=f"played the {label} announcement{screen_txt}")\n'
-  '                if hold_refusal:'),
+  '                hold_refusal, claim_epoch = self._request_hold(\n'),
+
+ # Jeff, 2026-10-26: during a show an announcement plays over it and
+ # Holds nothing. Asking for the Hold during a show too (the old rule)
+ # pauses the show (test_announce_hold_during_show).
+ ("an announcement during a show pauses the show again",
+  "ltcplay/announce.py",
+  '            if self.hold_requester is not None and not over_show:\n',
+  '            if self.hold_requester is not None:\n'),
+
+ # A press that cannot play (no device set, the device unplugged) must
+ # be refused before anything is Held (Jeff, 2026-10-26).
+ ("an announcement with no output device set holds the schedule anyway",
+  "ltcplay/announce.py",
+  '            if not self.device_set:\n'
+  '                text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
+  '                        f"Refused: {self.DEVICE_NOT_SET}")',
+  '            if False:\n'
+  '                text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
+  '                        f"Refused: {self.DEVICE_NOT_SET}")'),
+
+ # Over a running show with no Hold: a show that ended during the file
+ # read leaves nothing holding the schedule, so the press is refused.
+ ("an announcement pressed over a show still plays after the show ended "
+  "while loading", "ltcplay/announce.py",
+  '            if not held and over_show and state not in SHOW_STATES:',
+  '            if False:'),
 
  # Deliberately no mutation here disabling the FIRST checkpoint's own
  # "if hold_refusal:" alone (only the "if self.hold_requester is not
@@ -2902,7 +2921,7 @@ MUTATIONS = [
 
  ("announcements never Hold the scheduler in production, web.py never "
   "wires it", "ltcplay/web.py",
-  '        httpd.announce.hold_requester = sched.hold_for_announcement',
+  '        httpd.announce.hold_requester = httpd.remote.announce_hold(sched)',
   '        pass'),
 
  # ---------------------------------------------------------------------
@@ -2978,7 +2997,8 @@ MUTATIONS = [
  ("a name not on the operator list can still press Play",
   "ltcplay/announce.py",
   '                raise ValueError(text)\n'
-  '            if who.lower() not in {n.lower() for n in self.operators}:\n'
+  '            if not surface and \\\n'
+  '                    who.lower() not in {n.lower() for n in self.operators}:\n'
   '                reason = (f"{who!r} is not on the operator list "',
   '                raise ValueError(text)\n'
   '            if False:\n'
@@ -3599,8 +3619,7 @@ MUTATIONS = [
 
  ("the second check re-Holds instead of only reading the state",
   "ltcplay/announce.py",
-  "            if self.hold_requester is not None \\\n"
-  "                    and not self._check_still_held(claim_epoch):",
+  "            if held and not self._check_still_held(claim_epoch):",
   "            if False:"),
 
  ("hold_still_claimed ignores the epoch, only the state",
@@ -8624,6 +8643,176 @@ def build():
   "ltcplay/streamdeck.py",
   "        self._prev_keys = [False] * 6\n        for h in self._arm_holds:\n            h.release()\n        self._stop_hold.release()\n",
   "        self._prev_keys = [False] * 6\n        self._stop_hold.release()\n"),
+
+ # The Stream Deck's page 2, the announcements (Jeff, 2026-10-26): it
+ # covers the arm keys, so it must give way to them by itself, and nothing
+ # on it may arm (test_streamdeck_announcements_page_two).
+ ("deck page 2: stays up through an Abort latch",
+  "ltcplay/streamdeck.py",
+  '        if latched:\n            return "an Abort is latched"',
+  '        if False:\n            return "an Abort is latched"'),
+
+ ("deck page 2: never goes back by itself when idle",
+  "ltcplay/streamdeck.py",
+  "        if now - self._page2_at < PAGE2_IDLE_S:\n            return \"\"",
+  "        if True:\n            return \"\""),
+
+ ("deck page 2: stays up through an alarm on the arm link",
+  "ltcplay/streamdeck.py",
+  '        if self._spoof_alarm:\n            return "the arm link alarm is up"',
+  '        if False:\n            return "the arm link alarm is up"'),
+
+ ("deck page 2: opens while another key is down",
+  "ltcplay/streamdeck.py",
+  "        elif any(down[k] for k in range(len(down)) if k != ANNOUNCE_KEY):",
+  "        elif False:"),
+
+ ("deck page 2: a press plays twice",
+  "ltcplay/streamdeck.py",
+  "            elif k in PAGE2_PLAY:\n"
+  "                self._announce_press(PAGE2_PLAY[k])",
+  "            elif k in PAGE2_PLAY:\n"
+  "                self._announce_press(PAGE2_PLAY[k])\n"
+  "                self._announce_press(PAGE2_PLAY[k])"),
+
+ ("deck: key 5 opens page 2 with no announcements running",
+  "ltcplay/streamdeck.py",
+  '                    (self.announce_view() or {}).get("configured"):',
+  "                    True:"),
+
+ # Review of PR #129 (cold review, 2026-10-27).
+ ("an announcement pressed at showtime pauses the show that just started",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state == sch.SHOW:\n"
+  "                # A show is running, possibly one this very tick just",
+  "            if False:\n"
+  "                # A show is running, possibly one this very tick just"),
+
+ ("announcements: the rack status asks the service on the request path",
+  "ltcplay/remote.py",
+  "        c = self._ann_cache\n        if c is None:\n"
+  '            return {"configured": True, "ok": False,',
+  "        self._ann_refresh()\n        c = self._ann_cache\n        if c is None:\n"
+  '            return {"configured": True, "ok": False,'),
+
+ ("announcements: a Play skips the laser arm's press interlock",
+  "ltcplay/remote.py",
+  '            if name == "announce-play" else None\n        if la is None:',
+  '            if False else None\n        if la is None:'),
+
+ ("deck page 2: a press right after an automatic close arms a group",
+  "ltcplay/streamdeck.py",
+  "                elif self._guard_on(now) and \\\n",
+  "                elif False and \\\n"),
+
+ ("deck page 2: the guard after an automatic close also swallows a disarm",
+  "ltcplay/streamdeck.py",
+  "                elif self._guard_on(now) and \\\n"
+  "                        not self.arm.wanted[self._key_group[k]]:",
+  "                elif self._guard_on(now):"),
+
+ ("deck page 2: the guard ends when page 1 is composed, not written",
+  "ltcplay/streamdeck.py",
+  "        if shown and shown[0] >= f:\n            return shown[1]\n        return None",
+  "        return self._guard_frame_at"),
+
+ ("deck page 2: the guard counts from the return, not from the write",
+  "ltcplay/streamdeck.py",
+  "        if at is None or now < at + PAGE1_GUARD_S:",
+  "        if at is None or now < self._guard + PAGE1_GUARD_S:"),
+
+ ("deck page 2: a stale engine answer closes page 2 for idle",
+  "ltcplay/streamdeck.py",
+  "        return (isinstance(av, dict) and not av.get(\"stale\") and\n",
+  "        return (isinstance(av, dict) and\n"),
+
+ ("deck page 2: an answer that says ok false reads as nothing playing",
+  "ltcplay/streamdeck.py",
+  "                av.get(\"ok\") is not False and not av.get(\"playing\"))",
+  "                not av.get(\"playing\"))"),
+
+ ("announcements: a status that raised is not marked stale",
+  "ltcplay/remote.py",
+  "            v = {\"configured\": True, \"ok\": False, \"stale\": True,\n"
+  "                 \"error\": f\"Announcement status unavailable: it could not \"",
+  "            v = {\"configured\": True, \"ok\": False,\n"
+  "                 \"error\": f\"Announcement status unavailable: it could not \""),
+
+ ("deck page 2: never gives way while the engine stays silent",
+  "ltcplay/streamdeck.py",
+  "        if now - max(seen, self._page2_at) >= PAGE2_STALE_CLOSE_S:",
+  "        if False:"),
+
+ ("deck page 2: a refusal shows on whichever key was pressed last",
+  "ltcplay/streamdeck.py",
+  "                refused[said[3]] = announce_refusal_word(said[1])",
+  "                refused[self._ann_pressed] = announce_refusal_word(said[1])"),
+
+ ("deck page 2: closes for idle while an announcement plays",
+  "ltcplay/streamdeck.py",
+  "        if self._fresh_and_quiet(av):\n"
+  "            return f\"no key was pressed for {PAGE2_IDLE_S:g} s\"",
+  "        if True:\n"
+  "            return f\"no key was pressed for {PAGE2_IDLE_S:g} s\""),
+
+ ("deck page 2: an engine refusal is never shown on the key",
+  "ltcplay/streamdeck.py",
+  "            if fresh:\n                # On the key whose press it answers",
+  "            if False:\n                # On the key whose press it answers"),
+
+ ("announcements: a Hold for an announcement leaves the lasers armed",
+  "ltcplay/remote.py",
+  '                    self._lasers_disarm_now(who, screen, "announcement")',
+  "                    pass"),
+
+ ("announcements: the Hold's safety cuts are made outside the scheduler's lock",
+  "ltcplay/remote.py",
+  "            with (locked() if locked is not None\n"
+  "                  else contextlib.nullcontext()):",
+  "            with contextlib.nullcontext():"),
+
+ ("announcements: a Hold for an announcement leaves live flame programming on",
+  "ltcplay/remote.py",
+  "                    self.live_flame_cut(why, who, screen)\n                    self.scrub_flames_cut(why, who, screen)",
+  "                    pass"),
+
+ ("announcements: a stale snapshot still reads as fact",
+  "ltcplay/remote.py",
+  "        if age > ANNOUNCE_STALE_S:",
+  "        if False:"),
+
+ ("announcements: held-then-failed is cleared by state, not its own Hold",
+  "ltcplay/announce.py",
+  "        if self.hold_still_claimed is not None and \\\n"
+  "                self._held_failed_epoch is not None:",
+  "        if False:"),
+
+ ("deck: announcement presses share Stop's queue",
+  "ltcplay/streamdeck.py",
+  '        q = self._aq if name.startswith("announce-") else self._q',
+  "        q = self._q"),
+
+ ("announcements: a Hold whose announcement failed is never said",
+  "ltcplay/announce.py",
+  "                    if held:\n"
+  "                        self._note_held_failed(ann_id, _clean(str(e)),\n",
+  "                    if False:\n"
+  "                        self._note_held_failed(ann_id, _clean(str(e)),\n"),
+
+ # The rack screen's announcement routes (remote.announce_post).
+ ("announcements: an iPad can play one",
+  "ltcplay/remote.py",
+  "        if not ctx.local:\n"
+  '            return 403, {"error": "Announcements are played from the show "',
+  "        if False:\n"
+  '            return 403, {"error": "Announcements are played from the show "'),
+
+ ("announcements: a stale page's Play is taken",
+  "ltcplay/remote.py",
+  '        if name == "announce-play":\n'
+  "            # A Play acts on what the page shows",
+  '        if False:\n'
+  "            # A Play acts on what the page shows"),
 
  ("morning: a click on a fireball arms its group for a purge",
   "ltcplay/morning.py",

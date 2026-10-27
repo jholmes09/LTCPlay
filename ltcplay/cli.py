@@ -1384,7 +1384,9 @@ def _cmd_serve(args):
     if httpd.announce is not None:
         av = httpd.announce
         print(f"Announcements: {av.config_path}")
-        print("  " + (av.error or f"Loaded, on {av.device_name}."))
+        print("  " + (av.error or (f"Loaded, on {av.device_name}."
+                                   if av.device_set else
+                                   f"Loaded. {av.DEVICE_NOT_SET}")))
     if httpd.loopback is not None:
         print(f"\nServing on the show network at {host}:{args.port}, and on "
               f"this machine at\nhttp://127.0.0.1:{args.port}/ . Each operator "
