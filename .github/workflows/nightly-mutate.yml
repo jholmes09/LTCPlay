@@ -66,7 +66,35 @@ jobs:
       - id: sweep
         shell: bash
         timeout-minutes: 285
-        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} --write-catchers "$RUNNER_TEMP/catchers.json" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+      - name: Catchers as notices (TEMPORARY, catcher regeneration only)
+        if: always()
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          CF: ${{ runner.temp }}/catchers.json
+        run: |
+          python - <<'PY'
+          import json, os
+          try:
+              d = json.load(open(os.environ["CF"], encoding="utf-8"))
+          except Exception as e:
+              d = {}
+          items = sorted(d.items())
+          chunks, cur = [], {}
+          for k, v in items:
+              cur[k] = v
+              if len(json.dumps(cur)) > 3000:
+                  del cur[k]
+                  chunks.append(cur)
+                  cur = {k: v}
+          if cur:
+              chunks.append(cur)
+          esc = lambda s: s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"{len(items)} catchers in {len(chunks)} notices")
+          for i, c in enumerate(chunks):
+              print(f"::notice title=CATCHERS shard {os.environ['SHARD']} part {i}::" + esc(json.dumps(c, sort_keys=True)))
+          PY
       - name: Report a shard that ran out of time
         if: always() && steps.sweep.outcome != 'success'
         shell: bash
