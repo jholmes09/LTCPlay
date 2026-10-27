@@ -807,6 +807,7 @@ class Service:
         # (epoch, why) is told after such a Hold, outside the lock.
         self.showtime_gate = None
         self.on_alert_hold = None
+        self._alert_held = set()      # (night, show) already alert-held
         # Called after every tick of the running scheduler, outside the
         # lock (_run): remote.Remote._alert_tick.
         self.tick_hooks = []
@@ -2029,7 +2030,10 @@ class Service:
             return True
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
-        # journal rather than dropped without a word.
+        # journal rather than dropped without a word. A tick that would
+        # start a show goes through the alert gate here too (review of
+        # PR #133, 7).
+        self._hold_at_showtime_for_alerts(now)
         self._apply(sch.Event(sch.TICK, "scheduler"), now)
         how = self._still_open(now, d)
         if how is None:
@@ -2277,7 +2281,15 @@ class Service:
             return
         try:
             probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
-            if not any(e.kind == sch.START_SHOW for e in probe.effects):
+            shows = [e.show for e in probe.effects
+                     if e.kind == sch.START_SHOW]
+            if not shows:
+                return
+            # Once an operator has Resumed from an alert hold for this
+            # showtime, it is never held again for it, even with the alert
+            # still open (review of PR #133, 2): the Resume was the choice.
+            key = (str(m.date), shows[0])
+            if key in self._alert_held:
                 return
             why = gate()
         except Exception:                        # noqa: BLE001
@@ -2290,6 +2302,7 @@ class Service:
                    f"open ({why})"), now)
         if out.refused or self.machine.state != sch.HOLD:
             return
+        self._alert_held.add(key)
         hook = self.on_alert_hold
         if hook is not None:
             epoch = self.hold_epoch

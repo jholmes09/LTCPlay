@@ -1256,6 +1256,8 @@ class Remote:
         # follows unless acknowledged. Ticked with the booth re-sound
         # after every scheduler tick (_alert_tick), on its thread.
         from .alerthold import AlertHold
+        self._alert_wake = threading.Event()
+        self._alert_thread = None
         self.alert_hold = AlertHold(self.alerts, schedule,
                                     announce=lambda: self._announce,
                                     clock=clock)
@@ -1756,9 +1758,27 @@ class Remote:
         return 200, {"ok": True, "enabled": on, "text": text}
 
     def _alert_tick(self):
-        """After each scheduler tick: the booth note again for alerts still
-        open (alerts.Alerts.tick) and the alert hold's countdown. Never
-        raises."""
+        """After each scheduler tick, on the scheduler's thread: wakes the
+        alert worker and returns at once. The work itself (the booth
+        re-sound's device lookup and file read, the Delayed's file read
+        and stream open) is the worker's, so a slow disk or device never
+        stalls a scheduler tick (review of PR #133, 4)."""
+        self._alert_wake.set()
+        if self._alert_thread is None:
+            self._alert_thread = threading.Thread(
+                target=self._alert_loop, daemon=True,
+                name="ltcplay-alert-worker")
+            self._alert_thread.start()
+
+    def _alert_loop(self):
+        while True:
+            self._alert_wake.wait()
+            self._alert_wake.clear()
+            self._alert_work()
+
+    def _alert_work(self):
+        """The booth note again for alerts still open (alerts.Alerts.tick)
+        and the alert hold's countdown. Never raises."""
         try:
             self.alerts.tick()
         except Exception:                        # noqa: BLE001

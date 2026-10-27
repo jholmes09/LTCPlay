@@ -2857,9 +2857,9 @@ MUTATIONS = [
 
  ("an announcement never holds the schedule first between shows",
   "ltcplay/announce.py",
-  '            if self.hold_requester is not None and not over_show:\n'
+  '            elif self.hold_requester is not None and not over_show:\n'
   '                hold_refusal, claim_epoch = self._request_hold(\n',
-  '            if False:\n'
+  '            elif False:\n'
   '                hold_refusal, claim_epoch = self._request_hold(\n'),
 
  # Jeff, 2026-10-26: during a show an announcement plays over it and
@@ -2867,8 +2867,8 @@ MUTATIONS = [
  # pauses the show (test_announce_hold_during_show).
  ("an announcement during a show pauses the show again",
   "ltcplay/announce.py",
-  '            if self.hold_requester is not None and not over_show:\n',
-  '            if self.hold_requester is not None:\n'),
+  '            elif self.hold_requester is not None and not over_show:\n',
+  '            elif self.hold_requester is not None:\n'),
 
  # A press that cannot play (no device set, the device unplugged) must
  # be refused before anything is Held (Jeff, 2026-10-26).
@@ -3016,7 +3016,7 @@ MUTATIONS = [
 
  ("a refused announcement play is not written to the journal",
   "ltcplay/announce.py",
-  '                self._emit(actor="operator", action="play",\n'
+  '                self._emit(actor=actor, action="play",\n'
   '                          outcome="refused",\n'
   '                          reason="another announcement is already playing",\n'
   '                          text=text, ann_id=ann_id, who=who, screen=screen,\n'
@@ -8702,38 +8702,81 @@ def build():
 
  ("alert hold: a show starts at its time with an alert open",
   "ltcplay/schedule_service.py",
-  "            self._hold_at_showtime_for_alerts(now)\n",
-  ""),
+  "            self._hold_at_showtime_for_alerts(now)\n"
+  "            self._apply(sch.Event(sch.TICK, \"scheduler\"), now)\n"
+  "            self._sync_latch_marker()",
+  "            self._apply(sch.Event(sch.TICK, \"scheduler\"), now)\n"
+  "            self._sync_latch_marker()"),
 
- ("alert hold: a running show is held too",
+ ("alert hold: the same showtime is held again after Resume",
   "ltcplay/schedule_service.py",
-  "    SHOWTIME_FROM = (sch.IDLE, sch.STANDBY)",
-  "    SHOWTIME_FROM = (sch.IDLE, sch.STANDBY, sch.SHOW)"),
+  "            if key in self._alert_held:\n                return",
+  "            if False:\n                return"),
+
+ ("alert hold: the remote never hooks the scheduler's ticks",
+  "ltcplay/remote.py",
+  "            schedule.tick_hooks.append(self._alert_tick)",
+  "            pass"),
+
+ ("alert hold: the scheduler's run loop never calls its tick hooks",
+  "ltcplay/schedule_service.py",
+  "            for hook in list(self.tick_hooks):",
+  "            for hook in []:"),
+
+ ("alert hold: the alert work runs on the scheduler's thread",
+  "ltcplay/remote.py",
+  "        self._alert_wake.set()\n        if self._alert_thread is None:",
+  "        self._alert_work()\n        if self._alert_thread is None:"),
 
  ("alert hold: Acknowledge does not cancel the announcement",
   "ltcplay/alerthold.py",
-  "        if self._acknowledged(h):",
-  "        if False:"),
+  "        if self._acknowledged(h):\n            self._cancel(h)\n"
+  "            return\n        if self._clock() < h[\"due\"]:",
+  "        if False:\n            self._cancel(h)\n"
+  "            return\n        if self._clock() < h[\"due\"]:"),
+
+ ("alert hold: one Acknowledge cancels while another loud alert is open",
+  "ltcplay/alerthold.py",
+  "        return not (h[\"loud\"] & now_ids)",
+  "        return bool(h[\"ids\"] - now_ids)"),
 
  ("alert hold: deck and gate alerts announce too",
   "ltcplay/alerthold.py",
-  "        loud = bool(kinds & ANNOUNCE_KINDS)",
-  "        loud = bool(kinds)"),
+  "        loud_ids = {a.id for a in open_ if a.kind in ANNOUNCE_KINDS}",
+  "        loud_ids = {a.id for a in open_}"),
 
  ("alert hold: the announcement plays after the operator resumed",
   "ltcplay/alerthold.py",
-  "        if not self._still_held(h):\n            self.hold = None\n            return",
-  "        if False:\n            self.hold = None\n            return"),
+  "        if h is None:\n            return\n        if not self._still_held(h):\n"
+  "            self.hold = None\n            return",
+  "        if h is None:\n            return\n        if False:\n"
+  "            self.hold = None\n            return"),
 
  ("alert hold: the announcement plays on every tick after the countdown",
   "ltcplay/alerthold.py",
-  '        h["state"], h["due"] = "announced", None\n        ann = self._announce()',
-  '        ann = self._announce()'),
+  '        h["state"], h["due"] = "announcing", None\n',
+  ""),
 
  ("alert hold: the countdown is not waited for",
   "ltcplay/alerthold.py",
   '        if self._clock() < h["due"]:\n            return',
   '        if False:\n            return'),
+
+ ("alert hold: the automatic Delayed asks for a Hold, and its safety cuts",
+  "ltcplay/announce.py",
+  "            elif self.hold_requester is not None and not over_show:",
+  "            if self.hold_requester is not None and not over_show:"),
+
+ ("alert hold: an Acknowledge during the file read does not stop it",
+  "ltcplay/announce.py",
+  "            if automatic is not None:\n"
+  "                why = self._automatic_refusal(automatic)\n"
+  "                if why:\n"
+  "                    self.playing = None",
+  "            if False:\n"
+  "                why = self._automatic_refusal(automatic)\n"
+  "                if why:\n"
+  "                    self.playing = None"),
 
  # Review of PR #129 (cold review, 2026-10-27).
  ("an announcement pressed at showtime pauses the show that just started",

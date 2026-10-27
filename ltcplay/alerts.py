@@ -181,7 +181,8 @@ class Alerts:
         now = self._clock()
         last = self._sounded.get(a.kind)
         if last is not None and now - last < self.resound_s():
-            a.booth = a.booth or "quiet: sounded less than 30 s ago"
+            a.booth = a.booth or (f"quiet: sounded less than "
+                                  f"{self.resound_s():g} s ago")
             return
         if self.booth is None:
             a.booth_ok, a.booth = False, "No booth speaker is configured."

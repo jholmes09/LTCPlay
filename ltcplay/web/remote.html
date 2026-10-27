@@ -2001,7 +2001,8 @@ function render(){
   // The alert hold (alerthold.py, Jeff 2026-10-26): held at showtime with
   // an alert open, and the Delayed countdown, said on the state card.
   const ah = alertHoldLook(s.alert_hold);
-  if(ah){ word = ah.word; label = ah.label; cls = "warn"; }
+  // The scheduler's own error is never hidden behind it.
+  if(ah){ word = ah.word; label = ah.label + (sch.error ? " " + sch.error : ""); cls = "warn"; }
   $("st-word").textContent = word;
   $("st-word").className = "stateword " + cls;
   $("st-state").textContent = label; $("st-state").title = label;

@@ -98,10 +98,15 @@ says "Held: alert open". For an audio, video, flames, flame link,
 timecode or start alert, a 60 second countdown shows there; if nobody
 acknowledges the alert by then, the Delayed announcement plays once on
 the PA. A Stream Deck or gate alert holds quietly, with no announcement.
-Acknowledging cancels the countdown and the announcement, but does NOT
-start the show: it waits until you press Resume (then Start now for the
-delayed show, as after any Hold). If the recording or the announcement
-output is missing, it stays held and the state card says so. A show that
+Acknowledging cancels the countdown and the announcement (with two such
+alerts open, both have to be acknowledged), even while the recording is
+still loading; once it has started it plays to its end. Acknowledging
+does NOT start the show: it waits until you press Resume (then Start now
+for the delayed show, as after any Hold), and once you have resumed, that
+show is not held again for the same alert. The automatic announcement
+changes nothing else on the rig: no laser is disarmed and nothing about
+the flames changes. If the recording or the announcement output is
+missing, it stays held and the state card says so. A show that
 is already running is never held, stopped, disarmed or announced over by
 this. Stop on the Stream Deck works the same while held.
 While an alert is open the Stream Deck's Start key reads ACK / ALERT in
