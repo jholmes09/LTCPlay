@@ -14165,18 +14165,80 @@ def build():
 
  ("weather: a measured reading over 45 min old still shows its number",
   "ltcplay/weather.py",
-  "        elif age is None or age > dead_s:",
-  "        elif age is None:"),
+  "    if age > dead_s:\n        return \"none\", age",
+  "    if False:\n        return \"none\", age"),
 
  ("weather: a measured reading over 20 min old is not STALE",
   "ltcplay/weather.py",
-  "            line.update(level=\"stale\" if age > stale_s else \"ok\",",
-  "            line.update(level=\"ok\","),
+  "    return (\"stale\" if age > stale_s else \"ok\"), max(0.0, age)",
+  "    return \"ok\", max(0.0, age)"),
 
- ("weather: a forecast over 3 h old is not STALE",
+ # The forecast judged on when this PC got it, and the measured backups
+ # (Jeff, 2026-10-28, field report item 15).
+ ("weather: a forecast this PC has not got for over 1 h is not STALE",
   "ltcplay/weather.py",
-  "        line.update(level=\"stale\" if age > fstale_s else \"ok\",",
-  "        line.update(level=\"ok\","),
+  "        if got_age > fstale_s:",
+  "        if False:"),
+
+ ("weather: a forecast the NWS has not updated for 18 h is not STALE",
+  "ltcplay/weather.py",
+  "        if issued_age > fissued_s:",
+  "        if False:"),
+
+ ("weather: a forecast this PC has not got for 6 h still shows its number",
+  "ltcplay/weather.py",
+  "    if d is None or sp is None or got_age > fdead_s:",
+  "    if d is None or sp is None:"),
+
+ ("weather: the forecast is judged on its issue time again",
+  "ltcplay/weather.py",
+  "        got = d.get(\"fetched_at\")\n",
+  "        got = d[\"issued\"]\n"),
+
+ ("weather: a stalled station blanks the wind though a backup is current",
+  "ltcplay/weather.py",
+  "    usable = [r for r in rows if r[\"st\"] in (\"ok\", \"stale\")]",
+  "    usable = [r for r in rows[:1] if r[\"st\"] in (\"ok\", \"stale\")]"),
+
+ ("weather: a STALE station is used over a current backup",
+  "ltcplay/weather.py",
+  "    pick = next((r for r in usable if r[\"st\"] == \"ok\"), None) or \\",
+  "    pick = None or \\"),
+
+ ("weather: no current data gives no reason",
+  "ltcplay/weather.py",
+  "                         + \". \".join(_cap(r[\"why\"]) for r in rows) + \".\")",
+  "                         + \"\")"),
+
+ ("weather: a backup reading does not say why the station was passed over",
+  "ltcplay/weather.py",
+  "        if pick[\"i\"] > 0:\n            text += (\" Using it because \"",
+  "        if False:\n            text += (\" Using it because \""),
+
+ ("weather: a station that stopped reporting is said as not answering",
+  "ltcplay/weather.py",
+  "    if err and not s.get(\"answered\"):",
+  "    if True:"),
+
+ ("weather: a backup that disagrees with the station is not said",
+  "ltcplay/weather.py",
+  "        if others:\n            text += (\" \" + \"; \".join(",
+  "        if False:\n            text += (\" \" + \"; \".join("),
+
+ ("weather: aviationweather.gov's knots are shown as mph",
+  "ltcplay/weather.py",
+  "    return {\"speed_mph\": to_mph(wspd, unit),",
+  "    return {\"speed_mph\": wspd,"),
+
+ ("weather: aviationweather.gov's oldest report is used",
+  "ltcplay/weather.py",
+  "        if best is None or valid > best[0]:",
+  "        if best is None or valid < best[0]:"),
+
+ ("weather: the backup airports are never asked",
+  "ltcplay/weather.py",
+  "    for sid in cfg.get(\"backup_stations\") or ():",
+  "    for sid in ():"),
 
  ("weather: sources 30 mph apart do not disagree",
   "ltcplay/weather.py",

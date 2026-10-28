@@ -328,6 +328,19 @@ plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
+**WIND on the show screen (Fire & Ice).** Under the lasers. Advisory only:
+it never arms, holds or stops anything; the on-site wind check decides.
+The measured line comes from UTALP (the I-15 Point of the Mountain
+station) or, when UTALP has no current reading, from a backup airport
+(Provo, then Salt Lake City). A backup says so, with the airport, how far
+away it is and why UTALP was passed over ("UTALP (Iowa mesonet) stopped
+reporting at 3:40 AM, last reading 3 h 12 min ago"). NO CURRENT DATA, use
+on-site wind check, with no number, means no source has a reading under
+45 min old; the line says why for each one. The forecast line goes STALE
+only when this PC has not got it from the Weather Service for an hour, or
+the Weather Service has not updated it for 18 h, and says which. WEATHER.md
+has the rules and the settings.
+
 **Startup (Fire & Ice; it was called Morning and Shutdown).** The rack
 screen has a Startup page (the button in the header). Shutdown is its own
 labelled section on it: one press opens the Shutdown checklist. On it: the laser arm (every

@@ -75149,6 +75149,28 @@ def _wx_obs(update="2026-10-26T17:53:00+00:00"):
                      "qualityControl": "Z"}}}
 
 
+def _wx_awc(station="KPVU", obs=WX_NOW - 240, wdir=180, wspd=10, wgst=None,
+            lat=40.219, lon=-111.723, report=None):
+    """aviationweather.gov /api/data/metar?format=json: a list of METARs.
+    The shape follows the Data API's documented METAR JSON (icaoId,
+    obsTime in epoch seconds, reportTime, wdir as degrees or "VRB", wspd
+    and wgst in knots, rawOb, lat, lon); not fetched live from here."""
+    from datetime import datetime as _dt, timezone as _tz
+    t = _dt.fromtimestamp(obs, _tz.utc)
+    grp = (f"{wdir if wdir == 'VRB' else f'{int(wdir):03d}'}"
+           f"{int(wspd):02d}{'' if wgst is None else f'G{int(wgst):02d}'}KT")
+    return [{"icaoId": station, "receiptTime": t.strftime(
+                 "%Y-%m-%dT%H:%M:%S.000Z"),
+             "obsTime": int(obs),
+             "reportTime": report or t.strftime("%Y-%m-%dT%H:00:00.000Z"),
+             "temp": 12.2, "dewp": -3.9, "wdir": wdir, "wspd": wspd,
+             "wgst": wgst, "visib": "10+", "altim": 1019.6,
+             "rawOb": f"METAR {station} {t.strftime('%d%H%M')}Z {grp} 10SM "
+                      f"CLR 12/M04 A3011 RMK AO2",
+             "name": "Provo Muni, UT, US" if station == "KPVU" else station,
+             "lat": lat, "lon": lon, "elev": 1371}]
+
+
 class _WxNet:
     """Canned answers by URL for weather.Weather(get=...): a dict value is
     JSON, an int an HTTP status, an exception is raised. Counts calls."""
@@ -75180,7 +75202,10 @@ def _wx_all_good():
             base + "/stations": {"features": []},
             base: _wx_grid(),
             W.NWS + "/alerts/active": _wx_alerts("Wind Advisory"),
-            W.NWS + "/stations/": _wx_obs()}
+            W.NWS + "/stations/": _wx_obs(),
+            W.awc_url("KPVU"): _wx_awc("KPVU", wspd=10),
+            W.awc_url("KSLC"): _wx_awc("KSLC", wspd=9, lat=40.788,
+                                       lon=-111.978)}
 
 
 def _wx_service(folder, answers, cfg=None, now=None):
@@ -75289,11 +75314,15 @@ def test_weather_parsers_read_each_source():
 def test_weather_rules_age_stale_no_data_disagree_alerts():
     section("weather: every number with its age; measured over 20 min is "
             "amber STALE, over 45 min grey NO CURRENT DATA with no number; "
-            "the forecast stale after 3 h; sources 10 mph apart disagree; "
-            "wind alerts are a banner; no internet is said plainly")
+            "the forecast stale when this PC has not got it for 1 h or the "
+            "NWS has not updated it for 18 h; sources 10 mph apart "
+            "disagree; wind alerts are a banner; no internet is said "
+            "plainly. One measured source here (no backups): the backups "
+            "have their own test")
     from ltcplay import weather as W
     work = tempfile.mkdtemp()
-    w, net, t = _wx_service(work, _wx_all_good())
+    w, net, t = _wx_service(work, _wx_all_good(),
+                            cfg={"backup_stations": []})
     check(sorted(w.poll_once()) == ["alerts", "forecast", "mesonet"],
           "the first poll tries every source")
     v = w.view()
@@ -75304,7 +75333,8 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
           "12 mph, gusts 21 mph, from NNW (340°). 5 min old.",
           f"the measured line: {meas['text']!r}")
     check(fc["text"] == "Forecast for this spot (NWS): 10 mph, gusts 18 "
-          "mph, from S (170°). Issued 44 min ago.",
+          "mph, from S (170°). Issued 44 min ago; this PC got it under 1 "
+          "min ago.",
           f"the forecast line: {fc['text']!r}")
     check(v["banner"] and v["banner"][0].startswith(
           "NWS WIND ADVISORY in effect until ") and "Checked under 1 min "
@@ -75326,16 +75356,47 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
         else:
             check(re.search(r"\d+ min old\.", ln["text"]),
                   f"a number shown carries its age: {ln['text']!r}")
-    # The forecast: stale after 3 h of its issue time, grey after 6 h or
-    # when the saved hours do not reach now.
+    # The forecast (Jeff, 2026-10-28, item 15c): judged on when this PC
+    # last GOT it from the NWS (over 1 h amber, over 6 h grey), and on the
+    # NWS's own issue time only past 18 h, since the NWS often leaves a
+    # good forecast unchanged for hours. Jeff's case: issued 3 h 54 min
+    # ago, got 6 min ago, is current.
     w.src["mesonet"]["data"]["valid"] = WX_NOW
-    issued = w.src["forecast"]["data"]["issued"]
-    for age, lv in ((3 * 3600, "ok"), (3 * 3600 + 60, "stale"),
-                    (6 * 3600 + 60, "none")):
-        t["wall"] = issued + age
-        w.src["forecast"]["data"]["speed"] = [[0, 4e9, 8.0]]
+    fd = w.src["forecast"]["data"]
+    check(fd["fetched_at"] == WX_NOW, f"the fetch time is kept: {fd}")
+    issued = fd["issued"]
+    fd["speed"] = [[0, 4e9, 8.0]]
+    for issued_ago, got_ago, lv, words in (
+            (3 * 3600 + 54 * 60, 6 * 60, "ok",
+             "Issued 3 h 54 min ago; this PC got it 6 min ago."),
+            (3 * 3600 + 54 * 60, 3600, "ok", "this PC got it 1 h ago."),
+            (5 * 3600, 3600 + 60, "stale",
+             "Stale because this PC has not got it from the NWS for 1 h 1 "
+             "min (the limit is 1 h)."),
+            (12 * 3600, 6 * 3600, "stale", "for 6 h (the limit is 1 h)"),
+            (18 * 3600, 6 * 60, "ok", "Issued 18 h ago;"),
+            (18 * 3600 + 60, 6 * 60, "stale",
+             "Stale because the NWS has not updated it for 18 h 1 min (it "
+             "normally does at least twice a day; the limit is 18 h)."),
+            (8 * 3600, 6 * 3600 + 60, "none",
+             "This PC last got it from the NWS 6 h 1 min ago, over the 6 "
+             "h limit. Issued 8 h ago.")):
+        t["wall"] = issued + issued_ago
+        fd["fetched_at"] = t["wall"] - got_ago
         ln = w.view()["lines"][1]
-        check(ln["level"] == lv, f"forecast {age} s old reads {lv}: {ln}")
+        check(ln["level"] == lv and words in ln["text"],
+              f"forecast issued {issued_ago} s and got {got_ago} s ago "
+              f"reads {lv}, saying {words!r}: {ln}")
+        if lv == "none":
+            check(not num.search(ln["text"]), f"grey shows no number: {ln}")
+        _no_dashes(ln["text"], "the forecast line")
+    # A forecast saved before this change has no fetch time: its issue
+    # time stands in, the older of the two, so it is never made fresher.
+    del fd["fetched_at"]
+    t["wall"] = issued + 2 * 3600
+    check(w.view()["lines"][1]["level"] == "stale",
+          "no fetch time: judged on its issue time")
+    fd["fetched_at"] = WX_NOW
     t["wall"] = WX_NOW
     w.src["forecast"]["data"]["speed"] = [[0, WX_NOW - 1, 8.0]]
     ln = w.view()["lines"][1]
@@ -75346,7 +75407,7 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     w.src["mesonet"]["data"]["speed_mph"] = 12.0
     v = w.view()
     check(v["disagree"].startswith("Sources disagree, verify on site:") and
-          "measured 12 mph" in v["disagree"] and
+          "measured UTALP 12 mph" in v["disagree"] and
           "forecast 23 mph" in v["disagree"],
           f"11 mph apart: they disagree: {v['disagree']!r}")
     w.src["forecast"]["data"]["speed"] = [[0, 4e9, 22.0]]
@@ -75403,6 +75464,192 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     print("  ok")
 
 
+def test_weather_backup_stations_and_why_no_data():
+    section("weather (Jeff, 2026-10-28, item 15a and b): the measured "
+            "wind comes from the first current source in the list "
+            "(UTALP, then the airports through aviationweather.gov); the "
+            "line names the source and its age and says why the ones "
+            "ahead of it were passed over; a reading over 45 min old is "
+            "never used; with none current it says NO CURRENT DATA and "
+            "why, per source, with no number")
+    from ltcplay import weather as W
+    num = re.compile(r"\d+ mph")
+    stopped = WX_NOW - (3 * 3600 + 12 * 60)
+    at_ = W._clock_text(stopped)
+
+    def run(**over):
+        ans = _wx_all_good()
+        for k, v in over.items():
+            ans[{"mesonet": W.IEM + "/api/1/currents.json",
+                 "kpvu": W.awc_url("KPVU"),
+                 "kslc": W.awc_url("KSLC")}[k]] = v
+        w, net, t = _wx_service(tempfile.mkdtemp(), ans)
+        w.poll_once()
+        v = w.view()
+        _no_dashes(json.dumps(v, ensure_ascii=False), "the weather view")
+        return w, v, v["lines"][0]
+    # All fresh and agreeing: the station's line, exactly as before.
+    _w, v, ln = run()
+    check(ln["source"] == "mesonet" and ln["level"] == "ok" and
+          ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 12 "
+          "mph, gusts 21 mph, from NNW (340°). 5 min old." and
+          v["disagree"] == "", f"all fresh: the station, as before: {ln}")
+    # Jeff's morning: UTALP stopped reporting, the mesonet still answers
+    # with its last reading. The Provo airport is current.
+    _w, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T14:48:00Z"))
+    check(ln["source"] == "awc:KPVU" and ln["level"] == "ok" and
+          ln["text"] == "Measured, backup Provo airport (KPVU), 17 miles "
+          "away: 12 mph, gusts not reported, from S (180°). 4 min old. "
+          f"Using it because UTALP (Iowa mesonet) stopped reporting at "
+          f"{at_}, last reading 3 h 12 min ago.",
+          f"UTALP stalled: the backup, named, and why: {ln['text']!r}")
+    check(v["state"] == "ok", f"a current backup is not STALE: {v['state']}")
+    # UTALP stale (30 min): a current backup is used over it.
+    _w, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:30:00Z"))
+    check(ln["source"] == "awc:KPVU" and "Using it because UTALP (Iowa "
+          "mesonet)'s last reading is 30 min old, over the 20 min limit."
+          in ln["text"], f"a STALE station gives way: {ln['text']!r}")
+    # UTALP and Provo both down: Salt Lake City, with both reasons.
+    _w, v, ln = run(mesonet=W.FetchError("no answer in 8 s", offline=True),
+                    kpvu=503)
+    check(ln["source"] == "awc:KSLC" and ln["text"].startswith(
+          "Measured, backup Salt Lake City airport (KSLC), 25 miles away: "
+          "10 mph,") and ln["text"].endswith(
+          "Using it because UTALP (Iowa mesonet) did not answer: no answer "
+          "in 8 s; KPVU (aviationweather.gov) did not answer: the server "
+          "answered HTTP 503.") and v["internet"] == "",
+          f"two down: the third, with both reasons: {ln['text']!r}")
+    # Nothing current anywhere: NO CURRENT DATA, why for each, no number.
+    _w, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T14:48:00Z"),
+                    kpvu=204, kslc=W.FetchError(
+                        "the name could not be looked up (no internet, or "
+                        "DNS is blocked)", offline=True))
+    check(ln["level"] == "none" and ln["source"] == "" and
+          ln["text"] == f"Measured wind: {W.NO_DATA}. UTALP (Iowa mesonet) "
+          f"stopped reporting at {at_}, last reading 3 h 12 min ago. KPVU "
+          "(aviationweather.gov) answered with no usable reading: "
+          "aviationweather.gov has no report from KPVU in the last 2 h. "
+          "KSLC (aviationweather.gov) did not answer: the name could not "
+          "be looked up (no internet, or DNS is blocked).",
+          f"none current: why, per source: {ln['text']!r}")
+    check(not num.search(ln["text"]) and "speed_mph" not in ln,
+          "no current data shows no number")
+    check([x["level"] for x in ln["sources"]] == ["none", "none", "none"],
+          f"each source's state is in the view: {ln['sources']}")
+    # A backup over 45 min old is never used, and never shows a number.
+    _w, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T14:48:00Z"),
+                    kpvu=_wx_awc("KPVU", obs=WX_NOW - 46 * 60), kslc=[])
+    check(ln["level"] == "none" and not num.search(ln["text"]) and
+          "KPVU (aviationweather.gov) stopped reporting at "
+          f"{W._clock_text(WX_NOW - 46 * 60)}, last reading 46 min ago" in
+          ln["text"], f"a 46 min old backup is not used: {ln['text']!r}")
+    # Only stale readings: the first one, amber.
+    _w, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:35:00Z"),
+                    kpvu=_wx_awc("KPVU", obs=WX_NOW - 30 * 60),
+                    kslc=_wx_awc("KSLC", obs=WX_NOW - 40 * 60))
+    check(ln["source"] == "mesonet" and ln["level"] == "stale",
+          f"only STALE ones current: the first, amber: {ln}")
+    # They disagree: the line says which it uses, the banner says both.
+    _w, v, ln = run(kpvu=_wx_awc("KPVU", wspd=30, wgst=41))
+    check(ln["source"] == "mesonet" and ln["text"].endswith(
+          "5 min old. KPVU (aviationweather.gov) reads 35 mph, 4 min old. "
+          "This line uses UTALP, the first current source in the list.") and
+          "measured UTALP 12 mph, measured KPVU 35 mph" in v["disagree"],
+          f"a backup 23 mph apart: said: {ln['text']!r} {v['disagree']!r}")
+    # The setting moves them: no backups, and another order.
+    w, _v, _ln = run()
+    check(list(w.every) == ["mesonet", "awc:KPVU", "awc:KSLC", "alerts",
+                            "forecast"], f"the order tried: {list(w.every)}")
+    w2, net2, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
+                               cfg={"backup_stations": ["kslc"]})
+    w2.poll_once()
+    check(list(w2.every)[:2] == ["mesonet", "awc:KSLC"] and
+          not any("KPVU" in c[0] for c in net2.calls),
+          "backup_stations from the settings")
+    check([c[0] for c in net2.calls if "aviationweather" in c[0]] ==
+          ["https://aviationweather.gov/api/data/metar?ids=KSLC&format=json"
+           "&hours=2"], f"the aviationweather.gov request: {net2.calls}")
+    # Saved values: a restart shows the backup's reading with its true
+    # age; a reading saved for KPVU is never shown as KSLC's.
+    work = tempfile.mkdtemp()
+    w3, _n, _t = _wx_service(work, _wx_all_good())
+    w3.poll_once()
+    w4, _n, _t = _wx_service(work, {}, now=WX_NOW + 10 * 60)
+    check(w4.src["awc:KPVU"]["data"]["valid"] == WX_NOW - 240,
+          "a backup's reading is saved")
+    w5, _n, _t = _wx_service(work, {}, cfg={"backup_stations": ["KU42"]})
+    check(w5.src["awc:KU42"]["data"] is None,
+          "another station's saved reading is not this one's")
+    print("  ok")
+
+
+def test_weather_aviationweather_reports_are_read():
+    section("weather: aviationweather.gov's METAR answer is read: knots "
+            "to mph, the newest report, VRB as variable, the raw METAR's "
+            "wind group when a field is missing, no report said plainly")
+    from ltcplay import weather as W
+    r = W.parse_awc(_wx_awc("KPVU", wdir=340, wspd=12, wgst=20), "KPVU",
+                    40.4263, -111.8875)
+    check(abs(r["speed_mph"] - 12 * W.KNOT_MPH) < 1e-6 and
+          abs(r["gust_mph"] - 20 * W.KNOT_MPH) < 1e-6 and
+          r["dir_deg"] == 340 and r["valid"] == WX_NOW - 240 and
+          r["variable"] is False and 16 < r["miles"] < 18,
+          f"a KPVU report: {r}")
+    two = _wx_awc("KPVU", obs=WX_NOW - 3600, wspd=3) + \
+        _wx_awc("KPVU", obs=WX_NOW - 600, wspd=15) + \
+        _wx_awc("KSLC", obs=WX_NOW, wspd=40)
+    r = W.parse_awc(two, "KPVU")
+    check(r["valid"] == WX_NOW - 600 and
+          abs(r["speed_mph"] - 15 * W.KNOT_MPH) < 1e-6 and r["miles"] is None,
+          f"the newest of this station's reports: {r}")
+    r = W.parse_awc(_wx_awc("KPVU", wdir="VRB", wspd=4), "KPVU")
+    check(r["dir_deg"] is None and r["variable"] and
+          W.wind_text(r["speed_mph"], r["gust_mph"], r["dir_deg"],
+                      r["variable"]) ==
+          "5 mph, gusts not reported, direction variable", f"VRB: {r}")
+    raw = _wx_awc("KPVU", wdir=200, wspd=7, wgst=18)
+    for k in ("wdir", "wspd", "wgst", "obsTime"):
+        raw[0].pop(k)
+    raw[0]["reportTime"] = "2026-10-26 17:00:00"
+    r = W.parse_awc(raw, "KPVU")
+    check(r["dir_deg"] == 200 and abs(r["speed_mph"] - 7 * W.KNOT_MPH) < 1e-6
+          and abs(r["gust_mph"] - 18 * W.KNOT_MPH) < 1e-6 and
+          r["valid"] == WX_NOW - 3600,
+          f"no fields: the raw METAR's wind group and the report time: {r}")
+    calm = W.parse_awc(_wx_awc("KPVU", wdir=0, wspd=0), "KPVU")
+    check(W.wind_text(calm["speed_mph"], calm["gust_mph"],
+                      calm["dir_deg"]).endswith("calm"), "00000KT is calm")
+    for bad, words in ((None, "no report from KPVU in the last 2 h"),
+                       ([], "no report from KPVU in the last 2 h"),
+                       (_wx_awc("KSLC"), "no report from KPVU"),
+                       ({"error": "x"}, "not a list of reports")):
+        try:
+            W.parse_awc(bad, "KPVU")
+            check(False, f"{bad!r} was read as a report")
+        except ValueError as e:
+            check(words in str(e), f"{bad!r}: {e}")
+            _no_dashes(str(e), "an aviationweather.gov refusal")
+    nofield = _wx_awc("KPVU")
+    nofield[0].pop("wspd")
+    nofield[0]["rawOb"] = "METAR KPVU 261756Z AUTO 10SM CLR"
+    try:
+        W.parse_awc(nofield, "KPVU")
+        check(False, "a report with no wind was read")
+    except ValueError as e:
+        check("no wind speed" in str(e), str(e))
+    # aviationweather.gov's "nothing" is 204 No Content: no report, said.
+    for status, body in ((204, b""), (200, b"  ")):
+        check(W.get_json(lambda *_a, st=status, b=body: (st, b),
+                         "https://x/", empty_ok=True) is None,
+              f"{status} with no body is no report")
+    try:
+        W.get_json(lambda *_a: (204, b""), "https://x/")
+        check(False, "204 was taken where an answer is needed")
+    except W.FetchError:
+        pass
+    print("  ok")
+
+
 def test_weather_failure_backoff_and_disk_cache():
     section("weather: a failed source is tried again after 1, 2, 4 min, "
             "never later than its normal interval; the last good values "
@@ -75419,8 +75666,8 @@ def test_weather_failure_backoff_and_disk_cache():
     t["mono"] += 299
     check(w.poll_once() == [], "nothing is fetched before it is due")
     t["mono"] += 1
-    check(sorted(w.poll_once()) == ["alerts", "mesonet"],
-          "the measured station and the alerts at 5 min")
+    check(w.poll_once() == ["mesonet", "awc:KPVU", "awc:KSLC", "alerts"],
+          "the measured stations, in their order, and the alerts at 5 min")
     ans[W.IEM + "/api/1/currents.json"] = W.FetchError("no answer in 8 s",
                                                        offline=True)
     net.answers = ans
@@ -75523,6 +75770,16 @@ def test_weather_settings_are_checked():
     put({"screen_arming": False})
     check(W.load_config(work) == (W.DEFAULTS, ""), "no weather block: on")
     put({"weather": {"enabled": False, "nws_station": "ku42",
+                     "stale_min": 15, "contact": " ops@example.com ",
+                     "backup_stations": [" kslc", "KU42"]}})
+    cfg, err = W.load_config(work)
+    check(err == "" and cfg["backup_stations"] == ["KSLC", "KU42"] and
+          W.DEFAULTS["backup_stations"] == ["KPVU", "KSLC"],
+          f"backup_stations is taken, the default untouched: {cfg}")
+    put({"weather": {"backup_stations": []}})
+    check(W.load_config(work)[0]["backup_stations"] == [],
+          "no backups is allowed")
+    put({"weather": {"enabled": False, "nws_station": "ku42",
                      "stale_min": 15, "contact": " ops@example.com "}})
     cfg, err = W.load_config(work)
     check(err == "" and cfg["enabled"] is False and
@@ -75541,6 +75798,15 @@ def test_weather_settings_are_checked():
             ({"stale_min": 50}, "no_data_min (45) has to be more than "
                                 "stale_min (50)"),
             ({"disagree_mph": True}, "disagree_mph has to be a number"),
+            ({"backup_stations": "KPVU"}, "backup_stations has to be a "
+                                          "list of station names"),
+            ({"backup_stations": ["K PVU"]}, "is not a station name"),
+            ({"backup_stations": ["KPVU", "kpvu"]}, "names a station "
+                                                    "twice"),
+            ({"backup_stations": ["A1", "A2", "A3", "A4", "A5"]},
+             "at most 4 stations"),
+            ({"forecast_issued_stale_hours": 2},
+             "forecast_issued_stale_hours has to be from 6 to 72"),
             ([1], "has to be a block in curly brackets")):
         put({"weather": block, "screen_arming": True})
         cfg, err = W.load_config(work)
@@ -75738,7 +76004,11 @@ def test_weather_check_command():
                      wall=lambda: WX_NOW)
     text = "\n".join(lines)
     check(rc == 0 and "RESULT: PASS" in text and
-          text.count("PASS  ") == 5 and '"sknt": 10.4' in text and
+          text.count("PASS  ") == 7 and '"sknt": 10.4' in text and
+          "PASS  measured, backup KPVU (aviationweather.gov): 12 mph" in text
+          and "17 miles away" in text and
+          "Measured, in the order used: UTALP (Iowa mesonet), KPVU "
+          "(aviationweather.gov), KSLC (aviationweather.gov)." in text and
           "HTTP 200" in text, f"all good: pass, raw shown:\n{text[-1500:]}")
     check("UTALP" in text and "KPVU" in text and
           "(airport, not this spot)" in text and
@@ -75750,7 +76020,8 @@ def test_weather_check_command():
     text = "\n".join(lines)
     check(rc == 1 and "RESULT: FAIL" in text and
           "this PC cannot reach it" in text and
-          "TCP 443) to api.weather.gov and mesonet.agron.iastate.edu" in text,
+          "TCP 443) to api.weather.gov, mesonet.agron.iastate.edu and "
+          "aviationweather.gov" in text,
           f"nothing connects: fail, and the firewall named:\n{text[-800:]}")
     with open(os.path.join(work, W.SETTINGS_FILE), "w") as fh:
         json.dump({"weather": {"bogus": 1}}, fh)
@@ -75768,6 +76039,8 @@ def test_weather_check_command():
     here = os.path.dirname(os.path.abspath(__file__))
     doc = open(os.path.join(here, "WEATHER.md"), encoding="utf-8").read()
     for need in ("api.weather.gov", "mesonet.agron.iastate.edu", "443",
+                 "aviationweather.gov", "backup_stations",
+                 "forecast_issued_stale_hours", "stopped reporting",
                  "UNVERIFIED", "ltc weather --check", "STALE",
                  "NO CURRENT DATA"):
         check(need in doc, f"WEATHER.md says {need!r}")
@@ -76631,6 +76904,8 @@ if __name__ == "__main__":
         test_scrub_flames_seqlock,
         test_weather_parsers_read_each_source,
         test_weather_rules_age_stale_no_data_disagree_alerts,
+        test_weather_backup_stations_and_why_no_data,
+        test_weather_aviationweather_reports_are_read,
         test_weather_failure_backoff_and_disk_cache,
         test_weather_settings_are_checked,
         test_weather_is_display_only_and_off_the_show_path,
