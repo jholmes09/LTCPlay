@@ -97,6 +97,7 @@ from . import appdata
 from . import settings as settings_mod
 from . import users as users_mod
 from . import version as version_mod
+from .playhead import ShowAudioPlayhead
 
 FIXED_PORT = 7878
 DISK_FILE = "disk-low.txt"          # packaging/windows/housekeeping.DISK_FILE
@@ -1243,6 +1244,18 @@ class Remote:
         self.wall = wall
         self._log = log
         self.marks = {"a": None, "b": None}     # loop marks, show seconds
+        # The Programming playhead on the show audio (playhead.py): one
+        # per engine, so its watchdog and its record of the playback it
+        # started outlive a single press.
+        self.playhead = ShowAudioPlayhead(
+            control, schedule, threaded=True,
+            journal=lambda text, outcome: self._journal(
+                "", "Programming screen", "programming playback", outcome,
+                text))
+        # Start now asks again under the scheduler's lock, after its tick
+        # and any wait for the show audio (a Play from may have landed).
+        if schedule is not None and hasattr(schedule, "start_veto"):
+            schedule.start_veto = self.programming_playback_refusal
         # Screen arm holds: group index -> {token, who, device, start,
         # beat, id}; per-group disarms waiting for the deck to read them.
         import collections
@@ -2252,6 +2265,13 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
+        if name == "start-now":
+            why = self.programming_playback_refusal()
+            if why:
+                self._journal(who, screen, name, "refused",
+                              f"{who or 'Someone'}'s Start now on the "
+                              f"{screen} was refused. {why}")
+                return 409, {"ok": False, "error": why, "text": why}
         flames = None
         if name == "abort":
             # The flames first, every time (review of PR #43, P0-1): every
@@ -2334,8 +2354,86 @@ class Remote:
                 except Exception:
                     pass
             return out
+        # Programming playback on the show audio (review of #142): Hold is
+        # its Pause and Abort its Stop, after every disarm above, and no
+        # Start now goes over it. A scheduled show is never this
+        # (programming() refuses it, and active() is only the very cue
+        # Play from started).
+        ph = self.playhead if name in ("hold", "abort") else None
+        if ph is not None and not (self.programming()[0] and ph.active()):
+            ph = None
         if name == "abort":
-            return self.abort(who, screen, flames, lasers, pressed)
+            code, out = self.abort(who, screen, flames, lasers, pressed)
+            if ph is not None:
+                stopped = True
+                try:
+                    said = ph.abort_press(who, screen)
+                except Exception as e:              # noqa: BLE001
+                    stopped = False
+                    said = (f"Programming playback did NOT stop "
+                            f"({type(e).__name__}: {e}). Press Stop the "
+                            f"show audio, or Stop.")
+                self._journal(who, screen, "abort",
+                              "done" if stopped else "fault",
+                              f"{who or 'Someone'} pressed Abort on the "
+                              f"{screen}. {said}", fault=not stopped)
+                # No scheduled show was live to stop: the answer says what
+                # did stop, the Programming playback.
+                text = " ".join(t for t in (flames[1] if flames else "",
+                                            lasers[1], said) if t)
+                ok = stopped and not (flames and flames[0] is False)
+                out = dict(out, programming=said, stopped=stopped, ok=ok,
+                           text=text)
+                out.pop("error", None)
+                if not ok:
+                    out["error"] = text
+                code = 200 if ok else 409
+            return code, out
+        if ph is not None:                          # hold
+            # Jeff's ruling: Hold is a schedule pause. The schedule's own
+            # Hold first (so the next show does not start until Resume),
+            # and its conductor step let land; then the Programming Pause,
+            # so the music freezes (the schedule's Hold alone only takes
+            # the rig out of the show). Continue does not lift the
+            # schedule's Hold; Resume does.
+            svc = self.schedule
+            m = getattr(svc, "machine", None)
+            sched = ""
+            # A Start now waiting for the show audio never outlives a Hold
+            # (#144), whatever state the schedule is in.
+            cancel = getattr(svc, "cancel_start_wait", None)
+            if cancel is not None:
+                try:
+                    cancel(f"Hold was pressed on the {screen}")
+                except Exception:                   # noqa: BLE001
+                    pass
+            if svc is not None and getattr(m, "state", None) in ("IDLE",
+                                                                 "STANDBY"):
+                try:
+                    r = svc.operator_press("hold", who, screen,
+                                           pressed=pressed, surface=surface)
+                    sched = str(r.get("text") or "")
+                except ValueError as e:
+                    sched = str(e)
+                flush = getattr(svc, "flush_conductor", None)
+                if flush is not None:
+                    try:
+                        flush(2.0)
+                    except Exception:               # noqa: BLE001
+                        pass
+                ph.settle_conductor()
+            try:
+                said = ph.hold_press(who, screen)
+            except Exception as e:                  # noqa: BLE001
+                self._journal(who, screen, "hold", "refused",
+                              f"{who or 'Someone'}'s Hold on the {screen} "
+                              f"was refused. {e}")
+                return 409, {"ok": False, "error": str(e), "text": str(e)}
+            said = f"{sched} {said}".strip()
+            self._journal(who, screen, "hold", "done",
+                          f"{who or 'Someone'} pressed Hold on the "
+                          f"{screen}. {said}")
+            return 200, {"ok": True, "text": said}
         if name in TRANSPORT_ROUTES:
             why = self.scrub_transport_refusal(name, body, ctx)
             if why:
@@ -2372,6 +2470,18 @@ class Remote:
 
     # -- programming-session transport ----------------------------------
     LIVE_STATES = ("SHOW", "PAUSED")
+    PROGRAMMING_PLAYING = ("Stop the Programming playback first (Stop the "
+                           "show audio on the Programming screen). Nothing "
+                           "was started.")
+
+    def programming_playback_refusal(self):
+        """The sentence that refuses Start now and Run while Programming
+        playback is on (playhead.py), or ""."""
+        try:
+            on = self.programming()[0] and self.playhead.active()
+        except Exception:                           # noqa: BLE001
+            on = False
+        return self.PROGRAMMING_PLAYING if on else ""
 
     def programming(self):
         """(True, "") in a programming session, else (False, why)."""
@@ -2419,8 +2529,33 @@ class Remote:
         c = self.control
         p = c.session.player
         tl = c.session.tl
+        # The show audio as the one playhead (playhead.py, Jeff
+        # 2026-10-28): audio, timecode, video, pixels, flame cues and
+        # lasers follow it through the show's own paths. Otherwise (GPL, a
+        # show following timecode) the free run below, as before.
+        ph = self.playhead
+        if not ph.applies():
+            ph = None
+        fb = self.fireball
+        if ph is not None and name in ("play-from", "loop") and \
+                fb is not None and fb.active():
+            # One source of fire values at a time: the Fireball page has a
+            # channel on (it cuts itself once Run is pressed; this covers
+            # the moment between).
+            why = ("A Fireball channel is on. Turn the Fireball page off "
+                   "first. Nothing was played.")
+            self._journal(who, screen, name, "refused",
+                          f"{label}'s {name} on the {screen} was refused. "
+                          f"{why}")
+            return 409, {"error": why}
 
         def here():
+            if ph is not None:
+                at = ph.here()
+                if at is None:
+                    raise ValueError("There is no show time yet. Play from "
+                                     "a timecode first.")
+                return at
             if p.freerun_paused_at is not None:
                 return p.freerun_paused_at
             tc = p.tc_seconds
@@ -2439,8 +2574,14 @@ class Remote:
                 if not at:
                     raise ValueError("Type a timecode to play from, like "
                                      "00:01:30:00, or a cue name.")
-                r = c.go(at)
-                said = f"played from {r['at']}"
+                if ph is not None:
+                    pos = ph.resolve(at)
+                    said = (f"played from "
+                            f"{tl.format(ph.play_from(pos, who, screen))} "
+                            f"on the show audio")
+                else:
+                    r = c.go(at)
+                    said = f"played from {r['at']}"
             elif name == "jump":
                 try:
                     secs = float(body.get("seconds"))
@@ -2449,9 +2590,18 @@ class Remote:
                 if not (-JUMP_MAX_S <= secs <= JUMP_MAX_S) or secs == 0:
                     raise ValueError(f"Jump by up to {JUMP_MAX_S:g} s either "
                                      f"way.")
-                ensure_freerun()
-                at = p.nudge(secs)
+                if ph is not None:
+                    at = ph.jump(secs)
+                else:
+                    ensure_freerun()
+                    at = p.nudge(secs)
                 said = f"jumped {secs:+g} s to {tl.format(at)}"
+            elif name == "pause" and ph is not None:
+                at = ph.pause(who, screen)
+                said = f"paused at {tl.format(at)}"
+            elif name == "continue" and ph is not None:
+                at = ph.cont(who, screen)
+                said = f"continued from {tl.format(at)}"
             elif name == "pause":
                 ensure_freerun()
                 at = p.freerun_pause(True)
@@ -2469,14 +2619,23 @@ class Remote:
                     a, b = self.marks["a"], self.marks["b"]
                     if a is None or b is None:
                         raise ValueError("Set mark A and mark B first.")
-                    p.set_loop(a, b)
-                    if p.freerun_epoch is None:
+                    if ph is not None:
+                        ph.loop(a, b, who, screen)
+                    else:
+                        p.set_loop(a, b)
+                    if ph is None and p.freerun_epoch is None:
                         c.go(tl.format(a))
                     said = (f"turned the loop on, {tl.format(a)} to "
                             f"{tl.format(b)}")
                 else:
-                    p.set_loop(None, None)
+                    if ph is not None:
+                        ph.loop(None, None)
+                    else:
+                        p.set_loop(None, None)
                     said = "turned the loop off"
+            elif ph is not None:                    # follow
+                ph.follow(who, screen)
+                said = "stopped the show audio"
             else:                                   # follow
                 c.release()
                 said = "handed the show back to the timecode"
@@ -2509,6 +2668,13 @@ class Remote:
                        if p.loop else None)
         out["marks"] = {k: (tl.format(v) if v is not None else None)
                         for k, v in self.marks.items()}
+        ph = self.playhead
+        ph.seen()            # an operator page is open: the watchdog's beat
+        v = ph.view() if ph.applies() else None
+        if v is not None:
+            # The show audio is the playhead (playhead.py).
+            out.update(playhead="show_audio", playing=v["playing"],
+                       paused=v["paused"], loop=v["loop"], freerun=False)
         return out
 
     # -- arming from a screen (its own PR) ---------------------------------

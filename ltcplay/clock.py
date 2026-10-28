@@ -1414,6 +1414,7 @@ class AudioMaster(Clock):
         self._fault_at = None
         # The cue.
         self._cue = None
+        self._loop = None       # (a, b) seconds into the cue, or None
         self._token = 0
         self._mode = None       # wait | follow | freerun | return
         self._epoch = None
@@ -1504,10 +1505,19 @@ class AudioMaster(Clock):
         if self.out is not None:
             self.out.close()
 
-    def play(self, position_s, length_s=None, label=""):
+    def play(self, position_s, length_s=None, label="", start_s=0.0,
+             check_only=False):
         """Run a cue: its audio from the top, the timecode from 00:00:00:00
         as the first sample is heard, the pixels from `position_s`. The
-        cue's length is its audio's, whatever `length_s` says."""
+        cue's length is its audio's, whatever `length_s` says.
+
+        `start_s` (the Programming screen's Play from, Jeff 2026-10-28):
+        seconds into the cue to start at instead of the top. The audio
+        process starts on that sample (the same "play" message a Resume
+        after a lost interface sends), and the timecode starts on that
+        frame, not on 00:00:00:00. 0, every show start, is the top exactly
+        as before. `check_only` makes every check and refusal and starts
+        nothing (Play from asks before it moves MadMapper's bank)."""
         got = self.cues.get(label)
         if got is None:
             raise ClockConfigError(
@@ -1537,20 +1547,27 @@ class AudioMaster(Clock):
                 raise ClockConfigError(
                     f"The {role} audio is still loading. Try again in a few "
                     f"seconds.")
-            self._reset_cue()
-            self._token += 1
             tc_frames = int(math.ceil(frames / float(self.rate) * MASTER_FPS
                                       - 1e-9))
-            self._cue = {"label": label, "role": role, "frames": frames,
-                         "position_s": float(position_s),
-                         "tc_frames": tc_frames}
+            cue = {"label": label, "role": role, "frames": frames,
+                   "position_s": float(position_s),
+                   "tc_frames": tc_frames}
+            sample, first = self._seek_point(cue, start_s)
+            if check_only:
+                return now
+            self._reset_cue()
+            self._loop = None
+            self._token += 1
+            cue["first_frame"] = first
+            cue["start_sample"] = sample
+            self._cue = cue
             self.cues_played += 1
             self._set_paused(False)
             self._restore_level()
-            self._send(("play", role, 0, 0, self._token))
+            self._send(("play", role, sample, 0, self._token))
             self._mode = "wait"
             self._wait_since = now
-            self._event(f"timecode from 00:00:00:00 for "
+            self._event(f"timecode from {self._tc_text(first)} for "
                         f"{label or 'a cue'}, following its audio")
             self._kick()
             return now
@@ -1637,6 +1654,138 @@ class AudioMaster(Clock):
             self._resume(self._clock())
             self._kick()
 
+    # -- the Programming screen's playhead (Jeff, 2026-10-28) ---------------
+    def _seek_point(self, cue, start_s):
+        """(first sample, first timecode frame) for `start_s` seconds into
+        `cue`, on a frame boundary so the audio and the timecode start
+        together. Raises ClockConfigError past the cue's end."""
+        try:
+            start_s = float(start_s or 0.0)
+        except (TypeError, ValueError):
+            raise ClockConfigError("That is not a point in the cue.")
+        if not math.isfinite(start_s):
+            raise ClockConfigError("That is not a point in the cue.")
+        frame = max(0, int(math.floor(start_s * MASTER_FPS + 1e-9)))
+        sample = int(round(frame * self.rate / float(MASTER_FPS)))
+        if frame >= cue["tc_frames"] or sample >= cue["frames"]:
+            raise ClockConfigError(
+                f"{self._tc_text(frame)} is past the end of "
+                f"{cue['label'] or 'the cue'}'s audio "
+                f"({self._sa.fmt_len(cue['frames'])}).")
+        return sample, frame
+
+    def seek(self, start_s):
+        """Move the playhead to `start_s` seconds into the cue that is
+        playing: the audio, the timecode and the pixels together. Playing,
+        the audio process starts that sample with a new token (the "play"
+        message Resume after a lost interface sends) and the timecode
+        starts on that frame as the sound is heard. Paused, the frozen
+        frame moves there and Resume plays from it. Returns the cue
+        seconds it moved to. Raises ClockConfigError with a sentence."""
+        with self._lock:
+            cue = self._cue
+            if cue is None:
+                raise ClockConfigError("Nothing is playing to move. Play "
+                                       "from a timecode first.")
+            if self._halting:
+                raise ClockConfigError("The show is stopping, so it cannot "
+                                       "be moved.")
+            if self._pause_req and not self._paused:
+                raise ClockConfigError("The show audio is still fading into "
+                                       "the pause. Try again in a moment.")
+            sample, frame = self._seek_point(cue, start_s)
+            now = self._clock()
+            if self._paused:
+                self._frozen_frame = frame
+                self._frozen_sec = sample / float(self.rate)
+                self._frozen_pos = cue["position_s"] + frame / MASTER_FPS
+                self._last_frame = frame
+                self._last_send_at = None
+                if self._resuming:
+                    # A Resume is on its way in: it starts from here
+                    # instead.
+                    self._token += 1
+                    self._send(("play", cue["role"], sample, 0, self._token))
+                    self._mode = "wait"
+                    self._wait_since = now
+                self._event(f"moved to {self._tc_text(frame)} in "
+                            f"{cue['label'] or 'the cue'} while paused")
+                self._kick()
+                return frame / MASTER_FPS
+            self._start_at(cue, sample, frame, now)
+            self._event(f"moved to {self._tc_text(frame)} in "
+                        f"{cue['label'] or 'the cue'}")
+            return frame / MASTER_FPS
+
+    def _start_at(self, cue, sample, frame, now):
+        """The playhead starts again at `sample`, `frame`. Lock held."""
+        cue["first_frame"] = frame
+        cue["start_sample"] = sample
+        self._last_frame = None
+        self._last_send_at = None
+        self._target = None
+        self._resync = False
+        self._outliers = 0
+        self._stall_loss = False
+        self._stop_frame = None
+        if self._device_ok and cue["role"] in self._loaded:
+            self._token += 1
+            self._send(("play", cue["role"], sample, 0, self._token))
+            self._epoch = None
+            self._mode = "wait"
+            self._wait_since = now
+        else:
+            # No interface: the timecode carries on from there on this
+            # computer's clock, and the audio comes back the usual way
+            # (_maybe_return).
+            self._epoch = now - sample / float(self.rate)
+            self._mode = "freerun"
+        self._kick()
+
+    def set_loop(self, a_s, b_s):
+        """Loop the cue that is playing between `a_s` and `b_s` seconds into
+        it (the Programming screen's A/B loop), or clear it with None,
+        None. Passing B moves the playhead to A, the way seek() does."""
+        with self._lock:
+            if a_s is None and b_s is None:
+                self._loop = None
+                return None
+            cue = self._cue
+            if cue is None:
+                raise ClockConfigError("Nothing is playing to loop.")
+            a, b = float(a_s), float(b_s)
+            if not (0.0 <= a < b):
+                raise ClockConfigError("A loop needs mark B after mark A.")
+            if b - a < 1.0:
+                raise ClockConfigError("A loop has to be at least 1 second "
+                                       "long.")
+            self._seek_point(cue, a)
+            if b * MASTER_FPS > cue["tc_frames"]:
+                raise ClockConfigError(
+                    f"Mark B is past the end of {cue['label'] or 'the cue'}"
+                    f"'s audio.")
+            self._loop = (a, b)
+            self._kick()
+            return self._loop
+
+    @property
+    def loop(self):
+        return self._loop
+
+    def here(self):
+        """Seconds into the cue where the playhead is: the frozen frame
+        while paused, else the frame last sent (or the one it starts on).
+        None with no cue."""
+        with self._lock:
+            cue = self._cue
+            if cue is None:
+                return None
+            if self._paused and self._frozen_frame is not None:
+                return self._frozen_frame / MASTER_FPS
+            if self._last_frame is not None:
+                return self._last_frame / MASTER_FPS
+            return cue.get("first_frame", 0) / MASTER_FPS
+
     @property
     def paused(self):
         return self._paused or self._pause_req
@@ -1704,8 +1853,17 @@ class AudioMaster(Clock):
             frame = int(math.floor(last * MASTER_FPS / float(self.rate)
                                    + 1e-9))
         else:
-            sec = max(self._pos(now) or 0.0, 0.0)
-            frame = frame_at(sec, MASTER_FPS)
+            pos = self._pos(now)
+            if pos is None:
+                # Paused before the sound of a start or a move was heard
+                # (Play from, Back, Ahead, a loop wrap): the playhead is on
+                # the frame it is starting from, never the top of the cue
+                # (review of #142, finding 1).
+                frame = cue.get("first_frame", 0)
+                sec = cue.get("start_sample", 0) / float(self.rate)
+            else:
+                sec = max(pos, 0.0)
+                frame = frame_at(sec, MASTER_FPS)
         if self._last_frame is not None:
             frame = max(frame, self._last_frame)
         self._frozen_frame = frame
@@ -1775,6 +1933,7 @@ class AudioMaster(Clock):
     def _end(self, why, now, fade=0):
         cue = self._cue
         self._cue = None
+        self._loop = None
         self._reset_cue()
         self._send(("stop", fade, None))
         self._restore_level()
@@ -2009,7 +2168,8 @@ class AudioMaster(Clock):
             if self._resuming:
                 self._unfreeze(now)
             elif self._epoch is None:
-                self._epoch = now
+                self._epoch = now - cue.get("start_sample", 0) / \
+                    float(self.rate)
         self._mode = "freerun"
         self._target = None
         # A stall seen only from here may be the stream catching its breath:
@@ -2130,6 +2290,15 @@ class AudioMaster(Clock):
                 pos * self.rate >= self._stop_frame - 1e-6:
             self._freeze(now)
             return now
+        loop = self._loop
+        if loop is not None and not self._pause_req and \
+                pos >= loop[1] - 1e-9:
+            # The A/B loop: past B, the playhead goes back to A, audio,
+            # timecode and pixels together (seek()).
+            sample, first = self._seek_point(cue, loop[0])
+            self._start_at(cue, sample, first, now)
+            self._event(f"looped back to {self._tc_text(first)}")
+            return now
         frame = frame_at(pos, MASTER_FPS)
         if frame >= cue["tc_frames"]:
             self._end("finished", now)
@@ -2139,8 +2308,9 @@ class AudioMaster(Clock):
             # Every cue's timecode starts at 00:00:00:00 (handoff section
             # 4), however late this thread got to it on a busy machine:
             # frame 0 first, stamped with the moment it began, then straight
-            # on to the frame the audio is in.
-            frame = 0
+            # on to the frame the audio is in. A Play from or a move on the
+            # Programming screen starts on its own frame the same way.
+            frame = cue.get("first_frame", 0)
         if last is None or frame > last:
             if last is not None and frame > last + 1:
                 self.skipped += frame - last - 1
@@ -2236,6 +2406,7 @@ class AudioMaster(Clock):
                               f"{lt[3]:02d}" if lt and cue else None),
                   "skipped": self.skipped,
                   "last_ended": self.last_ended,
+                  "loop": list(self._loop) if self._loop else None,
                   "audio": {"device": self.audio.device,
                             "connected": self._device_ok,
                             "via": self._device_desc,

@@ -27378,6 +27378,53 @@ def test_audio_master_session_hold_resume_abort():
                                     for _, p in out.sent[n1:]}) >= 4, 3.0),
               f"the timecode did not move after Resume: "
               f"{[_tc_of(p)[:4] for _, p in out.sent[n1:n1 + 5]]}")
+        # The Programming playhead through the session (playhead.py): a
+        # move inside the cue, a loop, another cue, Play from a point.
+        check(sess.playhead_clock() is clk,
+              "the session does not offer the show audio as the playhead")
+        n2 = len(out.sent)
+        at = sess.clock_seek(3601.0)
+        check(abs(at - 3601.0) < 1e-9, f"clock_seek went to {at}")
+        check(wait_for(lambda: any(_tc_of(p)[:4] == (0, 0, 1, 0)
+                                   for _, p in out.sent[n2:]), 2.0),
+              "after a move the timecode did not start on 00:00:01:00")
+        check(wait_for(lambda: 3601.0 <= (sess.player.tc_seconds or 0)
+                       < 3603.0, 2.0),
+              f"the pixels did not follow the move: "
+              f"{sess.player.tc_seconds}")
+        sess.clock_set_loop(3601.0, 3603.0)
+        check(clk.loop == (1.0, 3.0), f"the loop: {clk.loop}")
+        try:
+            sess.clock_set_loop(3601.0, 7300.0)
+            check(False, "a loop into another cue was accepted")
+        except SessionError:
+            pass
+        sess.clock_set_loop(None, None)
+        sess.clock_seek(7200.5)
+        check(clk._cue and clk._cue["label"] == "Intermission",
+              "a move into another cue did not play that cue")
+        played = clk.cues_played
+        try:
+            sess.clock_play_from(3607.9 + 1.0, check_only=True)
+            check(False, "a check past the end of the audio passed")
+        except SessionError as e:
+            check("past the end" in str(e), f"refusal: {e}")
+        cue0 = clk._cue
+        sess.clock_play_from(3602.0, check_only=True)
+        check(clk.cues_played == played and clk._cue is cue0,
+              "a check-only Play from started something")
+        cue, at = sess.clock_play_from(3602.0)
+        check(cue.name == "Show" and abs(at - 3602.0) < 1e-9,
+              f"Play from 3602: {cue.name} {at}")
+        check(wait_for(lambda: 3602.0 <= (sess.player.tc_seconds or 0)
+                       < 3604.0, 2.0),
+              f"the pixels did not follow Play from: "
+              f"{sess.player.tc_seconds}")
+        try:
+            sess.clock_play_from(10.0)
+            check(False, "Play from before the first cue was accepted")
+        except SessionError as e:
+            check("before the first cue" in str(e), f"refusal: {e}")
         sess.clock_halt()
         check(clk.playing, "Abort through the session did not fade first")
         check(wait_for(lambda: not clk.playing, 2.5),
@@ -50304,6 +50351,844 @@ def test_remote_scrubbing_only_in_a_programming_session():
         st, _h, out = R.ask("POST", "/api/remote/jump",
                             {"seconds": 5, "seen": R.seen()})
         check(st == 409, "and a paused scheduled show is still live")
+        ctl.session = None
+    finally:
+        R.close()
+    print("  ok")
+
+
+
+def test_audio_master_play_from_a_point_and_move():
+    section("audio_master: Play from a point part way into a cue, Back and "
+            "Ahead, Pause, Continue and an A/B loop move the audio, the "
+            "timecode and the pixels together (the Programming playhead)")
+    import numpy as np
+    from ltcplay import clock as clock_mod
+    from ltcplay import flamelink as fl_mod
+    r = _am_rig(seconds=6.0)
+    am, sim, out, eng, vc = r["am"], r["sim"], r["out"], r["eng"], r["vc"]
+    sent = []
+    real_send = eng.send
+    eng.send = lambda msg: (sent.append(msg), real_send(msg))[1]
+
+    def heard(since):
+        return [(t, p) for t, p, b in eng.log if t > since and p.playing]
+
+    # Play from 2 s into the cue: the audio process starts on that sample
+    # (the same "play" message Resume after a lost interface sends), the
+    # timecode starts on frame 60, not 00:00:00:00, and the pixels on
+    # 3602.0.
+    t0 = vc()
+    am.play(3600.0, None, "Show", start_s=2.0)
+    check(sent and sent[-1][:4] == ("play", "show", 96000, 0),
+          f"Play from 2 s did not start the audio on sample 96000: {sent}")
+    sim.run(t0 + 1.0)
+    h = heard(t0)
+    check(h and h[0][1].frame == 96000,
+          f"the audio was heard from {h[0][1].frame if h else None}, not "
+          f"96000")
+    fr = out.frames(since=t0)
+    check(fr and fr[0][1] == 60 and not _am_consecutive(fr),
+          f"the timecode did not start on frame 60 and run on: "
+          f"{[n for _, n in fr[:4]]} {_am_consecutive(fr)[:3]}")
+    check(r["fed"] and abs(r["fed"][0][1] - 3602.0) < 1e-9,
+          f"the pixels did not start at 3602.0: {r['fed'][:1]}")
+    worst = max(abs(_am_true_pos(r, t) - n / 30.0) for t, n in fr[3:])
+    check(worst < 0.002, f"from a point part way in, the timecode is "
+                         f"{worst * 1000:.2f} ms off the audio")
+    check(abs(am.here() - fr[-1][1] / 30.0) < 1e-9,
+          "here() is not the frame last sent")
+    # Back 1 s from wherever it is (about 3.0 s in): a new token, the
+    # audio from that sample, the timecode carrying on from that frame.
+    back_to = am.here() - 1.0
+    del sent[:]
+    t1 = vc()
+    tok = am._token
+    got = am.seek(back_to)
+    want = int(np.floor(back_to * 30 + 1e-9))
+    check(abs(got - want / 30.0) < 1e-9 and am._token == tok + 1,
+          f"seek returned {got}, not frame {want}")
+    check(sent and sent[0][0] == "play" and sent[0][2] == want * 1600 and
+          sent[0][3] == 0, f"Back did not restart the audio on its "
+                           f"sample: {sent}")
+    sim.run(t1 + 1.0)
+    fr = out.frames(since=t1)
+    check(fr and fr[0][1] == want and not _am_consecutive(fr),
+          f"after Back the timecode did not start on frame {want} and run "
+          f"on: {[n for _, n in fr[:4]]}")
+    h = heard(t1)
+    check(h and h[0][1].frame == want * 1600,
+          "after Back the audio was not heard from the new sample")
+    # The move is a seek to the flame link: the timecode moved by much more
+    # than the time that passed, so its existing seek guard starts again.
+    before = [n for t, n in out.frames() if t <= t1][-1]
+    check(abs((want - before) / 30.0) > fl_mod.SEEK_JUMP_S,
+          "a 1 s move does not read as a seek to the flame link")
+    # Pause with no fade (the conductor's rehearsal Hold), then Ahead 2 s
+    # while paused: the frozen frame moves, no sound plays, and Continue
+    # plays from the new sample.
+    am.pause(fade_ms=0)
+    sim.run(vc() + 0.2)
+    here = am.here()
+    tp = vc()
+    am.seek(here + 2.0)
+    to = int(np.floor((here + 2.0) * 30 + 1e-9))
+    sim.run(tp + 0.5)
+    held = out.frames(since=tp)
+    check(held and {n for _, n in held} == {to} and am.paused,
+          f"paused, Ahead did not move the frozen frame to {to}: "
+          f"{sorted({n for _, n in held})}")
+    loud = [p for t, p, b in eng.log if t > tp and np.any(b != 0.0)]
+    check(not loud, "sound played while paused after a move")
+    fed = [p for t, p, _a, _x in r["fed"] if t > tp + 0.05]
+    check(fed and all(abs(p - (3600.0 + to / 30.0)) < 1e-9 for p in fed),
+          "paused, the pixels did not hold on the moved frame")
+    del sent[:]
+    tr = vc()
+    am.resume(fade_ms=0)
+    check(sent and sent[0][0] == "play" and sent[0][2] == to * 1600,
+          f"Continue after a paused move did not play from it: {sent}")
+    sim.run(tr + 0.5)
+    mv = [n for _, n in out.frames(since=tr) if n != to]
+    check(mv and mv[0] == to + 1 and not _am_consecutive(
+        [(0, n) for n in mv]), f"Continue did not carry on from frame "
+                               f"{to + 1}: {mv[:3]}")
+    # The A/B loop: from 1 s to 2 s, three times round; every frame inside
+    # the loop, the audio heard from mark A's sample after each wrap.
+    am.seek(1.5)
+    tl0 = vc()
+    am.set_loop(1.0, 2.0)
+    check(am.loop == (1.0, 2.0) and
+          am.snapshot()["loop"] == [1.0, 2.0], "the loop is not shown")
+    sim.run(tl0 + 3.2)
+    fr = out.frames(since=tl0 + 0.1)
+    check(fr and all(30 <= n < 60 for _, n in fr),
+          f"the loop went outside 1 s to 2 s: "
+          f"{sorted({n for _, n in fr})[:3]}..{sorted({n for _, n in fr})[-3:]}")
+    wraps = [(a, b) for (_, a), (_, b) in zip(fr, fr[1:]) if b < a]
+    check(len(wraps) >= 2 and all(b == 30 for _a, b in wraps),
+          f"the loop did not wrap to mark A: {wraps}")
+    starts = [p.frame for t, p in heard(tl0)]
+    check(starts.count(48000) >= 2,
+          "after a wrap the audio was not heard from mark A's sample")
+    am.set_loop(None, None)
+    check(am.loop is None, "the loop did not turn off")
+    # Review of #142, finding 1: a Pause before the sound of a move is
+    # heard freezes on the frame the move starts from, never 00:00:00:00,
+    # and Continue plays from there.
+    am.seek(2.5)
+    check(am._mode == "wait", "the move was heard at once (the test's "
+                              "premise)")
+    tw = vc()
+    am.pause(fade_ms=0)
+    check(abs(am.here() - 2.5) < 1e-9 and abs(am._frozen_sec - 2.5) < 1e-9,
+          f"a Pause before the move was heard froze at {am.here()}, not "
+          f"2.5 s")
+    sim.run(tw + 0.2)
+    check({n for _, n in out.frames(since=tw)} == {75},
+          f"the frozen frame is not the move's: "
+          f"{sorted({n for _, n in out.frames(since=tw)})}")
+    del sent[:]
+    am.resume(fade_ms=0)
+    check(sent and sent[0][0] == "play" and sent[0][2] == 75 * 1600,
+          f"Continue did not play from the move's sample: {sent}")
+    sim.run(vc() + 0.3)
+    # Refusals in sentences: past the end, a loop too short or backwards,
+    # nothing to move.
+    for bad, call in (("past the end", lambda: am.seek(30.0)),
+                      ("a short loop", lambda: am.set_loop(1.0, 1.5)),
+                      ("a backwards loop", lambda: am.set_loop(2.0, 1.0)),
+                      ("a loop past the end", lambda: am.set_loop(1.0, 9.0)),
+                      ("Play from past the end",
+                       lambda: am.play(3600.0, None, "Show", start_s=9.0))):
+        try:
+            call()
+            check(False, f"{bad} was accepted")
+        except clock_mod.ClockConfigError as e:
+            check(str(e).endswith("."), f"{bad}: not a sentence: {e}")
+    # The audio interface gone: a move carries on on this computer's clock
+    # from the new frame, never from 00:00:00:00.
+    am._device_ok = False
+    tg = vc()
+    am.seek(4.0)
+    sim.run(tg + 0.3)
+    fr = out.frames(since=tg)
+    check(fr and fr[0][1] == 120 and len(fr) >= 8 and
+          not _am_consecutive(fr),
+          f"a move with no interface did not run on from frame 120: "
+          f"{[n for _, n in fr[:10]]}")
+    am._device_ok = True
+    # A loop ends with its cue.
+    am.set_loop(4.5, 5.5)
+    am.halt(fade_ms=0)
+    sim.run(vc() + 0.2)
+    try:
+        am.seek(1.0)
+        check(False, "a move with nothing playing was accepted")
+    except clock_mod.ClockConfigError:
+        pass
+    check(am.loop is None, "a loop outlived its cue")
+    # A plain play still starts at the top, 00:00:00:00.
+    t5 = vc()
+    am.play(3600.0, None, "Show")
+    sim.run(t5 + 0.3)
+    fr = out.frames(since=t5)
+    check(fr and fr[0][1] == 0, "a show start no longer starts at 0")
+    eng.send = real_send
+    am.stop()
+    print("  ok")
+
+
+def test_programming_playhead_drives_the_show_path():
+    import types
+    section("Programming playhead: Play from, Back and Ahead, Pause, "
+            "Continue, the loop and Stop go through the show's own start, "
+            "Hold, Resume and conductor; nothing arms, nothing bypasses the "
+            "laser gate or the flame link")
+    from ltcplay import conductor as C
+    from ltcplay.playhead import ShowAudioPlayhead, PlayheadError
+    from ltcplay.session import SessionError
+
+    class TL:
+        def __init__(self):
+            self.cues = [types.SimpleNamespace(name="Show",
+                                               tc_text="01:00:00:00",
+                                               tc_seconds=3600.0)]
+
+        def parse(self, text):
+            return tcmod.parse_tc(text, 30)
+
+        def format(self, s):
+            return f"T{s:.1f}"
+
+    class Sess:
+        running = True
+
+        def __init__(self, calls):
+            self.calls = calls
+            self.tl = TL()
+            self.at = None
+            self.paused = False
+
+        def playhead_clock(self):
+            return self
+
+        @property
+        def playing(self):
+            return self.at is not None
+
+        def clock_play_from(self, s, check_only=False):
+            if check_only:
+                self.calls.append(("check", s))
+                if s > 99999:
+                    raise SessionError("T is past the end of Show's audio.")
+                return None, s
+            self.calls.append(("play_from", s))
+            self.at = s
+            self._cue = {"label": "Show", "position_s": 3600.0}
+            return None, s
+
+        def clock_seek(self, s):
+            self.calls.append(("seek", s))
+            self.at = s
+            return s
+
+        def clock_here(self):
+            return self.at
+
+        def clock_set_loop(self, a, b):
+            self.calls.append(("loop", a, b))
+            return None if a is None else (a, b)
+
+        def clock_halt(self):
+            self.calls.append(("halt",))
+            self.at = None
+            self._cue = None
+
+        def clock_pause(self):
+            self.calls.append(("clock_pause",))
+
+        def clock_resume(self):
+            self.calls.append(("clock_resume",))
+
+    c, rig, T, lines = _cond(gate=lambda: "the show state is IDLE, so the "
+                                           "lasers stay dark.")
+    order = []
+
+    class MM:
+        cfg = types.SimpleNamespace(show_bank="SHOW")
+
+        def select_bank(self, name, wait=True):
+            order.append(("select_bank", name, wait))
+    rig.mm = MM()
+    real_ss, real_ms = c.show_starting, c.music_started
+    c.show_starting = lambda *a: (order.append(("show_starting",) + a),
+                                  real_ss(*a))[1]
+    c.music_started = lambda: (order.append(("music_started",)),
+                               real_ms())[1]
+    calls = []
+    sess = Sess(calls)
+    ctl = types.SimpleNamespace(session=sess)
+    svc = types.SimpleNamespace(conductor=c,
+                                machine=types.SimpleNamespace(state="IDLE"))
+    ph = ShowAudioPlayhead(ctl, svc)
+    check(ph.applies(), "the show audio is not taken as the playhead")
+    real_cpf = sess.clock_play_from
+    sess.clock_play_from = lambda s, check_only=False: (
+        order.append(("clock_play_from", s, check_only)),
+        real_cpf(s, check_only))[1]
+    # A Play from the show audio refuses (past the end, still loading)
+    # is refused before MadMapper's bank is touched (review of #142, 7).
+    try:
+        ph.play_from(123456.0)
+        check(False, "a Play from past the end was accepted")
+    except SessionError as e:
+        check("past the end" in str(e), f"refusal: {e}")
+    check([o[0] for o in order] == ["clock_play_from"] and order[0][2],
+          f"MadMapper's bank moved before the refusal: {order}")
+    del order[:]
+    at = ph.play_from(ph.resolve("01:00:30:00"), "Andy", "iPad")
+    c.run_pending()
+    check(at == 3630.0, f"Play from went to {at}")
+    check([o[0] for o in order] == ["clock_play_from", "select_bank",
+                                    "clock_play_from", "music_started",
+                                    "show_starting"]
+          and order[0][2] is True and order[2][2] is False
+          and order[1][1:] == ("SHOW", False),
+          f"Play from is not the show start's own order (show bank, the "
+          f"cue on the show audio, music started, show starting): {order}")
+    check(c.snapshot()["look"] == C.PLAYING,
+          "the conductor does not have the show up after Play from")
+    # The lasers went through the laser gate, which said no: blanked,
+    # never restored. The flame cues were released to the flame link (it
+    # and flamesafe decide what fires: only armed groups).
+    check("lasers_restore" not in rig.names() and
+          "lasers_blank" in rig.names(),
+          f"Play from lit the lasers past a closed gate: {rig.names()}")
+    check("flames_release" in rig.names() and
+          "flames_disarm_all" not in rig.names(),
+          f"the flame cues did not go through the conductor's release: "
+          f"{rig.names()}")
+    # Back and Ahead move the clock only: no new show start.
+    n = len(order)
+    del rig.calls[:]
+    check(ph.jump(-10) == 3620.0 and calls[-1] == ("seek", 3620.0),
+          f"Back 10 s: {calls[-1]}")
+    check(ph.jump(5) == 3625.0, "Ahead 5 s")
+    check(ph.jump(-99999) == 0.0, "Back never goes before 0")
+    sess.at = 3625.0
+    check(len(order) == n and not rig.calls,
+          f"a move started the show again or touched the rig: "
+          f"{order[n:]} {rig.names()}")
+    # Pause is the conductor's Hold, Continue its Resume: flames to zero and
+    # lasers blanked before the music holds.
+    ph.pause("Andy", "iPad")
+    c.run_pending()
+    names = rig.names()
+    check(names[:3] == ["flames_zero", "lasers_blank", "music_hold"],
+          f"Pause is not the show's Hold: {names}")
+    check(c.snapshot()["look"] == C.HELD, "Pause did not hold the show")
+    T.t += 1.0
+    del rig.calls[:]
+    ph.cont("Andy", "iPad")
+    c.run_pending()
+    check(rig.names()[0] == "music_resume" and
+          "lasers_restore" not in rig.names(),
+          f"Continue is not the show's Resume: {rig.names()}")
+    # The loop: the clock's, between the marks.
+    ph.loop(3601.0, 3603.0)
+    check(calls[-1] == ("loop", 3601.0, 3603.0), f"loop: {calls[-1]}")
+    ph.loop(None, None)
+    check(calls[-1] == ("loop", None, None), "loop off")
+    # Stop: out of the show first (flame cues zero, lasers blanked), then
+    # the show audio stops.
+    del rig.calls[:]
+    ph.follow("Andy", "iPad")
+    c.run_pending()
+    check(calls[-1] == ("halt",) and
+          rig.names()[:2] == ["flames_zero", "lasers_blank"],
+          f"Stop did not take the rig out of the show: {rig.names()}")
+    # Review of #142, finding 3: a Stop that zeroes the flame link
+    # directly (the Rack screen's, the Stream Deck's) never tells the
+    # conductor. Its record must not stay "released", or the next start
+    # skips the release and the next show has no flames.
+    del order[:]
+    ph.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    check(c.snapshot()["applied"]["flames"] == C.LIVE,
+          "Play from did not release the flame cues")
+    check(ph.poll() is None, "poll ended a playback that is still on")
+    sess.at = None                  # a Stop: the show audio is gone
+    del rig.calls[:]
+    check(ph.poll() == "ended" and
+          c.snapshot()["applied"]["flames"] == C.ZERO and
+          "flames_zero" in rig.names(),
+          f"after a Stop the conductor still records the flame cues "
+          f"released: {c.snapshot()['applied']} {rig.names()}")
+    check(ph.poll() is None, "the end was handled twice")
+    del rig.calls[:]
+    ph.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    check("flames_release" in rig.names(),
+          f"Play from after a Stop did not release the flame cues again: "
+          f"{rig.names()}")
+    # The same Stop, then the next real show's start: released again too.
+    sess.at = None
+    ph.poll()
+    del rig.calls[:]
+    c.show_starting("the scheduler", "")
+    c.run_pending()
+    check("flames_release" in rig.names(),
+          f"a real show after Programming did not release the flame cues: "
+          f"{rig.names()}")
+    c.intermission("the scheduler", "")
+    c.run_pending()
+    # A Play from right after a Stop, before any poll: put right first.
+    ph.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    sess.at = None
+    del rig.calls[:]
+    ph.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    check("flames_release" in rig.names(),
+          f"Play from straight after a Stop did not release the flame "
+          f"cues: {rig.names()}")
+    # Hold and Abort from any surface while Programming plays: Pause and
+    # Stop of the playback (remote.py calls these after its disarms).
+    del rig.calls[:]
+    said = ph.hold_press("Andy", "Stream Deck")
+    c.run_pending()
+    check(c.snapshot()["look"] == C.HELD and "music_hold" in rig.names()
+          and "paused" in said, f"Hold did not pause the playback: {said}")
+    del calls[:]
+    said = ph.abort_press("Andy", "rack screen")
+    c.run_pending()
+    check(calls[-1:] == [("halt",)] and "stopped" in said and
+          c.snapshot()["applied"]["flames"] == C.ZERO,
+          f"Abort did not stop the playback: {calls} {said}")
+    # The watchdog: no operator page for 60 s stops the playback, with a
+    # journal line; a page asking for the status keeps it going.
+    from ltcplay import playhead as ph_mod
+    tnow = [500.0]
+    notes = []
+    phw = ShowAudioPlayhead(ctl, svc, clock=lambda: tnow[0],
+                            journal=lambda t, o: notes.append((o, t)))
+    phw.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    tnow[0] += ph_mod.WATCHDOG_S - 1
+    phw.seen()
+    tnow[0] += ph_mod.WATCHDOG_S - 1
+    check(phw.poll() is None and sess.at is not None,
+          "the watchdog stopped a playback a page was watching")
+    tnow[0] += 2.0
+    del calls[:]
+    check(phw.poll() == "watchdog" and calls[-1:] == [("halt",)] and
+          notes and notes[-1][0] == "watchdog" and
+          "no operator page" in notes[-1][1],
+          f"the watchdog did not stop an unwatched playback: {calls} "
+          f"{notes}")
+    c.run_pending()
+    # Re-review of #142, P1: a real show started over Programming playback
+    # (Start now or the scheduler swap the cue on the same clock) is never
+    # taken for it: no watchdog stop and no "ended" when its cue ends.
+    for live in ("SHOW", "IDLE"):
+        tnow[0] = 900.0
+        phw.play_from(3600.0, "Andy", "iPad")
+        c.run_pending()
+        sess._cue = {"label": "Show", "position_s": 3600.0}   # a real show
+        svc.machine.state = live
+        check(not phw.active(), f"a real show ({live}) reads as "
+                                f"Programming playback")
+        tnow[0] += ph_mod.WATCHDOG_S + 5
+        del calls[:]
+        del rig.calls[:]
+        n = len(notes)
+        check(phw.poll() == "dropped" and not calls and not rig.calls and
+              len(notes) == n + 1 and notes[-1][0] == "taken_over" and
+              "ended by the show starting" in notes[-1][1] and
+              not phw.active(),
+              f"a real show ({live}) was taken for Programming playback: "
+              f"{calls} {rig.names()} {notes[n:]}")
+        sess.at, sess._cue = None, None         # its cue ends
+        check(phw.poll() is None and not rig.calls and len(notes) == n + 1,
+              f"the real show's end ran the Programming end: "
+              f"{rig.names()} {notes[n:]}")
+        svc.machine.state = "IDLE"
+    # The watchdog's stop checks again that the playback is still ours: a
+    # show that took over between its check and its stop is never halted.
+    phw.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    stale = phw._ours
+    sess._cue = {"label": "Show", "position_s": 3600.0}       # a real show
+    del calls[:]
+    check(phw.follow("the Programming watchdog", "", only=stale) is False
+          and not calls, f"the watchdog halted a real show: {calls}")
+    phw.poll()
+    sess.at, sess._cue = None, None
+    # A Play from straight after a Stop is a new start token.
+    phw.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    first = phw._ours
+    phw.follow("Andy", "iPad")
+    phw.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    check(phw._ours is not first and phw._ours[0] is first[0],
+          "a new Play from on the same session kept the old token")
+    phw.follow("Andy", "iPad")
+    c.run_pending()
+    # Nothing to move, pause or continue: refused in sentences.
+    for f in (lambda: ph.jump(5), lambda: ph.pause(), lambda: ph.cont()):
+        try:
+            f()
+            check(False, "a press with nothing playing was accepted")
+        except PlayheadError as e:
+            check("Play from" in str(e), f"refusal: {e}")
+    # An Abort standing: Play from starts nothing at all.
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    del order[:]
+    del calls[:]
+    try:
+        ph.play_from(3600.0)
+        check(False, "Play from went ahead with an Abort standing")
+    except PlayheadError as e:
+        check("Reset" in str(e), f"the Abort refusal: {e}")
+    check(not order and not calls, f"something started: {order} {calls}")
+    # The show start refused after the cue began (an Abort landing): the
+    # music is stopped again.
+    c.reset("Andy", "rack screen")
+    real_ss2 = c.show_starting
+    c.show_starting = lambda *a: C.failed("an Abort landed")
+    try:
+        ph.play_from(3600.0)
+        check(False, "a refused show start was reported as played")
+    except PlayheadError:
+        pass
+    check(calls[-1] == ("halt",), f"the music was left playing: {calls}")
+    c.show_starting = real_ss2
+    # No conductor (no Fire & Ice wiring): the clock's own pause and resume.
+    ph2 = ShowAudioPlayhead(ctl, None)
+    sess.at = 3600.0
+    ph2.pause()
+    ph2.cont()
+    check(calls[-2:] == [("clock_pause",), ("clock_resume",)],
+          f"without a conductor: {calls[-2:]}")
+    # Not the playhead: a session whose clock cannot move.
+    sess.playhead_clock = lambda: None
+    check(not ph.applies(), "a clock that cannot move was taken")
+    # Nothing in the playhead arms, disarms or fires anything itself.
+    import inspect
+    from ltcplay import playhead as ph_mod
+    src = inspect.getsource(ph_mod)
+    code = "\n".join(l for l in src.splitlines()
+                     if not l.strip().startswith("#"))
+    body = code.split('"""', 2)[2]
+    for word in ("arm", "disarm", "lasers_restore", "lasers_blank",
+                 "flames_release", "flames_zero", "purge", "program_set",
+                 "rehearse_begin"):
+        check(not re.search(r"\b" + word + r"\b", body),
+              f"playhead.py calls {word} itself")
+    _ = SessionError
+    print("  ok")
+
+
+def test_session_playhead_loop_stays_in_its_cue():
+    section("Session: the Programming loop's marks must both be in the cue "
+            "that is playing, even where the next cue starts before this "
+            "cue's audio ends")
+    import types
+    from ltcplay.session import Session, SessionError
+    cues = [types.SimpleNamespace(name="Show", tc_seconds=3600.0,
+                                  fseq=object(), duration=8.0, path="a"),
+            types.SimpleNamespace(name="Next", tc_seconds=3604.0,
+                                  fseq=object(), duration=8.0, path="b")]
+
+    class TL:
+        def cue_at(self, t):
+            hit = [c for c in cues if c.tc_seconds <= t]
+            return hit[-1] if hit else None
+
+        def format(self, t):
+            return f"T{t:.1f}"
+
+    asked = []
+
+    class Clk:
+        master = True
+        _cue = {"label": "Show", "position_s": 3600.0}
+
+        def seek(self, s):
+            return s
+
+        def set_loop(self, a, b):
+            asked.append((a, b))
+
+    s = Session.__new__(Session)
+    s._running, s.clock, s.tl = True, Clk(), TL()
+    try:
+        s.clock_set_loop(3601.0, 3605.0)
+        check(False, "a loop with mark B in the next cue was accepted")
+    except SessionError as e:
+        check("cue that is playing" in str(e), f"refusal: {e}")
+    check(not asked, f"the clock was asked to loop into another cue: "
+                     f"{asked}")
+    s.clock_set_loop(3601.0, 3603.0)
+    check(asked == [(1.0, 3.0)], f"a loop inside the cue: {asked}")
+    print("  ok")
+
+def test_remote_transport_on_the_show_audio():
+    import types
+    section("iPad remote: in a programming session on the show audio, Play "
+            "from, Back, Ahead, Pause, Continue, the marks, the loop and Stop "
+            "drive the show audio playhead, never the free run")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S, at=_den(S, 17, 0))
+    try:
+        class _P:
+            freerun_epoch = None
+            freerun_paused_at = None
+            tc_seconds = 30.0
+            loop = None
+            on_lost = "hold"
+            override = None
+
+            def nudge(self, s):
+                raise AssertionError("the free run was moved")
+
+            def freerun_pause(self, on):
+                raise AssertionError("the free run was paused")
+
+            def set_loop(self, a, b):
+                raise AssertionError("the free run was looped")
+
+        class _TL:
+            cues = []
+
+            def format(self, s):
+                return f"T{s:.1f}"
+
+            def parse(self, text):
+                return tcmod.parse_tc(text, 30)
+
+        calls = []
+
+        class _Clk:
+            paused = False
+            loop = None
+            _cue = None
+
+            @property
+            def playing(self):
+                return self._cue is not None
+
+        clk = _Clk()
+
+        class _Sess:
+            running = True
+            no_output = False
+            tl = _TL()
+            log = None
+            player = _P()
+
+            def playhead_clock(self):
+                return clk
+
+            def clock_play_from(self, s, check_only=False):
+                if check_only:
+                    return None, s
+                calls.append(("play_from", s))
+                clk._cue = {"position_s": 0.0}
+                self.at = s
+                return None, s
+
+            def clock_seek(self, s):
+                calls.append(("seek", s))
+                self.at = s
+                return s
+
+            def clock_here(self):
+                return getattr(self, "at", None) if clk._cue else None
+
+            def clock_set_loop(self, a, b):
+                calls.append(("loop", a, b))
+                clk.loop = None if a is None else (a, b)
+
+            def clock_halt(self):
+                calls.append(("halt",))
+                clk._cue = None
+
+        ctl = R.httpd.control
+        ctl.session = _Sess()
+        ctl.go = lambda at: (_ for _ in ()).throw(
+            AssertionError("the free run GO was used"))
+        R.rig.cue = True
+        for route, body, want in (
+                ("play-from", {"at": "00:01:00:00"}, ("play_from", 60.0)),
+                ("jump", {"seconds": -10}, ("seek", 50.0)),
+                ("jump", {"seconds": 5}, ("seek", 55.0)),
+                ("mark-a", {}, None),
+                ("jump", {"seconds": 5}, ("seek", 60.0)),
+                ("mark-b", {}, None),
+                ("loop", {"on": True}, ("loop", 55.0, 60.0)),
+                ("pause", {}, None),
+                ("continue", {}, None),
+                ("loop", {"on": False}, ("loop", None, None)),
+                ("follow", {}, ("halt",))):
+            n = len(calls)
+            st, _h, out = R.ask("POST", "/api/remote/" + route,
+                                dict(body, seen=R.seen()))
+            R.settle()
+            check(st == 200, f"{route}: {st} {out}")
+            if want is not None:
+                check(calls[n:n + 1] == [want],
+                      f"{route} did not drive the show audio: {calls[n:]}")
+        check(any("on the show audio" in (r.get("text") or "")
+                  for r in R.svc.journal),
+              "Play from is not journaled as on the show audio")
+        # Review of #142, finding 2: Hold and Abort from a screen or the
+        # Stream Deck while Programming plays pause and stop the playback,
+        # not the scheduler's Hold (which would leave the music running).
+        state0 = R.svc.machine.state
+        R.c.run_pending()
+        st, _h, out = R.ask("POST", "/api/remote/play-from",
+                            {"at": "00:01:00:00", "seen": R.seen()})
+        R.settle()
+        st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        # Jeff's ruling: Hold is a schedule pause too, so the next show
+        # does not start over the paused playback.
+        held = "HOLD" if state0 in ("IDLE", "STANDBY") else state0
+        check(st == 200 and "paused" in out.get("text", "") and
+              R.c.snapshot()["look"] == "HELD" and
+              R.svc.machine.state == held,
+              f"Hold in Programming playback did not pause it and hold the "
+              f"schedule: {st} {out} {R.c.snapshot()['look']} "
+              f"{state0} -> {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/continue",
+                            {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == held,
+              f"Continue after a screen Hold lifted the schedule's Hold: "
+              f"{st} {out} {R.svc.machine.state}")
+        # Run over Programming playback: refused with Start now's sentence.
+        st, _h, out = R.ask("POST", "/api/start", {"timeline": "x.json"},
+                            client=("127.0.0.1", 50001))
+        check(st == 409 and "Stop the Programming playback first" in
+              str(out.get("error")), f"Run over Programming playback: "
+                                     f"{st} {out}")
+        # An Abort whose playback stop fails says so: not ok, not stopped.
+        real_ap = R.remote.playhead.abort_press
+
+        def wedged(*a):
+            raise OSError("the clock is wedged")
+        R.remote.playhead.abort_press = wedged
+        st, _h, out = R.ask("POST", "/api/remote/abort",
+                            {"confirmed": True, "seen": R.seen()})
+        R.settle()
+        R.remote.playhead.abort_press = real_ap
+        check(st == 409 and out.get("ok") is False and
+              out.get("stopped") is False and
+              "did NOT stop" in out.get("text", ""),
+              f"a failed Programming stop was reported as done: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"confirmed": True, "seen": R.seen()})
+        R.settle()
+        check(st == 409 and "Stop the Programming playback first" in
+              out.get("error", "") and clk.playing,
+              f"Start now went over Programming playback: {st} {out}")
+        # #144's Start now: it asks again under the scheduler's lock, after
+        # its tick and any wait for the show audio (a Play from may have
+        # landed meanwhile).
+        check(R.svc.start_veto == R.remote.programming_playback_refusal,
+              "the scheduler does not ask the Programming playhead")
+        r = R.svc.operator_press("start-now", "Andy", "iPad",
+                                 confirmed=True, surface=True)
+        check(r.get("ok") is False and
+              "Stop the Programming playback first" in r.get("text", "") and
+              clk.playing, f"Start now under the lock went over Programming "
+                           f"playback: {r}")
+        # A Play from, and a Programming Hold whatever the schedule's
+        # state, end a Start now waiting for the show audio.
+        g0 = R.svc._start_cancel[0]
+        st, _h, out = R.ask("POST", "/api/remote/play-from",
+                            {"at": "00:01:00:00", "seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc._start_cancel[0] > g0 and
+              "Play from" in R.svc._start_cancel[1],
+              f"Play from did not cancel a waiting Start now: {st} {out} "
+              f"{R.svc._start_cancel}")
+        g0 = R.svc._start_cancel[0]
+        st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc._start_cancel[0] > g0,
+              f"a Programming Hold did not cancel a waiting Start now: "
+              f"{st} {out} {R.svc._start_cancel}")
+        st, _h, out = R.ask("POST", "/api/remote/continue",
+                            {"seen": R.seen()})
+        R.settle()
+        # The Fireball page with a channel on: no Programming playback
+        # starts over it (one source of fire values at a time).
+        real_fb = R.remote.fireball
+        R.remote.fireball = types.SimpleNamespace(active=lambda: True)
+        n = len(calls)
+        st, _h, out = R.ask("POST", "/api/remote/play-from",
+                            {"at": "00:01:00:00", "seen": R.seen()})
+        R.remote.fireball = real_fb
+        check(st == 409 and "Fireball" in out.get("error", "") and
+              len(calls) == n,
+              f"Play from went over a Fireball channel: {st} {out}")
+        n = len(calls)
+        st, _h, out = R.ask("POST", "/api/remote/abort",
+                            {"confirmed": True, "seen": R.seen()})
+        R.settle()
+        check(out.get("stopped") is True and
+              "No show was stopped" not in out.get("text", ""),
+              f"the Abort's answer contradicts itself: {out}")
+        check(calls[n:] == [("halt",)] and
+              "Programming playback stopped" in out.get("text", "") and
+              not clk.playing,
+              f"Abort in Programming playback did not stop it: {calls[n:]} "
+              f"{out}")
+        # Re-review of #142, P1 b: a show on this machine's own clock Run in
+        # Show mode is not a programming session, though its player's
+        # on_lost reads "hold" (Session.open sets that for every master
+        # clock).
+        sess2 = ctl.session
+        sess2.clock = types.SimpleNamespace(master=True)
+        sess2.on_lost_arg = "freerun"
+        st, _h, out = R.ask("POST", "/api/remote/jump",
+                            {"seconds": 5, "seen": R.seen()})
+        check(st == 409 and "Show mode" in out.get("error", ""),
+              f"a Show mode Run on the show audio was scrubbed: {st} {out}")
+        sess2.on_lost_arg = "hold"
+        del sess2.clock, sess2.on_lost_arg
+        # With nothing playing, Hold goes to the scheduler as always.
+        st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check("Programming playback" not in str(out),
+              f"a Hold with nothing playing was taken as a Pause: {out}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        tr = (out or {}).get("transport", {})
+        seen0 = R.remote.playhead._seen
+        R.remote.playhead._seen = seen0 - 30.0
+        R.ask("GET", "/api/remote/status")
+        check(R.remote.playhead._seen >= seen0,
+              "an operator page asking for the status is not the "
+              "Programming watchdog's heartbeat")
+        check(tr.get("playhead") == "show_audio" and tr.get("freerun") is False,
+              f"the page is not told the show audio is the playhead: {tr}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web", "remote.html"),
+            encoding="utf-8").read()
+        check('"Playing on the show audio"' in page and
+              '"Paused on the show audio"' in page and
+              '"Stop the show audio"' in page,
+              "the page does not say the show audio is playing")
+        for t in ("Playing on the show audio", "Paused on the show audio",
+                  "Stop the show audio"):
+            check("\u2014" not in t and "\u2013" not in t, "a dash")
         ctl.session = None
     finally:
         R.close()
@@ -76758,6 +77643,10 @@ if __name__ == "__main__":
         test_windows_supervisor_first_run_defaults,
         test_remote_page_loss_changes_nothing,
         test_remote_scrubbing_only_in_a_programming_session,
+        test_audio_master_play_from_a_point_and_move,
+        test_programming_playhead_drives_the_show_path,
+        test_remote_transport_on_the_show_audio,
+        test_session_playhead_loop_stays_in_its_cue,
         test_player_free_run_pause_and_loop,
         test_flame_link_seek_guard,
         test_flame_link_aim_slots_skip_the_seek_guard,
