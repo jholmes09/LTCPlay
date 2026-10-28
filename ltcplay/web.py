@@ -969,6 +969,14 @@ class Handler(BaseHTTPRequestHandler):
                     fn(reason, who, screen)
                 except Exception:                # noqa: BLE001
                     pass
+        # The wave flamer cleaning (cleaning.py): Stop ends it, from the
+        # rack screen, an iPad or the Stream Deck.
+        cl = getattr(rm, "cleaning", None)
+        if cl is not None:
+            try:
+                cl.stop(reason, who=who, screen=screen)
+            except Exception:                    # noqa: BLE001
+                pass
         fn = getattr(rm, "_disarm_now", None)
         if fn is None:
             return None

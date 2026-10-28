@@ -67,7 +67,7 @@
   },
 
   "cleaning": {
-    "notes": "Wave flamer cleaning on the Shutdown page (MORNING.md). It runs only while the button is held. Every key is optional; these are the defaults. cycles: armed then disarmed this many times (1 to 10). armed_s and disarmed_s: how long each lasts once flamesafe reports it (1 to 30 and 2.5 to 30). arm_wait_s: how long to wait for flamesafe to report it armed before stopping (3 to 20); disarm_wait_s the same for disarmed (1 to 5). aim: the angle channel for the bursts, 128 is straight up (118 to 138, never far off straight up). aim_settle_s: time for the heads to come up before the first burst, from the first frame that points them up (1 to 5). burst_on_s and burst_off_s: each burst on, then off (0.2 to 5 and 0.5 to 10). max_run_min: every run ends by itself after this many minutes (1 to 30). authorization: dead_man, the button held the whole time (hold_to_start is not approved and is refused).",
+    "notes": "Wave flamer cleaning on the Shutdown page (MORNING.md). A hold of the button, the same as a Hold to arm, starts phase 1: it pressurizes and depressurizes the pump with no fire, on its own (cycles times armed armed_s, disarmed disarmed_s). Then it waits, disarmed, until a second full hold starts phase 2: the heads straight up (aim), then bursts burst_on_s on and burst_off_s off until Stop. Every key is optional; these are the defaults. cycles 1 to 10. armed_s 1 to 30 and disarmed_s 2.5 to 30, each counted once flamesafe reports it. arm_wait_s: how long to wait for flamesafe to report it armed before stopping (3 to 20); disarm_wait_s the same for disarmed (1 to 5). aim: 128 is straight up (118 to 138, never far off straight up). aim_settle_s: time for the heads to come up before the first burst, from the first frame that points them up (1 to 5). burst_on_s 0.2 to 5, burst_off_s 0.5 to 10. max_burst_min: the bursts end by themselves after this many minutes (1 to 30). pause_max_min: with no second hold it goes back to idle after this many minutes (1 to 60).",
     "cycles": 3,
     "armed_s": 3.0,
     "disarmed_s": 3.0,
@@ -77,8 +77,8 @@
     "aim_settle_s": 1.0,
     "burst_on_s": 1.0,
     "burst_off_s": 1.0,
-    "max_run_min": 10,
-    "authorization": "dead_man"
+    "max_burst_min": 10,
+    "pause_max_min": 10
   },
 
   "tally": {

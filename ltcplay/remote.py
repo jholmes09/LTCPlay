@@ -2914,6 +2914,16 @@ class Remote:
                     not isinstance(v.get("on"), bool):
                 if live is False:
                     live = None
+        # The wave flamer cleaning running, paused or being held counts as
+        # running too, so the deck's key 0 is Stop (cleaning.py).
+        cl = self.cleaning
+        if cl is not None:
+            try:
+                if cl.active():
+                    live = True
+            except Exception:                    # noqa: BLE001
+                if live is False:
+                    live = None
         out["flames_live"] = live
         # The Morning and Shutdown page (morning.py): whether it is open
         # (the deck re-maps itself while it is), the groups the purge
@@ -5503,6 +5513,13 @@ class Remote:
                 out["fuel"] = self.fuel.summary()
             except Exception as e:                   # noqa: BLE001
                 out["fuel"] = {"fault": f"{type(e).__name__}: {e}"}
+        if self.cleaning is not None:
+            # Wave flamer cleaning: every screen's banner and Stop.
+            try:
+                out["cleaning"] = self.cleaning.summary()
+            except Exception as e:                   # noqa: BLE001
+                out["cleaning"] = {"available": False, "state": "unknown",
+                                   "text": f"{type(e).__name__}: {e}"}
         if self.fireball is not None:
             # The Fireball nav button, and whether a channel is on.
             try:

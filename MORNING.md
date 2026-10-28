@@ -58,8 +58,9 @@ rule written there.
 7. **Checklists**: a Morning and a Shutdown list, steps editable in
    `ltcplay_morning.json` (`checklists`), ticks reset each night, every tick
    recorded for audit (below).
-8. **Wave flamer cleaning** (Shutdown; Andy's design, 2026-10-28): one
-   button held for the whole nightly routine. Below, and OPERATOR.md.
+8. **Wave flamer cleaning** (Shutdown; Andy's design, Jeff's ruling
+   2026-10-28): a hold starts phase 1 (no fire, on its own), a second
+   hold the purge bursts, Stop ends it. Below, and OPERATOR.md.
 
 ## Where each value lives
 
@@ -421,42 +422,51 @@ one POST (`{"v": 1, "kind": "checklist_record" | "checklist_routine",
 wait on disk (`<logs>/checklists/outbox/`) and are retried with backoff;
 the page shows queued, sent and the last error.
 
-### Wave flamer cleaning (Andy's design, 2026-10-28; cleaning.py)
+### Wave flamer cleaning (Andy's design, Jeff's ruling 2026-10-28; cleaning.py)
 
 The Shutdown part of the page has **Wave flamer cleaning**: one button,
-**Hold to clean the wave flamers**, and a big **Stop**. Held, it runs
-`cycles` times (3): arm the wave flamer group, armed `armed_s` (3 s),
-disarm, disarmed `disarmed_s` (3 s), each counted from flamesafe's own
-report; then arm again, the angle channels (the aim slots) to `aim` (128,
-straight up), `aim_settle_s` (1 s, from the first frame actually
-written with the heads up), and the ignition (channel 3 of each
-Showven) 255 for `burst_on_s` (1 s) and 0 for `burst_off_s` (1 s) until
-it is stopped. Speed, duration and preset stay 0.
+**Hold to start the cleaning**, and a big **Stop**. It pressurizes and
+depressurizes the pump, then fires the leftover fuel to clear it.
 
-**A dead-man sequence.** It runs only while a person holds the button: the
-page beats every 100 ms, and the engine stops the run 0.25 s after the
-last beat (the flame link drops the frame by itself 0.25 s after it too).
-The authorization switch (`authorization`) has one other value,
-`hold_to_start` (one hold starts the whole routine), which is refused in a
-sentence: Jeff has not approved it. Every run ends after `max_run_min`
-(10) minutes whatever else holds.
+1. **Start hold.** One deliberate hold of the button, the same hold as a
+   group's Hold to arm. A release before it completes starts nothing.
+2. **Phase 1, no fire, on its own** (the walk-away Jeff approved for
+   phase 1 only, `WALK_AWAY_PHASE1`): `cycles` (3) times armed `armed_s`
+   (3 s) and disarmed `disarmed_s` (3 s), each counted from flamesafe's
+   own report. No frame is set at all: only the wave flamers' safety
+   slots move.
+3. **Pause.** It ends disarmed and waits. Only a second full hold (a tap
+   does nothing) goes on; with nobody holding it goes back to idle after
+   `pause_max_min` (10).
+4. **Phase 2.** That second hold is the go-ahead and is itself the arm.
+   Once flamesafe reports ARMED the angle channels (the aim slots) go to
+   `aim` (128, straight up), the heads get `aim_settle_s` (1 s) from the
+   first frame actually written with them up, then the ignition (channel 3
+   of each Showven) 255 for `burst_on_s` (1 s) and 0 for `burst_off_s`
+   (1 s) until Stop or Abort, at most `max_burst_min` (10). Nobody has to
+   hold. Speed, duration and preset stay 0.
 
-**Arming: no new way to arm.** Each arm is the rack screen's own hold to
-arm (`Remote.arm_hold`), called inside the holding person's beat with that
-request's device, window, sign-in and page status time; the engine's
-watcher never calls it. The Stream Deck sees an ordinary screen hold on
-deck-input and arms only after 1 s of beat-evidenced holding, with its
-re-arm refractory window, the latch and the operator gate; flamesafe then
-applies its re-arm dwell, the clean rising edge (every flame slot under 15
-on the arm tick: nothing is set while arming) and the edge-quiet window.
-Each re-arm waits for flamesafe to report ARMED (`arm_wait_s`, 8 s, then
-it stops and says flamesafe's reason). The disarms are the screen's
-per-group Disarm (`Remote.group_disarm`); a stop's disarm that flamesafe
-has not confirmed within 1 s gets Disarm all flame groups.
+**Arming: no new way to arm.** Every arm is the rack screen's own hold to
+arm (`Remote.arm_hold`). The start hold and the go-ahead hold are the
+person's own: each beat of theirs calls it inside their request, with
+their device, window, sign-in and page status time. Phase 1's second and
+third arms are the walk-away: the engine's watcher calls the same handler
+for the person whose completed hold started it (their request's context,
+the engine's own time), every 50 ms until the deck takes it; never in
+phase 2, never while paused, never before a completed start hold. Each
+time the Stream Deck sees an ordinary screen hold on deck-input and arms
+only after 1 s of it, with its re-arm refractory window, the latch and the
+operator gate; flamesafe applies its re-arm dwell, the clean rising edge
+(nothing is set while arming) and the edge-quiet window. Each arm waits
+for flamesafe to report ARMED (`arm_wait_s`, 8 s, then it stops and says
+flamesafe's reason). The disarms are the screen's per-group Disarm
+(`Remote.group_disarm`); a stop's disarm that flamesafe has not confirmed
+within 1 s gets Disarm all flame groups.
 
-**Values: the purge frame, by flamesafe.** The frame goes out as this
-page's purge frame (`FlameLink.purge_set`), only in phase 2 and only once
-flamesafe reports the group ARMED; flamesafe composes it and zeroes it
+**Values: the purge frame, by flamesafe.** Phase 2 only, after the
+go-ahead, once flamesafe reports the group ARMED: this page's purge frame
+(`FlameLink.purge_set`), written by the watcher every 50 ms; the link
+drops it by itself 0.25 s after the last write, and flamesafe zeroes it
 whenever the group is not armed. Each fixture's angle and ignition come
 from flamesafe's config: the group named wave flamer, with a
 `safety_profile` and `aim`, each safety slot s one 6 channel block (angle
@@ -466,26 +476,28 @@ not match and nothing runs. One source of purge frames at a time: the
 purge and the Fireball page wait for it, and it for them.
 
 **Stops** (ignition 0 first, the angle left where it is, then the
-disarm; a stopped run never carries on): the button let go, the page's
-Stop, Abort, Hold, the rack screen's or the Stream Deck's Stop (the flame
-link's zero count moves), any disarm anywhere (the engine's disarm count
-moves), the group not reading armed when it should, flamesafe's status
-older than 0.5 s, a show live, Run pressed, live flame programming, a
-purge, the Fireball page, Arrange mode, another flame group armed or being
-held, an open alert of kind flames, link or deck, every fixture locked
-out, screen arming switched off, the Stream Deck not reading the engine,
-the page's status stale, sign out (the web layer refuses the beat), any
-refusal, and `max_run_min`.
+disarm; a stopped run never carries on), in every phase and while paused:
+Stop (the page's or the banner's on any screen, the rack screen's, the
+Stream Deck's: the deck reads the cleaning as running, so its key is
+Stop), Abort (which never waits on the cleaning's lock), Hold, any disarm
+anywhere (the engine's disarm count moves), the flame link zeroed, the
+group not reading armed when it should, flamesafe's status older than
+0.5 s, a wave flamer locked or unlocked, a show live, Run pressed, live
+flame programming, a purge, the Fireball page, Arrange mode, another
+flame group armed or being held, an open alert of kind flames, link or
+deck, every fixture locked out, screen arming switched off, the Stream
+Deck not reading the engine, the starter (phase 1) or the go-ahead
+(phase 2) signing out, any refusal, `max_burst_min`, `pause_max_min`.
 
 **Settings** (`ltcplay_morning.json`, `cleaning`; leave a key out for the
 default): `cycles` 3 (1 to 10), `armed_s` 3 (1 to 30), `disarmed_s` 3
 (2.5 to 30: it must cover the deck's 2 s re-arm window and flamesafe's 1 s
-dwell), `arm_wait_s` 8 (3 to 20), `disarm_wait_s` 2 (1 to 5), `aim` 128 (118
-to 138: never far off straight up), `aim_settle_s` 1 (1 to 5, counted
-from the first frame written with the heads up), `burst_on_s` 1 (0.2 to 5),
-`burst_off_s` 1 (0.5 to 10), `max_run_min` 10 (1 to 30), `authorization`
-`dead_man`. A value outside its limits: the page says which and nothing
-runs.
+dwell), `arm_wait_s` 8 (3 to 20), `disarm_wait_s` 2 (1 to 5), `aim` 128
+(118 to 138: never far off straight up), `aim_settle_s` 1 (1 to 5,
+counted from the first frame written with the heads up), `burst_on_s` 1
+(0.2 to 5), `burst_off_s` 1 (0.5 to 10), `max_burst_min` 10 (1 to 30),
+`pause_max_min` 10 (1 to 60). A value outside its limits: the page says
+which and nothing runs.
 
 **Fuel.** Its bursts are flame from the show tank: the Fuel page counts
 them as burn ("other", like scrubbing), once, and never as a Showven purge.
@@ -579,8 +591,7 @@ still hold.
 - Whether a purge should be allowed from an iPad on the show network
   (today: only with `screen_arming` true).
 - Andy's checklist steps and the list of names (`checklists`, `names`).
-- Wave flamer cleaning: whether `hold_to_start` (one hold starts the whole
-  routine, no finger held after) is approved, and the cleaning timings if
-  Andy wants others than 3 s, 3 s, three times, 1 s on, 1 s off.
+- Wave flamer cleaning: the timings, if Andy wants others than 3 s, 3 s,
+  three times, 1 s on, 1 s off.
 - The tally server's address and token (`tally`), and whether the payload
   below fits it.
