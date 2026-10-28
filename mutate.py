@@ -2669,8 +2669,8 @@ MUTATIONS = [
 
  ("flamesafe: a disarmed group passes its fire values through",
   "flamesafe/composer.py",
-  "                elif armed_now and not quiet:\n                    out = v",
-  "                elif not quiet:\n                    out = v"),
+  "                elif armed_now and (not quiet or f in g.aim):",
+  "                elif not quiet or f in g.aim:"),
 
  ("flamesafe: fire commanded on a disarmed group is not logged as a fault",
   "flamesafe/composer.py",
@@ -2895,8 +2895,8 @@ MUTATIONS = [
  # the audit's own entries, kept
  ("flamesafe: the quiet window is ignored on the fire pass",
   "flamesafe/composer.py",
-  "                elif armed_now and not quiet:\n                    out = v",
-  "                elif armed_now:\n                    out = v"),
+  "                elif armed_now and (not quiet or f in g.aim):",
+  "                elif armed_now:"),
 
  ("flamesafe: the arm input is live 30 ms longer than arm_stale_ms",
   "flamesafe/composer.py",
@@ -6038,8 +6038,8 @@ def build():
  # -- fix round 2 of PR #34 ------------------------------------------------
  ("fix2: flamesafe's frame_stale_ms is not read from its config",
   "ltcplay/flamelink.py",
-  '''                          "frame_stale_ms": doc.get("frame_stale_ms")},''',
-  '''                          },'''),
+  '''                         "frame_stale_ms": doc.get("frame_stale_ms")},''',
+  '''                         },'''),
 
  ("fix2: a flame_link block without frame_stale_ms quietly defaults to 500",
   "ltcplay/flamelink.py",
@@ -10034,12 +10034,12 @@ def build():
                     out = 0
                     if v != 0:
                         self.stats["lockout_zeroed"] += 1
-                elif armed_now and not quiet:''',
+                elif armed_now and (not quiet or f in g.aim):''',
   '''                if False:
                     out = 0
                     if v != 0:
                         self.stats["lockout_zeroed"] += 1
-                elif armed_now and not quiet:'''),
+                elif armed_now and (not quiet or f in g.aim):'''),
 
  ("flamesafe: a group with every fire slot locked still arms",
   "flamesafe/composer.py",
