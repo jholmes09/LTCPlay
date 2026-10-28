@@ -896,6 +896,20 @@ this LTC Player's release and build id (also in `/api/remote/status` as
 `version`), the device, the mode sentence, and how to leave a full screen
 window (Alt+F4, or its Close this window button on the show PC).
 
+Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it turns
+on programming mode"). The mode is what Run asked for, nothing else: Run
+with Show picked is a real show and the pill reads SHOW; it reads
+PROGRAMMING only after Run with Programming picked (or Rehearse, or
+Rehearsal on the old page). A Fire & Ice show is on this machine's own
+clock (the show audio), and such a show always holds its frame when its
+clock stops, Show or Programming; before this fix that hold made every
+Fire & Ice Run read PROGRAMMING and turned the switch to Programming after
+a page reload, so the next Run really was a rehearsal. The switch on the
+Show file card starts on the mode the engine is in, and on Show when
+nothing is running (after a restart too); no mode is kept across a
+restart. The old page's "When the timecode stops" switch follows the same
+mode and says it in words under the switch.
+
 On a fresh machine the show screen carries a "Getting started" card with
 the three things to set up and a button for each: the show folder (open
 it, or choose another on the Programming screen; the show's music is the

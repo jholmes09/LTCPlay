@@ -68660,6 +68660,272 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+def test_show_mode_stays_show_on_the_show_audio():
+    section("Show stays Show (Jeff, 2026-10-28: \"even when I press show "
+            "mode, it turns on programming mode\"): a Show Run of a show on "
+            "the show audio reads Show on the engine, the rack screen and "
+            "the old page, after a page reload and after an engine "
+            "restart; Programming only when it is chosen")
+    import json
+    import shutil as _sh
+    import types
+    from ltcplay import session as sess_mod, settings as st_mod
+    from ltcplay import web as web_mod, remote as remote_mod
+    import ltcplay.player as plmod
+    S = _sched()
+    if S is None:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    rack = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    old = open(os.path.join(here, "ltcplay", "web", "index.html"),
+               encoding="utf-8").read()
+    # What each Run sends, exactly as the pages send it.
+    check('post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
+          '{timeline:f})' in rack,
+          "the rack screen's Run sends on_lost hold for Programming only")
+    check('body.on_lost = (MODE === "rehearsal") ? "hold" : "freerun";'
+          in old, "the old page's Run sends hold for Rehearsal only")
+    check("const m = runningMode(s);" in old and
+          's.on_lost === "hold" ? "rehearsal"' not in
+          old[old.find("if(running && (s.mode"):][:200],
+          "the old page's switch follows the engine's mode, not on_lost")
+    R = _RemoteRig(S, at=_den(S, 17, 0))
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(R.work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(R.work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+    real_start = sess_mod.Session.start
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=4000)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    def fake_start(self):
+        # The show file is opened for real (its clock, its player's
+        # on_lost); nothing is started, so nothing reaches any rig.
+        self._running = True
+
+    plmod.Player._prepare = fake_prepare
+    sess_mod.Session.start = fake_start
+    httpd2 = None
+    opened = []
+    try:
+        _tl, tlp, net = _am_show(R.folder, 8.0)
+        name = os.path.basename(tlp)
+
+        def engine(httpd):
+            httpd.control.defaults = dict(httpd.control.defaults,
+                                          networks=net, no_log=True)
+
+        def run(httpd, body):
+            st, _h, out = _ask(httpd, "POST", "/api/start",
+                               dict(body, timeline=name),
+                               client=("127.0.0.1", 5000))
+            check(st == 200, f"Run {body}: {st} {out}")
+            sess = httpd.control.session
+            opened.append(sess)
+            return sess
+
+        def stop(httpd):
+            sess = httpd.control.session
+            if sess is not None:
+                sess._running = False
+                try:
+                    sess.sender.close()
+                except Exception:                # noqa: BLE001
+                    pass
+
+        def status(httpd):
+            st, _h, out = _ask(httpd, "GET", "/api/remote/status", None,
+                               client=("127.0.0.1", 5000))
+            check(st == 200, f"the status: {st}")
+            return out
+
+        def look(httpd, rm):
+            sess = httpd.control.session
+            out = status(httpd)
+            tr = out.get("transport") or {}
+            return {"show": {"running": bool(sess and sess.running)},
+                    "transport": {"programming": bool(tr.get("programming")),
+                                  "why": tr.get("why", "")},
+                    "schedule": {"state": (out.get("schedule") or {})
+                                 .get("state", "STANDBY")},
+                    "snap": sess.snapshot() if sess else None,
+                    "fuel": bool(rm.programming()[0])}
+
+        def brief(lk):
+            out = {k: v for k, v in lk.items() if k != "snap"}
+            out["mode"] = (lk.get("snap") or {}).get("mode")
+            return out
+
+        engine(R.httpd)
+        looks = {}
+        # 1. Show on the rack screen: Run sends only the show file.
+        sess = run(R.httpd, {})
+        check(sess.clock is not None and sess.clock.master is True and
+              sess.clock.source == "audio_master",
+              "the show's clock is the show audio")
+        check(sess.player.on_lost == "hold",
+              "safety kept: on this machine's clock a stopped cue still "
+              "holds and never free runs (Session.open)")
+        check(sess.run_mode() == "show",
+              f"the engine says Show: {sess.run_mode()}")
+        lk = look(R.httpd, R.remote)
+        looks["show"] = lk
+        check(lk["snap"]["mode"] == "show",
+              f"the show status says Show: {lk['snap'].get('mode')}")
+        check(lk["transport"]["programming"] is False and
+              "Show mode" in lk["transport"]["why"] and not lk["fuel"],
+              f"a Show Run on the show audio is not Programming: {brief(lk)}")
+        st, _h, out = R.ask("POST", "/api/remote/jump",
+                            {"seconds": 5, "seen": R.seen()})
+        check(st == 409 and "Show mode" in out.get("error", ""),
+              f"no scrubbing in a Show Run: {st} {out}")
+        stop(R.httpd)
+        # 2. Programming, chosen on the rack screen.
+        sess = run(R.httpd, {"on_lost": "hold"})
+        lk = look(R.httpd, R.remote)
+        looks["prog"] = lk
+        check(sess.run_mode() == "programming" and
+              lk["snap"]["mode"] == "programming" and
+              lk["transport"]["programming"] is True and lk["fuel"],
+              f"Programming when chosen: {brief(lk)}")
+        stop(R.httpd)
+        # 3. The old page: Show night, then Rehearsal, then Rehearse.
+        for body, want in (({"on_lost": "freerun"}, "show"),
+                           ({"on_lost": "hold"}, "programming"),
+                           ({"on_lost": "freerun", "no_output": True},
+                            "programming")):
+            sess = run(R.httpd, body)
+            lk = look(R.httpd, R.remote)
+            check(lk["snap"]["mode"] == want and
+                  lk["transport"]["programming"] is (want == "programming"),
+                  f"the old page's {body}: {want} wanted, {brief(lk)}")
+            looks[json.dumps(body, sort_keys=True)] = lk
+            stop(R.httpd)
+        # 4. An engine restart: a new engine over the same folders. Nothing
+        # is running and nothing kept says Programming; Run in Show is
+        # Show again.
+        httpd2 = web_mod.serve(R.folder, port=0, bind="127.0.0.1")
+        httpd2.bind_address = "10.20.0.5"
+        httpd2.schedule = R.svc
+        rm2 = remote_mod.Remote(httpd2.control, R.svc, folder=R.work,
+                                clock=lambda: R.mono[0],
+                                wall=lambda: R.wall[0], log=lambda t: None)
+        httpd2.remote = rm2
+        engine(httpd2)
+        lk = look(httpd2, rm2)
+        looks["restart_idle"] = lk
+        check(lk["show"]["running"] is False and
+              lk["transport"]["programming"] is False,
+              f"after a restart nothing runs: {brief(lk)}")
+        for root in (R.work, R.folder):
+            for fn in os.listdir(root):
+                fp = os.path.join(root, fn)
+                if os.path.isfile(fp) and fn.endswith(".json") and \
+                        fn != name:
+                    try:
+                        text = open(fp, encoding="utf-8").read()
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    check('"on_lost"' not in text and
+                          '"programming"' not in text,
+                          f"{fn} keeps a mode across a restart")
+        sess = run(httpd2, {})
+        lk = look(httpd2, rm2)
+        looks["restart_show"] = lk
+        check(sess.run_mode() == "show" and lk["snap"]["mode"] == "show" and
+              lk["transport"]["programming"] is False,
+              f"Show after a restart: {brief(lk)}")
+        stop(httpd2)
+        # A show that follows timecode (GPL): the player's own on_lost.
+        bare = sess_mod.Session(tlp)
+        bare.player = types.SimpleNamespace(on_lost="freerun")
+        check(bare.run_mode() == "show", "GPL freerun: Show")
+        bare.player.on_lost = "hold"
+        check(bare.run_mode() == "programming", "GPL hold: Programming")
+        bare.no_output = True
+        bare.player.on_lost = "freerun"
+        check(bare.run_mode() == "programming", "Rehearse: Programming")
+        # 5. The pages, given the engine's own status: the rack screen's
+        # MODE pill and its Show or Programming switch after a reload (the
+        # switch starts from the engine's mode), and the old page's switch.
+        node = _sh.which("node")
+        if not node:
+            check(not IN_CI, "node is missing on this CI runner")
+            print("  ok")
+            return
+        for k in looks:
+            looks[k] = {"st": {kk: v for kk, v in looks[k].items()
+                               if kk in ("show", "transport", "schedule")},
+                        "snap": dict(running=looks[k]["show"]["running"],
+                                     **{kk: v for kk, v in
+                                        (looks[k]["snap"] or {}).items()
+                                        if kk in ("mode", "on_lost")})}
+        js = "\n".join([
+            _js_fn(rack, "modeLook"),
+            _js_block(rack, "const MODE_WHAT = {", "let RUN_MODE"),
+            _js_fn(rack, "runModeNow"), _js_fn(rack, "runModeView"),
+            _js_fn(old, "runningMode")])
+        body = r"""
+"use strict";
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const esc = (s) => String(s == null ? "" : s);
+""" + js + "\nconst L = " + json.dumps(looks) + r""";
+// A reload: RUN_MODE starts from the engine (renderRunMode).
+const reload = (st) => runModeNow(st) || "show";
+for(const k of ["show", '{"on_lost": "freerun"}', "restart_show"]){
+  const st = L[k].st;
+  t(modeLook(st).word === "Show", k + ": the MODE pill reads " + modeLook(st).word);
+  t(reload(st) === "show", k + ": after a reload the switch is on " + reload(st));
+  t(/Running now/.test(runModeView(st, reload(st)).text), k + ": the switch says Running now");
+  t(runningMode(L[k].snap) === "show", k + ": the old page's switch reads " + runningMode(L[k].snap));
+  t(L[k].snap.on_lost === "hold", k + ": the player still holds (safety): " + L[k].snap.on_lost);
+}
+for(const k of ["prog", '{"on_lost": "hold"}', '{"no_output": true, "on_lost": "freerun"}']){
+  const st = L[k].st;
+  t(modeLook(st).word === "Programming", k + ": the MODE pill reads " + modeLook(st).word);
+  t(reload(st) === "programming", k + ": after a reload the switch is on " + reload(st));
+  t(runningMode(L[k].snap) === "rehearsal", k + ": the old page reads " + runningMode(L[k].snap));
+}
+const idle = L.restart_idle.st;
+t(modeLook(idle).word === "Not running", "after a restart: Not running");
+t(reload(idle) === "show", "after a restart the switch starts on Show");
+// An engine older than this change (no mode): on_lost, as before.
+t(runningMode({on_lost:"hold"}) === "rehearsal" && runningMode({on_lost:"freerun"}) === "show", "no mode field: on_lost as before");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, body, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"Show and Programming on the pages, in node: "
+              f"{r.stdout[-1500:]!r} {r.stderr[-800:]!r}")
+    finally:
+        sess_mod.Session.start = real_start
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+        for sess in opened:
+            sess._running = False
+            try:
+                sess.sender.close()
+            except Exception:                    # noqa: BLE001
+                pass
+        if httpd2 is not None:
+            httpd2.server_close()
+            rm2.close_alerts()
+            rm2.selection_written(5.0)
+        R.close()
+    print("  ok")
+
+
 def test_schedule_time_zone_is_checked_by_the_engine():
     section("the time zone dropdown (Jeff, 2026-10-23): the engine still "
             "refuses a zone it does not know when the schedule is saved")
@@ -77772,6 +78038,7 @@ if __name__ == "__main__":
         test_video_lamp_follows_the_madmapper_watch,
         test_artnet_faults_only_for_the_show_in_use,
         test_rack_screen_jeff_2026_10_23_page,
+        test_show_mode_stays_show_on_the_show_audio,
         test_schedule_time_zone_is_checked_by_the_engine,
         test_soak_bench_render_universes_and_fps,
         test_live_flame_sacn_parser_fuzz,

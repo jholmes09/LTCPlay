@@ -2402,8 +2402,18 @@ class Remote:
                            "machine choose Programming on the Show file "
                            "card and press Run.")
         cond = getattr(svc, "conductor", None)
+        # A show whose clock is this machine has its player's on_lost set
+        # to "hold" whatever was asked (Session.open), so there the Run's
+        # own choice decides: Programming asks for "hold" (re-review of
+        # #142, P1 b). Any other show, the player's own, as always.
+        clk = getattr(s, "clock", None)
+        if getattr(clk, "master", False) is True and \
+                hasattr(s, "on_lost_arg"):
+            asked = getattr(s, "on_lost_arg", None) == "hold"
+        else:
+            asked = getattr(p, "on_lost", "") == "hold"
         rehearsal = (getattr(s, "no_output", False)
-                     or getattr(p, "on_lost", "") == "hold"
+                     or asked
                      or getattr(cond, "mode", None) == "rehearsal")
         if not rehearsal:
             return False, ("This show was started in Show mode. Scrubbing "
