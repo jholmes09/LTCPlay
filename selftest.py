@@ -15937,10 +15937,14 @@ class _AnnBusEngine:
             {"name": "Show DSP", "hostapi": 0,
              "max_output_channels": channels}])
         self.msgs = []
+        # "platform": the fake device lists no Windows audio system, so
+        # the stream is opened the way it is on every other OS, whatever
+        # this test runs on (open_output_stream's Windows order is proven
+        # by the show audio tests of its own).
         self.proc = sa.AudioProcess(
             {"device": "Show DSP", "channels": channels, "rate": sa.RATE,
-             "cues": {}}, self.sd, sa.Publisher(self.arr), self.msgs.append,
-            sync_load=True)
+             "cues": {}, "platform": "linux"}, self.sd,
+            sa.Publisher(self.arr), self.msgs.append, sync_load=True)
         self.proc.step(0.0)
         self.sent = []
 
@@ -16047,7 +16051,9 @@ def test_announce_plays_through_the_show_audio():
     _ann_write_level(os.path.join(work, "cancellation.wav"), seconds=0.5,
                      rate=48000, levels=(0.5, -0.25))
     eng = _AnnBusEngine()
-    check(eng.device_open(), "setup: the show audio is open")
+    if not check(eng.device_open(),
+                 f"setup: the show audio is open: {eng.msgs}"):
+        return
     eng.show(level=0.25)
     route = sa.ShowRoute(eng, "Show DSP", 8)
     have = [route]
