@@ -714,9 +714,23 @@ def _local_ipv4s():
 # it.
 FIREWALL_RULE = "LTC Player rack page"
 FIREWALL_READ_S = 30.0
+# Windows' own programs, started by their full path under
+# %SystemRoot%\System32, never by a bare name a folder on PATH or the
+# engine's own folder could answer to (security review of #164).
+NETSH = ("netsh.exe",)
+POWERSHELL = ("WindowsPowerShell", "v1.0", "powershell.exe")
 
 
-def firewall_rule_state(run=None, windows=None):
+def system_tool(*parts, root=None, exists=None):
+    """The full path of a program under %SystemRoot%\\System32, or None
+    when it is not there."""
+    import ntpath
+    root = root or os.environ.get("SystemRoot") or r"C:\Windows"
+    path = ntpath.join(root, "System32", *parts)
+    return path if (exists or os.path.isfile)(path) else None
+
+
+def firewall_rule_state(run=None, windows=None, find=None):
     """("present" | "off" | "missing" | "unknown" | "none", sentence) for
     the Windows Firewall rule, read with netsh. Read only. Never raises.
     "none": not Windows, no rule needed."""
@@ -724,6 +738,10 @@ def firewall_rule_state(run=None, windows=None):
     if not windows:
         return ("none", "This is not a Windows PC, so there is no Windows "
                         "Firewall rule to check.")
+    exe = (find or system_tool)(*NETSH)
+    if exe is None:
+        return ("unknown", "The Windows Firewall rule could not be read "
+                           "(netsh.exe is not in System32).")
     try:
         import subprocess
         if run is None:
@@ -732,7 +750,7 @@ def firewall_rule_state(run=None, windows=None):
         if os.name == "nt":
             kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         # One command line as typed: netsh reads name="..." itself.
-        p = run(f'netsh advfirewall firewall show rule '
+        p = run(f'"{exe}" advfirewall firewall show rule '
                 f'name="{FIREWALL_RULE}" verbose',
                 capture_output=True, text=True, timeout=10, **kw)
         text = (p.stdout or "") + (p.stderr or "")
@@ -765,7 +783,7 @@ CATEGORY_COMMAND = ("(Get-NetConnectionProfile -InterfaceIndex "
                     ".NetworkCategory")
 
 
-def network_category(address, run=None, windows=None):
+def network_category(address, run=None, windows=None, find=None):
     """(category, sentence) for the network that owns `address` on this
     PC, as Windows names it: "Public", "Private", "DomainAuthenticated",
     "unknown", or "none" (not Windows). Read only (Get-NetIPAddress and
@@ -779,6 +797,11 @@ def network_category(address, run=None, windows=None):
     if not is_rfc1918(address):
         return "unknown", ""
     ip = str(ipaddress.ip_address(str(address).strip()))
+    exe = (find or system_tool)(*POWERSHELL)
+    if exe is None:
+        return "unknown", ("Which kind of network Windows calls this one "
+                           "could not be read (powershell.exe is not in "
+                           "System32).")
     try:
         import subprocess
         if run is None:
@@ -788,7 +811,7 @@ def network_category(address, run=None, windows=None):
             kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         env = dict(os.environ)
         env[CATEGORY_ENV] = ip
-        p = run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+        p = run([exe, "-NoProfile", "-NonInteractive", "-Command",
                  CATEGORY_COMMAND],
                 capture_output=True, text=True, timeout=15, env=env, **kw)
         words = [w.strip() for w in (p.stdout or "").splitlines()
@@ -2136,7 +2159,8 @@ class Remote:
         if got is None or now - got[0] >= FIREWALL_READ_S:
             got = (now, firewall_rule_state(
                 run=getattr(self, "_firewall_run", None),
-                windows=getattr(self, "_firewall_windows", None)))
+                windows=getattr(self, "_firewall_windows", None),
+                find=getattr(self, "_tool_find", None)))
             self._firewall_cache = got
         return got[1]
 
@@ -2147,7 +2171,8 @@ class Remote:
         if got is None or got[1] != addr or now - got[0] >= FIREWALL_READ_S:
             got = (now, addr, network_category(
                 addr, run=getattr(self, "_category_run", None),
-                windows=getattr(self, "_firewall_windows", None)))
+                windows=getattr(self, "_firewall_windows", None),
+                find=getattr(self, "_tool_find", None)))
             self._category_cache = got
         return got[2]
 

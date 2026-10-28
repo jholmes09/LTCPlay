@@ -719,6 +719,32 @@ MUTATIONS = [
   "        env[CATEGORY_ENV] = ip",
   "        pass"),
 
+ ("show network: a Windows program is found by its bare name",
+  "ltcplay/remote.py",
+  "    return path if (exists or os.path.isfile)(path) else None",
+  "    return parts[-1]"),
+
+ ("show network: netsh is started without its full path",
+  "ltcplay/remote.py",
+  "        p = run(f'\"{exe}\" advfirewall firewall show rule '",
+  "        p = run(f'netsh advfirewall firewall show rule '"),
+
+ ("show network: PowerShell is started without its full path",
+  "ltcplay/remote.py",
+  "        p = run([exe, \"-NoProfile\", \"-NonInteractive\", \"-Command\",",
+  "        p = run([\"powershell\", \"-NoProfile\", \"-NonInteractive\", "
+  "\"-Command\","),
+
+ ("show network: a netsh missing from System32 is run anyway",
+  "ltcplay/remote.py",
+  "    if exe is None:\n        return (\"unknown\", \"The Windows Firewall rule",
+  "    if False:\n        return (\"unknown\", \"The Windows Firewall rule"),
+
+ ("show network: a PowerShell missing from System32 is run anyway",
+  "ltcplay/remote.py",
+  "    if exe is None:\n        return \"unknown\", (\"Which kind",
+  "    if False:\n        return \"unknown\", (\"Which kind"),
+
  ("show network: the firewall rule is open to any address",
   "packaging/windows/installer.iss",
   "localport=7878 remoteip=localsubnet profile=any",

@@ -347,7 +347,9 @@ FIREWALL_RULE = "LTC Player rack page"
 def firewall_rule():
     """(exit code, netsh's words) for the installer's firewall rule."""
     try:
-        r = subprocess.run(f'netsh advfirewall firewall show rule '
+        netsh = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                             "System32", "netsh.exe")
+        r = subprocess.run(f'"{netsh}" advfirewall firewall show rule '
                            f'name="{FIREWALL_RULE}" verbose',
                            capture_output=True, text=True, timeout=60,
                            errors="replace")

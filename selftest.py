@@ -46387,6 +46387,22 @@ def test_show_network_card_firewall_and_wrong_name_page():
           f"the picker offers private IPv4 addresses only: {got}")
     check(all(isinstance(a, str) for a in remote_mod.address_candidates()),
           "the real lookup answers a list of addresses")
+    # Windows' own programs by their full path under System32, never a
+    # bare name (security review of #164); missing: "unknown", not run.
+    SYS32 = "C:\\Windows\\System32\\"
+
+    def FIND(*parts):
+        return SYS32 + "\\".join(parts)
+    check(remote_mod.system_tool(*remote_mod.POWERSHELL, root="C:\\Windows",
+                                 exists=lambda p: True) ==
+          SYS32 + "WindowsPowerShell\\v1.0\\powershell.exe" and
+          remote_mod.system_tool(*remote_mod.NETSH, root="C:\\Windows",
+                                 exists=lambda p: True) ==
+          SYS32 + "netsh.exe",
+          "netsh and powershell are found by their full System32 path")
+    check(remote_mod.system_tool(*remote_mod.NETSH, root="C:\\Windows",
+                                 exists=lambda p: False) is None,
+          "a program missing from System32 is None, never a bare name")
     # The firewall rule, read with netsh and never changed.
     ran = []
 
@@ -46400,20 +46416,27 @@ def test_show_network_card_firewall_and_wrong_name_page():
         return run
     st, why = remote_mod.firewall_rule_state(
         run=fake(0, "Rule Name: LTC Player rack page\nEnabled: Yes\n"),
-        windows=True)
+        windows=True, find=FIND)
     check(st == "present" and "subnet" in why and "7878" in why,
           f"a rule that is there reads present: {st} {why}")
     st, why = remote_mod.firewall_rule_state(
         run=fake(0, "Rule Name: LTC Player rack page\nEnabled: No\n"),
-        windows=True)
+        windows=True, find=FIND)
     check(st == "off" and "blocked" in why, f"a rule switched off: {st}")
     st, why = remote_mod.firewall_rule_state(
-        run=fake(1, "No rules match the specified criteria."), windows=True)
+        run=fake(1, "No rules match the specified criteria."), windows=True,
+        find=FIND)
     check(st == "missing" and "installer again" in why,
           f"no rule reads missing, with what to do: {st} {why}")
     st, why = remote_mod.firewall_rule_state(run=fake(0, boom=True),
-                                             windows=True)
+                                             windows=True, find=FIND)
     check(st == "unknown", f"netsh failing reads unknown: {st}")
+    n_ran = len(ran)
+    st, why = remote_mod.firewall_rule_state(
+        run=fake(0, "Enabled: Yes\n"), windows=True,
+        find=lambda *p: None)
+    check(st == "unknown" and "System32" in why and len(ran) == n_ran,
+          f"no netsh.exe in System32: unknown, and nothing is run: {st}")
     check(remote_mod.firewall_rule_state(windows=False)[0] == "none",
           "not Windows: no rule to read")
     check(remote_mod.network_category("10.1.2.3", windows=False) ==
@@ -46451,11 +46474,20 @@ def test_show_network_card_firewall_and_wrong_name_page():
         return types.SimpleNamespace(returncode=0, stdout="Public\n",
                                      stderr="")
     for bad in payloads:
-        got = remote_mod.network_category(bad, run=look, windows=True)
+        got = remote_mod.network_category(bad, run=look, windows=True,
+                                         find=FIND)
         check(got == ("unknown", ""), f"{bad!r} is never looked up: {got}")
     check(not looked, f"nothing but a private IPv4 address reaches "
                       f"PowerShell: {looked}")
-    got = remote_mod.network_category("10.20.0.5", run=look, windows=True)
+    got = remote_mod.network_category("10.20.0.5", run=look, windows=True,
+                                      find=lambda *p: None)
+    check(got[0] == "unknown" and "System32" in got[1] and not looked,
+          f"no powershell.exe in System32: unknown, nothing run: {got}")
+    got = remote_mod.network_category("10.20.0.5", run=look, windows=True,
+                                      find=FIND)
+    check(looked and looked[0][0][0] ==
+          SYS32 + "WindowsPowerShell\\v1.0\\powershell.exe",
+          f"PowerShell by its full path: {looked}")
     check(got[0] == "Public" and len(looked) == 1 and
           "10.20.0.5" not in " ".join(looked[0][0]) and
           looked[0][1].get(remote_mod.CATEGORY_ENV) == "10.20.0.5" and
@@ -46464,7 +46496,7 @@ def test_show_network_card_firewall_and_wrong_name_page():
           f"the address goes in as an environment variable, never in the "
           f"command text: {looked}")
     check(ran and all(isinstance(c, str) and c.startswith(
-              "netsh advfirewall firewall show rule ") and
+              '"' + SYS32 + 'netsh.exe" advfirewall firewall show rule ') and
               'name="LTC Player rack page"' in c and
               not any(w in c for w in (" add ", " delete ", " set "))
               for c in ran),
@@ -46475,6 +46507,7 @@ def test_show_network_card_firewall_and_wrong_name_page():
         rem = remote_mod.Remote(web_mod.Control(work), None, folder=work,
                                 log=lambda t: None)
         rem._firewall_windows = True
+        rem._tool_find = FIND
         rem._firewall_run = fake(0, "Enabled: Yes\n")
         cat_ran = []
 
