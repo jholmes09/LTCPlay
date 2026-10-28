@@ -1195,6 +1195,61 @@ MUTATIONS = [
   "window.addEventListener(\"pagehide\", () => armStop(\"the page closed\"));",
   ""),
 
+ ("flame link: aim slots are held by the zero-first rule again",
+  "ltcplay/flamelink.py",
+  "        return set(range(UNIVERSE_SIZE)) - self._aim",
+  "        return set(range(UNIVERSE_SIZE))"),
+
+ ("flame link: no slot is held by the zero-first rule, aim or flame",
+  "ltcplay/flamelink.py",
+  "        return set(range(UNIVERSE_SIZE)) - self._aim",
+  "        return set()"),
+
+ ("flame link: an aim slot that is not a fire slot is freed",
+  "ltcplay/flamelink.py",
+  "        aim = [a for a in aim if a in fire]",
+  "        aim = list(aim)"),
+
+ ("flame link: aim: two aim slots in one fixture are taken",
+  "ltcplay/flamelink.py",
+  "        if k in block:\n            return f\"slots {block[k]}",
+  "        if False:\n            return f\"slots {block[k]}"),
+
+ ("flame link: aim: the aim slots need not be the same channel",
+  "ltcplay/flamelink.py",
+  "    if len({a - saf[k] for k, a in block.items()}) > 1:\n        return",
+  "    if False:\n        return"),
+
+ ("flame link: aim: a wave flamer may aim with any channel",
+  "ltcplay/flamelink.py",
+  "        if a != saf[k] - 5:\n            return",
+  "        if False:\n            return"),
+
+ ("flame link: aim: a group without a safety_profile may aim",
+  "ltcplay/flamelink.py",
+  "               if \"safety_profile\" in g else",
+  "               if True else"),
+
+ ("flame link: aim: an aimed fixture need not be one 6 channel block",
+  "ltcplay/flamelink.py",
+  "        if {f for f in fire if len(saf) == 1 or lo < f < saf[k]} != set(",
+  "        if False and {f for f in fire if len(saf) == 1 or lo < f < saf[k]} != set("),
+
+ ("flame link: aim: an aim slot after the last safety slot is taken",
+  "ltcplay/flamelink.py",
+  "        if k is None:\n            return f\"slot {a} is after",
+  "        if False:\n            return f\"slot {a} is after"),
+
+ ("live flame: aim slots wait to be seen at zero again",
+  "ltcplay/flameprog.py",
+  "                self._blocked = set(fmap.slots) - self._aim",
+  "                self._blocked = set(fmap.slots)"),
+
+ ("live flame: an ended stream holds its aim slots again",
+  "ltcplay/flameprog.py",
+  "        self._blocked.update(set(range(first, first + count)) - self._aim)",
+  "        self._blocked.update(range(first, first + count))"),
+
  ("flame link: the seek guard is off by default", "ltcplay/flamelink.py",
   "                 tc_fps=TC_FPS_DEFAULT, seek_guard=True):",
   "                 tc_fps=TC_FPS_DEFAULT, seek_guard=False):"),
@@ -2372,6 +2427,72 @@ MUTATIONS = [
   "flamesafe/config.py",
   "    if arm_value != derived:",
   "    if False:"),
+
+ # aim slots (2026-10-28): the wave flamer's angle is not a flame
+ ("flamesafe: aim: every fire slot skips the edge check",
+  "flamesafe/composer.py",
+  "            if f in g.aim:\n                # An aim slot points the head; it never lights it.",
+  "            if f in g.fire:\n                # An aim slot points the head; it never lights it."),
+
+ ("flamesafe: aim: the edge check counts the aim slots again",
+  "flamesafe/composer.py",
+  "                # An aim slot points the head; it never lights it.\n                continue",
+  "                # An aim slot points the head; it never lights it.\n                pass"),
+
+ ("flamesafe: aim: an aim slot is held at zero through the edge-quiet window",
+  "flamesafe/composer.py",
+  "                elif armed_now and (not quiet or f in g.aim):",
+  "                elif armed_now and not quiet:"),
+
+ ("flamesafe: aim: every fire slot goes out in the edge-quiet window",
+  "flamesafe/composer.py",
+  "                elif armed_now and (not quiet or f in g.aim):",
+  "                elif armed_now:"),
+
+ ("flamesafe: aim: a slot outside the group's fire slots is accepted",
+  "flamesafe/config.py",
+  "        if isinstance(a, bool) or not isinstance(a, int) or a not in fire:",
+  "        if isinstance(a, bool) or not isinstance(a, int):"),
+
+ ("flamesafe: aim: every fire slot may be an aim slot",
+  "flamesafe/config.py",
+  "    if len(set(aim)) >= len(set(fire)):",
+  "    if False:"),
+
+ ("flamesafe: aim: an aim slot is sent while the group is disarmed",
+  "flamesafe/composer.py",
+  "                elif armed_now and (not quiet or f in g.aim):",
+  "                elif (armed_now and not quiet) or f in g.aim:"),
+
+ ("flamesafe: aim: two aim slots in one fixture are accepted",
+  "flamesafe/config.py",
+  "        if k in block:\n            raise ConfigError(f\"{name}: aim slots",
+  "        if False:\n            raise ConfigError(f\"{name}: aim slots"),
+
+ ("flamesafe: aim: the aim slots need not be the same channel",
+  "flamesafe/config.py",
+  "    if len({a - saf[k] for k, a in block.items()}) > 1:",
+  "    if False:"),
+
+ ("flamesafe: aim: a wave flamer may aim with any channel",
+  "flamesafe/config.py",
+  "        if a != saf[k] - 5:\n            raise",
+  "        if False:\n            raise"),
+
+ ("flamesafe: aim: a group without a safety_profile may aim",
+  "flamesafe/config.py",
+  "    if profile is None:\n        raise ConfigError(f\"{name}: aim is only",
+  "    if False:\n        raise ConfigError(f\"{name}: aim is only"),
+
+ ("flamesafe: aim: an aimed fixture need not be one 6 channel block",
+  "flamesafe/config.py",
+  "        if mine != set(range(a, a + 5)):",
+  "        if False:"),
+
+ ("flamesafe: aim: an aim slot after the last safety slot is accepted",
+  "flamesafe/config.py",
+  "            if k is None:\n                raise ConfigError(f\"{name}: aim slot {a} is after",
+  "            if False:\n                raise ConfigError(f\"{name}: aim slot {a} is after"),
 
  # rule 2: the rising edge must be clean
  ("flamesafe: a fire slot at exactly 15 no longer blocks the rise",

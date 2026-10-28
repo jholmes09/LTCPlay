@@ -1061,7 +1061,10 @@ class Composer:
                     out = 0
                     if v != 0:
                         self.stats["lockout_zeroed"] += 1
-                elif armed_now and not quiet:
+                elif armed_now and (not quiet or f in g.aim):
+                    # An aim slot is not held at zero through the edge-
+                    # quiet window: zero would swing the head to its end
+                    # stop for those frames, and it lights nothing.
                     out = v
                 elif armed_now and quiet and v != 0:
                     out = 0
@@ -1172,6 +1175,9 @@ class Composer:
         if commanded is None:
             return True
         for f in g.fire:
+            if f in g.aim:
+                # An aim slot points the head; it never lights it.
+                continue
             if commanded[f - 1] >= rules.GFLAME_EDGE_BELOW:
                 return False
         return True

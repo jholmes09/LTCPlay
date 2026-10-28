@@ -893,6 +893,7 @@ class LiveFlame:
         self._seq = {}                # universe -> last sequence
         self._rate = collections.defaultdict(collections.deque)
         self._blocked = set()         # slots not yet seen at zero
+        self._aim = frozenset()       # aim slots: never held (see begin)
         self.counts = collections.Counter()
         self._bad_said_at = None
         self._all = collections.deque()   # clock of every datagram, 1 s
@@ -1103,7 +1104,12 @@ class LiveFlame:
             try:
                 self._reset()
                 self.settings, self.map = s, fmap
-                self._blocked = set(fmap.slots)
+                # Every slot waits to be seen at zero, except the aim
+                # slots (the Showven's angle rests at 128 and is almost
+                # never zero; holding it pinned the head, Jeff 2026-10-28).
+                self._aim = frozenset(getattr(getattr(link, "cfg", None),
+                                              "aim_slots", ()) or ())
+                self._blocked = set(fmap.slots) - self._aim
                 self.began = self.last_data = self._beat = self._clock()
                 self.began_wall = self._wall()
                 self.who, self.screen = who or "unsigned", screen
@@ -1461,7 +1467,7 @@ class LiveFlame:
         if fmap is None or universe not in fmap.by_universe:
             return
         first, count = fmap.by_universe[universe]
-        self._blocked.update(range(first, first + count))
+        self._blocked.update(set(range(first, first + count)) - self._aim)
 
     def compose(self, now):
         """The 512 slot frame from every fresh universe, with each slot not
