@@ -60415,6 +60415,439 @@ def test_users_lockout_is_short_and_never_permanent():
             pass
 
 
+# -- settings changed on disk (Jeff's field report 2026-10-28, item 11) -----
+# flamesafe.json was fixed at 01:54 while the supervisor restarted flamesafe
+# five times; flamesafe read the final file at 01:55:54, but the engine and
+# the Stream Deck program had read it at 01:54:49 and kept that copy, and
+# nothing on the rack screen said so. ltcplay_announce.json too: the status
+# page showed the old value after the file was edited.
+
+def _cfg_dashes(text):
+    return "\u2014" not in text and "\u2013" not in text
+
+
+def test_config_watch_names_the_file_and_who_is_behind():
+    section("Settings changed on disk: the notice names the file and every "
+            "program still on the older copy, display only, and clears once "
+            "the file matches again (configwatch.py)")
+    import shutil as _sh
+    from ltcplay import configwatch as CW
+    d = tempfile.mkdtemp()
+    try:
+        def put(name, doc, mtime):
+            p = os.path.join(d, name)
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+            os.utime(p, (mtime, mtime))
+            return p
+        t0 = 1_800_000_000.0            # 01:54:49, say: every program reads
+        fs = put("flamesafe.json", {"groups": [{"name": "wave flamer",
+                                                "aim": []}]}, t0 - 100)
+        lines = []
+        w = CW.ConfigWatch(journal=lines.append, wall=lambda: t0)
+        w.add("flamesafe config", fs, others=(CW.DECK, CW.FLAMESAFE))
+        progs = {"flamesafe": {"running": True, "started": t0},
+                 "engine": {"running": True, "started": t0},
+                 "deck": {"running": True, "started": t0}}
+        check(w.check(progs) == [] and w.view()["text"] == "" and
+              lines == [],
+              f"nothing changed: no notice and no journal line: "
+              f"{w.view()} {lines}")
+        # The aim list is fixed at 01:55:50; the supervisor restarts
+        # flamesafe at 01:55:54 and it reads the final file.
+        put("flamesafe.json", {"groups": [{"name": "wave flamer",
+                                           "aim": [1, 7, 13]}]}, t0 + 61)
+        progs["flamesafe"]["started"] = t0 + 65
+        items = w.check(progs)
+        v = w.view()
+        check(len(items) == 1 and items[0]["file"] == "flamesafe.json" and
+              items[0]["behind"] == [CW.ENGINE, CW.DECK] and
+              v["engine_behind"],
+              f"the engine and the deck are behind, flamesafe is not: "
+              f"{items}")
+        t = v["text"]
+        check(t.startswith("Settings changed on disk: flamesafe.json") and
+              "older copy in the engine and the Stream Deck program" in t and
+              "Restart LTC Player to use them (Start menu, Stop LTC Player "
+              "then Start LTC Player)." in t and "older copy" in t and
+              _cfg_dashes(t),
+              f"the notice in plain words, with what to do: {t!r}")
+        check(lines == [t], f"one journal line for it: {lines}")
+        w.check(progs)
+        check(lines == [t], f"not said again while nothing changes: {lines}")
+        # flamesafe not restarted: it is behind too.
+        progs["flamesafe"]["started"] = t0
+        items = w.check(progs)
+        check(items[0]["behind"] == [CW.ENGINE, CW.DECK, CW.FLAMESAFE] and
+              "flamesafe" in w.view()["text"] and len(lines) == 2,
+              f"a program started before the change is named: {items}")
+        # An adopted program (no start time) or one not running is not
+        # judged; off the show PC there is no programs.json at all.
+        items = w.check({"deck": {"running": True},
+                         "flamesafe": {"running": False, "started": t0}})
+        check(items[0]["behind"] == [CW.ENGINE],
+              f"only what is known is said: {items}")
+        items = w.check(None)
+        check(items[0]["behind"] == [CW.ENGINE],
+              f"off the show PC the engine's own copy is judged: {items}")
+        # The file changed back to what the engine read: no notice, and
+        # one line saying so.
+        put("flamesafe.json", {"groups": [{"name": "wave flamer",
+                                           "aim": []}]}, t0 + 90)
+        check(w.check(None) == [] and w.view()["text"] == "" and
+              "match" not in lines[-1] and "as they are on disk" in
+              lines[-1],
+              f"changed back: cleared, and said: {lines[-1]!r}")
+        # Saved again unchanged (a newer time, the same settings): not a
+        # change.
+        put("flamesafe.json", {"groups": [{"name": "wave flamer",
+                                           "aim": []}]}, t0 + 120)
+        check(w.check(None) == [], "saved again unchanged is not a change")
+        # Removed.
+        os.remove(fs)
+        items = w.check(None)
+        check(items and items[0]["gone"] and "removed" in
+              CW.notice_text(items), f"a removed file is said: {items}")
+        # The rack screen settings: only what is read at start counts.
+        rp = put("ltcplay_remote.json", {"screen_arming": False,
+                                         "booth_alert": None}, t0 - 5)
+        w2 = CW.ConfigWatch(wall=lambda: t0)
+        w2.add("rack screen settings", rp,
+               digest=CW.keys_hash(("booth_alert", "alert_pixels",
+                                    "flamesafe_config")))
+        put("ltcplay_remote.json", {"screen_arming": True,
+                                    "booth_alert": None}, t0 + 5)
+        check(w2.check(None) == [],
+              "a setting read live (screen_arming) is not a change")
+        put("ltcplay_remote.json", {"screen_arming": True,
+                                    "booth_alert": {"device": "Booth"}},
+            t0 + 6)
+        check(len(w2.check(None)) == 1,
+              "a setting read at start (booth_alert) is a change")
+        with open(rp, "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        check(len(w2.check(None)) == 1, "a broken file is a change")
+        # A file only the deck reads (ltcplay_deck.json).
+        dp = put("ltcplay_deck.json", {"keys": {}}, t0 - 5)
+        w3 = CW.ConfigWatch(wall=lambda: t0)
+        w3.add("Stream Deck layout", dp, engine=False, others=(CW.DECK,))
+        put("ltcplay_deck.json", {"keys": {"1": "front row"}}, t0 + 5)
+        items = w3.check({"deck": {"running": True, "started": t0}})
+        check(items and items[0]["behind"] == [CW.DECK] and
+              not w3.view()["engine_behind"],
+              f"a file the engine does not read names the deck only: "
+              f"{items}")
+        # showpc.json, as the supervisor says it in programs.json.
+        items = w3.check({"supervisor": {"started": t0,
+                                         "showpc": os.path.join(d,
+                                                                "showpc.json"),
+                                         "showpc_changed": ["port"],
+                                         "changed_at": "01:56:00"}})
+        txt = CW.notice_text(items)
+        check(any(i["file"] == "showpc.json" and i["behind"] ==
+                  [CW.SUPERVISOR] for i in items) and
+              "showpc.json (changed 01:56:00: port; older copy in LTC "
+              "Player itself)" in txt and _cfg_dashes(txt),
+              f"showpc.json names LTC Player itself: {txt!r}")
+        # The same path noted twice joins its readers.
+        w3.add("flamesafe config", dp, others=(CW.FLAMESAFE,))
+        check(w3.paths() == [os.path.abspath(dp)], "noted once")
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_config_watch_reloads_only_what_is_safe_and_is_quick():
+    section("Settings changed on disk: the announcements are read again "
+            "live once nothing plays and no show runs; the check runs on "
+            "its own thread and sees a change within seconds")
+    import shutil as _sh
+    from ltcplay import configwatch as CW
+    from ltcplay import announce as AN
+    d = tempfile.mkdtemp()
+    try:
+        ap = os.path.join(d, "ltcplay_announce.json")
+
+        def put(device, mtime):
+            with open(ap, "w", encoding="utf-8") as fh:
+                json.dump({"device": device, "files": {
+                    i: f"Announcements/{i}.wav" for i in AN.IDS}}, fh)
+            os.utime(ap, (mtime, mtime))
+        put("", 1_800_000_000.0)
+        lines = []
+        w = CW.ConfigWatch(journal=lines.append)
+        w.add("announcements", ap)
+        svc = AN.AnnounceService(ap, operators_folder=d)
+        check(svc.device_name == "" and not svc.device_set,
+              "the first-run file: no device")
+        busy = [True]
+        w.set_reload(ap, lambda: svc.reload_if_idle(busy[0]))
+        put("Booth Speakers", 1_800_000_100.0)
+        items = w.check(None)
+        t = w.view()["text"]
+        check(len(items) == 1 and items[0]["waiting"] == "no show is running"
+              and "the engine reads it again by itself once no show is "
+              "running" in t and "Restart LTC Player" not in t and
+              svc.device_name == "" and _cfg_dashes(t),
+              f"during a show it waits, and says so: {t!r}")
+        busy[0] = False
+        svc.playing = AN.DELAYED
+        items = w.check(None)
+        check(items and items[0]["waiting"] == "no announcement is playing"
+              and svc.device_name == "",
+              f"never while an announcement plays: {items}")
+        svc.playing = None
+        items = w.check(None)
+        check(items == [] and svc.device_name == "Booth Speakers" and
+              svc.status()["device"] == "Booth Speakers" and
+              any("read it again" in ln for ln in lines) and
+              any(r.get("outcome") == "reloaded" for r in svc.journal),
+              f"between shows it is read again, the status shows the new "
+              f"value and it is journaled: {items} {lines}")
+        # The engine's own save (the Programming screen's schedule) is its
+        # copy: refresh.
+        sp = os.path.join(d, "ltcplay_schedule.json")
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        w.add("schedule", sp)
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write('{"a": 1}')
+        check(len(w.check(None)) == 1, "a hand edit is a change")
+        w.refresh(sp)
+        check(w.check(None) == [], "the engine's own save and reload is not")
+        # The thread: a change is seen within ~5 s (here with a short beat).
+        check(CW.CHECK_EVERY_S <= 2.0,
+              f"checked every {CW.CHECK_EVERY_S} s, so the notice is up "
+              f"within about 5 s")
+        seen = threading.Event()
+        w.start(lambda: (seen.set(), None)[1], every_s=0.05)
+        try:
+            with open(sp, "w", encoding="utf-8") as fh:
+                fh.write('{"a": 2}')
+            end = time.monotonic() + 5.0
+            while time.monotonic() < end and not w.view()["text"]:
+                time.sleep(0.02)
+            check(seen.is_set() and "ltcplay_schedule.json" in
+                  w.view()["text"],
+                  f"its own thread found it: {w.view()}")
+        finally:
+            w.stop()
+        # A reload that raises is a reason, never a crash.
+        w.set_reload(sp, lambda: 1 / 0)
+        items = w.check(None)
+        check(items and "ZeroDivisionError" in items[0]["waiting"],
+              f"a failing reload is said: {items}")
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_config_watch_on_the_status_and_reload_engine():
+    section("Settings changed on disk: on /api/remote/status, and Reload "
+            "engine offered on the rack screen only between shows with "
+            "every flame group disarmed")
+    import shutil as _sh
+    import types as _ty
+    from ltcplay import configwatch as CW
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import cli as CLI
+    d = tempfile.mkdtemp()
+    real_folder = RM.settings_folder
+    RM.settings_folder = lambda: d
+    try:
+        fp = os.path.join(d, "flamesafe.json")
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        w = CW.ConfigWatch()
+        w.add("flamesafe config", fp, others=(CW.DECK, CW.FLAMESAFE))
+        rm = RM.Remote(None, None, folder=d, log=lambda t: None)
+        rack, ipad = RM.Ctx(True, "127.0.0.1"), RM.Ctx(False, "10.0.0.9")
+        check(rm.config_changed_view(rack) == {"files": [], "text": "",
+                                               "engine_behind": False},
+              "no watch: nothing")
+        rm.config_watch = w
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write('{"aim": [1, 7, 13]}')
+        w.check(None)
+        groups = [{"name": "wave flamer", "armed": "disarmed",
+                   "wanted": False}]
+        rm.flame_status = _ty.SimpleNamespace(
+            view=lambda: {"stale": False, "groups": groups})
+        v = rm.config_changed_view(ipad)
+        check("flamesafe.json" in v["text"] and "reload" not in v,
+              f"a remote session reads the notice, with no button: {v}")
+        v = rm.config_changed_view(rack)
+        check(v["reload"]["offered"] is False and "supervisor" in
+              v["reload"]["why"],
+              f"off the show PC there is no supervisor to restart it: {v}")
+        with open(os.path.join(d, "showpc.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{}")
+        v = rm.config_changed_view(rack)
+        check(v["reload"] == {"offered": True, "why": "",
+                              "flamesafe": True},
+              f"between shows, nothing armed: offered: {v}")
+        groups[0]["armed"] = "armed"
+        v = rm.config_changed_view(rack)
+        code, body = rm.reload_engine({})
+        check(not v["reload"]["offered"] and "armed" in v["reload"]["why"]
+              and code == 409 and not os.path.exists(
+                  os.path.join(d, RM.RESTART_ENGINE_FILE)),
+              f"never while a group is armed: {v} {code} {body}")
+        groups[0]["armed"], groups[0]["wanted"] = "disarmed", True
+        check(rm.reload_engine_refusal(), "nor while one is being armed")
+        groups[0]["wanted"] = False
+        rm.flame_status = _ty.SimpleNamespace(
+            view=lambda: {"stale": True, "groups": groups})
+        check("not known" in (rm.reload_engine_refusal() or ""),
+              "nor while flamesafe's state is not seen")
+        rm.flame_status = _ty.SimpleNamespace(
+            view=lambda: {"stale": False, "groups": groups})
+        rm.show_busy_for_reload = lambda: True
+        check("show is running" in (rm.reload_engine_refusal() or ""),
+              "nor while a show runs")
+        del rm.show_busy_for_reload
+        rm.announce = _ty.SimpleNamespace(playing="delayed")
+        check("announcement" in (rm.reload_engine_refusal() or ""),
+              "nor while an announcement plays")
+        rm.announce = None
+        code, body = rm.reload_engine({})
+        check(code == 200 and os.path.exists(
+                  os.path.join(d, RM.RESTART_ENGINE_FILE)) and
+              "flamesafe" in body["text"] and _cfg_dashes(body["text"]),
+              f"pressed: the supervisor is asked to restart the engine: "
+              f"{code} {body}")
+        check("reload-engine" in RM.SETUP_POST_ROUTES and
+              U.classify("/api/remote/reload-engine", {}) == "show_files",
+              "a setup route of the show machine, behind the show files "
+              "permission")
+        code, body, _h = rm.post("/api/remote/reload-engine", {}, ipad)
+        check(code == 403, f"never from the network: {code} {body}")
+        # The status carries it.
+        st = rm.status(rack)
+        check("flamesafe.json" in (st.get("config_changed") or {}).get(
+                  "text", ""), f"on the status: {st.get('config_changed')}")
+        # What `ltc serve` notes before it reads anything.
+        args = _ty.SimpleNamespace(announce="", flamesafe_config=None)
+        env_was = os.environ.pop(CLI.FLAMESAFE_ENV, None)
+        os.environ[CLI.FLAMESAFE_ENV] = fp
+        try:
+            w2 = CLI._config_watch_at_start(
+                args, os.path.join(d, "ltcplay_schedule.json"))
+        finally:
+            os.environ.pop(CLI.FLAMESAFE_ENV, None)
+            if env_was is not None:
+                os.environ[CLI.FLAMESAFE_ENV] = env_was
+        names = {os.path.basename(p) for p in w2.paths()}
+        check({"flamesafe.json", "ltcplay_schedule.json",
+               "ltcplay_fire_ice.json", "ltcplay_operators.json",
+               "ltcplay_morning.json", "ltcplay_deck.json",
+               "ltcplay_announce.json", "ltcplay_remote.json"} <= names,
+              f"every file the engine reads at start is noted: {names}")
+    finally:
+        RM.settings_folder = real_folder
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_config_watch_supervisor_and_rack_screen_note():
+    section("Settings changed on disk: the supervisor writes each program's "
+            "start and the showpc.json settings changed since, logs a "
+            "restart that leaves others on an older copy, and the rack "
+            "screen shows the note and Reload engine")
+    import shutil as _sh
+    W, SUP, gone = _winpkg()
+    d = tempfile.mkdtemp()
+    try:
+        check(SUP.showpc_changed({"port": 7878, "show_folder": "a"},
+                                 {"port": 7879, "show_folder": "b"}) ==
+              ["port"], "show_folder is followed by itself; port is not")
+
+        class _P:
+            def __init__(self, alive, started, proc=True):
+                self._a, self.started_wall = alive, started
+                self.proc = object() if proc else None
+
+            def alive(self):
+                return self._a
+        fs = os.path.join(d, "flamesafe.json")
+        with open(fs, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        t0 = 1_800_000_000.0
+        os.utime(fs, (t0 + 61, t0 + 61))
+        progs = {"flamesafe": _P(True, t0 + 65), "engine": _P(True, t0),
+                 "deck": _P(True, t0)}
+        note = SUP.restart_note("flamesafe", progs, fs,
+                                clock_hms=lambda t: f"T{t - t0:+.0f}")
+        check(note.startswith("flamesafe.exe started at T+65 with "
+                              "flamesafe.json as changed at T+61") and
+              "ltcplay.exe (started T+0)" in note and
+              "ltcplay-deck.exe (started T+0)" in note and _cfg_dashes(note),
+              f"the restart names who kept the older copy: {note!r}")
+        progs["engine"] = _P(True, t0 + 70)
+        progs["deck"] = _P(True, t0 + 70)
+        check(SUP.restart_note("flamesafe", progs, fs) == "",
+              "nothing to say when the others started after the change")
+        pf = SUP.ProgramsFile(os.path.join(d, "p.json"))
+        progs = {"flamesafe": _P(True, t0 + 65), "engine": _P(True, t0),
+                 "deck": _P(True, t0, proc=False)}
+        blk = SUP.supervisor_block(t0, os.path.join(d, "showpc.json"),
+                                   ["port"], "01:56:00")
+        pf.update(progs, {n: (["x"], "") for n in SUP.PROGRAMS}, blk)
+        doc = json.load(open(os.path.join(d, "p.json"), encoding="utf-8"))
+        check(doc["flamesafe"]["started"] == t0 + 65 and
+              "started" not in doc["deck"] and
+              doc["supervisor"]["showpc_changed"] == ["port"],
+              f"programs.json carries the starts and showpc.json's "
+              f"changes; an adopted program has no start: {doc}")
+    finally:
+        gone()
+        _sh.rmtree(d, ignore_errors=True)
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('<div class="warnbox" id="cfg-note" hidden></div>'
+                 '<button class="ghost" id="cfg-reload" hidden>Reload '
+                 'engine</button>',
+                 'setWarn("cfg-note", cn.text);',
+                 '$("cfg-reload").hidden = !cn.offer || '
+                 '!mayRow(s, "show_files");',
+                 '"an-note", "cfg-note"].forEach(',
+                 'post("/api/remote/reload-engine", {})'):
+        check(need in page, f"the rack screen has {need!r}")
+    check(not re.search(r'LOCAL_FAULT\["cfg-note"\]', page),
+          "the note is never a fault")
+    import shutil
+    node = shutil.which("node")
+    if node is None:
+        print("  (node not found: the note's words are not run here)")
+        print("  ok")
+        return
+    js = _js_fn(page, "cfgNote") + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(JSON.stringify(cfgNote(null)) === '{"text":"","offer":false}', "none");
+const base = {text:"Settings changed on disk: flamesafe.json."};
+let r = cfgNote(base);
+t(r.text === base.text && !r.offer, "no reload block: the text alone");
+r = cfgNote(Object.assign({reload:{offered:true, why:"", flamesafe:true}}, base));
+t(r.offer && r.text.includes("stop LTC Player and start it again"), "offered, flamesafe: " + r.text);
+r = cfgNote(Object.assign({reload:{offered:false, why:"A flame group is armed."}}, base));
+t(!r.offer && r.text.endsWith("Reload engine is not offered now: A flame group is armed."), "refused: " + r.text);
+console.log(JSON.stringify(out));
+"""
+    import subprocess as _subp
+    rr = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(rr.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(rr.returncode == 0 and bad == [],
+          f"cfgNote in node: {rr.stdout!r} {rr.stderr[-400:]!r}")
+    print("  ok")
+
+
 def test_users_sign_out_after_the_last_show():
     """Jeff, 2026-10-26: once the night's last show has ended, and N
     minutes have passed (default 10, 0 is off), everyone signed in is
@@ -76641,6 +77074,10 @@ if __name__ == "__main__":
         test_calibrate_all_lasers_rules_and_order,
         test_calibrate_all_and_open_beyond_routes,
         test_users_sign_out_after_the_last_show,
+        test_config_watch_names_the_file_and_who_is_behind,
+        test_config_watch_reloads_only_what_is_safe_and_is_quick,
+        test_config_watch_on_the_status_and_reload_engine,
+        test_config_watch_supervisor_and_rack_screen_note,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

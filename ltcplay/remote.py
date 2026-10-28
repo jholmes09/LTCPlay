@@ -296,7 +296,7 @@ LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1", "[::1]")
 # show; the schedule is refused while a show is live.
 SETUP_GET_ROUTES = ("setup", "schedule-file")
 SETUP_POST_ROUTES = ("schedule-file", "open-folder", "show-folder", "screen",
-                     "show-select", "show-file-new")
+                     "show-select", "show-file-new", "reload-engine")
 PROGRAMS_FILE = "programs.json"      # packaging/windows/supervisor.py writes
 FIRST_RUN_FILE = "first-run.json"    # what the supervisor wrote at first run
 SHOWPC_FILE = "showpc.json"          # the supervisor's own settings
@@ -1213,6 +1213,10 @@ class Remote:
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
+        # configwatch.ConfigWatch, set by web.serve for `ltc serve`: the
+        # settings files changed on disk since this engine (or the deck,
+        # flamesafe, the supervisor) read them. Display only.
+        self.config_watch = None
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
         self.beyond_watch = None
@@ -4862,6 +4866,10 @@ class Remote:
                           else " The scheduler has loaded it.")
             except Exception as e:               # noqa: BLE001
                 loaded = f" The scheduler could not reload it: {e}"
+        cw = self.config_watch
+        if cw is not None and svc is not None and hasattr(svc, "reload"):
+            # Read again just now: what is on disk is the engine's copy.
+            cw.refresh(path)
         self._journal("", "Rack screen", "schedule file", "saved",
                       f"The schedule file {path} was saved from the "
                       f"Programming screen.{loaded}")
@@ -5053,6 +5061,102 @@ class Remote:
                      "window. The show engine keeps running. If the window "
                      "stays, press Alt+F4."}
 
+    # -- settings changed on disk (configwatch.py, 2026-10-28) -------------
+    def config_journal(self, text):
+        """The watch's journal line."""
+        self._journal("system", "engine", "settings files", "changed", text)
+
+    def programs_now(self):
+        """programs.json read afresh (not the status's 3 s cache), for the
+        watch's own thread: a restarted program is seen within one check."""
+        return self._settings_json(PROGRAMS_FILE, "programs_cfgwatch", 0.0)
+
+    def show_busy_for_reload(self):
+        """True while a show is live, or a show file runs or is starting."""
+        if self._show_live():
+            return True
+        c = self.control
+        sess = getattr(c, "session", None)
+        return bool(getattr(c, "_starting", False) or
+                    (sess is not None and getattr(sess, "running", False)))
+
+    def reload_engine_refusal(self):
+        """Why the rack screen's Reload engine may not be pressed now, or
+        None: only on the show PC (the supervisor restarts the engine),
+        with no show live, running or starting, no announcement playing,
+        and every flame group seen disarmed in a fresh frame."""
+        if not os.path.isfile(os.path.join(settings_folder(), SHOWPC_FILE)):
+            return ("This engine is not run by LTC Player's supervisor. "
+                    "Quit it and start it again.")
+        if self.show_busy_for_reload():
+            return "A show is running. Reload the engine between shows."
+        ann = getattr(self, "announce", None)
+        if ann is not None and getattr(ann, "playing", None) is not None:
+            return "An announcement is playing."
+        fs = self.flame_status
+        if fs is not None:
+            try:
+                v = fs.view()
+            except Exception:                    # noqa: BLE001
+                v = {"stale": True}
+            if v.get("stale"):
+                return ("flamesafe's status is not seen, so it is not known "
+                        "that every flame group is disarmed.")
+            if any(g.get("armed") != "disarmed" or g.get("wanted")
+                   for g in v.get("groups") or []):
+                return "A flame group is armed. Disarm every group first."
+        return None
+
+    def config_changed_view(self, ctx):
+        """The settings notice for the status (configwatch.ConfigWatch.
+        view): {"files", "text", "engine_behind"} and, on the rack screen
+        while the engine's copy is behind, "reload": {"offered", "why"}.
+        Never raises."""
+        cw = self.config_watch
+        if cw is None:
+            return {"files": [], "text": "", "engine_behind": False}
+        try:
+            v = cw.view()
+            if v.get("engine_behind") and ctx.local:
+                why = self.reload_engine_refusal()
+                # flamesafe's own file: a Reload engine alone does not
+                # give it to flamesafe or the deck; the page says so.
+                v["reload"] = {"offered": why is None, "why": why or "",
+                               "flamesafe": any(
+                                   i.get("name") == "flamesafe config"
+                                   for i in v.get("files") or [])}
+            return v
+        except Exception:                        # noqa: BLE001
+            return {"files": [], "text": "", "engine_behind": False}
+
+    def reload_engine(self, body):
+        """POST reload-engine: the rack screen's Reload engine, offered
+        while a settings file changed since the engine read it. A request
+        the Windows supervisor acts on (restart-engine, as for a new show
+        folder): the engine alone is restarted and reads every settings
+        file afresh. flamesafe and the Stream Deck program are not
+        touched. Refused unless reload_engine_refusal() is None; the
+        supervisor refuses again while a show runs."""
+        why = self.reload_engine_refusal()
+        if why:
+            return 409, {"error": f"Not reloaded: {why} Nothing was "
+                                  f"changed."}
+        try:
+            with open(os.path.join(settings_folder(), RESTART_ENGINE_FILE),
+                      "w", encoding="utf-8") as fh:
+                fh.write(f"settings changed {time.time():.3f}\n")
+        except OSError as e:
+            return 500, {"error": f"Could not ask LTC Player: {e}"}
+        self._journal("", "Rack screen", "reload engine", "asked",
+                      "Reload engine was pressed: LTC Player restarts the "
+                      "engine so it reads the changed settings files.")
+        return 200, {"ok": True, "text": (
+            "LTC Player restarts the engine now so it reads the settings "
+            "files again. This page reconnects by itself. flamesafe and the "
+            "Stream Deck program keep running with what they read at their "
+            "start: to give them a changed flamesafe.json, stop LTC Player "
+            "and start it again.")}
+
     def setup_post(self, name, body):
         if name == "schedule-file":
             return self.save_schedule_file(body)
@@ -5064,6 +5168,8 @@ class Remote:
             return self.select_show(body)
         if name == "show-file-new":
             return self.new_show_file(body)
+        if name == "reload-engine":
+            return self.reload_engine(body)
         return self.screen(body)
 
     def audio_interface_view(self):
@@ -5451,6 +5557,7 @@ class Remote:
                          "holds": holds}
         self.artnet_alert()
         out["artnet_note"] = self.artnet_note()
+        out["config_changed"] = self.config_changed_view(ctx)
         self._apply_pulse()
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""

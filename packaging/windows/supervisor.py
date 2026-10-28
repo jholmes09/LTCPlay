@@ -988,12 +988,24 @@ class ProgramsFile:
         self.path = path
         self.last = None
 
-    def update(self, progs, want):
+    def update(self, progs, want, supervisor=None):
+        """`supervisor`: this process's own block (supervisor_block), for
+        the engine's settings notice (ltcplay/configwatch.py)."""
         doc = {}
         for n in PROGRAMS:
             args, why = want.get(n, (None, ""))
-            doc[n] = {"running": bool(progs[n].alive()),
+            p = progs[n]
+            alive = bool(p.alive())
+            # When this supervisor started it (time.time()), so the engine
+            # can tell a settings file changed after this program read it;
+            # None for one it adopted, whose start it does not know.
+            started = getattr(p, "started_wall", 0.0)
+            doc[n] = {"running": alive,
                       "why": "" if args is not None else why}
+            if alive and getattr(p, "proc", None) is not None and started:
+                doc[n]["started"] = started
+        if supervisor is not None:
+            doc["supervisor"] = supervisor
         if doc == self.last:
             return
         self.last = doc
@@ -1001,6 +1013,51 @@ class ProgramsFile:
             _write_json(self.path, doc)
         except OSError:
             pass
+
+
+def showpc_changed(loaded, now):
+    """The showpc.json settings that differ between what this supervisor
+    read at its start (`loaded`) and the file now (`now`), sorted, leaving
+    out show_folder, which it follows by itself (SettingsWatch). Each takes
+    a restart of LTC Player (2026-10-28, the rack screen says so)."""
+    keys = set(loaded or {}) | set(now or {})
+    return sorted(k for k in keys if k != "show_folder" and
+                  (loaded or {}).get(k) != (now or {}).get(k))
+
+
+def supervisor_block(started, showpc, changed, changed_at=""):
+    """programs.json's "supervisor" block: when this process started, its
+    showpc.json, and the settings in it changed since (showpc_changed)."""
+    return {"started": started, "showpc": showpc,
+            "showpc_changed": list(changed or []),
+            "changed_at": changed_at if changed else ""}
+
+
+def restart_note(name, progs, flamesafe_config, clock_hms=None):
+    """The log line when `name` has just been started while other programs
+    run (2026-10-28: at 01:54 flamesafe was restarted five times as its
+    file was fixed, and the engine and the deck kept the copy they read at
+    01:54:49). Names each running program that started before flamesafe's
+    config last changed, so it runs with an older copy; "" when there is
+    none. Every program reads flamesafe's config."""
+    hms = clock_hms or (lambda t: time.strftime("%H:%M:%S",
+                                                 time.localtime(t)))
+    try:
+        changed = os.path.getmtime(flamesafe_config)
+    except (OSError, TypeError, ValueError):
+        return ""
+    me = progs[name]
+    older = [f"{EXE[n]} (started {hms(progs[n].started_wall)})"
+             for n in PROGRAMS
+             if n != name and progs[n].alive() and progs[n].started_wall and
+             progs[n].started_wall < changed]
+    if not older:
+        return ""
+    return (f"{EXE[name]} started at {hms(me.started_wall)} with "
+            f"{os.path.basename(flamesafe_config)} as changed at "
+            f"{hms(changed)}; {' and '.join(older)} still run with the older "
+            f"copy they read when they started. The rack screen says so "
+            f"until LTC Player is stopped and started again.")
 
 
 class Requests:
@@ -1250,6 +1307,10 @@ def run_loop(open_page=False):
     programs_file = ProgramsFile(os.path.join(appdata_dir(), PROGRAMS_FILE))
     requests = Requests(appdata_dir(), me_started)
     watch = SettingsWatch()
+    # showpc.json as this process read it at its start: the rack screen's
+    # settings notice names the settings changed since (2026-10-28).
+    loaded_settings = dict(settings)
+    sup_block = supervisor_block(me_started, settings_path(), [])
     folder_change = ""          # a hand edit of show_folder, not yet used
     folder_said = ""
     folder_next = 0.0
@@ -1312,6 +1373,15 @@ def run_loop(open_page=False):
         # by the same restart as the page's, once no show is running.
         changed = watch.poll()
         if changed is not None:
+            keys = showpc_changed(loaded_settings, changed)
+            if keys != sup_block["showpc_changed"]:
+                if keys:
+                    log(f"showpc.json changed ({', '.join(keys)}); LTC "
+                        f"Player uses it once it is stopped and started "
+                        f"again")
+                sup_block = supervisor_block(
+                    me_started, settings_path(), keys,
+                    time.strftime("%H:%M:%S"))
             why = show_folder_change(settings, changed)
             if why:
                 folder_change = why
@@ -1374,12 +1444,16 @@ def run_loop(open_page=False):
                 try:
                     p.start(args, settings)
                     audit_event("program-start", EXE[n])
+                    note = restart_note(n, progs,
+                                        settings.get("flamesafe_config"))
+                    if note:
+                        log(note)
                 except OSError as e:
                     log(f"could not start {EXE[n]}: {e}")
                     audit_event("program-start", EXE[n], "error", str(e))
                     p.next_try = now + p.backoff
                     p.backoff = min(p.backoff * 2, 60.0)
-        programs_file.update(progs, want)
+        programs_file.update(progs, want, sup_block)
         if not page_opened and engine_answers(port):
             page_opened = True
             open_page_now(port)

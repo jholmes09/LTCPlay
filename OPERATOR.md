@@ -506,6 +506,54 @@ Read that first. The short version:
 - **The rig is lit but not moving.** Look at the PLAYING line. If it is
   counting, the program is fine and the problem is downstream.
 
+### "Settings changed on disk"
+
+Each program reads its settings files once, when it starts. If a file is
+edited afterwards, the program keeps running with the copy it read until it is
+restarted. Within about 5 seconds of the edit, the rack screen shows a note
+(labelled "Settings changed" when it is folded with other banners):
+
+> Settings changed on disk: flamesafe.json (changed 01:55:50; older copy in
+> the engine and the Stream Deck program). Restart LTC Player to use them
+> (Start menu, Stop LTC Player then Start LTC Player). Until then it runs with
+> the older copy.
+
+- It names each file and the programs still running with the older copy:
+  the engine, the Stream Deck program, flamesafe, or LTC Player itself (for
+  `showpc.json`). The time is when the file was last changed.
+- The files it checks are the ones the engine reads at start: `flamesafe.json`,
+  `ltcplay_fire_ice.json`, `ltcplay_schedule.json`, `ltcplay_morning.json`,
+  `ltcplay_operators.json`, `ltcplay_announce.json` and the booth speaker,
+  alert pixels and flamesafe config settings in `ltcplay_remote.json`. It also
+  checks `ltcplay_deck.json` (read by the Stream Deck program) and
+  `showpc.json` (read by LTC Player itself; a change of the show folder is
+  still followed by itself).
+- The note is for information only. It never holds a show, plays no
+  announcement, sounds no booth note and never replaces a flames alert. It also
+  appears in the journal and on the status page, so an iPad or a remote session
+  can see it.
+- It disappears after the restart, or if the file is changed back to what the
+  program read.
+- **`ltcplay_announce.json` is the exception.** The engine reads it again by
+  itself as soon as no announcement is playing and no show is running. The
+  note says it is waiting until then, and the Announcements block then shows
+  the new value. No restart is needed.
+- A schedule saved from the Programming screen is read at once and never
+  raises the note. A hand edit of `ltcplay_schedule.json` does.
+- **Reload engine.** If the engine is behind and it is between shows (no show
+  running or starting, no announcement playing, and every flame group seen
+  disarmed), the rack screen offers **Reload engine** under the note. LTC
+  Player then restarts the engine alone, which reads every settings file
+  again. flamesafe and the Stream Deck program keep running with what they
+  read when they started. For a changed `flamesafe.json`, stop LTC Player
+  and start it again instead, so all three read it. When the button is not
+  offered, the note says why. Nothing is ever restarted unless someone
+  presses it.
+- When LTC Player itself restarts flamesafe (for example after it stopped
+  over a bad file) while the engine and the Stream Deck program keep running
+  with an older copy of `flamesafe.json`, its log says which programs were
+  left behind and when each started.
+
 ## Stop, Hold and Reset on the rack screen
 
 Jeff, 2026-10-28. Each screen has one Stop, where the button that started

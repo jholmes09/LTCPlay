@@ -748,6 +748,33 @@ class AnnounceService:
             else:
                 self.status_by_id[aid] = self._probe_file(self.files[aid])
 
+    def reload_if_idle(self, show_busy=False):
+        """(True, "") once ltcplay_announce.json (and the operator list)
+        have been read again, as at startup (configwatch.py, Jeff
+        2026-10-28: the rack screen showed the old value after the file was
+        edited). Only while nothing plays and `show_busy` is False (no show
+        running or starting); else (False, why), and nothing is changed.
+        Under the lock, so a Play press sees either the old settings or
+        the new ones, never a mix."""
+        if show_busy:
+            return False, "no show is running"
+        with self.lock:
+            if self.playing is not None:
+                return False, "no announcement is playing"
+            self.error = ""
+            self.device_name = None
+            self.files = {}
+            self.status_by_id = {}
+            self._load()
+            said = self.error or (
+                f"device {self.device_name}" if self.device_set
+                else self.DEVICE_NOT_SET)
+            self._emit(actor="system", action="config", outcome="reloaded",
+                       reason="the file changed on disk",
+                       text=f"The announcements file {self.config_path} "
+                            f"changed on disk and was read again: {said}")
+        return True, ""
+
     @staticmethod
     def _probe_file(path):
         """A missing or unreadable file is decided HERE, once, so a press
@@ -1217,8 +1244,9 @@ class AnnounceService:
             self.playing = ann_id
             self.held_schedule = held
 
-        # The file read happens WITHOUT the lock held: self.files never
-        # changes after startup, so this is safe to do unlocked, and it is
+        # The file read happens WITHOUT the lock held: self.files changes
+        # only in reload_if_idle, under the lock and never while an
+        # announcement is claimed, so this is safe to do unlocked, and it is
         # the one part of a Play press that touches disk. Holding the lock
         # across it would block Stop, a status poll and every other
         # operator action for as long as the read takes (review, minor).

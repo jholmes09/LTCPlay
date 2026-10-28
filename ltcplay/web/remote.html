@@ -862,7 +862,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -2213,6 +2213,23 @@ function renderStale(){
 }
 setInterval(renderStale, 250);
 
+// The settings note (2026-10-28, configwatch.py): the engine's sentence,
+// and on the rack screen, while the engine may be reloaded now, what Reload
+// engine does. `cc` is the status's config_changed. Pure.
+function cfgNote(cc){
+  if(!cc || !cc.text) return {text:"", offer:false};
+  const r = cc.reload || {};
+  let t = cc.text;
+  if(r.offered) t += " Reload engine restarts the engine alone, between shows; flamesafe and the Stream Deck program keep what they read" +
+    (r.flamesafe ? ", so for a changed flamesafe.json stop LTC Player and start it again." : ".");
+  else if(r.why) t += " Reload engine is not offered now: " + r.why;
+  return {text:t, offer:!!r.offered};
+}
+$("cfg-reload").addEventListener("click", async () => {
+  if(!(await confirmBox("Reload the engine?", "LTC Player restarts the show engine so it reads the changed settings files. It is refused while a show runs or a flame group is armed. flamesafe and the Stream Deck program keep running.", "Yes, reload", "start"))) return;
+  try{ const j = await post("/api/remote/reload-engine", {}); $("ctl-msg").textContent = j.text; }
+  catch(e){ $("ctl-msg").textContent = e.message; }
+});
 function setWarn(id, msg){
   const el = $(id);
   el.hidden = !msg; el.textContent = msg || ""; el.title = msg || "";
@@ -2290,6 +2307,11 @@ function render(){
   // The Art-Net receiver check with no show in use (2026-10-24): one note,
   // never a fault (remote.py artnet_note).
   setWarn("an-note", s.artnet_note || "");
+  // Settings changed on disk since a program read them (2026-10-28): one
+  // note, display only, never an alert (remote.py config_changed_view).
+  const cn = cfgNote(s.config_changed);
+  setWarn("cfg-note", cn.text);
+  $("cfg-reload").hidden = !cn.offer || !mayRow(s, "show_files");
   renderAlerts(s.alerts || []);
   renderAnnounce();
   renderLamps(fl);
@@ -2460,14 +2482,14 @@ function renderAlerts(alerts){
 }
 let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
 // The page's own banners: whether each is a fault now, and its label.
-const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note"};
+const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note", "cfg-note": "Settings changed"};
 const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
   lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
     label: ALERT_LABEL[a.kind] || a.kind, text: a.text}));
-  ["lock-banner", "st-trouble", "fl-warn", "an-note"].forEach(id => {
+  ["lock-banner", "st-trouble", "fl-warn", "an-note", "cfg-note"].forEach(id => {
     const el = $(id);
     if(!el.hidden) items.push({key:id + ":" + (LOCAL_LABEL[id] || id), fault:!!LOCAL_FAULT[id], label:LOCAL_LABEL[id] || "", text:el.textContent});
   });
