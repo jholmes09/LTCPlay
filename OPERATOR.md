@@ -1410,6 +1410,32 @@ blanked from here.
 After the press, the engine's answer stays on the screen as a banner until
 it is seen, never only as a one-line note.
 
+## Interface 2.0 (being tried, 1.0 stays)
+
+The page above is interface 1.0. Interface 2.0 is a new SHOW screen beside
+it; the Day, Schedule and Settings tabs of 2.0 open the 1.0 page for now
+("Open in 1.0"). Nothing else changes: every 2.0 button sends exactly what
+the same 1.0 button sends, with the same holds, confirms and refusals.
+
+- Try it: "Try 2.0" in the 1.0 header. Back: "Back to 1.0" in the 2.0
+  header. One tap each way, and it is this screen only (a cookie in that
+  browser): the rack screen, each iPad and each laptop choose for
+  themselves. The rack window's address stays `/remote`.
+- `/remote1` is always 1.0 and `/remote2` is always 2.0, for comparing.
+- Which one a screen that has not chosen gets: 2.0 Settings, "Default
+  interface", on the show PC itself, by someone with Settings (admins).
+  It starts at 1.0 and stays there until Jeff changes it. It is
+  `ui_default` (1 or 2) in `ltcplay_remote.json`; anything else reads as 1.
+- The 2.0 SHOW screen, top to bottom: one line that says what to do next;
+  the show state, the timecode and the time left; the big button for the
+  next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
+  alert at a time with Acknowledge (tap the words for the details); a tile
+  per flame group and one for the lasers, with Hold: arm all and Disarm
+  all; the announcements; the wind on one line; Abort in the corner, 96
+  px, tap twice. Run show is the 1.0 Run in Show mode, on the show PC only.
+- Help (header): the tour again, and a quick card to print. Each "?" says
+  what the buttons near it do, in one sentence each.
+
 ## The show file, and making one
 
 The show file is the playlist: a small `.json` file that says which

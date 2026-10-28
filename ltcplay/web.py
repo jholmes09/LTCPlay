@@ -40,6 +40,16 @@ USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "web", "index.html")
 REMOTE_PAGE = os.path.join(HERE, "web", "remote.html")
+# Interface 2.0 (Jeff, 2026-10-28), beside 1.0, never instead of it.
+# /remote serves 1.0 unless this screen chose 2.0 with its own cookie (set
+# by /ui?v=2, cleared back by /ui?v=1), or the show machine's default says
+# 2 (remote.ui_default, 1 until Jeff sets it). /remote1 and /remote2 are
+# always that page. /remote-logic.js is 1.0's own pure rules (remote.html's
+# remote-logic block, cut out at each request), so both pages run one set.
+REMOTE2_PAGE = os.path.join(HERE, "web", "remote2.html")
+UI_COOKIE = "ltcplay_ui"
+UI_ROUTES = ("/remote1", "/remote2", "/remote-logic.js", "/ui")
+LOGIC_OPEN = '<script id="remote-logic">'
 # The pages' icons (tab, iPad home screen, installed web app), made from the
 # LTC Player app icon by tools/make_web_icons.py. A fixed list of files at
 # fixed addresses: nothing here reads a path the request names.
@@ -150,6 +160,7 @@ def network_may_reach(route):
     a network session reaching them bypassed every rule /api/remote/*
     keeps (who pressed, no scrubbing during a show). Loopback is unchanged."""
     return (route in ("/", "/index.html", "/remote", "/api/brand")
+            or route in UI_ROUTES
             or route.startswith("/brand/") or route in ICONS
             or route == "/api/remote" or route.startswith("/api/remote/"))
 
@@ -1372,11 +1383,20 @@ class Handler(BaseHTTPRequestHandler):
                 # path only; nothing in this mode serves or links to it.
                 return self._send(302, b"", "text/plain",
                                   headers={"Location": "/remote"})
-            if route == "/remote" or (route in ("/", "/index.html")
-                                      and not self._local()):
+            if route == "/ui":
+                return self._ui_switch()
+            if route == "/remote-logic.js":
+                return self._remote_logic()
+            if route in ("/remote", "/remote1", "/remote2") or (
+                    route in ("/", "/index.html") and not self._local()):
                 # The show network gets the remote page: the sign-in form
-                # until it has a session, then the touch controls.
-                with open(REMOTE_PAGE, "rb") as fh:
+                # until it has a session, then the touch controls. 1.0
+                # unless this screen chose 2.0 (or the default is 2.0);
+                # /remote1 and /remote2 are always that page.
+                page = {"/remote1": REMOTE_PAGE,
+                        "/remote2": REMOTE2_PAGE}.get(route) or (
+                    REMOTE2_PAGE if self._ui_choice() == 2 else REMOTE_PAGE)
+                with open(page, "rb") as fh:
                     return self._send(200, fh.read(),
                                       "text/html; charset=utf-8")
             if route == "/api/remote" or route.startswith("/api/remote/"):
@@ -1445,6 +1465,54 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._send(500, {"error": f"{type(e).__name__}: {e}"})
         return self._send(404, {"error": "no such thing here"})
+
+    def _ui_choice(self):
+        """1 or 2: which page /remote serves this screen. Its own
+        ltcplay_ui cookie ("1" or "2") first, else the show machine's
+        default (remote.ui_default, 1 until Jeff sets 2). Anything odd, or
+        anything that cannot be read, is 1: the page every screen had."""
+        for part in str(self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == UI_COOKIE and v in ("1", "2"):
+                return int(v)
+        rm = getattr(self.server, "remote", None)
+        try:
+            return 2 if rm is not None and rm.ui_default() == 2 else 1
+        except Exception:                        # noqa: BLE001
+            return 1
+
+    def _ui_switch(self):
+        """GET /ui?v=2 or /ui?v=1: this screen's own choice of interface, a
+        cookie in this browser and nothing else, then back to /remote.
+        Nothing on the show machine changes. A link followed from another
+        site's page is refused, as a press from one is."""
+        sfs = self.headers.get("Sec-Fetch-Site")
+        if sfs is not None and sfs.strip().lower() not in ("same-origin",
+                                                           "none"):
+            return self._send(403, {"error": "A switch from another site's "
+                                             "page was refused."})
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        v = (q.get("v") or [""])[0]
+        if v not in ("1", "2"):
+            return self._send(400, {"error": "v has to be 1 or 2."})
+        return self._send(302, b"", "text/plain", headers={
+            "Location": "/remote",
+            "Set-Cookie": f"{UI_COOKIE}={v}; SameSite=Strict; Path=/; "
+                          f"Max-Age=31536000"})
+
+    def _remote_logic(self):
+        """GET /remote-logic.js: 1.0's pure rules, cut out of remote.html
+        (its remote-logic block) at each request, so 2.0 runs the very
+        functions 1.0 runs and selftest.py proves."""
+        with open(REMOTE_PAGE, encoding="utf-8") as fh:
+            page = fh.read()
+        a = page.find(LOGIC_OPEN)
+        b = page.find("</script>", a) if a >= 0 else -1
+        if a < 0 or b < 0:
+            return self._send(500, {"error": "remote.html has no "
+                                             "remote-logic block."})
+        return self._send(200, page[a + len(LOGIC_OPEN):b],
+                          "application/javascript; charset=utf-8")
 
     def _abort_latched(self):
         """True while an Abort stands (the scheduler's latch, or the show

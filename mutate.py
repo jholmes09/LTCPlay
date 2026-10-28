@@ -17604,6 +17604,81 @@ def build():
  ("continue anyway: the next show's check does not end the Continue", 'ltcplay/preroll.py',
   "            if not manual:\n                # A new show's check: the last Continue anyway is over.\n                self.continued = None",
   '            if False:\n                self.continued = None'),
+ # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
+ # switch, the default set on the show machine only, 1.0's own rules served,
+ # and the SHOW tab's presses kept 1.0's --
+ ("ui2: the show network cannot reach the 2.0 page", "ltcplay/web.py",
+  "            or route in UI_ROUTES\n",
+  ""),
+
+ ("ui2: a screen's own choice of page is ignored", "ltcplay/web.py",
+  '            if k == UI_COOKIE and v in ("1", "2"):',
+  "            if False:"),
+
+ ("ui2: a junk choice cookie picks 2.0", "ltcplay/web.py",
+  '            if k == UI_COOKIE and v in ("1", "2"):\n                return int(v)',
+  '            if k == UI_COOKIE:\n                return 2'),
+
+ ("ui2: the show machine's default interface is ignored", "ltcplay/web.py",
+  "            return 2 if rm is not None and rm.ui_default() == 2 else 1",
+  "            return 1"),
+
+ ("ui2: a link from another site's page switches the page", "ltcplay/web.py",
+  "            return self._send(403, {\"error\": \"A switch from another site's \"\n"
+  "                                             \"page was refused.\"})",
+  "            pass"),
+
+ ("ui2: /ui sets any value it is given", "ltcplay/web.py",
+  '        if v not in ("1", "2"):\n            return self._send(400, {"error": "v has to be 1 or 2."})',
+  '        if not v:\n            return self._send(400, {"error": "v has to be 1 or 2."})'),
+
+ ("ui2: /remote-logic.js serves the whole of 1.0", "ltcplay/web.py",
+  "        return self._send(200, page[a + len(LOGIC_OPEN):b],",
+  "        return self._send(200, page,"),
+
+ ("ui2: the default interface is set from the network", "ltcplay/remote.py",
+  "            if not ctx.local:\n                return 403, {\"error\": \"The default interface is set on the \"",
+  "            if False:\n                return 403, {\"error\": \"The default interface is set on the \""),
+
+ ("ui2: the default interface is read from the network", "ltcplay/remote.py",
+  "        if name == UI_DEFAULT_ROUTE:\n            if not ctx.local:\n                return 403, {\"error\": \"Only on the show machine itself.\"}",
+  "        if name == UI_DEFAULT_ROUTE:\n            if False:\n                return 403, {\"error\": \"Only on the show machine itself.\"}"),
+
+ ("ui2: the default interface takes any value", "ltcplay/remote.py",
+  "        if not isinstance(v, int) or isinstance(v, bool) or \\\n                v not in UI_VERSIONS:",
+  "        if v is None:"),
+
+ ("ui2: a hand-written ui_default that is not 1 or 2 is kept", "ltcplay/remote.py",
+  "    out[\"ui_default\"] = v if (isinstance(v, int) and not isinstance(v, bool)\n                              and v in UI_VERSIONS) else 1",
+  "    out[\"ui_default\"] = v if v is not None else 1"),
+
+ ("ui2: setting the default interface needs no role", "ltcplay/users.py",
+  '    "ui-default": "settings",',
+  '    "ui-default": None,'),
+
+ ("ui2 page: Abort fires on its first tap", "ltcplay/web/remote2.html",
+  "  const step = abortTapStep(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(!step.fire){",
+  "  const step = abortTapStep(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(false){"),
+
+ ("ui2 page: Stop is sent with no confirm", "ltcplay/web/remote2.html",
+  '  if(!(await confirmBox("Stop the show?",',
+  '  if(false && !(await confirmBox("Stop the show?",'),
+
+ ("ui2 page: lifting the finger does not let go of a hold to arm", "ltcplay/web/remote2.html",
+  '        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
+  '        b.addEventListener(ev, () => {}));'),
+
+ ("ui2 page: the copied hold beats faster than 1.0's", "ltcplay/web/remote2.html",
+  "    p.timer = setTimeout(() => armBeat(h, p), 100);",
+  "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
+
+ ("ui2 page: a stale page keeps Hold to arm on the group buttons", "ltcplay/web/remote2.html",
+  "    if(isSt) setArmMode(el, armOn ? \"disarm\" : \"lamp\", \"unknown\");",
+  ""),
+
+ ("ui2 page: a stale page keeps the big button live", "ltcplay/web/remote2.html",
+  "  else if(isHeld(st)) L = {mode:\"resume\", label:\"Resume\", icon:\"play\", tone:\"green\", off:!fresh || !sch.attached,",
+  "  else if(isHeld(st)) L = {mode:\"resume\", label:\"Resume\", icon:\"play\", tone:\"green\", off:!sch.attached,"),
 
 ]
 
