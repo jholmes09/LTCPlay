@@ -30,10 +30,35 @@ per-PR gate; the nightly sweep and a release tag still run everything):
     --list             print what would run and why, then stop
     --catchers FILE    {mutation name: test that caught it} from an earlier
                        sweep, so a changed test re-runs only what it guards
+
+Speed. None of it changes what a mutation has to survive: the baseline runs
+every test in file order, a mutant is caught only when the suite fails under
+it (twice, with --expected), and the restore is proved byte for byte.
+
+    (default)          fail fast: a mutated run stops after the first test
+                       that failed a check (LTC_SELFTEST_FAILFAST in
+                       selftest.py). --no-failfast runs every test.
+    --hints FILE       mutate_catchers.json: run the test that caught each
+                       mutation last time first. A run counts only when it
+                       fails in that test, and that test passes when run
+                       first with nothing mutated (checked once per test);
+                       anything else runs again in file order. A hinted
+                       catch is confirmed by a plain file-order run with no
+                       hint. A stale or missing hint costs time, never a
+                       verdict.
+    --write-catchers F add the test each caught mutation stopped in to F
+    --jobs N           N mutations at once, each worker in its own copy of
+                       the tree with its own home and app-data
+                       folders, and each copy runs its own whole baseline
+                       first
 """
+import json
+import shutil
 import subprocess
 import sys
 import os
+import tempfile
+import threading
 import time
 import traceback
 
@@ -14898,10 +14923,39 @@ def build():
 ]
 
 
+class _PerThread:
+    """A list each thread sees its own copy of, so side-by-side workers
+    (--jobs) never read each other's last result."""
+
+    def __init__(self, start):
+        self._start = list(start)
+        self._tl = threading.local()
+
+    def _v(self):
+        if not hasattr(self._tl, "v"):
+            self._tl.v = list(self._start)
+        return self._tl.v
+
+    def __getitem__(self, i):
+        return self._v()[i]
+
+    def __setitem__(self, i, x):
+        self._v()[i] = x
+
+    def __iter__(self):
+        return iter(self._v())
+
+    def __len__(self):
+        return len(self._v())
+
+
 # What the last suite run failed on, so a surprising result can be read.
-_LAST_FAILS = []
+_LAST_FAILS = _PerThread([])
 # The last run: [seconds it took, whether it was stopped at its limit].
-_LAST_RUN = [0.0, False]
+_LAST_RUN = _PerThread([0.0, False])
+# The last run: [the test a fail-fast run stopped in ("" when it did not
+# say), whether it was a probe that passed].
+_LAST_STOP = _PerThread(["", False])
 
 # Two limits, for two different questions.
 #
@@ -14950,17 +15004,55 @@ def _what_failed(out, limit=10):
     return ["the suite ended red without a FAIL line; its last lines:"] + tail
 
 
-def run_suite(limit=None):
+# The settings selftest.py reads for mutate.py's fast path (see the top of
+# selftest.py). Every run sets them itself, so none can leak in from the
+# environment into a baseline.
+_FAST_ENV = ("LTC_SELFTEST_FAILFAST", "LTC_SELFTEST_FIRST", "LTC_SELFTEST_PROBE")
+PROBE_EXIT = 3
+
+
+def _stop_in(out):
+    """The test a fail-fast run stopped in, from its own line, or failing
+    that (a run stopped at its limit) the test it was running."""
+    stop = running = ""
+    for l in out.splitlines():
+        for pre in ("  fast path: stopped in ", "  fast path: running "):
+            if l.startswith(pre) and l[len(pre):].split():
+                if "stopped" in pre:
+                    stop = l[len(pre):].split()[0]
+                else:
+                    running = l[len(pre):].split()[0]
+    return stop or running
+
+
+def run_suite(limit=None, failfast=False, first=None, probe=False,
+              root=None, extra_env=None):
     """True when the suite is green. `limit` is seconds (SUITE_TIMEOUT when
-    None); _LAST_RUN says how long it took and whether it was stopped."""
+    None); _LAST_RUN says how long it took and whether it was stopped.
+
+    failfast, first and probe are for mutated runs and probes only (see
+    selftest.py): none of them can turn a red suite green. A baseline passes
+    none of them and runs every test in file order. root and extra_env are a
+    --jobs worker's own tree and folders."""
     limit = SUITE_TIMEOUT if limit is None else limit
+    env = dict(os.environ)
+    env.update(extra_env or {})
+    for k in _FAST_ENV:
+        env.pop(k, None)
+    if failfast:
+        env["LTC_SELFTEST_FAILFAST"] = "1"
+    if first:
+        env["LTC_SELFTEST_FIRST"] = first
+    if probe:
+        env["LTC_SELFTEST_PROBE"] = "1"
     started = time.time()
     _LAST_RUN[:] = [0.0, False]
+    _LAST_STOP[:] = ["", False]
     try:
-        r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
+        r = subprocess.run([sys.executable, "selftest.py"], cwd=root or HERE,
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
-                           timeout=limit)
+                           timeout=limit, env=env)
     except subprocess.TimeoutExpired as e:
         _LAST_RUN[:] = [time.time() - started, True]
         # A suite that does not finish is not a green suite. Under a
@@ -14972,6 +15064,7 @@ def run_suite(limit=None):
                else b"")
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
+        _LAST_STOP[0] = _stop_in(out) if failfast else ""
         _LAST_FAILS[:] = [f"FAIL  the suite did not finish inside "
                           f"{limit} s (TimeoutExpired)"] + \
             [l.strip() for l in out.splitlines()
@@ -14982,6 +15075,11 @@ def run_suite(limit=None):
     if r.returncode == 0:
         _LAST_FAILS[:] = []
         return True
+    if probe and r.returncode == PROBE_EXIT and any(
+            l.startswith("  fast path: probe passed when run first: ")
+            for l in out.splitlines()):
+        _LAST_STOP[1] = True
+    _LAST_STOP[0] = _stop_in(out) if failfast else ""
     _LAST_FAILS[:] = _what_failed(out)
     return False
 
@@ -15092,7 +15190,7 @@ class _Report:
             out.append("")
         for title, items in (
                 ("Missed", [f"`{rel}`: {n}" for n, rel in self.missed]),
-                ("Flaky (caught once, then not)",
+                ("Flaky (red once, then green)",
                  [f"{n}: " + " | ".join(w) for n, w in self.flaky]),
                 ("Setup failed", [f"{n}: {w}" for n, w in self.setup_fails]),
                 ("Now caught, delete from the list", list(self.now_caught)),
@@ -15183,14 +15281,16 @@ def main():
     return _finish(code)
 
 
-OPTS = {"changed": None, "files": None, "list": False, "catchers": None}
+OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
+        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1}
 
 
 def _args(argv):
     """Name filters, plus the CI options. Anything else is a filter, as it
     always was."""
     wants, shard, expected = [], None, None
-    OPTS.update(changed=None, files=None, list=False, catchers=None)
+    OPTS.update(changed=None, files=None, list=False, catchers=None,
+                failfast=True, hints=None, write_catchers=None, jobs=1)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -15206,6 +15306,14 @@ def _args(argv):
             OPTS["catchers"] = next(it)
         elif a == "--list":
             OPTS["list"] = True
+        elif a == "--no-failfast":
+            OPTS["failfast"] = False
+        elif a == "--hints":
+            OPTS["hints"] = next(it)
+        elif a == "--write-catchers":
+            OPTS["write_catchers"] = next(it)
+        elif a == "--jobs":
+            OPTS["jobs"] = max(1, int(next(it)))
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -15345,6 +15453,18 @@ def _load_catchers(path):
         return {str(k): str(v) for k, v in d.items()}
     except (OSError, ValueError, AttributeError):
         return {}
+
+
+def _save_catchers(path, learned):
+    """Merge {mutation name: test} into the catchers file at `path`, one
+    entry a line, sorted, so a regenerated file diffs line by line."""
+    merged = _load_catchers(path)
+    merged.update(learned)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(merged, fh, indent=0, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, path)
 
 
 def select_affected(changed, base=None, catchers=None):
@@ -15505,83 +15625,261 @@ def _run():
     # leaves a mutation behind; the next sweep then measures that mutant and
     # blames whichever mutation it happens to be applying. Both of those have
     # already happened here.
-    baseline_green = run_suite()
+    #
+    # With --jobs N each worker has its own copy of the tree, and each copy
+    # runs its own whole baseline, every check, before any mutation is
+    # applied to it: a copy that is red for any reason of its own (a file
+    # the copy lacks, a folder it cannot write) would otherwise make every
+    # mutation it runs look caught.
+    jobs = max(1, min(OPTS["jobs"], len(todo)))
+    base_dir = tempfile.mkdtemp(prefix="ltm") if jobs > 1 else None
+    try:
+        if base_dir:
+            print(f"{jobs} workers, each in its own copy of the tree")
+            workers = [_worker_tree(base_dir, n) for n in range(jobs)]
+        else:
+            workers = [(HERE, None)]
+        return _sweep(todo, workers, expected, unknown, expected_file)
+    finally:
+        if base_dir:
+            shutil.rmtree(base_dir, ignore_errors=True)
+
+
+def _worker_tree(base, n):
+    """(tree, env) for --jobs worker n: a private copy of the tree, with its
+    own home and app-data folders. A mutation edits a file in place, and the
+    suite takes a machine-wide output lock (found through the home folder,
+    or LOCALAPPDATA on Windows), so two workers can share neither a tree nor
+    a home.
+
+    The temp folder stays the machine's own: each suite makes one private
+    folder inside it and never looks at the rest (_TempRun in selftest.py),
+    and the browser checks put Chrome's profile and scratch folder in there,
+    where Chrome cannot start once its socket path passes the 107 bytes a
+    Unix socket may have. A temp folder inside the worker's home was
+    already too long (every rack screen check red in each copy)."""
+    root = os.path.join(base, f"t{n}")
+    home = os.path.join(base, f"h{n}")
+    os.makedirs(home)
+    shutil.copytree(HERE, root, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", ".mutating", ".claude"))
+    env = {"HOME": home, "USERPROFILE": home, "LOCALAPPDATA": os.path.join(home, "Local"),
+           "APPDATA": os.path.join(home, "Roaming"),
+           "XDG_STATE_HOME": os.path.join(home, ".local", "state"),
+           "XDG_CONFIG_HOME": os.path.join(home, ".config"),
+           "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
+           "XDG_CACHE_HOME": os.path.join(home, ".cache")}
+    return root, env
+
+
+def _baseline(root, env):
+    """One worker's baseline, every test in file order: (green, timed out
+    twice, seconds, what failed, what failed the first time when it was
+    red once and then green, else None)."""
+    first_red = None
+    green = run_suite(root=root, extra_env=env)
     if _LAST_RUN[1]:
         # Stopped at its limit with nothing mutated: the runner, not the
         # code. Once more before giving up, since a loaded runner passes.
         print(f"the baseline did not finish inside {SUITE_TIMEOUT} s with "
-              f"nothing mutated; running it once more")
-        baseline_green = run_suite()
-    if _LAST_RUN[1]:
+              f"nothing mutated; running it once more", flush=True)
+        green = run_suite(root=root, extra_env=env)
+    elif not green:
+        # Red with nothing mutated, inside its limit. One wall-clock check
+        # can miss its bound on a busy runner (three copies at once with
+        # --jobs; CI shard 12 on PR #55). A leftover mutation or a real
+        # break fails again, every check run again, so the baseline gets one
+        # more full run, with the first failure printed. No bound in
+        # selftest.py is loosened.
+        print("  baseline failed once, running it again:", flush=True)
         for _l in _LAST_FAILS:
+            print("    " + _l)
+        first_red = list(_LAST_FAILS)
+        green = run_suite(root=root, extra_env=env)
+    return (green, bool(_LAST_RUN[1]), _LAST_RUN[0], list(_LAST_FAILS),
+            first_red if green else None)
+
+
+def _each_worker(workers, fn):
+    """fn(root, env) for every worker at once; the results in worker order.
+    A worker that raised re-raises here: a dead worker must never look like
+    a clean result."""
+    if len(workers) == 1:
+        return [fn(*workers[0])]
+    out, errors = [None] * len(workers), []
+
+    def go(i):
+        try:
+            out[i] = fn(*workers[i])
+        except BaseException as e:
+            errors.append(f"worker {i}: {e!r}")
+
+    ts = [threading.Thread(target=go, args=(i,)) for i in range(len(workers))]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    if errors:
+        raise RuntimeError("a mutation worker died: " + "; ".join(errors))
+    return out
+
+
+def _sweep(todo, workers, expected, unknown, expected_file):
+    bases = _each_worker(workers, _baseline)
+    timed = [b for b in bases if b[1]]
+    if timed:
+        for _l in timed[0][3]:
             print("  " + _l)
         REPORT.baseline = "TIMED OUT"
         fail("INFRASTRUCTURE: the suite did not finish with nothing mutated, "
              "twice, so the shard measured nothing. This is the runner, not "
-             "a missed mutation; re-run the shard", _LAST_FAILS)
+             "a missed mutation; re-run the shard", timed[0][3])
         print(f"INFRASTRUCTURE FAILURE: the suite with nothing mutated did "
               f"not finish inside {SUITE_TIMEOUT} s, twice. No mutation was "
               f"run and none was missed. Re-run the shard.")
         return 2
-    if not baseline_green:
-        for _l in _LAST_FAILS:
+    red = [b for b in bases if not b[0]]
+    if red:
+        for _l in red[0][3]:
             print("  " + _l)
         REPORT.baseline = "FAILED"
         fail("the suite FAILS with nothing mutated, so the shard measured "
-             "nothing", _LAST_FAILS)
+             "nothing", red[0][3])
         print("The suite FAILS with nothing mutated. A previous run was "
               "killed before it restored the tree, or something else is "
               "broken. Fix that first: nothing measured from here would "
               "mean anything.")
         return 2
-    baseline_s = _LAST_RUN[0]
+    baseline_s = max(b[2] for b in bases)
     limit = mutant_timeout(baseline_s)
-    REPORT.baseline = "green"
+    REPORT.baseline = "green" if len(bases) == 1 else f"green x{len(bases)}"
+    # Red once and then green with nothing mutated is a flaky test, not a
+    # green baseline: it is let through (the second run was whole and
+    # green) but never silently. It is named here and in the summary.
+    shaky = [b[4] for b in bases if b[4] is not None]
+    if shaky:
+        REPORT.baseline += f", FLAKY ({len(shaky)} red once, then green)"
+        for lines in shaky:
+            REPORT.flaky.append(("baseline, nothing mutated", lines))
+        print(f"FLAKY BASELINE: {len(shaky)} of {len(bases)} baselines failed "
+              f"once with nothing mutated and passed on the second run. "
+              f"What failed:")
+        for lines in shaky:
+            for _l in lines:
+                print("    " + _l)
     REPORT.limits = f"{baseline_s:.0f} s / {limit} s"
-    print(f"baseline green in {baseline_s:.0f} s; a mutant's suite is "
-          f"stopped (and counts as caught) after {limit} s")
+    print(f"baseline green in {baseline_s:.0f} s"
+          f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
+          f"; a mutant's suite is stopped (and counts as caught) after "
+          f"{limit} s")
+    ff = OPTS["failfast"]
+    hints = _load_catchers(OPTS["hints"]) if (ff and OPTS["hints"]) else {}
+    if hints:
+        print(f"{len(hints)} catcher hints: each mutation runs the test that "
+              f"caught it last time first")
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    learned = {}
     # The bytes of every file this run breaks, before it does: the restore
-    # is proved against them at the end, byte for byte.
-    originals = {}
-    for name, rel, old, new in todo:
-        path = os.path.join(HERE, rel)
-        if rel not in originals:
-            originals[rel] = _read(path)
+    # is proved against them at the end, byte for byte, in every copy.
+    originals = {rel: _read(os.path.join(HERE, rel))
+                 for rel in sorted({m[1] for m in todo})}
+    out_lock = threading.Lock()
+    probes, probe_locks = {}, {}
+
+    def probe(test, root, env):
+        """Does `test` pass when it runs first, with nothing mutated? Asked
+        once per test per sweep. Only then may a mutation's run that
+        failed in that test, run first, count: otherwise the order alone
+        could be what failed it."""
+        with out_lock:
+            lk = probe_locks.setdefault(test, threading.Lock())
+        with lk:
+            if test not in probes:
+                run_suite(limit, True, test, True, root, env)
+                probes[test] = bool(_LAST_STOP[1])
+                if not probes[test]:
+                    with out_lock:
+                        print(f"  hint {test} does not pass when run first "
+                              f"with nothing mutated: its mutations run in "
+                              f"file order", flush=True)
+            return probes[test]
+
+    def attempt(hint, root, env):
+        """One run of the mutant: (green, the test it stopped in, what
+        failed, the hint if the run that counts had it first). A run with a
+        hint counts only when it failed in the hinted test; any other result
+        (green, red elsewhere, stopped without saying where) is run again in
+        file order, and that one counts."""
+        green = run_suite(limit, ff, hint, False, root, env)
+        if hint and not (not green and _LAST_STOP[0] == hint):
+            green = run_suite(limit, ff, None, False, root, env)
+            hint = None
+        return green, _LAST_STOP[0], list(_LAST_FAILS), hint
+
+    def one(item, root, env):
+        """Apply one mutation in `root`, run the suite, put the file back.
+        Returns (kind, lines, catcher); nothing here touches shared state
+        but the probe cache, so workers run it side by side."""
+        name, rel, old, new = item
+        path = os.path.join(root, rel)
         # Bytes in, the same bytes out: UTF-8 whatever the OS default is, and
         # no newline translation, so a restore on Windows cannot turn an LF
         # file into a CRLF one and a pattern cannot miss on a line ending.
         src = _read(path)
         if src.count(old) != 1:
-            what = f"pattern appears {src.count(old)} times in {rel}"
-            print(f"  SETUP FAIL  {name} ({what})")
-            missed += 1
-            setup_fails.append(name)
-            REPORT.setup_fails.append((name, what))
-            continue
-        backup = src
+            return ("setup", f"pattern appears {src.count(old)} times in {rel}",
+                    None, None)
+        hint = hints.get(name)
+        if hint and not probe(hint, root, env):
+            hint = None
+        flaky = None
         _write(path, src.replace(old, new, 1))
         try:
-            green = run_suite(limit)
+            green, stop, fails, hinted = attempt(hint, root, env)
             # In CI a mutation counts as caught only if the suite fails under
             # it twice running. A test that fails for the runner's reasons
             # would otherwise pass itself off as coverage: an unlisted
             # mutation nothing really catches would read "caught", and a
             # listed one would read "now caught". Caught once and then not is
             # NOT CAUGHT, with what failed the first time printed.
-            if not green and expected_file:
-                why = list(_LAST_FAILS)
-                if run_suite(limit):
-                    green = True
-                    print(f"  caught once, then not: counted as NOT CAUGHT, "
-                          f"and the first failure was a flaky test: {name}")
-                    for w in why:
-                        print(f"      {w}")
-                    REPORT.flaky.append((name, why))
+            # The second run is always plain file order, no hint: a red run
+            # with the hinted test first could be the order itself (state one
+            # test leaves for the next) while the real suite is green. Only a
+            # file-order run that fails confirms it, so no such catch counts
+            # or is written to --write-catchers. A hinted red is confirmed
+            # this way even outside CI.
+            if not green and (expected_file or hinted):
+                green2, stop2, fails2, _h = attempt(None, root, env)
+                if green2:
+                    if hinted:
+                        fails = ([f"red only with {hinted} run first; the "
+                                  f"suite in file order was green"] + fails)
+                    green, flaky = True, fails
+                else:
+                    stop = stop or stop2
         finally:
-            _write(path, backup)
+            _write(path, src)
         if green:
+            return ("missed", None, flaky, None)
+        return ("caught", fails, None, stop if ff else None)
+
+    def tally(item, res):
+        nonlocal caught, missed
+        name, rel = item[0], item[1]
+        kind, info, flaky, catcher = res
+        if kind == "setup":
+            print(f"  SETUP FAIL  {name} ({info})")
+            missed += 1
+            setup_fails.append(name)
+            REPORT.setup_fails.append((name, info))
+        elif kind == "missed":
+            if flaky is not None:
+                print(f"  caught once, then not: counted as NOT CAUGHT, "
+                      f"and the first failure was a flaky test: {name}")
+                for w in flaky:
+                    print(f"      {w}")
+                REPORT.flaky.append((name, flaky))
             print(f"  NOT CAUGHT  {name}")
             missed += 1
             missed_names.append(name)
@@ -15594,18 +15892,48 @@ def _run():
             # What caught it. A check that has nothing to do with this
             # mutation is a flaky test passing itself off as coverage, and
             # this is where that shows.
-            for w in _LAST_FAILS[:3]:
+            for w in info[:3]:
                 print(f"      {w}")
+            if catcher:
+                learned[name] = catcher
+                if OPTS["write_catchers"]:
+                    # Written as each one is learned, so a shard stopped at
+                    # its limit still leaves what it learned.
+                    _save_catchers(OPTS["write_catchers"], {name: catcher})
+        sys.stdout.flush()
+
+    if len(workers) == 1:
+        for item in todo:
+            tally(item, one(item, *workers[0]))
+    else:
+        queue = list(todo)
+
+        def drain(root, env):
+            while True:
+                with out_lock:
+                    if not queue:
+                        return
+                    item = queue.pop(0)
+                res = one(item, root, env)
+                with out_lock:
+                    tally(item, res)
+
+        _each_worker(workers, drain)
     print(f"\ncaught {caught}, missed {missed}")
+    if OPTS["write_catchers"] and learned:
+        print(f"{len(learned)} catchers written to {OPTS['write_catchers']}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.
     # Prove the tree is back the way it started before reporting anything:
     # every file this run broke is compared with the bytes it had before,
     # which is a stronger proof than a green suite (a restore that landed the
     # wrong text could still pass) and costs nothing. The suite runs once
-    # more only when that comparison fails, to say how bad it is.
-    dirty = [rel for rel, text in originals.items()
-             if _read(os.path.join(HERE, rel)) != text]
+    # more only when that comparison fails, to say how bad it is. With
+    # --jobs the tree itself was never touched; it and every copy are
+    # checked all the same.
+    dirty = sorted({rel for root, _env in [(HERE, None)] + workers
+                    for rel, text in originals.items()
+                    if _read(os.path.join(root, rel)) != text})
     if dirty:
         print(f"\nTHE TREE IS NOT CLEAN: a restore did not land in "
               f"{', '.join(dirty)}. Fix that before trusting any line above.")
@@ -15614,11 +15942,12 @@ def _run():
             print("  and the suite fails with nothing mutated:")
             for w in _LAST_FAILS:
                 print(f"      {w}")
-            why += ["and the suite fails with nothing mutated:"] + _LAST_FAILS
+            why += ["and the suite fails with nothing mutated:"] + list(_LAST_FAILS)
         REPORT.restored = "NO"
         fail("restore proof failed: the tree is not clean", why)
         return 2
-    print(f"tree restored byte for byte ({len(originals)} files)")
+    print(f"tree restored byte for byte ({len(originals)} files"
+          f"{f', in each of {len(workers)} copies' if len(workers) > 1 else ''})")
     REPORT.restored = "yes"
     return _verdict(expected if expected_file else None, unknown,
                     missed_names, caught_names, setup_fails)

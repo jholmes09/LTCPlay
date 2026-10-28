@@ -48,6 +48,68 @@ def check(cond, msg):
     return cond
 
 
+# --------------------------------------------- mutate.py's fast path --
+# Three settings mutate.py uses for MUTATED runs only. A plain run, CI's
+# selftest job and mutate.py's baseline set none of them and run every test
+# in file order, as always. None of them can make a run green that would not
+# be green without them: a run exits 0 only when every test ran and every
+# check passed.
+#
+#   LTC_SELFTEST_FAILFAST=1  stop after the first test that failed a check.
+#                            That test runs to its end first (its clean-up,
+#                            its threads, its child processes, exactly as in
+#                            a full run), so nothing is left behind for the
+#                            next run on the same machine. Under a mutation
+#                            all that counts is whether the suite fails, and
+#                            everything after the first failing test is time.
+#   LTC_SELFTEST_FIRST=a,b   run these tests first, then the rest in file
+#                            order: the test that caught a mutation last time
+#                            (mutate_catchers.json) answers in seconds.
+#   LTC_SELFTEST_PROBE=1     with FIRST: stop once those tests have passed,
+#                            exit PROBE_EXIT (never 0). mutate.py uses it to
+#                            prove, with nothing mutated, that a test it is
+#                            about to run first passes when run first.
+FAILFAST = os.environ.get("LTC_SELFTEST_FAILFAST") == "1"
+PROBE = os.environ.get("LTC_SELFTEST_PROBE") == "1"
+PROBE_EXIT = 3
+_CURRENT_TEST = [""]
+
+
+def _test_order(tests):
+    """(tests in the order to run them, the ones LTC_SELFTEST_FIRST put at
+    the front). Names that are not tests here are ignored. Every test is in
+    the list exactly once, whatever the setting says."""
+    want = [n.strip() for n in
+            os.environ.get("LTC_SELFTEST_FIRST", "").split(",") if n.strip()]
+    by_name = {t.__name__: t for t in tests}
+    head = []
+    for n in want:
+        if n in by_name and by_name[n] not in head:
+            head.append(by_name[n])
+    return head + [t for t in tests if t not in head], head
+
+
+def _run_tests(tests):
+    """Run the tests. Returns None when every one of them ran, "failfast" or
+    "probe" when the run stopped early on purpose (see above)."""
+    order, head = _test_order(tests)
+    for i, t in enumerate(order):
+        _CURRENT_TEST[0] = t.__name__
+        if FAILFAST:
+            # Flushed, so a run stopped at its limit still says where.
+            print(f"  fast path: running {t.__name__}", flush=True)
+        t()
+        if FAILFAST and FAILS:
+            print(f"\n  fast path: stopped in {t.__name__} after its first "
+                  f"failure ({i + 1} of {len(order)} tests ran)")
+            return "failfast"
+        if PROBE and head and i + 1 == len(head):
+            print(f"\n  fast path: probe passed when run first: "
+                  f"{','.join(h.__name__ for h in head)}")
+            return "probe"
+    return None
+
+
 # ----------------------------------------------------- reporting to CI --
 # In GitHub Actions the job log cannot always be fetched (a cloud session's
 # proxy blocks the log store), so each failure is also an annotation, and
@@ -109,6 +171,10 @@ def _ci_crash_hook(started):
     def hook(kind, value, tb):
         text = "".join(traceback.format_exception(kind, value, tb))
         sys.__stderr__.write(text)
+        if FAILFAST and _CURRENT_TEST[0]:
+            # mutate.py reads where a red run stopped from this line.
+            print(f"\n  fast path: stopped in {_CURRENT_TEST[0]} on an "
+                  f"uncaught exception", flush=True)
         tail = [l for l in text.rstrip().splitlines() if l.strip()][-10:]
         ci_annotate("selftest stopped on an uncaught exception",
                     "\n".join(tail))
@@ -3795,12 +3861,31 @@ def _web_fixture():
                          "name": "Opener"}]},
               open(os.path.join(folder, "webtest_timeline.json"), "w"), indent=2)
     rows = "\n".join(
-        f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
+        f'    <network NetworkType="ArtNET" ComPort="{SPY_ADDR}" '
         f'BaudRate="{u+1}" MaxChannels="510"/>' for u in range(70))
     open(os.path.join(folder, "net.xml"), "w").write(
-        f'<Networks>\n  <Controller Name="Loopback" IP="127.0.0.1" '
+        f'<Networks>\n  <Controller Name="Loopback" IP="{SPY_ADDR}" '
         f'ActiveState="Active">\n{rows}\n  </Controller>\n</Networks>\n')
     return folder
+
+
+def _spy_addr():
+    """The loopback address the "validate sends nothing" check listens on.
+
+    That check binds UDP 6454, the Art-Net port, and requires silence. On
+    127.0.0.1 it also hears every other copy of this suite sending to the
+    loopback at the same moment (another CI job on the same machine,
+    mutate.py --jobs), and fails for their packets. Linux sends all of
+    127.0.0.0/8 to the loopback, so there each process listens on, and
+    points the show it validates at, an address of its own. Elsewhere it
+    stays 127.0.0.1, which is what it always was."""
+    if sys.platform.startswith("linux"):
+        n = (os.getpid() * 2654435761) % 0xFFFE + 1
+        return f"127.{(n >> 8) & 0xFF}.{n & 0xFF}.1"
+    return "127.0.0.1"
+
+
+SPY_ADDR = _spy_addr()
 
 
 def test_web_ui():
@@ -3890,7 +3975,7 @@ def test_web_ui():
         spy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         heard = []
         try:
-            spy.bind(("127.0.0.1", 6454))
+            spy.bind((SPY_ADDR, 6454))
             spy.settimeout(0.4)
             chk = post("/api/check", {"timeline": "webtest_timeline.json"})
             end = time.time() + 1.0
@@ -42188,7 +42273,9 @@ def test_mutate_mutant_limit_follows_the_baseline():
             baselines = list(baselines)
             calls = []
 
-            def fake_suite(limit=None):
+            def fake_suite(limit=None, *_fast, **_where):
+                # The fast-path settings (fail fast, a hint, a worker's
+                # tree) do not change how long these fake runs take.
                 limit = mutate.SUITE_TIMEOUT if limit is None else limit
                 with open(target, encoding="utf-8") as fh:
                     mutated = "GUARD" not in fh.read()
@@ -42291,6 +42378,307 @@ def test_mutate_mutant_limit_follows_the_baseline():
                           in l for l in lines),
               f"a baseline that never finishes is infrastructure, not a "
               f"miss or a red suite: {rep.baseline} {lines} {notes}")
+
+
+def test_mutate_fast_path_never_turns_red_green():
+    """mutate.py's fast path (fail fast, the catcher hint run first, --jobs)
+    changes how long a sweep takes, never a verdict: the baseline runs every
+    test in file order with none of the settings, a hinted run counts only
+    when it failed in the hinted test after that test passed run first with
+    nothing mutated, anything else runs again in file order, a mutation is
+    caught only when two runs fail and the second is plain file order with
+    no hint, and with --jobs each copy runs its own whole baseline and is
+    proved restored, a baseline red once and then green named as flaky.
+    The suite runs are faked."""
+    section("mutate.py: the fast path changes the time, not the verdict")
+    import contextlib
+    import io
+    import subprocess as _sp
+    import mutate
+
+    # selftest.py's own order: every test exactly once, the named ones
+    # first, names that are not tests ignored.
+    def a(): pass
+    def b(): pass
+    def c(): pass
+    saved_first = os.environ.get("LTC_SELFTEST_FIRST")
+    try:
+        os.environ["LTC_SELFTEST_FIRST"] = "c,nope,c,a"
+        order, head = _test_order([a, b, c])
+        check(order == [c, a, b] and head == [c, a],
+              f"LTC_SELFTEST_FIRST puts c, a first, every test once: "
+              f"{[f.__name__ for f in order]}")
+        os.environ["LTC_SELFTEST_FIRST"] = ""
+        order, head = _test_order([a, b, c])
+        check(order == [a, b, c] and head == [],
+              "no LTC_SELFTEST_FIRST: file order")
+    finally:
+        if saved_first is None:
+            os.environ.pop("LTC_SELFTEST_FIRST", None)
+        else:
+            os.environ["LTC_SELFTEST_FIRST"] = saved_first
+
+    # A baseline never inherits a fast-path setting from the environment.
+    seen = []
+
+    class _R:
+        returncode, stdout, stderr = 0, "", ""
+
+    def fake_run(*a, **k):
+        seen.append(dict(k.get("env") or {}))
+        return _R()
+
+    saved_env = {k: os.environ.get(k) for k in mutate._FAST_ENV}
+    saved_run = mutate.subprocess.run
+    try:
+        for k in mutate._FAST_ENV:
+            os.environ[k] = "1"
+        mutate.subprocess.run = fake_run
+        mutate.run_suite(10)
+        mutate.run_suite(10, True, "test_x")
+    finally:
+        mutate.subprocess.run = saved_run
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    check(len(seen) == 2 and not any(k in seen[0] for k in mutate._FAST_ENV),
+          f"a plain run (the baseline) carries none of {mutate._FAST_ENV}")
+    check(len(seen) == 2 and seen[1].get("LTC_SELFTEST_FAILFAST") == "1"
+          and seen[1].get("LTC_SELFTEST_FIRST") == "test_x"
+          and "LTC_SELFTEST_PROBE" not in seen[1],
+          "a mutated run carries exactly what it was asked for")
+    check(mutate.PROBE_EXIT == PROBE_EXIT != 0,
+          "a probe's exit is never 0, and both files agree on it")
+
+    with tempfile.TemporaryDirectory() as tree:
+        names = ["m one", "m two"]
+
+        def sweep(behave, hints=None, jobs=1, ci=True, listed=True):
+            """behave(name, failfast, first, probe) -> (green, stopped in).
+            (exit, lines, calls, catchers written)."""
+            for i, n in enumerate(names):
+                with open(os.path.join(tree, f"t{i}.py"), "w",
+                          encoding="utf-8", newline="") as fh:
+                    fh.write(f"ok\nGUARD{i}\n")
+            calls = []
+            lock = threading.Lock()
+
+            def fake_suite(limit=None, failfast=False, first=None,
+                           probe=False, root=None, extra_env=None):
+                root = root or tree
+                hit = None
+                for i, n in enumerate(names):
+                    with open(os.path.join(root, f"t{i}.py"),
+                              encoding="utf-8") as fh:
+                        if f"GUARD{i}" not in fh.read():
+                            hit = n
+                with lock:
+                    calls.append((hit, bool(failfast), first, bool(probe),
+                                  root == tree))
+                mutate._LAST_RUN[:] = [5.0, False]
+                mutate._LAST_STOP[:] = ["", False]
+                green, stop = behave(hit, failfast, first, probe)
+                if probe and green:
+                    mutate._LAST_STOP[1] = True
+                    green = False
+                mutate._LAST_STOP[0] = stop if failfast else ""
+                mutate._LAST_FAILS[:] = [] if green else [f"FAIL  in {stop}"]
+                return green
+
+            hf = os.path.join(tree, "hints.json")
+            wf = os.path.join(tree, "learned.json")
+            for p in (hf, wf):
+                if os.path.exists(p):
+                    os.remove(p)
+            if hints is not None:
+                with open(hf, "w", encoding="utf-8") as fh:
+                    json.dump(hints, fh)
+            saved = {k: getattr(mutate, k) for k in
+                     ("HERE", "LOCK", "MUTATIONS", "CI", "run_suite")}
+            env_saved = os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            old_argv = sys.argv
+            buf = io.StringIO()
+            try:
+                mutate.HERE = tree
+                mutate.LOCK = os.path.join(tree, ".mutating")
+                mutate.MUTATIONS = [(n, f"t{i}.py", f"GUARD{i}", "BROKEN")
+                                    for i, n in enumerate(names)]
+                mutate.CI = ci
+                mutate.run_suite = fake_suite
+                sys.argv = (["mutate.py", "--shard", "0/1"]
+                            + (["--expected", os.devnull] if listed else [])
+                            + ["--hints", hf, "--write-catchers", wf,
+                               "--jobs", str(jobs)])
+                with contextlib.redirect_stdout(buf):
+                    code = mutate.main()
+            finally:
+                for k, v in saved.items():
+                    setattr(mutate, k, v)
+                if env_saved is not None:
+                    os.environ["GITHUB_STEP_SUMMARY"] = env_saved
+                sys.argv = old_argv
+            learned = {}
+            if os.path.exists(wf):
+                with open(wf, encoding="utf-8") as fh:
+                    learned = json.load(fh)
+            return code, buf.getvalue().splitlines(), calls, learned
+
+        def base_runs(calls):
+            return [c for c in calls if c[0] is None and not c[3]]
+
+        # Caught by the hinted test, run first, twice. The baseline ran with
+        # no fast-path setting at all; the probe ran once for the shared hint.
+        def red_in_t_guard(hit, ff, first, probe):
+            return (hit is None, "test_guard")
+        code, lines, calls, learned = sweep(
+            red_in_t_guard, {"m one": "test_guard", "m two": "test_guard"})
+        check(code == 0 and base_runs(calls) == [(None, False, None, False, True)],
+              f"the baseline is one full run in file order: {calls}")
+        check([c for c in calls if c[3]] == [(None, True, "test_guard", True, True)],
+              f"the hint is probed once, with nothing mutated: {calls}")
+        check([c for c in calls if c[0]] == [
+                  ("m one", True, "test_guard", False, True),
+                  ("m one", True, None, False, True),
+                  ("m two", True, "test_guard", False, True),
+                  ("m two", True, None, False, True)],
+              f"each mutation: two fail-fast runs, the hint first, then the "
+              f"confirming one in file order with no hint: {calls}")
+        check(learned == {"m one": "test_guard", "m two": "test_guard"},
+              f"--write-catchers records where each was caught: {learned}")
+
+        # The hinted run fails in another test: that run does not count, and
+        # the run in file order does.
+        def red_elsewhere(hit, ff, first, probe):
+            if hit is None:
+                return True, ""
+            return False, "test_other"
+        code, lines, calls, learned = sweep(red_elsewhere,
+                                            {"m one": "test_guard"})
+        mine = [c for c in calls if c[0] == "m one"]
+        check(code == 0 and mine == [("m one", True, "test_guard", False, True),
+                                     ("m one", True, None, False, True),
+                                     ("m one", True, None, False, True)],
+              f"red in another test than the hint: run again in file order, "
+              f"twice: {mine}")
+        check(learned.get("m one") == "test_other",
+              f"the catcher learned is where it really stopped: {learned}")
+
+        # Red only when the hinted test runs first (an order-dependent leak:
+        # the suite in file order is green under the mutation). The file
+        # order confirm run is green, so it is NOT CAUGHT, flagged flaky,
+        # and the hint is never written back as a catcher.
+        def red_only_hint_first(hit, ff, first, probe):
+            if hit is None:
+                return True, ""
+            return (first != "test_guard", "test_guard")
+        code, lines, calls, learned = sweep(
+            red_only_hint_first, {"m one": "test_guard", "m two": "test_guard"})
+        mine = [c for c in calls if c[0] == "m one"]
+        check(code == 1 and "  NOT CAUGHT  m one" in lines
+              and "  NOT CAUGHT  m two" in lines
+              and "  caught      m one" not in lines,
+              f"red only with the hint first is NOT CAUGHT: exit {code}, "
+              f"{lines}")
+        check(mine == [("m one", True, "test_guard", False, True),
+                       ("m one", True, None, False, True)],
+              f"the confirming run is file order with no hint: {mine}")
+        check(not learned,
+              f"an order-only catch is never written as a catcher: {learned}")
+        check(any("red only with test_guard run first" in l for l in lines),
+              f"the flaky line says it was the order: {lines}")
+        code, lines, calls, learned = sweep(
+            red_only_hint_first, {"m one": "test_guard"}, ci=False,
+            listed=False)
+        check([c for c in calls if c[0] == "m one"][-1:] ==
+              [("m one", True, None, False, True)]
+              and "  caught      m one" not in lines and not learned,
+              f"with no expected-miss list too, a hinted red is confirmed "
+              f"in file order: {calls} {learned}")
+
+        # The hinted test does not pass run first with nothing mutated: the
+        # hint is dropped, its mutations run in file order.
+        def probe_fails(hit, ff, first, probe):
+            if probe:
+                return False, "test_guard"
+            return (hit is None, "test_guard")
+        code, lines, calls, learned = sweep(probe_fails,
+                                            {"m one": "test_guard"})
+        check(code == 0 and all(c[2] is None for c in calls if c[0])
+              and any("does not pass when run first" in l for l in lines),
+              f"a hint that fails on its own is not used: {calls}")
+
+        # A mutation nothing catches: green in the hinted run and in file
+        # order, NOT CAUGHT, whatever the hint said.
+        def nothing_catches(hit, ff, first, probe):
+            return True, ""
+        code, lines, calls, learned = sweep(nothing_catches,
+                                            {"m one": "test_guard"})
+        check(code == 1 and "  NOT CAUGHT  m one" in lines
+              and "  NOT CAUGHT  m two" in lines and not learned,
+              f"green is green, hint or not: exit {code}, {lines}")
+
+        # Caught once, then green: NOT CAUGHT, as without the fast path.
+        once = {"n": 0}
+
+        def flaky(hit, ff, first, probe):
+            if hit is None:
+                return True, ""
+            once["n"] += 1
+            return (once["n"] % 2 == 0, "test_guard")
+        code, lines, calls, learned = sweep(flaky)
+        check(code == 1 and "  NOT CAUGHT  m one" in lines
+              and any(l.startswith("  caught once, then not") for l in lines),
+              f"one red run of two is not caught: {lines}")
+
+        # --jobs 2: each copy runs its own whole baseline, the tree itself is
+        # never mutated, and every copy is proved restored.
+        code, lines, calls, learned = sweep(
+            red_in_t_guard, {"m one": "test_guard"}, jobs=2)
+        bases = base_runs(calls)
+        check(code == 0 and len(bases) == 2
+              and all(b == (None, False, None, False, False) for b in bases),
+              f"--jobs 2: two whole baselines, one per copy: {bases}")
+        check(not any(c[4] for c in calls)
+              and "  caught      m one" in lines
+              and "  caught      m two" in lines
+              and any("in each of 2 copies" in l for l in lines),
+              f"--jobs 2: mutations run in the copies only, both caught, "
+              f"every copy restored: {lines}")
+        for i in range(2):
+            with open(os.path.join(tree, f"t{i}.py"), encoding="utf-8") as fh:
+                check(fh.read() == f"ok\nGUARD{i}\n",
+                      f"the tree's own t{i}.py is untouched")
+
+        # --jobs 2 with one baseline red once, then green: the sweep goes on
+        # (the second run was whole and green) but says it was flaky.
+        base_seen = {"n": 0}
+
+        def red_base_once(hit, ff, first, probe):
+            if hit is None and not probe:
+                with lock_once:
+                    base_seen["n"] += 1
+                    if base_seen["n"] == 1:
+                        return False, "test_wobbly"
+            return (hit is None, "test_guard")
+        lock_once = threading.Lock()
+        code, lines, calls, learned = sweep(red_base_once, jobs=2)
+        check(code == 0 and len(base_runs(calls)) == 3
+              and any(l.startswith("FLAKY BASELINE: 1 of 2") for l in lines)
+              and any("FAIL  in test_wobbly" in l for l in lines),
+              f"--jobs 2: a baseline red once then green is reported as "
+              f"flaky, never silently: {lines}")
+
+        # A red baseline gets one more full run; red twice stops the shard.
+        def red_base(hit, ff, first, probe):
+            return False, "test_guard"
+        code, lines, calls, learned = sweep(red_base)
+        check(code == 2 and len(base_runs(calls)) == 2
+              and not [c for c in calls if c[0]]
+              and any("FAILS with nothing mutated" in l for l in lines),
+              f"a red baseline is run once more, then stops the shard: "
+              f"{calls}")
 
 
 def test_the_gpl_path_never_loads_the_flame_link():
@@ -72158,677 +72546,689 @@ if __name__ == "__main__":
     if _show_before is not None:
         print(f"real show folder: {_show_root} "
               f"({len(_show_before)} entries, read only)")
-    test_ltc_roundtrip()
-    test_ltc_rollovers()
-    test_ltc_degraded()
-    test_ltc_rejects_garbage()
-    test_numpy_matches_scalar()
-    test_packets()
-    test_timeline()
-    test_netmap()
-    test_tc_math()
-    test_rate_detection()
-    test_next_cue()
-    test_player_states()
-    test_loop_never_dies()
-    test_pixel_output_frame_jitter()
-    test_pixel_pacing_never_accumulates_error()
-    test_pixel_scheduler_recovers_after_one_late_wake()
-    test_a_failing_send_still_advances_the_pixel_schedule()
-    test_pixel_loop_sleep_is_capped()
-    test_pixel_loop_matches_the_old_one_when_healthy()
-    test_windows_pixel_clock_choice()
-    test_no_clock_is_ever_mixed_with_another()
-    test_the_stepped_player_is_the_output_thread()
-    test_socket_healing()
-    test_display_survives()
-    test_park_and_pause()
-    test_on_lost_policies()
-    test_pause_does_not_poison_the_rate()
-    test_device_resolution()
-    test_timecode_on_a_channel_other_than_one()
-    test_find_names_the_channel()
-    test_input_rebuilds_itself()
-    test_level_meter()
-    test_timeline_input_block()
-    test_installer_and_launcher_names()
-    test_real_hardware_is_picked_out_of_the_noise()
-    test_only_plausible_inputs_are_scanned()
-    test_saved_input_setting()
-    test_settings_files_accept_a_utf8_bom()
-    test_input_precedence()
-    test_show_dir_survives_the_wrong_machine()
-    test_web_ui()
-    test_web_token_gate()
-    test_web_state_cache_refresh_interval()
-    test_web_state_cache_dedupes_concurrent_misses()
-    test_web_state_cache_content_matches_a_direct_build()
-    test_web_state_cache_never_reaches_the_gpl_terminal_path()
-    test_which_file_plays_when()
-    test_one_frame_between_cues_is_not_a_gap()
-    test_a_cue_owns_the_whole_rig()
-    test_a_bad_frame_does_not_move_the_show()
-    test_the_bridge_does_not_resurrect_a_finished_cue()
-    test_a_read_hiccup_does_not_stick()
-    test_the_overrun_warning_is_per_cue()
-    test_stop_always_works()
-    test_a_read_only_folder_is_a_sentence()
-    test_up_next_survives_the_interval()
-    test_free_run_does_not_flood_the_log()
-    test_the_readout_tells_the_truth_in_a_free_run()
-    test_go_runs_without_the_feed()
-    test_the_bundle_stands_on_its_own()
-    test_cli_show_commands_accept_a_utf8_bom()
-    test_the_credit_travels_with_it()
-    test_brand_file_accepts_a_utf8_bom()
-    test_a_dead_controller_stops_being_hammered()
-    test_broadcast_destinations_are_called_out()
-    test_a_controller_ping_means_what_it_says()
-    test_free_run_to_the_end_when_timecode_dies()
-    test_the_input_can_be_rebuilt_without_dropping_the_rig()
-    test_the_input_stops_hunting_sample_rates()
-    test_a_poisoned_portaudio_is_rebuilt()
-    test_a_missing_input_still_runs_the_preshow()
-    test_the_input_can_be_changed_mid_show()
-    test_a_failed_start_leaves_nothing_running()
-    test_only_one_player_sends_at_a_time()
-    test_second_copy_guard_one_show_and_one_deck_per_machine()
-    test_machine_data_goes_where_the_os_keeps_it()
-    test_reload_while_the_show_runs()
-    test_auto_reload_waits_for_the_writer()
-    test_opening_a_render_proves_it_reads()
-    test_sequence_position_not_timecode()
-    test_a_cue_that_will_not_open_stops_the_show()
-    test_preshow_can_be_held_by_hand()
-    test_a_misspelled_setting_is_refused()
-    test_timeline_load_accepts_a_utf8_bom()
-    test_one_sequence_at_two_timecodes()
-    test_at_command_on_the_real_show()
-    test_track_numbers_are_not_identity()
-    test_sequences_declare_what_they_are()
-    test_verify_catches_a_mislabelled_sequence()
-    test_pointing_a_show_at_a_different_folder()
-    test_web_show_reads_accept_a_utf8_bom()
-    test_trigger_mode_mutes_the_advateks_and_nothing_else()
-    test_a_muted_controller_is_not_reported_as_a_fault()
-    test_a_cue_fires_its_scene_once_and_only_once()
-    test_preshow_fires_once_per_entry_not_once_per_loop()
-    test_an_unmapped_cue_is_named_rather_than_fired_blind()
-    test_a_trigger_that_explodes_does_not_stop_the_show()
-    test_the_trigger_packet_is_one_artnet_channel_at_full()
-    test_a_trigger_never_blocks_the_output_loop()
-    test_a_show_file_that_would_silently_do_nothing_is_refused()
-    test_the_scene_map_is_checked_against_the_real_show()
-    test_the_real_show_file_maps_every_cue()
-    test_the_trigger_goes_out_on_the_protocol_the_boxes_listen_for()
-    test_the_real_show_file_matches_the_trigger_reference()
-    test_stopping_the_show_unmutes_before_the_blackout()
-    test_the_panel_tells_the_truth_about_backup_mode()
-    test_a_shared_show_folder_cannot_be_moved_away_from_it()
-    test_the_app_is_signed_last_and_nothing_touches_it_after()
-    test_the_build_proves_macos_will_actually_launch_it()
-    test_the_app_declares_what_macos_needs_to_know()
-    test_the_app_launcher_finds_its_way_home()
-    test_the_app_starts_the_page_by_itself()
-    test_you_can_tell_which_version_is_installed()
-    test_frozen_app_build_id_is_the_source_it_was_built_from()
-    test_the_beta_window_app_stays_a_window()
-    test_schedule_rule_is_validated()
-    test_schedule_expands_the_season()
-    test_schedule_late_rule()
-    test_schedule_state_machine_every_state_every_event()
-    test_abort_and_hold_never_refused_for_who_or_where()
-    test_schedule_restart_guard_and_hold()
-    test_schedule_hold_pauses_a_show()
-    test_schedule_hold_between_shows_delays()
-    test_schedule_start_now_in_every_state()
-    test_schedule_extra_show_and_the_next_slot()
-    test_schedule_abort_end_night_and_operator_actions()
-    test_schedule_file_is_versioned_and_atomic()
-    test_schedule_clock_check()
-    test_schedule_routes()
-    test_the_gpl_path_never_loads_the_scheduler()
-    test_windows_shutdown_stops_the_show_programs_cleanly()
-    test_windows_supervisor_end_of_session_and_engine_refusal()
-    test_windows_supervisor_one_flamesafe_config_for_all()
-    test_windows_supervisor_lock_is_machine_wide()
-    test_the_scheduler_engine_is_pure()
-    test_schedule_restart_keeps_tonight()
-    test_schedule_clock_check_never_delays_a_show()
-    test_schedule_faults_during_and_before_a_show()
-    test_schedule_edits_past_last_end_and_midnight()
-    test_schedule_rule_file_with_a_bom()
-    test_schedule_tonight_file_is_checked()
-    test_schedule_rule_change_rebuilds_tonight()
-    test_schedule_late_failed_start_is_a_fault()
-    test_schedule_after_a_stopped_show_is_one_choice()
-    test_schedule_contract_for_the_transport()
-    test_schedule_uncertain_record_never_fires_twice()
-    test_schedule_delayed_and_paused_survive_a_restart()
-    test_schedule_operator_list()
-    test_schedule_a_paused_show_is_never_overlapped()
-    test_schedule_a_clock_step_during_a_pause()
-    test_journal_every_event_is_complete()
-    test_journal_line_format_is_the_spec()
-    test_journal_is_append_only()
-    test_journal_rotation_and_pruning_across_dst()
-    test_journal_prune_never_removes_a_partial_by_its_name_date()
-    test_journal_prune_takes_the_incident_lock()
-    test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled()
-    test_journal_prune_trusted_clock_deletes_purely_by_age()
-    test_journal_prune_untrusted_clock_keeps_them_all()
-    test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning()
-    test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping()
-    test_journal_nightly_summary()
-    test_journal_incident_bundle()
-    test_journal_a_full_disk_stops_the_logging_not_the_show()
-    test_journal_cold_read()
-    test_journal_faults_write_sentences()
-    test_the_gpl_path_never_loads_the_journal()
-    test_journal_the_way_out_never_waits_on_the_disk()
-    test_journal_a_line_the_disk_cannot_take()
-    test_journal_a_torn_last_line_after_a_power_cut()
-    test_journal_a_repeating_fault_does_not_flood()
-    test_journal_a_show_past_midnight_keeps_its_night()
-    test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight()
-    test_journal_waiting_lines_are_capped_and_counted()
-    test_journal_a_clean_stop_reads_as_one()
-    test_journal_screens_come_from_a_list()
-    test_journal_summary_lists_every_fault()
-    test_journal_leftover_temp_files_are_cleared()
-    test_journal_housekeeping_runs_once()
-    test_journal_every_line_reaches_the_disk_within_a_second()
-    test_journal_summary_is_written_however_the_night_closes()
-    test_announce_probe_matches_open_for_format()
-    test_announce_unsupported_wav_formats_rejected()
-    test_announce_wav_decode_values()
-    test_announce_wav_extensible_float_accepted()
-    test_announce_wav_data_chunk_sanity()
-    test_announce_device_exact_match_only()
-    test_announce_toctou_recheck_before_start()
-    test_announce_interlock_recheck_catches_a_state_provider_with_no_hold()
-    test_announce_show_start_stops_announcement()
-    test_announce_stall_watchdog()
-    test_announce_callback_status_errors()
-    test_announce_minor_hardening()
-    test_announce_load_operators_dash_cleaning()
-    test_announce_show_start_hook_never_touches_the_stream()
-    test_schedule_hook_runs_outside_service_lock()
-    test_announce_reentrant_claim_does_not_orphan_a_stream()
-    test_announce_interlock_matrix()
-    test_announce_hold_between_shows()
-    test_announce_hold_during_show()
-    test_announce_hold_refused_refuses_the_announcement()
-    test_announce_stays_held_after_it_ends()
-    test_announce_resume_wins_over_second_hold_request()
-    test_announce_resume_then_rehold_still_refuses()
-    test_announce_on_show_started_reason_new_vs_resume()
-    test_announce_hold_for_announcement_no_noise_when_already_held()
-    test_announce_claim_wording_is_the_hold_text()
-    test_announce_no_scheduler_stays_inert()
-    test_announce_single_flight()
-    test_announce_operator_validation()
-    test_announce_missing_files_at_startup()
-    test_announce_device_missing_renamed_reappearing()
-    test_announce_progress_and_stop()
-    test_announce_logging_fields()
-    test_announce_routes()
-    test_announce_device_not_set_and_device_missing_refuse_before_hold()
-    test_announce_surface_press_and_show_ending_while_loading()
-    test_announce_remote_routes_rack_screen()
-    test_announce_rack_screen_page_logic()
-    test_streamdeck_announcements_page_two()
-    test_announce_at_showtime_never_pauses_the_show_that_just_started()
-    test_announce_held_then_failed_says_so()
-    test_announce_view_never_on_the_status_path()
-    test_announce_play_goes_through_the_laser_press_interlock()
-    test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop()
-    test_streamdeck_page_two_auto_close_guard()
-    test_announce_hold_does_the_operator_holds_safety_cuts()
-    test_announce_view_stale_snapshot_is_not_fact()
-    test_streamdeck_page_two_shows_the_engines_refusal()
-    test_rack_screen_small_screens_with_announcements_and_setup()
-    test_rack_screen_setup_card_refits_when_warnings_come()
-    test_alerts_booth_resounds_every_30_s_until_acknowledged()
-    test_alert_hold_at_showtime_then_one_delayed_announcement()
-    test_alert_hold_acknowledge_cancels_and_quiet_kinds()
-    test_alert_hold_never_touches_a_running_show()
-    test_alert_hold_rack_screen_words()
-    test_deck_stop_works_while_held_for_an_alert()
-    test_alert_hold_acknowledge_during_the_file_read()
-    test_alert_hold_never_re_holds_after_resume()
-    test_alert_hold_respects_any_operator_resume()
-    test_alert_booth_never_waits_behind_the_delayed()
-    test_alert_hold_an_old_hold_never_clears_a_newer_one()
-    test_alert_hold_resume_covers_only_its_own_show()
-    test_alert_workers_started_once_under_a_lock()
-    test_alert_workers_stop_with_the_server()
-    test_alert_worker_never_stalls_a_scheduler_tick()
-    test_the_gpl_path_never_loads_announcements()
-    test_arttimecode_packet_byte_for_byte()
-    test_artnet_timecode_holds_30fps_under_load()
-    test_artnet_timecode_never_drifts_from_its_clock()
-    test_timecode_zones_for_fallback_3()
-    test_clock_show_length_follows_the_music()
-    test_scheduler_show_len_s_checked_against_the_show_media()
-    test_clock_settings_fail_loudly()
-    test_the_gpl_path_never_loads_the_clock()
-    test_a_master_clock_runs_the_show()
-    test_a_slave_clock_forwards_the_show_zone()
-    test_a_stopped_cue_hands_the_rig_back()
-    test_the_clock_survives_its_own_faults()
-    test_forwarded_timecode_steps_by_one()
-    test_timecode_health_is_shown()
-    test_a_lost_feed_still_reads_lost_without_a_master_clock()
-    test_the_clock_freezes_on_hold_and_resume_carries_on()
-    test_resume_backdating_a_ticker_is_not_a_skip()
-    test_hold_freezes_the_pixels_at_once_and_resume_never_reorders()
-    test_hard_park_is_seen_at_once_under_every_override()
-    test_session_hold_and_resume()
-    test_pause_does_not_race_its_own_ticker()
-    test_resume_does_not_race_its_own_ticker()
-    test_pause_resume_survive_a_real_ticker_under_pressure()
-    test_audio_master_settings_and_files_refuse_in_sentences()
-    test_audio_master_mixing()
-    test_audio_master_timecode_follows_the_audio()
-    test_audio_master_hold_resume_and_abort()
-    test_audio_master_device_loss_freeruns_and_returns()
-    test_audio_master_the_audio_ending_ends_the_cue()
-    test_audio_master_session_hold_resume_abort()
-    test_audio_master_runs_in_its_own_process()
-    test_the_gpl_path_never_loads_the_show_audio()
-    test_audio_master_review_rules()
-    test_audio_master_stop_during_a_respawn()
-    test_audio_master_never_reruns_an_unguarded_main()
-    test_audio_master_loads_all_or_nothing()
-    test_audio_master_nineteen_channels_and_timecode()
-    test_soak_bench_track_nineteen_channels()
-    test_tctest_packets_on_the_wire()
-    test_tctest_seconds_zero_means_until_stopped()
-    test_tctest_only_named_nodes_receive()
-    test_tctest_refusals()
-    test_tctest_show_file_accepts_a_utf8_bom()
-    test_tctest_beyond_warning()
-    test_tctest_releases_lock_on_exception()
-    test_tctest_never_touches_session_or_sacn()
-    test_madmapper_osc_bytes_match_the_bench_capture()
-    test_madmapper_primitives_send_the_right_addresses()
-    test_madmapper_ramp_step_count_and_values()
-    test_madmapper_fade_surfaces_perceptual_curve_step_values()
-    test_madmapper_ramp_is_cancellable()
-    test_madmapper_restore_levels()
-    test_madmapper_fade_all_sends_audio_and_surfaces_together()
-    test_madmapper_config_refusals()
-    test_madmapper_watchdog_bind_must_be_loopback()
-    test_madmapper_watchdog_start_bind_failure_has_its_own_sentence()
-    test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed()
-    test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start()
-    test_madmapper_watchdog_nan_is_a_drift_fault()
-    test_madmapper_watchdog_alarms_only_while_armed()
-    test_madmapper_watchdog_recovery()
-    test_madmapper_watchdog_drift_flag()
-    test_madmapper_watchdog_suspend_and_resume()
-    test_madmapper_watchdog_skips_drift_right_after_recovery()
-    test_madmapper_submit_has_a_timeout()
-    test_madmapper_no_clock_is_ever_mixed_with_another()
-    test_the_gpl_path_never_loads_madmapper()
-    test_madmapper_web_route_reports_health()
-    test_web_does_not_close_a_ready_made_madmapper_link()
-    test_web_closes_a_config_built_madmapper_link()
-    test_beyond_osc_bytes_and_config_refusals()
-    test_beyond_allow_list_rejects_everything_but_brightness()
-    test_beyond_lowest_level_socket_also_enforces_allow_list()
-    test_beyond_blank_and_unblank_succeed_and_report_ok()
-    test_beyond_blank_retries_and_reports_failure()
-    test_beyond_health_reports_last_result_and_packets_sent()
-    test_beyond_builds_blank_at_construction_and_close_blanks_again()
-    test_beyond_never_sends_blackout_or_masterpause()
-    test_the_gpl_path_never_loads_beyond()
-    test_beyond_web_route_reports_health()
-    test_web_does_not_close_a_ready_made_beyond_link()
-    test_web_closes_a_config_built_beyond_link()
-    test_devices_on_hold_blanks_beyond_then_fades_music_down()
-    test_devices_on_resume_in_show_fades_up_then_unblanks()
-    test_devices_on_resume_not_in_show_refuses_to_unblank()
-    test_devices_on_resume_not_in_show_reports_a_failed_reblank()
-    test_beyond_unblank_itself_refuses_in_show_false()
-    test_devices_on_abort_blanks_beyond_then_fades_everything_together()
-    test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
-    test_devices_in_show_must_be_a_real_bool()
-    test_devices_report_a_failed_blank_to_the_caller()
-    test_the_gpl_path_never_loads_devices()
-    test_flamesafe_in_its_own_process()
-    test_the_wall_between_ltcplay_and_flamesafe()
-    test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
-    test_conductor_failed_start_leaves_groups_as_they_are()
-    test_conductor_double_abort_is_idempotent()
-    test_conductor_abort_mid_hold_fade_wins()
-    test_conductor_resume_before_the_hold_fade_finishes()
-    test_conductor_generation_guard_stops_a_stale_effect()
-    test_conductor_announcements_hold_go_dark_then_play()
-    test_conductor_no_lasers_during_intermission()
-    test_conductor_rehearsal_hold_is_instant()
-    test_conductor_hold_video_pixels_freeze_or_fade()
-    test_conductor_output_failures_are_loud_and_never_crash_it()
-    test_conductor_on_real_threads()
-    test_streamdeck_pure_logic()
-    test_streamdeck_controller_with_fakes()
-    test_streamdeck_tick_drives_holds_without_new_key_snapshots()
-    test_streamdeck_look_a_marquee()
-    test_streamdeck_idle_deck_draws_rarely()
-    test_streamdeck_start_key_during_a_show()
-    test_streamdeck_stop_hold_face_and_ring_from_the_first_instant()
-    test_streamdeck_no_flame_link_words()
-    test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
-    test_streamdeck_abort_same_pass_as_arm_hold_completion()
-    test_streamdeck_arm_fire_refuses_latched_and_refractory()
-    test_streamdeck_refractory_also_starts_at_reset()
-    test_streamdeck_draw_latched_shows_real_state_not_flat_off()
-    test_streamdeck_unconfirmed_config_never_marks_a_key()
-    test_streamdeck_builds_one_http_opener()
-    test_streamdeck_spoof_alarm()
-    test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone()
-    test_streamdeck_unplug_keeps_wanted_and_counter()
-    test_streamdeck_unplug_posts_one_deck_alert_and_one_update()
-    test_streamdeck_hardware_reconnect_keeps_counter()
-    test_streamdeck_outage_loop_runs_screen_pass()
-    test_streamdeck_ack_key_while_an_alert_is_open()
-    test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send()
-    test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error()
-    test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers()
-    test_streamdeck_round4_unplug_keeps_one_real_source_port()
-    test_streamdeck_round4_reconnect_releases_every_hold()
-    test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves()
-    test_streamdeck_round4_fresh_process_gets_the_reconnect_grace()
-    test_streamdeck_round4_other_sender_reason_has_a_label()
-    test_streamdeck_second_copy_flame_sender_reason_has_a_label()
-    test_streamdeck_round5_a_long_unplug_never_goes_quiet()
-    test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit()
-    test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number()
-    test_streamdeck_arm_socket_logs_failed_sends_once()
-    test_streamdeck_local_schedule_never_blocks_the_main_loop()
-    test_streamdeck_local_schedule_operator_reverts_when_server_drops()
-    test_streamdeck_deck_journal_prints_and_posts()
-    test_streamdeck_reconnect_never_remembers_old_state()
-    test_streamdeck_never_imports_flamesafe()
-    test_conductor_devices_hold_blanks_beyond_before_anything_fades()
-    test_conductor_devices_abort_blanks_at_once_never_ramps()
-    test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
-    test_conductor_devices_failures_missing_links_and_speed()
-    test_conductor_devices_instant_video_lands_after_a_running_fade()
-    test_conductor_devices_every_dark_path_fades_the_video_down_to_zero()
-    test_conductor_devices_unknown_video_level_never_fades_from_full()
-    test_beyond_a_blank_cuts_an_unblank_short_from_any_thread()
-    test_conductor_abort_is_never_held_up_by_a_slow_device()
-    test_conductor_hears_about_madmapper_failures_and_stalls()
-    test_conductor_a_failed_abort_blank_can_be_sent_again()
-    test_conductor_video_never_rises_after_abort_or_hold()
-    test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
-    test_conductor_announcement_after_abort_and_reset()
-    test_schedule_drives_the_show_conductor()
-    test_schedule_conductor_calls_after_the_save_and_off_the_lock()
-    test_schedule_failed_start_leaves_groups_and_raises_an_alert()
-    test_schedule_abort_latch_misses_the_next_show_until_reset()
-    test_schedule_restart_after_a_stopped_show_stays_dark()
-    test_schedule_preshow_lead_on_tick_and_resume()
-    test_schedule_night_reset_boundary()
-    test_schedule_delayed_night_closes_at_the_2am_reset()
-    test_schedule_restart_across_the_2am_reset()
-    test_schedule_restart_after_an_abort_stays_latched_until_reset()
-    test_schedule_abort_latch_outlives_the_night()
-    test_schedule_hold_while_aborted_stays_dark()
-    test_schedule_conductor_line_stuck_or_dead_is_loud()
-    test_schedule_reset_refusals_are_journaled()
-    test_schedule_conductor_wiring_details()
-    test_schedule_reset_answered_during_abort_save()
-    test_schedule_tonight_file_format()
-    test_schedule_abort_latch_survives_a_damaged_disk()
-    test_schedule_reset_never_overtakes_an_abort()
-    test_schedule_conductor_line_round3_details()
-    test_fire_ice_config_defaults_and_refusals()
-    test_fire_ice_one_flamesafe_config_or_none_starts()
-    test_flame_groups_are_a_settings_change_only()
-    test_beyond_timecode_blanking()
-    test_beyond_timecode_needs_one_route_through_the_gate()
-    test_beyond_restore_never_outruns_an_abort_blank()
-    test_beyond_lasers_dark_when_the_engine_stops()
-    test_fire_ice_serves_the_rack_screen_not_the_old_page()
-    test_fire_ice_show_outputs()
-    test_audio_master_per_call_fade()
-    test_fire_ice_night_end_to_end()
-    test_fire_ice_runner_reports_the_show()
-    test_schedule_never_touches_the_rig_before_run()
-    test_a_refused_start_sends_no_fade()
-    test_schedule_failed_start_effects_follow_what_was_sent()
-    test_soak_schedule_is_refused_outside_the_soak()
-    test_fire_ice_flame_link_from_flamesafe_config()
-    test_onlyone_named_lock_sees_a_copy_in_another_folder()
-    test_onlyone_named_lock_is_machine_wide_or_says_so()
-    test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender()
-    test_fire_ice_flame_cues_follow_a_changed_layout()
-    test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout()
-    test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault()
-    test_fire_ice_flame_cue_refusals_are_faults_on_the_screens()
-    test_fire_ice_flame_node_address_never_in_the_pixel_output()
-    test_fire_ice_active_flame_controller_refused()
-    test_fire_ice_auto_start_off_and_start_now()
-    test_fire_ice_start_rules_on_the_ordered_line()
-    test_fire_ice_review_hand_mutations()
-    test_fire_ice_show_log_is_written_off_the_logging_threads()
-    test_fire_ice_abort_and_hold_before_the_show_is_confirmed()
-    test_fire_ice_show_end_burst_never_holds_up_the_flame_link()
-    test_fire_ice_status_mirror_reaches_the_flame_link()
-    test_ltc_serve_gpl_builds_no_conductor()
-    test_the_gpl_path_never_loads_the_conductor()
-    test_flame_link_unit()
-    test_flame_link_fix_round_1()
-    test_show_timing_diagnostics_and_priority()
-    test_flame_link_fix_round_2()
-    test_the_deck_arm_hold_fits_inside_the_post_abort_window()
-    test_flame_link_sends_at_its_rate_on_one_socket()
-    test_flame_link_end_to_end_against_the_real_flamesafe()
-    test_the_gpl_path_never_loads_the_flame_link()
-    test_remote_no_sign_in_over_the_network()
-    test_remote_countdown_left_in_this_show()
-    test_remote_network_session_reaches_only_remote_routes()
-    test_web_page_icons()
-    test_remote_cross_site_posts_refused_on_loopback()
-    test_remote_localhost_unaffected_and_proxies_refused()
-    test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
-    test_deck_fix_round_2_abort_reset_and_disarm()
-    test_deck_presses_reach_the_engine_conductor()
-    test_deck_arm_pacer_sends_only_while_the_input_loop_beats()
-    test_deck_display_worker_latest_wins_and_errors_come_back()
-    test_deck_usb_meter_fault_line_and_rack_screen_chip()
-    test_deck_hold_between_shows_is_not_an_engine_fault()
-    test_deck_usb_stall_never_starves_the_arm_link()
-    test_ltc_deck_runs_the_threaded_loop()
-    test_deck_wedged_deck_never_keeps_a_purge_firing()
-    test_deck_purge_fire_stops_when_its_loop_is_not_alive()
-    test_deck_purge_fire_stop_never_waits_on_a_post()
-    test_deck_key_write_the_deck_did_not_take()
-    test_deck_arm_journal_never_holds_the_arm_lock()
-    test_api_conductor_reports_audio_loss()
-    test_live_show_refuses_the_page_transport()
-    test_remote_abort_and_start_need_the_confirm()
-    test_remote_unconfirmed_abort_still_disarms_the_flames()
-    test_windows_supervisor_never_passes_bench_hooks()
-    test_windows_supervisor_sets_madmapper_back_to_normal()
-    test_engine_refuses_run_with_a_bench_hook_outside_the_soak()
-    test_fire_ice_no_mirror_no_fault_on_every_abort()
-    test_remote_abort_disarms_with_no_show_live()
-    test_remote_abort_disarm_never_waits_on_the_tonight_save()
-    test_remote_reset_and_abort_1_ms_apart_under_a_slow_save()
-    test_deck_abort_with_no_show_reads_what_the_engine_did()
-    test_deck_requests_share_one_no_proxy_opener()
-    test_deck_reads_reset_after_an_engine_restart()
-    test_remote_stale_state_refused_and_banner()
-    test_remote_has_no_arm_route()
-    test_rack_screen_width_guard_css_contract()
-    test_rack_screen_banners_never_squeeze_the_flame_controls()
-    test_rack_screen_browser_check_retries_only_a_timeout()
-    test_rack_screen_flame_controls_need_no_show_file()
-    test_startup_page_says_hold_space_and_this_page_selected()
-    test_startup_page_readable_at_the_show_pc_sizes()
-    test_rack_screen_says_the_rearm_wait()
-    test_rack_screen_abort_is_a_corner_stop_sign()
-    test_rack_screen_one_button_per_flame_group()
-    test_rack_screen_arm_all_and_disarm_all_toggle()
-    test_rack_screen_nav_buttons_never_cut_off()
-    test_rack_screen_one_laser_pill()
-    test_startup_lock_is_one_tap_with_undo()
-    test_rack_screen_flame_group_machine_count()
-    test_streamdeck_reports_rearm_wait_and_purge_refusal()
-    test_rack_window_fits_the_work_area_above_the_taskbar()
-    test_deck_chip_shows_live_truth()
-    test_pixels_chip_shows_live_truth()
-    test_deck_chip_red_when_the_deck_loop_hangs()
-    test_deck_chip_in_a_browser()
-    test_remote_setup_routes_this_machine_only()
-    test_make_a_show_file_from_the_show_folder()
-    test_a_bracketed_show_folder_is_a_name_not_a_pattern()
-    test_windows_supervisor_first_run_defaults()
-    test_remote_page_loss_changes_nothing()
-    test_remote_scrubbing_only_in_a_programming_session()
-    test_player_free_run_pause_and_loop()
-    test_flame_link_seek_guard()
-    test_screen_arming_is_off_unless_switched_on()
-    test_screen_arm_engine_rules()
-    test_screen_arm_deck_rules()
-    test_stream_deck_fourth_group_is_screen_only()
-    test_stream_deck_key_order_and_labels_come_from_config()
-    test_stream_deck_review_of_120()
-    test_stream_deck_start_stop_is_one_key()
-    test_stop_disarms_every_flame_group_without_the_latch()
-    test_stop_says_when_its_flame_disarm_failed()
-    test_stop_halt_review_of_130()
-    test_stop_halt_second_review_of_130()
-    test_stop_halt_low_items_of_130()
-    test_stop_halt_review_of_132()
-    test_screen_arm_end_to_end_probes()
-    test_screen_arming_switch_and_refusals()
-    test_engine_stall_probe_memory_is_bounded()
-    test_tracemalloc_diagnostic_is_opt_in()
-    test_lasers_blanking_not_set_up_is_loud()
-    test_mutate_reports_every_failure_it_can_have()
-    test_mutate_mutant_limit_follows_the_baseline()
-    test_mutate_never_runs_stale_bytecode()
-    test_alerts_pure_logic()
-    test_alerts_route_status_and_acknowledge()
-    test_boothaudio_never_holds_and_never_uses_the_pa()
-    test_player_alert_look_pulse_shape()
-    test_alert_pixels_never_the_flame_controllers()
-    test_audio_interface_watch()
-    test_morning_config_layout_and_lockout_file()
-    test_flamesafe_multi_safety_ltcplay_side()
-    test_morning_multi_safety_machines_pair_by_layout()
-    test_morning_default_wave_flamer_is_never_purged()
-    test_morning_fireball_is_never_purged()
-    test_morning_fireball_group_is_never_purged()
-    test_morning_unknown_multi_channel_group_is_never_purged()
-    test_witness_checker_rules()
-    test_purge_frame_on_the_flame_link()
-    test_purge_rules_at_the_engine()
-    test_morning_deck_remap_and_purge_arming()
-    test_laser_tests_placeholders_lockout_and_allow_list()
-    test_laser_output_allow_list_is_exactly_the_three_addresses()
-    test_laser_arm_by_laser_and_group_default_disarmed()
-    test_laser_arm_groups_config_and_placeholders()
-    test_laser_arm_abort_and_hold_disarm_and_need_rearming()
-    test_laser_arm_disarm_never_waits_on_beyond()
-    test_laser_arm_blanking_unblank_needs_the_arm()
-    test_laser_arm_morning_page_routes_and_surfaces()
-    test_laser_arm_roles_disarm_signed_out_and_no_auto_run()
-    test_laser_arm_review_races_closing_and_ordering()
-    test_laser_arm_announcement_disarms_like_hold()
-    test_laser_arm_through_web_serve()
-    test_laser_arm_review_round_two()
-    test_laser_startup_dark_without_the_morning_page()
-    test_rack_lasers_strip_engine()
-    test_rack_lasers_strip_page()
-    test_checklist_audit_chain_pdf_export_and_tally()
-    test_morning_lockout_trust_link_and_close()
-    test_morning_no_unlock_while_group_armed()
-    test_morning_arrange_mode_arms_nothing()
-    test_morning_arrange_disables_firing()
-    test_purge_release_can_never_start_a_fire()
-    test_windows_rack_window_and_explorer_front()
-    test_users_passwords_are_slow_salted_hashes_and_never_stored()
-    test_users_lockout_is_short_and_never_permanent()
-    test_users_role_matrix_never_restricts_a_safety_press()
-    test_safety_presses_pass_signed_out_and_are_logged_unsigned()
-    test_audit_logs_one_line_per_press_on_every_surface()
-    test_deck_role_gate_restricts_arming_only()
-    test_audit_chain_verify_finds_every_kind_of_tamper()
-    test_audit_upload_retries_resumes_and_waits_for_the_ack()
-    test_audit_never_blocks_or_fails_a_press()
-    test_soak_render_older_than_layout_is_a_cues_fault_at_show_load()
-    test_flame_cues_refused_while_the_reader_is_mid_pass()
-    test_soak_flame_cues_preloaded_and_never_copied_under_the_lock()
-    test_soak_show_folder_served_is_said_and_followed()
-    test_soak_pc_clock_and_time_service_in_the_morning_checks()
-    test_artnet_receivers_one_address_each_and_on_this_pc()
-    test_disarm_all_is_a_plain_disarm_and_never_gated()
-    test_disarm_ids_survive_an_engine_restart()
-    test_disarm_all_end_to_end_rearms_without_a_cycle()
-    test_lasers_lamp_follows_the_beyond_link()
-    test_video_lamp_follows_the_madmapper_watch()
-    test_artnet_faults_only_for_the_show_in_use()
-    test_rack_screen_jeff_2026_10_23_page()
-    test_schedule_time_zone_is_checked_by_the_engine()
-    test_soak_bench_render_universes_and_fps()
-    test_live_flame_sacn_parser_fuzz()
-    test_live_flame_map_from_a_synthetic_networks_file()
-    test_live_flame_listener_binds_loopback_only()
-    test_live_flame_entry_refusals()
-    test_live_flame_values_and_zero_on_silence()
-    test_live_flame_ends_disarm_and_name_the_reason()
-    test_live_flame_engine_routes_roles_and_presses()
-    test_live_flame_page_banner_and_card()
-    test_live_flame_end_to_end_real_flamesafe()
-    test_live_flame_review_round_one()
-    test_live_flame_end_to_end_armed_group_real_flamesafe()
-    test_live_flame_review_round_two()
-    test_live_flame_from_a_mac()
-    test_live_flame_from_a_mac_round_two()
-    test_scrub_flames_link_rules()
-    test_scrub_flames_read_the_fseq_at_the_transport()
-    test_scrub_flames_the_mode_starts_off_and_ends_itself()
-    test_scrub_flames_engine_routes_roles_and_page()
-    test_scrub_flames_end_to_end_real_flamesafe()
-    test_scrub_flames_review_of_117()
-    test_fuel_flame_seconds_at_the_flame_link()
-    test_fuel_observer_never_waits_and_stays_bounded()
-    test_fuel_purge_counts_for_gflame_not_showven()
-    test_fuel_counts_shows_and_not_rehearsals()
-    test_fuel_learns_the_tank_and_counts_shows_left()
-    test_fuel_refill_undo_and_the_record()
-    test_fuel_survives_restarts_and_a_bad_disk()
-    test_fuel_settings_are_checked_strictly()
-    test_fuel_routes_and_who_may_refill()
-    test_fuel_page_in_a_browser()
-    test_fuel_doc_in_plain_words()
-    test_scrub_flames_seqlock()
-    test_weather_parsers_read_each_source()
-    test_weather_rules_age_stale_no_data_disagree_alerts()
-    test_weather_failure_backoff_and_disk_cache()
-    test_weather_settings_are_checked()
-    test_weather_is_display_only_and_off_the_show_path()
-    test_weather_check_command()
-    test_weather_block_on_the_rack_screen()
-    test_waver_head_settle_may_be_zero()
-    test_open_beyond_window_finder_and_front()
-    test_calibrate_all_lasers_rules_and_order()
-    test_calibrate_all_and_open_beyond_routes()
-    test_users_sign_out_after_the_last_show()
-    for arg in sys.argv[1:]:
+    # Every test, in file order. LTC_SELFTEST_FIRST and
+    # LTC_SELFTEST_FAILFAST (mutate.py only; see _run_tests) change the
+    # order and where a red run stops, never which checks a green run has
+    # passed: a run is green only when every test here ran and every check
+    # in it passed.
+    TESTS = [
+        test_ltc_roundtrip,
+        test_ltc_rollovers,
+        test_ltc_degraded,
+        test_ltc_rejects_garbage,
+        test_numpy_matches_scalar,
+        test_packets,
+        test_timeline,
+        test_netmap,
+        test_tc_math,
+        test_rate_detection,
+        test_next_cue,
+        test_player_states,
+        test_loop_never_dies,
+        test_pixel_output_frame_jitter,
+        test_pixel_pacing_never_accumulates_error,
+        test_pixel_scheduler_recovers_after_one_late_wake,
+        test_a_failing_send_still_advances_the_pixel_schedule,
+        test_pixel_loop_sleep_is_capped,
+        test_pixel_loop_matches_the_old_one_when_healthy,
+        test_windows_pixel_clock_choice,
+        test_no_clock_is_ever_mixed_with_another,
+        test_the_stepped_player_is_the_output_thread,
+        test_socket_healing,
+        test_display_survives,
+        test_park_and_pause,
+        test_on_lost_policies,
+        test_pause_does_not_poison_the_rate,
+        test_device_resolution,
+        test_timecode_on_a_channel_other_than_one,
+        test_find_names_the_channel,
+        test_input_rebuilds_itself,
+        test_level_meter,
+        test_timeline_input_block,
+        test_installer_and_launcher_names,
+        test_real_hardware_is_picked_out_of_the_noise,
+        test_only_plausible_inputs_are_scanned,
+        test_saved_input_setting,
+        test_settings_files_accept_a_utf8_bom,
+        test_input_precedence,
+        test_show_dir_survives_the_wrong_machine,
+        test_web_ui,
+        test_web_token_gate,
+        test_web_state_cache_refresh_interval,
+        test_web_state_cache_dedupes_concurrent_misses,
+        test_web_state_cache_content_matches_a_direct_build,
+        test_web_state_cache_never_reaches_the_gpl_terminal_path,
+        test_which_file_plays_when,
+        test_one_frame_between_cues_is_not_a_gap,
+        test_a_cue_owns_the_whole_rig,
+        test_a_bad_frame_does_not_move_the_show,
+        test_the_bridge_does_not_resurrect_a_finished_cue,
+        test_a_read_hiccup_does_not_stick,
+        test_the_overrun_warning_is_per_cue,
+        test_stop_always_works,
+        test_a_read_only_folder_is_a_sentence,
+        test_up_next_survives_the_interval,
+        test_free_run_does_not_flood_the_log,
+        test_the_readout_tells_the_truth_in_a_free_run,
+        test_go_runs_without_the_feed,
+        test_the_bundle_stands_on_its_own,
+        test_cli_show_commands_accept_a_utf8_bom,
+        test_the_credit_travels_with_it,
+        test_brand_file_accepts_a_utf8_bom,
+        test_a_dead_controller_stops_being_hammered,
+        test_broadcast_destinations_are_called_out,
+        test_a_controller_ping_means_what_it_says,
+        test_free_run_to_the_end_when_timecode_dies,
+        test_the_input_can_be_rebuilt_without_dropping_the_rig,
+        test_the_input_stops_hunting_sample_rates,
+        test_a_poisoned_portaudio_is_rebuilt,
+        test_a_missing_input_still_runs_the_preshow,
+        test_the_input_can_be_changed_mid_show,
+        test_a_failed_start_leaves_nothing_running,
+        test_only_one_player_sends_at_a_time,
+        test_second_copy_guard_one_show_and_one_deck_per_machine,
+        test_machine_data_goes_where_the_os_keeps_it,
+        test_reload_while_the_show_runs,
+        test_auto_reload_waits_for_the_writer,
+        test_opening_a_render_proves_it_reads,
+        test_sequence_position_not_timecode,
+        test_a_cue_that_will_not_open_stops_the_show,
+        test_preshow_can_be_held_by_hand,
+        test_a_misspelled_setting_is_refused,
+        test_timeline_load_accepts_a_utf8_bom,
+        test_one_sequence_at_two_timecodes,
+        test_at_command_on_the_real_show,
+        test_track_numbers_are_not_identity,
+        test_sequences_declare_what_they_are,
+        test_verify_catches_a_mislabelled_sequence,
+        test_pointing_a_show_at_a_different_folder,
+        test_web_show_reads_accept_a_utf8_bom,
+        test_trigger_mode_mutes_the_advateks_and_nothing_else,
+        test_a_muted_controller_is_not_reported_as_a_fault,
+        test_a_cue_fires_its_scene_once_and_only_once,
+        test_preshow_fires_once_per_entry_not_once_per_loop,
+        test_an_unmapped_cue_is_named_rather_than_fired_blind,
+        test_a_trigger_that_explodes_does_not_stop_the_show,
+        test_the_trigger_packet_is_one_artnet_channel_at_full,
+        test_a_trigger_never_blocks_the_output_loop,
+        test_a_show_file_that_would_silently_do_nothing_is_refused,
+        test_the_scene_map_is_checked_against_the_real_show,
+        test_the_real_show_file_maps_every_cue,
+        test_the_trigger_goes_out_on_the_protocol_the_boxes_listen_for,
+        test_the_real_show_file_matches_the_trigger_reference,
+        test_stopping_the_show_unmutes_before_the_blackout,
+        test_the_panel_tells_the_truth_about_backup_mode,
+        test_a_shared_show_folder_cannot_be_moved_away_from_it,
+        test_the_app_is_signed_last_and_nothing_touches_it_after,
+        test_the_build_proves_macos_will_actually_launch_it,
+        test_the_app_declares_what_macos_needs_to_know,
+        test_the_app_launcher_finds_its_way_home,
+        test_the_app_starts_the_page_by_itself,
+        test_you_can_tell_which_version_is_installed,
+        test_frozen_app_build_id_is_the_source_it_was_built_from,
+        test_the_beta_window_app_stays_a_window,
+        test_schedule_rule_is_validated,
+        test_schedule_expands_the_season,
+        test_schedule_late_rule,
+        test_schedule_state_machine_every_state_every_event,
+        test_abort_and_hold_never_refused_for_who_or_where,
+        test_schedule_restart_guard_and_hold,
+        test_schedule_hold_pauses_a_show,
+        test_schedule_hold_between_shows_delays,
+        test_schedule_start_now_in_every_state,
+        test_schedule_extra_show_and_the_next_slot,
+        test_schedule_abort_end_night_and_operator_actions,
+        test_schedule_file_is_versioned_and_atomic,
+        test_schedule_clock_check,
+        test_schedule_routes,
+        test_the_gpl_path_never_loads_the_scheduler,
+        test_windows_shutdown_stops_the_show_programs_cleanly,
+        test_windows_supervisor_end_of_session_and_engine_refusal,
+        test_windows_supervisor_one_flamesafe_config_for_all,
+        test_windows_supervisor_lock_is_machine_wide,
+        test_the_scheduler_engine_is_pure,
+        test_schedule_restart_keeps_tonight,
+        test_schedule_clock_check_never_delays_a_show,
+        test_schedule_faults_during_and_before_a_show,
+        test_schedule_edits_past_last_end_and_midnight,
+        test_schedule_rule_file_with_a_bom,
+        test_schedule_tonight_file_is_checked,
+        test_schedule_rule_change_rebuilds_tonight,
+        test_schedule_late_failed_start_is_a_fault,
+        test_schedule_after_a_stopped_show_is_one_choice,
+        test_schedule_contract_for_the_transport,
+        test_schedule_uncertain_record_never_fires_twice,
+        test_schedule_delayed_and_paused_survive_a_restart,
+        test_schedule_operator_list,
+        test_schedule_a_paused_show_is_never_overlapped,
+        test_schedule_a_clock_step_during_a_pause,
+        test_journal_every_event_is_complete,
+        test_journal_line_format_is_the_spec,
+        test_journal_is_append_only,
+        test_journal_rotation_and_pruning_across_dst,
+        test_journal_prune_never_removes_a_partial_by_its_name_date,
+        test_journal_prune_takes_the_incident_lock,
+        test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled,
+        test_journal_prune_trusted_clock_deletes_purely_by_age,
+        test_journal_prune_untrusted_clock_keeps_them_all,
+        test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning,
+        test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping,
+        test_journal_nightly_summary,
+        test_journal_incident_bundle,
+        test_journal_a_full_disk_stops_the_logging_not_the_show,
+        test_journal_cold_read,
+        test_journal_faults_write_sentences,
+        test_the_gpl_path_never_loads_the_journal,
+        test_journal_the_way_out_never_waits_on_the_disk,
+        test_journal_a_line_the_disk_cannot_take,
+        test_journal_a_torn_last_line_after_a_power_cut,
+        test_journal_a_repeating_fault_does_not_flood,
+        test_journal_a_show_past_midnight_keeps_its_night,
+        test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight,
+        test_journal_waiting_lines_are_capped_and_counted,
+        test_journal_a_clean_stop_reads_as_one,
+        test_journal_screens_come_from_a_list,
+        test_journal_summary_lists_every_fault,
+        test_journal_leftover_temp_files_are_cleared,
+        test_journal_housekeeping_runs_once,
+        test_journal_every_line_reaches_the_disk_within_a_second,
+        test_journal_summary_is_written_however_the_night_closes,
+        test_announce_probe_matches_open_for_format,
+        test_announce_unsupported_wav_formats_rejected,
+        test_announce_wav_decode_values,
+        test_announce_wav_extensible_float_accepted,
+        test_announce_wav_data_chunk_sanity,
+        test_announce_device_exact_match_only,
+        test_announce_toctou_recheck_before_start,
+        test_announce_interlock_recheck_catches_a_state_provider_with_no_hold,
+        test_announce_show_start_stops_announcement,
+        test_announce_stall_watchdog,
+        test_announce_callback_status_errors,
+        test_announce_minor_hardening,
+        test_announce_load_operators_dash_cleaning,
+        test_announce_show_start_hook_never_touches_the_stream,
+        test_schedule_hook_runs_outside_service_lock,
+        test_announce_reentrant_claim_does_not_orphan_a_stream,
+        test_announce_interlock_matrix,
+        test_announce_hold_between_shows,
+        test_announce_hold_during_show,
+        test_announce_hold_refused_refuses_the_announcement,
+        test_announce_stays_held_after_it_ends,
+        test_announce_resume_wins_over_second_hold_request,
+        test_announce_resume_then_rehold_still_refuses,
+        test_announce_on_show_started_reason_new_vs_resume,
+        test_announce_hold_for_announcement_no_noise_when_already_held,
+        test_announce_claim_wording_is_the_hold_text,
+        test_announce_no_scheduler_stays_inert,
+        test_announce_single_flight,
+        test_announce_operator_validation,
+        test_announce_missing_files_at_startup,
+        test_announce_device_missing_renamed_reappearing,
+        test_announce_progress_and_stop,
+        test_announce_logging_fields,
+        test_announce_routes,
+        test_announce_device_not_set_and_device_missing_refuse_before_hold,
+        test_announce_surface_press_and_show_ending_while_loading,
+        test_announce_remote_routes_rack_screen,
+        test_announce_rack_screen_page_logic,
+        test_streamdeck_announcements_page_two,
+        test_announce_at_showtime_never_pauses_the_show_that_just_started,
+        test_announce_held_then_failed_says_so,
+        test_announce_view_never_on_the_status_path,
+        test_announce_play_goes_through_the_laser_press_interlock,
+        test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop,
+        test_streamdeck_page_two_auto_close_guard,
+        test_announce_hold_does_the_operator_holds_safety_cuts,
+        test_announce_view_stale_snapshot_is_not_fact,
+        test_streamdeck_page_two_shows_the_engines_refusal,
+        test_rack_screen_small_screens_with_announcements_and_setup,
+        test_rack_screen_setup_card_refits_when_warnings_come,
+        test_alerts_booth_resounds_every_30_s_until_acknowledged,
+        test_alert_hold_at_showtime_then_one_delayed_announcement,
+        test_alert_hold_acknowledge_cancels_and_quiet_kinds,
+        test_alert_hold_never_touches_a_running_show,
+        test_alert_hold_rack_screen_words,
+        test_deck_stop_works_while_held_for_an_alert,
+        test_alert_hold_acknowledge_during_the_file_read,
+        test_alert_hold_never_re_holds_after_resume,
+        test_alert_hold_respects_any_operator_resume,
+        test_alert_booth_never_waits_behind_the_delayed,
+        test_alert_hold_an_old_hold_never_clears_a_newer_one,
+        test_alert_hold_resume_covers_only_its_own_show,
+        test_alert_workers_started_once_under_a_lock,
+        test_alert_workers_stop_with_the_server,
+        test_alert_worker_never_stalls_a_scheduler_tick,
+        test_the_gpl_path_never_loads_announcements,
+        test_arttimecode_packet_byte_for_byte,
+        test_artnet_timecode_holds_30fps_under_load,
+        test_artnet_timecode_never_drifts_from_its_clock,
+        test_timecode_zones_for_fallback_3,
+        test_clock_show_length_follows_the_music,
+        test_scheduler_show_len_s_checked_against_the_show_media,
+        test_clock_settings_fail_loudly,
+        test_the_gpl_path_never_loads_the_clock,
+        test_a_master_clock_runs_the_show,
+        test_a_slave_clock_forwards_the_show_zone,
+        test_a_stopped_cue_hands_the_rig_back,
+        test_the_clock_survives_its_own_faults,
+        test_forwarded_timecode_steps_by_one,
+        test_timecode_health_is_shown,
+        test_a_lost_feed_still_reads_lost_without_a_master_clock,
+        test_the_clock_freezes_on_hold_and_resume_carries_on,
+        test_resume_backdating_a_ticker_is_not_a_skip,
+        test_hold_freezes_the_pixels_at_once_and_resume_never_reorders,
+        test_hard_park_is_seen_at_once_under_every_override,
+        test_session_hold_and_resume,
+        test_pause_does_not_race_its_own_ticker,
+        test_resume_does_not_race_its_own_ticker,
+        test_pause_resume_survive_a_real_ticker_under_pressure,
+        test_audio_master_settings_and_files_refuse_in_sentences,
+        test_audio_master_mixing,
+        test_audio_master_timecode_follows_the_audio,
+        test_audio_master_hold_resume_and_abort,
+        test_audio_master_device_loss_freeruns_and_returns,
+        test_audio_master_the_audio_ending_ends_the_cue,
+        test_audio_master_session_hold_resume_abort,
+        test_audio_master_runs_in_its_own_process,
+        test_the_gpl_path_never_loads_the_show_audio,
+        test_audio_master_review_rules,
+        test_audio_master_stop_during_a_respawn,
+        test_audio_master_never_reruns_an_unguarded_main,
+        test_audio_master_loads_all_or_nothing,
+        test_audio_master_nineteen_channels_and_timecode,
+        test_soak_bench_track_nineteen_channels,
+        test_tctest_packets_on_the_wire,
+        test_tctest_seconds_zero_means_until_stopped,
+        test_tctest_only_named_nodes_receive,
+        test_tctest_refusals,
+        test_tctest_show_file_accepts_a_utf8_bom,
+        test_tctest_beyond_warning,
+        test_tctest_releases_lock_on_exception,
+        test_tctest_never_touches_session_or_sacn,
+        test_madmapper_osc_bytes_match_the_bench_capture,
+        test_madmapper_primitives_send_the_right_addresses,
+        test_madmapper_ramp_step_count_and_values,
+        test_madmapper_fade_surfaces_perceptual_curve_step_values,
+        test_madmapper_ramp_is_cancellable,
+        test_madmapper_restore_levels,
+        test_madmapper_fade_all_sends_audio_and_surfaces_together,
+        test_madmapper_config_refusals,
+        test_madmapper_watchdog_bind_must_be_loopback,
+        test_madmapper_watchdog_start_bind_failure_has_its_own_sentence,
+        test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed,
+        test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start,
+        test_madmapper_watchdog_nan_is_a_drift_fault,
+        test_madmapper_watchdog_alarms_only_while_armed,
+        test_madmapper_watchdog_recovery,
+        test_madmapper_watchdog_drift_flag,
+        test_madmapper_watchdog_suspend_and_resume,
+        test_madmapper_watchdog_skips_drift_right_after_recovery,
+        test_madmapper_submit_has_a_timeout,
+        test_madmapper_no_clock_is_ever_mixed_with_another,
+        test_the_gpl_path_never_loads_madmapper,
+        test_madmapper_web_route_reports_health,
+        test_web_does_not_close_a_ready_made_madmapper_link,
+        test_web_closes_a_config_built_madmapper_link,
+        test_beyond_osc_bytes_and_config_refusals,
+        test_beyond_allow_list_rejects_everything_but_brightness,
+        test_beyond_lowest_level_socket_also_enforces_allow_list,
+        test_beyond_blank_and_unblank_succeed_and_report_ok,
+        test_beyond_blank_retries_and_reports_failure,
+        test_beyond_health_reports_last_result_and_packets_sent,
+        test_beyond_builds_blank_at_construction_and_close_blanks_again,
+        test_beyond_never_sends_blackout_or_masterpause,
+        test_the_gpl_path_never_loads_beyond,
+        test_beyond_web_route_reports_health,
+        test_web_does_not_close_a_ready_made_beyond_link,
+        test_web_closes_a_config_built_beyond_link,
+        test_devices_on_hold_blanks_beyond_then_fades_music_down,
+        test_devices_on_resume_in_show_fades_up_then_unblanks,
+        test_devices_on_resume_not_in_show_refuses_to_unblank,
+        test_devices_on_resume_not_in_show_reports_a_failed_reblank,
+        test_beyond_unblank_itself_refuses_in_show_false,
+        test_devices_on_abort_blanks_beyond_then_fades_everything_together,
+        test_devices_skip_gracefully_with_no_madmapper_or_no_beyond,
+        test_devices_in_show_must_be_a_real_bool,
+        test_devices_report_a_failed_blank_to_the_caller,
+        test_the_gpl_path_never_loads_devices,
+        test_flamesafe_in_its_own_process,
+        test_the_wall_between_ltcplay_and_flamesafe,
+        test_conductor_abort_cuts_flames_at_once_and_fades_the_rest,
+        test_conductor_failed_start_leaves_groups_as_they_are,
+        test_conductor_double_abort_is_idempotent,
+        test_conductor_abort_mid_hold_fade_wins,
+        test_conductor_resume_before_the_hold_fade_finishes,
+        test_conductor_generation_guard_stops_a_stale_effect,
+        test_conductor_announcements_hold_go_dark_then_play,
+        test_conductor_no_lasers_during_intermission,
+        test_conductor_rehearsal_hold_is_instant,
+        test_conductor_hold_video_pixels_freeze_or_fade,
+        test_conductor_output_failures_are_loud_and_never_crash_it,
+        test_conductor_on_real_threads,
+        test_streamdeck_pure_logic,
+        test_streamdeck_controller_with_fakes,
+        test_streamdeck_tick_drives_holds_without_new_key_snapshots,
+        test_streamdeck_look_a_marquee,
+        test_streamdeck_idle_deck_draws_rarely,
+        test_streamdeck_start_key_during_a_show,
+        test_streamdeck_stop_hold_face_and_ring_from_the_first_instant,
+        test_streamdeck_no_flame_link_words,
+        test_streamdeck_reconnect_resets_hold_state_and_key_snapshot,
+        test_streamdeck_abort_same_pass_as_arm_hold_completion,
+        test_streamdeck_arm_fire_refuses_latched_and_refractory,
+        test_streamdeck_refractory_also_starts_at_reset,
+        test_streamdeck_draw_latched_shows_real_state_not_flat_off,
+        test_streamdeck_unconfirmed_config_never_marks_a_key,
+        test_streamdeck_builds_one_http_opener,
+        test_streamdeck_spoof_alarm,
+        test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone,
+        test_streamdeck_unplug_keeps_wanted_and_counter,
+        test_streamdeck_unplug_posts_one_deck_alert_and_one_update,
+        test_streamdeck_hardware_reconnect_keeps_counter,
+        test_streamdeck_outage_loop_runs_screen_pass,
+        test_streamdeck_ack_key_while_an_alert_is_open,
+        test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send,
+        test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error,
+        test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers,
+        test_streamdeck_round4_unplug_keeps_one_real_source_port,
+        test_streamdeck_round4_reconnect_releases_every_hold,
+        test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves,
+        test_streamdeck_round4_fresh_process_gets_the_reconnect_grace,
+        test_streamdeck_round4_other_sender_reason_has_a_label,
+        test_streamdeck_second_copy_flame_sender_reason_has_a_label,
+        test_streamdeck_round5_a_long_unplug_never_goes_quiet,
+        test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit,
+        test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number,
+        test_streamdeck_arm_socket_logs_failed_sends_once,
+        test_streamdeck_local_schedule_never_blocks_the_main_loop,
+        test_streamdeck_local_schedule_operator_reverts_when_server_drops,
+        test_streamdeck_deck_journal_prints_and_posts,
+        test_streamdeck_reconnect_never_remembers_old_state,
+        test_streamdeck_never_imports_flamesafe,
+        test_conductor_devices_hold_blanks_beyond_before_anything_fades,
+        test_conductor_devices_abort_blanks_at_once_never_ramps,
+        test_conductor_devices_resume_unblanks_only_after_timecode_and_gate,
+        test_conductor_devices_failures_missing_links_and_speed,
+        test_conductor_devices_instant_video_lands_after_a_running_fade,
+        test_conductor_devices_every_dark_path_fades_the_video_down_to_zero,
+        test_conductor_devices_unknown_video_level_never_fades_from_full,
+        test_beyond_a_blank_cuts_an_unblank_short_from_any_thread,
+        test_conductor_abort_is_never_held_up_by_a_slow_device,
+        test_conductor_hears_about_madmapper_failures_and_stalls,
+        test_conductor_a_failed_abort_blank_can_be_sent_again,
+        test_conductor_video_never_rises_after_abort_or_hold,
+        test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit,
+        test_conductor_announcement_after_abort_and_reset,
+        test_schedule_drives_the_show_conductor,
+        test_schedule_conductor_calls_after_the_save_and_off_the_lock,
+        test_schedule_failed_start_leaves_groups_and_raises_an_alert,
+        test_schedule_abort_latch_misses_the_next_show_until_reset,
+        test_schedule_restart_after_a_stopped_show_stays_dark,
+        test_schedule_preshow_lead_on_tick_and_resume,
+        test_schedule_night_reset_boundary,
+        test_schedule_delayed_night_closes_at_the_2am_reset,
+        test_schedule_restart_across_the_2am_reset,
+        test_schedule_restart_after_an_abort_stays_latched_until_reset,
+        test_schedule_abort_latch_outlives_the_night,
+        test_schedule_hold_while_aborted_stays_dark,
+        test_schedule_conductor_line_stuck_or_dead_is_loud,
+        test_schedule_reset_refusals_are_journaled,
+        test_schedule_conductor_wiring_details,
+        test_schedule_reset_answered_during_abort_save,
+        test_schedule_tonight_file_format,
+        test_schedule_abort_latch_survives_a_damaged_disk,
+        test_schedule_reset_never_overtakes_an_abort,
+        test_schedule_conductor_line_round3_details,
+        test_fire_ice_config_defaults_and_refusals,
+        test_fire_ice_one_flamesafe_config_or_none_starts,
+        test_flame_groups_are_a_settings_change_only,
+        test_beyond_timecode_blanking,
+        test_beyond_timecode_needs_one_route_through_the_gate,
+        test_beyond_restore_never_outruns_an_abort_blank,
+        test_beyond_lasers_dark_when_the_engine_stops,
+        test_fire_ice_serves_the_rack_screen_not_the_old_page,
+        test_fire_ice_show_outputs,
+        test_audio_master_per_call_fade,
+        test_fire_ice_night_end_to_end,
+        test_fire_ice_runner_reports_the_show,
+        test_schedule_never_touches_the_rig_before_run,
+        test_a_refused_start_sends_no_fade,
+        test_schedule_failed_start_effects_follow_what_was_sent,
+        test_soak_schedule_is_refused_outside_the_soak,
+        test_fire_ice_flame_link_from_flamesafe_config,
+        test_onlyone_named_lock_sees_a_copy_in_another_folder,
+        test_onlyone_named_lock_is_machine_wide_or_says_so,
+        test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,
+        test_fire_ice_flame_cues_follow_a_changed_layout,
+        test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout,
+        test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault,
+        test_fire_ice_flame_cue_refusals_are_faults_on_the_screens,
+        test_fire_ice_flame_node_address_never_in_the_pixel_output,
+        test_fire_ice_active_flame_controller_refused,
+        test_fire_ice_auto_start_off_and_start_now,
+        test_fire_ice_start_rules_on_the_ordered_line,
+        test_fire_ice_review_hand_mutations,
+        test_fire_ice_show_log_is_written_off_the_logging_threads,
+        test_fire_ice_abort_and_hold_before_the_show_is_confirmed,
+        test_fire_ice_show_end_burst_never_holds_up_the_flame_link,
+        test_fire_ice_status_mirror_reaches_the_flame_link,
+        test_ltc_serve_gpl_builds_no_conductor,
+        test_the_gpl_path_never_loads_the_conductor,
+        test_flame_link_unit,
+        test_flame_link_fix_round_1,
+        test_show_timing_diagnostics_and_priority,
+        test_flame_link_fix_round_2,
+        test_the_deck_arm_hold_fits_inside_the_post_abort_window,
+        test_flame_link_sends_at_its_rate_on_one_socket,
+        test_flame_link_end_to_end_against_the_real_flamesafe,
+        test_the_gpl_path_never_loads_the_flame_link,
+        test_remote_no_sign_in_over_the_network,
+        test_remote_countdown_left_in_this_show,
+        test_remote_network_session_reaches_only_remote_routes,
+        test_web_page_icons,
+        test_remote_cross_site_posts_refused_on_loopback,
+        test_remote_localhost_unaffected_and_proxies_refused,
+        test_remote_controls_reach_the_same_paths_and_journal_who_and_where,
+        test_deck_fix_round_2_abort_reset_and_disarm,
+        test_deck_presses_reach_the_engine_conductor,
+        test_deck_arm_pacer_sends_only_while_the_input_loop_beats,
+        test_deck_display_worker_latest_wins_and_errors_come_back,
+        test_deck_usb_meter_fault_line_and_rack_screen_chip,
+        test_deck_hold_between_shows_is_not_an_engine_fault,
+        test_deck_usb_stall_never_starves_the_arm_link,
+        test_ltc_deck_runs_the_threaded_loop,
+        test_deck_wedged_deck_never_keeps_a_purge_firing,
+        test_deck_purge_fire_stops_when_its_loop_is_not_alive,
+        test_deck_purge_fire_stop_never_waits_on_a_post,
+        test_deck_key_write_the_deck_did_not_take,
+        test_deck_arm_journal_never_holds_the_arm_lock,
+        test_api_conductor_reports_audio_loss,
+        test_live_show_refuses_the_page_transport,
+        test_remote_abort_and_start_need_the_confirm,
+        test_remote_unconfirmed_abort_still_disarms_the_flames,
+        test_windows_supervisor_never_passes_bench_hooks,
+        test_windows_supervisor_sets_madmapper_back_to_normal,
+        test_engine_refuses_run_with_a_bench_hook_outside_the_soak,
+        test_fire_ice_no_mirror_no_fault_on_every_abort,
+        test_remote_abort_disarms_with_no_show_live,
+        test_remote_abort_disarm_never_waits_on_the_tonight_save,
+        test_remote_reset_and_abort_1_ms_apart_under_a_slow_save,
+        test_deck_abort_with_no_show_reads_what_the_engine_did,
+        test_deck_requests_share_one_no_proxy_opener,
+        test_deck_reads_reset_after_an_engine_restart,
+        test_remote_stale_state_refused_and_banner,
+        test_remote_has_no_arm_route,
+        test_rack_screen_width_guard_css_contract,
+        test_rack_screen_banners_never_squeeze_the_flame_controls,
+        test_rack_screen_browser_check_retries_only_a_timeout,
+        test_rack_screen_flame_controls_need_no_show_file,
+        test_startup_page_says_hold_space_and_this_page_selected,
+        test_startup_page_readable_at_the_show_pc_sizes,
+        test_rack_screen_says_the_rearm_wait,
+        test_rack_screen_abort_is_a_corner_stop_sign,
+        test_rack_screen_one_button_per_flame_group,
+        test_rack_screen_arm_all_and_disarm_all_toggle,
+        test_rack_screen_nav_buttons_never_cut_off,
+        test_rack_screen_one_laser_pill,
+        test_startup_lock_is_one_tap_with_undo,
+        test_rack_screen_flame_group_machine_count,
+        test_streamdeck_reports_rearm_wait_and_purge_refusal,
+        test_rack_window_fits_the_work_area_above_the_taskbar,
+        test_deck_chip_shows_live_truth,
+        test_pixels_chip_shows_live_truth,
+        test_deck_chip_red_when_the_deck_loop_hangs,
+        test_deck_chip_in_a_browser,
+        test_remote_setup_routes_this_machine_only,
+        test_make_a_show_file_from_the_show_folder,
+        test_a_bracketed_show_folder_is_a_name_not_a_pattern,
+        test_windows_supervisor_first_run_defaults,
+        test_remote_page_loss_changes_nothing,
+        test_remote_scrubbing_only_in_a_programming_session,
+        test_player_free_run_pause_and_loop,
+        test_flame_link_seek_guard,
+        test_screen_arming_is_off_unless_switched_on,
+        test_screen_arm_engine_rules,
+        test_screen_arm_deck_rules,
+        test_stream_deck_fourth_group_is_screen_only,
+        test_stream_deck_key_order_and_labels_come_from_config,
+        test_stream_deck_review_of_120,
+        test_stream_deck_start_stop_is_one_key,
+        test_stop_disarms_every_flame_group_without_the_latch,
+        test_stop_says_when_its_flame_disarm_failed,
+        test_stop_halt_review_of_130,
+        test_stop_halt_second_review_of_130,
+        test_stop_halt_low_items_of_130,
+        test_stop_halt_review_of_132,
+        test_screen_arm_end_to_end_probes,
+        test_screen_arming_switch_and_refusals,
+        test_engine_stall_probe_memory_is_bounded,
+        test_tracemalloc_diagnostic_is_opt_in,
+        test_lasers_blanking_not_set_up_is_loud,
+        test_mutate_reports_every_failure_it_can_have,
+        test_mutate_mutant_limit_follows_the_baseline,
+        test_mutate_fast_path_never_turns_red_green,
+        test_mutate_never_runs_stale_bytecode,
+        test_alerts_pure_logic,
+        test_alerts_route_status_and_acknowledge,
+        test_boothaudio_never_holds_and_never_uses_the_pa,
+        test_player_alert_look_pulse_shape,
+        test_alert_pixels_never_the_flame_controllers,
+        test_audio_interface_watch,
+        test_morning_config_layout_and_lockout_file,
+        test_flamesafe_multi_safety_ltcplay_side,
+        test_morning_multi_safety_machines_pair_by_layout,
+        test_morning_default_wave_flamer_is_never_purged,
+        test_morning_fireball_is_never_purged,
+        test_morning_fireball_group_is_never_purged,
+        test_morning_unknown_multi_channel_group_is_never_purged,
+        test_witness_checker_rules,
+        test_purge_frame_on_the_flame_link,
+        test_purge_rules_at_the_engine,
+        test_morning_deck_remap_and_purge_arming,
+        test_laser_tests_placeholders_lockout_and_allow_list,
+        test_laser_output_allow_list_is_exactly_the_three_addresses,
+        test_laser_arm_by_laser_and_group_default_disarmed,
+        test_laser_arm_groups_config_and_placeholders,
+        test_laser_arm_abort_and_hold_disarm_and_need_rearming,
+        test_laser_arm_disarm_never_waits_on_beyond,
+        test_laser_arm_blanking_unblank_needs_the_arm,
+        test_laser_arm_morning_page_routes_and_surfaces,
+        test_laser_arm_roles_disarm_signed_out_and_no_auto_run,
+        test_laser_arm_review_races_closing_and_ordering,
+        test_laser_arm_announcement_disarms_like_hold,
+        test_laser_arm_through_web_serve,
+        test_laser_arm_review_round_two,
+        test_laser_startup_dark_without_the_morning_page,
+        test_rack_lasers_strip_engine,
+        test_rack_lasers_strip_page,
+        test_checklist_audit_chain_pdf_export_and_tally,
+        test_morning_lockout_trust_link_and_close,
+        test_morning_no_unlock_while_group_armed,
+        test_morning_arrange_mode_arms_nothing,
+        test_morning_arrange_disables_firing,
+        test_purge_release_can_never_start_a_fire,
+        test_windows_rack_window_and_explorer_front,
+        test_users_passwords_are_slow_salted_hashes_and_never_stored,
+        test_users_lockout_is_short_and_never_permanent,
+        test_users_role_matrix_never_restricts_a_safety_press,
+        test_safety_presses_pass_signed_out_and_are_logged_unsigned,
+        test_audit_logs_one_line_per_press_on_every_surface,
+        test_deck_role_gate_restricts_arming_only,
+        test_audit_chain_verify_finds_every_kind_of_tamper,
+        test_audit_upload_retries_resumes_and_waits_for_the_ack,
+        test_audit_never_blocks_or_fails_a_press,
+        test_soak_render_older_than_layout_is_a_cues_fault_at_show_load,
+        test_flame_cues_refused_while_the_reader_is_mid_pass,
+        test_soak_flame_cues_preloaded_and_never_copied_under_the_lock,
+        test_soak_show_folder_served_is_said_and_followed,
+        test_soak_pc_clock_and_time_service_in_the_morning_checks,
+        test_artnet_receivers_one_address_each_and_on_this_pc,
+        test_disarm_all_is_a_plain_disarm_and_never_gated,
+        test_disarm_ids_survive_an_engine_restart,
+        test_disarm_all_end_to_end_rearms_without_a_cycle,
+        test_lasers_lamp_follows_the_beyond_link,
+        test_video_lamp_follows_the_madmapper_watch,
+        test_artnet_faults_only_for_the_show_in_use,
+        test_rack_screen_jeff_2026_10_23_page,
+        test_schedule_time_zone_is_checked_by_the_engine,
+        test_soak_bench_render_universes_and_fps,
+        test_live_flame_sacn_parser_fuzz,
+        test_live_flame_map_from_a_synthetic_networks_file,
+        test_live_flame_listener_binds_loopback_only,
+        test_live_flame_entry_refusals,
+        test_live_flame_values_and_zero_on_silence,
+        test_live_flame_ends_disarm_and_name_the_reason,
+        test_live_flame_engine_routes_roles_and_presses,
+        test_live_flame_page_banner_and_card,
+        test_live_flame_end_to_end_real_flamesafe,
+        test_live_flame_review_round_one,
+        test_live_flame_end_to_end_armed_group_real_flamesafe,
+        test_live_flame_review_round_two,
+        test_live_flame_from_a_mac,
+        test_live_flame_from_a_mac_round_two,
+        test_scrub_flames_link_rules,
+        test_scrub_flames_read_the_fseq_at_the_transport,
+        test_scrub_flames_the_mode_starts_off_and_ends_itself,
+        test_scrub_flames_engine_routes_roles_and_page,
+        test_scrub_flames_end_to_end_real_flamesafe,
+        test_scrub_flames_review_of_117,
+        test_fuel_flame_seconds_at_the_flame_link,
+        test_fuel_observer_never_waits_and_stays_bounded,
+        test_fuel_purge_counts_for_gflame_not_showven,
+        test_fuel_counts_shows_and_not_rehearsals,
+        test_fuel_learns_the_tank_and_counts_shows_left,
+        test_fuel_refill_undo_and_the_record,
+        test_fuel_survives_restarts_and_a_bad_disk,
+        test_fuel_settings_are_checked_strictly,
+        test_fuel_routes_and_who_may_refill,
+        test_fuel_page_in_a_browser,
+        test_fuel_doc_in_plain_words,
+        test_scrub_flames_seqlock,
+        test_weather_parsers_read_each_source,
+        test_weather_rules_age_stale_no_data_disagree_alerts,
+        test_weather_failure_backoff_and_disk_cache,
+        test_weather_settings_are_checked,
+        test_weather_is_display_only_and_off_the_show_path,
+        test_weather_check_command,
+        test_weather_block_on_the_rack_screen,
+        test_waver_head_settle_may_be_zero,
+        test_open_beyond_window_finder_and_front,
+        test_calibrate_all_lasers_rules_and_order,
+        test_calibrate_all_and_open_beyond_routes,
+        test_users_sign_out_after_the_last_show,
+    ]
+    _stopped = _run_tests(TESTS)
+    for arg in (sys.argv[1:] if _stopped is None else []):
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
     # the command line, so it is not expected in a default run.
     OPT_IN = {"test_real_show"}
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)} - OPT_IN
-    never = sorted(defined - RAN)
+    # A run that stopped early on purpose is red (FAILFAST: a check failed)
+    # or exits PROBE_EXIT, never 0, so the tests it did not reach are not
+    # reported as never called. A run that went through is held to it.
+    never = sorted(defined - RAN) if _stopped is None else []
     if never:
         FAILS.extend(f"{n} is defined but was never called" for n in never)
         print(f"\n{len(never)} test(s) defined but never run:")
@@ -72863,6 +73263,14 @@ if __name__ == "__main__":
             print(f"  {_s:6.1f}s  {_n}")
 
     print(f"\n{'-'*50}")
+    if _stopped == "probe" and not FAILS:
+        print(f"probe passed in {time.time()-t0:.1f}s; not a full run, so "
+              f"exit {PROBE_EXIT}, never 0")
+        sys.exit(PROBE_EXIT)
+    if _stopped is not None and not FAILS:
+        # Cannot happen: FAILFAST stops only on a failure. If it ever does,
+        # a run that skipped tests must not read as green.
+        FAILS.append(f"the run stopped early ({_stopped}) with no failure")
     if SHOW_PROBLEMS:
         print(f"{len(SHOW_PROBLEMS)} thing(s) to fix in the SHOW FILE. The "
               f"program is sound and an update cannot change these:")
