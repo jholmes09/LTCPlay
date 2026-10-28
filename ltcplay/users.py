@@ -107,7 +107,8 @@ PERMS = (
     ("show", "Start now, Resume, Reset, Run a show file, rehearsal "
              "scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
-            "keys, a purge, the Fireball page's channels, arming a laser"),
+            "keys, a purge, the Fireball page's channels, the wave flamer "
+            "cleaning, arming a laser"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -205,8 +206,10 @@ REMOTE_ROUTES = {
     "fuel-refill": None, "fuel-undo": None,
     # The Fireball page (fireball.py): All off only takes risk away.
     "fireball-off": "safety",
+    # Wave flamer cleaning (cleaning.py): Stop only takes risk away.
+    "cleaning-stop": "safety",
     # These depend on the body: see classify().
-    "fireball-beat": "arm",
+    "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
     "laser-arm": "arm",
     "lock": "unlock",
@@ -265,6 +268,10 @@ def classify(route, body=None):
         if name == "fireball-beat":
             # A beat with every channel off only turns things off.
             return "arm" if fireball_on_wanted(raw) else "safety"
+        if name == "cleaning-beat":
+            # Only "hold" the JSON word true runs it (cleaning.py); every
+            # other body is a release, which only stops it.
+            return "arm" if body.get("hold") is True else "safety"
         if name == "laser-test" and body.get("on") is not True:
             return "safety"
         if name == "screen-arming" and body.get("on") is False:

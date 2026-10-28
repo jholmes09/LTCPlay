@@ -15,6 +15,9 @@
 *.m4v
 *.avi
 *.mkv
+# The one exception (Jeff, 2026-10-28): the booth alert notes the Windows
+# installer ships, booth_<name>.wav, short spoken lines and no show media.
+!packaging/windows/booth/booth_*.wav
 
 # Local environment and built app
 .venv/
