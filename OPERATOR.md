@@ -352,6 +352,10 @@ it, or its taskbar button) for Calibration off; it sends nothing to
 BEYOND; if Windows will not let it come
 forward, BEYOND's button on the taskbar flashes, click it); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
+a group button arms every machine in it that can be armed and says which
+it skipped and why, such as one locked out; it is green when all of the
+group is armed, amber with the count and the reason when only part is,
+and while any of it is armed, clicking it again takes the whole group off;
 let go and it stops; nothing fires while a show is live or an Abort
 stands); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either

@@ -59017,7 +59017,7 @@ def test_morning_arrange_mode_arms_nothing():
                  'if(arrangeBlocked("lock", {})) return;',
                  'await post("/api/remote/morning-open", openBeatBody());',
                  'arrangeExit("left");',
-                 'b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));',
+                 'b.disabled = !ids.length || (!any && (!mo.purge_enabled || ARRANGE || !mayRow(ST, "arm")));',
                  'wireMachine(el, m);',
                  'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
                  'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
@@ -59525,6 +59525,173 @@ t(renders > 0, "the page was redrawn");
         R.close()
     print("  ok")
 
+
+
+def test_morning_group_button_skips_locked_and_always_disarms():
+    section("Morning and Shutdown, a group button (Jeff, 2026-10-28, on the "
+            "show PC: Ground G-Flames with front-row-4 locked out armed 1 to "
+            "3, never tried 5 and 6, stayed grey, and a second click did not "
+            "disarm): the click arms every member that can take it and "
+            "names each one refused and why; the button is amber for part "
+            "of the group and green only when all of it is selected and "
+            "flamesafe armed it; while any member is selected the next click "
+            "takes the whole group off, and nothing refuses that")
+    S = _sched()
+    if S is None:
+        return
+    import json as _j
+    import shutil
+    from ltcplay import morning as MO
+    ids = [f"fr{i}" for i in range(1, 7)]
+    cfg = _j.loads(_j.dumps(_MO_CONFIG))
+    cfg["machines"] = [{"id": f"fr{i}", "name": f"front-row-{i}",
+                        "kind": "gflame", "group": "cat-walk",
+                        "fire": [420 + i]} for i in range(1, 7)] + \
+        [m for m in cfg["machines"] if m["id"] == "w1"]
+    cfg["groups"] = {"Ground G-Flames": ids, "Scaffold G-Flames": [],
+                     "Scaffold Wavers": ["w1"]}
+    loop = ("127.0.0.1", 5000)
+    grp = "Ground G-Flames"
+    for locked in (True, False):
+        R = _morning_rig(S, cfg)
+        try:
+            if locked:
+                st, _h, out = R.ask("POST", "/api/remote/lock",
+                                    {"kind": "machine", "id": "fr4",
+                                     "on": True}, client=loop)
+                check(st == 200, f"setup: front-row-4 locked out: {out}")
+            R.fs_lockout = {"slots": [424] if locked else [],
+                            "state": "read"}
+            R.feed()
+            R.m.tick()
+            # First click: every member that can take it.
+            st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                                {"machines": ids, "group": grp, "on": True,
+                                 "seen": R.seen()}, client=loop)
+            want = [i for i in ids if i != "fr4"] if locked else ids
+            check(st == 200 and R.m.purge.selected == want and
+                  out["selected"] == want,
+                  f"locked={locked}: the group arms {want}, past any "
+                  f"member refused: {st} {out}")
+            if locked:
+                check("front-row-4 is locked out" in out["text"] and
+                      "5 of 6 armed" in out["text"] and
+                      out["refused"] == [
+                          "front-row-4 is locked out, so it cannot be armed "
+                          "for a purge. Unlock it first."],
+                      f"and names front-row-4 and why: {out}")
+            else:
+                check(out["refused"] == [] and "6 of 6 armed" in out["text"],
+                      f"all six, nothing refused: {out}")
+            R.m.open_beat("Rack screen")
+            dk = R.remote.deck_input()["morning"]["purge"]["wanted_groups"]
+            check(dk == [1], f"the deck is asked to arm the group: {dk}")
+            # flamesafe has not armed the group yet: amber, in words.
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            gs = v["group_state"][grp]
+            check(gs["state"] == "part" and gs["any"] is True and
+                  "flamesafe has not armed cat-walk yet" in gs["text"] and
+                  ("front-row-4 locked out" in gs["text"]) == locked and
+                  gs["locked"] == (["front-row-4"] if locked else []),
+                  f"selected, flamesafe not armed: amber: {gs}")
+            R.groups[1]["armed"] = "armed"
+            R.groups[1]["wanted"] = True
+            R.feed()
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            gs = v["group_state"][grp]
+            if locked:
+                check(gs["state"] == "part" and gs["text"] ==
+                      "5 of 6 selected; flamesafe armed; front-row-4 "
+                      "locked out", f"one locked out: amber, never "
+                                    f"green: {gs}")
+            else:
+                check(gs["state"] == "on" and gs["text"] ==
+                      "6 of 6 selected; flamesafe armed",
+                      f"all six selected and armed: green: {gs}")
+            check(v["group_state"]["Scaffold Wavers"]["state"] == "off" and
+                  v["group_state"]["Scaffold Wavers"]["any"] is False,
+                  "another group is untouched")
+            # Second click (the page sends on false while any member is
+            # selected): the whole group off, nothing refuses it, even with
+            # purge arming switched off and the deck quiet.
+            R.remote._deck_seen = R.mono[0] - 10
+            from ltcplay import remote as RM
+            RM.save_settings(R.work, purge_arming=False)
+            st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                                {"machines": ids, "group": grp, "on": False,
+                                 "seen": R.seen() - 5000}, client=loop)
+            check(st == 200 and R.m.purge.selected == [] and
+                  out["text"].startswith(f"{grp} off the purge: "),
+                  f"locked={locked}: the second click clears the group: "
+                  f"{st} {out}")
+            check(R.m.purge.groups_wanted() == [] and
+                  R.m.purge.owner is None, "and nothing is asked armed")
+            RM.save_settings(R.work, purge_arming=True)
+            R.remote._deck_seen = R.mono[0]
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            check(v["group_state"][grp]["state"] == "off",
+                  "the button is grey again")
+            if locked:
+                # Every member refused: nothing armed, every reason said.
+                R.fs_lockout = {"slots": [], "state": "read"}
+                R.feed()
+                st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                                    {"machines": ids, "group": grp,
+                                     "on": True, "seen": R.seen()},
+                                    client=loop)
+                check(st == 409 and R.m.purge.selected == [] and
+                      out["error"].startswith(f"{grp}: nothing was armed.")
+                      and "until they agree" in out["error"] and
+                      out["error"].count("until they agree") == 1,
+                      f"a rule that refuses every member: nothing armed, "
+                      f"the reason said once: {st} {out}")
+        finally:
+            R.m.close()
+            R.close()
+    # The page: the click's direction comes from ANY member selected.
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.find("// GROUP CLICK BEGIN")
+    b = page.find("// GROUP CLICK END")
+    check(0 < a < b, "the page has its GROUP CLICK block")
+    for need in ('b.classList.toggle("on", gs.state === "on");',
+                 'b.classList.toggle("part", any && gs.state !== "on");',
+                 'b.textContent = b.dataset.grp + (gs.text ? ": " + gs.text : "");',
+                 '.mo-groups button.part{background:var(--amber)'):
+        check(need in page, f"the page wires {need!r}")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not on this machine, so the group click was "
+              "checked by reading only (CI runs it)")
+    else:
+        js = r"""
+const posts = [];
+function moPress(route, extra){ posts.push([route, extra]); }
+let MO = {groups:{"Ground G-Flames":["fr1","fr2","fr3","fr4","fr5","fr6"]},
+          purge_state:{selected:[]}};
+""" + page[a:b] + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+groupClick("Ground G-Flames");
+t(posts[0][1].on === true && posts[0][1].group === "Ground G-Flames" && posts[0][1].machines.length === 6, "none selected: arm: " + JSON.stringify(posts));
+MO.purge_state.selected = ["fr1","fr2","fr3","fr5","fr6"];
+groupClick("Ground G-Flames");
+t(posts[1][1].on === false && posts[1][1].machines.length === 6, "five of six (one locked): the click disarms: " + JSON.stringify(posts));
+MO.purge_state.selected = ["fr2"];
+groupClick("Ground G-Flames");
+t(posts[2][1].on === false, "any one selected: the click disarms");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = _j.loads(r.stdout.strip() or "null")
+        except ValueError:
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"the group click, in node: {r.stdout!r} {r.stderr[-600:]!r}")
+    print("  ok")
 
 
 def test_morning_arrange_disables_firing():
@@ -76534,6 +76701,7 @@ if __name__ == "__main__":
         test_purge_frame_on_the_flame_link,
         test_purge_rules_at_the_engine,
         test_morning_deck_remap_and_purge_arming,
+        test_morning_group_button_skips_locked_and_always_disarms,
         test_laser_tests_placeholders_lockout_and_allow_list,
         test_laser_output_allow_list_is_exactly_the_three_addresses,
         test_laser_arm_by_laser_and_group_default_disarmed,

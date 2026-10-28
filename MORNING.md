@@ -27,7 +27,18 @@ rule written there.
 3. **Groups**, with Jeff's exact names: Ground G-Flames, Scaffold G-Flames,
    Scaffold Wavers, Fireball. A group button is a fast multi-select
    (nothing saved); every machine can also be clicked on its own; any
-   collection can be armed.
+   collection can be armed. A group click arms every member that can take
+   it and names each one it skipped and why (locked out, never purged, any
+   other rule); it never stops at the first one refused. The button reads
+   in words: green only when every member is selected and flamesafe
+   reports the group armed; amber for part of it ("5 of 6 selected;
+   flamesafe armed; front-row-4 locked out") or while flamesafe has not
+   armed it yet; grey when none is selected. While any member is
+   selected, the next click takes the whole group off the purge, and
+   nothing holds that back: not a locked or refused member, not Arrange
+   mode, not purge arming switched off (Jeff, 2026-10-28, show PC: with
+   front-row-4 locked out the group armed 1 to 3, never tried 5 and 6,
+   stayed grey, and a second click armed again instead of disarming).
 4. **Layout**: the machines drawn labelled in a top-down positional view.
    The machine list comes from `ltcplay_morning.json` (or, when it names
    none, one machine per fire slot of flamesafe's own config), positions

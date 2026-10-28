@@ -424,6 +424,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .mo-groups button{flex:1 1 9em;min-height:clamp(44px,5.5vh,56px);font-size:clamp(14px,1.8vh,18px);padding:4px 8px}
 .mo-groups button.ghost{flex:0 0 auto}
 .mo-groups button.on{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
+.mo-groups button.part{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
 #mo-field{flex:0 0 auto;height:clamp(360px,56vh,680px);position:relative;border:1px solid var(--hair);border-radius:8px;
   background:rgba(7,6,5,.6) linear-gradient(180deg,rgba(212,168,74,.05),rgba(212,168,74,0));overflow:hidden}
 #mo-field .edge{position:absolute;left:8px;right:8px;font:700 14px/1.2 var(--caps);letter-spacing:.14em;
@@ -3879,12 +3880,20 @@ function renderMorning(){
   // Arrange mode: the banner with its three ways out shows, the Arrange
   // button and every group button are off (Jeff, 2026-10-19).
   renderArrange();
+  // A group button (Jeff, 2026-10-28): green only when every member is
+  // selected and flamesafe armed it, amber for part of it (the engine's
+  // words name what is locked out or not armed yet), and while ANY member
+  // is selected its click takes the whole group off: a disarm is never
+  // held back.
   gb.querySelectorAll("[data-grp]").forEach(b => {
     const ids = (mo.groups || {})[b.dataset.grp] || [];
-    const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
-    b.classList.toggle("on", !!all);
-    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));
-    b.title = ids.length ? ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
+    const gs = (mo.group_state || {})[b.dataset.grp] || {};
+    const any = groupAnySelected(ids, purge);
+    b.classList.toggle("on", gs.state === "on");
+    b.classList.toggle("part", any && gs.state !== "on");
+    b.disabled = !ids.length || (!any && (!mo.purge_enabled || ARRANGE || !mayRow(ST, "arm")));
+    b.textContent = b.dataset.grp + (gs.text ? ": " + gs.text : "");
+    b.title = ids.length ? (any ? "Click to take the whole group off the purge. " : "") + ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
   });
   // The field: every machine where the layout puts it.
   const field = $("mo-field");
@@ -4063,12 +4072,22 @@ function laserGroupClick(g){
   const la = (MO && MO.laser_arm) || {groups: {}};
   laserArmClick(((la.groups || {})[g] || []).slice());
 }
+// GROUP CLICK BEGIN
+// Any member selected: the click takes the WHOLE group off (the safe way,
+// never blocked by a member that is locked out or was refused). None
+// selected: it asks the engine to arm every member that can take it; the
+// engine skips and names the rest (Jeff, 2026-10-28: a locked front-row-4
+// left the button grey and a second click armed again instead of off).
+function groupAnySelected(ids, purge){
+  const sel = (purge && purge.selected) || [];
+  return ids.some(id => sel.includes(id));
+}
 function groupClick(g){
   const ids = (MO.groups || {})[g] || [];
-  const purge = MO.purge_state || {};
-  const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
-  moPress("purge-select", {machines: ids, on: !all});
+  const any = groupAnySelected(ids, MO.purge_state || {});
+  moPress("purge-select", {machines: ids, group: g, on: !any});
 }
+// GROUP CLICK END
 async function moPress(route, extra, msgEl){
   const el = $(msgEl || "mo-msg");
   // Every press on this page goes through here: in Arrange mode the ones
