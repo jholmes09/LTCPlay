@@ -10208,8 +10208,8 @@ def build():
 
  ("rack screen: a group's arm value is dropped from the card",
   "ltcplay/remote.py",
-  '                           "arm_value": _arm(g.get("arm_value"))})',
-  '                           "arm_value": None})'),
+  '                           "arm_value": _arm(g.get("arm_value")),',
+  '                           "arm_value": None,'),
 
  ("flamesafe: a profile group arms at the file's arm value",
   "flamesafe/config.py",
@@ -13717,9 +13717,8 @@ def build():
 
  ("fuel: one under the fire value counts as flame",
   "ltcplay/fuel.py",
-  "            if not any(0 < s <= n and values[s - 1] >= at for s in m.fire):",
-  "            if not any(0 < s <= n and values[s - 1] >= at - 1\n"
-  "                       for s in m.fire):"),
+  "            if not any(0 < s <= n and values[s - 1] >= at\n",
+  "            if not any(0 < s <= n and values[s - 1] >= at - 1\n"),
 
  ("fuel: a Showven's purge counts",
   "ltcplay/fuel.py",
