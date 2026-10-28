@@ -1508,6 +1508,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(409, {"error": (
                         "Run was refused: " + _svc.HALTING + ". Nothing was "
                         "started.")})
+                # Never over Programming playback (playhead.py): the same
+                # sentence as Start now's.
+                _rm = getattr(self.server, "remote", None)
+                _why = getattr(_rm, "programming_playback_refusal",
+                               lambda: "")()
+                if _why:
+                    return self._send(409, {"error": _why})
                 # Run ends live flame programming first (flameprog.py):
                 # the show's own flame cues and xLights are never both a
                 # source of fire values.
