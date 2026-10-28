@@ -26148,7 +26148,8 @@ class _AmSim:
 
 
 def _am_rig(work=None, seconds=6.0, block=480, latency=0.02, drift_ppm=0.0,
-            devices=None, reported_latency=None, silences=(), **audio):
+            devices=None, reported_latency=None, silences=(), lengths=None,
+            **audio):
     """A deterministic audio_master: the show, the clock, a local audio
     engine, and a recorder for everything the clock tells the world."""
     import tempfile
@@ -26175,7 +26176,7 @@ def _am_rig(work=None, seconds=6.0, block=480, latency=0.02, drift_ppm=0.0,
         clock=vc, mono=vc, log=lg, journal=jr, threaded=False,
         on_stop=lambda: calls["stop"].append(vc()),
         on_pause=lambda: calls["pause"].append(vc()),
-        on_resume=lambda: calls["resume"].append(vc()))
+        on_resume=lambda: calls["resume"].append(vc()), lengths=lengths)
     am.start()
     sim = _AmSim(am, eng, vc)
     sim.run(vc() + 0.05)
@@ -27223,7 +27224,9 @@ def test_audio_master_the_audio_ending_ends_the_cue():
     am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
     am.play(3600.0, None, "Show")
     sim.run(vc() + 2.0)
-    frames = [n for _, n in out.frames()]
+    # Up to the end: after it the last frame is held (the next test).
+    stop_at = r["calls"]["stop"][0] if r["calls"]["stop"] else 1e18
+    frames = [n for t, n in out.frames() if t <= stop_at]
     check(frames == list(range(30)),
           f"a 1 s cue sent frames {frames[:3]}..{frames[-3:]}, not 0 to 29")
     check(len(r["calls"]["stop"]) == 1 and not am.playing
@@ -27261,6 +27264,266 @@ def test_audio_master_the_audio_ending_ends_the_cue():
         check("has no show audio" in str(e), f"the refusal: {e}")
     r["am"].stop()
     r2["am"].stop()
+    print("  ok")
+
+
+def test_audio_master_the_show_runs_to_its_longest_part():
+    section("audio_master: a show runs to the longest of its audio, lights "
+            "file and show length; past the audio's end the timecode and "
+            "the lights carry on in silence, with no loss (Jeff's field "
+            "report, 2026-10-28, item 12)")
+    from ltcplay import clock as clock_mod
+    # 1 s of audio, a 1.5 s lights file.
+    r = _am_rig(seconds=1.0, lengths={"Show": 1.5})
+    am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 1.2)
+    check(am.playing and am._mode == "tail",
+          f"past the end of the audio and before the end of the show the "
+          f"cue did not carry on in its tail: playing {am.playing}, mode "
+          f"{am._mode}, {am.last_ended!r}")
+    check(am.losses == 0 and not am.health_warnings() and
+          not r["journal"].faults,
+          f"the audio ending before the lights read as a loss: "
+          f"{am.health_warnings()} {r['journal'].faults}")
+    check(am.snapshot()["audio"]["mode"] == "tail",
+          "the page does not say the cue is in its silent tail")
+    sim.run(vc() + 1.0)
+    stops = r["calls"]["stop"]
+    check(len(stops) == 1 and not am.playing and
+          am.last_ended == "Show finished",
+          f"the cue did not end the normal way at the end of the lights: "
+          f"{stops} {am.last_ended!r}")
+    before = [n for t, n in out.frames() if stops and t <= stops[0]]
+    check(before == list(range(45)),
+          f"a 1 s audio and a 1.5 s lights file sent frames "
+          f"{before[:3]}..{before[-3:]}, not 0 to 44")
+    fed = [pos for _t, pos, _a, _x in r["fed"]]
+    check(fed and abs(max(fed) - (3600.0 + 44 / 30.0)) < 1e-6,
+          f"the pixels did not follow the timecode to the end of the "
+          f"lights: last {max(fed) if fed else None}")
+    first = out.frames()[0][0]
+    check(stops and 1.5 - 1e-6 <= stops[0] - first < 1.5 + 2 / 30.0,
+          f"the show ended {stops[0] - first if stops else None} s after "
+          f"its first frame, not 1.5 s")
+    check(clock_mod.show_len_of(am, r["tl"]) == 1.5 and
+          am.show_lengths("Show") == {"audio_s": 1.0, "show_s": 1.5},
+          f"the show's real length: {am.show_lengths('Show')}")
+    am.stop()
+    # A show length shorter than the audio never cuts the audio short.
+    r2 = _am_rig(seconds=1.0, lengths={"Show": 0.5})
+    r2["am"].play(3600.0, None, "Show")
+    r2["sim"].run(r2["vc"]() + 2.0)
+    s2 = r2["calls"]["stop"]
+    sent = [n for t, n in r2["out"].frames() if s2 and t <= s2[0]]
+    check(sent == list(range(30)),
+          f"a 0.5 s length cut a 1 s audio short: {sent[-3:]}")
+    r2["am"].stop()
+    # Abort in the tail is at once: a longer show never delays it.
+    r3 = _am_rig(seconds=1.0, lengths={"Show": 3.0})
+    am3, vc3 = r3["am"], r3["vc"]
+    am3.play(3600.0, None, "Show")
+    r3["sim"].run(vc3() + 1.3)
+    t_abort = vc3()
+    am3.halt()
+    check(not am3.playing and am3.last_ended == "Show stopped" and
+          r3["calls"]["stop"] == [t_abort],
+          f"an Abort in the tail did not stop at once: {am3.playing} "
+          f"{am3.last_ended!r} {r3['calls']['stop']} at {t_abort}")
+    r3["sim"].run(vc3() + 1.0)
+    check(not r3["out"].frames(since=t_abort + 1e-9),
+          "an Abort in the tail left the timecode running or held")
+    am3.stop()
+    # Hold and Resume in the tail carry on to the end.
+    r4 = _am_rig(seconds=1.0, lengths={"Show": 2.0})
+    am4, vc4 = r4["am"], r4["vc"]
+    am4.play(3600.0, None, "Show")
+    r4["sim"].run(vc4() + 1.3)
+    am4.pause()
+    r4["sim"].run(vc4() + 0.5)
+    check(am4.paused and am4.playing, "a Hold in the tail did not hold")
+    am4.resume()
+    r4["sim"].run(vc4() + 0.2)
+    check(am4.playing and not am4.paused and am4._mode == "tail",
+          f"a Resume in the tail ended the show or lost it: playing "
+          f"{am4.playing}, mode {am4._mode}, {am4.last_ended!r}")
+    r4["sim"].run(vc4() + 1.5)
+    s4 = r4["calls"]["stop"]
+    seen = []
+    for t, n in r4["out"].frames():
+        if s4 and t <= s4[0] and (not seen or n != seen[-1]):
+            seen.append(n)
+    check(len(s4) == 1 and am4.last_ended == "Show finished" and
+          seen == list(range(60)),
+          f"Hold and Resume in the tail did not run on to the end: "
+          f"{seen[-3:]} {am4.last_ended!r}")
+    am4.stop()
+    # The lengths a show file gives: the lights file, and the configured
+    # show length for the show's own cue only.
+    tl = r["tl"]
+    cues = {"Show": ("show", 48000), "Intermission": ("intermission", 48000)}
+    for c in tl.cues:
+        c.duration = 1.5 if c.name == "Show" else 2.5
+    got = clock_mod.cue_lengths(tl.clock, tl, cues)
+    check(got == {"Show": 1.5, "Intermission": 2.5},
+          f"the lights files' lengths: {got}")
+    tl.clock.zones.show_len_s = 4.0
+    got = clock_mod.cue_lengths(tl.clock, tl, cues)
+    check(got == {"Show": 4.0, "Intermission": 2.5},
+          f"'clock.zones.show_len_s' is the show cue's override only: {got}")
+    print("  ok")
+
+
+def test_audio_master_timecode_holds_at_the_end():
+    section("audio_master: at the end of a show the timecode holds its last "
+            "frame for MadMapper (never BEYOND) until the next cue, an "
+            "Abort or Stop (Jeff's field report, 2026-10-28, item 12)")
+    from ltcplay import clock as clock_mod
+    r = _am_rig(seconds=1.0)
+    am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 1.2)
+    stops = r["calls"]["stop"]
+    check(len(stops) == 1 and not am.playing and
+          am.last_ended == "Show finished",
+          f"the show did not end the normal way: {stops} {am.last_ended!r}")
+    sim.run(vc() + 2.0)
+    after = [n for _t, n in out.frames(since=stops[0] + 1e-9)]
+    check(after and set(after) == {29},
+          f"after the end the timecode did not hold the last frame: "
+          f"{sorted(set(after))[:5]}")
+    check(55 <= len(after) <= 66,
+          f"the held frame was not sent 30 times a second: {len(after)} "
+          f"in about 2.2 s")
+    snap = am.snapshot()
+    check(snap["holding"] == "00:00:00:29" and snap["playing"] is None and
+          snap["sending"] is None,
+          f"the page does not say the timecode is held: {snap['holding']}")
+    check(r["fed"][-1][3] == "00:00:00:29" and
+          all(t <= stops[0] for t, *_ in r["fed"]),
+          "the held frame reached the pixels, which go to the idle look")
+    # The next cue starts from 00:00:00:00, and its Abort stops everything,
+    # with no held frame from the last show left behind.
+    t_play = vc()
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 0.5)
+    nxt = [n for _t, n in out.frames(since=t_play + 1e-9)]
+    check(nxt and nxt[0] == 0 and nxt == sorted(nxt) and 29 not in nxt,
+          f"the next cue did not start at 00:00:00:00: {nxt[:5]}")
+    t_abort = vc()
+    am.halt(fade_ms=0)
+    sim.run(vc() + 1.0)
+    check(not out.frames(since=t_abort + 1e-9) and
+          am.snapshot()["holding"] is None,
+          "an Abort mid-show sent a held frame from the show before")
+    am.stop()
+    # Abort and Stop after the end let the held frame go.
+    for how in ("Abort", "Stop"):
+        r2 = _am_rig(seconds=1.0)
+        am2, vc2 = r2["am"], r2["vc"]
+        am2.play(3600.0, None, "Show")
+        r2["sim"].run(vc2() + 1.5)
+        check(am2.snapshot()["holding"] == "00:00:00:29",
+              f"{how}: nothing held before it")
+        if how == "Abort":
+            am2.halt()
+            t = vc2()
+            r2["sim"].run(vc2() + 1.0)
+            check(not r2["out"].frames(since=t + 1e-9),
+                  "an Abort after the end left the timecode held")
+        else:
+            am2.stop()
+            with am2._lock:
+                am2._emit(vc2() + 1.0)
+            check(am2._held is None and
+                  not r2["out"].frames(since=vc2() + 1e-9),
+                  "Stop after the end left the timecode held")
+        am2.stop()
+    # The real socket: a held frame goes to MadMapper, never to BEYOND,
+    # and a show frame still goes to both.
+
+    class Sock:
+        def __init__(self):
+            self.to = []
+
+        def sendto(self, pkt, addr):
+            self.to.append(addr[0])
+
+        def close(self):
+            pass
+    sock = Sock()
+    o = clock_mod.TimecodeOut([("MadMapper", "10.0.0.1"),
+                               ("BEYOND", "10.0.0.2")],
+                              socket_factory=lambda: sock)
+    pkt = clock_mod.arttimecode(0, 7, 34, 5)
+    o.send_held(pkt)
+    check(sock.to == ["10.0.0.1"],
+          f"a held frame went to {sock.to}, not MadMapper alone")
+    sock.to.clear()
+    o.send(pkt)
+    check(sock.to == ["10.0.0.1", "10.0.0.2"],
+          f"a show frame went to {sock.to}, not to both")
+    only = clock_mod.TimecodeOut([("BEYOND", "10.0.0.2")],
+                                 socket_factory=lambda: sock)
+    for _ in range(5):
+        only.send_held(pkt)
+    check(only.send_errors == 0 and only.reopens == 0 and
+          only._sock is not None,
+          "holding with nobody to hold for counted as a failing socket")
+    print("  ok")
+
+
+def test_audio_master_run_warns_when_the_audio_is_shorter():
+    section("audio_master: Run says, first and in plain words, when the "
+            "show audio is shorter than the lights file, naming both "
+            "lengths, and never refuses (Jeff's field report, 2026-10-28, "
+            "item 12c)")
+    import tempfile
+    from ltcplay.session import Session
+    from ltcplay import clock as clock_mod, settings as st_mod
+    import ltcplay.player as plmod
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    real_prepare = plmod.Player._prepare
+    frames = [60]
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=frames[0])
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    try:
+        for n, want in ((60, True), (40, False)):
+            work = tempfile.mkdtemp()
+            st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+            st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+            plmod.Player._prepare = fake_prepare
+            frames[0] = n
+            _tl, tlp, net = _am_show(work, 1.0)
+            sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                           sd=FakeSD())
+            sess.open()
+            notes = list(sess.notes)
+            real = clock_mod.show_len_of(sess.clock, sess.tl)
+            sess.stop()
+            short = [t for t in notes if "shorter than" in t]
+            if want:
+                check(short and notes[0] == short[0] and
+                      "The show audio for Show is 1.00 s, shorter than the "
+                      "lights file (1.50 s)" in short[0] and
+                      "the last 0.50 s play in silence" in short[0],
+                      f"Run did not say first that the audio is short: "
+                      f"{notes[:2]}")
+                _no_dashes(" ".join(short), "the short audio note")
+                check(real == 1.5, f"the show's real length: {real}")
+            else:
+                check(not short and real == 1.0,
+                      f"audio as long as the lights was warned about: "
+                      f"{short} {real}")
+    finally:
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
     print("  ok")
 
 
@@ -27904,7 +28167,9 @@ def test_audio_master_review_rules():
     check(len(quiet) > 1400, "the silent stretches were not silent")
     check(am.losses == 0 and eng.proc.opens == 1 and not warned
           and not r["journal"].faults and am.last_ended == "Show finished"
-          and not _am_consecutive(r["out"].frames(since=t0)),
+          and not _am_consecutive(
+              [(t, n) for t, n in r["out"].frames(since=t0)
+               if t <= r["calls"]["stop"][-1]]),
           f"digital silence was taken for a lost interface: losses "
           f"{am.losses}, opens {eng.proc.opens}, faults "
           f"{r['journal'].faults}, health {warned[:1]}")
@@ -67912,6 +68177,131 @@ def test_lasers_lamp_follows_the_beyond_link():
     print("  ok")
 
 
+def test_madmapper_heartbeat_follows_the_real_show_length():
+    section("MadMapper heartbeat: read against the show's real length, "
+            "MadMapper's /float-1 track length measured, and the rack "
+            "screen says exactly what to set it to (Jeff's field report, "
+            "2026-10-28, item 14)")
+    import tempfile
+    import types
+    from ltcplay import madmapper as MM, madmapperwatch as MW
+    from ltcplay import remote as RM
+    t = [1000.0]
+    pos = [None]
+
+    class Clk:
+        source = "audio_master"
+        cues = {"Show": ("show", int(451.46 * 48000))}
+        paused = False
+        _mode = "follow"
+        _cue = {"label": "Show"}
+
+        def show_lengths(self, label):
+            return ({"audio_s": 451.46, "show_s": 454.17}
+                    if label == "Show" else None)
+
+        def _clock(self):
+            return t[0]
+
+        def _pos(self, now):
+            return pos[0]
+    tl = types.SimpleNamespace(
+        clock=types.SimpleNamespace(zones=types.SimpleNamespace(show=1)),
+        cues=[types.SimpleNamespace(name="Show", tc_seconds=3600.0)])
+    sess = types.SimpleNamespace(clock=Clk(), tl=tl)
+    cfg = MM.HeartbeatConfig(show_len_s=444.42)
+    dog = MM.Watchdog(cfg, clock=lambda: t[0])
+    hv = MW.heartbeat_view
+    got = hv(dog, cfg, True, sess)
+    check(dog.show_len_s() == 454.17,
+          f"the heartbeat is read against {dog.show_len_s()} s, not the "
+          f"show's real 454.17 s")
+    check(got["track"] == ("MadMapper's /float-1 heartbeat track must end "
+                           "at 454.17 s, the show's real length "
+                           "(ltcplay_fire_ice.json says 444.42 s; the "
+                           "heartbeat is read against 454.17 s)") and
+          not got["track_wrong"],
+          f"before any measurement: what it must end at: {got}")
+    hv(dog, cfg, True, None)
+    check(dog.show_len_s() == 444.42,
+          "with no show running the configured length is used")
+    # The drift check reads the real length: MadMapper at 0.5 of a 454.17 s
+    # track while ltcplay is at 227.085 s is in step.
+    dog.arm(show=1)
+    dog.note_position(0.0)
+    dog.on_packet(0.0)
+    dog.follow_show_length(454.17)
+    dog.on_packet(0.0)
+    dog.note_position(227.085)
+    dog.on_packet(0.5)
+    check(dog.last_drift_ms is not None and abs(dog.last_drift_ms) < 1.0,
+          f"in step against the real length, yet {dog.last_drift_ms} ms of "
+          f"drift")
+    dog.disarm()
+    # MadMapper's track ends at 444.42 s: measured from the show playing.
+
+    def play(track):
+        for s in range(60, 300, 5):
+            t[0] += 5.0
+            pos[0] = float(s)
+            hv(dog, cfg, True, sess)
+            t[0] += 0.2
+            dog.on_packet((s + 0.2) / track)
+        return hv(dog, cfg, True, sess)
+    got = play(444.42)
+    check(abs(dog.track_len_s() - 444.42) < 0.01,
+          f"MadMapper's track measured {dog.track_len_s()} s, not 444.42")
+    check(got["track"] == ("set MadMapper's /float-1 heartbeat track to end "
+                           "at 454.17 s, the show's real length; it ends at "
+                           "444.42 s now") and
+          got["track_wrong"] == ("set /float-1 to end at 454.17 s, it ends "
+                                 "at 444.42 s"),
+          f"a short track: said exactly: {got}")
+    _no_dashes(got["track"] + got["track_wrong"], "the heartbeat track words")
+    # A held or stopped show measures nothing.
+    n = len(dog._track_samples)
+    pos[0] = None
+    hv(dog, cfg, True, sess)
+    t[0] += 0.2
+    dog.on_packet(0.6)
+    check(len(dog._track_samples) == n, "a stopped show measured the track")
+    # The rack screen's Video lamp says it.
+    snap = {"applied": {"video": "lit"}, "look": "PLAYING"}
+    cond = types.SimpleNamespace(
+        snapshot=lambda: snap,
+        devices=types.SimpleNamespace(beyond=types.SimpleNamespace(
+            fault="")), _ver={"lasers": 0, "video": 2})
+    sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+    r = RM.Remote(types.SimpleNamespace(session=sess), sched,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+    r.madmapper_watch = MW.MadMapperWatch(lambda: True, clock=lambda: t[0])
+    r.madmapper_watch.check_once()
+    r.madmapper_heartbeat, r.madmapper_heartbeat_cfg = dog, cfg
+
+    def chip():
+        got = [x for x in r.subsystems({"running": True})
+               if x["name"] == "Video"]
+        return got[0] if got else {}
+    c = chip()
+    check((c.get("state"), c.get("word")) == (
+        "warn", "MadMapper running, set /float-1 to end at 454.17 s, it "
+                "ends at 444.42 s") and
+          "Set MadMapper's /float-1 heartbeat track to end at 454.17 s" in
+          c.get("title", ""),
+          f"the Video lamp does not say what to set: {c}")
+    # Set right in MadMapper: the samples roll over and it reads right.
+    pos[0] = None
+    got = play(454.17)
+    check(abs(dog.track_len_s() - 454.17) < 0.01 and
+          not got["track_wrong"] and
+          got["track"] == ("MadMapper's /float-1 heartbeat track ends at "
+                           "454.17 s, the show's real length"),
+          f"a right track: {got}")
+    c = chip()
+    check(c.get("state") == "ok", f"a right track is green: {c}")
+    print("  ok")
+
+
 def test_video_lamp_follows_the_madmapper_watch():
     section("The Video lamp read 'not known' until a show sent something "
             "(Jeff, 2026-10-26): the MadMapper watch says up, lost or "
@@ -76233,6 +76623,9 @@ if __name__ == "__main__":
         test_audio_master_hold_resume_and_abort,
         test_audio_master_device_loss_freeruns_and_returns,
         test_audio_master_the_audio_ending_ends_the_cue,
+        test_audio_master_the_show_runs_to_its_longest_part,
+        test_audio_master_timecode_holds_at_the_end,
+        test_audio_master_run_warns_when_the_audio_is_shorter,
         test_audio_master_session_hold_resume_abort,
         test_audio_master_runs_in_its_own_process,
         test_the_gpl_path_never_loads_the_show_audio,
@@ -76585,6 +76978,7 @@ if __name__ == "__main__":
         test_disarm_all_end_to_end_rearms_without_a_cycle,
         test_lasers_lamp_follows_the_beyond_link,
         test_video_lamp_follows_the_madmapper_watch,
+        test_madmapper_heartbeat_follows_the_real_show_length,
         test_artnet_faults_only_for_the_show_in_use,
         test_rack_screen_jeff_2026_10_23_page,
         test_schedule_time_zone_is_checked_by_the_engine,

@@ -350,6 +350,14 @@ class Session:
             # it reads the rig watch and the input.
             self.player.clock = self.clock
             self.notes.append(f"Show clock: {self.tl.clock.summary()}.")
+            # Audio shorter than the lights file (Jeff's field report,
+            # 2026-10-28, item 12c): said at Run, first, in plain words.
+            # Never a refusal: the show plays to its real end either way.
+            short = clock_mod.audio_length_notes(self.clock, self.tl)
+            self.notes[:0] = short
+            if self.log:
+                for t in short:
+                    self.log.event("preflight", t)
             # Two receivers on one address, or a node address this PC does
             # not have (soak 2026-10-21): said at show load, never refused
             # here. The rack screen's alert and the Morning card say it too.

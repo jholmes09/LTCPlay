@@ -4418,10 +4418,15 @@ class Remote:
                   "why": f"the MadMapper watch failed: {type(e).__name__}"}
         from . import madmapperwatch as mmw
         hb = mmw.heartbeat_view(self.madmapper_heartbeat,
-                                self.madmapper_heartbeat_cfg, playing)
+                                self.madmapper_heartbeat_cfg, playing,
+                                getattr(self.control, "session", None))
         if hb is not None:
             st["heartbeat"] = hb["heartbeat"]
             st["heartbeat_why"] = hb["why"]
+            # What MadMapper's heartbeat track must end at, and what it
+            # ends at now once measured (Jeff, 2026-10-28, item 14).
+            st["heartbeat_track"] = hb.get("track")
+            st["heartbeat_track_wrong"] = hb.get("track_wrong") or False
         return st
 
     @staticmethod
@@ -4488,6 +4493,9 @@ class Remote:
             hb = mm.get("heartbeat")
             if hb == "silent":
                 add("Video", "warn", "MadMapper running, no heartbeat")
+            elif mm.get("heartbeat_track_wrong"):
+                add("Video", "warn", f"MadMapper running, "
+                    f"{mm['heartbeat_track_wrong']}")
             elif not last and sent:
                 add("Video", "warn",
                     "MadMapper running, last command not confirmed")
@@ -4501,6 +4509,9 @@ class Remote:
             if mm.get("heartbeat_why"):
                 why = mm["heartbeat_why"][0].upper() + \
                     mm["heartbeat_why"][1:] + ". "
+            if mm.get("heartbeat_track"):
+                why += mm["heartbeat_track"][0].upper() + \
+                    mm["heartbeat_track"][1:] + ". "
         elif last:
             add("Video", "ok", last)
         elif sent:

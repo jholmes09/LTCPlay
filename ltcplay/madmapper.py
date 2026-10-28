@@ -903,6 +903,14 @@ class Watchdog:
     ignore the alarm."""
 
     DRIFT_SETTLE_PACKETS = 1
+    # Measuring MadMapper's heartbeat track length (track_len_s): only from
+    # packets in the middle of the track, at least TRACK_MIN_S into the
+    # show, against a position noted no more than TRACK_FRESH_S before.
+    TRACK_SAMPLES = 15
+    TRACK_MIN_SAMPLES = 3
+    TRACK_MIN_S = 60.0
+    TRACK_FRESH_S = 1.5
+    TRACK_VALUES = (0.02, 0.98)
 
     def __init__(self, cfg=None, clock=time.perf_counter, sleep=time.sleep,
                 socket_factory=None, journal=None, poll_s=0.1):
@@ -929,6 +937,15 @@ class Watchdog:
         self._alarmed = False
         self.packets_in = 0
         self._ltcplay_pos = None       # (seconds, at) from note_position()
+        # The show's real length, when the running show says it
+        # (follow_show_length): it outranks cfg.show_len_s, so the heartbeat
+        # is read against the show that is really playing (Jeff's field
+        # report, 2026-10-28, item 14).
+        self._show_len_real = None
+        # MadMapper's own heartbeat track length as measured: ltcplay's
+        # position divided by the value at the same moment, one per packet
+        # (TRACK_SAMPLES kept). Any packet counts, armed or not.
+        self._track_samples = []
         self.last_drift_ms = None
         self.drift_flagged = False
         self.bind_error = None
@@ -1023,12 +1040,15 @@ class Watchdog:
         drift_note = None
         skip_drift = False
         with self._lock:
+            # MadMapper's track length, measured from any packet, armed or
+            # not (track_len_s).
+            self._measure_track(value, now)
             # Heard at all, armed or not: the rack screen's Video lamp
             # (madmapperwatch.py) only. Never counted, never a position.
             self._heard_at = now
             if not self.armed:
                 return
-            show_len_s = self.cfg.show_len_s
+            show_len_s = self._show_len_locked()
             if self._awaiting_start:
                 near_start = (show_len_s is not None
                              and isinstance(value, (int, float))
@@ -1084,10 +1104,64 @@ class Watchdog:
     def note_position(self, seconds, at=None):
         """ltcplay's own timecode position, for the drift check. Nothing
         in this module calls this itself -- see the class docstring; it
-        is fed in by whoever also owns the real clock."""
+        is fed in by whoever also owns the real clock. None: no moving
+        position (nothing playing, or held)."""
         with self._lock:
-            self._ltcplay_pos = (seconds, self._clock() if at is None
-                                else at)
+            self._ltcplay_pos = None if seconds is None else (
+                seconds, self._clock() if at is None else at)
+
+    # -- the heartbeat track's length (Jeff, 2026-10-28, item 14) ----------
+    def follow_show_length(self, seconds):
+        """The running show's real length (clock.show_len_of), or None to
+        go back to cfg.show_len_s. The track measurements stay: they are
+        of MadMapper's own track, whatever the show says."""
+        v = None
+        if isinstance(seconds, (int, float)) and \
+                not isinstance(seconds, bool) and seconds > 0 and \
+                math.isfinite(seconds):
+            v = float(seconds)
+        with self._lock:
+            self._show_len_real = v
+
+    def _show_len_locked(self):
+        return self._show_len_real if self._show_len_real is not None \
+            else self.cfg.show_len_s
+
+    def show_len_s(self):
+        """The show length the heartbeat is read against: the running
+        show's real length, else the configured one."""
+        with self._lock:
+            return self._show_len_locked()
+
+    def _measure_track(self, value, now):
+        """One measurement of MadMapper's heartbeat track length from this
+        packet. Lock held."""
+        pos = self._ltcplay_pos
+        if pos is None or not isinstance(value, (int, float)) or \
+                isinstance(value, bool) or math.isnan(value):
+            return
+        lo, hi = self.TRACK_VALUES
+        if not lo <= value <= hi:
+            return
+        ltc_s, ltc_at = pos
+        if not 0 <= now - ltc_at <= self.TRACK_FRESH_S:
+            return
+        t = ltc_s + (now - ltc_at)
+        if t < self.TRACK_MIN_S:
+            return
+        self._track_samples.append(t / value)
+        del self._track_samples[:-self.TRACK_SAMPLES]
+
+    def track_len_s(self):
+        """MadMapper's heartbeat track length as measured (the median of
+        the recent measurements), or None until there are enough. The
+        track's value runs 0 to 1 over its length, so with ltcplay at t s
+        and the value v, the track is t / v s long."""
+        with self._lock:
+            got = sorted(self._track_samples)
+        if len(got) < self.TRACK_MIN_SAMPLES:
+            return None
+        return got[len(got) // 2]
 
     def arm(self, show=None):
         with self._lock:
