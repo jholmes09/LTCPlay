@@ -25971,14 +25971,22 @@ class _AmOut(_TcOut):
         self.packets_sent += 1
         return True
 
-    # A held end frame (clock.TimecodeOut.send_held): this recorder's one
-    # destination is MadMapper's.
-    send_held = send
+    # A held frame (clock.TimecodeOut.send_held, after the end of a show or
+    # an Abort): this recorder's one destination is MadMapper's. Kept in
+    # `sent` like every frame, and its time in `held_at` too, so a test can
+    # tell it from a frame sent to every receiver (frames(plain=True)).
+    def send_held(self, pkt):
+        self.held_at = getattr(self, "held_at", set())
+        self.held_at.add(len(self.sent))
+        return self.send(pkt)
 
-    def frames(self, since=None):
+    def frames(self, since=None, plain=False):
         out = []
-        for t, p in self.sent:
+        held = getattr(self, "held_at", set())
+        for i, (t, p) in enumerate(self.sent):
             if since is not None and t < since:
+                continue
+            if plain and i in held:
                 continue
             h, m, s, f, _ = _tc_of(p)
             out.append((t, ((h * 60 + m) * 60 + s) * 30 + f))
@@ -27065,7 +27073,12 @@ def test_audio_master_hold_resume_and_abort():
           "the Abort fade is not a fade")
     check(all(v == 0.0 for t, v in lv if t > t_abort + 1.05),
           "sound kept coming after Abort's fade")
-    check(not out.frames(since=r["calls"]["stop"][0] + 1e-9),
+    # After the Abort nothing goes to every receiver; only the frozen last
+    # frame, held for MadMapper alone (send_held), as at a show's end.
+    stop0 = r["calls"]["stop"][0]
+    last = [n for t, n in out.frames() if t <= stop0][-1]
+    check(not out.frames(since=stop0 + 1e-9, plain=True) and
+          {n for _t, n in out.frames(since=stop0 + 1e-9)} == {last},
           "timecode kept going after Abort stopped the cue")
     check(not am.playing and "stopped" in am.last_ended,
           f"after Abort: playing={am.playing} {am.last_ended!r}")
@@ -27335,8 +27348,12 @@ def test_audio_master_the_show_runs_to_its_longest_part():
           f"an Abort in the tail did not stop at once: {am3.playing} "
           f"{am3.last_ended!r} {r3['calls']['stop']} at {t_abort}")
     r3["sim"].run(vc3() + 1.0)
-    check(not r3["out"].frames(since=t_abort + 1e-9),
-          "an Abort in the tail left the timecode running or held")
+    last3 = [n for t, n in r3["out"].frames() if t <= t_abort][-1]
+    check(not r3["out"].frames(since=t_abort + 1e-9, plain=True) and
+          {n for _t, n in r3["out"].frames(since=t_abort + 1e-9)} ==
+          {last3},
+          "an Abort in the tail left the timecode running, or did not "
+          "hold its last frame for MadMapper alone")
     am3.stop()
     # Hold and Resume in the tail carry on to the end.
     r4 = _am_rig(seconds=1.0, lengths={"Show": 2.0})
@@ -27449,8 +27466,9 @@ def test_audio_master_the_show_runs_to_its_longest_part():
 def test_audio_master_timecode_holds_at_the_end():
     import types
     section("audio_master: at the end of a show the timecode holds its last "
-            "frame for MadMapper (never BEYOND) until the next cue, an "
-            "Abort or Stop (Jeff's field report, 2026-10-28, item 12)")
+            "frame for MadMapper (never BEYOND) until the next cue or Stop, "
+            "an Abort keeping it held (Jeff's field report, 2026-10-28, "
+            "item 12, and the Abort report the same night)")
     from ltcplay import clock as clock_mod
     r = _am_rig(seconds=1.0)
     am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
@@ -27475,8 +27493,8 @@ def test_audio_master_timecode_holds_at_the_end():
     check(r["fed"][-1][3] == "00:00:00:29" and
           all(t <= stops[0] for t, *_ in r["fed"]),
           "the held frame reached the pixels, which go to the idle look")
-    # The next cue starts from 00:00:00:00, and its Abort stops everything,
-    # with no held frame from the last show left behind.
+    # The next cue starts from 00:00:00:00, and its Abort holds its own
+    # last frame, never one from the show before.
     t_play = vc()
     am.play(3600.0, None, "Show")
     sim.run(vc() + 0.5)
@@ -27484,13 +27502,16 @@ def test_audio_master_timecode_holds_at_the_end():
     check(nxt and nxt[0] == 0 and nxt == sorted(nxt) and 29 not in nxt,
           f"the next cue did not start at 00:00:00:00: {nxt[:5]}")
     t_abort = vc()
+    last = nxt[-1]
     am.halt(fade_ms=0)
     sim.run(vc() + 1.0)
-    check(not out.frames(since=t_abort + 1e-9) and
-          am.snapshot()["holding"] is None,
-          "an Abort mid-show sent a held frame from the show before")
+    after = {n for _t, n in out.frames(since=t_abort + 1e-9)}
+    check(after == {last} and 29 not in after and
+          am.snapshot()["holding"] == f"00:00:00:{last:02d}",
+          f"an Abort mid-show did not hold its own last frame ({last}): "
+          f"{sorted(after)} {am.snapshot()['holding']}")
     am.stop()
-    # Abort and Stop after the end let the held frame go.
+    # An Abort after the end keeps the held frame; Stop lets it go.
     for how in ("Abort", "Stop"):
         r2 = _am_rig(seconds=1.0)
         am2, vc2 = r2["am"], r2["vc"]
@@ -27502,8 +27523,10 @@ def test_audio_master_timecode_holds_at_the_end():
             am2.halt()
             t = vc2()
             r2["sim"].run(vc2() + 1.0)
-            check(not r2["out"].frames(since=t + 1e-9),
-                  "an Abort after the end left the timecode held")
+            kept = {n for _t, n in r2["out"].frames(since=t + 1e-9)}
+            check(kept == {29} and
+                  am2.snapshot()["holding"] == "00:00:00:29",
+                  f"an Abort after the end let the held frame go: {kept}")
         else:
             am2.stop()
             with am2._lock:
@@ -27586,6 +27609,96 @@ def test_audio_master_timecode_holds_at_the_end():
     finally:
         clock_mod.HOLD_NEVER.clear()
         clock_mod.HOLD_NEVER.update(saved)
+    print("  ok")
+
+
+def test_audio_master_abort_holds_the_frame_for_madmapper():
+    section("audio_master: after an Abort the timecode holds the aborted "
+            "show's last frame, 30 times a second, to MadMapper alone "
+            "(TimecodeOut.send_held), never to the pixels; the next cue "
+            "starts from 00:00:00:00 and the hold stops; an Abort before "
+            "a frame was sent holds nothing (Jeff's field report, "
+            "2026-10-28)")
+    r = _am_rig(seconds=6.0)
+    am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
+    plain, held = [], []
+
+    def send(pkt):
+        plain.append((vc(), bytes(pkt)))
+        return True
+
+    def send_held(pkt):
+        held.append((vc(), bytes(pkt)))
+        return True
+    out.send, out.send_held = send, send_held
+
+    def frames(lst, since):
+        out_ = []
+        for t, p in lst:
+            if t > since:
+                h, m, s_, f, _ = _tc_of(p)
+                out_.append(((h * 60 + m) * 60 + s_) * 30 + f)
+        return out_
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    check(am._mode == "follow", f"the show is playing: {am._mode}")
+    am.halt()                       # the real 1 s fade
+    t_halt = vc()
+    sim.run(vc() + 1.5)
+    stops = r["calls"]["stop"]
+    check(len(stops) == 1 and not am.playing and
+          "stopped" in am.last_ended,
+          f"the Abort stopped the cue the usual way: {stops} "
+          f"{am.last_ended!r}")
+    last = frames(plain, 0)[-1]
+    check(last > 60, f"the fade's frames went out as before: {last}")
+    after_plain = frames(plain, stops[0] + 1e-9)
+    check(not after_plain,
+          f"after the Abort nothing goes to every receiver: {after_plain}")
+    sim.run(vc() + 2.0)
+    kept = frames(held, stops[0])
+    check(kept and set(kept) == {last},
+          f"after the Abort the last frame is held for MadMapper: "
+          f"{sorted(set(kept))[:5]} not {last}")
+    n2 = len(frames(held, vc() - 2.0))
+    check(55 <= n2 <= 66,
+          f"the held frame goes 30 times a second: {n2} in 2 s")
+    check(all(t <= stops[0] for t, *_ in r["fed"]),
+          "the held frame reached the pixels")
+    h, m, s_, f = am.last_sent
+    check(am.snapshot()["holding"] == f"{h:02d}:{m:02d}:{s_:02d}:{f:02d}",
+          f"the page says what is held: {am.snapshot()['holding']}")
+    check(any("for MadMapper after Show was aborted" in msg
+              for _k, msg in r["log"].lines),
+          f"the show log says the timecode holds: {r['log'].lines[-4:]}")
+    check(t_halt < stops[0], "setup: the fade took time")
+    # The next cue: from 00:00:00:00, and the hold stops.
+    t_play = vc()
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 0.5)
+    nxt = frames(plain, t_play)
+    check(nxt and nxt[0] == 0 and nxt == sorted(nxt),
+          f"the next show's timecode starts at 00:00:00:00: {nxt[:5]}")
+    check(not frames(held, t_play + 1e-9) and
+          am.snapshot()["holding"] is None,
+          "the held frame carried on into the next show")
+    # Abort before this cue sent its first frame: nothing held, not even
+    # the last show's frame.
+    am.stop()
+    r3 = _am_rig(seconds=1.0)
+    am3, vc3 = r3["am"], r3["vc"]
+    am3.play(3600.0, None, "Show")
+    r3["sim"].run(vc3() + 1.5)
+    check(am3.snapshot()["holding"] == "00:00:00:29",
+          "setup: the first show finished and holds")
+    h3 = []
+    r3["out"].send_held = lambda pkt: h3.append(bytes(pkt)) or True
+    am3.play(3600.0, None, "Show")
+    am3.halt(fade_ms=0)
+    r3["sim"].run(vc3() + 1.0)
+    check(not h3 and am3.snapshot()["holding"] is None,
+          f"an Abort before the first frame held something: {len(h3)}")
+    am3.stop()
     print("  ok")
 
 
@@ -38403,6 +38516,95 @@ def _fi_rig_touched(calls, since=0):
             k.startswith("music_") or k.startswith("flames_")]
 
 
+def test_fire_ice_abort_reset_start_now_video_follows_again():
+    section("fire & ice: after Abort, Reset and Start now MadMapper's show "
+            "bank is set following timecode again: the Abort's "
+            "conductor/stop is answered by conductor/play T right after "
+            "the bank select, before the show audio starts (Jeff's field "
+            "report, 2026-10-28; bench B2)")
+    from ltcplay import madmapper as MM
+    n = _fi_night()
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    play = ("/timelines/Bank-1/conductor/play", None)
+    select = ("/timelines/Bank-1/select", None)
+    stop = ("/timelines/Bank-1/conductor/stop", None)
+
+    def mm_sent(since):
+        return [a for k, a, _t in n.calls[since:] if k == "mm"]
+
+    def order(since):
+        # MadMapper's packets go out on its Link's own thread, in the
+        # order they were queued: select, then play. The show audio is
+        # asked for after both were queued (fire_ice.ShowRunner.
+        # start_show), whenever the worker sends them.
+        return [a for k, a, _t in n.calls[since:]
+                if k == "mm" and a in (play, select, stop)] + \
+            [k for k, _a, _t in n.calls[since:] if k == "music_play"][:1]
+    # The scheduled show: select, then play, then the show audio.
+    at = len(n.calls)
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    _mm_flush(n.link)
+    got = order(at)
+    check(svc.machine.state == S.SHOW and
+          got == [select, play, "music_play"],
+          f"a scheduled show start: bank select, conductor/play T, then the "
+          f"show audio: {got}")
+    # The bytes are the documented message, bench B2's ",T".
+    want = MM.encode("/timelines/Bank-1/conductor/play", (True,))
+    check(want == b"/timelines/Bank-1/conductor/play\x00\x00\x00\x00"
+          b",T\x00\x00", f"conductor/play T is {want!r}")
+    n.sess.clock._last_frame = 30
+    n.w.runner.poll()
+    _settle(svc, c)
+    # Abort: the bank is stopped, as before (Tier A unchanged).
+    n.now[0] = _den(S, 18, 3)
+    at = len(n.calls)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    _mm_flush(n.link)
+    check(stop in mm_sent(at) and play not in mm_sent(at) and c.latched,
+          f"the Abort still stops the show bank and sends no play: "
+          f"{mm_sent(at)}")
+    # Reset, then Start now.
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] and not c.latched, f"Reset: {r}")
+    at = len(n.calls)
+    n.now[0] = _den(S, 18, 5)
+    svc._apply(_op(S, S.START_NOW, confirmed=True))
+    _settle(svc, c)
+    _mm_flush(n.link)
+    got = order(at)
+    check(got == [select, play, "music_play"],
+          f"Start now after Abort and Reset: bank select, conductor/play T, "
+          f"then the show audio: {got}")
+    c.close()
+    n.link.close()
+    # A link that cannot send says so in the journal, and the show start
+    # carries on (never raises).
+    from ltcplay import fire_ice as F
+    notes = []
+
+    import types
+
+    class Bad:
+        cfg = types.SimpleNamespace(show_bank="Bank-1")
+
+        def play(self, name, wait=True):
+            raise OSError("no route")
+    b = Bad()
+    F.follow_show_bank(b, lambda text, **k: notes.append((text, k)))
+    check(len(notes) == 1 and "following timecode again failed" in
+          notes[0][0] and notes[0][1].get("fault") is True,
+          f"a failed play is a fault line: {notes}")
+    _no_dashes(notes[0][0], "the follow failure")
+    print("  ok")
+
+
 def _fi_walk(n, until_h, until_m, start=(17, 55)):
     """The night moved a minute at a time, the scheduler ticked, the show
     runner polled and every conductor call and effect run, as the engine
@@ -39151,6 +39353,175 @@ def test_reset_from_hold_ends_it_and_starts_nothing():
               not R.svc.machine.running,
               f"the second ends the Hold, starting nothing: {st} {out} "
               f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_reset_says_how_the_rig_stands():
+    section("Reset says, in plain words, how every subsystem stands: audio, "
+            "pixels, flame link, timecode, MadMapper (its heartbeat), "
+            "BEYOND, lasers, announcements; anything unhealthy in capitals "
+            "with what to do; in the answer and the journal (Jeff's field "
+            "report, 2026-10-28)")
+    import types
+    from ltcplay import righealth as RH
+    from ltcplay import madmapper as MM, madmapperwatch as MW
+    lamps = [{"name": "Audio", "state": "ok", "word": "ok"},
+             {"name": "Pixels", "state": "ok", "word": "sending"},
+             {"name": "Lasers", "state": "ok", "word": "black"},
+             {"name": "Laser arm", "state": "off", "word": "disarmed"}]
+    fl = {"connected": True, "stale": False, "fault": "",
+          "groups": [{"name": "Wave", "armed": "disarmed"},
+                     {"name": "Gas", "armed": "disarmed"}]}
+    clk = {"artnet": ["MadMapper 10.250.1.1"], "failing": [],
+           "holding": "00:01:27:10", "held_to": ["MadMapper"]}
+    mm = {"link": "up", "heartbeat": "quiet"}
+    ann = {"configured": True, "ok": True, "device_set": True,
+           "device_available": True,
+           "items": [{"id": "a", "name": "Delayed", "available": True}]}
+    text, items = RH.summary(lamps, clk, mm, {"link": "up"}, fl, ann)
+    want = ("Audio ready. Pixels ready. Flame link OK, all groups disarmed. "
+            "Timecode ready, holding 00:01:27:10 for MadMapper until the "
+            "next show. MadMapper running: heartbeat not seen yet (it must "
+            "follow once a show starts; Start now sets its show bank "
+            "following timecode again). BEYOND running. Lasers black, "
+            "laser arm disarmed. Announcements ready.")
+    check(text == want, f"a healthy rig, said exactly:\n{text}\n{want}")
+    check([i["name"] for i in items] == [
+        "audio", "pixels", "flame link", "timecode", "MadMapper", "BEYOND",
+        "lasers", "announcements"] and
+          not any(i["ok"] is False for i in items),
+          f"in the fixed order, nothing flagged: {items}")
+    _no_dashes(text, "the healthy Reset summary")
+    mm_ok = dict(mm, heartbeat="ok")
+    check("MadMapper running, heartbeat OK." in
+          RH.summary(lamps, clk, mm_ok, None, fl, None)[0],
+          "a fresh heartbeat is said")
+    # Unhealthy: each in capitals with what to do, then the list.
+    bad_lamps = [{"name": "Audio", "state": "bad", "word": "lost"},
+                 {"name": "Pixels", "state": "off", "word": "stopped"},
+                 {"name": "Lasers", "state": "bad", "word": "LINK LOST"}]
+    text, items = RH.summary(
+        bad_lamps, dict(clk, failing=["MadMapper (10.250.1.1)"]),
+        {"link": "lost"}, {"link": "lost"}, {"connected": False},
+        dict(ann, items=[{"name": "Delayed", "available": False}]))
+    for part in ("Audio NOT READY (lost): check the show audio interface, "
+                 "then press Stop and Run.",
+                 "Pixels NOT READY: Run is not pressed. Press Run.",
+                 "Flame link NOT READY: flamesafe is not connected. Start "
+                 "flamesafe.",
+                 "Timecode NOT READY: MadMapper (10.250.1.1) is not taking "
+                 "Art-Net timecode. Check the show network.",
+                 "MadMapper NOT RUNNING: start MadMapper and its project.",
+                 "BEYOND NOT RUNNING: start BEYOND and its show.",
+                 "Lasers NOT READY: LINK LOST.",
+                 "Announcements NOT READY: Delayed cannot play.",
+                 "Needs attention: audio, pixels, flame link, timecode, "
+                 "MadMapper, BEYOND, lasers, announcements."):
+        check(part in text, f"said: {part!r} in {text!r}")
+    _no_dashes(text, "the unhealthy Reset summary")
+    armed = dict(fl, groups=[{"name": "Wave", "armed": "armed"},
+                             {"name": "Gas", "armed": "disarmed"}])
+    check("Flame link OK, 1 group armed: Wave." in
+          RH.summary(lamps, clk, None, None, armed, None)[0],
+          "an armed group is named")
+    # Review of #161: never "holding for MadMapper" when nothing can take
+    # the held frame (TimecodeOut.held_dests empty), nor when unknown.
+    t, it = RH.summary(lamps, dict(clk, held_to=[]), None, None, fl, None)
+    check("Timecode NOT HELD for MadMapper" in t and
+          "holding" not in t and
+          [i["ok"] for i in it if i["name"] == "timecode"] == [False],
+          f"no MadMapper receiver: said, never 'holding': {t}")
+    t, it = RH.summary(lamps, dict(clk, held_to=None), None, None, fl, None)
+    check("Timecode ready." in t and "holding" not in t,
+          f"where it goes not known: no holding claim: {t}")
+    # A heartbeat listener that cannot listen is said, and flagged.
+    t, it = RH.summary(lamps, clk, {"link": "up", "heartbeat": "silent",
+                                    "heartbeat_why": "The MadMapper "
+                                    "heartbeat could not listen on "
+                                    "127.0.0.1:9001: in use"},
+                       None, fl, None)
+    check("heartbeat listener NOT WORKING (The MadMapper heartbeat could "
+          "not listen on 127.0.0.1:9001: in use)" in t and
+          "not seen yet" not in t and
+          [i["ok"] for i in it if i["name"] == "MadMapper"] == [False],
+          f"a broken heartbeat listener: {t}")
+    # Lasers: a laser arm not known is flagged; "none" is not ready.
+    t, it = RH.summary([{"name": "Lasers", "state": "ok", "word": "black"},
+                        {"name": "Laser arm", "state": "bad",
+                         "word": "not known"}], None, None, None, fl, None)
+    check("Laser arm NOT READY: not known." in t and
+          [i["ok"] for i in it if i["name"] == "lasers"] == [False],
+          f"the laser arm not known: {t}")
+    t, it = RH.summary([{"name": "Lasers", "state": "off", "word": "none"}],
+                       None, None, None, fl, None)
+    check([i["ok"] for i in it if i["name"] == "lasers"] == [None],
+          f"lasers 'none' is not ready: {it}")
+    # A flamesafe fault still names the armed groups.
+    t, it = RH.summary(lamps, clk, None, None,
+                       dict(armed, fault="arm input lost"), None)
+    check("flamesafe reports a fault (arm input lost)" in t and
+          "1 group armed: Wave." in t,
+          f"a fault still names the armed groups: {t}")
+    # The engine asks the running clock where a held frame can go.
+    import tempfile
+    from ltcplay import remote as RM
+    dests = [[]]
+    snap = {"running": True,
+            "clock": {"artnet": ["MadMapper 10.0.0.1"], "failing": [],
+                      "holding": "00:00:07:00"}}
+    ctl = types.SimpleNamespace(
+        state=lambda: snap,
+        session=types.SimpleNamespace(clock=types.SimpleNamespace(
+            out=types.SimpleNamespace(held_dests=lambda: dests[0]))))
+    rm = RM.Remote(ctl, None, folder=tempfile.gettempdir())
+    t = rm.rig_health()[0]
+    check("Timecode NOT HELD for MadMapper" in t,
+          f"the engine: nothing takes the held frame: {t}")
+    dests[0] = [("MadMapper", "10.0.0.1")]
+    t = rm.rig_health()[0]
+    check("holding 00:00:07:00 for MadMapper" in t,
+          f"the engine: MadMapper takes it: {t}")
+    t2, it2 = RH.summary(lamps, clk, None, None, fl, None)
+    check(not any(i["name"] in ("MadMapper", "BEYOND") for i in it2) and
+          "BEYOND" not in t2 and
+          "Announcements" not in t2,
+          f"what this engine does not have is left out: {t2}")
+    check(RH.summary(None, None, None, None, None, None)[0].startswith(
+        "Audio:"), "nothing known: never raises")
+    # Through the route: an Abort, then Reset.
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        check(st == 409 and "Reset done" not in str(out),
+              f"a refused Reset is answered as before: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        cfg = MM.HeartbeatConfig(show_len_s=60.0)
+        R.remote.madmapper_watch = MW.MadMapperWatch(lambda: True)
+        R.remote.madmapper_watch.check_once()
+        R.remote.madmapper_heartbeat = MM.Watchdog(cfg)
+        R.remote.madmapper_heartbeat_cfg = cfg
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        txt = str(out.get("text"))
+        check(st == 200 and txt.startswith("Reset done.") and
+              "Audio" in txt and "Pixels" in txt and "Flame link" in txt
+              and "Timecode" in txt and
+              "MadMapper running: heartbeat not seen yet" in txt and
+              isinstance(out.get("health"), list) and out["health"],
+              f"Reset says how the rig stands: {st} {out}")
+        _no_dashes(txt, "the Reset answer")
+        rows = [r for r in R.svc.journal if r.get("action") == "reset"
+                and r.get("outcome") == "rig state"]
+        check(rows and "Timecode" in rows[-1].get("text", ""),
+              f"and the journal says it: {rows[-1:]}")
     finally:
         R.close()
     print("  ok")
@@ -51246,6 +51617,11 @@ def test_programming_playhead_drives_the_show_path():
 
         def select_bank(self, name, wait=True):
             order.append(("select_bank", name, wait))
+
+        def play(self, name, wait=True):
+            # Following timecode again after a Stop or an Abort stopped
+            # the bank (fire_ice.follow_show_bank).
+            order.append(("play", name, wait))
     rig.mm = MM()
     real_ss, real_ms = c.show_starting, c.music_started
     c.show_starting = lambda *a: (order.append(("show_starting",) + a),
@@ -51277,10 +51653,11 @@ def test_programming_playhead_drives_the_show_path():
     c.run_pending()
     check(at == 3630.0, f"Play from went to {at}")
     check([o[0] for o in order] == ["clock_play_from", "select_bank",
-                                    "clock_play_from", "music_started",
-                                    "show_starting"]
-          and order[0][2] is True and order[2][2] is False
-          and order[1][1:] == ("SHOW", False),
+                                    "play", "clock_play_from",
+                                    "music_started", "show_starting"]
+          and order[0][2] is True and order[3][2] is False
+          and order[1][1:] == ("SHOW", False)
+          and order[2][1:] == ("SHOW", False),
           f"Play from is not the show start's own order (show bank, the "
           f"cue on the show audio, music started, show starting): {order}")
     check(c.snapshot()["look"] == C.PLAYING,
@@ -62416,6 +62793,614 @@ def test_users_lockout_is_short_and_never_permanent():
             pass
 
 
+# -- settings changed on disk (Jeff's field report 2026-10-28, item 11) -----
+# flamesafe.json was fixed at 01:54 while the supervisor restarted flamesafe
+# five times; flamesafe read the final file at 01:55:54, but the engine and
+# the Stream Deck program had read it at 01:54:49 and kept that copy, and
+# nothing on the rack screen said so. ltcplay_announce.json too: the status
+# page showed the old value after the file was edited.
+
+def _cfg_dashes(text):
+    return "\u2014" not in text and "\u2013" not in text
+
+
+def test_config_watch_names_the_file_and_who_is_behind():
+    section("Settings changed on disk: the notice names the file and every "
+            "program still on the older copy, by content, display only, and "
+            "clears once the file matches again (configwatch.py)")
+    import shutil as _sh
+    from ltcplay import configwatch as CW
+    d = tempfile.mkdtemp()
+    try:
+        def put(name, doc, mtime, raw=None):
+            p = os.path.join(d, name)
+            with open(p, "wb") as fh:
+                fh.write(raw if raw is not None else
+                         json.dumps(doc).encode("utf-8"))
+            os.utime(p, (mtime, mtime))
+            return p
+        t0 = 1_800_000_000.0
+        old_doc = {"groups": [{"name": "wave flamer", "aim": []}]}
+        new_doc = {"groups": [{"name": "wave flamer", "aim": [1, 7, 13]}]}
+        fs = put("flamesafe.json", old_doc, t0 - 100)
+        h_old = CW.file_hash(fs)
+        lines = []
+        w = CW.ConfigWatch(journal=lines.append, wall=lambda: t0)
+        w.add("flamesafe config", fs, others=(CW.DECK, CW.FLAMESAFE))
+        progs = {"flamesafe": {"running": True, "started": t0,
+                               "read": {fs: h_old}},
+                 "engine": {"running": True, "started": t0},
+                 "deck": {"running": True, "started": t0,
+                          "read": {fs: h_old}}}
+        check(w.check(progs) == [] and w.view()["text"] == "" and
+              lines == [],
+              f"nothing changed: no notice and no journal line: "
+              f"{w.view()} {lines}")
+        # The aim list is fixed; the supervisor restarts flamesafe and it
+        # reads the final file.
+        put("flamesafe.json", new_doc, t0 + 61)
+        progs["flamesafe"]["read"] = {fs: CW.file_hash(fs)}
+        items = w.check(progs)
+        v = w.view()
+        check(len(items) == 1 and items[0]["file"] == "flamesafe.json" and
+              items[0]["behind"] == [CW.ENGINE, CW.DECK] and
+              v["engine_behind"],
+              f"the engine and the deck are behind, flamesafe is not: "
+              f"{items}")
+        t = v["text"]
+        check(t.startswith("Settings changed on disk: flamesafe.json") and
+              "older copy in the engine and the Stream Deck program" in t and
+              "Restart LTC Player between shows, when nothing is armed, to "
+              "use them (Start menu, Stop LTC Player then Start LTC "
+              "Player)." in t and t.endswith(CW.AIM_NOTE) and
+              t.count("Aim slots") == 1 and _cfg_dashes(t),
+              f"the notice in plain words, with what to do and when, and "
+              f"the aim alert named once: {t!r}")
+        check(lines == [t], f"one journal line for it: {lines}")
+        w.check(progs)
+        check(lines == [t], f"not said again while nothing changes: {lines}")
+        # flamesafe not restarted: it is behind too.
+        progs["flamesafe"]["read"] = {fs: h_old}
+        items = w.check(progs)
+        check(items[0]["behind"] == [CW.ENGINE, CW.DECK, CW.FLAMESAFE] and
+              "flamesafe" in w.view()["text"] and len(lines) == 2,
+              f"a program that read the older copy is named: {items}")
+        # An adopted program (nothing known of what it read) or one not
+        # running is not judged; off the show PC there is no programs.json.
+        items = w.check({"deck": {"running": True, "started": t0},
+                         "flamesafe": {"running": False,
+                                       "read": {fs: h_old}}})
+        check(items[0]["behind"] == [CW.ENGINE],
+              f"only what is known is said: {items}")
+        check(w.check(None)[0]["behind"] == [CW.ENGINE],
+              "off the show PC the engine's own copy is judged")
+        # An Explorer copy keeps the source's older modified time and the
+        # same size: still a change, by content.
+        w5 = CW.ConfigWatch(wall=lambda: t0)
+        p5 = put("copy.json", None, t0 - 50, raw=b'{"aim": [1]}')
+        w5.add("flamesafe config", p5)
+        put("copy.json", None, t0 - 50, raw=b'{"aim": [7]}')
+        check(len(w5.check(None)) == 1,
+              "a copy with the old modified time and size is still a change")
+        # The same settings with a BOM and Windows line ends: no change.
+        put("flamesafe.json", None, t0 + 90,
+            raw=b"\xef\xbb\xbf" + json.dumps(old_doc, indent=1).replace(
+                "\n", "\r\n").encode("utf-8"))
+        w6 = CW.ConfigWatch(wall=lambda: t0)
+        p6 = put("lf.json", None, t0, raw=json.dumps(
+            old_doc, indent=1).encode("utf-8"))
+        w6.add("flamesafe config", p6)
+        put("lf.json", None, t0 + 5, raw=b"\xef\xbb\xbf" + json.dumps(
+            old_doc, indent=1).replace("\n", "\r\n").encode("utf-8"))
+        check(w6.check(None) == [], "a BOM and CRLF are not a change")
+        # Changed back to what the engine read: cleared, and said.
+        put("flamesafe.json", old_doc, t0 + 95)
+        check(w.check(None) == [] and w.view()["text"] == "" and
+              "as they are on disk" in lines[-1],
+              f"changed back: cleared, and said: {lines[-1]!r}")
+        os.remove(fs)
+        items = w.check(None)
+        check(items and items[0]["gone"] and "removed" in
+              CW.notice_text(items), f"a removed file is said: {items}")
+        # The rack screen settings: only what is read at start counts.
+        rp = put("ltcplay_remote.json", {"screen_arming": False,
+                                         "booth_alert": None}, t0 - 5)
+        w2 = CW.ConfigWatch(wall=lambda: t0)
+        w2.add("rack screen settings", rp,
+               digest=CW.keys_hash(("booth_alert", "alert_pixels",
+                                    "flamesafe_config")))
+        put("ltcplay_remote.json", {"screen_arming": True,
+                                    "booth_alert": None}, t0 + 5)
+        check(w2.check(None) == [],
+              "a setting read live (screen_arming) is not a change")
+        put("ltcplay_remote.json", {"screen_arming": True,
+                                    "booth_alert": {"device": "Booth"}},
+            t0 + 6)
+        check(len(w2.check(None)) == 1,
+              "a setting read at start (booth_alert) is a change")
+        with open(rp, "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        check(len(w2.check(None)) == 1, "a broken file is a change")
+        # Morning: the fuel block is read again live by fuel.py.
+        mp = put("ltcplay_morning.json", {"machines": [1], "fuel": {"a": 1}},
+                 t0)
+        w7 = CW.ConfigWatch(wall=lambda: t0)
+        w7.add("Morning settings", mp, digest=CW.without_hash(("fuel",)))
+        put("ltcplay_morning.json", {"machines": [1], "fuel": {"a": 2}}, t0)
+        check(w7.check(None) == [], "the fuel block alone is not a change")
+        put("ltcplay_morning.json", {"machines": [2], "fuel": {"a": 2}}, t0)
+        check(len(w7.check(None)) == 1, "the rest of it is")
+        # The operator list: missing at start, then written by the
+        # scheduler with its defaults: the same settings, no notice.
+        op = os.path.join(d, "ltcplay_operators.json")
+        w8 = CW.ConfigWatch(wall=lambda: t0)
+        w8.add("operator list", op, digest=CW.default_hash(
+            {"operators": ["Andy", "Jeff"]}))
+        with open(op, "w", encoding="utf-8") as fh:
+            json.dump({"operators": ["Andy", "Jeff"]}, fh, indent=2)
+        check(w8.check(None) == [],
+              "the defaults written at first start are not a change")
+        with open(op, "w", encoding="utf-8") as fh:
+            json.dump({"operators": ["Andy", "Jeff", "Pico"]}, fh)
+        check(len(w8.check(None)) == 1, "a name added is")
+        # A file only the deck reads (ltcplay_deck.json).
+        dp = put("ltcplay_deck.json", {"keys": {}}, t0 - 5)
+        dh = CW.file_hash(dp)
+        w3 = CW.ConfigWatch(wall=lambda: t0)
+        w3.add("Stream Deck layout", dp, engine=False, others=(CW.DECK,))
+        put("ltcplay_deck.json", {"keys": {"1": "front row"}}, t0 + 5)
+        items = w3.check({"deck": {"running": True, "read": {dp: dh}}})
+        check(items and items[0]["behind"] == [CW.DECK] and
+              not w3.view()["engine_behind"] and
+              CW.AIM_NOTE not in w3.view()["text"],
+              f"a file the engine does not read names the deck only: "
+              f"{items}")
+        # showpc.json, as the supervisor says it in programs.json.
+        items = w3.check({"supervisor": {"started": t0,
+                                         "showpc": os.path.join(d,
+                                                                "showpc.json"),
+                                         "showpc_changed": ["port"],
+                                         "changed_at": "01:56:00"}})
+        txt = CW.notice_text(items)
+        check(any(i["file"] == "showpc.json" and i["behind"] ==
+                  [CW.SUPERVISOR] for i in items) and
+              "showpc.json (changed 01:56:00: port; older copy in LTC "
+              "Player itself)" in txt and _cfg_dashes(txt),
+              f"showpc.json names LTC Player itself: {txt!r}")
+        w3.add("flamesafe config", dp, others=(CW.FLAMESAFE,))
+        check(w3.paths() == [os.path.abspath(dp)], "noted once")
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_config_watch_reloads_only_what_is_safe_and_is_quick():
+    section("Settings changed on disk: the announcements are read again "
+            "live once nothing plays and no show runs, and only when the "
+            "new file is good; the check runs on its own thread and sees a "
+            "change within seconds")
+    import shutil as _sh
+    from ltcplay import configwatch as CW
+    from ltcplay import announce as AN
+    d = tempfile.mkdtemp()
+    try:
+        ap = os.path.join(d, "ltcplay_announce.json")
+
+        def put(device, mtime):
+            with open(ap, "w", encoding="utf-8") as fh:
+                json.dump({"device": device, "files": {
+                    i: f"Announcements/{i}.wav" for i in AN.IDS}}, fh)
+            os.utime(ap, (mtime, mtime))
+        put("Old Speakers", 1_800_000_000.0)
+        lines = []
+        w = CW.ConfigWatch(journal=lines.append)
+        w.add("announcements", ap)
+        svc = AN.AnnounceService(ap, operators_folder=d)
+        check(svc.device_name == "Old Speakers", "the file at start")
+        busy = [True]
+        w.set_reload(ap, lambda: svc.reload_if_idle(busy[0]))
+        put("Booth Speakers", 1_800_000_100.0)
+        items = w.check(None)
+        t = w.view()["text"]
+        check(len(items) == 1 and "it reads it again by itself once no show "
+              "is running" in t and "Restart LTC Player" not in t and
+              svc.device_name == "Old Speakers" and _cfg_dashes(t),
+              f"during a show it waits, and says so: {t!r}")
+        busy[0] = False
+        svc.playing = AN.DELAYED
+        items = w.check(None)
+        check(items and "once no announcement is playing" in
+              items[0]["waiting"] and svc.device_name == "Old Speakers",
+              f"never while an announcement plays: {items}")
+        svc.playing = None
+        # Half written (a truncated save): the old settings stay, and the
+        # notice says the file is not valid.
+        with open(ap, "w", encoding="utf-8") as fh:
+            fh.write('{"device": "Booth Spea')
+        before = dict(svc.status_by_id)
+        items = w.check(None)
+        t = w.view()["text"]
+        check(items and "the file is not valid" in t and
+              "keeps the old settings" in t and
+              svc.device_name == "Old Speakers" and svc.error == "" and
+              svc.status_by_id == before and _cfg_dashes(t),
+              f"a truncated file is never taken; the old settings stay: "
+              f"{t!r} {svc.device_name!r} {svc.error!r}")
+        os.remove(ap)
+        items = w.check(None)
+        check(items and "not valid" in items[0]["waiting"] and
+              svc.device_name == "Old Speakers",
+              f"nor a missing one: {items}")
+        put("Booth Speakers", 1_800_000_200.0)
+        items = w.check(None)
+        check(items == [] and svc.device_name == "Booth Speakers" and
+              svc.status()["device"] == "Booth Speakers" and
+              any("read it again" in ln for ln in lines) and
+              any(r.get("outcome") == "reloaded" for r in svc.journal),
+              f"between shows a good file is read again, the status shows "
+              f"the new value and it is journaled: {items} {lines}")
+        # The engine's own save (the Programming screen's schedule) is its
+        # copy: refresh.
+        sp = os.path.join(d, "ltcplay_schedule.json")
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        w.add("schedule", sp)
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write('{"a": 1}')
+        check(len(w.check(None)) == 1, "a hand edit is a change")
+        w.refresh(sp)
+        check(w.check(None) == [], "the engine's own save and reload is not")
+        check(CW.CHECK_EVERY_S <= 2.0,
+              f"checked every {CW.CHECK_EVERY_S} s, so the notice is up "
+              f"within about 5 s")
+        seen = threading.Event()
+        w.start(lambda: (seen.set(), None)[1], every_s=0.05)
+        try:
+            with open(sp, "w", encoding="utf-8") as fh:
+                fh.write('{"a": 2}')
+            end = time.monotonic() + 5.0
+            while time.monotonic() < end and not w.view()["text"]:
+                time.sleep(0.02)
+            check(seen.is_set() and "ltcplay_schedule.json" in
+                  w.view()["text"],
+                  f"its own thread found it: {w.view()}")
+        finally:
+            w.stop()
+        w.set_reload(sp, lambda: 1 / 0)
+        items = w.check(None)
+        check(items and "ZeroDivisionError" in items[0]["waiting"] and
+              "keeps the old settings" in items[0]["waiting"],
+              f"a failing reload is said: {items}")
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_config_watch_on_the_status_and_reload_engine():
+    section("Settings changed on disk: on /api/remote/status; Reload engine "
+            "offered on the rack screen only between shows with nothing "
+            "armed, firing or unknown, behind the Settings permission; the "
+            "supervisor's restart-check says the same")
+    import shutil as _sh
+    import types as _ty
+    from ltcplay import configwatch as CW
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import cli as CLI
+    d = tempfile.mkdtemp()
+    real_folder = RM.settings_folder
+    RM.settings_folder = lambda: d
+    try:
+        fp = os.path.join(d, "flamesafe.json")
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        w = CW.ConfigWatch()
+        w.add("flamesafe config", fp, others=(CW.DECK, CW.FLAMESAFE))
+        rm = RM.Remote(None, None, folder=d, log=lambda t: None)
+        rack, ipad = RM.Ctx(True, "127.0.0.1"), RM.Ctx(False, "10.0.0.9")
+        check(rm.config_changed_view(rack) == {"files": [], "text": "",
+                                               "engine_behind": False},
+              "no watch: nothing")
+        rm.config_watch = w
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write('{"aim": [1, 7, 13]}')
+        w.check(None)
+        groups = [{"name": "wave flamer", "armed": "disarmed",
+                   "wanted": False}]
+        fresh = {"stale": False}
+
+        def fview():
+            return dict(fresh, groups=groups)
+        rm.flame_status = _ty.SimpleNamespace(view=fview)
+        v = rm.config_changed_view(ipad)
+        check("flamesafe.json" in v["text"] and "reload" not in v,
+              f"a remote session reads the notice, with no button: {v}")
+        v = rm.config_changed_view(rack)
+        check(v["reload"]["offered"] is False and "supervisor" in
+              v["reload"]["why"],
+              f"off the show PC there is no supervisor to restart it: {v}")
+        with open(os.path.join(d, "showpc.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{}")
+        v = rm.config_changed_view(rack)
+        check(v["reload"] == {"offered": True, "why": "",
+                              "flamesafe": True},
+              f"between shows, nothing armed: offered: {v}")
+        code, body = rm.get("/api/remote/restart-check", rack)[:2]
+        check(code == 200 and body == {"refusal": ""},
+              f"the supervisor's check agrees: {code} {body}")
+        code, body = rm.get("/api/remote/restart-check", ipad)[:2]
+        check(code == 403, f"never from the network: {code}")
+
+        def refused(word, what):
+            why = rm.reload_engine_refusal() or ""
+            got = rm.get("/api/remote/restart-check", rack)[1]
+            check(word.lower() in why.lower() and
+                  got.get("refusal") == why and _cfg_dashes(why),
+                  f"refused {what}: {why!r} {got}")
+        groups[0]["armed"] = "armed"
+        refused("armed", "while a group is armed")
+        code, body = rm.reload_engine({})
+        check(code == 409 and not os.path.exists(
+                  os.path.join(d, RM.RESTART_ENGINE_FILE)),
+              f"and the press writes nothing: {code} {body}")
+        groups[0]["armed"], groups[0]["wanted"] = "disarmed", True
+        refused("armed", "while one is being armed")
+        groups[0]["armed"], groups[0]["wanted"] = "held", False
+        refused("armed", "while one is held")
+        groups[0]["armed"] = "disarmed"
+        fresh["stale"] = True
+        refused("not seen", "while flamesafe's state is stale")
+        fresh["stale"] = False
+        keep = list(groups)
+        groups.clear()
+        refused("not seen", "while flamesafe lists no groups")
+        groups.extend(keep)
+        fs_was, rm.flame_status = rm.flame_status, None
+        refused("not connected", "with no flamesafe status at all")
+        rm.flame_status = _ty.SimpleNamespace(view=lambda: 1 / 0)
+        refused("could not be checked", "when the check itself fails")
+        rm.flame_status = fs_was
+        rm.show_busy_for_reload = lambda: True
+        refused("show is running", "while a show runs")
+        del rm.show_busy_for_reload
+        rm.announce = _ty.SimpleNamespace(playing="delayed")
+        refused("announcement", "while an announcement plays")
+        rm.announce = None
+        rm.live_flame = _ty.SimpleNamespace(on=True)
+        refused("live flame", "with live flame programming on")
+        rm.live_flame = _ty.SimpleNamespace(on=False)
+        rm.scrub_flames = _ty.SimpleNamespace(on=True)
+        refused("scrubbing", "with fire flames while scrubbing on")
+        rm.scrub_flames = None
+        rm.fireball = _ty.SimpleNamespace(
+            summary=lambda: {"on": ["ignite"], "owner": "x"})
+        refused("Fireball", "with the Fireball page in use")
+        rm.fireball = _ty.SimpleNamespace(
+            summary=lambda: {"on": [], "owner": None})
+        mv = {"purge": True, "laser_tests_on": [], "laser_arm":
+              {"armed": []}}
+        rm.morning = _ty.SimpleNamespace(status_view=lambda: dict(mv))
+        refused("purge", "with a purge selected or firing")
+        mv["purge"], mv["laser_tests_on"] = False, ["L1"]
+        refused("laser test", "with a laser test on")
+        mv["laser_tests_on"], mv["laser_arm"] = [], {"armed": ["Left"]}
+        refused("laser is armed", "with a laser armed")
+        mv["laser_arm"] = {"armed": []}
+        check(rm.reload_engine_refusal() is None, "all clear again")
+        code, body = rm.reload_engine({})
+        check(code == 200 and os.path.exists(
+                  os.path.join(d, RM.RESTART_ENGINE_FILE)) and
+              "flamesafe" in body["text"] and _cfg_dashes(body["text"]),
+              f"pressed: the supervisor is asked to restart the engine: "
+              f"{code} {body}")
+        check("reload-engine" in RM.SETUP_POST_ROUTES and
+              U.classify("/api/remote/reload-engine", {}) == "settings",
+              "a setup route of the show machine, behind the Settings "
+              "permission")
+        code, body, _h = rm.post("/api/remote/reload-engine", {}, ipad)
+        check(code == 403, f"never from the network: {code} {body}")
+        st = rm.status(rack)
+        check("flamesafe.json" in (st.get("config_changed") or {}).get(
+                  "text", ""), f"on the status: {st.get('config_changed')}")
+        # What `ltc serve` notes before it reads anything.
+        args = _ty.SimpleNamespace(announce="", flamesafe_config=None)
+        env_was = os.environ.pop(CLI.FLAMESAFE_ENV, None)
+        os.environ[CLI.FLAMESAFE_ENV] = fp
+        try:
+            w2 = CLI._config_watch_at_start(
+                args, os.path.join(d, "ltcplay_schedule.json"))
+        finally:
+            os.environ.pop(CLI.FLAMESAFE_ENV, None)
+            if env_was is not None:
+                os.environ[CLI.FLAMESAFE_ENV] = env_was
+        names = {os.path.basename(p) for p in w2.paths()}
+        check({"flamesafe.json", "ltcplay_schedule.json",
+               "ltcplay_fire_ice.json", "ltcplay_operators.json",
+               "ltcplay_morning.json", "ltcplay_deck.json",
+               "ltcplay_announce.json", "ltcplay_remote.json"} <= names,
+              f"every file the engine reads at start is noted: {names}")
+    finally:
+        RM.settings_folder = real_folder
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_config_watch_supervisor_and_rack_screen_note():
+    section("Settings changed on disk: the supervisor hashes what each "
+            "program reads before it starts it, names the showpc.json "
+            "settings changed since, logs a restart that leaves others on an "
+            "older copy, asks the engine again before a restart (failing "
+            "closed), and the rack screen shows the note and Reload engine")
+    import shutil as _sh
+    import http.server as _hs
+    from ltcplay import configwatch as CW
+    W, SUP, gone = _winpkg()
+    d = tempfile.mkdtemp()
+    srv = None
+    try:
+        check(SUP.showpc_changed({"port": 7878, "show_folder": "a"},
+                                 {"port": 7879, "show_folder": "b"}) ==
+              ["port"], "show_folder is followed by itself; port is not")
+        fs = os.path.join(d, "flamesafe.json")
+        for raw in (b'{"a": 1}\n', b'\xef\xbb\xbf{"a": 1}\r\n'):
+            with open(fs, "wb") as fh:
+                fh.write(raw)
+            check(SUP.config_hash(fs) == CW.file_hash(fs),
+                  f"the supervisor and the engine hash alike: {raw!r}")
+        check(SUP.config_hash(os.path.join(d, "none.json")) is None,
+              "a missing file is None on both sides")
+        check(SUP.files_read("flamesafe", {"flamesafe_config": fs}) ==
+              [os.path.abspath(fs)] and
+              SUP.files_read("engine", {"flamesafe_config": fs}) == [] and
+              len(SUP.files_read("deck", {"flamesafe_config": fs})) == 2,
+              "flamesafe and the deck read flamesafe's config, the deck its "
+              "layout too")
+
+        class _P:
+            def __init__(self, alive, started, proc=True, read=None):
+                self._a, self.started_wall = alive, started
+                self.proc = object() if proc else None
+                self.read = read or {}
+
+            def alive(self):
+                return self._a
+        t0 = 1_800_000_000.0
+        os.utime(fs, (t0 + 61, t0 + 61))
+        progs = {"flamesafe": _P(True, t0 + 65), "engine": _P(True, t0),
+                 "deck": _P(True, t0)}
+        note = SUP.restart_note("flamesafe", progs, fs,
+                                clock_hms=lambda t: f"T{t - t0:+.0f}")
+        check(note.startswith("flamesafe.exe started at T+65 with "
+                              "flamesafe.json as changed at T+61") and
+              "ltcplay.exe (started T+0)" in note and
+              "ltcplay-deck.exe (started T+0)" in note and _cfg_dashes(note),
+              f"the restart names who kept the older copy: {note!r}")
+        progs["engine"] = _P(True, t0 + 70)
+        progs["deck"] = _P(True, t0 + 70)
+        check(SUP.restart_note("flamesafe", progs, fs) == "",
+              "nothing to say when the others started after the change")
+        pf = SUP.ProgramsFile(os.path.join(d, "p.json"))
+        progs = {"flamesafe": _P(True, t0 + 65, read={fs: "h1"}),
+                 "engine": _P(True, t0),
+                 "deck": _P(True, t0, proc=False, read={fs: "h0"})}
+        blk = SUP.supervisor_block(t0, os.path.join(d, "showpc.json"),
+                                   ["port"], "01:56:00")
+        pf.update(progs, {n: (["x"], "") for n in SUP.PROGRAMS}, blk)
+        doc = json.load(open(os.path.join(d, "p.json"), encoding="utf-8"))
+        check(doc["flamesafe"]["started"] == t0 + 65 and
+              doc["flamesafe"]["read"] == {fs: "h1"} and
+              "started" not in doc["deck"] and "read" not in doc["deck"] and
+              doc["supervisor"]["showpc_changed"] == ["port"],
+              f"programs.json carries the starts, what each read and "
+              f"showpc.json's changes; an adopted program has neither: "
+              f"{doc}")
+        # The second check before a restart: the engine's own word, and
+        # fail closed when it does not answer or answers nonsense.
+        import socket as _so
+        s_ = _so.socket()
+        s_.bind(("127.0.0.1", 0))
+        dead = s_.getsockname()[1]
+        s_.close()
+        why = SUP.engine_restart_refusal(dead)
+        check(why and "left running" in why,
+              f"no answer: the engine is not restarted: {why!r}")
+        answer = [b'{"refusal": ""}']
+
+        class _H(_hs.BaseHTTPRequestHandler):
+            def do_GET(self):
+                ok = self.path == "/api/remote/restart-check"
+                self.send_response(200 if ok else 404)
+                self.end_headers()
+                self.wfile.write(answer[0] if ok else b"{}")
+
+            def log_message(self, *a):
+                pass
+        srv = _hs.HTTPServer(("127.0.0.1", 0), _H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        check(SUP.engine_restart_refusal(port) == "",
+              "the engine says it may: restarted")
+        state = [b'{"running": true}']
+        answer[0] = b'{"refusal": ""}'
+        _get = _H.do_GET
+
+        def do_get(self):
+            if self.path == "/api/state":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(state[0])
+                return
+            _get(self)
+        _H.do_GET = do_get
+        busy, why = SUP.engine_restart_blocked(port)
+        check(busy and "show is running" in why,
+              f"a show running is refused first: {busy} {why!r}")
+        state[0] = b'{"starting": true}'
+        check(SUP.engine_restart_blocked(port)[0], "and one starting")
+        state[0] = b'{}'
+        answer[0] = b'{"refusal": "A flame group is armed."}'
+        check(SUP.engine_restart_refusal(port) == "A flame group is armed.",
+              "the engine says why not: refused with its words")
+        check(SUP.engine_restart_blocked(port) ==
+              (True, "A flame group is armed."),
+              "every restart request asks the engine again, after the "
+              "show check")
+        answer[0] = b'["no"]'
+        check("left running" in SUP.engine_restart_refusal(port),
+              "an answer it cannot read: refused")
+        check(SUP.engine_restart_blocked(dead)[0],
+              "no engine answering: blocked, never restarted blind")
+    finally:
+        if srv is not None:
+            srv.shutdown()
+            srv.server_close()
+        gone()
+        _sh.rmtree(d, ignore_errors=True)
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('<div class="warnbox" id="cfg-note" hidden></div>'
+                 '<button class="ghost" id="cfg-reload" hidden>Reload '
+                 'engine</button>',
+                 'setWarn("cfg-note", cn.text);',
+                 '$("cfg-reload").hidden = !cn.offer || '
+                 '!mayRow(s, "settings");',
+                 '"an-note", "cfg-note"].forEach(',
+                 'post("/api/remote/reload-engine", {})'):
+        check(need in page, f"the rack screen has {need!r}")
+    check(not re.search(r'LOCAL_FAULT\["cfg-note"\]', page),
+          "the note is never a fault")
+    import shutil
+    node = shutil.which("node")
+    if node is None:
+        print("  (node not found: the note's words are not run here)")
+        print("  ok")
+        return
+    js = _js_fn(page, "cfgNote") + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(JSON.stringify(cfgNote(null)) === '{"text":"","offer":false}', "none");
+const base = {text:"Settings changed on disk: flamesafe.json."};
+let r = cfgNote(base);
+t(r.text === base.text && !r.offer, "no reload block: the text alone");
+r = cfgNote(Object.assign({reload:{offered:true, why:"", flamesafe:true}}, base));
+t(r.offer && r.text.includes("stop LTC Player and start it again"), "offered, flamesafe: " + r.text);
+r = cfgNote(Object.assign({reload:{offered:false, why:"A flame group is armed."}}, base));
+t(!r.offer && r.text.endsWith("Reload engine is not offered now: A flame group is armed."), "refused: " + r.text);
+console.log(JSON.stringify(out));
+"""
+    rr = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(rr.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(rr.returncode == 0 and bad == [],
+          f"cfgNote in node: {rr.stdout!r} {rr.stderr[-400:]!r}")
+    print("  ok")
+
+
+
 def test_users_sign_out_after_the_last_show():
     """Jeff, 2026-10-26: once the night's last show has ended, and N
     minutes have passed (default 10, 0 is off), everyone signed in is
@@ -65875,9 +66860,25 @@ def test_soak_show_folder_served_is_said_and_followed():
             for need in ("changed = watch.poll()",
                          "settings = dict(settings, show_folder="
                          "changed[\"show_folder\"])",
-                         "            busy, why = show_running(port)\n"
+                         # Never while a show runs or starts, and (since
+                         # 2026-10-28) never while the engine's own
+                         # restart-check refuses: armed groups and the
+                         # like (engine_restart_blocked, show_running
+                         # first, then the engine, failing closed).
+                         "            busy, why = (engine_restart_blocked(port)\n"
+                         "                         if progs[\"engine\"].alive() "
+                         "else (False, \"\"))\n"
                          "            if busy:\n"
                          "                if folder_said != folder_change:",
+                         "    busy, why = show_running(port)\n"
+                         "    if busy:\n"
+                         "        return True, why\n"
+                         "    why = engine_restart_refusal(port)\n"
+                         "    return bool(why), why\n",
+                         "            busy, why = engine_restart_blocked(port)\n"
+                         "            if busy:\n"
+                         "                log(f\"the page asked for an engine "
+                         "restart; refused: {why}\")",
                          "                why = progs[\"engine\"].stop()\n"
                          "                log(f\"{folder_change}: \""):
                 check(need in src, f"the supervisor's loop does {need!r}")
@@ -70035,6 +71036,187 @@ def test_madmapper_heartbeat_follows_the_real_show_length():
           f"a right track: {got}")
     c = chip()
     check(c.get("state") == "ok", f"a right track is green: {c}")
+    print("  ok")
+
+
+def test_madmapper_not_following_is_a_display_only_alert():
+    section("MadMapper not following: the show's timecode moving for "
+            "follow_s (default 5 s) with no MadMapper heartbeat raises a "
+            "display only alert with the plain sentence; it never sounds "
+            "the booth, never runs the pulse, never holds a show, never "
+            "reaches the Stream Deck, never overwrites another kind, and "
+            "clears when the heartbeat follows (Jeff's field report, "
+            "2026-10-28)")
+    import tempfile
+    import types
+    from ltcplay import madmapper as MM, madmapperwatch as MW
+    from ltcplay import remote as RM, alerts as AL, alerthold as AH
+    text = MW.FOLLOW_TEXT
+    check(text == "MadMapper is not following timecode. Re-select External "
+                  "Sync in MadMapper's timeline settings.",
+          f"the sentence: {text}")
+    _no_dashes(text, "the follow alert")
+    # The heartbeat block's follow_s: 5 s unless set, and checked.
+    check(MM.HeartbeatConfig.parse({"show_len_s": 10.0},
+                                   "t").follow_s == 5.0, "default 5 s")
+    check(MM.HeartbeatConfig.parse({"show_len_s": 10.0, "follow_s": 8},
+                                   "t").follow_s == 8, "follow_s is read")
+    for bad in (0, -1, "5", True):
+        try:
+            MM.HeartbeatConfig.parse({"show_len_s": 10.0, "follow_s": bad},
+                                     "t")
+            check(False, f"follow_s {bad!r} was taken")
+        except MM.MadMapperConfigError as e:
+            check("follow_s" in str(e), f"refused with its name: {e}")
+    # FollowCheck alone, on a fake clock.
+    t = [0.0]
+    fc = MW.FollowCheck(clock=lambda: t[0])
+    steps = []
+    for i in range(12):                # 6 s of moving timecode, no beat
+        steps.append(fc.step(i * 0.5, None, 3.0, 5.0))
+        t[0] += 0.5
+    check(steps.count("raise") == 1 and steps.index("raise") == 10,
+          f"raised once, at 5 s of moving timecode: {steps}")
+    check(fc.step(6.0, None, 3.0, 5.0) is None, "raised once per run")
+    check(fc.step(6.5, 0.1, 3.0, 5.0) == "clear", "a heartbeat clears it")
+    check(fc.step(7.0, 4.0, 3.0, 5.0) is None,
+          "the same run is never raised twice")
+    # A new run (the timecode back at the top) is judged afresh, and a
+    # heartbeat older than timeout_s (the lone one at a bank select, bench
+    # B9) is not following.
+    got = []
+    for i in range(12):
+        got.append(fc.step(i * 0.5, 3.5 + i * 0.5, 3.0, 5.0))
+        t[0] += 0.5
+    check(got.count("raise") == 1, f"a new run is judged afresh: {got}")
+    fc2 = MW.FollowCheck(clock=lambda: t[0])
+    fine = []
+    for i in range(20):
+        fine.append(fc2.step(i * 0.5, 0.02, 3.0, 5.0))
+        t[0] += 0.5
+    check(not any(fine), f"following: never a word: {fine}")
+    held = []
+    for i in range(20):                # between shows, on Hold: no position
+        held.append(fc2.step(None, None, 3.0, 5.0))
+        t[0] += 0.5
+    check(not any(held), f"no moving timecode: never raised: {held}")
+    cant = []
+    for i in range(20):
+        cant.append(fc2.step(30 + i * 0.5, None, 3.0, 5.0, can_tell=False))
+        t[0] += 0.5
+    check(not any(cant), f"cannot tell: never raised: {cant}")
+    # On the engine: the remote's alert worker.
+    t = [1000.0]
+    pos = [None]
+
+    class Clk:
+        source = "audio_master"
+        cues = {"Show": ("show", int(60 * 48000))}
+        paused = False
+        _mode = "follow"
+        _cue = {"label": "Show"}
+
+        def show_lengths(self, label):
+            return {"audio_s": 60.0, "show_s": 60.0}
+
+        def _clock(self):
+            return t[0]
+
+        def _pos(self, now):
+            return pos[0]
+    tl = types.SimpleNamespace(
+        clock=types.SimpleNamespace(zones=types.SimpleNamespace(show=1)),
+        cues=[types.SimpleNamespace(name="Show", tc_seconds=3600.0)])
+    sess = types.SimpleNamespace(clock=Clk(), tl=tl)
+    cfg = MM.HeartbeatConfig(show_len_s=60.0)
+    dog = MM.Watchdog(cfg, clock=lambda: t[0])
+    r = RM.Remote(types.SimpleNamespace(session=sess), None,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+    lines = []
+    r._journal = lambda *a, **k: lines.append((a, k))
+    r.madmapper_watch = MW.MadMapperWatch(lambda: True, clock=lambda: t[0])
+    r.madmapper_watch.check_once()
+
+    def run(seconds, p0=0.0, beat=False):
+        for i in range(int(seconds * 4)):
+            pos[0] = None if p0 is None else p0 + i * 0.25
+            if beat:
+                dog.on_packet(0.1)
+            r._booth_work()          # the alert worker, after each tick
+            t[0] += 0.25
+            r.madmapper_watch.check_once()
+
+    def follow():
+        return [a for a in r.alerts.view() if a["kind"] == "follow"]
+    run(10.0)
+    check(not follow(), "no heartbeat block: nothing is judged")
+    r.madmapper_heartbeat, r.madmapper_heartbeat_cfg = dog, cfg
+    r.alerts.raise_("flames", "A flame alert that must stay as it is.")
+    run(4.75)
+    check(not follow(), "under 5 s of moving timecode: nothing yet")
+    run(0.5, p0=4.75)
+    a = follow()
+    check(len(a) == 1 and a[0]["text"] == text and
+          a[0]["pulse"] is False,
+          f"5 s of moving timecode, no heartbeat: the alert, no pulse: {a}")
+    fa = [x for x in r.alerts.open() if x.kind == "follow"][0]
+    check(fa.booth_ok is None and "display only" in fa.booth,
+          f"no booth note: {fa.booth}")
+    fl = [x for x in r.alerts.view() if x["kind"] == "flames"]
+    check(len(fl) == 1 and fl[0]["text"].startswith("A flame alert"),
+          f"the flames alert is untouched: {fl}")
+    from ltcplay import streamdeck as sd
+    ans = dict(r.deck_input())
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=lambda p: ans,
+                         clock=lambda: t[0])
+    keys.poll_once()
+    check([x["kind"] for x in keys.alerts()] == ["flames"],
+          f"the Stream Deck never sees it: {keys.alerts()}")
+    hold = AH.AlertHold(r.alerts)
+    g = hold.gate()
+    check(g is not None and "follow" not in g[0] and
+          fa.id not in g[1], f"the showtime gate leaves it out: {g}")
+    r.alerts.clear(kind="flames")
+    check(hold.gate() is None, "alone, it never holds a show")
+    check(r.alerts.pulse_wanted() is False,
+          "alone, it never runs the blue pulse")
+    check("follow" in AL.DISPLAY_ONLY and AL.SEVERITY["follow"] == "warning",
+          "a display only kind")
+    # The heartbeat arrives: cleared, and journaled.
+    run(0.5, p0=6.0, beat=True)
+    check(not follow(), f"the heartbeat followed: cleared: {follow()}")
+    check(any("following timecode again" in str(x) for x in lines),
+          f"journaled: {lines[-2:]}")
+    # It stops again mid show: raised again once the run is new? The same
+    # run is not; a new show (back at the top) is.
+    run(6.0, p0=10.0)
+    check(not follow(), "the same run of timecode is never raised twice")
+    run(1.0, p0=None)
+    run(5.5, p0=0.0)
+    check(len(follow()) == 1, "the next show is judged afresh")
+    # Acknowledged by a person: not raised again in that run.
+    r.alerts.clear(kind="follow", who="Andy", screen="rack screen")
+    run(6.0, p0=5.5)
+    check(not follow(), "acknowledged: not raised again in the same run")
+    run(1.0, p0=None)
+    run(5.5, p0=0.0)
+    check(len(follow()) == 1, "after an Acknowledge the next show is "
+                              "judged afresh")
+    # MadMapper not running: its own alert says so; this one never.
+    r2 = RM.Remote(types.SimpleNamespace(session=sess), None,
+                   folder=tempfile.gettempdir(), clock=lambda: t[0])
+    r2.madmapper_heartbeat, r2.madmapper_heartbeat_cfg = dog, cfg
+    r2.madmapper_watch = MW.MadMapperWatch(lambda: False,
+                                           clock=lambda: t[0])
+    r2.madmapper_watch.check_once()
+    t[0] += 10
+    for i in range(40):
+        pos[0] = i * 0.25
+        r2._follow_work()
+        t[0] += 0.25
+        r2.madmapper_watch.check_once()
+    check(not [x for x in r2.alerts.view() if x["kind"] == "follow"],
+          "MadMapper not running: no follow alert")
     print("  ok")
 
 
@@ -78839,6 +80021,9 @@ class _PrLink:
     def select_bank(self, name, wait=True):
         self.calls.append(("select", name))
 
+    def play(self, name, wait=True):
+        self.calls.append(("play", name))
+
 
 class _PrConductor:
     def __init__(self, calls, video_ok=True, blank_ok=True):
@@ -79040,10 +80225,11 @@ def test_preroll_checks_prove_each_device_and_fail_closed():
     (ok, t), calls, clk = video("plays")
     check(ok is True, f"MadMapper plays the bank: OK: {t}")
     check(calls[0] == ("video black",) and calls[1] == ("select", "Bank-1")
-          and all(c == ("frame", "black") for c in calls[2:]),
-          f"the screens black first (confirmed), then the show bank, then "
-          f"only test frames, every one with the screens black: "
-          f"{calls[:4]}")
+          and calls[2] == ("play", "Bank-1")
+          and all(c == ("frame", "black") for c in calls[3:]),
+          f"the screens black first (confirmed), then the show bank "
+          f"selected and set following timecode (#161), then only test "
+          f"frames, every one with the screens black: {calls[:4]}")
     check(clk.frames[:3] == [0, 1, 2] and clk.frames[-3:] == [0, 0, 0],
           f"timecode from 00:00:00:00, then parked on frame 0: "
           f"{clk.frames[:3]} {clk.frames[-3:]}")
@@ -80283,6 +81469,7 @@ if __name__ == "__main__":
         test_audio_master_the_audio_ending_ends_the_cue,
         test_audio_master_the_show_runs_to_its_longest_part,
         test_audio_master_timecode_holds_at_the_end,
+        test_audio_master_abort_holds_the_frame_for_madmapper,
         test_audio_master_run_warns_when_the_audio_is_shorter,
         test_audio_master_session_hold_resume_abort,
         test_audio_master_runs_in_its_own_process,
@@ -80447,6 +81634,7 @@ if __name__ == "__main__":
         test_fire_ice_show_outputs,
         test_audio_master_per_call_fade,
         test_fire_ice_night_end_to_end,
+        test_fire_ice_abort_reset_start_now_video_follows_again,
         test_fire_ice_runner_reports_the_show,
         test_schedule_never_touches_the_rig_before_run,
         test_a_refused_start_sends_no_fade,
@@ -80644,6 +81832,8 @@ if __name__ == "__main__":
         test_disarm_all_end_to_end_rearms_without_a_cycle,
         test_lasers_lamp_follows_the_beyond_link,
         test_video_lamp_follows_the_madmapper_watch,
+        test_madmapper_not_following_is_a_display_only_alert,
+        test_reset_says_how_the_rig_stands,
         test_madmapper_heartbeat_follows_the_real_show_length,
         test_artnet_faults_only_for_the_show_in_use,
         test_rack_screen_jeff_2026_10_23_page,
@@ -80705,6 +81895,10 @@ if __name__ == "__main__":
         test_calibrate_all_lasers_rules_and_order,
         test_calibrate_all_and_open_beyond_routes,
         test_users_sign_out_after_the_last_show,
+        test_config_watch_names_the_file_and_who_is_behind,
+        test_config_watch_reloads_only_what_is_safe_and_is_quick,
+        test_config_watch_on_the_status_and_reload_engine,
+        test_config_watch_supervisor_and_rack_screen_note,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

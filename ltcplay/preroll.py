@@ -643,6 +643,10 @@ def check_video(p, link, watchdog, clk, conductor, running=None,
         p.sleep(0.02)
     try:
         link.select_bank(link.cfg.show_bank, wait=False)
+        # Set following timecode again, as every show start does
+        # (fire_ice.follow_show_bank, #161): after an Abort or a failed
+        # start the bank is stopped and would not chase the test timecode.
+        link.play(link.cfg.show_bank, wait=False)
     except Exception as e:                       # noqa: BLE001
         return False, f"the show bank could not be selected: {e}"
     seen = []

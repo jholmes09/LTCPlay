@@ -1670,6 +1670,7 @@
 "pre-roll: the test timecode goes to every receiver, BEYOND too": "test_preroll_video_test_reaches_madmapper_alone",
 "pre-roll: the test timecode is sent while a cue plays": "test_preroll_video_test_reaches_madmapper_alone",
 "pre-roll: the video test does not park MadMapper on frame 0": "test_preroll_checks_prove_each_device_and_fail_closed",
+"pre-roll: the video test does not set the show bank following timecode": "test_preroll_checks_prove_each_device_and_fail_closed",
 "pre-roll: the video test does not take the screens to black first": "test_preroll_checks_prove_each_device_and_fail_closed",
 "pre-roll: the video test passes when MadMapper's position does not move": "test_preroll_checks_prove_each_device_and_fail_closed",
 "preflight findings vanish with the modal": "test_pointing_a_show_at_a_different_folder",

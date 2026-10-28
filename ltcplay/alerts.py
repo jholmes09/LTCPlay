@@ -43,11 +43,11 @@ asking before an unattended start.
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-         "timecode", "lasers", "users", "aim", "preroll")
+         "timecode", "lasers", "users", "aim", "follow", "preroll")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
-            "users": "fault", "aim": "warning",
+            "users": "fault", "aim": "warning", "follow": "warning",
             # The rig check before a show failed (preroll.py): it holds the
             # show at its time like any fault (alerthold.py).
             "preroll": "fault"}
@@ -56,8 +56,10 @@ SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
 # booth, never runs the pulse, never holds a show at showtime
 # (alerthold.py leaves it out) and never reaches the Stream Deck
 # (streamdeck.ScreenKeys.alerts leaves it out: no ACK key). "aim": the wave flamer's aim slots differ
-# between flamesafe and LTC Player (remote.Remote.aim_view).
-DISPLAY_ONLY = frozenset(("aim",))
+# between flamesafe and LTC Player (remote.Remote.aim_view). "follow":
+# MadMapper is not following the show's timecode (madmapperwatch.
+# FollowCheck; Jeff's field report, 2026-10-28).
+DISPLAY_ONLY = frozenset(("aim", "follow"))
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any

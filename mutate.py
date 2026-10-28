@@ -4269,13 +4269,13 @@ def build():
 
  ('audio_master: the timecode stops dead at the end of a show again',
   'ltcplay/clock.py',
-  '        if why == "finished" and self.last_sent is not None:',
-  '        if False:'),
+  '        if (why == "finished" or hold) and self.last_sent is not None:',
+  '        if hold and self.last_sent is not None:'),
 
- ('audio_master: an Abort after the end leaves the timecode held',
+ ('audio_master: an Abort after the end lets the held frame go again',
   'ltcplay/clock.py',
-  '                self._drop_held("Abort")\n                return',
-  '                return'),
+  '                # frame for MadMapper: an Abort keeps it held.\n                return',
+  '                self._drop_held("Abort")\n                return'),
 
  ('audio_master: Stop leaves the timecode held',
   'ltcplay/clock.py',
@@ -4316,6 +4316,125 @@ def build():
   'ltcplay/remote.py',
   '            elif mm.get("heartbeat_track_wrong"):',
   '            elif False:'),
+
+ # Jeff's field report, 2026-10-28 (Abort, Reset, Start now and MadMapper
+ # did not follow): the timecode holds for MadMapper after an Abort, the
+ # show bank is set following again at every start, a display only alert
+ # says when MadMapper is not following, and Reset says how the rig stands.
+ ('audio_master: an Abort stops the timecode dead again',
+  'ltcplay/clock.py',
+  '        if (why == "finished" or hold) and self.last_sent is not None:',
+  '        if why == "finished" and self.last_sent is not None:'),
+
+ ('audio_master: an Abort that fades ends without holding',
+  'ltcplay/clock.py',
+  '        if self._halting and now >= self._halt_end:\n            self._end("stopped", now, hold=True)',
+  '        if self._halting and now >= self._halt_end:\n            self._end("stopped", now)'),
+
+ ('audio_master: an Abort before its first frame holds the last show\'s',
+  'ltcplay/clock.py',
+  '        hold = hold and self._last_frame is not None\n',
+  ''),
+
+ ('video: a show start never sets MadMapper\'s show bank following again',
+  'ltcplay/fire_ice.py',
+  '            follow_show_bank(self.mm, self._note)\n',
+  ''),
+
+ ('video: following again sends nothing',
+  'ltcplay/fire_ice.py',
+  '        mm.play(mm.cfg.show_bank, wait=False)',
+  '        pass'),
+
+ ('video: Play from never sets the show bank following again',
+  'ltcplay/playhead.py',
+  '            follow_show_bank(mm, getattr(cond, "_note", None) or\n                             (lambda *a, **k: None))',
+  '            pass'),
+
+ ('madmapper: follow_s in the heartbeat block is ignored',
+  'ltcplay/madmapper.py',
+  '        follow_s = _positive(doc, "follow_s", where, what, DEFAULT_FOLLOW_S)',
+  '        follow_s = DEFAULT_FOLLOW_S'),
+
+ ('video: not following is said at once, without waiting follow_s',
+  'ltcplay/madmapperwatch.py',
+  '                    now - self._since < follow_s:',
+  '                    False:'),
+
+ ('video: the not following alert never clears',
+  'ltcplay/madmapperwatch.py',
+  '                if following:\n                    self.raised = False\n                    return "clear"',
+  '                if False:\n                    return "clear"'),
+
+ ('video: the engine never checks that MadMapper follows',
+  'ltcplay/remote.py',
+  '        self._follow_work()\n        try:\n            self.alerts.tick()',
+  '        try:\n            self.alerts.tick()'),
+
+ ('video: not following is alerted while MadMapper is not running',
+  'ltcplay/remote.py',
+  '            can = not getattr(wd, "bind_error", None) and link != "lost"',
+  '            can = True'),
+
+ ('video: the not following alert stays up once MadMapper follows',
+  'ltcplay/remote.py',
+  '                    self.alerts.clear(id=aid, who="LTC Player",',
+  '                    self.alerts.clear(id=-1, who="LTC Player",'),
+
+ ('video: an acknowledged not following alert never comes back',
+  'ltcplay/remote.py',
+  '                fc.dropped()\n',
+  ''),
+
+ ('reset: Reset says nothing about the rig again',
+  'ltcplay/remote.py',
+  '                r = self._reset_health(r, who, screen)\n',
+  ''),
+
+ ('reset: a lost audio interface reads ready',
+  'ltcplay/righealth.py',
+  '    if st == "ok":\n        return True, "Audio ready."',
+  '    if st in ("ok", "bad"):\n        return True, "Audio ready."'),
+
+ ('reset: MadMapper not running is not said',
+  'ltcplay/righealth.py',
+  '    if link == "lost":\n        return False, ("MadMapper NOT RUNNING',
+  '    if False:\n        return False, ("MadMapper NOT RUNNING'),
+
+ ('reset: an armed flame group is not named',
+  'ltcplay/righealth.py',
+  '    if armed:\n        return True, (f"Flame link OK',
+  '    if False:\n        return True, (f"Flame link OK'),
+
+ ('reset: the frame is said held for MadMapper when nothing takes it',
+  'ltcplay/righealth.py',
+  '    if clk.get("holding") and held_to:',
+  '    if clk.get("holding"):'),
+
+ ('reset: a broken heartbeat listener reads as not seen yet',
+  'ltcplay/righealth.py',
+  '    if hb == "silent":\n',
+  '    if False:\n'),
+
+ ('reset: a laser arm not known reads ready',
+  'ltcplay/righealth.py',
+  '    if ast == "bad":\n        return False, f"Laser arm NOT READY',
+  '    if False:\n        return False, f"Laser arm NOT READY'),
+
+ ('reset: lasers none reads ready',
+  'ltcplay/righealth.py',
+  '    ok = True if st == "ok" and ast in (None, "ok", "off") else None',
+  '    ok = True'),
+
+ ('reset: the rig health never asks where a held frame can go',
+  'ltcplay/remote.py',
+  '                        clk["held_to"] = [str(lb) for lb, _ip in held()]',
+  '                        pass'),
+
+ ('reset: what needs attention is not listed',
+  'ltcplay/righealth.py',
+  '    if bad:\n        text += f" Needs attention',
+  '    if False:\n        text += f" Needs attention'),
 
  # Safety review of #157.
  ('audio_master: a held end frame goes to receivers not named MadMapper',
@@ -16294,6 +16413,188 @@ def build():
   "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
   "  fbPress(b.dataset.k, true);"),
 
+ # Settings changed on disk (Jeff's field report 2026-10-28, item 11):
+ # configwatch.py, its notice, the live reload of the announcements, Reload
+ # engine and the supervisor's word in programs.json.
+ ("settings watch: the engine's copy is never judged changed",
+  "ltcplay/configwatch.py",
+  "        return e.digest(e.path) != e.value\n",
+  "        return False\n"),
+
+ ("settings watch: the deck and flamesafe are never named behind",
+  "ltcplay/configwatch.py",
+  "                    if theirs != now:\n",
+  "                    if False:\n"),
+
+ ("settings watch: a save of a setting read live counts as a change",
+  "ltcplay/configwatch.py",
+  "    return lambda path: _json_hash(path, lambda d: {k: d.get(k)\n"
+  "                                                    for k in keys})\n",
+  "    return lambda path: _json_hash(path, lambda d: d)\n"),
+
+ ("settings watch: the notice never says to restart LTC Player",
+  "ltcplay/configwatch.py",
+  "        text += \" \" + RESTART + \" \" + RUNNING_OLD\n",
+  "        pass\n"),
+
+ ("settings watch: the notice is never journaled",
+  "ltcplay/configwatch.py",
+  "        if text:\n            self._line(text)\n",
+  "        if text:\n            pass\n"),
+
+ ("settings watch: the announcements are read again during a show",
+  "ltcplay/announce.py",
+  "        if show_busy:\n            return False, (\"it reads it again by itself once no show is \"\n",
+  "        if False:\n            return False, (\"it reads it again by itself once no show is \"\n"),
+
+ ("settings watch: the announcements are read again while one plays",
+  "ltcplay/announce.py",
+  "            if self.playing is not None:\n"
+  "                return False, (\"it reads it again by itself once no \"\n",
+  "            if False:\n"
+  "                return False, (\"it reads it again by itself once no \"\n"),
+
+ ("Reload engine: offered while a flame group is armed",
+  "ltcplay/remote.py",
+  "        if any(g.get(\"armed\") != \"disarmed\" or g.get(\"wanted\")\n"
+  "               for g in groups):\n"
+  "            return \"A flame group is armed.",
+  "        if False:\n"
+  "            return \"A flame group is armed."),
+
+ ("Reload engine: offered while flamesafe's state is not seen",
+  "ltcplay/remote.py",
+  "        if v.get(\"stale\") or not groups:\n",
+  "        if v.get(\"stale\"):\n"),
+
+ ("Reload engine: offered with no flamesafe status at all",
+  "ltcplay/remote.py",
+  "        if fs is None:\n            return (\"flamesafe's status is not connected",
+  "        if False:\n            return (\"flamesafe's status is not connected"),
+
+ ("Reload engine: a check that fails lets the restart go",
+  "ltcplay/remote.py",
+  "            return (f\"Whether the engine may restart could not be checked \"\n"
+  "                    f\"({type(e).__name__}).\")\n",
+  "            return \"\"\n"),
+
+ ("Reload engine: offered with live flame programming on",
+  "ltcplay/remote.py",
+  "        if lf is not None and lf.on:\n            return \"Live flame programming is on. Turn it off first.\"\n",
+  ""),
+
+ ("Reload engine: offered with fire flames while scrubbing on",
+  "ltcplay/remote.py",
+  "        if sf is not None and sf.on:\n            return \"Fire flames while scrubbing is on. Turn it off first.\"\n",
+  ""),
+
+ ("Reload engine: offered with the Fireball page in use",
+  "ltcplay/remote.py",
+  "            if sm.get(\"on\") or sm.get(\"owner\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: offered with a purge selected",
+  "ltcplay/remote.py",
+  "            if mv.get(\"purge\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: offered with a laser test on",
+  "ltcplay/remote.py",
+  "            if mv.get(\"laser_tests_on\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: offered with a laser armed",
+  "ltcplay/remote.py",
+  "            if (mv.get(\"laser_arm\") or {}).get(\"armed\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: the supervisor never asks the engine again",
+  "packaging/windows/supervisor.py",
+  "    why = engine_restart_refusal(port)\n    return bool(why), why\n",
+  "    return False, \"\"\n"),
+
+ ("Reload engine: an engine that does not answer may be restarted",
+  "packaging/windows/supervisor.py",
+  "        return (f\"the engine did not say whether it may be restarted \"\n"
+  "                f\"({type(e).__name__}), so it is left running\")\n",
+  "        return \"\"\n"),
+
+ ("settings watch: a half written announcements file is taken",
+  "ltcplay/announce.py",
+  "        if error:\n            return False, (f\"the file is not valid",
+  "        if False:\n            return False, (f\"the file is not valid"),
+
+ ("settings watch: a BOM or Windows line ends count as a change",
+  "ltcplay/configwatch.py",
+  "    return raw.replace(b\"\\r\\n\", b\"\\n\")\n",
+  "    return raw\n"),
+
+ ("supervisor: hashes a file differently from the engine",
+  "packaging/windows/supervisor.py",
+  "    return hashlib.sha256(raw.replace(b\"\\r\\n\", b\"\\n\")).hexdigest()\n",
+  "    return hashlib.sha256(raw).hexdigest()\n"),
+
+ ("supervisor: programs.json never says what a program read",
+  "packaging/windows/supervisor.py",
+  "                    doc[n][\"read\"] = dict(read)\n",
+  "                    pass\n"),
+
+ ("settings watch: the fuel block counts as a Morning change",
+  "ltcplay/configwatch.py",
+  "                                                    if k not in keys})\n",
+  "                                                    if True})\n"),
+
+ ("settings watch: the operators written at first start are a change",
+  "ltcplay/configwatch.py",
+  "        if missing is None:\n            return None\n",
+  "        return None\n"),
+
+ ("settings watch: the notice never says when to restart",
+  "ltcplay/configwatch.py",
+  "RESTART = (\"Restart LTC Player between shows, when nothing is armed, to \"\n",
+  "RESTART = (\"Restart LTC Player to \"\n"),
+
+ ("Reload engine: offered while a show runs",
+  "ltcplay/remote.py",
+  "        if self.show_busy_for_reload():\n"
+  "            return \"A show is running. Reload the engine between shows.\"\n",
+  ""),
+
+ ("settings watch: the status never carries the notice",
+  "ltcplay/remote.py",
+  "        out[\"config_changed\"] = self.config_changed_view(ctx)\n",
+  ""),
+
+ ("settings watch: ltc serve never notes flamesafe's config",
+  "ltcplay/cli.py",
+  "    watch.add(\"flamesafe config\", path, others=(cw.DECK, cw.FLAMESAFE))\n",
+  "    pass\n"),
+
+ ("supervisor: programs.json never says when a program started",
+  "packaging/windows/supervisor.py",
+  "                doc[n][\"started\"] = started\n",
+  "                pass\n"),
+
+ ("supervisor: a show folder change counts as a showpc.json change",
+  "packaging/windows/supervisor.py",
+  "    return sorted(k for k in keys if k != \"show_folder\" and\n",
+  "    return sorted(k for k in keys if True and\n"),
+
+ ("supervisor: a restart never names who kept the older copy",
+  "packaging/windows/supervisor.py",
+  "             progs[n].started_wall < changed]\n",
+  "             progs[n].started_wall < 0]\n"),
+
+ ("rack screen: Reload engine shown when not offered",
+  "ltcplay/web/remote.html",
+  "  $(\"cfg-reload\").hidden = !cn.offer || !mayRow(s, \"settings\");\n",
+  "  $(\"cfg-reload\").hidden = false;\n"),
+
+ ("rack screen: the settings note leaves out flamesafe's own restart",
+  "ltcplay/web/remote.html",
+  "    (r.flamesafe ? \", so for a changed flamesafe.json stop LTC Player and start it again.\" : \".\");\n",
+  "    \".\";\n"),
+
  # Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it
  # turns on programming mode").
  ("Show on the show audio: the engine's mode follows the player's forced hold", "ltcplay/session.py",
@@ -16357,6 +16658,10 @@ def build():
   '    if span < 0.4 or rise <= 0 or any(b[1] < a[1] for a, b in',
   '    if span < 0.0 and any(b[1] < a[1] for a, b in'),
 
+ ('pre-roll: the video test does not set the show bank following timecode', 'ltcplay/preroll.py',
+  '        link.play(link.cfg.show_bank, wait=False)\n',
+  ''),
+
  ('pre-roll: the video test does not park MadMapper on frame 0', 'ltcplay/preroll.py',
   '            for _ in range(3):\n                clk.preroll_frame(0)',
   '            for _ in range(0):\n                clk.preroll_frame(0)'),
@@ -16406,8 +16711,8 @@ def build():
   '            if False:\n                return self._refused("Pre-roll video black",'),
 
  ('pre-roll: the alert is display only and never holds the show', 'ltcplay/alerts.py',
-  'DISPLAY_ONLY = frozenset(("aim",))',
-  'DISPLAY_ONLY = frozenset(("aim", "preroll"))'),
+  'DISPLAY_ONLY = frozenset(("aim", "follow"))',
+  'DISPLAY_ONLY = frozenset(("aim", "follow", "preroll"))'),
 
  ('pre-roll: a pixel controller that never answered a ping holds every show', 'ltcplay/web.py',
   '            if base is None or ip in base:',
