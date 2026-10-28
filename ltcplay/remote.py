@@ -168,13 +168,18 @@ MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
 # refill needs a signed-in operator or admin, an undo an admin (fuel.py).
 FUEL_GET_ROUTES = ("fuel",)
 FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
+# The Fireball page (fireball.py): read by anyone; a channel ON needs the
+# arm row (users.classify), everything off never.
+FIREBALL_GET_ROUTES = ("fireball",)
+FIREBALL_POST_ROUTES = ("fireball-beat", "fireball-off")
 GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
-    MORNING_GET_ROUTES + FUEL_GET_ROUTES
+    MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
-    "scrub-flames") + MORNING_POST_ROUTES + FUEL_POST_ROUTES
+    "scrub-flames") + MORNING_POST_ROUTES + FUEL_POST_ROUTES + \
+    FIREBALL_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1225,6 +1230,7 @@ class Remote:
         self.madmapper_heartbeat_cfg = None
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
+        self.fireball = None         # fireball.FireballPanel, web.serve
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         # scrubflames.ScrubFlames, set by web.serve (Fire & Ice with a flame
         # link and a flame controller). Always off at start.
@@ -1513,6 +1519,9 @@ class Remote:
         if name in FUEL_GET_ROUTES:
             from . import fuel as fuel_mod
             return fuel_mod.route_get(self.fuel, ctx, self.users, self.wall)
+        if name in FIREBALL_GET_ROUTES:
+            from . import fireball as fireball_mod
+            return fireball_mod.route_get(self.fireball, ctx, self.wall)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -1551,6 +1560,10 @@ class Remote:
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
                                          self.users),) + ({},)
+        if name in FIREBALL_POST_ROUTES:
+            from . import fireball as fireball_mod
+            return (*fireball_mod.route_post(self.fireball, self, name, body,
+                                             ctx),) + ({},)
         if name in ANNOUNCE_ROUTES:
             return (*self.announce_post(name, body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
@@ -5390,6 +5403,13 @@ class Remote:
                 out["fuel"] = self.fuel.summary()
             except Exception as e:                   # noqa: BLE001
                 out["fuel"] = {"fault": f"{type(e).__name__}: {e}"}
+        if self.fireball is not None:
+            # The Fireball nav button, and whether a channel is on.
+            try:
+                out["fireball"] = self.fireball.summary()
+            except Exception as e:                   # noqa: BLE001
+                out["fireball"] = {"available": False,
+                                   "error": f"{type(e).__name__}: {e}"}
         return out
 
     @staticmethod

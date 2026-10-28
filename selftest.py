@@ -72668,6 +72668,1348 @@ def test_fuel_doc_in_plain_words():
     print("  ok")
 
 
+# --------------------------------------------------- the Fireball page --
+# Jeff, 2026-10-28 (design by Andy): manual control of each Fireball
+# channel on its own rack screen page (fireball.py, OPERATOR.md).
+
+_FB_GROUP = {"name": "fireball", "safety": 77, "safeties": [77],
+             "fire": [55, 56, 57, 58, 59]}
+
+
+class _FakeFireballLink:
+    """What fireball.py asks of the flame link: the purge frame, its zero
+    count and whether it is sending. `cur` is the frame held now."""
+
+    def __init__(self):
+        self._zero_gen = 0
+        self.cur = None
+        self.sets = 0
+        self.cleared = 0
+        self.locked = set()
+        self.state = "running"
+        self.lock_alarm = ""
+        self.on_set = None
+
+    def purge_set(self, values):
+        self.cur = bytes(values)
+        self.sets += 1
+        if self.on_set is not None:
+            self.on_set()
+        return True
+
+    def purge_clear(self):
+        self.cur = None
+        self.cleared += 1
+
+    def set_locked_channels(self, slots):
+        self.locked = set(slots)
+
+    def sender_state(self):
+        return self.state
+
+    def zero(self):
+        """As FlameLink.zero(): the purge frame dropped, the count bumped."""
+        self._zero_gen += 1
+        self.cur = None
+
+
+def _fb_panel(**kw):
+    """A FireballPanel on a fake link and clock, flamesafe saying armed."""
+    import types
+    from ltcplay import fireball as FB
+    P = types.SimpleNamespace(t=[100.0], link=_FakeFireballLink(),
+                              armed=["armed"], age=[20], why=[""],
+                              locked=[set()], lines=[])
+    group, problem = FB.find_group(
+        [{"name": "front row", "safeties": [401], "fire": [411]},
+         dict(_FB_GROUP)])
+
+    def flames():
+        return {"connected": True, "stale": P.age[0] is None,
+                "age_ms": P.age[0],
+                "groups": [{"name": "front row", "armed": "disarmed"},
+                           {"name": "fireball", "armed": P.armed[0]}]}
+    P.fb = FB.FireballPanel(
+        group, problem, link_get=lambda: P.link, flames_get=flames,
+        blockers=lambda: P.why[0], locked_slots=lambda: P.locked[0],
+        journal=lambda text, **k: P.lines.append((text, k)),
+        clock=lambda: P.t[0], threaded=False, **kw)
+    return P
+
+
+def test_fireball_panel_rules():
+    section("the Fireball page's engine (fireball.py): the slots come from "
+            "flamesafe's fireball group, by channel number; 255 on a channel only "
+            "while flamesafe reports the group ARMED, never on the safety "
+            "slot; one run at a time, the page's beats in order; no beat "
+            "for 0.25 s, a disarm, a stale flamesafe, the flame link zeroed "
+            "(Stop, Hold, Abort), a blocker, a lock or a refusal cut "
+            "everything, and a cut run never comes back")
+    import re as _re
+    import types
+    from ltcplay import fireball as FB
+    from ltcplay import flamelink as FL
+    from ltcplay import users as U
+    here = os.path.dirname(os.path.abspath(__file__))
+    rules_src = open(os.path.join(here, "flamesafe", "rules.py"),
+                     encoding="utf-8").read()
+    fire_at = int(_re.search(r"^GFLAME_FIRE_AT = (\d+)", rules_src,
+                             _re.M).group(1))
+    check(FB.ON_VALUE == 255 and FB.ON_VALUE >= fire_at,
+          f"ON is 255, at or over the G-Flame fire value {fire_at}")
+    check(FB.BEAT_STALE_S == FL.PURGE_HOLD_S == 0.25 and
+          FB.WATCH_S <= 0.05 and FB.STATUS_FRESH_S == 0.5,
+          "a run with no beat for 0.25 s is cut, the watcher looks every "
+          "50 ms, and flamesafe's word has to be under half a second old")
+    check([c[0] for c in FB.CONTROLS] ==
+          ["fuel", "air", "valve", "igniter", "purge"] and
+          FB.TOGGLES == ("fuel", "air", "purge") and
+          FB.MOMENTARY == ("valve", "igniter"),
+          "Fuel, Air and Purge toggle; Valve Open and Igniter are held")
+    # The group, by name, in the config's order; anything else says why.
+    g, why = FB.find_group([{"name": "front row", "safeties": [401],
+                             "fire": [411]},
+                            {"name": " FireBall ", "safeties": [77],
+                             "fire": [59, 58, 57, 56, 55]}])
+    check(g == {"name": " FireBall ", "index": 1, "safety": 77,
+                "fire": [55, 56, 57, 58, 59]} and why == "",
+          f"found by name in any case; the buttons go by channel number, "
+          f"lowest first, whatever order the file lists: {g}")
+    for groups, need in (
+            ([], "could not be read"),
+            ([{"name": "front row", "safeties": [401], "fire": [411]}],
+             "no group named fireball"),
+            ([{"name": "fireball", "safeties": [405], "fire": [451]}],
+             "Fireball page unavailable: flamesafe.json fireball group must "
+             "list five fire slots"),
+            ([{"name": "fireball", "safeties": [405],
+               "fire": [1, 2, 3, 4, 5, 6]}], "must list five fire slots"),
+            ([{"name": "fireball", "safeties": [7, 8],
+               "fire": [1, 2, 3, 4, 5]}], "2 safety slots"),
+            ([{"name": "fireball", "safeties": [7],
+               "fire": [1, 1, 3, 4, 5]}], "five different slots"),
+            ([{"name": "fireball", "safeties": [7],
+               "fire": [1, 2, 3, 4, 513]}], "five different slots")):
+        g, why = FB.find_group(groups)
+        check(g is None and need in why, f"{need}: {why}")
+    P = _fb_panel()
+    fb, link = P.fb, P.link
+    me = ("Rack screen", "w-a")
+    ipad = ("iPad at 10.20.0.44", "w-b")
+    vals = fb.frame({"fuel", "valve"})
+    check(len(vals) == 512 and vals[54] == 255 and vals[56] == 255 and
+          vals[55] == 0 and vals[76] == 0 and sum(1 for v in vals if v) == 2,
+          "the frame: 255 on Fuel Charge (55) and Valve Open (57), zero on "
+          "everything else, the safety slot (77) included")
+    check(all(fb.frame(set(FB.KEYS))[s - 1] == 255 for s in _FB_GROUP["fire"])
+          and fb.frame(set(FB.KEYS))[76] == 0, "every channel, never 77")
+    # Only the JSON word true is ON, and the role check agrees.
+    for c, want in (({"fuel": True}, {"fuel"}), ({"fuel": 1}, set()),
+                    ({"fuel": "true"}, set()), ({"bogus": True}, set()),
+                    ({}, set()), (None, set())):
+        check(FB.controls_on({"controls": c}) == want,
+              f"controls {c!r}: {want}")
+    check(U.classify("/api/remote/fireball-beat",
+                     {"controls": {"valve": True}}) == "arm" and
+          U.classify("/api/remote/fireball-beat",
+                     {"controls": {"valve": False}}) == "safety" and
+          U.classify("/api/remote/fireball-beat", {}) == "safety" and
+          U.classify("/api/remote/fireball-beat",
+                     {"controls": {"bogus": True}}) == "arm" and
+          U.classify("/api/remote/fireball-off", {}) == "safety",
+          "a channel ON is an arm press (signed out is view only); all off "
+          "and every other body only turn things off: safety")
+
+    bases = {}
+
+    def beat(on, run="r1", seq=None, owner=me, **kw):
+        # A page numbers its beats across runs (FB_SEQ): each run's seqs
+        # here start past every earlier run's.
+        body = {"controls": {k: True for k in on}, "run": run}
+        if seq is not None:
+            body["seq"] = bases.setdefault(run, 1000 * (len(bases) + 1)) + \
+                seq
+        return fb.beat(body, owner, **kw)
+    # Not armed: nothing, said.
+    P.armed[0] = "disarmed"
+    code, out = beat({"fuel"}, seq=1)
+    check(code == 409 and "not armed" in out["error"] and out["cut"] and
+          link.cur is None and link.sets == 0,
+          f"the Fireball not armed: refused, nothing set: {code} {out}")
+    P.armed[0] = "armed"
+    P.age[0] = 600
+    code, out = beat({"fuel"}, run="r0", seq=1)
+    check(code == 409 and "half second" in out["error"] and link.sets == 0,
+          f"flamesafe's status 0.6 s old: refused: {out}")
+    P.age[0] = 20
+    code, out = beat({"fuel"}, run=None)
+    check(code == 400 and link.sets == 0, "a beat with no run: refused")
+    # Armed: a run starts; Fuel Charge goes out.
+    code, out = beat({"fuel"}, seq=1)
+    check(code == 200 and out["run"] == "r1" and out["on"] == ["fuel"] and
+          link.cur[54] == 255 and link.cur[56] == 0,
+          f"armed: Fuel Charge 255 on slot 55: {code} {out}")
+    check(any("Fuel Charge ON (a new run)" in t for t, _k in P.lines),
+          "the journal says what went on")
+    P.t[0] += 0.1
+    code, out = beat({"fuel", "valve"}, seq=2)
+    check(code == 200 and link.cur[56] == 255, "Valve Open held: 57 at 255")
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, seq=3)
+    check(code == 200 and link.cur[56] == 0 and link.cur[54] == 255,
+          "Valve Open let go: 57 back to 0 on the next beat")
+    code, out = beat({"fuel", "valve"}, seq=2)
+    check(code == 200 and out.get("overtaken") and link.cur[56] == 0,
+          f"an older beat that arrives late never puts the valve back on: "
+          f"{out}")
+    # Another screen, while this one runs: refused, this run unharmed.
+    code, out = beat({"air"}, run="x1", seq=1, owner=ipad)
+    check(code == 409 and "One screen at a time" in out["error"] and
+          link.cur[54] == 255 and fb.active(),
+          f"another screen is refused and changes nothing: {out}")
+    v = fb.view(ipad)
+    check(v["owner"] == "Rack screen" and not v["mine"] and
+          v["on"] == ["fuel"] and fb.view(me)["mine"],
+          "the view says who has it")
+    # No beat for 0.25 s: cut by the watcher; the run never comes back.
+    P.t[0] += 0.2
+    check(fb.tick() == "" and fb.active(), "0.2 s: still on")
+    P.t[0] += 0.06
+    why = fb.tick()
+    check("no heartbeat" in why and not fb.active() and link.cur is None,
+          f"0.26 s with no beat: everything off at once: {why}")
+    code, out = beat({"fuel"}, seq=4)
+    check(code == 409 and "Press again" in out["error"] and link.cur is None,
+          f"a beat of the cut run is refused: {out}")
+    # A new press (a new run) is fine; all off ends it, and its late
+    # beats are refused.
+    code, out = beat({"air"}, run="r2", seq=5)
+    check(code == 200 and link.cur[55] == 255, "a new press: Air Charge on")
+    code, out = beat(set(), run="r2", seq=6)
+    check(code == 200 and not fb.active() and link.cur is None,
+          "all off ends the run and clears the frame")
+    code, out = beat({"air"}, run="r2", seq=5)
+    check(code == 409 and link.cur is None,
+          "a late beat of that run never turns it back on")
+    code, out = beat(set(), run="r3", seq=1)
+    code, out = beat({"air"}, run="r3", seq=0)
+    check(code == 409 and link.cur is None,
+          "an all off that overtook its run's first beat: the run never "
+          "starts")
+    # Each cut: a disarm, a stale flamesafe, the link zeroed, a blocker,
+    # a lock, the page's status stale, the switch off.
+
+    def start(run):
+        P.t[0] += 0.05
+        code, out = beat({"fuel", "purge"}, run=run, seq=1)
+        check(code == 200 and link.cur[58] == 255,
+              f"setup {run}: Fuel Charge and Purge on: {out}")
+    start("c1")
+    P.armed[0] = "held"
+    P.t[0] += 0.05
+    why = fb.tick()
+    check("not armed" in why and link.cur is None and not fb.active(),
+          f"the group disarmed (a deck key, a lockout): cut: {why}")
+    P.armed[0] = "armed"
+    start("c2")
+    P.age[0] = None
+    P.t[0] += 0.05
+    check("not known" in fb.tick() and link.cur is None,
+          "flamesafe's status stale: cut")
+    P.age[0] = 20
+    start("c3")
+    link.zero()
+    P.t[0] += 0.05
+    check("zeroed" in fb.tick() and not fb.active(),
+          "the flame link zeroed (Stop, Hold, Abort): cut")
+    start("c4")
+    P.why[0] = "a scheduled show is live (SHOW)"
+    P.t[0] += 0.05
+    check(fb.tick() == "a scheduled show is live (SHOW)" and
+          link.cur is None, "a show going live: cut, with the reason")
+    code, out = beat({"fuel"}, run="c5", seq=1)
+    check(code == 409 and out["error"] == "a scheduled show is live (SHOW)",
+          "and nothing turns on while it stands")
+    v = fb.view(me)
+    check(v["blocked"] == "a scheduled show is live (SHOW)" and
+          v["armed"] == "armed", f"the view says why: {v['blocked']}")
+    P.why[0] = ""
+    P.locked[0] = {57}
+    code, out = beat({"fuel"}, run="c6", seq=1)
+    check(code == 409 and "locked out" in out["error"] and link.cur is None,
+          f"a locked fireball slot: nothing turns on: {out}")
+    P.locked[0] = set()
+    start("c7")
+    code, out = beat({"fuel"}, run="c7", seq=2, seen_ok=False)
+    check(code == 409 and "1 s old" in out["error"] and not fb.active() and
+          link.cur is None, "a stale page: refused, and its run is cut")
+    start("c8")
+    code, out = beat({"fuel"}, run="c8", seq=2,
+                     may=(False, "switched off here"))
+    check(code == 409 and out["error"] == "switched off here" and
+          not fb.active(), "the purge switch off: refused and cut")
+    start("c9")
+    code, out = fb.off("All off pressed", who="Ola")
+    check(code == 200 and not fb.active() and link.cur is None,
+          "All off from any screen: everything off")
+    start("c10")
+    fb.on_abort("Jeff", "Rack screen")
+    check(not fb.active() and link.cur is None and "Abort" in fb.last_cut,
+          "an Abort cuts it")
+    # A zero or disarm that lands while a beat's frame goes in: the beat
+    # clears it again and the run is cut.
+    start("c11")
+    link.on_set = link.zero
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, run="c11", seq=2)
+    link.on_set = None
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"Stop, Hold or Abort in the middle of a beat wins: {out}")
+    # A disarm read right after the frame went in (the belt).
+    start("c12")
+    seq = [0]
+
+    def disarm_after_set():
+        seq[0] += 1
+        P.armed[0] = "held"
+    link.on_set = disarm_after_set
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, run="c12", seq=2)
+    link.on_set = None
+    P.armed[0] = "armed"
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"a disarm seen just after the frame went in: cut: {out}")
+    # A beat from the same screen with a new run while its old one is
+    # still live (its all off on the way): the old one can never return.
+    start("c13")
+    P.t[0] += 0.05
+    code, out = beat({"air"}, run="c14", seq=1)
+    code2, out2 = beat({"fuel", "purge"}, run="c13", seq=2)
+    check(code == 200 and code2 == 409 and link.cur[55] == 255 and
+          link.cur[54] == 0, "a new run replaces the old; the old is dead")
+    fb.cut("test")
+    # Review of #149, P3-1: a beat whose frame is still being worked out
+    # when a later beat of the same run lands (separate connections) is
+    # not written over the later one: a released valve stays off.
+    start("o1")
+    real_frame = fb.frame
+    late = []
+
+    def frame_then_newer(on):
+        vals = real_frame(on)
+        if "valve" in on and not late:
+            late.append(beat({"fuel"}, run="o1", seq=3))
+        return vals
+    fb.frame = frame_then_newer
+    P.t[0] += 0.05
+    code, out = beat({"fuel", "valve"}, run="o1", seq=2)
+    fb.frame = real_frame
+    check(late and late[0][0] == 200 and code == 200 and
+          out.get("overtaken") and link.cur[56] == 0 and
+          link.cur[54] == 255,
+          f"the older beat (valve held) finishing after the newer one (valve "
+          f"let go) does not put the valve back: {out} {late}")
+    fb.cut("test")
+    # Review of #149, P3-2: no other screen's beats can push a real ended
+    # run out of what is remembered, and this screen's own all offs cannot
+    # either: a late 'on' of it never starts again.
+    start("e1")
+    old = {"controls": {"fuel": True}, "run": "e1",
+           "seq": bases["e1"] + 2}
+    fb.cut("test")
+    for i in range(300):
+        fb.beat({"controls": {}, "run": f"x{i}", "seq": i},
+                (f"iPad at 10.20.0.{i % 250}", f"w-{i}"))
+    code, out = fb.beat(dict(old), me)
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"300 all offs from other screens: the ended run stays ended: "
+          f"{out}")
+    for i in range(200):
+        beat(set(), run=f"own{i}", seq=1)
+    code, out = fb.beat(dict(old), me)
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"200 of this screen's own all offs: a late beat of the ended "
+          f"run still never starts (its beat number is behind): {out}")
+    # No group: nothing at all, said.
+    from ltcplay import fireball as FB2
+    nog = FB2.FireballPanel(None, "flamesafe's config has no group named "
+                                  "fireball, so this page has nothing to "
+                                  "control.", link_get=lambda: link,
+                            threaded=False)
+    code, out = nog.beat({"controls": {"fuel": True}, "run": "n1"}, me)
+    check(code == 409 and "no group named fireball" in out["error"] and
+          nog.view()["available"] is False and nog.summary() ==
+          {"available": False, "on": [], "owner": None},
+          f"no fireball group: unavailable, says why: {out}")
+    # The watcher thread runs by itself, and close() cuts.
+    P2 = _fb_panel()
+    P2.fb.close()
+    from ltcplay import fireball as FB3
+    g, _w = FB3.find_group([dict(_FB_GROUP)])
+    lk = _FakeFireballLink()
+    th = FB3.FireballPanel(g, "", link_get=lambda: lk, flames_get=lambda: {
+        "connected": True, "stale": False, "age_ms": 5,
+        "groups": [{"name": "fireball", "armed": "armed"}]})
+    try:
+        code, out = th.beat({"controls": {"igniter": True}, "run": "t1",
+                             "seq": 1}, me)
+        check(code == 200 and lk.cur[57] == 255, "threaded: Igniter on")
+        end = time.monotonic() + 2.0
+        while th.active() and time.monotonic() < end:
+            time.sleep(0.02)
+        check(not th.active() and lk.cur is None,
+              "the watcher thread cuts a run whose beats stopped, by itself")
+    finally:
+        th.close()
+    print("  ok")
+
+
+def _fireball_rig(S):
+    """_morning_rig with flamesafe's fireball group (Jeff's: safety 77, fire
+    55 to 59) and the Fireball panel built as web.serve builds it, on the
+    test's clock with no watcher thread."""
+    from ltcplay import fireball as FB
+    R = _morning_rig(S, _MO_CONFIG, link=_FakeFireballLink())
+    R.m.groups = list(R.m.groups) + [dict(_FB_GROUP)]
+    R.groups.append({"name": "fireball", "armed": "disarmed",
+                     "wanted": False, "reason": ""})
+    R.feed()
+    R.fb = FB.build(R.remote, R.m, R.link,
+                    journal=R.remote._morning_journal, threaded=False,
+                    clock=lambda: R.mono[0])
+    R.remote.fireball = R.fb
+    return R
+
+
+def _fb_armed(R, armed=True):
+    for g in R.groups:
+        if g["name"] == "fireball":
+            g["armed"] = "armed" if armed else "disarmed"
+            g["wanted"] = armed
+    R.feed()
+
+
+def test_fireball_at_the_engine():
+    section("the Fireball page on the real engine: GET for anyone; a "
+            "channel goes on only with the Fireball armed and none of the "
+            "Startup page's purge rules against it; one screen and window "
+            "at a time; it waits for a purge selection and the purge waits "
+            "for it; Arrange mode, live flame programming, Run pressed and "
+            "a show live hold it off and say why; an Abort cuts it and "
+            "nothing goes on until the Fireball is armed again; web.serve "
+            "closes it first")
+    S = _sched()
+    if S is None:
+        return
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import fireball as FB
+    from ltcplay import web as W
+    check("fireball" in RM.GET_ROUTES and "fireball-beat" in RM.POST_ROUTES
+          and "fireball-off" in RM.POST_ROUTES, "the routes exist")
+    R = _fireball_rig(S)
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    win_a = {"X-LTC-Window": "w-aaaaaa"}
+    win_b = {"X-LTC-Window": "w-bbbbbb"}
+    link = R.link
+
+    count = [0]
+
+    def beat(on, run, seq, client=loop, headers=win_a, seen=None):
+        count[0] += 1          # a page's beats are numbered across runs
+        body = {"controls": {k: True for k in on}, "run": run,
+                "seq": count[0],
+                "seen": R.seen() if seen is None else seen}
+        st, _h, out = R.ask("POST", "/api/remote/fireball-beat", body,
+                            client=client, headers=headers)
+        return st, out
+    try:
+        st, _h, v = R.ask("GET", "/api/remote/fireball", client=ipad)
+        check(st == 200 and v["available"] and
+              [(c["key"], c["slot"], c["kind"]) for c in v["controls"]] ==
+              [("fuel", 55, "toggle"), ("air", 56, "toggle"),
+               ("valve", 57, "momentary"), ("igniter", 58, "momentary"),
+               ("purge", 59, "toggle")] and v["group"]["safety"] == 77 and
+              v["armed"] == "off" and "hold to arm" in v["armed_why"],
+              f"anyone reads it: the channels from flamesafe's config, the "
+              f"Fireball not armed: {st} {v}")
+        st, _h, s = R.ask("GET", "/api/remote/status", client=ipad)
+        check(s.get("fireball") == {"available": True, "on": [],
+                                    "owner": None},
+              f"every screen's status carries it: {s.get('fireball')}")
+        st, out = beat({"fuel"}, "a1", 1)
+        check(st == 409 and "not armed" in out["error"] and link.sets == 0,
+              f"not armed: nothing: {st} {out}")
+        _fb_armed(R)
+        st, out = beat({"fuel"}, "a1", 1, seen=R.seen() - 1500)
+        check(st == 409 and "1 s old" in out["error"] and link.sets == 0,
+              f"a page status 1.5 s old: refused: {out}")
+        st, out = beat({"fuel"}, "a2", 1)
+        check(st == 200 and link.cur[54] == 255 and link.cur[76] == 0,
+              f"armed: Fuel Charge on slot 55 at 255: {st} {out}")
+        st, out = beat({"air"}, "b1", 1, headers=win_b)
+        check(st == 409 and "One screen at a time" in out["error"],
+              f"another window of the same screen: refused: {out}")
+        st, _h, v = R.ask("GET", "/api/remote/fireball", client=loop,
+                          headers=win_a)
+        check(v["mine"] and v["on"] == ["fuel"] and v["owner"] ==
+              "Rack screen", f"the view: {v['on']} {v['owner']}")
+        # The Startup page's purge waits while a channel is on.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "Fireball page" in out["error"] and
+              not R.m.purge.selected,
+              f"a purge selection waits for the Fireball page: {st} {out}")
+        st, out = beat(set(), "a2", 2)
+        check(st == 200 and not R.fb.active() and link.cur is None,
+              "all off: done")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200, f"then the purge selection goes: {out}")
+        st, out = beat({"fuel"}, "a3", 1)
+        check(st == 409 and "purge selection" in out["error"] and
+              link.cur is None,
+              f"and the Fireball page waits for the purge: {out}")
+        R.ask("POST", "/api/remote/purge-clear", {}, client=loop)
+        # The purge's switches.
+        RM.save_settings(R.work, purge_arming=False)
+        st, out = beat({"fuel"}, "a4", 1)
+        check(st == 409 and "purge_arming" in out["error"],
+              f"purge_arming off: refused: {out}")
+        RM.save_settings(R.work, purge_arming=True, screen_arming=False)
+        st, out = beat({"fuel"}, "a5", 1, client=ipad)
+        check(st == 409 and "screen_arming" in out["error"],
+              f"from the show network without screen_arming: {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        st, out = beat({"igniter"}, "a6", 1, client=ipad)
+        check(st == 200 and link.cur[57] == 255,
+              f"with it, an iPad may: Igniter on: {out}")
+        st, out = beat(set(), "a6", 2, client=ipad)
+        # Arrange mode anywhere holds it off.
+        R.m.open_beat("iPad at 10.20.0.44", arranging=True, inst="i1")
+        st, out = beat({"fuel"}, "a7", 1)
+        check(st == 409 and "Arrange mode" in out["error"],
+              f"a screen in Arrange mode: refused: {out}")
+        R.m.open_beat("iPad at 10.20.0.44", arranging=False, inst="i1")
+        # Live flame programming on; Run pressed.
+        R.remote.live_flame = types.SimpleNamespace(on=True)
+        st, out = beat({"fuel"}, "a8", 1)
+        check(st == 409 and "live flame programming" in out["error"],
+              f"live flame programming on: refused: {out}")
+        R.remote.live_flame = None
+        real_state = R.remote.control.state
+        R.remote.control.state = lambda: {"running": True}
+        try:
+            st, out = beat({"fuel"}, "a9", 1)
+            st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
+        finally:
+            R.remote.control.state = real_state
+        check(st == 409 and "Run is pressed" in out["error"] and
+              "Run is pressed" in v["blocked"],
+              f"Run pressed: refused, and the page says why: {out}")
+        # A lock on the fireball's slot (the Startup page's lockout).
+        R.fb._locked = lambda: {57}
+        st, out = beat({"fuel"}, "a10", 1)
+        check(st == 409 and "locked out" in out["error"],
+              f"a locked Fireball: refused: {out}")
+        R.fb._locked = lambda: R.m.lockout.channels(R.m.cfg)
+        # A run going; then a watcher pass with the group disarmed.
+        st, out = beat({"fuel", "purge"}, "a11", 1)
+        check(st == 200 and link.cur[58] == 255, "Purge on: 59 at 255")
+        _fb_armed(R, False)
+        R.mono[0] += 0.05
+        R.wall[0] += 0.05
+        R.fb.tick()
+        check(not R.fb.active() and link.cur is None,
+              "a disarm seen by the watcher: everything off")
+        _fb_armed(R)
+        # An Abort from the rack screen cuts it at the press.
+        st, out = beat({"fuel"}, "a12", 1)
+        check(st == 200 and R.fb.active(), "Fuel on again (a new press)")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
+                            client=loop)
+        check(not R.fb.active() and link.cur is None and
+              "Abort" in R.fb.last_cut,
+              f"an Abort cuts it at the press: {R.fb.last_cut}")
+        check(out.get("disarmed") is True,
+              f"and every group was sent a disarm: {out}")
+        _fb_armed(R, False)      # flamesafe took the disarm
+        st, out = beat({"fuel"}, "a13", 1)
+        check(st == 409 and "not armed" in out["error"] and
+              link.cur is None,
+              f"nothing goes on after it until the Fireball is armed again "
+              f"by its hold to arm: {out}")
+        fb_lines = [r for r in R.svc.journal if r.get("action") == "morning"
+                    and "Fireball page" in str(r.get("text", ""))]
+        check(fb_lines, "the journal has the Fireball page's lines")
+    finally:
+        R.close()
+    # A show live: the page says why.
+    R = _fireball_rig(S)
+    try:
+        _fb_armed(R)
+        _live_show(R)
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/fireball-beat",
+                            {"controls": {"fuel": True}, "run": "s1",
+                             "seq": 1, "seen": R.seen()}, client=loop)
+        st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
+        check(st == 409 and "scheduled show is live" in out["error"] and
+              "scheduled show is live" in v["blocked"] and
+              R.link.cur is None,
+              f"a show live: nothing, and the page says why: {out} "
+              f"{v['blocked']}")
+    finally:
+        R.close()
+    # web.serve's wiring: built on the Morning page's groups and the flame
+    # link; closed FIRST.
+    order = []
+    link = _FakeFireballLink()
+    morning = types.SimpleNamespace(
+        groups=[dict(_FB_GROUP)], purge_blocker=None, abort_hooks=[],
+        lockout=types.SimpleNamespace(channels=lambda cfg: set(),
+                                      file_channels=()), cfg=None)
+    remote = types.SimpleNamespace(flame_status=None, fireball=None,
+                                   _journal=lambda *a, **k: None)
+    httpd = types.SimpleNamespace(
+        remote=remote, morning=morning,
+        fire_ice=types.SimpleNamespace(flame_link=link),
+        server_close=lambda: order.append(
+            ("flame link", remote.fireball.active() if remote.fireball
+             else None)))
+    W._attach_fireball(httpd)
+    fb = remote.fireball
+    check(fb is not None and fb.group["fire"] == [55, 56, 57, 58, 59] and
+          fb._link() is link and morning.abort_hooks == [fb.on_abort] and
+          morning.purge_blocker() == "",
+          "built from the Morning page's groups, on the flame link, hooked "
+          "into the Abort and the purge")
+    fb._run = {"id": "z", "owner": ("x", ""), "on": {"fuel"}, "beat": 0.0,
+               "gen": 0, "start": 0.0, "seq": None}
+    check("Fireball page" in morning.purge_blocker(),
+          "the purge is told while a channel is on")
+    httpd.server_close()
+    check(order == [("flame link", False)] and fb._stop.is_set(),
+          f"closing the engine cuts the Fireball first, then the rest: "
+          f"{order}")
+    print("  ok")
+
+
+def test_fireball_signed_out_is_view_only():
+    section("the Fireball page and sign-in: signed out and a viewer read it "
+            "but turn nothing on (403, nothing reaches the engine); all off "
+            "and every beat with nothing on go through for anyone; an "
+            "operator may; every change is audit logged, the beats between "
+            "are not")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer"), ("Ola", "operator")))
+    rem = httpd.remote
+    P = _fb_panel()
+    try:
+        rem.fireball = P.fb
+
+        def body(on, run, seq, change=False):
+            return {"controls": {k: True for k in on}, "run": run,
+                    "seq": seq, "seen": time.time() * 1000, "change": change}
+        st, v, _h = http("/api/remote/fireball")
+        check(st == 200 and v["available"] and len(v["controls"]) == 5,
+              f"signed out reads the page: {st}")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body({"valve"}, "s1", 1, True), window="w-aaaaaa")
+        check(st == 403 and out.get("role_refused") and P.link.sets == 0
+              and not P.fb.active(),
+              f"signed out: Valve Open refused, nothing reached the engine: "
+              f"{st} {out}")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body(set(), "s1", 2, True), window="w-aaaaaa")
+        check(st == 200, f"signed out: a beat with nothing on goes: {out}")
+        st, out, _h = http("/api/remote/fireball-off", {})
+        check(st == 200, f"signed out: All off goes: {out}")
+        ck = {}
+        for name in ("Vic", "Ola"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body({"fuel"}, "v1", 1, True), cookie=ck["Vic"],
+                           window="w-aaaaaa")
+        check(st == 403 and "viewer" in out["error"] and P.link.sets == 0,
+              f"a viewer may not: {out}")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body({"fuel"}, "o1", 1, True), cookie=ck["Ola"],
+                           window="w-aaaaaa")
+        check(st == 200 and P.link.cur[54] == 255,
+              f"an operator may: Fuel Charge on: {st} {out}")
+        for seq in (2, 3, 4):
+            http("/api/remote/fireball-beat", body({"fuel"}, "o1", seq),
+                 cookie=ck["Ola"], window="w-aaaaaa")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body(set(), "o1", 5, True), cookie=ck["Ola"],
+                           window="w-aaaaaa")
+        check(st == 200 and not P.fb.active() and P.link.cur is None,
+              "and off")
+        rem.audit.flush(5.0)
+        beats = [l for l in _audit_lines(rem.audit.folder)
+                 if l["action"] == "fireball-beat"]
+        check(len(beats) == 5,
+              f"every refused press and every change is in the audit log, "
+              f"not the beats between: {len(beats)}")
+        check(any(l["action"] == "fireball-off"
+                  for l in _audit_lines(rem.audit.folder)),
+              "All off is in the audit log")
+    finally:
+        rem.fireball = None
+        httpd.server_close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fireball_end_to_end_real_flamesafe():
+    section("the Fireball page end to end: the real flamesafe with Jeff's "
+            "fireball group (safety 77 at 157, fire 55 to 59), the real "
+            "flame link and arm link; disarmed, a value held on the Valve "
+            "Open is zero at the node and the page refuses; a value held "
+            "on the arm tick keeps it from arming; armed, Fuel Charge and "
+            "the held Valve Open reach the node at 255; the beats stopping "
+            "zero the node; an Abort zeroes and disarms")
+    import json as _j
+    import socket as _so
+    import subprocess
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    from ltcplay import streamdeck as sd
+    from ltcplay import fireball as FB
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.01)
+    listen, statusp, armp = _lf_free_udps(3)
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    groups = [{"name": "front row", "safety": 401, "fire": [411]},
+              {"name": "fireball", "safety": 77,
+               "fire": [55, 56, 57, 58, 59]}]
+    names = [g["name"] for g in groups]
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "arm_port": armp, "key": key},
+        "gflame_range": "60-80%", "arm_value": 157,
+        "accept_unsourced_risk": True, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": groups}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    link = fl.FlameLink(fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+                        ).start()
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 2)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    stop = threading.Event()
+
+    def flames():
+        st, at = status.last, status.last_at
+        if st is None or at is None:
+            return None
+        return {"connected": True, "stale": False,
+                "age_ms": int((time.monotonic() - at) * 1000),
+                "groups": [{"name": g.get("name"), "armed": g.get("armed")}
+                           for g in st.get("groups") or []]}
+    g, _w = FB.find_group([{"name": x["name"], "safeties": [x["safety"]],
+                            "fire": x["fire"]} for x in groups])
+    fb = FB.FireballPanel(g, "", link_get=lambda: link, flames_get=flames)
+    me = ("Rack screen", "w-e2e")
+
+    def deck():
+        while not stop.is_set():
+            arm.send(names)
+            status.poll()
+            time.sleep(0.02)
+
+    def node_until(pred, slots, seconds=10.0, k=5):
+        out = []
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            v = fp.parse_e131(data).values
+            out.append(tuple(v[s - 1] for s in slots))
+            if len(out) >= k and all(pred(x) for x in out[-k:]):
+                break
+        return out
+
+    def wait_for(cond, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return cond()
+
+    def fb_state():
+        st = status.last
+        return st["groups"][1] if st else {}
+
+    def arm_fireball():
+        ok = False
+        for _cycle in range(5):
+            arm.set_group(1, False)
+            time.sleep(1.2)
+            arm.set_group(1, True)
+            ok = wait_for(lambda: fb_state().get("armed") == "armed", 4)
+            if ok:
+                break
+        return ok
+
+    count = [0]
+
+    def beats(on, run, seconds):
+        """The page's heartbeat every 100 ms for `seconds`."""
+        last = None
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            count[0] += 1
+            last = fb.beat({"controls": {k: True for k in on}, "run": run,
+                            "seq": count[0]}, me)
+            if last[0] != 200:
+                return last
+            time.sleep(0.1)
+        return last
+    dt = threading.Thread(target=deck, daemon=True)
+    dt.start()
+    try:
+        if not check(wait_for(lambda: status.last is not None, 15),
+                     "flamesafe is up: " + "".join(said)[-500:]):
+            return
+        # Disarmed: the page refuses, and a Valve Open value put on the
+        # link by hand (as if anything else did) is zero at the node.
+        code, out = fb.beat({"controls": {"valve": True}, "run": "d1",
+                             "seq": 1}, me)
+        check(code == 409 and "not armed" in out["error"],
+              f"disarmed: the page refuses: {out}")
+        vals = bytearray(512)
+        vals[56] = 255
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            link.purge_set(bytes(vals))
+            time.sleep(0.1)
+        got = node_until(lambda x: x == (0, 0), (57, 77), seconds=1.5, k=20)
+        check(got and not any(any(x) for x in got),
+              f"disarmed: 255 on the Valve Open from the link is 0 at the "
+              f"node, and so is the safety: {got[-3:]}")
+        # A value held on a fire slot on the arm tick: no arm.
+        arm.set_group(1, False)
+        time.sleep(1.2)
+        vals = bytearray(512)
+        vals[54] = 255                       # Fuel Charge held
+        holding = threading.Event()
+
+        def hold_fuel():
+            while not holding.is_set():
+                link.purge_set(bytes(vals))
+                time.sleep(0.05)
+        threading.Thread(target=hold_fuel, daemon=True).start()
+        time.sleep(0.3)
+        arm.set_group(1, True)
+        time.sleep(1.0)
+        st = fb_state()
+        check(st.get("armed") != "armed" and st.get("reason") == "dirty edge",
+              f"a channel at 255 on the arm tick: the Fireball does not arm "
+              f"(dirty edge): {st.get('armed')} {st.get('reason')}")
+        holding.set()
+        link.purge_clear()
+        # Armed by the hold, everything zero: Fuel Charge and the held
+        # Valve Open reach the node.
+        check(arm_fireball(), f"the Fireball armed: {fb_state()}")
+        res = [None]
+
+        def run_beats():
+            res[0] = beats({"fuel", "valve"}, "e1", 2.0)
+        t = threading.Thread(target=run_beats, daemon=True)
+        t.start()
+        got = node_until(lambda x: x == (255, 0, 255, 157), (55, 56, 57, 77),
+                         seconds=3.0)
+        t.join(5)
+        check(got[-1:] == [(255, 0, 255, 157)] and res[0][0] == 200,
+              f"armed: Fuel Charge and Valve Open at 255, Air Charge 0, the "
+              f"safety at 157: {got[-3:]} {res[0]}")
+        # The beats stop (the page died): zero at the node by itself.
+        got = node_until(lambda x: x == (0, 0), (55, 57), seconds=2.0)
+        check(got[-5:] == [(0, 0)] * 5,
+              f"no beats: zero at the node within the hold: {got[-5:]}")
+        fb.tick()
+        check(not fb.active(), "and the run is over")
+        # Abort: zero and disarm.
+        t = threading.Thread(target=lambda: beats({"fuel"}, "e2", 1.5),
+                             daemon=True)
+        t.start()
+        got = node_until(lambda x: x == (255,), (55,), seconds=3.0)
+        check(got[-1:] == [(255,)], f"Fuel Charge on again: {got[-3:]}")
+        link.disarm_all("Abort from the rack screen (selftest)")
+        got = node_until(lambda x: x == (0, 0), (55, 77), seconds=3.0)
+        t.join(5)
+        check(got[-5:] == [(0, 0)] * 5,
+              f"Abort: zero at the node, the safety down: {got[-5:]}")
+        fb.tick()
+        check(not fb.active() and wait_for(
+            lambda: fb_state().get("armed") != "armed", 3),
+              f"Abort: the run cut, the Fireball disarmed: {fb_state()}")
+    finally:
+        stop.set()
+        dt.join(2)
+        fb.close()
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        arm.close()
+        status.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+_FIREBALL_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function go(){
+  const pads = [...document.querySelectorAll("#fb-pads .fb-pad")];
+  if(!pads.length) return setTimeout(go, 100);
+  setTimeout(() => {
+    const mainR = document.getElementById("main").getBoundingClientRect();
+    const ab = document.getElementById("abortbar");
+    const abR = ab ? ab.getBoundingClientRect() : null;
+    const out = {vw:innerWidth, vh:innerHeight, sw:document.scrollingElement.scrollWidth, problems:[],
+      view_shown:shown(document.getElementById("v-fireball")),
+      armed:document.getElementById("fb-armed").textContent,
+      note:document.getElementById("fb-note").textContent,
+      block:shown(document.getElementById("fb-block")) ? document.getElementById("fb-block").textContent : "",
+      pads:[], buttons:[]};
+    const rects = [];
+    pads.forEach(b => {
+      const r = b.getBoundingClientRect();
+      out.pads.push({k:b.dataset.k, kind:b.dataset.kind, label:b.querySelector("b").textContent,
+        st:b.querySelector(".fb-st").textContent, small:b.querySelector("small").textContent,
+        h:Math.round(r.height), w:Math.round(r.width), na:b.classList.contains("na"),
+        aria:b.getAttribute("aria-disabled"), disabled:b.disabled,
+        minfont:Math.min(...[...b.querySelectorAll("*")].map(e => parseFloat(getComputedStyle(e).fontSize)))});
+      if(r.right > innerWidth + 0.5 || r.left < -0.5) out.problems.push(b.dataset.k + " is not inside the window");
+      if(r.bottom > mainR.bottom + 0.5) out.problems.push(b.dataset.k + " is below the window (" + Math.round(r.bottom) + " > " + Math.round(mainR.bottom) + ")");
+      if(abR && r.left < abR.right && abR.left < r.right && r.top < abR.bottom && abR.top < r.bottom) out.problems.push(b.dataset.k + " is under the Abort sign");
+      rects.push([b.dataset.k, r]);
+    });
+    ["fb-alloff", "fb-disarm"].forEach(id => {
+      const b = document.getElementById(id), r = b.getBoundingClientRect();
+      out.buttons.push({id:id, shown:shown(b), h:Math.round(r.height)});
+      if(r.bottom > mainR.bottom + 0.5 || r.right > innerWidth + 0.5) out.problems.push(id + " is not on the screen");
+      rects.push([id, r]);
+    });
+    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
+      const a = rects[i][1], b = rects[j][1];
+      if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+        out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
+    }
+    history.replaceState(null, "", location.pathname);
+    showView();
+    setTimeout(() => {
+      const nf = document.getElementById("nav-fireball");
+      out.nav = {shown:shown(nf), text:nf.textContent,
+        inside:[...document.querySelectorAll("nav button")].filter(shown).every(b => b.getBoundingClientRect().right <= innerWidth + 0.5)};
+      const pre = document.createElement("pre"); pre.id = "rack-measure";
+      pre.textContent = JSON.stringify([out]);
+      document.body.appendChild(pre);
+    }, 1200);
+  }, 600);
+}
+go();
+})();
+</script>
+"""
+
+
+def _fb_view(armed="armed", **over):
+    v = {"available": True, "problem": "", "on": [], "owner": None,
+         "mine": False, "last_cut": "", "on_value": 255,
+         "beat_stale_ms": 250,
+         "group": {"name": "fireball", "index": 3, "safety": 77},
+         "controls": [{"key": k, "label": lb, "kind": kind, "slot": s}
+                      for (k, lb, kind), s in zip(
+                          (("fuel", "Fuel Charge", "toggle"),
+                           ("air", "Air Charge", "toggle"),
+                           ("valve", "Valve Open", "momentary"),
+                           ("igniter", "Igniter", "momentary"),
+                           ("purge", "Purge", "toggle")),
+                          (55, 56, 57, 58, 59))],
+         "armed": armed,
+         "armed_why": "" if armed == "armed" else
+         ("The Fireball is not armed. Arm it with its hold to arm (the show "
+          "screen's Fireball button or its Stream Deck key)."),
+         "blocked": "", "served_at": 0}
+    v.update(over)
+    return v
+
+
+def test_fireball_page_in_a_browser():
+    section("the Fireball page drawn in a real browser at the rack screen's "
+            "and an iPad's sizes (the runner's page is about 143 px shorter "
+            "than its window): five big buttons, labelled, on one screen, "
+            "none under the Abort sign, nothing off the side; armed, the "
+            "buttons work; not armed or not available, they say why; the "
+            "Fireball button in the header only with a fireball group")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('<button id="nav-fireball" class="ghost" data-go="fireball" '
+                 'hidden>Fireball</button>', 'fireball:"v-fireball"',
+                 'fireballView(v === "fireball");',
+                 '<section id="v-fireball" class="view" hidden>'):
+        check(need in page, f"the page has {need!r}")
+    a, b = page.index("<!-- Fireball (Jeff"), page.index(
+        "<!-- Users and the audit log")
+    js_a = page.index("// ---- Fireball (Jeff")
+    js_b = page.index("// WEATHER (weather.py, WEATHER.md): its own slow")
+    lg_a = page.index("// The Fireball page (fireball.py). The body")
+    lg_b = page.index("// LOGIC END")
+    for part in (page[a:b], page[js_a:js_b], page[lg_a:lg_b]):
+        check("—" not in part and "–" not in part,
+              "the Fireball page's words have no em or en dashes")
+    check(".fb-pad" in page[js_a:js_b] and
+          "disabled = " not in page[js_a:js_b],
+          "a pad is never given the disabled attribute (a held button that "
+          "turned disabled could lose its lift)")
+    # The page's own rules, in node.
+    bad = _page_logic_in_node(page, r"""
+const V = (o) => Object.assign({available:true, armed:"armed", blocked:"", owner:null, mine:false, armed_why:"not armed why"}, o || {});
+const off = {fuel:false, air:false, valve:false, igniter:false, purge:false};
+let b = fireballBody({fuel:true, valve:true, air:1, purge:"true"}, "r1", 7, true);
+t(JSON.stringify(b) === JSON.stringify({controls:{fuel:true, air:false, valve:true, igniter:false, purge:false}, run:"r1", seq:7, change:true}), "the body: only true is on: " + JSON.stringify(b));
+t(fireballBody(off, undefined, 1).run === null, "no run: null");
+let s = fireballState(V(), off, false, false);
+t(s.ok && !s.cut && s.armed && /Valve Open and Igniter are on only while held/.test(s.text), "armed, fresh: a press may start: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), off, false, false);
+t(!s.ok && !s.cut && /nothing on this page arms/.test(s.text) && s.block === "Arm the Fireball first.", "not armed: nothing may start, says why: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), Object.assign({}, off, {fuel:true, purge:true}), false, false);
+t(s.text === "Turn Fuel, Purge off before arming." && s.cut, "not armed with a toggle on: says turn it off before arming, and cuts: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {valve:true}), true, false);
+t(!s.ok && s.cut && /not live/.test(s.cut), "a stale page: cut: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {air:true}), false, true);
+t(!s.ok && /view only/.test(s.cut), "signed out: cut: " + JSON.stringify(s));
+s = fireballState(V({blocked:"a scheduled show is live (SHOW)"}), off, false, false);
+t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && !s.cut, "a show live: says why: " + JSON.stringify(s));
+s = fireballState(V({owner:"iPad at 10.20.0.44", mine:false}), off, false, false);
+t(!s.ok && /One screen at a time/.test(s.block), "another screen has it: " + JSON.stringify(s));
+s = fireballState(V({owner:"Rack screen", mine:true}), Object.assign({}, off, {fuel:true}), false, false);
+t(s.ok && !s.cut, "this screen has it: fine");
+s = fireballState(V({available:false, problem:"no group named fireball"}), off, false, false);
+t(!s.ok && s.block === "no group named fireball", "no group: says why");
+s = fireballState(null, off, false, false);
+t(!s.ok, "nothing read yet: nothing may start");
+""")
+    check(bad == [] or bad is None, f"the page's Fireball rules, in node: "
+                                    f"{bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["fireball"] = {"available": True, "on": [], "owner": None}
+    sizes = ((1920, 1080), (1366, 600), (1280, 720), (1024, 768),
+             (768, 1024))
+    for which, fv, szs in (("armed", _fb_view(), sizes),
+                           ("not armed", _fb_view("off"),
+                            ((1366, 768),)),
+                           ("a show live", _fb_view(
+                               blocked="a scheduled show is live (SHOW); "
+                                       "nothing fires from this page until "
+                                       "it has ended"), ((1366, 768),))):
+        got = _rack_screen_in_chromium(
+            chrome, page, st, szs, measure_js=_FIREBALL_MEASURE_JS,
+            frag="#fireball", routes={"/api/remote/fireball": fv})
+        for size, res in got.items():
+            if not check(isinstance(res, list) and res,
+                         f"{which} {size}: drawn: {res!r}"):
+                continue
+            m = res[0]
+            check(m["view_shown"] and
+                  [(p["k"], p["kind"], p["label"]) for p in m["pads"]] ==
+                  [("fuel", "toggle", "Fuel Charge"),
+                   ("air", "toggle", "Air Charge"),
+                   ("valve", "momentary", "Valve Open"),
+                   ("igniter", "momentary", "Igniter"),
+                   ("purge", "toggle", "Purge")],
+                  f"{which} {size}: five buttons in the config's order: "
+                  f"{[p['k'] for p in m['pads']]}")
+            check(all(p["h"] >= 88 and p["w"] >= 120 for p in m["pads"]) and
+                  all(p["minfont"] >= 12 for p in m["pads"]) and
+                  all(x["shown"] and x["h"] >= 44 for x in m["buttons"]),
+                  f"{which} {size}: big touch targets, readable: "
+                  f"{[(p['h'], p['w'], p['minfont']) for p in m['pads']]} "
+                  f"{m['buttons']}")
+            check(not m["problems"] and m["sw"] <= m["vw"] + 1,
+                  f"{which} {size}: one screen, nothing overlaps, nothing "
+                  f"under the Abort sign or off the side: {m['problems']} "
+                  f"{m['sw']} {m['vw']}x{m['vh']}")
+            check("channel 57" in m["pads"][2]["small"] and
+                  "Hold" in m["pads"][2]["small"] and
+                  "press again: off" in m["pads"][0]["small"] and
+                  all(p["st"] == "OFF" and not p["disabled"]
+                      for p in m["pads"]),
+                  f"{which} {size}: each says how it works and its channel: "
+                  f"{[p['small'] for p in m['pads']]}")
+            check(m["nav"]["shown"] and m["nav"]["inside"],
+                  f"{which} {size}: the Fireball button in the header: "
+                  f"{m['nav']}")
+            if which == "armed":
+                check(m["armed"].startswith("ARMED") and
+                      not any(p["na"] for p in m["pads"]) and
+                      all(p["aria"] == "false" for p in m["pads"]),
+                      f"{which} {size}: armed, every button may be pressed: "
+                      f"{m['armed']}")
+            elif which == "not armed":
+                check(m["armed"] == "Not armed" and
+                      all(p["na"] and p["aria"] == "true"
+                          for p in m["pads"]) and
+                      "nothing on this page arms" in m["note"],
+                      f"not armed: every button says it may not, and why: "
+                      f"{m['note']!r}")
+            else:
+                check(all(p["na"] for p in m["pads"]) and
+                      "Not available now: a scheduled show is live" in
+                      m["block"], f"a show live: said in plain words: "
+                                  f"{m['block']!r}")
+    # Without a fireball group the header has no Fireball button.
+    st2 = dict(st)
+    st2.pop("fireball")
+    got = _rack_screen_in_chromium(chrome, page, st2, ((1366, 768),),
+                                   measure_js=_FIREBALL_MEASURE_JS,
+                                   frag="#fireball",
+                                   routes={"/api/remote/fireball": _fb_view(
+                                       available=False, controls=[{
+                                           "key": "fuel", "label": "x",
+                                           "kind": "toggle", "slot": 1}])})
+    res = got[(1366, 768)]
+    check(isinstance(res, list) and not res[0]["nav"]["shown"],
+          f"no fireball group: no Fireball button: {res!r}"[:600])
+    print("  ok")
+
+
+def test_fireball_page_buttons_driven():
+    section("the Fireball page pressed in a real browser: Valve Open beats "
+            "every 100 ms while held and lets go on the lift; Fuel Charge "
+            "stays on until pressed again; losing focus lets go of the held "
+            "ones only; a refusal, the Fireball disarming, signing out and "
+            "leaving the page turn everything off and nothing comes back; "
+            "nothing is sent while it is not armed; All off and Disarm")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["fireball"] = {"available": True, "on": [], "owner": None}
+    steps = r"""
+window.__fb = JSON.parse(document.getElementById("fb-seed").textContent);
+const realF = window.fetch;
+window.fetch = async (url, opt) => {
+  if(String(url).indexOf("/api/remote/fireball") >= 0 && !(opt && opt.method === "POST"))
+    return new Response(JSON.stringify(window.__fb), {status:200, headers:{"Content-Type":"application/json"}});
+  return realF(url, opt);
+};
+const pad = k => document.querySelector('.fb-pad[data-k="' + k + '"]');
+const beats = () => h.posts("fireball-beat").map(p => p.body);
+const on = b => Object.keys(b.controls).filter(k => b.controls[k]).join("+");
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+await h.sleep(900);
+// Valve Open: held.
+let n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(460);
+const held = since(n).filter(p => p.route === "fireball-beat").map(p => p.body);
+out.held = {n:held.length, on:held.map(on), runs:[...new Set(held.map(b => b.run))].length,
+  seqs:held.map(b => b.seq), cls:pad("valve").className, st:pad("valve").querySelector(".fb-st").textContent};
+n = mark();
+h.ev(pad("valve"), "pointerup");
+await h.sleep(350);
+out.lift = since(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
+out.lift_cls = pad("valve").className;
+// Fuel Charge: a toggle.
+n = mark();
+h.ev(pad("fuel"), "click");
+await h.sleep(350);
+out.fuel = since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body));
+// Igniter held with Fuel on, then the window loses focus.
+h.ev(pad("igniter"), "pointerdown");
+await h.sleep(150);
+n = mark();
+window.dispatchEvent(new Event("blur"));
+await h.sleep(250);
+out.blur = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)),
+  fuel:pad("fuel").classList.contains("on"), ign:pad("igniter").classList.contains("on")};
+// Fuel pressed again: off, the run ends.
+n = mark();
+h.ev(pad("fuel"), "click");
+await h.sleep(300);
+out.fuel_off = since(n).map(p => p.route + ":" + on(p.body));
+// A refusal from the engine: everything off, nothing comes back.
+window.__answer["fireball-beat"] = b => on(b) ? [409, {error:"The Fireball is not armed. Arm it first.", cut:true}] : [200, {ok:true}];
+h.ev(pad("air"), "click");
+await h.sleep(500);
+out.refused = {air:pad("air").classList.contains("on"), msg:document.getElementById("fb-msg").textContent,
+  after:since(mark()).length};
+n = mark();
+await h.sleep(400);
+out.refused.quiet = since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length;
+delete window.__answer["fireball-beat"];
+// The Fireball disarms while Purge is on: cut on the next look.
+h.ev(pad("purge"), "click");
+await h.sleep(250);
+window.__fb = Object.assign({}, window.__fb, {armed:"off", armed_why:"The Fireball is not armed."});
+await h.sleep(800);
+n = mark();
+await h.sleep(300);
+out.disarmed = {purge:pad("purge").classList.contains("on"), more:since(n).filter(p => on(p.body || {controls:{}})).length,
+  note:document.getElementById("fb-note").textContent};
+// Not armed: a press sends nothing.
+n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(300);
+h.ev(pad("valve"), "pointerup");
+out.not_armed = {posts:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length,
+  msg:document.getElementById("fb-msg").textContent};
+window.__fb = Object.assign({}, window.__fb, {armed:"armed", armed_why:""});
+await h.sleep(700);
+// Signed out while Fuel is on.
+h.ev(pad("fuel"), "click");
+await h.sleep(250);
+window.__patch = s => Object.assign(s, {me:{users_active:true, view_only:true}});
+await h.sleep(900);
+n = mark();
+await h.sleep(300);
+out.signout = {fuel:pad("fuel").classList.contains("on"), more:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length};
+window.__patch = null;
+await h.sleep(700);
+// Leaving the page while Air is on.
+h.ev(pad("air"), "click");
+await h.sleep(250);
+n = mark();
+history.replaceState(null, "", location.pathname);
+showView();
+await h.sleep(400);
+out.left = {posts:since(n).map(p => p.route + ":" + on(p.body || {controls:{}})), air:FB_ON.air};
+location.hash = "fireball";
+showView();
+await h.sleep(700);
+// All off and Disarm.
+n = mark();
+document.getElementById("fb-alloff").click();
+document.getElementById("fb-disarm").click();
+await h.sleep(300);
+out.buttons = since(n).map(p => p.route + (p.body.group ? ":" + p.body.group : ""));
+"""
+    seed = ('<script type="application/json" id="fb-seed">' +
+            json.dumps(_fb_view()) + '</script>')
+    m = _rack_drive(chrome, page.replace("</body>", seed + "</body>", 1), st,
+                    steps, size=(1366, 768), frag="#fireball",
+                    routes={"/api/remote/fireball": _fb_view()},
+                    budget_ms=20000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"the Fireball page, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    hd = m["held"]
+    check(hd["n"] >= 4 and all(x == "valve" for x in hd["on"]) and
+          hd["runs"] == 1 and hd["seqs"] == sorted(hd["seqs"]) and
+          "on" in hd["cls"] and hd["st"] == "ON",
+          f"Valve Open held: a beat every 100 ms, one run, in order: {hd}")
+    check(m["lift"] and m["lift"][0] == "fireball-beat::true" and
+          len(m["lift"]) == 1 and "on" not in m["lift_cls"].split(),
+          f"the lift: one beat with everything off, then nothing: "
+          f"{m['lift']}")
+    check(len(m["fuel"]) >= 3 and all(x == "fuel" for x in m["fuel"]),
+          f"Fuel Charge stays on, beating: {m['fuel']}")
+    check(m["blur"]["fuel"] and not m["blur"]["ign"] and
+          m["blur"]["posts"] and m["blur"]["posts"][0] == "fuel",
+          f"losing focus lets go of the Igniter at once, Fuel stays: "
+          f"{m['blur']}")
+    check(m["fuel_off"][:1] == ["fireball-beat:"],
+          f"Fuel pressed again: everything off: {m['fuel_off']}")
+    check(not m["refused"]["air"] and "not armed" in m["refused"]["msg"] and
+          m["refused"]["quiet"] == 0,
+          f"a refusal: everything off, said, nothing comes back: "
+          f"{m['refused']}")
+    check(not m["disarmed"]["purge"] and m["disarmed"]["more"] == 0 and
+          "not armed" in m["disarmed"]["note"],
+          f"the Fireball disarmed: Purge off, nothing sent: {m['disarmed']}")
+    check(m["not_armed"]["posts"] == 0 and
+          "Arm the Fireball first" in m["not_armed"]["msg"],
+          f"not armed: a press sends nothing, and says why: "
+          f"{m['not_armed']}")
+    check(not m["signout"]["fuel"] and m["signout"]["more"] == 0,
+          f"signed out: Fuel off, nothing more sent: {m['signout']}")
+    check(m["left"]["posts"][:1] == ["fireball-beat:"] and
+          m["left"]["air"] is False,
+          f"leaving the page: everything off: {m['left']}")
+    check(m["buttons"] == ["fireball-off", "group-disarm:fireball"],
+          f"All off and Disarm Fireball: {m['buttons']}")
+    print("  ok")
+
+
+def test_fireball_doc_in_plain_words():
+    section("the Fireball page: OPERATOR.md says what each button does, that "
+            "nothing on it arms, what turns everything off, when it will not "
+            "work and the first test with the fuel valve closed, in plain "
+            "words; the engine's sentences have no em or en dashes")
+    import ast as _ast
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    a = doc.index("**The Fireball page")
+    part = doc[a:doc.index("**Stream Deck unplugged.**", a)]
+    for need in ("Fuel Charge", "Air Charge", "Valve Open", "Igniter",
+                 "Purge", "toggles", "only while your finger",
+                 "Nothing on this page arms", "hold to arm", "255",
+                 "Stop", "Hold", "Abort", "signing out", "All off",
+                 "Run pressed", "fuel valve closed", "One screen at a time",
+                 "turn\nFuel, Air, Purge off before arming"):
+        check(need in part, f"OPERATOR.md's Fireball section says {need!r}")
+    check("—" not in part and "–" not in part,
+          "OPERATOR.md's Fireball section has no em or en dashes")
+    src = open(os.path.join(here, "ltcplay", "fireball.py"),
+               encoding="utf-8").read()
+    words = [n.value for n in _ast.walk(_ast.parse(src))
+             if isinstance(n, _ast.Constant) and isinstance(n.value, str)]
+    check(not [w for w in words if "—" in w or "–" in w],
+          "fireball.py's sentences have no em or en dashes")
+    print("  ok")
+
+
 def test_scrub_flames_seqlock():
     section("fire flames while scrubbing, third review of #117: the move "
             "count is a seqlock; a player tick that lands inside a move "
@@ -74449,6 +75791,13 @@ if __name__ == "__main__":
         test_fuel_routes_and_who_may_refill,
         test_fuel_page_in_a_browser,
         test_fuel_doc_in_plain_words,
+        test_fireball_panel_rules,
+        test_fireball_at_the_engine,
+        test_fireball_signed_out_is_view_only,
+        test_fireball_end_to_end_real_flamesafe,
+        test_fireball_page_in_a_browser,
+        test_fireball_page_buttons_driven,
+        test_fireball_doc_in_plain_words,
         test_scrub_flames_seqlock,
         test_weather_parsers_read_each_source,
         test_weather_rules_age_stale_no_data_disagree_alerts,
