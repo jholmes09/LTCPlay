@@ -375,6 +375,63 @@ PURGE ARMED on an armed group's key; it goes back to normal when you
 leave the page. MORNING.md says how it all works and where every setting
 lives.
 
+**The Fireball page (Fire & Ice, when flamesafe's config has a group named
+fireball).** The header's Fireball button opens one big button per Fireball
+channel, numbered from flamesafe's config (on the Pico: 55 to 59), in the
+order the config lists them:
+
+- **Fuel Charge**, **Air Charge** and **Purge** are toggles: press once for
+  ON, press again for OFF.
+- **Valve Open** and **Igniter** are on only while your finger is on the
+  button. Lift it and they go off.
+
+ON is 255 on that channel. Nothing on this page arms. Arm the Fireball as
+always, with its hold to arm (the show screen's button or its Stream Deck
+key), signed in. Until it is armed every button is grey, says why, and
+nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve
+Open included, unless the Fireball is armed. The Fireball arms only with
+every channel at zero, so this page keeps them all off until it is armed,
+and turns them all off when it disarms (if one still shows ON, it says "turn
+Fuel, Air, Purge off before arming").
+
+**Everything goes off by itself** (within a quarter of a second) on: Stop,
+Hold, Abort, Disarm Fireball, Disarm all flame groups or the Fireball's
+deck key; flamesafe not reporting; leaving the page, closing it or hiding
+it; this page's status not being live; signing out; the connection
+dropping; and the All off button (any screen). Losing focus (another window
+clicked) lets go of Valve Open and Igniter. After any of these nothing
+comes back on by itself: press again.
+
+**When it will not work** it says why in plain words: a show live or on
+Hold, an Abort standing, Run pressed (the show file owns the channels),
+live flame programming or fire flames while scrubbing on, a purge selected
+on the Startup page (and that purge waits while a Fireball channel is on),
+any screen in Arrange mode, the Fireball locked out, or the purge switch
+off (`purge_arming`, and from an iPad `screen_arming`, in
+ltcplay_remote.json). One screen at a time. Signed out it is view only;
+turning a channel on needs the arm permission (an operator or admin), and
+All off always works. The values go out the way the Startup page's purge
+does, on the engine's own flame link to flamesafe, which stays the only
+program that writes to the flame node.
+
+**First test at the rack, fuel valve closed and the key switch on test or
+off, with Andy:**
+
+1. With the Fireball disarmed, every button is grey and says "Arm the
+   Fireball first". Press each one: nothing clicks at the head.
+2. Arm the Fireball with its hold to arm (every channel is off, so it
+   arms). The page reads ARMED.
+3. Each toggle on and off once (Fuel Charge, Air Charge, Purge): the head
+   follows, and goes off when pressed again.
+4. Hold Valve Open, then Igniter: on while held, off the moment you lift.
+5. With Fuel Charge on: press Disarm Fireball, then (armed again) Abort,
+   Stop, Hold, the Fireball's deck key, and close the page. Each time every
+   channel goes off at once and stays off.
+6. Pull the network cable of the iPad (or close the browser) while holding
+   Valve Open: it goes off within a second.
+7. Only then open the fuel valve, one channel at a time.
+
+
 **Stream Deck unplugged.** Unplugging or replugging the deck changes nothing
 on the flame groups: whatever was armed stays armed, whatever was off stays
 off, and the deck process keeps telling the flame safety program so. A
