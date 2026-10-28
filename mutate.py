@@ -8607,8 +8607,31 @@ def build():
 
  ("morning page: a group button cannot disarm with purge arming off",
   "ltcplay/web/remote.html",
-  "    b.disabled = !ids.length || (!any && (!mo.purge_enabled || ARRANGE || !mayRow(ST, \"arm\")));",
-  "    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!any && !mayRow(ST, \"arm\"));"),
+  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
+  "  return !ids.length || !mo.purge_enabled || (!any && (arrange || !mayRow(st, \"arm\")));"),
+
+ ("morning page: a group button cannot disarm in Arrange mode or signed out",
+  "ltcplay/web/remote.html",
+  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
+  "  return !ids.length || arrange || !mayRow(st, \"arm\") || (!any && !mo.purge_enabled);"),
+
+ ("morning page: a group button's words grow it and push the page down",
+  "ltcplay/web/remote.html",
+  ".mo-groups button .gd{display:block;max-width:100%;white-space:nowrap;",
+  ".mo-groups button .gd{display:block;max-width:100%;white-space:normal;"),
+
+ ("morning page: a group button flamesafe still holds armed is drawn grey",
+  "ltcplay/web/remote.html",
+  '    b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));',
+  '    b.classList.toggle("part", any && gs.state !== "on");'),
+
+ ("morning: a group flamesafe still holds armed shows grey once cleared",
+  "ltcplay/morning.py",
+  """            if still:
+                words.append("flamesafe still armed " + ", ".join(still))""",
+  """            still = []
+            if still:
+                words.append("flamesafe still armed " + ", ".join(still))"""),
 
  ("morning: a purge is allowed while a show is live or aborted (T1)",
   "ltcplay/morning.py",
@@ -9755,8 +9778,8 @@ def build():
 
  ("morning page: the group buttons stay live while arranging",
   "ltcplay/web/remote.html",
-  '''    b.disabled = !ids.length || (!any && (!mo.purge_enabled || ARRANGE || !mayRow(ST, "arm")));''',
-  '''    b.disabled = !ids.length || (!any && (!mo.purge_enabled || !mayRow(ST, "arm")));'''),
+  '''  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));''',
+  '''  return !ids.length || (!any && (!mo.purge_enabled || !mayRow(st, "arm")));'''),
 
  ("morning page: a bare mouse (no button down) still drags the machine",
   "ltcplay/web/remote.html",

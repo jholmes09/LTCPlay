@@ -1162,7 +1162,8 @@ class Purge:
             for mid in ids:
                 was = mid in self.selected
                 if self.select(mid, False, device, seen_ok)[0] == 200 and was:
-                    off.append(cfg.by_id[mid].name)
+                    m = cfg.by_id.get(mid)
+                    off.append(m.name if m is not None else mid)
             text = (f"{what} off the purge: {', '.join(off)}." if off else
                     f"{what}: nothing of it was armed for the purge.")
             return 200, {"ok": True, "text": text,
@@ -1171,7 +1172,8 @@ class Purge:
         for mid in ids:
             code, out = self.select(mid, True, device, seen_ok)
             if code == 200:
-                armed.append(cfg.by_id[mid].name)
+                m = cfg.by_id.get(mid)
+                armed.append(m.name if m is not None else mid)
             elif out.get("error") not in refused:
                 refused.append(out.get("error"))
         if not armed:
@@ -1193,11 +1195,18 @@ class Purge:
         group reports ARMED; "part" (amber) when some of it is selected,
         or selected but flamesafe has not armed it; "off" when none is.
         `text` says so in words and names every member locked out or
-        never purged; `any` is true while any member is selected (the
+        never purged; with none selected while flamesafe still reports a
+        member's group armed or asked for, it is "part" and says so; `any` is true while any member is selected (the
         button's next click then takes the whole group off)."""
         cfg = self._cfg()
         armed_fs = self._armed_groups()
         fl = self._flames() or {}
+        # What flamesafe says is armed or still asked for, whatever the
+        # selection says: a group taken off here that flamesafe still holds
+        # armed (the deck slow or quiet) is never shown plain grey.
+        held_fs = set() if fl.get("stale") or not fl.get("connected") else \
+            {g.get("name") for g in fl.get("groups", []) if isinstance(g, dict)
+             and (g.get("armed") == "armed" or g.get("wanted") is True)}
         why_fs = {g.get("name"): g.get("reason") or ""
                   for g in fl.get("groups", []) if isinstance(g, dict)}
         with self._lock:
@@ -1223,10 +1232,15 @@ class Purge:
                                            for x in waiting) + " yet")
                 else:
                     words.append("flamesafe armed")
+            still = [] if on else sorted({m.group for m in ms
+                                          if m not in never and
+                                          m.group in held_fs})
+            if still:
+                words.append("flamesafe still armed " + ", ".join(still))
             words += [f"{m.name} locked out" for m in locked]
             words += [f"{m.name} never purged" for m in never]
             state = ("on" if ms and len(on) == len(ms) and not waiting else
-                     "part" if on else "off")
+                     "part" if on or still else "off")
             out[g] = {"state": state, "any": any(i in sel for i in ids),
                       "text": "; ".join(words),
                       "selected": [m.name for m in on],

@@ -425,6 +425,11 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .mo-groups button.ghost{flex:0 0 auto}
 .mo-groups button.on{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
 .mo-groups button.part{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
+/* A group button's words (2026-10-28): one line under its name, cut with
+   an ellipsis (the whole of it in the tooltip), so a long sentence never
+   grows the button or pushes the field and the message line down. */
+.mo-groups button[data-grp]{min-width:0;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.mo-groups button .gd{display:block;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px;font-weight:600;line-height:1.15}
 #mo-field{flex:0 0 auto;height:clamp(360px,56vh,680px);position:relative;border:1px solid var(--hair);border-radius:8px;
   background:rgba(7,6,5,.6) linear-gradient(180deg,rgba(212,168,74,.05),rgba(212,168,74,0));overflow:hidden}
 #mo-field .edge{position:absolute;left:8px;right:8px;font:700 14px/1.2 var(--caps);letter-spacing:.14em;
@@ -3871,7 +3876,7 @@ function renderMorning(){
   const key = JSON.stringify([Object.keys(mo.groups || {}), mo.config_error]);
   if(gb.dataset.key !== key){
     gb.dataset.key = key;
-    gb.innerHTML = Object.keys(mo.groups || {}).map(g => `<button data-grp="${esc(g)}">${esc(g)}</button>`).join("") +
+    gb.innerHTML = Object.keys(mo.groups || {}).map(g => `<button data-grp="${esc(g)}"><b>${esc(g)}</b><small class="gd">\u00a0</small></button>`).join("") +
       `<button class="ghost" id="mo-clear">Clear</button><button class="ghost" id="mo-arrange">Arrange</button>`;
     gb.querySelectorAll("[data-grp]").forEach(b => b.addEventListener("click", () => groupClick(b.dataset.grp)));
     $("mo-clear").addEventListener("click", () => moPress("purge-clear", {}));
@@ -3890,10 +3895,10 @@ function renderMorning(){
     const gs = (mo.group_state || {})[b.dataset.grp] || {};
     const any = groupAnySelected(ids, purge);
     b.classList.toggle("on", gs.state === "on");
-    b.classList.toggle("part", any && gs.state !== "on");
-    b.disabled = !ids.length || (!any && (!mo.purge_enabled || ARRANGE || !mayRow(ST, "arm")));
-    b.textContent = b.dataset.grp + (gs.text ? ": " + gs.text : "");
-    b.title = ids.length ? (any ? "Click to take the whole group off the purge. " : "") + ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
+    b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));
+    b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);
+    b.querySelector(".gd").textContent = gs.text || "\u00a0";
+    b.title = ids.length ? (gs.text ? b.dataset.grp + ": " + gs.text + ". " : "") + (any ? "Click to take the whole group off the purge. " : "") + ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
   });
   // The field: every machine where the layout puts it.
   const field = $("mo-field");
@@ -4081,6 +4086,11 @@ function laserGroupClick(g){
 function groupAnySelected(ids, purge){
   const sel = (purge && purge.selected) || [];
   return ids.some(id => sel.includes(id));
+}
+// Off (any member selected) is never disabled: not by Arrange mode, purge
+// arming switched off or a signed-out screen. Only an arm is.
+function groupButtonDisabled(ids, any, mo, arrange, st){
+  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));
 }
 function groupClick(g){
   const ids = (MO.groups || {})[g] || [];

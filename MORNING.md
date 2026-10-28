@@ -33,7 +33,11 @@ rule written there.
    in words: green only when every member is selected and flamesafe
    reports the group armed; amber for part of it ("5 of 6 selected;
    flamesafe armed; front-row-4 locked out") or while flamesafe has not
-   armed it yet; grey when none is selected. While any member is
+   armed it yet, or while flamesafe still reports it armed after it was
+   taken off here ("flamesafe still armed front row"); grey when none is
+   selected and flamesafe holds none of it. The words sit on one line
+   under the name, cut short with the whole in the tooltip, so they never
+   move the field or the message line. While any member is
    selected, the next click takes the whole group off the purge, and
    nothing holds that back: not a locked or refused member, not Arrange
    mode, not purge arming switched off (Jeff, 2026-10-28, show PC: with

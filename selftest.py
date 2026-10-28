@@ -47575,7 +47575,12 @@ function measure(){
     key:(document.getElementById("mo-key") || {}).textContent || "",
     focus:shown(document.getElementById("mo-focus")) ? document.getElementById("mo-focus").textContent : null,
     nofile:shown(document.getElementById("nofile")) ? document.getElementById("nofile").textContent : null,
-    tiles:[], scroll_h:document.scrollingElement.scrollHeight};
+    tiles:[], scroll_h:document.scrollingElement.scrollHeight,
+    groups_h:Math.round(document.getElementById("mo-groups").getBoundingClientRect().height),
+    msg_top:Math.round(document.getElementById("mo-msg").getBoundingClientRect().top),
+    field_top:Math.round(document.getElementById("mo-field").getBoundingClientRect().top),
+    grp:[...document.querySelectorAll("#mo-groups [data-grp]")].map(b => ({h:Math.round(b.getBoundingClientRect().height),
+      text:(b.querySelector(".gd") || {}).textContent || "", title:b.title, cls:b.className}))};
   // Every piece of text on the Startup page and the Abort bar.
   const root = [document.getElementById("v-morning"), document.getElementById("abortbar")];
   for(const r of root){
@@ -47747,6 +47752,38 @@ def test_startup_page_readable_at_the_show_pc_sizes():
               f"{w}x{h}: every machine tile's label 16 px or more: "
               f"{m['tile_px']} {m['tiles'][:2]}")
         check(not m["problems"], f"{w}x{h}: {m['problems'][:6]}")
+    # A group button's words (2026-10-28), at their longest: one line,
+    # cut with an ellipsis, the whole in the tooltip; the group row, the
+    # field and the message line do not move.
+    long = ("5 of 6 selected; flamesafe has not armed front row (the "
+            "edge check is still waiting for its dwell) yet; front-row-4 "
+            "locked out; front-row-6 never purged")
+    mo2 = dict(mo, group_state={
+        g: {"state": "part", "any": True, "text": long, "selected": [],
+            "locked": [], "never": []} for g in mo["groups"]})
+    got2 = _rack_screen_in_chromium(
+        chrome, page, st, ((1280, 800), (1366, 768), (1920, 1080)),
+        measure_js=_STARTUP_MEASURE_JS, frag="#morning",
+        routes={"/api/remote/morning": mo2})
+    for (w, h), res in got2.items():
+        a = (got.get((w, h)) or [None])[0]
+        if not check(isinstance(res, list) and res and a,
+                     f"{w}x{h}: drawn with long group words: {res!r}"):
+            continue
+        b = res[0]
+        check(b["groups_h"] == a["groups_h"] and
+              b["field_top"] == a["field_top"] and
+              b["msg_top"] == a["msg_top"],
+              f"{w}x{h}: the long words move nothing: group row "
+              f"{a['groups_h']} -> {b['groups_h']}, field {a['field_top']} "
+              f"-> {b['field_top']}, message line {a['msg_top']} -> "
+              f"{b['msg_top']}")
+        check(b["grp"] and all(x["text"] == long and long in x["title"] and
+                               "part" in x["cls"] for x in b["grp"]),
+              f"{w}x{h}: every group button says it, amber, the whole in "
+              f"its tooltip: {b['grp'][:1]}")
+        check(not b["small"] and not b["problems"],
+              f"{w}x{h}: {b['small'][:4]} {b['problems'][:4]}")
     print("  measured: " + "; ".join(said))
     print("  ok")
 
@@ -59017,7 +59054,8 @@ def test_morning_arrange_mode_arms_nothing():
                  'if(arrangeBlocked("lock", {})) return;',
                  'await post("/api/remote/morning-open", openBeatBody());',
                  'arrangeExit("left");',
-                 'b.disabled = !ids.length || (!any && (!mo.purge_enabled || ARRANGE || !mayRow(ST, "arm")));',
+                 'b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);',
+                 '  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));',
                  'wireMachine(el, m);',
                  'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
                  'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
@@ -59608,9 +59646,11 @@ def test_morning_group_button_skips_locked_and_always_disarms():
                 check(gs["state"] == "on" and gs["text"] ==
                       "6 of 6 selected; flamesafe armed",
                       f"all six selected and armed: green: {gs}")
-            check(v["group_state"]["Scaffold Wavers"]["state"] == "off" and
-                  v["group_state"]["Scaffold Wavers"]["any"] is False,
-                  "another group is untouched")
+            sw = v["group_state"]["Scaffold Wavers"]
+            check(sw["any"] is False and sw["state"] == "part" and
+                  sw["text"] == "flamesafe still armed wave flamer",
+                  f"another group is untouched, and one flamesafe holds "
+                  f"armed (by hand) is amber, never grey: {sw}")
             # Second click (the page sends on false while any member is
             # selected): the whole group off, nothing refuses it, even with
             # purge arming switched off and the deck quiet.
@@ -59628,9 +59668,20 @@ def test_morning_group_button_skips_locked_and_always_disarms():
                   R.m.purge.owner is None, "and nothing is asked armed")
             RM.save_settings(R.work, purge_arming=True)
             R.remote._deck_seen = R.mono[0]
+            # flamesafe still reports the group armed (the deck slow or
+            # quiet): amber, saying so, until flamesafe lets it go.
             st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
-            check(v["group_state"][grp]["state"] == "off",
-                  "the button is grey again")
+            gs = v["group_state"][grp]
+            check(gs["state"] == "part" and gs["any"] is False and
+                  gs["text"].startswith("flamesafe still armed cat-walk"),
+                  f"cleared, flamesafe still armed: amber: {gs}")
+            R.groups[1]["armed"] = "disarmed"
+            R.groups[1]["wanted"] = False
+            R.feed()
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            gs = v["group_state"][grp]
+            check(gs["state"] == "off" and "flamesafe" not in gs["text"],
+                  f"flamesafe disarmed it: grey again: {gs}")
             if locked:
                 # Every member refused: nothing armed, every reason said.
                 R.fs_lockout = {"slots": [], "state": "read"}
@@ -59656,8 +59707,9 @@ def test_morning_group_button_skips_locked_and_always_disarms():
     b = page.find("// GROUP CLICK END")
     check(0 < a < b, "the page has its GROUP CLICK block")
     for need in ('b.classList.toggle("on", gs.state === "on");',
-                 'b.classList.toggle("part", any && gs.state !== "on");',
-                 'b.textContent = b.dataset.grp + (gs.text ? ": " + gs.text : "");',
+                 'b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));',
+                 'b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);',
+                 'b.querySelector(".gd").textContent = gs.text || "\\u00a0";',
                  '.mo-groups button.part{background:var(--amber)'):
         check(need in page, f"the page wires {need!r}")
     node = shutil.which("node")
@@ -59671,7 +59723,8 @@ const posts = [];
 function moPress(route, extra){ posts.push([route, extra]); }
 let MO = {groups:{"Ground G-Flames":["fr1","fr2","fr3","fr4","fr5","fr6"]},
           purge_state:{selected:[]}};
-""" + page[a:b] + r"""
+""" + page[page.find("function mayRow("):page.find("function armState(")] + \
+            page[a:b] + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 groupClick("Ground G-Flames");
@@ -59682,6 +59735,16 @@ t(posts[1][1].on === false && posts[1][1].machines.length === 6, "five of six (o
 MO.purge_state.selected = ["fr2"];
 groupClick("Ground G-Flames");
 t(posts[2][1].on === false, "any one selected: the click disarms");
+// The button's enabled state: an off (any member selected) is never
+// disabled; an arm is, by purge arming off, Arrange mode or signed out.
+const six = MO.groups["Ground G-Flames"], out_ = {me:{may:{arm:false}}}, in_ = {me:{may:{arm:true}}};
+for(const [mo, arr, st, why] of [[{purge_enabled:false}, false, in_, "purge arming off"], [{purge_enabled:true}, true, in_, "Arrange mode"],
+                                 [{purge_enabled:true}, false, out_, "signed out"], [{purge_enabled:false}, true, out_, "all three"]]){
+  t(groupButtonDisabled(six, true, mo, arr, st) === false, "the off click stays enabled with " + why);
+  t(groupButtonDisabled(six, false, mo, arr, st) === true, "an arm is disabled with " + why);
+}
+t(groupButtonDisabled(six, false, {purge_enabled:true}, false, in_) === false, "an arm, nothing against it: enabled");
+t(groupButtonDisabled([], true, {purge_enabled:true}, false, in_) === true, "an empty group: disabled");
 console.log(JSON.stringify(out));
 """
         r = _node_js(node, js, capture_output=True, text=True, timeout=60)
