@@ -8568,6 +8568,71 @@ def build():
   '''        if False:
             return 409, {"error": f"{m.name} is locked out, so it cannot "'''),
 
+ # A group button (Jeff, 2026-10-28, show PC: front-row-4 locked out
+ # stopped the group at 1 to 3, the button stayed grey and the second
+ # click armed again instead of taking the group off).
+ ("morning: a group button stops at the first member refused",
+  "ltcplay/morning.py",
+  """            elif out.get("error") not in refused:
+                refused.append(out.get("error"))""",
+  """            else:
+                refused.append(out.get("error"))
+                break"""),
+
+ ("morning: a group button's off is treated as an arm",
+  "ltcplay/morning.py",
+  """        cfg = self._cfg()
+        if not on:
+            off = []""",
+  """        cfg = self._cfg()
+        if False:
+            off = []"""),
+
+ ("morning: a group button is green with a member locked out",
+  "ltcplay/morning.py",
+  """            state = ("on" if ms and len(on) == len(ms) and not waiting else""",
+  """            state = ("on" if ms and len(on) >= len(ms) - len(locked) and not waiting else"""),
+
+ ("morning: a group button is green before flamesafe armed it",
+  "ltcplay/morning.py",
+  """            state = ("on" if ms and len(on) == len(ms) and not waiting else""",
+  """            state = ("on" if ms and len(on) == len(ms) else"""),
+
+ ("morning page: a group click arms again unless every member is selected",
+  "ltcplay/web/remote.html",
+  "  const any = groupAnySelected(ids, MO.purge_state || {});\n"
+  "  moPress(\"purge-select\", {machines: ids, group: g, on: !any});",
+  "  const any = ids.every(id => ((MO.purge_state || {}).selected || []).includes(id));\n"
+  "  moPress(\"purge-select\", {machines: ids, group: g, on: !any});"),
+
+ ("morning page: a group button cannot disarm with purge arming off",
+  "ltcplay/web/remote.html",
+  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
+  "  return !ids.length || !mo.purge_enabled || (!any && (arrange || !mayRow(st, \"arm\")));"),
+
+ ("morning page: a group button cannot disarm in Arrange mode or signed out",
+  "ltcplay/web/remote.html",
+  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
+  "  return !ids.length || arrange || !mayRow(st, \"arm\") || (!any && !mo.purge_enabled);"),
+
+ ("morning page: a group button's words grow it and push the page down",
+  "ltcplay/web/remote.html",
+  ".mo-groups button .gd{display:block;max-width:100%;white-space:nowrap;",
+  ".mo-groups button .gd{display:block;max-width:100%;white-space:normal;"),
+
+ ("morning page: a group button flamesafe still holds armed is drawn grey",
+  "ltcplay/web/remote.html",
+  '    b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));',
+  '    b.classList.toggle("part", any && gs.state !== "on");'),
+
+ ("morning: a group flamesafe still holds armed shows grey once cleared",
+  "ltcplay/morning.py",
+  """            if still:
+                words.append("flamesafe still armed " + ", ".join(still))""",
+  """            still = []
+            if still:
+                words.append("flamesafe still armed " + ", ".join(still))"""),
+
  ("morning: a purge is allowed while a show is live or aborted (T1)",
   "ltcplay/morning.py",
   '''        why = self._live()
@@ -9713,8 +9778,8 @@ def build():
 
  ("morning page: the group buttons stay live while arranging",
   "ltcplay/web/remote.html",
-  '''    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));''',
-  '''    b.disabled = !ids.length || !mo.purge_enabled || (!all && !mayRow(ST, "arm"));'''),
+  '''  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));''',
+  '''  return !ids.length || (!any && (!mo.purge_enabled || !mayRow(st, "arm")));'''),
 
  ("morning page: a bare mouse (no button down) still drags the machine",
   "ltcplay/web/remote.html",

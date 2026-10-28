@@ -1147,6 +1147,107 @@ class Purge:
                                          f"key) to fire.",
                      "selected": list(self.selected)}
 
+    def select_many(self, ids, on, device, seen_ok, group=""):
+        """A group button's click (code, body): select() for EVERY member,
+        each under every rule select() has, never stopping at the first
+        refusal (Jeff, 2026-10-28: with front-row-4 locked out the group
+        armed 1 to 3 and never tried 5 and 6). A member refused (locked
+        out, never purged, any other rule) is skipped and named with its
+        reason. Off takes every member out and nothing refuses it."""
+        what = group or "The group"
+        ids = [str(x) for x in ids]
+        cfg = self._cfg()
+        if not on:
+            off = []
+            for mid in ids:
+                was = mid in self.selected
+                if self.select(mid, False, device, seen_ok)[0] == 200 and was:
+                    m = cfg.by_id.get(mid)
+                    off.append(m.name if m is not None else mid)
+            text = (f"{what} off the purge: {', '.join(off)}." if off else
+                    f"{what}: nothing of it was armed for the purge.")
+            return 200, {"ok": True, "text": text,
+                         "selected": list(self.selected)}
+        armed, refused = [], []
+        for mid in ids:
+            code, out = self.select(mid, True, device, seen_ok)
+            if code == 200:
+                m = cfg.by_id.get(mid)
+                armed.append(m.name if m is not None else mid)
+            elif out.get("error") not in refused:
+                refused.append(out.get("error"))
+        if not armed:
+            return 409, {"error": f"{what}: nothing was armed. " +
+                                  " ".join(refused), "refused": refused,
+                         "selected": list(self.selected)}
+        text = (f"{what}: {len(armed)} of {len(ids)} armed for the purge "
+                f"({', '.join(armed)}).")
+        if refused:
+            text += " Not armed: " + " ".join(refused)
+        else:
+            text += " Hold Space (or the deck's FIRE key) to fire."
+        return 200, {"ok": True, "text": text, "refused": refused,
+                     "selected": list(self.selected)}
+
+    def group_view(self, banks):
+        """What each group button shows (Jeff, 2026-10-28): "on" (green)
+        only when every member is selected, unlocked and its flamesafe
+        group reports ARMED; "part" (amber) when some of it is selected,
+        or selected but flamesafe has not armed it; "off" when none is.
+        `text` says so in words and names every member locked out or
+        never purged; with none selected while flamesafe still reports a
+        member's group armed or asked for, it is "part" and says so; `any` is true while any member is selected (the
+        button's next click then takes the whole group off)."""
+        cfg = self._cfg()
+        armed_fs = self._armed_groups()
+        fl = self._flames() or {}
+        # What flamesafe says is armed or still asked for, whatever the
+        # selection says: a group taken off here that flamesafe still holds
+        # armed (the deck slow or quiet) is never shown plain grey.
+        held_fs = set() if fl.get("stale") or not fl.get("connected") else \
+            {g.get("name") for g in fl.get("groups", []) if isinstance(g, dict)
+             and (g.get("armed") == "armed" or g.get("wanted") is True)}
+        why_fs = {g.get("name"): g.get("reason") or ""
+                  for g in fl.get("groups", []) if isinstance(g, dict)}
+        with self._lock:
+            sel = set(self.selected)
+        out = {}
+        for g, ids in banks.items():
+            ms = [cfg.by_id[i] for i in ids if i in cfg.by_id]
+            locked = [m for m in ms if self._lockout.is_locked("machine",
+                                                                m.id)]
+            never = [m for m in ms if m not in locked and
+                     cfg.purge_refusal(m)]
+            on = [m for m in ms if m.id in sel and m not in locked and
+                  m not in never]
+            waiting = sorted({m.group for m in on
+                              if m.group not in armed_fs})
+            words = []
+            if on:
+                words.append(f"{len(on)} of {len(ms)} selected")
+                if waiting:
+                    words.append("flamesafe has not armed " +
+                                 ", ".join(f"{x}" + (f" ({why_fs[x]})" if
+                                                    why_fs.get(x) else "")
+                                           for x in waiting) + " yet")
+                else:
+                    words.append("flamesafe armed")
+            still = [] if on else sorted({m.group for m in ms
+                                          if m not in never and
+                                          m.group in held_fs})
+            if still:
+                words.append("flamesafe still armed " + ", ".join(still))
+            words += [f"{m.name} locked out" for m in locked]
+            words += [f"{m.name} never purged" for m in never]
+            state = ("on" if ms and len(on) == len(ms) and not waiting else
+                     "part" if on or still else "off")
+            out[g] = {"state": state, "any": any(i in sel for i in ids),
+                      "text": "; ".join(words),
+                      "selected": [m.name for m in on],
+                      "locked": [m.name for m in locked],
+                      "never": [m.name for m in never]}
+        return out
+
     def groups_wanted(self):
         """flamesafe group indices the selection needs armed, for the deck.
         A locked machine, or one in a fully locked group, never counts,
@@ -2032,6 +2133,7 @@ class Morning:
         v["layout_saved"] = saved
         v["lockout"] = self.lockout.view(self.cfg)
         v["purge_state"] = self.purge.view()
+        v["group_state"] = self.purge.group_view(self.cfg.banks)
         v["lasers"] = self.lasers.view()
         v["laser_arm"] = self.laser_arm.view()
         v["checklists"] = self.checklist.view()
@@ -2076,14 +2178,13 @@ class Morning:
         if name == "purge-select":
             on = body.get("on") is not False
             if isinstance(body.get("machines"), list):
-                out, last = [], (200, {"ok": True})
-                for mid in body["machines"]:
-                    last = self.purge.select(str(mid), on, device, seen_ok)
-                    out.append(last)
-                    if last[0] != 200:
-                        break
-                return last[0], dict(last[1], selected=list(
-                    self.purge.selected))
+                # A group button: every member, never stopping at the
+                # first refusal (Purge.select_many).
+                grp = body.get("group")
+                return self.purge.select_many(
+                    body["machines"], on, device, seen_ok,
+                    group=grp if isinstance(grp, str) and grp in
+                    self.cfg.banks else "")
             return self.purge.select(str(body.get("machine")), on, device,
                                      seen_ok)
         if name == "purge-fire":
