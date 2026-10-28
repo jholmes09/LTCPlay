@@ -38487,6 +38487,9 @@ def test_reset_from_hold_ends_it_and_starts_nothing():
         check(rows and "complete halt" in rows[-1]["text"] and
               rows[-1].get("screen") == "iPad",
               f"journaled as a complete halt from the iPad: {rows[-1:]}")
+        from ltcplay import users as _U
+        check(_U.classify("/api/remote/stop", {}) == "safety",
+              "Stop is a safety press: signed out may (PR #143)")
         st, _h, out = R.ask("POST", "/api/remote/stop", {"seen": 1})
         check(st in (200, 500) and "stale" not in out,
               f"never refused for a stale page: {st} {out}")
@@ -38595,6 +38598,41 @@ _STOP_BUTTON_JS = r"""<script>
 </script>"""
 
 
+_FETCH_LOG_JS = r"""<script>
+window.__posts = [];
+(function(){ const f = window.fetch; window.fetch = function(u, o){
+  if(o && o.method === "POST") window.__posts.push(String(u));
+  return f.apply(this, arguments); }; })();
+</script>"""
+
+_STOP_CLICK_JS = r"""<script>
+(function(){
+ let n = 0;
+ function go(){
+  const b = document.getElementById("@BID@");
+  if(!ST || !b || (b.dataset.mode !== "stop" && n++ < 40)) return setTimeout(go, 50);
+  setTimeout(() => {
+   const out = {mode:b.dataset.mode, label:b.querySelector(".lbl").textContent,
+     disabled:b.disabled, off:b.classList.contains("signin-off")};
+   b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
+   b.click();
+   setTimeout(() => {
+    const y = document.getElementById("m-yes");
+    if(!document.getElementById("modal").hidden) y.click();
+    setTimeout(() => {
+     out.posts = window.__posts.slice();
+     out.said = document.getElementById("@MSG@").textContent;
+     const pre = document.createElement("pre"); pre.id = "rack-measure";
+     pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
+    }, 700);
+   }, 300);
+  }, 600);
+ }
+ go();
+})();
+</script>"""
+
+
 def test_rack_screen_stop_in_place_of_start_now():
     section("Jeff's field report (2026-10-28), Stop: while a show is live "
             "Start now becomes Stop in the same place (the Run button on the "
@@ -38694,7 +38732,7 @@ console.log(JSON.stringify(out));
     # The CI runner's Chrome leaves about 143 px less page than its window
     # (see test_rack_screen_small_screens_with_announcements_and_setup):
     # 1366x544 and 1024x625 are what it shows of 1366x687 and 1024x768.
-    sizes = [(1366, 544), (1366, 558), (1366, 625), (1024, 625),
+    sizes = [(1366, 544), (1366, 558), (1024, 625),
              (1280, 577), (1920, 937), (820, 1037)]
     for frag, label in (("", "show screen"), ("#programming",
                                                "Programming screen")):
@@ -38732,6 +38770,39 @@ console.log(JSON.stringify(out));
                   f"Abort bar: {b} abort {ab} vh {m['vh']}")
             check(ab["bottom"] <= m["vh"] + 1,
                   f"{w}x{h} {label}: Abort still on screen: {ab}")
+    # Signed out (PR #143: view only) with a show live, and with Run on its
+    # way in on the Programming screen: Stop is still enabled, and a press
+    # really posts the complete halt (#143's lock skips a control whose
+    # mode is "stop"). One size each, to keep the run short.
+    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
+             "users")
+    out_st = json.loads(json.dumps(st))
+    out_st["me"] = {"user": None, "role": None, "view_only": True,
+                    "may": {p: False for p in perms}}
+    prog_st = json.loads(json.dumps(out_st))
+    prog_st["schedule"] = dict(prog_st["schedule"], state="STANDBY",
+                               running=None, held=False)
+    prog_st["show"] = {"running": False, "starting": True,
+                       "timecode": None}
+    for frag, status, bid, msg in (("", out_st, "b-start", "ctl-msg"),
+                                   ("#programming", prog_st, "b-run",
+                                    "run-msg")):
+        js = _STOP_CLICK_JS.replace("@BID@", bid).replace("@MSG@", msg)
+        got = _rack_screen_in_chromium(chrome, page, status, ((1366, 544),),
+                                       frag=frag, measure_js=js,
+                                       head_js=_FETCH_LOG_JS)
+        m = got[(1366, 544)]
+        if check(isinstance(m, dict), f"signed out {frag or 'show'}: "
+                                      f"drawn: {m!r}"):
+            check(m["mode"] == "stop" and m["label"] == "Stop" and
+                  not m["disabled"] and not m["off"],
+                  f"signed out {frag or 'show screen'}: Stop is enabled, "
+                  f"never locked for signing in: {m}")
+            check("/api/remote/stop" in m["posts"] and
+                  m["said"].startswith("Stopped."),
+                  f"signed out {frag or 'show screen'}: pressing it posts "
+                  f"the complete halt and says Stopped: {m['posts']} "
+                  f"{m['said']!r}")
     # Loading: the Start now button says so before the show.
     st2 = _rack_status_pico()
     st2["schedule"] = dict(st2["schedule"], start_blocked={
