@@ -1198,24 +1198,39 @@ class Service:
         # (ruling 1, 2026-10-12): neither disarms a flame group.
         return le
 
-    FAILED_START_ALERT = ("The show did not start. The rig is dark and every "
-                          "flame group stays as it was. Press Acknowledge "
-                          "once you have seen it; Start now or the next show "
-                          "brings the rig back.")
+    FAILED_START_ALERT = ("The rig is dark and every flame group stays as "
+                          "it was. Press Acknowledge once you have seen it; "
+                          "Start now or the next show brings the rig back.")
 
-    REFUSED_START_ALERT = ("The show did not start. Nothing was sent to the "
-                           "rig for it: no fade, no MadMapper or BEYOND "
-                           "command, and every flame group stays as it was. "
-                           "Press Acknowledge once you have seen it; the "
-                           "journal says why the start was refused.")
+    REFUSED_START_ALERT = ("Nothing was sent to the rig for it: no fade, no "
+                           "MadMapper or BEYOND command, and every flame "
+                           "group stays as it was. Press Acknowledge once "
+                           "you have seen it.")
+
+    @staticmethod
+    def start_alert(show, why, tail):
+        """A failed or refused start's alert (Jeff's field report,
+        2026-10-28): which show, the real reason in plain words with what
+        to press (the runner's own sentence, the same one the slot's FAULT
+        reason carries), then what was or was not sent. Never only "The
+        show did not start"."""
+        why = str(why or "").strip().rstrip(".")
+        if not why:
+            why = ("no reason was given; the journal has the lines around "
+                   "it")
+        head = f"Show {show}" if show else "The show"
+        return f"{head} did not start: {why}. {tail}"
 
     def _record(self, out, now, plan=(), held=(), ev=None):
         for le in out.log:
             self._record_logevent(self._reworded(le))
             if le.action == sch.SHOW_FAILED and self.alert_sink is not None:
-                alert = (self.REFUSED_START_ALERT
-                         if ev is not None and ev.nothing_sent and
-                         not out.effects else self.FAILED_START_ALERT)
+                tail = (self.REFUSED_START_ALERT
+                        if ev is not None and ev.nothing_sent and
+                        not out.effects else self.FAILED_START_ALERT)
+                alert = self.start_alert(
+                    le.show or (ev.show if ev is not None else 0),
+                    ev.detail if ev is not None else "", tail)
                 try:
                     self.alert_sink("start", alert)
                 except Exception as e:   # noqa: BLE001  never the scheduler
@@ -1578,10 +1593,79 @@ class Service:
                                "latest Abort, so that Abort is still in "
                                "force. Press Reset again.")
         if not call.done.wait(wait_s):
-            return {"ok": False, "text": "Reset is queued behind the show "
-                                         "conductor's earlier work and has "
-                                         "not answered yet."}
-        return {"ok": call.ok, "text": call.sentence}
+            out = {"ok": False, "text": "Reset is queued behind the show "
+                                        "conductor's earlier work and has "
+                                        "not answered yet."}
+        else:
+            out = {"ok": call.ok, "text": call.sentence}
+        return out
+
+    def reset_hold(self, who, screen, surface=False):
+        """The rack screen's Reset while the schedule is on Hold or has a
+        fault flag up and no Abort stands (Jeff's field report, 2026-10-28:
+        "I play the show, press Hold, and Reset does nothing"). The remote
+        route asks this first and reset_conductor only when this returns
+        None, so while an Abort stands Reset is the Abort's alone, exactly
+        as before (a second Reset then ends a Hold). The scheduler's own
+        events, each journaled with who and where:
+
+          PAUSED  the paused show ends: STOP_SHOW, faded to dark like a
+                  Stop, nothing latched and no flame group disarmed;
+          HOLD    the Hold between shows ends: RESUME, back to waiting;
+          faults  the fault flag is cleared: CLEAR_FAULT.
+
+        Reset never starts or continues a show by itself (a delayed show
+        still waits for Start now). {"ok", "text"}, or None when there was
+        nothing of these to do. Raises ValueError, journaled, for a blank
+        or unknown operator or screen, as reset_conductor does."""
+        m = self.machine
+        if m is None or self._aborted() or not (
+                m.state in (sch.PAUSED, sch.HOLD) or m.faults):
+            return None
+        who = str(who or "").strip()
+        screen = str(screen or "").strip()
+        if not who or not screen:
+            self._refuse_reset(who, screen, "Reset has to say who pressed it "
+                               "and which screen it came from. Nothing was "
+                               "reset.")
+        names = {n.lower(): n for n in self.operators}
+        if surface:
+            names[who.lower()] = who
+        if who.lower() not in names:
+            self._refuse_reset(who, screen, f"{who!r} is not on the operator "
+                               f"list ({', '.join(self.operators)}). Nothing "
+                               f"was reset.")
+        who = names[who.lower()]
+        screen = self._check_screen(screen, who, "reset", "Reset")
+        texts, ok = [], True
+        with self._locked():
+            self.tick()
+            m = self.machine
+            if m is None or self._aborted():
+                # An Abort decided meanwhile: Reset is its, with its own
+                # ordering rules (reset_conductor).
+                return None
+            kinds = []
+            if m.state == sch.PAUSED:
+                kinds.append(sch.STOP_SHOW)
+            elif m.state == sch.HOLD:
+                kinds.append(sch.RESUME)
+            if m.faults:
+                kinds.append(sch.CLEAR_FAULT)
+            if not kinds:
+                return None
+            for kind in kinds:
+                out = self._apply(sch.Event(
+                    kind, "operator", who=who, screen=screen,
+                    confirmed=True, surface=bool(surface),
+                    detail=sch.RESET_DETAIL))
+                if out.refused:
+                    ok = False
+                    texts.append(out.refused)
+                else:
+                    texts.append(" ".join(self._reworded(le).text
+                                          for le in out.log if le.text))
+        return {"ok": ok, "text": " ".join(t for t in texts if t)}
 
     def _refuse_reset(self, who, screen, sentence):
         with self._locked():
@@ -2813,7 +2897,10 @@ class Service:
                    "journal": list(self.journal)[-int(journal):][::-1]}
             if self.machine is not None:
                 out.update(sch.machine_view(self.machine, now))
-            return out
+        # What Start now would be refused with now (the rack screen's
+        # Loading state and its reason), read off this service's lock.
+        out["start_blocked"] = self.start_blocked()
+        return out
 
     def edit_tonight(self, body):
         """Move, add or remove one of tonight's shows. Tonight only."""
@@ -3114,6 +3201,12 @@ class Service:
                 screen.lower(), screen)
         else:
             screen = self._check_screen(screen, who, what, what)
+        if kind == sch.START_NOW:
+            # Outside this service's lock: the performer's check reads the
+            # show's clock (start_blocked).
+            refused = self._start_now_refusal(who, screen)
+            if refused is not None:
+                return refused
         with self._locked():
             self.tick()
             if self.machine is None:
@@ -3147,6 +3240,49 @@ class Service:
         # while the conductor did disarm).
         text = " ".join(self._reworded(le).text for le in out.log if le.text)
         return {"ok": True, "text": text or "Done."}
+
+    def start_blocked(self):
+        """What would stop an operator's Start now before anything is
+        decided, as {"text", "loading"}, or None: the performer's own check
+        (fire_ice.ShowRunner.start_blocked: Run not pressed, the show audio
+        still loading or not loaded, its interface missing). None with no
+        performer or in a dry run, where nothing is started anyway. Takes
+        no lock of this service. Never raises."""
+        perf = self.performer
+        fn = getattr(perf, "start_blocked", None)
+        if fn is None or self.dry_run:
+            return None
+        try:
+            got = fn()
+        except Exception:                        # noqa: BLE001
+            return None
+        if not isinstance(got, dict) or not got.get("text"):
+            return None
+        return {"text": str(got["text"]), "loading": got.get("loading") is
+                True}
+
+    def _start_now_refusal(self, who, screen):
+        """Start now refused up front, with the real reason and what to
+        press (Jeff's field report, 2026-10-28: Start now with Run off, or
+        4 s after Run while the show audio loaded, was "refused" only by a
+        FAULT slot and an alert that said "The show did not start"). Only
+        while the scheduler would take a Start now at all; its own refusals
+        (a show running, an Abort not Reset) keep their own sentences.
+        Journaled as a refused press. {"ok": False, ...} or None."""
+        m = self.machine
+        if m is None or m.state not in sch.ALLOWED[sch.START_NOW]:
+            return None
+        blocked = self.start_blocked()
+        if blocked is None:
+            return None
+        why = blocked["text"].rstrip(".")
+        sentence = (f"Start now was refused: {why}. Nothing was started and "
+                    f"nothing was sent to the rig.")
+        self.journal_press(who, screen, "start-now", "refused",
+                           f"{who or 'Someone'}'s Start now was refused. "
+                           f"{sentence}")
+        return {"ok": False, "text": sentence,
+                "loading": blocked["loading"]}
 
     def journal_press(self, who, screen, action, outcome, text,
                       fault=False):

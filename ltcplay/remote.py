@@ -2240,8 +2240,14 @@ class Remote:
             # operator list (Jeff, 2026-10-07). Every other rule the
             # scheduler has for these presses still applies.
             if name == "reset":
-                r = svc.reset_conductor(who, screen, pressed=pressed,
-                                        surface=surface)
+                # From a Hold, Reset ends it (and a paused show) and clears
+                # the fault flag; starts nothing (Jeff, 2026-10-28). Else,
+                # and always while an Abort stands, the Abort's Reset.
+                fn = getattr(svc, "reset_hold", None)
+                r = fn(who, screen, surface=surface) if fn else None
+                if r is None:
+                    r = svc.reset_conductor(who, screen, pressed=pressed,
+                                            surface=surface)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
@@ -5128,6 +5134,7 @@ class Remote:
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),
+                    "start_blocked": st.get("start_blocked"),
                     "slots": tn.get("slots", [])}
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,

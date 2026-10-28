@@ -224,6 +224,13 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 .big2:empty,.cdlabel:empty{display:none}
 .ctl{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .ctl button{min-height:clamp(52px,8vh,96px);font-size:clamp(18px,3vh,30px)}
+/* Start now becomes Stop while a show is live (Jeff, 2026-10-28): the same
+   place, a red fill, and its small line says what it does. */
+.ctl button small,#b-run small{display:block;font-size:clamp(11px,1.4vh,14px);font-weight:600;line-height:1.15;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctl button small:empty,#b-run small:empty{display:none}
+button.stopnow{background:var(--red-deep);border-color:var(--red);color:var(--champ)}
+#b-run{min-height:56px;font-size:20px}
 /* Operator announcements (announce.py, Jeff 2026-10-26): one press plays,
    no double tap. A recording not on this PC yet reads Recording missing
    and its button is off. */
@@ -859,7 +866,7 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
       </div>
     </div>
     <div class="ctl">
-      <button id="b-start" class="go">Start now</button>
+      <button id="b-start" class="go" data-mode="start"><span class="lbl">Start now</span><small></small></button>
       <button id="b-hold" class="hold">Hold</button>
       <button id="b-resume" class="go">Resume</button>
       <button id="b-reset">Reset</button>
@@ -1124,8 +1131,7 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
       <div class="modeline locked" id="run-rate" hidden></div>
       <div class="row">
         <select id="run-file" style="flex:2 1 0" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
-        <button id="b-run" class="go" style="flex:1 1 0">Run</button>
-        <button id="b-stoprun" style="flex:1 1 0">Stop</button>
+        <button id="b-run" class="go" style="flex:1 1 0" data-mode="run"><span class="lbl">Run</span><small></small></button>
       </div>
       <div class="toast" id="run-msg"></div>
     </section>
@@ -1776,10 +1782,63 @@ function lastShowMinutes(text){
 // group (review of #126, P2-1), and a disarm that failed is said plainly,
 // never a bare "Stopped." (third review of #126, P2-2).
 const STOP_DISARM_FAILED = "Stopped, but the flame disarm FAILED: use Disarm all flame groups or the hardware e-stop.";
+// Stop is the Stream Deck's Stop, a complete halt (Jeff, 2026-10-28: "no
+// way to simply stop the show"): every flame group and laser disarmed, a
+// live show ended and faded to dark, then playback stops, so Run is off.
+// Nothing is fired and nothing is latched: no Reset is needed.
 function stopWords(j){
   const f = j && j.flames;
   if(f && f.disarmed === false) return STOP_DISARM_FAILED;
-  return "Stopped.";
+  const bad = ((j && j.failed) || []).filter(x => x !== "flames");
+  if(bad.length || (j && j.stopped === false))
+    return "Stopped, but these did NOT work: " + (bad.length ? bad.join(", ") : "playback stop") +
+      (j && j.error ? " (" + j.error + ")" : "") + ". Press Abort, or use the hardware e-stop.";
+  const said = [];
+  if(j && j.show && j.show.ok) said.push("The show ended and the rig is fading to dark.");
+  else said.push("The rig is dark.");
+  if(f && f.disarmed === true) said.push("Every flame group was disarmed.");
+  if(j && j.lasers && j.lasers.disarmed === true) said.push("Every laser was disarmed.");
+  said.push("Run is off. Press Run to bring the rig back.");
+  return "Stopped. " + said.join(" ");
+}
+// A refused press's words: the engine's own sentence, whichever key it
+// came in ("error", or "text" for a scheduler press it refused, such as
+// Start now with Run off), never a bare "Conflict" (Jeff, 2026-10-28).
+function refusedWords(j, statusText){
+  const t = j && (j.error || j.text);
+  return t ? String(t) : String(statusText || "The engine refused it and did not say why.");
+}
+const STOP_CONFIRM = "Stop playback and disarm every flame group. Every laser is disarmed too, and a live show ends and fades to dark first. Nothing is fired. No show starts until Run is pressed again, and each group has to be armed again.";
+const STOP_NOT_HERE = "Stop works on the rack screen and the Stream Deck, not from this device. Here press Hold to pause the show, or Abort to stop it now.";
+// The Show screen's Start now button, or Stop in its place while a show is
+// live (Jeff, 2026-10-28: the Play button becomes Stop, same position). A
+// live show is the scheduler in SHOW or PAUSED (on Hold), or, with no
+// scheduler in this engine, Run playing. Stop is never held back by a
+// stale page: it only takes risk away. Before a show, what Start now
+// would be refused with (the engine's start_blocked) is on the button:
+// "Loading" while the show audio loads, so it is not pressed only to fail.
+function startLook(st, stale, local){
+  const sch = (st && st.schedule) || {}, show = (st && st.show) || {};
+  const live = sch.state === "SHOW" || sch.state === "PAUSED" || (!sch.attached && !!show.running);
+  if(live)
+    return {mode:"stop", label:"Stop", sub:local ? "end the show, rig dark" : "rack screen only",
+            disabled:false, title:local ? STOP_CONFIRM : STOP_NOT_HERE, why:""};
+  const b = sch.start_blocked;
+  const fresh = !stale && !!st && !!sch.attached;
+  if(b && b.text && b.loading)
+    return {mode:"start", label:"Loading", sub:"show audio, wait", disabled:true,
+            title:String(b.text), why:String(b.text)};
+  if(b && b.text)
+    return {mode:"start", label:"Start now", sub:/^Run has not been pressed/.test(String(b.text)) ? "Run is off" : "not ready, tap for why",
+            disabled:!fresh, title:String(b.text), why:String(b.text)};
+  return {mode:"start", label:"Start now", sub:"", disabled:!fresh, title:"", why:""};
+}
+// The Programming screen's Run button, or Stop in its place while Run is
+// in force (Jeff, 2026-10-28): one Stop, where Run was.
+function runLook(st){
+  const show = (st && st.show) || {};
+  return show.running ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
+                      : {mode:"run", label:"Run", sub:""};
 }
 // The alert hold (alerthold.py): the state card's word and sentence while
 // the schedule is held at showtime because an alert is open, or null.
@@ -1868,7 +1927,7 @@ async function post(p, body){
   const r = await fetch(p, {method:"POST", credentials:"same-origin", cache:"no-store",
     headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {})});
   const j = await r.json().catch(() => ({}));
-  if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; e.code = j.code || ""; throw e; }
+  if(!r.ok){ const e = new Error(refusedWords(j, r.statusText)); e.status = r.status; e.code = j.code || ""; throw e; }
   return j;
 }
 // No sign-in (Jeff, 2026-10-07): the engine names the surface a press
@@ -1991,6 +2050,7 @@ function renderStale(){
   if(stale) b.textContent = staleText(Date.now(), LAST_OK, DRAW_ERR);
   const cs = controlStates(ST, stale);
   $("b-start").disabled = !cs.startNow;
+  drawStart(stale);
   $("b-resume").disabled = !cs.resume;
   $("b-reset").disabled = !cs.reset;
   $("b-hold").disabled = !cs.hold;
@@ -3145,7 +3205,70 @@ $("se-save").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); $("se-msg").textContent = j.text; if(j.doc) drawSchedule(j.doc); }
   catch(e){ $("se-msg").textContent = e.message; }
 });
+// Start now, or Stop in its place (startLook). The button is redrawn only
+// when what it says changes, so a press is never lost to a redraw.
+function setLook(el, mode, label, sub, title){
+  if(el.dataset.mode !== mode) el.dataset.mode = mode;
+  const l = el.querySelector(".lbl"), sm = el.querySelector("small");
+  if(l && l.textContent !== label) l.textContent = label;
+  if(sm && sm.textContent !== sub) sm.textContent = sub;
+  if(el.title !== title) el.title = title;
+}
+function drawStart(stale){
+  const el = $("b-start");
+  const lk = startLook(ST, stale, !!(ME && ME.local));
+  setLook(el, lk.mode, HALT_BUSY ? "Stopping" : lk.label, lk.sub, lk.title);
+  el.classList.toggle("go", lk.mode === "start");
+  el.classList.toggle("stopnow", lk.mode === "stop");
+  // Stop is never held back; Start now follows controlStates and the
+  // engine's own reason (Loading while the show audio loads).
+  el.disabled = lk.mode === "stop" ? HALT_BUSY : (el.disabled || lk.disabled);
+  const r = $("b-run");
+  if(r){
+    const rk = runLook(ST);
+    setLook(r, rk.mode, HALT_BUSY ? "Stopping" : rk.label, rk.sub, rk.mode === "stop" ? STOP_CONFIRM : "");
+    r.classList.toggle("go", rk.mode === "run");
+    r.classList.toggle("stopnow", rk.mode === "stop");
+    r.disabled = HALT_BUSY;
+  }
+}
+let HALT_BUSY = false;
+// Stop: the engine's complete halt (/api/stop with "halt", the Stream
+// Deck's Stop), from the rack screen itself only (/api/stop is the
+// machine's own route). What came back is said where it was pressed, and
+// a refusal says why, in the engine's words.
+async function pressStop(msgId){
+  const el = $(msgId);
+  if(!(ME && ME.local)){ el.textContent = STOP_NOT_HERE; el.title = el.textContent; return; }
+  if(!(await confirmBox("Stop the show?", STOP_CONFIRM, "Yes, Stop", ""))) return;
+  HALT_BUSY = true;
+  el.textContent = "Stopping: disarming, then fading to dark...";
+  try{ drawStart(false); }catch(e){}
+  let r = null, j = {};
+  try{
+    r = await fetch("/api/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify({halt:true})});
+    j = await r.json().catch(() => ({}));
+    el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :
+      ("Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Press Abort to stop the show anyway.");
+  }catch(e){
+    el.textContent = "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or Abort.";
+  }finally{
+    HALT_BUSY = false;
+    el.title = el.textContent;
+    try{ drawStart(false); }catch(e){}
+  }
+}
 $("b-start").addEventListener("click", async () => {
+  const lk = startLook(ST, false, !!(ME && ME.local));
+  if($("b-start").dataset.mode === "stop" || lk.mode === "stop") return pressStop("ctl-msg");
+  if(lk.why){
+    // The engine would refuse it: said now, in its words, with what to
+    // press. Nothing is sent.
+    $("ctl-msg").textContent = "Start now would be refused: " + lk.why.replace(/\.$/, "") + ".";
+    $("ctl-msg").title = $("ctl-msg").textContent;
+    return;
+  }
   if(await confirmBox("Start a show now?", "The next show starts now, or an extra show if none is waiting.", "Yes, start now", "start"))
     press("start-now", {confirmed:true});
 });
@@ -3221,6 +3344,7 @@ function renderRunMode(){
 }
 document.querySelectorAll("#run-mode [data-mode]").forEach(b => b.addEventListener("click", () => { RUN_MODE = b.dataset.mode; renderRunMode(); }));
 $("b-run").addEventListener("click", async () => {
+  if($("b-run").dataset.mode === "stop") return pressStop("run-msg");
   const f = $("run-file").value;
   if(!f){ $("run-msg").textContent = "No show file in the show folder."; return; }
   const prog = RUN_MODE === "programming";
@@ -3228,11 +3352,6 @@ $("b-run").addEventListener("click", async () => {
   if(v.locked){ $("run-msg").textContent = "Programming is locked while a scheduled show is live. Press Hold to pause it now; Programming opens once the show has ended."; return; }
   if(!(await confirmBox(prog ? "Run in Programming?" : "Press Run?", prog ? "Run " + f + " as a rehearsal. Play from, jump and loop work, and the scheduler starts no show." : "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "start"))) return;
   try{ const j = await post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f}); $("run-msg").textContent = j.banner || "Running."; }
-  catch(e){ $("run-msg").textContent = e.message; }
-});
-$("b-stoprun").addEventListener("click", async () => {
-  if(!(await confirmBox("Stop?", "Stop playback and disarm every flame group. No show starts until Run is pressed again, and each group has to be armed again.", "Yes, Stop", ""))) return;
-  try{ const j = await post("/api/stop", {}); $("run-msg").textContent = stopWords(j); }
   catch(e){ $("run-msg").textContent = e.message; }
 });
 $("b-hold").addEventListener("click", () => press("hold"));

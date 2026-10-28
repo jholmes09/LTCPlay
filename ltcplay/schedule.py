@@ -216,6 +216,14 @@ END_NIGHT = "END_NIGHT"
 # Reset is needed; Run brings the rig back. The engine disarms every flame
 # group and laser itself before it sends this.
 STOP_SHOW = "STOP_SHOW"
+# Reset pressed while the schedule is on Hold (Jeff's field report,
+# 2026-10-28: "I play the show, press Hold, and Reset does nothing"). The
+# service sends the scheduler's own events with this as their detail: a
+# paused show ends (STOP_SHOW, faded to dark, nothing latched) and a Hold
+# between shows ends (RESUME); the fault flag is cleared (CLEAR_FAULT).
+# Reset never starts or continues a show itself: a delayed show still
+# waits for Start now. Only the journal's words differ.
+RESET_DETAIL = "reset"
 EDIT_MOVE = "EDIT_MOVE"
 EDIT_ADD = "EDIT_ADD"
 EDIT_REMOVE = "EDIT_REMOVE"
@@ -1652,8 +1660,12 @@ def _resume(m, ev, now):
     tx.m = replace(tx.m, held_from="")
     _enter(tx, back, after_stop=ev.latched)
     nxt, d = tx.m.next_slot(), tx.m.delayed()
+    reset = ev.detail == RESET_DETAIL
     tx.note(RESUME, "done", "schedule resumed",
-            f"{_operator_name(ev)} pressed Resume{_screen(ev)}."
+            f"{_operator_name(ev)} pressed "
+            f"{'Reset' if reset else 'Resume'}{_screen(ev)}."
+            + (" The schedule is no longer on hold. Reset starts nothing "
+               "by itself." if reset else "")
             + (f" The delayed show {d.n} still waits for Start now."
                if d else "")
             + (f" Next on the schedule is show {nxt.n} at "
@@ -1831,6 +1843,17 @@ def _stop_show(m, ev, now):
     itself before this and journals how that went, so this line claims
     only what the scheduler does."""
     n = m.running
+    if ev.detail == RESET_DETAIL:
+        return _show_stopped(
+            m, ev, now, ABORTED, "ENDED (Reset during Hold)",
+            f"{_pressed(ev, 'Reset')} while show {n} was paused on Hold. "
+            f"Show {n} has ended: flame cues zeroed and lasers blanked; "
+            f"music, video and pixels fading to black over "
+            f"{ABORT_FADE_S:g} s, then MadMapper stopped. No flame group is "
+            f"disarmed and nothing is latched. Reset starts nothing: the "
+            f"rig stays dark until Start now or the next show's time, and "
+            f"only while Run is pressed.",
+            _abort_effects(n), abort=True)
     return _show_stopped(
         m, ev, now, ABORTED, "STOPPED (operator Stop)",
         f"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and "

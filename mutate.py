@@ -12445,7 +12445,7 @@ def build():
 
  ("the refused start alert says the rig went dark",
   "ltcplay/schedule_service.py",
-  "alert = (self.REFUSED_START_ALERT", "alert = (self.FAILED_START_ALERT"),
+  "tail = (self.REFUSED_START_ALERT", "tail = (self.FAILED_START_ALERT"),
 
  ("a leftover soak schedule loads on a show PC",
   "ltcplay/schedule_service.py",
@@ -14210,13 +14210,13 @@ def build():
 
  ("Rack screen: Stop's answer is not read",
   "ltcplay/web/remote.html",
-  "$(\"run-msg\").textContent = stopWords(j); }",
-  "$(\"run-msg\").textContent = \"Stopped.\"; }"),
+  "el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :",
+  "el.textContent = (r.ok || (j && j.failed)) ? \"Stopped.\" :"),
 
  ("Rack screen: the Stop confirm does not say it disarms the flames",
   "ltcplay/web/remote.html",
-  "\"Stop playback and disarm every flame group. No show starts",
-  "\"Stop playback. No show starts"),
+  "\"Stop playback and disarm every flame group. Every laser",
+  "\"Stop playback. Every laser"),
 
  ("deck: a failed Stop disarm is a quiet done",
   "ltcplay/streamdeck.py",
@@ -14919,6 +14919,51 @@ def build():
  ("the short-window rules make the controls taller on a short window", "ltcplay/web/remote.html",
   ":where(html.tight) .ctl button{min-height:44px}",
   "html.tight .ctl button{min-height:44px}"),
+
+ # Jeff's field report, 2026-10-28: Stop, Reset from Hold, refusal reasons.
+ ("a refused start's alert says only that the show did not start",
+  "ltcplay/schedule_service.py",
+  '        why = str(why or "").strip().rstrip(".")\n        if not why:',
+  '        why = ""\n        if not why:'),
+
+ ("Start now with Run off becomes a FAULT slot again",
+  "ltcplay/schedule_service.py",
+  "        if kind == sch.START_NOW:\n            # Outside this service's lock",
+  "        if False:\n            # Outside this service's lock"),
+
+ ("Start now while the show audio loads is not said to wait",
+  "ltcplay/fire_ice.py",
+  "        if any(role not in loaded for role in roles):\n"
+  "            return self.AUDIO_LOADING",
+  "        if False:\n            return self.AUDIO_LOADING"),
+
+ ("Reset from Hold does nothing again", "ltcplay/remote.py",
+  "                r = fn(who, screen, surface=surface) if fn else None",
+  "                r = None"),
+
+ ("Reset from a paused show carries the show on",
+  "ltcplay/schedule_service.py",
+  "            if m.state == sch.PAUSED:\n                kinds.append(sch.STOP_SHOW)",
+  "            if m.state == sch.PAUSED:\n                kinds.append(sch.RESUME)"),
+
+ ("Rack screen: Start now never becomes Stop during a show",
+  "ltcplay/web/remote.html",
+  'const live = sch.state === "SHOW" || sch.state === "PAUSED" ||',
+  'const live = false ||'),
+
+ ("Rack screen: Stop is not the complete halt", "ltcplay/web/remote.html",
+  "body:JSON.stringify({halt:true})", "body:JSON.stringify({})"),
+
+ ("Rack screen: Run never becomes Stop", "ltcplay/web/remote.html",
+  'return show.running ? {mode:"stop"', 'return false ? {mode:"stop"'),
+
+ ("Rack screen: a scheduler refusal reads Conflict again",
+  "ltcplay/web/remote.html",
+  "  const t = j && (j.error || j.text);", "  const t = j && j.error;"),
+
+ ("Rack screen: no Loading state while the show audio loads",
+  "ltcplay/web/remote.html",
+  "if(b && b.text && b.loading)", "if(false)"),
 
 ]
 
