@@ -715,15 +715,17 @@ class AnnounceService:
         if why:
             self._emit(actor="system", action="operators", outcome="note",
                        reason=why, text=why)
-        (self.error, self.device_name, self.files,
-         self.status_by_id) = self._read_config(self.config_path)
+        for k, v in self._read_config(self.config_path).items():
+            setattr(self, k, v)
 
     @classmethod
     def _read_config(cls, config_path):
-        """(error, device_name, files, status_by_id) for the file at
-        `config_path`, read and probed without touching this service, so
-        a reload can look at a new file before anything live changes.
-        error is "" when the file could be used."""
+        """{"error", "device_name", "files", "status_by_id"}: the
+        attributes the file at `config_path` sets, read and probed without
+        touching this service, so a reload can look at a new file before
+        anything live changes. error is "" when the file could be used. A
+        setting added to the file later goes in this dict, and both _load
+        and reload_if_idle apply it."""
         error, device_name, files, status = "", None, {}, {}
         try:
             with open(config_path, encoding="utf-8-sig") as fh:
@@ -754,7 +756,8 @@ class AnnounceService:
                                "length_s": None}
             else:
                 status[aid] = cls._probe_file(files[aid])
-        return error, device_name, files, status
+        return {"error": error, "device_name": device_name, "files": files,
+                "status_by_id": status}
 
     def reload_if_idle(self, show_busy=False):
         """(True, "") once ltcplay_announce.json (and the operator list)
@@ -771,7 +774,8 @@ class AnnounceService:
         if show_busy:
             return False, ("it reads it again by itself once no show is "
                            "running")
-        error, device, files, status = self._read_config(self.config_path)
+        new = self._read_config(self.config_path)
+        error = new["error"]
         if error:
             return False, (f"the file is not valid ({error.rstrip('.')}), "
                            f"so the engine keeps the old settings")
@@ -780,8 +784,8 @@ class AnnounceService:
             if self.playing is not None:
                 return False, ("it reads it again by itself once no "
                                "announcement is playing")
-            self.error, self.device_name = "", device
-            self.files, self.status_by_id = files, status
+            for k, v in new.items():
+                setattr(self, k, v)
             if not op_why:
                 self.operators = operators
             said = (f"device {self.device_name}" if self.device_set

@@ -839,6 +839,21 @@ def beyond_gate_address(cfg):
             getattr(getattr(cfg, "beyond", None), "host", None) or None)
 
 
+def beyond_addresses(cfg, beyond=None):
+    """Every address BEYOND may be reached at: beyond_timecode_ip, the
+    BEYOND block's host, and the host of the BEYOND link `beyond` (its OSC
+    host, which can also be where it hears timecode). A finished show's
+    held timecode frame never goes to any of them
+    (clock.TimecodeOut.held_dests)."""
+    out = set()
+    for v in (getattr(cfg, "beyond_timecode_ip", None),
+              getattr(getattr(cfg, "beyond", None), "host", None),
+              getattr(getattr(beyond, "cfg", None), "host", None)):
+        if isinstance(v, str) and v.strip():
+            out.add(v.strip())
+    return out
+
+
 def blanks_by_timecode(cfg):
     return getattr(cfg, "beyond_blank", BEYOND_BLANK_DEFAULT) in (
         "timecode", "both")
@@ -1055,6 +1070,22 @@ RENDER_OLDER_THAN_LAYOUT = (
     "the show's render is older than xlights_networks.xml: the layout was "
     "changed after the show was rendered, so which channels are the flames "
     "cannot be trusted. Render the show again for this layout")
+
+
+def _tail_by_design(clk, label, f, rel):
+    """True when timecode `rel` s into cue `label` is past the end of its
+    render `f` only because the show clock deliberately runs the cue
+    longer than its lights file (clock.AudioMaster.show_lengths: the
+    configured show length), and not past that end. Never raises."""
+    try:
+        got = clk.show_lengths(label)
+        if not got:
+            return False
+        render_s = f.frame_count * f.step_time_ms / 1000.0
+        show_s = float(got["show_s"])
+        return show_s > render_s + 1e-6 and rel <= show_s + 1.0 / 30.0
+    except Exception:                            # noqa: BLE001
+        return False
 
 
 class FlameCues:
@@ -1432,6 +1463,15 @@ class FlameCues:
                         f"the show's render has ended (the timecode is "
                         f"within {RENDER_END_TOLERANCE_FRAMES} frames of "
                         f"its end)")
+                if idx >= f.frame_count and _tail_by_design(
+                        clk, label, f, rel):
+                    # The show runs on past its lights file on purpose
+                    # ('clock.zones.show_len_s', the video's length): zero,
+                    # said, never a FAULT (safety review of #157, 4).
+                    return self._zero(
+                        "the show's lights file has ended and the show "
+                        "runs on to its configured length with no flame "
+                        "cues")
                 return self._zero("the timecode is past the end of the "
                                   "show's render", fault=True)
             data = f.frame(idx)
@@ -2170,6 +2210,11 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     (clock, waiter) are the selftest's: nothing runs on its own then."""
     link = madmapper[0] if madmapper is not None else None
     built_link = None
+    # A finished show's held timecode frame never goes to BEYOND, whatever
+    # the lasers' blanking mode (clock.TimecodeOut.held_dests; safety
+    # review of #157, 1).
+    from . import clock as clock_mod
+    clock_mod.HOLD_NEVER.update(beyond_addresses(cfg, beyond))
     # The show log is written on a thread of its own, so the show audio's
     # timecode thread never writes, flushes or prints a line itself, nor
     # waits on the logging lock (PR #43 review, finding 9).

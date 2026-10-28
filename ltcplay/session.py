@@ -350,6 +350,26 @@ class Session:
             # it reads the rig watch and the input.
             self.player.clock = self.clock
             self.notes.append(f"Show clock: {self.tl.clock.summary()}.")
+            # Audio shorter than the lights file (Jeff's field report,
+            # 2026-10-28, item 12c): said at Run, first, in plain words.
+            # Never a refusal: the show plays to its real end either way.
+            # Nothing here may ever fail Run (safety review of #157, 6).
+            try:
+                short = clock_mod.audio_length_notes(self.clock, self.tl)
+                hold = clock_mod.hold_note(self.clock)
+                if hold:
+                    short.append(hold)
+            except Exception as e:               # noqa: BLE001
+                short = [f"How long the show audio is against the lights "
+                         f"file could not be checked ({type(e).__name__}); "
+                         f"the show runs to the longest of the two."]
+            self.notes[:0] = short
+            if self.log:
+                for t in short:
+                    try:
+                        self.log.event("preflight", t)
+                    except Exception:            # noqa: BLE001
+                        pass
             # Two receivers on one address, or a node address this PC does
             # not have (soak 2026-10-21): said at show load, never refused
             # here. The rack screen's alert and the Morning card say it too.
@@ -745,6 +765,25 @@ class Session:
     def running(self):
         return self._running
 
+    def run_mode(self):
+        """"programming" when this Run was a rehearsal, else "show" (Jeff,
+        2026-10-28: "even when I press show mode, it turns on programming
+        mode"). What the Run asked for decides: Rehearse (no output), or
+        on_lost "hold" (Programming on the rack screen's Show file card,
+        Rehearsal on the old page). On a show whose clock is this machine
+        the player's own on_lost does not decide: open() sets it to "hold"
+        for every such show, Show and Programming alike."""
+        if self.no_output:
+            return "programming"
+        clk = self.clock
+        if clk is not None and getattr(clk, "master", False) is True:
+            asked = self.on_lost_arg
+        elif self.player is not None:
+            asked = self.player.on_lost
+        else:
+            asked = self.on_lost_arg or getattr(self.tl, "on_lost", None)
+        return "programming" if asked == "hold" else "show"
+
     # -- Advatek scene triggers -------------------------------------------
     def arm_trigger(self, on):
         """Turn the alternate playback mode on or off while running.
@@ -838,6 +877,115 @@ class Session:
             # refusal here, not the clock's own exception.
             raise SessionError(str(e))
         return pick
+
+    # -- the Programming screen's playhead on the show audio ----------------
+    def playhead_clock(self):
+        """The show clock when it can be the Programming screen's playhead:
+        this machine is the clock and it can start a cue part way and move
+        it (AudioMaster). None otherwise (a show that follows timecode, an
+        Art-Net only clock, GPL): the free run stays the playhead there."""
+        clk = self.clock
+        if not self._running or clk is None or not clk.master or \
+                not callable(getattr(clk, "seek", None)):
+            return None
+        return clk
+
+    def _playhead_cue(self, show_s):
+        tl = self.tl
+        cue = tl.cue_at(show_s) if tl is not None else None
+        if cue is None:
+            raise SessionError(
+                f"{tl.format(max(0.0, show_s))} is before the first cue of "
+                f"this show, so there is no audio to play there.")
+        if cue.fseq is None or not cue.duration:
+            raise SessionError(
+                f"{cue.name} did not open ({os.path.basename(cue.path)}), "
+                f"so it cannot be played from. Fix the render and restart.")
+        return cue
+
+    def clock_play_from(self, show_s, check_only=False):
+        """Play from `show_s` (show seconds, as the timeline counts them):
+        the cue in force there, its audio from that sample, its timecode
+        from that frame, the pixels following it. The real show start
+        (clock_play) with a start point. Returns (cue, show seconds).
+        `check_only`: every refusal, nothing started (returns (cue,
+        show_s))."""
+        clk = self.playhead_clock()
+        if clk is None:
+            raise SessionError("This show's clock cannot start part way.")
+        cue = self._playhead_cue(float(show_s))
+        if check_only:
+            try:
+                clk.play(cue.tc_seconds, cue.duration, cue.name,
+                         start_s=float(show_s) - cue.tc_seconds,
+                         check_only=True)
+            except ValueError as e:
+                raise SessionError(str(e))
+            return cue, float(show_s)
+        if self.player.freerun_epoch is not None:
+            # A free run left over would outrank the clock (clock_play).
+            self.player.release()
+        try:
+            clk.play(cue.tc_seconds, cue.duration, cue.name,
+                     start_s=float(show_s) - cue.tc_seconds)
+        except ValueError as e:
+            raise SessionError(str(e))
+        return cue, cue.tc_seconds + (clk.here() or 0.0)
+
+    def clock_seek(self, show_s):
+        """Move the playhead to `show_s`: inside the cue that is playing,
+        the clock's own seek (playing or paused); in another cue, playing,
+        that cue from there. Returns the show seconds it moved to."""
+        clk = self.playhead_clock()
+        cur = getattr(clk, "_cue", None) if clk is not None else None
+        if cur is None:
+            raise SessionError("Nothing is playing to move. Play from a "
+                               "timecode first.")
+        cue = self._playhead_cue(max(0.0, float(show_s)))
+        try:
+            if cue.name == cur.get("label"):
+                return cue.tc_seconds + clk.seek(
+                    float(show_s) - cue.tc_seconds)
+            if clk.paused:
+                raise SessionError(
+                    f"That is in {cue.name}, another cue. Press Continue "
+                    f"first, or Play from it.")
+        except ValueError as e:
+            raise SessionError(str(e))
+        return self.clock_play_from(show_s)[1]
+
+    def clock_here(self):
+        """Where the playhead is, in show seconds, or None."""
+        clk = self.playhead_clock()
+        cur = getattr(clk, "_cue", None) if clk is not None else None
+        if cur is None:
+            return None
+        at = clk.here()
+        return None if at is None else cur["position_s"] + at
+
+    def clock_set_loop(self, a_show_s, b_show_s):
+        """The A/B loop on the show audio, from show seconds; both marks in
+        the cue that is playing. None, None clears it."""
+        clk = self.playhead_clock()
+        if clk is None:
+            raise SessionError("This show's clock cannot loop.")
+        if a_show_s is None and b_show_s is None:
+            clk.set_loop(None, None)
+            return None
+        cur = getattr(clk, "_cue", None)
+        if cur is None:
+            raise SessionError("Nothing is playing to loop.")
+        base = cur["position_s"]
+        a, b = float(a_show_s) - base, float(b_show_s) - base
+        if a < 0 or self._playhead_cue(float(b_show_s) - 1e-6).name != \
+                cur.get("label"):
+            raise SessionError(f"Mark A and mark B have to be in the cue "
+                               f"that is playing ({cur.get('label')}).")
+        try:
+            clk.set_loop(a, b)
+        except ValueError as e:
+            raise SessionError(str(e))
+        return (a_show_s, b_show_s)
 
     def clock_halt(self):
         """Stop the show clock now. Nothing is sent until the next cue."""
@@ -983,6 +1131,10 @@ class Session:
             "warnings": display_mod.warnings_for(p, dec, tl),
             "history": display_mod.history_for(p),
             "on_lost": p.on_lost,
+            # Show or Programming, as the Run asked (run_mode): the page's
+            # mode switch reads this, never on_lost, which is "hold" for
+            # every show on this machine's own clock.
+            "mode": self.run_mode(),
             "hold_ms": int(p.hold_s * 1000),
             "gaps": p.gaps,
             "override": p.override,
