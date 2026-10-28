@@ -753,6 +753,25 @@ class Session:
     def running(self):
         return self._running
 
+    def run_mode(self):
+        """"programming" when this Run was a rehearsal, else "show" (Jeff,
+        2026-10-28: "even when I press show mode, it turns on programming
+        mode"). What the Run asked for decides: Rehearse (no output), or
+        on_lost "hold" (Programming on the rack screen's Show file card,
+        Rehearsal on the old page). On a show whose clock is this machine
+        the player's own on_lost does not decide: open() sets it to "hold"
+        for every such show, Show and Programming alike."""
+        if self.no_output:
+            return "programming"
+        clk = self.clock
+        if clk is not None and getattr(clk, "master", False) is True:
+            asked = self.on_lost_arg
+        elif self.player is not None:
+            asked = self.player.on_lost
+        else:
+            asked = self.on_lost_arg or getattr(self.tl, "on_lost", None)
+        return "programming" if asked == "hold" else "show"
+
     # -- Advatek scene triggers -------------------------------------------
     def arm_trigger(self, on):
         """Turn the alternate playback mode on or off while running.
@@ -991,6 +1010,10 @@ class Session:
             "warnings": display_mod.warnings_for(p, dec, tl),
             "history": display_mod.history_for(p),
             "on_lost": p.on_lost,
+            # Show or Programming, as the Run asked (run_mode): the page's
+            # mode switch reads this, never on_lost, which is "hold" for
+            # every show on this machine's own clock.
+            "mode": self.run_mode(),
             "hold_ms": int(p.hold_s * 1000),
             "gaps": p.gaps,
             "override": p.override,
