@@ -667,6 +667,37 @@ MUTATIONS = [
   "              \"--no-browser\", \"--network-if-saved\"]",
   "              \"--no-browser\"]"),
 
+ ("show network: a saved public, VPN or link-local address is served on",
+  "ltcplay/cli.py",
+  "    if not remote_mod.is_rfc1918(saved):",
+  "    if False:"),
+
+ ("show network: the fallback binds every interface", "ltcplay/web.py",
+  "        bind, on_network = \"127.0.0.1\", False\n"
+  "        httpd = ThreadingHTTPServer((bind, port), Handler)",
+  "        bind, on_network = \"0.0.0.0\", True\n"
+  "        httpd = ThreadingHTTPServer((bind, port), Handler)"),
+
+ ("show network: the wrong-name page reflects the Host header",
+  "ltcplay/web.py",
+  "                getattr(self.server, \"bind_address\", \"127.0.0.1\"),\n"
+  "                self.server.server_address[1], self._local()),",
+  "                str(self.headers.get(\"Host\", \"\")).split(\":\")[0],\n"
+  "                self.server.server_address[1], False),"),
+
+ ("show network: the wrong-name page may be sniffed", "ltcplay/web.py",
+  "                         \"X-Content-Type-Options\": \"nosniff\"})",
+  "                         \"X-Content-Type-Options\": \"sniff\"})"),
+
+ ("show network: a Public network is not warned about", "ltcplay/remote.py",
+  "    if cat == \"Public\":",
+  "    if False:"),
+
+ ("show network: the card is silent about a port the rule does not open",
+  "ltcplay/remote.py",
+  "            if port != FIXED_PORT:\n                # The installer's rule",
+  "            if False:\n                # The installer's rule"),
+
  ("show network: the firewall rule is open to any address",
   "packaging/windows/installer.iss",
   "localport=7878 remoteip=localsubnet profile=any",

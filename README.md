@@ -411,8 +411,9 @@ itself is the lock. The network reaches only the remote page and its own
 routes, and anything that looks proxied, cross-site or addressed to another
 host name is refused (a page opened by another name gets a short page
 naming the address to use). On the Windows show PC the supervisor serves
-the saved address once it is saved (`--network-if-saved`; a saved address
-the PC does not have falls back to this PC only), the installer adds one
+the saved address once it is saved (`--network-if-saved`; only a private
+RFC 1918 address, and a saved address that is not one, or that the PC
+does not have, falls back to this PC only), the installer adds one
 firewall rule for port 7878 from the PC's own subnet only, and the Show
 network card says where the engine listens, whether that rule is there and
 the address to type. The journal names the surface a press came from: "Rack

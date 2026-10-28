@@ -1342,7 +1342,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.server_address[1], self._local()),
                 "text/html; charset=utf-8",
                 headers={"Content-Security-Policy":
-                         "default-src 'none'; style-src 'unsafe-inline'"})
+                         "default-src 'none'; style-src 'unsafe-inline'",
+                         "X-Content-Type-Options": "nosniff"})
         if why:
             return self._send(403, {"error": why})
         if not self._local() and not network_may_reach(route):
@@ -1963,7 +1964,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
           remote_folder=None, flamesafe_config=None, flame_disarm=None,
-          accounts=False, config_watch=None, network_fallback=False):
+          accounts=False, config_watch=None, network_fallback=False,
+          network_note=""):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -2085,7 +2087,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     # saved show network address this PC does not have right now (another
     # network, the cable out) must not stop the show engine. It then
     # listens on this PC only, and the Show network card says why.
-    network_why = ""
+    # network_note: why a saved address was not even tried (cli.py
+    # _network_if_saved), said on the Show network card.
+    network_why = str(network_note or "")
     try:
         httpd = ThreadingHTTPServer((bind, port), Handler)
     except OSError as e:
@@ -2493,7 +2497,8 @@ def _say_listening(httpd, on_network, why=""):
             # The show journal (without a scheduler there is none, and
             # Remote._journal would only print the line a second time).
             httpd.remote._journal("system", "engine", "web page",
-                                  "listening", line)
+                                  "listening",
+                                  f"{line} {why}" if why else line)
     except Exception as e:                       # noqa: BLE001
         print(f"Where the page listens could not be noted: "
               f"{type(e).__name__}: {e}")

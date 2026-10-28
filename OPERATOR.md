@@ -769,13 +769,15 @@ y to the iPad question). There is no PIN.
 
 On the Windows show PC the "Show network, on this machine" card on
 Programming says it all in plain words: the address saved (or none), where
-the engine is listening, whether the Windows Firewall rule is there, and
-the address to type on the other machine, for example
+the engine is listening, whether the Windows Firewall rule is there,
+whether Windows calls that network Public or Private (with what to do
+when it is Public), and the address to type on the other machine, for
+example
 `http://10.1.2.3:7878/`.
 
 - Nothing saved: press "Use <address>" for this PC's address on the show
-  network (only private addresses are offered). Settings permission, show
-  PC only.
+  network (only private addresses are offered, and only a private
+  address is ever served on). Settings permission, show PC only.
 - "Not listening on it yet": press "Restart the engine" between shows,
   with every flame group disarmed. It is refused during a show.
 - On the Mac or iPad, type exactly the address the card gives. The PC's

@@ -403,6 +403,23 @@ def network_check(ip, logs):
     check(f"listens on 127.0.0.1:7878 and {ip}:7878" in log_text,
           f"the engine's log does not name both addresses it listens on "
           f"(127.0.0.1:7878 and {ip}:7878)")
+    # The Show network card's view, on the PC itself: listening on the
+    # address, the rule read as present, the network's category read.
+    st, body = get("/api/remote/network", timeout=40)
+    try:
+        card = json.loads(body) if st == 200 else {}
+    except ValueError:
+        card = {}
+    check(card.get("on_saved") is True and
+          card.get("url") == f"http://{ip}:7878/" and
+          (card.get("firewall") or {}).get("state") == "present" and
+          card.get("category") in ("Public", "Private",
+                                   "DomainAuthenticated"),
+          f"the Show network card does not say it listens on {ip}, the "
+          f"rule is there and the network's category: {st} {body[:600]!r}")
+    if card:
+        NOTES.append(f"Show network card: {' '.join(card.get('lines') or [])}"
+                     [:600])
     if ok:
         NOTES.append(f"the engine answered on the saved show network "
                      f"address {ip}:7878, and another name got the short "

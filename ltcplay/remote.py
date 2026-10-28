@@ -735,6 +735,52 @@ def firewall_rule_state(run=None, windows=None):
                        f"\"{FIREWALL_RULE}\").")
 
 
+def network_category(address, run=None, windows=None):
+    """(category, sentence) for the network that owns `address` on this
+    PC, as Windows names it: "Public", "Private", "DomainAuthenticated",
+    "unknown", or "none" (not Windows). Read only (Get-NetIPAddress and
+    Get-NetConnectionProfile). `address` has passed check_show_address
+    (an IP address and nothing else) before it is put in the command.
+    Never raises."""
+    windows = (os.name == "nt") if windows is None else windows
+    if not windows:
+        return "none", ""
+    try:
+        ip = str(ipaddress.ip_address(str(address)))
+    except ValueError:
+        return "unknown", ""
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"(Get-NetConnectionProfile -InterfaceIndex "
+                 f"(Get-NetIPAddress -IPAddress '{ip}' -ErrorAction Stop)"
+                 f".InterfaceIndex -ErrorAction Stop).NetworkCategory"],
+                capture_output=True, text=True, timeout=15, **kw)
+        words = [w.strip() for w in (p.stdout or "").splitlines()
+                 if w.strip()]
+        cat = words[-1] if p.returncode == 0 and words else ""
+    except Exception:                            # noqa: BLE001
+        cat = ""
+    if cat == "Public":
+        return cat, ("Windows calls the network with this address Public. "
+                     "The firewall rule still lets this subnet in, but if "
+                     "Windows Security blocks every incoming connection on "
+                     "public networks, other machines are blocked. To make "
+                     "it Private: Settings, Network and internet, Wi-Fi or "
+                     "Ethernet, this network, Network profile type, "
+                     "Private network.")
+    if cat in ("Private", "DomainAuthenticated"):
+        return cat, (f"Windows calls the network with this address "
+                     f"{'Domain' if cat.startswith('Domain') else cat}.")
+    return "unknown", ("Which kind of network Windows calls this one "
+                       "(Public or Private) could not be read.")
+
+
 def page_url(address, port=FIXED_PORT):
     """The address to type on another machine, or None."""
     if not address:
@@ -2021,6 +2067,17 @@ class Remote:
             self._firewall_cache = got
         return got[1]
 
+    def category_view(self, addr):
+        """network_category(addr), read at most every FIREWALL_READ_S."""
+        now = self.clock()
+        got = getattr(self, "_category_cache", None)
+        if got is None or got[1] != addr or now - got[0] >= FIREWALL_READ_S:
+            got = (now, addr, network_category(
+                addr, run=getattr(self, "_category_run", None),
+                windows=getattr(self, "_firewall_windows", None)))
+            self._category_cache = got
+        return got[2]
+
     def network_view(self):
         """The Show network card on the show PC (GET network, LOCAL_ONLY):
         the address saved, whether this engine listens on it, the firewall
@@ -2062,6 +2119,18 @@ class Remote:
             lines.append(f"The engine is not listening on {addr} yet. "
                          f"Restart the engine between shows to use it.")
         lines.append(fw_text)
+        category = None
+        if fw_state != "none":
+            if port != FIXED_PORT:
+                # The installer's rule opens 7878 only (review of #164).
+                lines.append(f"The engine runs on port {port}, but the "
+                             f"firewall rule opens port {FIXED_PORT} only, "
+                             f"so other machines are blocked. Set \"port\" "
+                             f"back to {FIXED_PORT} in showpc.json.")
+            if addr:
+                category, cat_text = self.category_view(addr)
+                if cat_text:
+                    lines.append(cat_text)
         url = page_url(addr, port) if on_saved else None
         if url and fw_state in ("present", "none"):
             lines.append(f"On your Mac or iPad, on the same network, type "
@@ -2073,6 +2142,7 @@ class Remote:
                 "candidates": address_candidates(),
                 "listening": addrs, "on_saved": on_saved,
                 "firewall": {"state": fw_state, "text": fw_text},
+                "category": category,
                 "url": url, "restart": restart, "lines": lines}
 
     def set_network(self, body):

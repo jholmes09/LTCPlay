@@ -44983,6 +44983,12 @@ def test_show_network_card_firewall_and_wrong_name_page():
     check(st == "unknown", f"netsh failing reads unknown: {st}")
     check(remote_mod.firewall_rule_state(windows=False)[0] == "none",
           "not Windows: no rule to read")
+    check(remote_mod.network_category("10.1.2.3", windows=False) ==
+          ("none", ""), "not Windows: no category to read")
+    check(remote_mod.network_category("10.1.2.3'; Set-X; '",
+                                      run=fake(0, "Public"),
+                                      windows=True)[0] == "unknown",
+          "only an IP address is ever put in the command")
     check(ran and all(isinstance(c, str) and c.startswith(
               "netsh advfirewall firewall show rule ") and
               'name="LTC Player rack page"' in c and
@@ -44996,6 +45002,15 @@ def test_show_network_card_firewall_and_wrong_name_page():
                                 log=lambda t: None)
         rem._firewall_windows = True
         rem._firewall_run = fake(0, "Enabled: Yes\n")
+        cat_ran = []
+
+        def cat_run(word, code=0):
+            def run(cmd, **kw):
+                cat_ran.append(cmd)
+                return types.SimpleNamespace(returncode=code,
+                                             stdout=word + "\n", stderr="")
+            return run
+        rem._category_run = cat_run("Private")
         rem.listen = {"addresses": ["127.0.0.1"], "port": 7878, "why": ""}
         v = rem.network_view()
         txt = " ".join(v["lines"])
@@ -45028,6 +45043,36 @@ def test_show_network_card_firewall_and_wrong_name_page():
               "type http://10.20.0.5:7878/" in txt and
               "127.0.0.1:7878 and 10.20.0.5:7878" in txt,
               f"listening on it: the address to type: {v}")
+        check(v["category"] == "Private" and
+              "Windows calls the network with this address Private." in txt,
+              f"the card names the network's category: {v}")
+        check(cat_ran and all("10.20.0.5" in " ".join(c) and
+                              "Get-NetConnectionProfile" in " ".join(c) and
+                              "Set-" not in " ".join(c) for c in cat_ran),
+              f"the category is only read: {cat_ran}")
+        rem._category_cache = None
+        rem._category_run = cat_run("Public")
+        v = rem.network_view()
+        txt = " ".join(v["lines"])
+        check(v["category"] == "Public" and "Public" in txt and
+              "Private network" in txt,
+              f"a Public network is warned about in plain words: {v}")
+        rem._category_cache = None
+        rem._category_run = cat_run("", code=1)
+        v = rem.network_view()
+        check(v["category"] == "unknown" and "could not be read" in
+              " ".join(v["lines"]), f"an unread category says so: {v}")
+        rem.listen = {"addresses": ["127.0.0.1", "10.20.0.5"],
+                      "port": 7879, "why": ""}
+        v = rem.network_view()
+        check("runs on port 7879" in " ".join(v["lines"]) and
+              v["url"] == "http://10.20.0.5:7879/",
+              f"a port that is not 7878: the card says the rule blocks it: "
+              f"{v}")
+        rem.listen = {"addresses": ["127.0.0.1", "10.20.0.5"],
+                      "port": 7878, "why": ""}
+        check("runs on port" not in " ".join(rem.network_view()["lines"]),
+              "on 7878 nothing is said about the port")
         rem._firewall_cache = None
         rem._firewall_run = fake(1)
         v = rem.network_view()
@@ -45045,27 +45090,42 @@ def test_show_network_card_firewall_and_wrong_name_page():
                   f"no em or en dash on the card: {line!r}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    # --network-if-saved: the saved address, or this PC only.
+    # --network-if-saved: a saved PRIVATE address, or this PC only.
+    for saved in ("10.20.0.5", "172.16.0.9", "192.168.1.5"):
+        a = types.SimpleNamespace(network_if_saved=True, network=False,
+                                  bind="127.0.0.1")
+        got = cli_mod._network_if_saved(a, load=lambda saved=saved: {
+            "show_network_address": saved})
+        check(got == (True, "") and a.bind == saved,
+              f"a saved private address is served on: {got} {a}")
+    # Review of #164, B1: public, CGNAT/VPN, link-local and IPv6 are never
+    # served on, whatever check_show_address let be saved; each says why.
+    for saved in ("8.8.8.8", "100.64.1.2", "169.254.3.4", "fd00::5",
+                  "2001:db8::5", "172.32.0.1"):
+        a = types.SimpleNamespace(network_if_saved=True, network=False,
+                                  bind="127.0.0.1")
+        got = cli_mod._network_if_saved(a, load=lambda saved=saved: {
+            "show_network_address": saved})
+        check(got[0] is False and a.bind == "127.0.0.1" and
+              f"{saved} is not a private address" in got[1] and
+              "not served on it" in got[1],
+              f"{saved}: this PC only, and why: {got} {a}")
     a = types.SimpleNamespace(network_if_saved=True, network=False,
                               bind="127.0.0.1")
     check(cli_mod._network_if_saved(a, load=lambda: {
-              "show_network_address": "10.20.0.5"}) is True and
-          a.bind == "10.20.0.5", f"a saved address is served on: {a}")
-    a = types.SimpleNamespace(network_if_saved=True, network=False,
-                              bind="127.0.0.1")
-    check(cli_mod._network_if_saved(a, load=lambda: {
-              "show_network_address": None}) is False and
+              "show_network_address": None}) == (False, "") and
           a.bind == "127.0.0.1", "nothing saved: this PC only")
 
     def broken():
         raise ValueError("ltcplay_remote.json could not be read")
     a = types.SimpleNamespace(network_if_saved=True, network=False,
                               bind="127.0.0.1")
-    check(cli_mod._network_if_saved(a, load=broken) is False and
+    got = cli_mod._network_if_saved(a, load=broken)
+    check(got[0] is False and "could not be read" in got[1] and
           a.bind == "127.0.0.1", "a broken settings file: this PC only")
     a = types.SimpleNamespace(network_if_saved=False, bind="127.0.0.1")
     check(cli_mod._network_if_saved(a, load=lambda: {
-              "show_network_address": "10.20.0.5"}) is False and
+              "show_network_address": "10.20.0.5"}) == (False, "") and
           a.bind == "127.0.0.1", "without the flag nothing changes")
     # A saved address this PC does not have: this PC only, said why.
     folder = tempfile.mkdtemp()
@@ -45099,6 +45159,15 @@ def test_show_network_card_firewall_and_wrong_name_page():
                   f"loopback only: {h.remote.listen}")
         finally:
             h.server_close()
+        h = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          network_note="8.8.8.8 is not a private address")
+        try:
+            ls = h.remote.listen or {}
+            check(ls.get("addresses") == ["127.0.0.1"] and
+                  "8.8.8.8 is not a private address" in ls.get("why", ""),
+                  f"a refused saved address: the card says why: {ls}")
+        finally:
+            h.server_close()
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     # The start line names the addresses, in the journal too.
@@ -45128,7 +45197,8 @@ def test_show_network_card_firewall_and_wrong_name_page():
                       in str(out) and "instead" in str(out) and
                       "showpc.local" not in str(out) and
                       "default-src 'none'" in hd.get(
-                          "content-security-policy", [""])[0],
+                          "content-security-policy", [""])[0] and
+                      hd.get("x-content-type-options") == ["nosniff"],
                       f"GET {path} by another name: the short page: {st} "
                       f"{hd} {str(out)[:300]}")
             st, hd, out = R.ask("GET", "/api/state",
@@ -45205,7 +45275,8 @@ def test_show_network_card_firewall_and_wrong_name_page():
     for want in ('check_firewall_rule("after install")',
                  'check_firewall_rule("after the update")',
                  "rc, out = firewall_rule()\n        check(rc != 0, ",
-                 "network_check(net_ip, logs)", '"remoteip": "localsubnet"'):
+                 "network_check(net_ip, logs)", '"remoteip": "localsubnet"',
+                 'get("/api/remote/network"'):
         check(want in smoke, f"the smoke test checks {want!r}")
     print("  ok")
 

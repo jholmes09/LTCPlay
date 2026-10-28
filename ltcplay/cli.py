@@ -1505,7 +1505,7 @@ def _cmd_serve(args):
         args.bind = rs["show_network_address"]
         args.port = remote_mod.FIXED_PORT
         flamesafe_config = flamesafe_config or rs["flamesafe_config"]
-    network_fallback = _network_if_saved(args)
+    network_fallback, network_note = _network_if_saved(args)
     if flamesafe_config is None and fire_ice is not None:
         # Fire & Ice: the flame link's own flamesafe config also feeds the
         # remote page's flame lamps, and (through its status_mirror_port)
@@ -1518,7 +1518,8 @@ def _cmd_serve(args):
                               announce=announce, fire_ice=fire_ice,
                               flamesafe_config=flamesafe_config,
                               accounts=True, config_watch=cfg_watch,
-                              network_fallback=network_fallback)
+                              network_fallback=network_fallback,
+                              network_note=network_note)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1597,26 +1598,38 @@ def _cmd_serve(args):
 
 
 def _network_if_saved(args, load=None):
-    """--network-if-saved (the Windows supervisor): the show network
-    address saved on the page (Show network, on the show PC) becomes
-    args.bind when there is one, and True is returned (serve's
-    network_fallback); else args is left on this PC only and False is
-    returned. Never every interface: the address passed check_show_address
-    when it was read. A broken settings file keeps the engine on this PC
-    only instead of stopping it."""
+    """--network-if-saved (the Windows supervisor): (network_fallback,
+    note). The show network address saved on the page (Show network, on
+    the show PC) becomes args.bind when there is one AND it is a private
+    IPv4 address (RFC 1918: 10/8, 172.16/12, 192.168/16), and (True, "")
+    is returned: serve's network_fallback. Anything else leaves args on
+    this PC only: (False, "") with nothing saved or the flag off, and
+    (False, the reason) for an address that is not private (public, CGNAT
+    or VPN 100.64/10, link-local 169.254, IPv6; review of #164, B1: the
+    firewall rule's LocalSubnet on a VPN adapter would let a whole VPN
+    in). A broken settings file keeps the engine on this PC only instead
+    of stopping it. The Mac's --network is not changed by this."""
     if not getattr(args, "network_if_saved", False) or \
             getattr(args, "network", False):
-        return False
+        return False, ""
     from . import remote as remote_mod
     try:
         saved = (load or remote_mod.load_settings)()["show_network_address"]
     except ValueError as e:
-        print(f"The show network is not used: {e}")
-        return False
+        why = f"The show network is not used: {e}"
+        print(why, flush=True)
+        return False, why
     if not saved:
-        return False
+        return False, ""
+    if not remote_mod.is_rfc1918(saved):
+        why = (f"The saved show network address {saved} is not a private "
+               f"address (10.x, 172.16 to 172.31 or 192.168.x), so the page "
+               f"is not served on it, only on this PC. Save this PC's "
+               f"address on the show network, then restart the engine.")
+        print(why, flush=True)
+        return False, why
     args.bind = saved
-    return True
+    return True, ""
 
 
 def _config_watch_at_start(args, schedule):

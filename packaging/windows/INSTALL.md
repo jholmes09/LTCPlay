@@ -126,12 +126,15 @@ machine on the same network:
 1. On the show PC's rack screen: Programming, "Show network, on this
    machine". Press "Use <address>" for this PC's address on the show
    network (only private addresses are offered: 10.x, 172.16 to 172.31,
-   192.168.x), or type it and press Save address. It needs the Settings
+   192.168.x), or type it and press Save address. Only a private address
+   is ever served on: a public, VPN (100.64.x) or 169.254 address is not,
+   and the card says so. It needs the Settings
    permission once users exist, and it is set on the show PC only.
 2. Between shows, with every flame group disarmed, press "Restart the
    engine" on that card (or stop LTC Player and start it again).
 3. The card then says "The engine is listening on 127.0.0.1:7878 and
-   <address>:7878", whether the firewall rule is there, and the address to
+   <address>:7878", whether the firewall rule is there, whether Windows
+   calls that network Public or Private, and the address to
    type, for example `http://10.1.2.3:7878/`. Type exactly that on the Mac
    or iPad. The computer's name or a `.local` name does not work: the page
    answers only to its address, and says so with the address to use.
