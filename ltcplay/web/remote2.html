@@ -167,7 +167,7 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 .ann .head span{color:var(--muted);line-height:1.1}
 .ann .head span.bad{color:#FFB3AB}
 #ann-btns{display:flex;gap:var(--gap);flex:1 1 auto;min-width:0;height:100%}
-#ann-btns .b,#ann-stop{height:100%;min-height:0;flex:1 1 0;padding:0 8px}
+#ann-btns .b,#ann-stop{height:100%;min-height:0;flex:1 1 0;padding:0 6px;gap:6px}
 #ann-btns .b.on{border-color:var(--amber);background:#3a2604}
 #ann-stop{flex:0 0 auto}
 /* the footer: wind, the last message, then the room Abort keeps */
@@ -1420,7 +1420,7 @@ function renderAnnounce(){
     ANN_SIG = sig;
     const may = mayRow(s, "show");
     $("ann-btns").innerHTML = L.buttons.map(b =>
-      `<button class="b ${b.on ? "on" : ""}" data-ann="${esc(b.id)}"${b.off || ANN_BUSY || !may ? " disabled" : ""}><span>${esc(b.label)}${b.missing ? "<small>Missing</small>" : ""}</span></button>`).join("");
+      `<button class="b ${b.on ? "on" : ""}" data-ann="${esc(b.id)}"${b.off || ANN_BUSY || !may ? " disabled" : ""}>${icon("mega")}<span>${esc(b.label)}${b.missing ? "<small>Missing</small>" : ""}</span></button>`).join("");
   }
   $("ann-stop").disabled = L.stopOff || ANN_BUSY;
 }
