@@ -4235,8 +4235,163 @@ def build():
 
  ('audio_master: the audio ending does not end the cue',
   'ltcplay/clock.py',
-  '        if frame >= cue["tc_frames"]:\n            self._end("finished", now)',
+  '        if frame >= self._end_frames(cue):\n            self._end("finished", now)',
   '        if False:\n            self._end("finished", now)'),
+
+ # Jeff's field report, 2026-10-28, items 12 and 14: the show ends at the
+ # longest of its audio, lights file and show length; the timecode holds
+ # its last frame at the end; Run says when the audio is short; the
+ # MadMapper heartbeat follows the real show length.
+ ('audio_master: the show ends with its audio again, not its lights file',
+  'ltcplay/clock.py',
+  '            want = self.lengths.get(cue["label"])\n            if want:',
+  '            want = None\n            if want:'),
+
+ ('audio_master: the configured show length is ignored',
+  'ltcplay/clock.py',
+  '        if override and c.tc_seconds is not None and show_hour is not None \\',
+  '        if False and c.tc_seconds is not None and show_hour is not None \\'),
+
+ ('audio_master: the audio ending before the lights is not the silent tail',
+  'ltcplay/clock.py',
+  '            self._audio_ended(cue, now)\n',
+  '            pass\n'),
+
+ ('audio_master: an Abort in the tail waits for a fade of nothing',
+  'ltcplay/clock.py',
+  '            if self._paused or self._mode in ("freerun", "wait", "tail") \\',
+  '            if self._paused or self._mode in ("freerun", "wait") \\'),
+
+ ('audio_master: a Resume after the audio ended ends the show',
+  'ltcplay/clock.py',
+  '            if self._frozen_frame is not None and \\\n                    self._frozen_frame + 1 < self._end_frames(cue):',
+  '            if False:'),
+
+ ('audio_master: the timecode stops dead at the end of a show again',
+  'ltcplay/clock.py',
+  '        if why == "finished" and self.last_sent is not None:',
+  '        if False:'),
+
+ ('audio_master: an Abort after the end leaves the timecode held',
+  'ltcplay/clock.py',
+  '                self._drop_held("Abort")\n                return',
+  '                return'),
+
+ ('audio_master: Stop leaves the timecode held',
+  'ltcplay/clock.py',
+  '            self._drop_held("Stop")\n',
+  ''),
+
+ ('audio_master: a new cue keeps the last show\'s held frame for its Abort',
+  'ltcplay/clock.py',
+  '        self._last_send_at = None\n        self._held = None\n        self._held_at = None\n',
+  '        self._last_send_at = None\n'),
+
+ ('audio_master: Run says nothing when the audio is shorter than the lights',
+  'ltcplay/session.py',
+  '            self.notes[:0] = short',
+  '            pass'),
+
+ ('madmapper: the heartbeat is read against the configured length only',
+  'ltcplay/madmapper.py',
+  '        return self._show_len_real if self._show_len_real is not None \\\n            else self.cfg.show_len_s',
+  '        return self.cfg.show_len_s'),
+
+ ('madmapper: MadMapper\'s heartbeat track length is never measured',
+  'ltcplay/madmapper.py',
+  '            self._measure_track(value, now)\n',
+  ''),
+
+ ('madmapper: a heartbeat track of the wrong length is never told',
+  'ltcplay/madmapperwatch.py',
+  '    if got is not None and abs(got - need) > TRACK_TOLERANCE_S:',
+  '    if False:'),
+
+ ('madmapper: the rack screen never follows the running show\'s length',
+  'ltcplay/madmapperwatch.py',
+  '            watchdog.follow_show_length(length)\n',
+  ''),
+
+ ('rack screen: the Video lamp is green with a wrong heartbeat track',
+  'ltcplay/remote.py',
+  '            elif mm.get("heartbeat_track_wrong"):',
+  '            elif False:'),
+
+ # Safety review of #157.
+ ('audio_master: a held end frame goes to receivers not named MadMapper',
+  'ltcplay/clock.py',
+  '            if "madmapper" not in name or ip in HOLD_NEVER or \\',
+  '            if ip in HOLD_NEVER or \\'),
+
+ ('audio_master: a held end frame goes to BEYOND\'s address',
+  'ltcplay/clock.py',
+  '            if "madmapper" not in name or ip in HOLD_NEVER or \\',
+  '            if "madmapper" not in name or \\'),
+
+ ('audio_master: a held end frame goes to an address another receiver shares',
+  'ltcplay/clock.py',
+  '                    any(o_ip == ip and o_label != label',
+  '                    any(False'),
+
+ ('audio_master: a held end frame goes out by broadcast',
+  'ltcplay/clock.py',
+  '        if self.broadcast:\n            return []\n        out = []',
+  '        out = []'),
+
+ ('fire & ice: BEYOND\'s addresses are never kept from the held frame',
+  'ltcplay/fire_ice.py',
+  '    clock_mod.HOLD_NEVER.update(beyond_addresses(cfg, beyond))',
+  '    pass'),
+
+ ('fire & ice: BEYOND\'s OSC host is not one of its addresses',
+  'ltcplay/fire_ice.py',
+  '              getattr(getattr(beyond, "cfg", None), "host", None)):',
+  '              None):'),
+
+ ('audio_master: Run never says the timecode will not hold',
+  'ltcplay/clock.py',
+  '        if not callable(held) or held():\n            return None',
+  '        return None'),
+
+ ('audio_master: any clock.zones.show_len_s is taken, however long',
+  'ltcplay/clock.py',
+  '        if float(want) > top + SHOW_LEN_OVER_S:',
+  '        if False:'),
+
+ ('audio_master: Run never checks clock.zones.show_len_s',
+  'ltcplay/clock.py',
+  '    check_show_len_cap(cfg, timeline, cues)\n',
+  ''),
+
+ ('audio_master: Run says nothing about the LTC track ending with the audio',
+  'ltcplay/clock.py',
+  '        if ltc is not None:\n            # Safety review of #157, 2',
+  '        if False:\n            # Safety review of #157, 2'),
+
+ ('audio_master: Run says nothing about a show running past its lights',
+  'ltcplay/clock.py',
+  '        if not by_lights and lights > 0:',
+  '        if False:'),
+
+ ('fire & ice: a deliberate tail past the lights file is a flame cue fault',
+  'ltcplay/fire_ice.py',
+  '                if idx >= f.frame_count and _tail_by_design(',
+  '                if False and _tail_by_design('),
+
+ ('fire & ice: past the configured end is not a flame cue fault either',
+  'ltcplay/fire_ice.py',
+  '        return show_s > render_s + 1e-6 and rel <= show_s + 1.0 / 30.0',
+  '        return show_s > render_s + 1e-6'),
+
+ ('audio_master: a Hold at the very end of the audio is lost',
+  'ltcplay/clock.py',
+  '        if self._pause_req and not self._paused:\n            # A Hold pressed',
+  '        if False:\n            # A Hold pressed'),
+
+ ('audio_master: the Run notice can fail Run',
+  'ltcplay/session.py',
+  '                short = [f"How long the show audio is against the lights "',
+  '                raise\n                short = [f"How long the show audio is against the lights "'),
 
  ('audio_master: an interface that cannot run the show does not stop Run',
   'ltcplay/session.py',

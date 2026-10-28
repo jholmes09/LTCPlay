@@ -560,6 +560,45 @@ While a Stop is still disarming and fading to dark, Start now and Run on
 any screen are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
+## How long a show runs
+
+Jeff's field report, 2026-10-28. With the show audio played by ltcplay
+("audio_master"), a show runs to the longest of its audio, its lights
+file (the cue's FSEQ), and the show length set in the show file's
+`clock.zones.show_len_s` when there is one. ltcplay cannot read the
+video's length from MadMapper, so a video longer than both the audio and
+the lights file needs that setting. The schedule's own show_len_s is the
+time the night plans for a show and is not used here.
+
+- **Audio shorter than the lights file.** Run says so first, naming both
+  lengths, for example "The show audio for Show is 451.46 s, shorter than
+  the lights file (454.17 s)". The show still starts. After the audio
+  ends the rest plays in silence on this computer's clock: the Art-Net
+  timecode, the lights, the flame cues and the video carry on to the end,
+  and nothing reads as the audio lost. An LTC timecode track inside the
+  show audio (`clock.audio.ltc_output`) is part of the audio, so it ends
+  with the audio; Run says so when there is one. Export the audio to the
+  full length to hear it to the end.
+- **`clock.zones.show_len_s`** may make the show at most 60 s longer than
+  its audio and lights file. More than that refuses Run, naming the
+  numbers (a typo must never run an hour of silent timecode). Past the
+  end of the lights file the lights and the flame cues are dark, Run says
+  so, and that is not a fault.
+- **The schedule's show_len_s** must be at least the show's real length.
+  If it is shorter, ltcplay does not start and says which number to put
+  in the schedule file.
+- **At the end of a show** the timecode holds its last frame, sent 30
+  times a second, so MadMapper stays on the last picture instead of going
+  back to the start. The show still ends at that moment: the pixels go to
+  the idle look and the scheduler goes to the intermission (flame cues to
+  zero, lasers blanked) at the real end. The held frame goes to
+  MadMapper alone (the timecode receiver named MadMapper in the show
+  file), never to BEYOND, never by broadcast, whatever the lasers'
+  blanking mode. The held frame stops when the next show starts, on Abort, or on
+  Stop.
+- **Abort and Stop** are as before: they stop the timecode at once,
+  including after the audio has ended. A longer show never delays them.
+
 ## Stopping
 
 On the page: Stop and black out. In the terminal: Ctrl-C. Either way the rig is
@@ -718,7 +757,17 @@ is running: MadMapper never answers back, so it cannot tell whether the
 screens show the picture. If the show file has a MadMapper heartbeat, a
 playing show also reads "heartbeat OK", or "MadMapper running, no
 heartbeat" (amber) when MadMapper's heartbeat stops arriving; between
-shows and on Hold a silent heartbeat is normal and nothing is said. Off
+shows and on Hold a silent heartbeat is normal and nothing is said. The
+chip's tooltip also says what MadMapper's heartbeat track (/float-1) must
+end at: the show's real length (see "How long a show runs"), whatever
+ltcplay_fire_ice.json says. Once a show has played a minute, ltcplay
+measures where MadMapper's track really ends; if that is wrong the chip
+turns amber and says exactly what to set, for example "MadMapper
+running, set /float-1 to end at 454.17 s, it ends at 444.42 s". Change
+the track's length in MadMapper and the chip turns green during the next
+show. This lamp is the only place a wrong track length shows: ltcplay's
+heartbeat drift alarm is not switched on in this build, so there is no
+drift alert. Off
 the show PC, or with MadMapper on another machine, it cannot be told:
 the chip reads "not sent yet" (grey) until a show sends something, and
 its tooltip says why.

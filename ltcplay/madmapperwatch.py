@@ -191,7 +191,77 @@ class MadMapperWatch:
             t.join(timeout=2.0)
 
 
-def heartbeat_view(watchdog, cfg, playing):
+# The heartbeat track is told to the operator as wrong when its measured
+# length is further than this from the show's real length.
+TRACK_TOLERANCE_S = 0.5
+
+
+def _secs(x):
+    return f"{round(float(x), 2):g} s"
+
+
+def show_reading(session):
+    """(the show's real length in seconds, ltcplay's position in the show's
+    own cue while it is moving) from the running session's show audio
+    clock (clock.AudioMaster), each None when it cannot be told: no
+    session, another kind of clock, nothing moving. Never raises."""
+    try:
+        clk = getattr(session, "clock", None)
+        tl = getattr(session, "tl", None)
+        if clk is None or tl is None or \
+                getattr(clk, "source", None) != "audio_master":
+            return None, None
+        # Already loaded: this is an audio_master clock.
+        from . import clock as clock_mod
+        length = clock_mod.show_len_of(clk, tl)
+        cue = getattr(clk, "_cue", None)
+        pos = None
+        if cue and not clk.paused and \
+                getattr(clk, "_mode", None) in ("follow", "return",
+                                                "freerun", "tail") and \
+                cue.get("label") == clock_mod.show_cue_of(clk, tl):
+            p = clk._pos(clk._clock())
+            pos = p if p is not None and p >= 0 else None
+        return length, pos
+    except Exception:                            # noqa: BLE001
+        return None, None
+
+
+def track_view(watchdog, cfg):
+    """(sentence, wrong) about MadMapper's heartbeat track length (Jeff's
+    field report, 2026-10-28, item 14): what it must end at (the show's
+    real length, Watchdog.show_len_s) and, once measured, what it ends at
+    now. `wrong` is False, or the lamp's few words for a measured track
+    that does not end at the show's end (the heartbeat's value would
+    then read wrong by the end of the show; the watchdog's drift alarm
+    is not armed by anything in this build, so no drift alert is raised,
+    and this lamp is how it is told). Never raises."""
+    try:
+        need = watchdog.show_len_s()
+        got = watchdog.track_len_s()
+    except Exception:                            # noqa: BLE001
+        return None, False
+    if not need:
+        return None, False
+    addr = getattr(cfg, "address", None) or "/float-1"
+    if got is not None and abs(got - need) > TRACK_TOLERANCE_S:
+        return (f"set MadMapper's {addr} heartbeat track to end at "
+                f"{_secs(need)}, the show's real length; it ends at "
+                f"{_secs(got)} now"), \
+            f"set {addr} to end at {_secs(need)}, it ends at {_secs(got)}"
+    if got is not None:
+        return (f"MadMapper's {addr} heartbeat track ends at {_secs(got)}, "
+                f"the show's real length"), False
+    said = getattr(cfg, "show_len_s", None)
+    tail = ""
+    if said and abs(float(said) - need) > 0.005:
+        tail = (f" (ltcplay_fire_ice.json says {_secs(said)}; the heartbeat "
+                f"is read against {_secs(need)})")
+    return (f"MadMapper's {addr} heartbeat track must end at "
+            f"{_secs(need)}, the show's real length{tail}"), False
+
+
+def heartbeat_view(watchdog, cfg, playing, session=None):
     """What the rack screen says about MadMapper's heartbeat, or None when
     there is nothing to say: no watchdog, or no "madmapper.heartbeat"
     block in the show file (then it is never mentioned, never an alarm).
@@ -201,11 +271,34 @@ def heartbeat_view(watchdog, cfg, playing):
                                     video should be moving), or the
                                     listener could not open its port.
     {"heartbeat": "quiet", "why"}   none, and no show playing: normal.
+
+    Each also has "track" (track_view's sentence, or None) and
+    "track_wrong". `session` is the running session, or None: its show
+    length is the one the heartbeat is read against, and its moving
+    position is what measures MadMapper's track (show_reading).
     Never raises."""
     try:
         if watchdog is None or cfg is None or \
                 getattr(cfg, "show_len_s", None) is None:
             return None
+        try:
+            length, pos = show_reading(session)
+            watchdog.follow_show_length(length)
+            watchdog.note_position(pos)
+        except Exception:                        # noqa: BLE001
+            pass
+        out = _heartbeat_word(watchdog, cfg, playing)
+        out["track"], out["track_wrong"] = track_view(watchdog, cfg)
+        return out
+    except Exception as e:                       # noqa: BLE001
+        return {"heartbeat": "quiet",
+                "why": f"the heartbeat could not be read: "
+                       f"{type(e).__name__}", "track": None,
+                "track_wrong": False}
+
+
+def _heartbeat_word(watchdog, cfg, playing):
+    try:
         err = getattr(watchdog, "bind_error", None)
         if err:
             return {"heartbeat": "silent", "why": str(err)}
