@@ -1434,6 +1434,10 @@ def _cmd_serve(args):
         from . import schedule_service
         schedule = os.path.abspath(os.path.expanduser(
             args.schedule or schedule_service.default_rule_path()))
+    # Settings changed on disk since this engine read them (configwatch.py,
+    # Jeff 2026-10-28): each file is noted BEFORE it is read, so an edit
+    # that lands while the engine starts counts as changed, never missed.
+    cfg_watch = _config_watch_at_start(args, schedule)
     fire_ice = None
     if schedule is not None:
         # A schedule is what makes this Fire & Ice (the GPL launchers never
@@ -1444,6 +1448,7 @@ def _cmd_serve(args):
         try:
             fire_ice = fire_ice_mod.FireIceConfig.load(
                 fire_ice_mod.config_path_for(schedule))
+            _watch_flamesafe(cfg_watch, fire_ice.flamesafe_config)
             _soak_why = fire_ice_mod.soak_refusal(fire_ice)
             if _soak_why:
                 # The soak kit's settings, left behind: refused where the
@@ -1505,12 +1510,13 @@ def _cmd_serve(args):
         # remote page's flame lamps, and (through its status_mirror_port)
         # the flame link's disarm confirmation and lock alarm.
         flamesafe_config = fire_ice.flamesafe_config
+    _watch_flamesafe(cfg_watch, flamesafe_config)
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
                               token=args.token, schedule=schedule,
                               announce=announce, fire_ice=fire_ice,
                               flamesafe_config=flamesafe_config,
-                              accounts=True)
+                              accounts=True, config_watch=cfg_watch)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1583,6 +1589,65 @@ def _cmd_serve(args):
         _shutdown(httpd)
         _say_blackout(sess)
     return 0
+
+
+def _config_watch_at_start(args, schedule):
+    """configwatch.ConfigWatch with every settings file `ltc serve` reads
+    once at start noted before it is read: the schedule, the Fire & Ice
+    settings, the Morning settings, the operator list, the Stream Deck's
+    layout (read by the deck program only), the announcements, the
+    start-only part of ltcplay_remote.json and, when the Windows app names
+    it, flamesafe's config. Never raises: None when it cannot be made."""
+    try:
+        from . import configwatch as cw
+        from . import remote as remote_mod
+        w = cw.ConfigWatch()
+        folder = remote_mod.settings_folder()
+        if os.environ.get(FLAMESAFE_ENV):
+            _watch_flamesafe(w, os.environ.get(FLAMESAFE_ENV))
+        if getattr(args, "flamesafe_config", None):
+            _watch_flamesafe(w, args.flamesafe_config)
+        if schedule is not None:
+            from . import fire_ice as fire_ice_mod
+            from . import schedule_service
+            w.add("schedule", schedule)
+            w.add("Fire & Ice settings", fire_ice_mod.config_path_for(schedule))
+            # Missing, the scheduler writes it with its defaults at start:
+            # the same settings, so not a change.
+            w.add("operator list", schedule_service.operators_path(),
+                  digest=cw.default_hash({"operators": list(
+                      schedule_service.sch.DEFAULT_OPERATORS)}))
+            # Its "fuel" block is read again live by fuel.py.
+            w.add("Morning settings",
+                  os.path.join(folder, "ltcplay_morning.json"),
+                  digest=cw.without_hash(("fuel",)))
+            w.add("Stream Deck layout",
+                  os.path.join(folder, "ltcplay_deck.json"),
+                  engine=False, others=(cw.DECK,))
+        if getattr(args, "announce", None) is not None:
+            from . import announce as announce_mod
+            w.add("announcements", os.path.abspath(os.path.expanduser(
+                args.announce or announce_mod.default_config_path())))
+        # Only the settings read at start: the booth speaker, the alert
+        # pulse's pixels and the flamesafe config. The rest of the file
+        # is read live, or saved from the page.
+        w.add("rack screen settings",
+              os.path.join(folder, remote_mod.SETTINGS_FILE),
+              digest=cw.keys_hash(("booth_alert", "alert_pixels",
+                                   "flamesafe_config")))
+        return w
+    except Exception as e:                       # noqa: BLE001
+        print(f"The settings file watch is off: {type(e).__name__}: {e}")
+        return None
+
+
+def _watch_flamesafe(watch, path):
+    """flamesafe's config: read by this engine (the flame link, the lamps),
+    and by flamesafe and the Stream Deck program the supervisor runs."""
+    if watch is None or not path:
+        return
+    from . import configwatch as cw
+    watch.add("flamesafe config", path, others=(cw.DECK, cw.FLAMESAFE))
 
 
 # Set by the Windows app's supervisor from showpc.json: the ONE flamesafe

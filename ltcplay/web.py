@@ -1929,7 +1929,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
           remote_folder=None, flamesafe_config=None, flame_disarm=None,
-          accounts=False):
+          accounts=False, config_watch=None):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -2418,6 +2418,37 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                       "morning"):
             if hasattr(httpd, _name):
                 setattr(httpd.loopback, _name, getattr(httpd, _name))
+    if config_watch is not None:
+        _attach_config_watch(httpd, config_watch)
     if on_ready:
         on_ready(httpd, control, token)
     return httpd
+
+
+def _attach_config_watch(httpd, watch):
+    """Settings changed on disk since this engine read them (configwatch.py,
+    Jeff 2026-10-28): its own thread, display only, on the rack screen and
+    the status. The announcements file alone is read again live, once no
+    announcement plays and no show is running or starting. Never raises."""
+    try:
+        remote = httpd.remote
+        remote.config_watch = watch
+        watch._journal = remote.config_journal
+        ann = getattr(httpd, "announce", None)
+        if ann is not None and hasattr(ann, "reload_if_idle") and \
+                getattr(ann, "config_path", None):
+            watch.set_reload(ann.config_path, lambda: ann.reload_if_idle(
+                remote.show_busy_for_reload()))
+        watch.check(remote.programs_now())
+        watch.start(remote.programs_now)
+        _close_before_cw = httpd.server_close
+
+        def _close_cw():
+            try:
+                watch.stop()
+            finally:
+                _close_before_cw()
+        httpd.server_close = _close_cw
+    except Exception as e:                       # noqa: BLE001
+        print(f"The settings file watch could not start: "
+              f"{type(e).__name__}: {e}")
