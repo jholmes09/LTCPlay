@@ -102,6 +102,10 @@ DEFAULT_FADE_S = 1.0
 DEFAULT_RAMP_STEPS = 31          # bench B2, B4: 31 steps over 1 s was smooth
 DEFAULT_TIMEOUT_S = 3.0          # handoff section 4: no pulse for 3 s = fault
 DEFAULT_DRIFT_MS = 100.0         # handoff section 4: configurable, default 100
+# Jeff's field report, 2026-10-28: the show's timecode moving this long
+# with no heartbeat from MadMapper is the rack screen's "MadMapper is not
+# following timecode" alert (madmapperwatch.FollowCheck). Display only.
+DEFAULT_FOLLOW_S = 5.0
 AUDIO_ADDR = "/master/master_audio_level"
 # Bench B9: MadMapper's re-sent value at bank select is 1.0 (the end of
 # whatever it last showed), not anywhere near a real show's start. A real
@@ -325,12 +329,12 @@ class HeartbeatConfig:
     judges it (handoff section 4; bench B3)."""
 
     KEYS = frozenset(("bind", "port", "address", "show_len_s", "timeout_s",
-                      "drift_ms", "allow_non_loopback_bind"))
+                      "drift_ms", "allow_non_loopback_bind", "follow_s"))
 
     def __init__(self, bind=DEFAULT_HEARTBEAT_BIND, port=DEFAULT_HEARTBEAT_PORT,
                  address=DEFAULT_HEARTBEAT_ADDRESS, show_len_s=None,
                  timeout_s=DEFAULT_TIMEOUT_S, drift_ms=DEFAULT_DRIFT_MS,
-                 allow_non_loopback_bind=False):
+                 allow_non_loopback_bind=False, follow_s=DEFAULT_FOLLOW_S):
         self.bind = bind
         self.port = port
         self.address = address
@@ -338,6 +342,7 @@ class HeartbeatConfig:
         self.timeout_s = timeout_s
         self.drift_ms = drift_ms
         self.allow_non_loopback_bind = allow_non_loopback_bind
+        self.follow_s = follow_s
 
     @classmethod
     def parse(cls, doc, where):
@@ -381,8 +386,9 @@ class HeartbeatConfig:
                 f"length.")
         timeout_s = _positive(doc, "timeout_s", where, what, DEFAULT_TIMEOUT_S)
         drift_ms = _positive(doc, "drift_ms", where, what, DEFAULT_DRIFT_MS)
+        follow_s = _positive(doc, "follow_s", where, what, DEFAULT_FOLLOW_S)
         return cls(bind, port, address, show_len_s, timeout_s, drift_ms,
-                   allow_non_loopback)
+                   allow_non_loopback, follow_s)
 
 
 class MadMapperConfig:

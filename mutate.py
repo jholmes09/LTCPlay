@@ -4269,13 +4269,13 @@ def build():
 
  ('audio_master: the timecode stops dead at the end of a show again',
   'ltcplay/clock.py',
-  '        if why == "finished" and self.last_sent is not None:',
-  '        if False:'),
+  '        if (why == "finished" or hold) and self.last_sent is not None:',
+  '        if hold and self.last_sent is not None:'),
 
- ('audio_master: an Abort after the end leaves the timecode held',
+ ('audio_master: an Abort after the end lets the held frame go again',
   'ltcplay/clock.py',
-  '                self._drop_held("Abort")\n                return',
-  '                return'),
+  '                # frame for MadMapper: an Abort keeps it held.\n                return',
+  '                self._drop_held("Abort")\n                return'),
 
  ('audio_master: Stop leaves the timecode held',
   'ltcplay/clock.py',
@@ -4316,6 +4316,110 @@ def build():
   'ltcplay/remote.py',
   '            elif mm.get("heartbeat_track_wrong"):',
   '            elif False:'),
+
+ # Jeff's field report, 2026-10-28 (Abort, Reset, Start now and MadMapper
+ # did not follow): the timecode holds for MadMapper after an Abort, the
+ # show bank is set following again at every start, a display only alert
+ # says when MadMapper is not following, and Reset says how the rig stands.
+ ('audio_master: an Abort stops the timecode dead again',
+  'ltcplay/clock.py',
+  '        if (why == "finished" or hold) and self.last_sent is not None:',
+  '        if why == "finished" and self.last_sent is not None:'),
+
+ ('audio_master: an Abort that fades ends without holding',
+  'ltcplay/clock.py',
+  '        if self._halting and now >= self._halt_end:\n            self._end("stopped", now, hold=True)',
+  '        if self._halting and now >= self._halt_end:\n            self._end("stopped", now)'),
+
+ ('audio_master: an Abort before its first frame holds the last show\'s',
+  'ltcplay/clock.py',
+  '        hold = hold and self._last_frame is not None\n',
+  ''),
+
+ ('video: a show start never sets MadMapper\'s show bank following again',
+  'ltcplay/fire_ice.py',
+  '            follow_show_bank(self.mm, self._note)\n',
+  ''),
+
+ ('video: following again sends nothing',
+  'ltcplay/fire_ice.py',
+  '        mm.play(mm.cfg.show_bank, wait=False)',
+  '        pass'),
+
+ ('video: Play from never sets the show bank following again',
+  'ltcplay/playhead.py',
+  '            follow_show_bank(mm, getattr(cond, "_note", None) or\n                             (lambda *a, **k: None))',
+  '            pass'),
+
+ ('madmapper: follow_s in the heartbeat block is ignored',
+  'ltcplay/madmapper.py',
+  '        follow_s = _positive(doc, "follow_s", where, what, DEFAULT_FOLLOW_S)',
+  '        follow_s = DEFAULT_FOLLOW_S'),
+
+ ('video: not following is said at once, without waiting follow_s',
+  'ltcplay/madmapperwatch.py',
+  '                    now - self._since < follow_s:',
+  '                    False:'),
+
+ ('video: the not following alert never clears',
+  'ltcplay/madmapperwatch.py',
+  '                if following:\n                    self.raised = False\n                    return "clear"',
+  '                if False:\n                    return "clear"'),
+
+ ('video: the engine never checks that MadMapper follows',
+  'ltcplay/remote.py',
+  '        self._follow_work()\n        try:\n            self.alerts.tick()',
+  '        try:\n            self.alerts.tick()'),
+
+ ('video: not following is alerted while MadMapper is not running',
+  'ltcplay/remote.py',
+  '            can = not getattr(wd, "bind_error", None) and link != "lost"',
+  '            can = True'),
+
+ ('video: an acknowledged not following alert never comes back',
+  'ltcplay/remote.py',
+  '                fc.dropped()\n',
+  ''),
+
+ ('alerts: a display only alert sounds the booth',
+  'ltcplay/alerts.py',
+  '        if a.kind in DISPLAY_ONLY:\n            a.booth_ok, a.booth = None, "display only: no booth note"\n            return\n',
+  ''),
+
+ ('alerts: a display only alert holds the show at showtime',
+  'ltcplay/alerthold.py',
+  '        return [a for a in self.alerts.open() if a.kind not in DISPLAY_ONLY]',
+  '        return list(self.alerts.open())'),
+
+ ('alerts: a display only alert reaches the Stream Deck',
+  'ltcplay/remote.py',
+  '               "alerts": [a for a in self.alerts.view()\n                          if a.get("kind") not in DISPLAY_ONLY]}',
+  '               "alerts": self.alerts.view()}'),
+
+ ('reset: Reset says nothing about the rig again',
+  'ltcplay/remote.py',
+  '                r = self._reset_health(r, who, screen)\n',
+  ''),
+
+ ('reset: a lost audio interface reads ready',
+  'ltcplay/righealth.py',
+  '    if st == "ok":\n        return True, "Audio ready."',
+  '    if st in ("ok", "bad"):\n        return True, "Audio ready."'),
+
+ ('reset: MadMapper not running is not said',
+  'ltcplay/righealth.py',
+  '    if link == "lost":\n        return False, ("MadMapper NOT RUNNING',
+  '    if False:\n        return False, ("MadMapper NOT RUNNING'),
+
+ ('reset: an armed flame group is not named',
+  'ltcplay/righealth.py',
+  '    if armed:\n        return True, (f"Flame link OK',
+  '    if False:\n        return True, (f"Flame link OK'),
+
+ ('reset: what needs attention is not listed',
+  'ltcplay/righealth.py',
+  '    if bad:\n        text += f" Needs attention',
+  '    if False:\n        text += f" Needs attention'),
 
  # Safety review of #157.
  ('audio_master: a held end frame goes to receivers not named MadMapper',

@@ -1233,6 +1233,11 @@ class Remote:
         self.madmapper_watch = None
         self.madmapper_heartbeat = None
         self.madmapper_heartbeat_cfg = None
+        # madmapperwatch.FollowCheck, made on the first _follow_work, and
+        # the id of the "follow" alert it raised (Jeff's field report,
+        # 2026-10-28: MadMapper not following the show's timecode).
+        self._follow = None
+        self._follow_alert_id = None
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
@@ -1994,8 +1999,102 @@ class Remote:
 
     def _booth_work(self):
         """The booth note again for alerts still open. Never raises."""
+        self._follow_work()
         try:
             self.alerts.tick()
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def rig_health(self):
+        """righealth.summary() of this engine as it is now: (sentence,
+        items). Display only: reads what the rack screen already shows.
+        Never raises."""
+        from . import righealth
+        try:
+            try:
+                cs = self.control.state() or {}
+            except Exception:                    # noqa: BLE001
+                cs = {}
+            try:
+                fl = self.flame_status.view() if self.flame_status else None
+            except Exception:                    # noqa: BLE001
+                fl = None
+            return righealth.summary(
+                lamps=self.subsystems(cs), clock=cs.get("clock"),
+                madmapper=self.madmapper_link(False),
+                beyond=self.beyond_link(), flames=fl,
+                announce=self.announce_view())
+        except Exception as e:                   # noqa: BLE001
+            return (f"The rig's state could not be read "
+                    f"({type(e).__name__}).", [])
+
+    def _reset_health(self, r, who, screen):
+        """A Reset that went through says, in plain words, how every
+        subsystem stands (Jeff's field report, 2026-10-28), in its answer
+        and in the journal. A refused Reset is answered as before. Never
+        raises."""
+        try:
+            if not isinstance(r, dict) or not r.get("ok"):
+                return r
+            text, items = self.rig_health()
+            said = str(r.get("text") or "").strip()
+            if said.startswith("Reset."):
+                said = said[len("Reset."):].strip()
+            out = dict(r, text=" ".join(x for x in ("Reset done.", said,
+                                                    text) if x),
+                       health=items)
+            self._journal(who, screen, "reset", "rig state",
+                          f"After {who or 'someone'}'s Reset on the "
+                          f"{screen}: {text}",
+                          fault=any(i.get("ok") is False for i in items))
+            return out
+        except Exception:                        # noqa: BLE001
+            return r
+
+    def _follow_work(self):
+        """Is MadMapper following the show's timecode (madmapperwatch.
+        FollowCheck)? On the alert worker, after each scheduler tick: a
+        display only "follow" alert (alerts.DISPLAY_ONLY: no booth note,
+        no pulse, never holds a show, never on the Stream Deck) once the
+        timecode has moved for the heartbeat block's follow_s with no
+        heartbeat from MadMapper, cleared when the heartbeat arrives.
+        Only with a "madmapper.heartbeat" block; never while MadMapper is
+        not running (its own alert). Sends nothing anywhere. Never
+        raises."""
+        try:
+            from . import madmapperwatch as mmw
+            wd = self.madmapper_heartbeat
+            cfg = self.madmapper_heartbeat_cfg
+            if wd is None or cfg is None:
+                return
+            if self._follow is None:
+                self._follow = mmw.FollowCheck(clock=self.clock)
+            fc = self._follow
+            aid = self._follow_alert_id
+            if fc.raised and aid is not None and \
+                    not any(a.id == aid for a in self.alerts.open()):
+                fc.dropped()
+                self._follow_alert_id = None
+            _length, pos = mmw.show_reading(
+                getattr(self.control, "session", None))
+            w = self.madmapper_watch
+            link = w.state().get("link") if w is not None else "unknown"
+            can = not getattr(wd, "bind_error", None) and link != "lost"
+            what = fc.step(pos, wd.heard_age_s(),
+                           float(getattr(cfg, "timeout_s", 3.0) or 3.0),
+                           float(getattr(cfg, "follow_s", 5.0) or 5.0), can)
+            if what == "raise":
+                a = self.alerts.raise_("follow", mmw.FOLLOW_TEXT)
+                self._follow_alert_id = getattr(a, "id", None)
+            elif what == "clear":
+                aid, self._follow_alert_id = self._follow_alert_id, None
+                self._journal("system", "engine", "video", "following",
+                              "MadMapper is following timecode again: its "
+                              "heartbeat arrived.")
+                if aid is not None and any(a.id == aid
+                                           for a in self.alerts.open()):
+                    self.alerts.clear(id=aid, action="Confirm",
+                                      who="LTC Player", screen="engine")
         except Exception:                        # noqa: BLE001
             pass
 
@@ -2460,6 +2559,7 @@ class Remote:
                 if r is None:
                     r = svc.reset_conductor(who, screen, pressed=pressed,
                                             surface=surface)
+                r = self._reset_health(r, who, screen)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
@@ -3029,9 +3129,13 @@ class Remote:
             disarms = list(self._disarms)
         self._apply_pulse()
         # The open alerts too: the deck relights a key as ACK while one is
-        # open, and any key press acknowledges (alerts.py).
+        # open, and any key press acknowledges (alerts.py). A display only
+        # kind (alerts.DISPLAY_ONLY) never reaches the deck.
+        from .alerts import DISPLAY_ONLY
         out = {"enabled": enabled, "holds": holds if enabled else [],
-               "disarms": disarms, "alerts": self.alerts.view()}
+               "disarms": disarms,
+               "alerts": [a for a in self.alerts.view()
+                          if a.get("kind") not in DISPLAY_ONLY]}
         # The announcements, for the deck's page 2 keys (display only).
         av = self.announce_view()
         out["announce"] = {
