@@ -1076,14 +1076,24 @@ def _tail_by_design(clk, label, f, rel):
     """True when timecode `rel` s into cue `label` is past the end of its
     render `f` only because the show clock deliberately runs the cue
     longer than its lights file (clock.AudioMaster.show_lengths: the
-    configured show length), and not past that end. Never raises."""
+    configured show length), and not past that end. Never raises.
+
+    Only 'clock.zones.show_len_s' makes a tail deliberate: it must be set
+    and the show must run longer than BOTH its audio and its render. A
+    render that is simply shorter than its audio (stale, or cut short) is
+    still the FAULT, the only warning there is (review of #157)."""
     try:
+        zones = getattr(getattr(clk, "cfg", None), "zones", None)
+        if not getattr(zones, "show_len_s", None):
+            return False
         got = clk.show_lengths(label)
         if not got:
             return False
         render_s = f.frame_count * f.step_time_ms / 1000.0
         show_s = float(got["show_s"])
-        return show_s > render_s + 1e-6 and rel <= show_s + 1.0 / 30.0
+        audio_s = float(got["audio_s"])
+        return show_s > render_s + 1e-6 and show_s > audio_s + 1e-6 and \
+            rel <= show_s + 1.0 / 30.0
     except Exception:                            # noqa: BLE001
         return False
 

@@ -40053,8 +40053,34 @@ def test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault():
             # than its lights file ('clock.zones.show_len_s', the video):
             # zero, said, never a FAULT (safety review of #157, 4); past
             # that configured end it is the fault again.
+            import types
+            # A render simply shorter than its audio, with no configured
+            # show length, is still the FAULT (review of #157): nothing else
+            # warns of a stale or cut-short render.
+            rig.clk.show_lengths = lambda label: (
+                {"audio_s": 4.0, "show_s": 4.0} if label == "Show" else None)
+            rig.clk.cfg = types.SimpleNamespace(
+                zones=types.SimpleNamespace(show_len_s=None))
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: a render shorter than its audio, no "
+                         f"show_len_s: the FAULT went quiet: {fault!r}")
+            # A show_len_s set, but the audio is what runs past the render:
+            # still the FAULT.
+            rig.clk.cfg.zones.show_len_s = 3.0
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: the audio, not show_len_s, runs past the "
+                         f"render: the FAULT went quiet: {fault!r}")
             rig.clk.show_lengths = lambda label: (
                 {"audio_s": 1.0, "show_s": 4.0} if label == "Show" else None)
+            # Longer than both, but no show_len_s says so: the FAULT.
+            rig.clk.cfg.zones.show_len_s = None
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: no show_len_s set, yet the tail read as "
+                         f"deliberate: {fault!r}")
+            rig.clk.cfg.zones.show_len_s = 4.0
             got, fault, said = at(40, 25, fill=77)
             check(got is None and fault == "" and
                   not any(f for _t, f in said) and
@@ -40068,6 +40094,7 @@ def test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault():
                   fault, f"{mode}: past the configured end too: still the "
                          f"fault: {fault!r}")
             del rig.clk.show_lengths
+            del rig.clk.cfg
             # Within tolerance again after a fault: the fault clears, the
             # output stays zero.
             got, fault, _l = at(99, 25, fill=77)
