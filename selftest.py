@@ -60624,6 +60624,17 @@ def test_users_file_broken_or_lost_locks_and_says_so():
           f"a broken file: on, locked, safety still goes: {us.broken()}")
     ok, why, _t, _n = us.sign_in("Andy", "andy-own-pw-1", True, "Rack screen")
     check(not ok, "and nobody can sign in")
+    # Not text at all (a name saved by an editor in another encoding): read
+    # whole and invalid, locked and said, never "no users" (fourth review).
+    with open(us.path, "wb") as fh:
+        fh.write(b'{"users": {"J\xe9ff": {"role": "admin"}}}')
+    try:
+        bad = (us.active(), us.broken(), us.names(), us.may(None, "arm"))
+    except ValueError as e:
+        bad = ("raised", str(e))
+    check(bad[0] is True and "could not be read" in str(bad[1]) and
+          bad[2] == [] and bad[3] is False,
+          f"a users file that is not UTF-8: locked and said: {bad}")
     os.remove(us.path)
     check(us.active() and "missing" in us.broken() and
           not us.may(None, "arm"),

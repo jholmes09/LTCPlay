@@ -49,8 +49,9 @@ nothing is deleted and nobody is signed out. While LTC Player is running,
 the last good copy is used for up to 10 seconds; after that, and at once
 when LTC Player has just started and has never read it, every control is
 locked as above until the file opens again. It is tried again all the
-time and used the moment it opens. Changes on the Users screen wait until
-it can be read. If it lasts, check the antivirus.
+time and used the moment it opens. A change on the Users screen made
+meanwhile is refused with "try again in a moment" and nothing is changed;
+press it again once the file opens. If it lasts, check the antivirus.
 
 "deck" is kept for the Stream Deck's own journal lines and cannot be a
 user's name, like "unsigned", "system" and "nobody".

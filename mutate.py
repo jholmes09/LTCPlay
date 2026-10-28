@@ -10524,6 +10524,10 @@ def build():
   'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")',
   'RESERVED = ("unsigned", "system", "signed out", "nobody")'),
 
+ ('users: a users file that is not UTF-8 reads as no users', 'ltcplay/users.py',
+  '            with open(self.path, "rb") as fh:\n                raw = fh.read()',
+  '            with open(self.path, encoding="utf-8-sig") as fh:\n                raw = fh.read().encode("utf-8")'),
+
  ('users: a failed open locks at once', 'ltcplay/users.py',
   '            if self._good is not None and \\\n                    now - self._fail_since < READ_GRACE_S:',
   '            if False:'),

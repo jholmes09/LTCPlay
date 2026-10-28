@@ -363,7 +363,7 @@ def check_name(name):
     if not NAME_RE.match(name) or name.lower() in RESERVED:
         raise ValueError("A name is 1 to 40 letters, digits, spaces, dots, "
                          "dashes or apostrophes, and not unsigned, system, "
-                         "deck or nobody.")
+                         "signed out, deck or nobody.")
     return name
 
 
@@ -450,7 +450,10 @@ class Users:
                 self.error, self.error_kind = "", ""
             return self._doc
         try:
-            with open(self.path, encoding="utf-8-sig") as fh:
+            # Bytes only here: a file that is not text (not UTF-8) is read
+            # whole and found invalid below, never a failed open (fourth
+            # review of PR #143).
+            with open(self.path, "rb") as fh:
                 raw = fh.read()
         except OSError as e:
             # The file is there but could not be opened just now (an
@@ -470,7 +473,7 @@ class Users:
             return {"users": {}, "broken": True}
         self._fail_since = None
         try:
-            doc = json.loads(raw)
+            doc = json.loads(raw.decode("utf-8-sig"))
             if not isinstance(doc, dict) or not isinstance(
                     doc.get("users", {}), dict):
                 raise ValueError("not a users object")
