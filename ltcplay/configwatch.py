@@ -18,9 +18,10 @@ own and never on the show's path, it looks at each file again:
   the engine     is behind when the file's hash differs from the one taken
                  at start (a file saved again unchanged, or changed back,
                  is not a change)
-  the deck,      are behind when the file was modified after they started
-  flamesafe      (their start times come from the Windows supervisor's
-                 programs.json; off the show PC there are none)
+  the deck,      are behind when the file's hash differs from the one the
+  flamesafe      supervisor took just before it started them (programs.json
+                 "read"; off the show PC, or for a program the supervisor
+                 adopted, there is none and they are not judged)
   LTC Player     (the supervisor) is behind when showpc.json differs, in a
                  setting other than show_folder, from what it read at its
                  start (it says so in programs.json; the show folder it
@@ -53,44 +54,80 @@ PROGRAMS = (ENGINE, DECK, FLAMESAFE, SUPERVISOR)
 WHO = {ENGINE: "the engine", DECK: "the Stream Deck program",
        FLAMESAFE: "flamesafe", SUPERVISOR: "LTC Player itself"}
 
-RESTART = ("Restart LTC Player to use them (Start menu, Stop LTC Player "
-           "then Start LTC Player).")
+RESTART = ("Restart LTC Player between shows, when nothing is armed, to "
+           "use them (Start menu, Stop LTC Player then Start LTC Player).")
 RUNNING_OLD = "Until then it runs with the older copy."
+# #150's Aim slots alert names the same cause from the other side (the two
+# aim lists differ); said once, for flamesafe's own file.
+AIM_NOTE = "An Aim slots alert can come from this older copy."
+
+
+def normalized(raw):
+    """The bytes as a program reads them: a UTF-8 byte order mark and
+    Windows line ends do not count as a change. packaging/windows/
+    supervisor.py's config_hash does the same, byte for byte."""
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    return raw.replace(b"\r\n", b"\n")
 
 
 def file_hash(path):
-    """sha256 of the file's bytes, or None when it is not there or cannot
-    be read."""
+    """sha256 of the file's normalized bytes, or None when it is not there
+    or cannot be read."""
     try:
         with open(path, "rb") as fh:
-            return hashlib.sha256(fh.read()).hexdigest()
+            return hashlib.sha256(normalized(fh.read())).hexdigest()
     except OSError:
         return None
 
 
-def keys_hash(keys):
-    """A hash function for a file only some of whose settings are read at
-    start (ltcplay_remote.json): the hash of those keys alone, so a save of
-    a setting the engine reads live is not a change. A file that is not
-    JSON hashes as its bytes, so a broken edit still counts as changed."""
-    keys = tuple(keys)
-
-    def h(path):
-        try:
-            with open(path, "rb") as fh:
-                raw = fh.read()
-        except OSError:
+def _json_hash(path, pick, missing=None):
+    """The hash of pick(doc) for a JSON file; a file that is not JSON (or
+    not an object) hashes as its bytes, so a broken edit still counts as
+    changed. `missing`: the document a program uses when the file is not
+    there (so writing exactly that is not a change)."""
+    try:
+        with open(path, "rb") as fh:
+            raw = normalized(fh.read())
+    except FileNotFoundError:
+        if missing is None:
             return None
-        try:
-            doc = json.loads(raw.decode("utf-8-sig"))
-        except (ValueError, UnicodeDecodeError):
-            return hashlib.sha256(raw).hexdigest()
-        if not isinstance(doc, dict):
-            return hashlib.sha256(raw).hexdigest()
-        part = {k: doc.get(k) for k in keys}
-        return hashlib.sha256(json.dumps(part, sort_keys=True).encode(
-            "utf-8")).hexdigest()
-    return h
+        raw = json.dumps(missing).encode("utf-8")
+    except OSError:
+        return None
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return hashlib.sha256(raw).hexdigest()
+    if not isinstance(doc, dict):
+        return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(json.dumps(pick(doc), sort_keys=True).encode(
+        "utf-8")).hexdigest()
+
+
+def keys_hash(keys):
+    """For a file only some of whose settings are read at start
+    (ltcplay_remote.json): the hash of those keys alone, so a save of a
+    setting the engine reads live is not a change."""
+    keys = tuple(keys)
+    return lambda path: _json_hash(path, lambda d: {k: d.get(k)
+                                                    for k in keys})
+
+
+def without_hash(keys):
+    """For a file part of which the engine reads again live by itself
+    (ltcplay_morning.json's "fuel" block, fuel.py): every key but those."""
+    keys = frozenset(keys)
+    return lambda path: _json_hash(path, lambda d: {k: v for k, v in
+                                                    d.items()
+                                                    if k not in keys})
+
+
+def default_hash(default_doc):
+    """For a file a program writes with its defaults when it is missing
+    (ltcplay_operators.json, written by the scheduler at start): missing and
+    those defaults are the same settings."""
+    return lambda path: _json_hash(path, lambda d: d, missing=default_doc)
 
 
 def _stamp(path):
@@ -132,7 +169,6 @@ class _Entry:
         self.stamp = _stamp(self.path)
         self.value = self.digest(self.path)
         self.loaded_at = wall
-        self.seen = (self.stamp, self.value)
 
 
 class ConfigWatch:
@@ -203,27 +239,27 @@ class ConfigWatch:
 
     # -- the check ----------------------------------------------------------
     def _engine_behind(self, e):
-        st = _stamp(e.path)
-        if st == e.stamp:
-            return False
-        if st != e.seen[0]:
-            e.seen = (st, e.digest(e.path))
-        if e.seen[1] == e.value:
-            # Saved again with the same settings, or changed back.
-            e.stamp = st
-            return False
-        return True
+        """By content, every check: a copy that keeps the old modified
+        time (Explorer keeps the source's) is still a change. The files
+        are small and this runs on its own thread every CHECK_EVERY_S."""
+        return e.digest(e.path) != e.value
 
     @staticmethod
-    def _started(programs, who):
-        """When the supervisor started `who`, while it runs; else None."""
+    def _read_by(programs, who, path):
+        """(True, hash) for what the supervisor saw in `path` just before it
+        started `who` (programs.json "read"), while `who` runs; (False,
+        None) when that is not known."""
         p = (programs or {}).get(who)
         if not isinstance(p, dict) or not p.get("running"):
-            return None
-        t = p.get("started")
-        if isinstance(t, bool) or not isinstance(t, (int, float)) or t <= 0:
-            return None
-        return float(t)
+            return False, None
+        read = p.get("read")
+        if not isinstance(read, dict):
+            return False, None
+        want = os.path.normcase(os.path.abspath(path))
+        for k, v in read.items():
+            if os.path.normcase(os.path.abspath(str(k))) == want:
+                return True, v
+        return False, None
 
     def check(self, programs=None):
         """Look at every file now. `programs` is the supervisor's
@@ -239,10 +275,14 @@ class ConfigWatch:
                 if e.engine and self._engine_behind(e):
                     behind.append(ENGINE)
                 st = _stamp(e.path)
+                now = None
                 for who in e.others:
-                    t = self._started(programs, who)
-                    if t is not None and st is not None and \
-                            st[0] / 1e9 > t:
+                    known, theirs = self._read_by(programs, who, e.path)
+                    if not known:
+                        continue
+                    if now is None:
+                        now = file_hash(e.path)
+                    if theirs != now:
                         behind.append(who)
                 if not behind:
                     e.waiting = ""
@@ -287,7 +327,9 @@ class ConfigWatch:
         try:
             done, why = e.reload()
         except Exception as ex:                  # noqa: BLE001
-            done, why = False, f"{type(ex).__name__}: {ex}"
+            done, why = False, (f"the engine could not read it again "
+                                f"({type(ex).__name__}: {ex}) and keeps "
+                                f"the old settings")
         if done:
             e.snap(self.wall())
             e.waiting = ""
@@ -363,12 +405,15 @@ def notice_text(items):
         if it.get("keys"):
             when += f": {', '.join(it['keys'])}"
         if it.get("waiting") and behind == [ENGINE]:
-            parts.append(f"{it['file']} ({when}; the engine reads it again "
-                         f"by itself once {it['waiting']})")
+            # The engine's own sentence: it waits to read it again, or the
+            # new file is not valid and it keeps the old settings.
+            parts.append(f"{it['file']} ({when}; {it['waiting']})")
             continue
         restart = True
         parts.append(f"{it['file']} ({when}; older copy in {who})")
     text = "Settings changed on disk: " + "; ".join(parts) + "."
     if restart:
         text += " " + RESTART + " " + RUNNING_OLD
+    if any(it.get("name") == "flamesafe config" for it in items):
+        text += " " + AIM_NOTE
     return text

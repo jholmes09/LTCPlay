@@ -1512,6 +1512,12 @@ class Remote:
             return 200, self.deck_input(query)
         if name == "status":
             return 200, self.status(ctx)
+        if name == "restart-check":
+            # The Windows supervisor, on this machine, right before it
+            # stops the engine for a restart-engine request.
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return 200, {"refusal": self.restart_refusal()}
         if name == "weather":
             # Display only: what the weather thread last stored.
             from . import weather as weather_mod
@@ -5082,30 +5088,64 @@ class Remote:
 
     def reload_engine_refusal(self):
         """Why the rack screen's Reload engine may not be pressed now, or
-        None: only on the show PC (the supervisor restarts the engine),
-        with no show live, running or starting, no announcement playing,
-        and every flame group seen disarmed in a fresh frame."""
+        None: only on the show PC (the supervisor restarts the engine), and
+        only when restart_refusal() finds nothing."""
         if not os.path.isfile(os.path.join(settings_folder(), SHOWPC_FILE)):
             return ("This engine is not run by LTC Player's supervisor. "
                     "Quit it and start it again.")
+        return self.restart_refusal() or None
+
+    def restart_refusal(self):
+        """Why this engine may not be restarted now, in a sentence, or "".
+        Fails closed (2026-10-28): anything not known refuses. Asked by
+        Reload engine, and again by the Windows supervisor right before it
+        stops the engine (GET restart-check), for every restart-engine
+        request. Never raises."""
+        try:
+            return self._restart_refusal()
+        except Exception as e:                   # noqa: BLE001
+            return (f"Whether the engine may restart could not be checked "
+                    f"({type(e).__name__}).")
+
+    def _restart_refusal(self):
         if self.show_busy_for_reload():
             return "A show is running. Reload the engine between shows."
         ann = getattr(self, "announce", None)
         if ann is not None and getattr(ann, "playing", None) is not None:
             return "An announcement is playing."
         fs = self.flame_status
-        if fs is not None:
-            try:
-                v = fs.view()
-            except Exception:                    # noqa: BLE001
-                v = {"stale": True}
-            if v.get("stale"):
-                return ("flamesafe's status is not seen, so it is not known "
-                        "that every flame group is disarmed.")
-            if any(g.get("armed") != "disarmed" or g.get("wanted")
-                   for g in v.get("groups") or []):
-                return "A flame group is armed. Disarm every group first."
-        return None
+        if fs is None:
+            return ("flamesafe's status is not connected to this engine, so "
+                    "it is not known that every flame group is disarmed.")
+        v = fs.view() or {}
+        groups = v.get("groups") or []
+        if v.get("stale") or not groups:
+            return ("flamesafe's status is not seen, so it is not known "
+                    "that every flame group is disarmed.")
+        if any(g.get("armed") != "disarmed" or g.get("wanted")
+               for g in groups):
+            return "A flame group is armed. Disarm every group first."
+        lf = getattr(self, "live_flame", None)
+        if lf is not None and lf.on:
+            return "Live flame programming is on. Turn it off first."
+        sf = getattr(self, "scrub_flames", None)
+        if sf is not None and sf.on:
+            return "Fire flames while scrubbing is on. Turn it off first."
+        fb = getattr(self, "fireball", None)
+        if fb is not None:
+            sm = fb.summary() or {}
+            if sm.get("on") or sm.get("owner"):
+                return "The Fireball page is in use. Press All off first."
+        m = getattr(self, "morning", None)
+        if m is not None:
+            mv = m.status_view() or {}
+            if mv.get("purge"):
+                return "A purge is selected or firing. Clear it first."
+            if mv.get("laser_tests_on"):
+                return "A laser test is on. Turn it off first."
+            if (mv.get("laser_arm") or {}).get("armed"):
+                return "A laser is armed. Disarm the lasers first."
+        return ""
 
     def config_changed_view(self, ctx):
         """The settings notice for the status (configwatch.ConfigWatch.

@@ -2311,7 +2311,7 @@ function render(){
   // note, display only, never an alert (remote.py config_changed_view).
   const cn = cfgNote(s.config_changed);
   setWarn("cfg-note", cn.text);
-  $("cfg-reload").hidden = !cn.offer || !mayRow(s, "show_files");
+  $("cfg-reload").hidden = !cn.offer || !mayRow(s, "settings");
   renderAlerts(s.alerts || []);
   renderAnnounce();
   renderLamps(fl);

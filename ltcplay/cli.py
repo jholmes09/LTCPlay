@@ -1434,11 +1434,11 @@ def _cmd_serve(args):
         from . import schedule_service
         schedule = os.path.abspath(os.path.expanduser(
             args.schedule or schedule_service.default_rule_path()))
-    fire_ice = None
     # Settings changed on disk since this engine read them (configwatch.py,
     # Jeff 2026-10-28): each file is noted BEFORE it is read, so an edit
     # that lands while the engine starts counts as changed, never missed.
     cfg_watch = _config_watch_at_start(args, schedule)
+    fire_ice = None
     if schedule is not None:
         # A schedule is what makes this Fire & Ice (the GPL launchers never
         # pass one), so only here is the real show conductor built, from
@@ -1612,9 +1612,15 @@ def _config_watch_at_start(args, schedule):
             from . import schedule_service
             w.add("schedule", schedule)
             w.add("Fire & Ice settings", fire_ice_mod.config_path_for(schedule))
-            w.add("operator list", schedule_service.operators_path())
+            # Missing, the scheduler writes it with its defaults at start:
+            # the same settings, so not a change.
+            w.add("operator list", schedule_service.operators_path(),
+                  digest=cw.default_hash({"operators": list(
+                      schedule_service.sch.DEFAULT_OPERATORS)}))
+            # Its "fuel" block is read again live by fuel.py.
             w.add("Morning settings",
-                  os.path.join(folder, "ltcplay_morning.json"))
+                  os.path.join(folder, "ltcplay_morning.json"),
+                  digest=cw.without_hash(("fuel",)))
             w.add("Stream Deck layout",
                   os.path.join(folder, "ltcplay_deck.json"),
                   engine=False, others=(cw.DECK,))
