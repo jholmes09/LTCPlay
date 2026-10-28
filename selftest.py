@@ -76360,9 +76360,16 @@ def test_fireball_signed_out_is_view_only():
                            window="w-aaaaaa")
         check(st == 200 and not P.fb.active() and P.link.cur is None,
               "and off")
-        rem.audit.flush(5.0)
-        beats = [l for l in _audit_lines(rem.audit.folder)
-                 if l["action"] == "fireball-beat"]
+        # The handler writes a request's audit line just after its answer
+        # has gone (web.py's finally), so the last line is waited for: a
+        # busy runner read the log in between (mutate shard 19 baseline,
+        # PR #158).
+        def _beats():
+            rem.audit.flush(5.0)
+            return [l for l in _audit_lines(rem.audit.folder)
+                    if l["action"] == "fireball-beat"]
+        wait_for(lambda: len(_beats()) >= 5, timeout=5.0, step=0.05)
+        beats = _beats()
         check(len(beats) == 5,
               f"every refused press and every change is in the audit log, "
               f"not the beats between: {len(beats)}")
