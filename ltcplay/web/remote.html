@@ -2725,13 +2725,19 @@ function signinLocked(){
     offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));
   }
   if(!mayRow(ST, "settings")) offs.push($("sa-on"), $("lf-on"), $("sf-on"));
-  return offs.filter(Boolean);
+  // A control that is a Stop just now (Start now or Run while a show is
+  // live or starting) is never locked: Stop always works (third review of
+  // PR #143, 1).
+  return offs.filter(el => el && el.dataset.mode !== "stop");
 }
 function lockForSignIn(){
   const offs = signinLocked();
   for(const el of offs){
     if(!el.classList.contains("signin-off")){
-      el.dataset.title0 = el.title || "";
+      // What the control was before the lock, put back when it lifts;
+      // a control's own redraw then decides again.
+      el.dataset.title0 = el.title === SIGN_IN_WORDS ? "" : (el.title || "");
+      el.dataset.dis0 = el.disabled ? "1" : "";
       el.classList.add("signin-off");
     }
     el.disabled = true;
@@ -2740,10 +2746,12 @@ function lockForSignIn(){
   document.querySelectorAll(".signin-off").forEach(el => {
     if(offs.includes(el)) return;
     el.classList.remove("signin-off");
-    el.title = el.dataset.title0 || "";
+    if(el.dataset.mode !== "stop"){
+      el.title = el.dataset.title0 || "";
+      el.disabled = el.dataset.dis0 === "1";
+    }
     delete el.dataset.title0;
-    // Run has no redraw of its own: it is always pressable.
-    if(el.id === "b-run") el.disabled = false;
+    delete el.dataset.dis0;
   });
   const sig = ["show", "arm", "settings"].map(p => mayRow(ST, p) ? "1" : "0").join("");
   if(SIGNIN_SIG !== null && sig !== SIGNIN_SIG){

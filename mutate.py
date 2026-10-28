@@ -10509,8 +10509,20 @@ def build():
   '            if False:\n                self._write_mark()'),
 
  ('users: a failed open is remembered as broken', 'ltcplay/users.py',
-  '            self.error = f"{USERS_FILE} could not be opened: {e}"\n            return {"users": {}, "broken": True}',
-  '            self.error = f"{USERS_FILE} could not be opened: {e}"\n            self._doc, self._mtime = {"users": {}, "broken": True}, m\n            return self._doc'),
+  '            self.error_kind = "open"\n            return {"users": {}, "broken": True}',
+  '            self.error_kind = "open"\n            self._doc, self._mtime = {"users": {}, "broken": True}, m\n            return self._doc'),
+
+ ('users: a held file after a change brings back the copy before it', 'ltcplay/users.py',
+  '        self._good = json.loads(json.dumps(clean))\n',
+  ''),
+
+ ('users: a change is made from a held copy', 'ltcplay/users.py',
+  '            if self._fail_since is not None:\n                # Only ever changed from a fresh read',
+  '            if False:\n                # Only ever changed from a fresh read'),
+
+ ('users: deck can be a name', 'ltcplay/users.py',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody")'),
 
  ('users: a failed open locks at once', 'ltcplay/users.py',
   '            if self._good is not None and \\\n                    now - self._fail_since < READ_GRACE_S:',
@@ -10551,6 +10563,10 @@ def build():
  ('remote: a good users file back leaves the alert up', 'ltcplay/remote.py',
   '                    self.alerts.clear(kind="users", action="Confirm",\n                                      who="system", screen="engine")',
   '                    pass'),
+
+ ('remote: a held users file is told to be deleted', 'ltcplay/remote.py',
+  '        if getattr(u, "error_kind", "") == "open":',
+  '        if False:'),
 
  ('remote: a broken users file raises no alert', 'ltcplay/remote.py',
   '            self.alerts.raise_("users", text)',
@@ -10609,8 +10625,12 @@ def build():
   '        if False:'),
 
  ('page: a sign-in leaves Run locked', 'ltcplay/web/remote.html',
-  '    if(el.id === "b-run") el.disabled = false;\n',
+  '      el.disabled = el.dataset.dis0 === "1";\n',
   ''),
+
+ ('page: a Stop is locked signed out', 'ltcplay/web/remote.html',
+  '  return offs.filter(el => el && el.dataset.mode !== "stop");',
+  '  return offs.filter(Boolean);'),
 
  ('page: a sign-in leaves the laser and announcement buttons locked', 'ltcplay/web/remote.html',
   '    SIGNIN_SIG = sig;\n    redrawForSignIn();\n',

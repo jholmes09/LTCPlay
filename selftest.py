@@ -60637,6 +60637,47 @@ def test_users_file_broken_or_lost_locks_and_says_so():
         check(False, "a user was added to a lost users file")
     except ValueError as e:
         check(U.USERS_MARK in str(e), f"refused, saying what to do: {e}")
+    # A change saved, then the file held: the copy used meanwhile is the
+    # one just written, never the one before it; and nothing is changed
+    # from it (third review of PR #143, 2).
+    d5 = tempfile.mkdtemp()
+    t5 = [100.0]
+    us5 = U.Users(d5, hash_params=_U_FAST, clock=lambda: t5[0])
+    us5.seed((("Jeff", "admin"), ("Ann", "operator"), ("Bob", "operator")))
+    ok, _w, ann, _n = us5.sign_in("Ann", "", True, "Rack screen",
+                                  new_password="ann-own-pw-1")
+    us5.remove("Bob")
+    us5.set_role("Ann", "viewer")
+    st5 = os.stat(us5.path)
+    os.utime(us5.path, (st5.st_atime, st5.st_mtime + 5))
+    import builtins as _b
+
+    def held5(path, *a, **k):
+        if os.path.abspath(str(path)) == os.path.abspath(us5.path):
+            raise PermissionError(13, "held by another program", path)
+        return _b.open(path, *a, **k)
+    U.open = held5
+    try:
+        s5 = us5.session(ann)
+        check(s5 and s5["role"] == "viewer" and "Bob" not in us5.names(),
+              f"held right after a change: the copy just written, the new "
+              f"role and no Bob: {s5} {us5.names()}")
+        try:
+            us5.set_role("Jeff", "admin")
+            check(False, "a change was made while the file was held")
+        except ValueError as e:
+            check("Nothing was changed" in str(e) and
+                  "Bob" not in us5.names(),
+                  f"a change waits for a fresh read: {e}")
+    finally:
+        del U.open
+    check("Bob" not in us5.names() and us5.role_of("Ann") == "viewer",
+          "and nothing that was removed or changed came back")
+    try:
+        us5.add("Deck", "operator", "deck-pw-1234")
+        check(False, "deck was taken as a user's name")
+    except ValueError:
+        pass
     # A users file from before the mark existed gets it on first read.
     d3 = tempfile.mkdtemp()
     with open(os.path.join(d3, U.USERS_FILE), "w", encoding="utf-8") as fh:
@@ -60685,6 +60726,32 @@ def test_users_file_broken_or_lost_locks_and_says_so():
               rem.users.broken() == "",
               f"a good file back: no restart, the alert is gone: "
               f"{s3.get('alerts')}")
+        # Held by another program past the grace: locked, and the alert
+        # says wait and check, never delete anything.
+        tt = [time.monotonic()]
+        rem.users._clock = lambda: tt[0]
+        st6 = os.stat(rem.users.path)
+        os.utime(rem.users.path, (st6.st_atime, st6.st_mtime + 5))
+        import builtins as _b6
+
+        def held6(path, *a, **k):
+            if os.path.abspath(str(path)) == \
+                    os.path.abspath(rem.users.path):
+                raise PermissionError(13, "held by another program", path)
+            return _b6.open(path, *a, **k)
+        U.open = held6
+        try:
+            http("/api/remote/status")
+            tt[0] += U.READ_GRACE_S + 1
+            st, s4, _h = http("/api/remote/status")
+        finally:
+            del U.open
+        ua = [a for a in s4.get("alerts") or [] if a.get("kind") == "users"]
+        check(len(ua) == 1 and "cannot be opened just now" in ua[0]["text"]
+              and "antivirus" in ua[0]["text"] and
+              U.USERS_MARK not in ua[0]["text"] and
+              "remove" not in ua[0]["text"],
+              f"held: wait and check, never delete: {ua}")
     finally:
         httpd.server_close()
     # A moment when the file cannot be opened (an antivirus scan holding
@@ -61038,6 +61105,24 @@ function go(){
   if(!ST || !document.querySelector("#fl-lamps [data-arm]")) return setTimeout(go, 100);
   setTimeout(async () => {
     const res = {out1:state()};
+    // Start now and Run as a Stop (a show live or starting; PR #144):
+    // never locked, signed out or not (third review of PR #143, 1).
+    const sm = {};
+    for(const id of ["b-start", "b-run"]){
+      const e = $(id), was = [e.dataset.mode, e.disabled, e.title,
+        e.classList.contains("signin-off"), e.dataset.title0, e.dataset.dis0];
+      e.dataset.mode = "stop"; e.disabled = false; e.title = "Stop";
+      lockForSignIn();
+      sm[id] = {d:e.disabled, off:e.classList.contains("signin-off"), t:e.title};
+      // Put the drawing back exactly as it was, the lock's notes too.
+      if(was[0] === undefined) delete e.dataset.mode; else e.dataset.mode = was[0];
+      e.disabled = was[1]; e.title = was[2];
+      e.classList.toggle("signin-off", was[3]);
+      if(was[4] !== undefined) e.dataset.title0 = was[4];
+      if(was[5] !== undefined) e.dataset.dis0 = was[5];
+    }
+    lockForSignIn();
+    res.stop_mode = sm;
     window.__mode = "in"; await wait(1500); res.in1 = state();
     window.__mode = "out"; await wait(1500); res.out2 = state();
     window.__mode = "in"; await wait(1500); res.in2 = state();
@@ -61096,6 +61181,11 @@ def test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser():
         if not check(isinstance(res, dict),
                      f"{w}x{h}: drawn: {res!r}"[:600]):
             continue
+        sm = res.get("stop_mode") or {}
+        check(sm and all(not v["d"] and not v["off"] and v["t"] == "Stop"
+                         for v in sm.values()),
+              f"{w}x{h}: Start now and Run as a Stop stay live signed out, "
+              f"their own tooltip kept: {sm}")
         for tag in ("out1", "out2"):
             o = res[tag]
             check(o["chip"] == words and o["b"]["b-run"]["d"] and
@@ -61112,12 +61202,12 @@ def test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser():
             o = res[tag]
             check(o["chip"] == "Jeff" and o["locked"] == 0 and
                   not o["b"]["b-run"]["d"] and
-                  o["b"]["b-run"]["t"] != words and
-                  o["b"]["b-start"]["t"] != words and
+                  words not in o["b"]["b-run"]["t"] and
+                  words not in o["b"]["b-start"]["t"] and
                   o["lz"] and not any(z["d"] for z in o["lz"]) and
-                  not any(z["t"] == words for z in o["lz"]) and
+                  not any(words in z["t"] for z in o["lz"]) and
                   o["ann"] and not any(a["d"] for a in o["ann"]) and
-                  not any(a["t"] == words for a in o["ann"]) and
+                  not any(words in a["t"] for a in o["ann"]) and
                   any(not a["d"] for a in o["arm"]),
                   f"{w}x{h} {tag}: signed in, every control back to its "
                   f"own state and tooltip at once: {o}")

@@ -42,9 +42,18 @@ back in the settings folder is used at once, with no restart. To start
 over with no users: close LTC Player, remove `ltcplay_users.json` and
 `ltcplay_users.made` from the settings folder (Start menu, LTC Player,
 "Settings and logs"), and start it again; each person then chooses a
-password at the rack screen. A moment when the file cannot be opened (an
-antivirus scan holding it) changes nothing: it is tried again, and nobody
-is signed out by it.
+password at the rack screen.
+
+If the file is there but cannot be opened (an antivirus scan holding it),
+nothing is deleted and nobody is signed out. While LTC Player is running,
+the last good copy is used for up to 10 seconds; after that, and at once
+when LTC Player has just started and has never read it, every control is
+locked as above until the file opens again. It is tried again all the
+time and used the moment it opens. Changes on the Users screen wait until
+it can be read. If it lasts, check the antivirus.
+
+"deck" is kept for the Stream Deck's own journal lines and cannot be a
+user's name, like "unsigned", "system" and "nobody".
 
 ## Signing in
 

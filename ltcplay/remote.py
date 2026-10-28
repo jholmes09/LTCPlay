@@ -5239,15 +5239,26 @@ class Remote:
             return
         self._users_alert_said = why
         from . import users as users_mod
-        text = (f"The users file cannot be used: {why}. Every control is "
-                f"locked except Stop, Hold, Abort, Acknowledge and every "
-                f"disarm, and nobody can sign in. If a good "
-                f"{users_mod.USERS_FILE} is put back in {u.folder}, it is "
-                f"used at once, with no restart. To start over with no "
-                f"users instead: close LTC Player, remove "
-                f"{users_mod.USERS_FILE} and {users_mod.USERS_MARK} from "
-                f"that folder, and start LTC Player again; then each person "
-                f"chooses a password at the rack screen.")
+        locked = ("Every control is locked except Stop, Hold, Abort, "
+                  "Acknowledge and every disarm, and nobody can sign in.")
+        if getattr(u, "error_kind", "") == "open":
+            # There, but held by something: nothing to delete. It is tried
+            # again on every read (third review of PR #143, 4).
+            text = (f"The users file cannot be opened just now: {why}. "
+                    f"{locked} It is tried again all the time and used the "
+                    f"moment it opens, with no restart. Another program may "
+                    f"be holding it, such as an antivirus scan: if this "
+                    f"lasts, check that program, and that {u.folder} can be "
+                    f"read.")
+        else:
+            text = (f"The users file cannot be used: {why}. {locked} If a "
+                    f"good {users_mod.USERS_FILE} is put back in "
+                    f"{u.folder}, it is used at once, with no restart. To "
+                    f"start over with no users instead: close LTC Player, "
+                    f"remove {users_mod.USERS_FILE} and "
+                    f"{users_mod.USERS_MARK} from that folder, and start "
+                    f"LTC Player again; then each person chooses a password "
+                    f"at the rack screen.")
         try:
             self.alerts.raise_("users", text)
         except Exception:                        # noqa: BLE001

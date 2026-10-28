@@ -82,7 +82,7 @@ ROLES = ("admin", "operator", "viewer")
 SIGNED_OUT = "signed_out"
 COLUMNS = ROLES + (SIGNED_OUT,)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'_-]{0,39}$")
-RESERVED = ("unsigned", "system", "signed out", "nobody")
+RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")
 # Who a press is from when nobody is signed in (the journal, the audit).
 UNSIGNED = "unsigned"
 PW_MIN, PW_MAX = 6, 128
@@ -362,8 +362,8 @@ def check_name(name):
     name = " ".join(str(name or "").split())
     if not NAME_RE.match(name) or name.lower() in RESERVED:
         raise ValueError("A name is 1 to 40 letters, digits, spaces, dots, "
-                         "dashes or apostrophes, and not unsigned, system or "
-                         "nobody.")
+                         "dashes or apostrophes, and not unsigned, system, "
+                         "deck or nobody.")
     return name
 
 
@@ -413,6 +413,10 @@ class Users:
         self._mtime = None
         self._good = None         # the last users file read whole and good
         self._fail_since = None   # when the opens started failing
+        # Why the file cannot be used: "open" (there, but could not be
+        # opened), "invalid" (read whole, not a users file) or "missing"
+        # (gone after users were set up); "" when it can.
+        self.error_kind = ""
         self.error = ""
         # () -> None, or {"night": the schedule's night, "ended": wall
         # clock seconds the last show of it ended}, only while that last
@@ -435,13 +439,15 @@ class Users:
                 self._doc, self._mtime = {"users": {}, "broken": True}, None
                 self.error = (f"{USERS_FILE} is missing, but users were set "
                               f"up on this machine")
+                self.error_kind = "missing"
                 return self._doc
             self._doc, self._mtime, self.error = {"users": {}}, None, ""
+            self.error_kind = ""
             return self._doc
         if self._doc is not None and m == self._mtime:
             self._fail_since = None
             if not self._doc.get("broken"):
-                self.error = ""
+                self.error, self.error_kind = "", ""
             return self._doc
         try:
             with open(self.path, encoding="utf-8-sig") as fh:
@@ -460,6 +466,7 @@ class Users:
                     now - self._fail_since < READ_GRACE_S:
                 return self._good
             self.error = f"{USERS_FILE} could not be opened: {e}"
+            self.error_kind = "open"
             return {"users": {}, "broken": True}
         self._fail_since = None
         try:
@@ -468,7 +475,7 @@ class Users:
                     doc.get("users", {}), dict):
                 raise ValueError("not a users object")
             doc.setdefault("users", {})
-            self.error = ""
+            self.error, self.error_kind = "", ""
             self._good = doc
             if doc["users"] and not os.path.exists(self.mark):
                 self._write_mark()
@@ -477,6 +484,7 @@ class Users:
             # Nobody can sign in, and every restricted press is refused.
             doc = {"users": {}, "broken": True}
             self.error = f"{USERS_FILE} could not be read: {e}"
+            self.error_kind = "invalid"
         self._doc, self._mtime = doc, m
         return doc
 
@@ -486,6 +494,10 @@ class Users:
         _write_private(self.path, clean)
         if clean.get("users"):
             self._write_mark()
+        # What was just written is the last good read: a failed open right
+        # after never brings back the copy from before this change (third
+        # review of PR #143, 2).
+        self._good = json.loads(json.dumps(clean))
         self._doc = None
 
     def _write_mark(self):
@@ -830,7 +842,16 @@ class Users:
     # -- changes (the Users screen) -----------------------------------------
     def _change(self, fn):
         with self._lock:
-            doc = json.loads(json.dumps(self._load()))
+            loaded = self._load()
+            if self._fail_since is not None:
+                # Only ever changed from a fresh read: a change made from
+                # the last good copy while the file cannot be opened could
+                # undo a change made since.
+                raise ValueError(f"{USERS_FILE} cannot be opened just now "
+                                 f"(another program may be holding it). "
+                                 f"Nothing was changed; try again in a "
+                                 f"moment.")
+            doc = json.loads(json.dumps(loaded))
             if doc.get("broken"):
                 raise ValueError(f"{self.error}. Nothing was changed. To "
                                  f"start over, close LTC Player, remove "
