@@ -60424,7 +60424,10 @@ def test_sign_out_locks_the_screen_and_lets_go_of_a_hold():
     from ltcplay import users as U
     from ltcplay import remote as RM
     d = tempfile.mkdtemp()
-    us = U.Users(d, hash_params=_U_FAST)
+    # One frozen clock: every sign-in here lands in the same tick, as two
+    # quick sign-ins do on Windows (a 16 ms clock); the latest must still
+    # be the latest.
+    us = U.Users(d, hash_params=_U_FAST, clock=lambda: 50.0)
     us.seed((("Jeff", "admin"), ("Andy", "operator")))
     ok, _t, jeff, _n = us.sign_in("Jeff", "", True, "Rack screen",
                                   new_password="jeff-own-pw-1")

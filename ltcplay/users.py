@@ -408,6 +408,10 @@ class Users:
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()   # one password check at a time
         self._sessions = {}       # token -> session dict
+        # Each sign-in's place in line: which is the latest is never left
+        # to the clock, whose tick is about 16 ms on Windows, so two
+        # sign-ins in one tick are still told apart.
+        self._signin_seq = 0
         self._fails = {}          # key -> [count, locked_until]
         self._doc = None
         self._mtime = None
@@ -714,7 +718,7 @@ class Users:
             users = self._load().get("users", {})
             for s in self._sessions.values():
                 if s["local"] and isinstance(users.get(s["name"]), dict) and \
-                        (best is None or s["at"] > best["at"]):
+                        (best is None or s.get("seq", 0) > best.get("seq", 0)):
                     best = s
             if best is None:
                 return None
@@ -816,7 +820,9 @@ class Users:
             for k in keys:
                 self._fails.pop(k, None)
             token = secrets.token_urlsafe(24)
+            self._signin_seq += 1
             self._sessions[token] = {"name": real, "local": bool(local),
+                                     "seq": self._signin_seq,
                                      "source": str(source), "at": now,
                                      "seen": now, "wall_at": self._wall()}
         self._note("sign-in", real, source=source)

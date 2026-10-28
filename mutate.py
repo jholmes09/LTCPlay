@@ -10536,6 +10536,10 @@ def build():
   '            if doc.get("broken"):\n                # Locked while the file cannot be used',
   '            if False:\n                # Locked while the file cannot be used'),
 
+ ('users: the latest sign-in here is told by the clock', 'ltcplay/users.py',
+  '                        (best is None or s.get("seq", 0) > best.get("seq", 0)):',
+  '                        (best is None or s["at"] > best["at"]):'),
+
  ('users: a sign-out on the rack screen leaves the machine signed in', 'ltcplay/users.py',
   '            if local or (s is not None and s["local"]):',
   '            if False:'),
