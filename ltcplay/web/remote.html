@@ -387,6 +387,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #nav-user{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #nav-user.in{border-color:var(--amber);color:var(--champ)}
 #nav-user.fault{border-color:var(--red);color:var(--red)}
+#nav-user.viewonly{border-color:var(--red);color:var(--red);font-weight:700}
 .utab{width:100%;border-collapse:collapse;font-size:14px}
 .utab th,.utab td{padding:4px 6px;border-bottom:1px solid var(--hair);text-align:left;vertical-align:middle}
 .utab td.c,.utab th.c{text-align:center}
@@ -4091,9 +4092,16 @@ function renderUserChip(){
   if(me.users_active === undefined && !("user" in me)){ b.hidden = true; return; }
   b.hidden = false;
   const fault = me.audit_fault || "";
-  b.textContent = me.user ? me.user : "Signed out";
-  b.className = "ghost" + (me.user ? " in" : "") + (fault ? " fault" : "");
-  b.title = (me.user ? ("Signed in as " + me.user + " (" + (me.role || "") + ")") : "Nobody is signed in on this screen") +
+  // Signed out with users on is view only, on the rack screen too
+  // (2026-10-28): the chip says so, and a hold to arm under way stops.
+  const viewOnly = !!me.view_only;
+  document.body.classList.toggle("view-only", viewOnly);
+  if(viewOnly && HOLD) armStop("Signed out: this screen is view only");
+  b.textContent = me.user ? me.user : (viewOnly ? "View only: sign in" : "Signed out");
+  b.className = "ghost" + (me.user ? " in" : "") + (viewOnly ? " viewonly" : "") + (fault ? " fault" : "");
+  b.title = (me.user ? ("Signed in as " + me.user + " (" + (me.role || "") + ")") :
+    (viewOnly ? "Nobody is signed in on this screen, so it is view only. Stop, Hold, Abort, Acknowledge and every disarm still work. Press here to sign in" :
+      "Nobody is signed in on this screen")) +
     (fault ? ". AUDIT LOG FAULT: " + fault : "") + ". Users, who may do what, and the audit log.";
 }
 setInterval(renderUserChip, 1000);
@@ -4195,7 +4203,15 @@ $("u-go").addEventListener("click", async () => {
   loadUsers();
 });
 $("u-out").addEventListener("click", async () => {
+  // Signing out ends the session at the engine and leaves nothing behind
+  // here: a hold to arm is let go first, typed passwords are cleared, and
+  // the chip reads View only at once (2026-10-28).
+  if(HOLD) armStop("Signed out");
   try{ const r = await post("/api/remote/signout", {}); uMsg("u-msg", r.text); }catch(e){ uMsg("u-msg", e.message, true); }
+  UNEED = false; $("u-newbox").hidden = true;
+  $("u-pw").value = ""; $("u-new").value = ""; $("u-old").value = ""; $("u-new1").value = "";
+  if(ST && ST.me){ ST.me = Object.assign({}, ST.me, {user:null, role:null, view_only:!!ST.me.users_active}); }
+  renderUserChip();
   loadUsers();
 });
 $("u-chg").addEventListener("click", async () => {

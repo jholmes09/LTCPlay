@@ -1397,15 +1397,57 @@ class Remote:
     def context(self, local, ip):
         return Ctx(local, ip)
 
-    @staticmethod
-    def _actor(ctx, body=None):
-        """(who, screen, surface) for a press. From the network: the
-        surface it came from, by the request's own address, whatever the
-        body says. On the machine itself the Stream Deck process names its
-        chosen operator (or none) and "Stream Deck" (EngineConductor), and
-        that is kept, checked against the lists as before; the page sends
-        neither, and is the Rack screen."""
+    def users_active(self):
+        """True once any user exists (users.py): then every name in the
+        journal is the signed-in user's, never one a body carries. False
+        without users, or when the users file cannot be asked."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return False
+        try:
+            return bool(u.active())
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def signed_in_name(self, ctx, body=None):
+        """The authenticated name a press is from, with users on: this
+        page's own session, or for the Stream Deck process (this machine,
+        screen "Stream Deck") whoever is signed in on this machine's rack
+        screen; users.UNSIGNED when nobody is. Never a name from the body
+        (Jeff's field report, 2026-10-28: the journal said "By Jeff" with
+        nobody signed in)."""
+        from . import users as users_mod
+        name = getattr(ctx, "user", "")
+        if name:
+            return name
         body = body if isinstance(body, dict) else {}
+        if getattr(ctx, "local", False) and \
+                str(body.get("screen") or "") == "Stream Deck":
+            try:
+                mu = self.users.machine_user()
+            except Exception:                    # noqa: BLE001
+                mu = None
+            if mu and mu.get("name"):
+                return mu["name"]
+        return users_mod.UNSIGNED
+
+    def _actor(self, ctx, body=None):
+        """(who, screen, surface) for a press. With users on (users.py):
+        who is the signed-in user (signed_in_name), or "unsigned", and
+        never looked up on the operator list; the screen is the one the
+        Stream Deck process names on this machine, else the request's own.
+        Without users, as before: from the network the surface it came
+        from, by the request's own address, whatever the body says; on the
+        machine itself the Stream Deck process names its chosen operator
+        (or none) and "Stream Deck" (EngineConductor), and that is kept,
+        checked against the lists as before; the page sends neither, and
+        is the Rack screen."""
+        body = body if isinstance(body, dict) else {}
+        if self.users_active():
+            screen = ctx.screen
+            if ctx.local:
+                screen = str(body.get("screen") or "").strip() or screen
+            return self.signed_in_name(ctx, body), screen, True
         if ctx.local:
             who = str(body.get("who") or "").strip()
             screen = str(body.get("screen") or "").strip()
@@ -1477,6 +1519,11 @@ class Remote:
         """(code, body, extra headers)."""
         name = route[len("/api/remote/"):]
         body = body if isinstance(body, dict) else {}
+        if "who" in body and self.users_active():
+            # A name in the body (the Morning page's checklist, the Stream
+            # Deck's chosen operator) is never who pressed: the signed-in
+            # user is, or "unsigned" (2026-10-28).
+            body = dict(body, who=self.signed_in_name(ctx, body))
         if name in SETUP_POST_ROUTES:
             if not ctx.local:
                 return 403, {"error": "The show folder, the schedule file "
@@ -1582,6 +1629,27 @@ class Remote:
                 out["users_active"] = u.active()
             except Exception:                    # noqa: BLE001
                 out["users_active"] = False
+            # The truth about this screen (Jeff's field report,
+            # 2026-10-28): with users on and nobody signed in it is view
+            # only, on this machine too; "may" is what the role matrix lets
+            # this page do, the same answer the web layer gives a press.
+            # Safety presses are not in it: they always may.
+            from . import users as users_mod
+            try:
+                out["may"] = {p: bool(u.may(out["role"], p))
+                              for p in users_mod.PERM_KEYS}
+            except Exception:                    # noqa: BLE001
+                out["may"] = {p: False for p in users_mod.PERM_KEYS}
+            out["view_only"] = bool(out["users_active"] and
+                                    not out["user"])
+            if ctx.local:
+                # Who the Stream Deck acts as: whoever is signed in on
+                # this machine's rack screen, or nobody.
+                try:
+                    mu = u.machine_user()
+                except Exception:                # noqa: BLE001
+                    mu = None
+                out["machine_user"] = (mu or {}).get("name") or None
         a = self.audit
         if a is not None:
             try:
@@ -1604,7 +1672,10 @@ class Remote:
         try:
             mu = u.machine_user()
             role = mu["role"] if mu else None
+            # "active": users are on, so the deck names the signed-in user
+            # (or unsigned) in its journal, never its chosen operator.
             return {"name": mu["name"] if mu else None, "role": role,
+                    "active": bool(u.active()),
                     "may": {p: u.may(role, p) for p in ("arm", "show")}}
         except Exception:                        # noqa: BLE001
             return None
@@ -1681,8 +1752,20 @@ class Remote:
             return 200, {"ok": True, "text": text}, {
                 "Set-Cookie": cookie % token}
         if name == "signout":
-            u.sign_out(getattr(ctx, "token", ""), ctx.source)
-            return 200, {"ok": True, "text": "Signed out."}, {
+            # The session ends at the engine, not just in the page: on this
+            # machine every session made here ends with it (users.sign_out),
+            # and any hold to arm under way on a screen is let go now
+            # (Jeff's field report, 2026-10-28).
+            u.sign_out(getattr(ctx, "token", ""), ctx.source,
+                       local=ctx.local)
+            try:
+                self.cancel_holds("the screen was signed out")
+            except Exception:                    # noqa: BLE001
+                pass
+            return 200, {"ok": True, "text": "Signed out. This screen is "
+                                             "view only now: Stop, Hold, "
+                                             "Abort, Acknowledge and every "
+                                             "disarm still work."}, {
                 "Set-Cookie": (cookie % "") + "; Max-Age=0"}
         me = getattr(ctx, "session", None) or {}
         if name == "my-password":
@@ -2485,8 +2568,12 @@ class Remote:
             return 403, {"error": ARMING_OFF, "let_go": True,
                          "arming_off": True}
         # The hold belongs to the surface it came from: one device, one
-        # hold, and another device cannot carry it on.
+        # hold, and another device cannot carry it on. With users on it is
+        # the signed-in user's, by name (the web layer refused it already
+        # for nobody signed in), so the Stream Deck's journal names them.
         who, device = ctx.device, ctx.screen
+        if self.users_active():
+            who = self.signed_in_name(ctx, body)
         token = ctx.device
         try:
             i, gname = self._group_index(body)

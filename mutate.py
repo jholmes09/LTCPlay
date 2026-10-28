@@ -9247,8 +9247,8 @@ def build():
 
  ("deck: Stop asks the engine before it disarms the arm link",
   "ltcplay/streamdeck.py",
-  "        self._disarm_all_groups(\"Stop held\")\n        who = self.operator_provider() or \"\"\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n",
-  "        who = self.operator_provider() or \"\"\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._disarm_all_groups(\"Stop held\")\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n        self._disarm_all_groups(\"Stop held\")\n"),
+  "        self._disarm_all_groups(\"Stop held\")\n        who = self._who()\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n",
+  "        who = self._who()\n        fn = getattr(self.conductor, \"stop_run\", None)\n        if fn is None:\n            self._disarm_all_groups(\"Stop held\")\n            self._log(\"Stream Deck Stop pressed: no engine is connected in \"\n                      \"this build. Nothing was stopped.\", fault=True,\n                      action=\"stop\", who=who, screen=\"Stream Deck\")\n            return\n        r = fn(who=who, screen=\"Stream Deck\")\n        self._disarm_all_groups(\"Stop held\")\n"),
 
  ("supervisor: the first-run flamesafe config is cut to three groups again",
   "packaging/windows/supervisor.py",
@@ -10361,8 +10361,8 @@ def build():
  # role matrix; then passwords, the lockout, the last admin, the chain,
  # the never-blocking writer and the nightly upload's acknowledgement.
  ('users: a safety press is restricted like any other', 'ltcplay/users.py',
-  '    if perm == "safety" or perm is None:\n        return True\n    col = role',
-  '    if perm is None:\n        return True\n    col = role'),
+  '    if perm == "safety" or perm is None:\n        return True\n    if role is None or role not in ROLES:',
+  '    if perm is None:\n        return True\n    if role is None or role not in ROLES:'),
 
  ('users: a purge turned off is an arming press', 'ltcplay/users.py',
   '                body.get("on") is False:\n            return "safety"',
@@ -10440,9 +10440,13 @@ def build():
   '                if now - s["seen"] > mins * 60]',
   '                if False]'),
 
- ('web: a fault in the role check stops the press', 'ltcplay/web.py',
-  '                f"disarm always work. Nothing was changed."\n        except Exception:                        # noqa: BLE001\n            return False',
-  '                f"disarm always work. Nothing was changed."\n        except Exception:                        # noqa: BLE001\n            why = "the role check failed"'),
+ ('web: a fault before the press is known stops it', 'ltcplay/web.py',
+  '        except Exception:                        # noqa: BLE001\n            return False\n        try:\n            who = self._acting_user(body)',
+  '        except Exception:                        # noqa: BLE001\n            self._send(403, {"error": "x", "role_refused": True})\n            return True\n        try:\n            who = self._acting_user(body)'),
+
+ ('web: a fault in the role check lets an arm through', 'ltcplay/web.py',
+  '        except Exception as e:                   # noqa: BLE001\n            why = (f"The sign-in check could not be made',
+  '        except Exception as e:                   # noqa: BLE001\n            return False\n            why = (f"The sign-in check could not be made'),
 
  ('web: the role matrix is never asked', 'ltcplay/web.py',
   '            if users.may(role, perm):\n                return False',
@@ -10451,6 +10455,98 @@ def build():
  ("web: the Stream Deck's presses count as nobody", 'ltcplay/web.py',
   '                str(body.get("screen") or "") == "Stream Deck":\n            users = getattr(',
   '                str(body.get("screen") or "") == "Nope":\n            users = getattr('),
+
+ # -- signed out is view only (Jeff's field report, 2026-10-28, Tier A):
+ # the rack screen on the machine itself needs a sign-in like any other
+ # surface, the journal names the signed-in user and never a body's name,
+ # and Sign out ends the session at the engine and lets go of a hold.
+ ('users: signed out may do what a stored matrix says', 'ltcplay/users.py',
+  '    if role is None or role not in ROLES:\n        return False\n    col = role',
+  '    if role is not None and role not in ROLES:\n        return False\n    col = role if role is not None else SIGNED_OUT'),
+
+ ('users: the signed-out column can be ticked', 'ltcplay/users.py',
+  'FIXED.update({(SIGNED_OUT, p): False for p in PERM_KEYS})',
+  'pass'),
+
+ ("users: tonight's list needs nobody", 'ltcplay/users.py',
+  '        if route == "/api/schedule/tonight":\n            return "show_files"',
+  '        if False:\n            return "show_files"'),
+
+ ('users: choosing the operator needs nobody', 'ltcplay/users.py',
+  '            return "show" if str(body.get("who") or "").strip() else "safety"',
+  '            return None'),
+
+ ('users: opening the settings folder needs nobody', 'ltcplay/users.py',
+  '    "checklist-tally-retry": None, "open-folder": "show_files",',
+  '    "checklist-tally-retry": None, "open-folder": None,'),
+
+ ('users: choosing the show in use needs nobody', 'ltcplay/users.py',
+  '    "show-select": "show_files", "show-file-new": "show_files",',
+  '    "show-select": None, "show-file-new": "show_files",'),
+
+ ('users: a sign-out on the rack screen leaves the machine signed in', 'ltcplay/users.py',
+  '            if local or (s is not None and s["local"]):',
+  '            if False:'),
+
+ ('remote: with users on the journal names whoever the body says', 'ltcplay/remote.py',
+  '            return self.signed_in_name(ctx, body), screen, True',
+  '            return (str(body.get("who") or "") or self.signed_in_name(ctx, body)), screen, True'),
+
+ ('remote: a name in a body reaches the route', 'ltcplay/remote.py',
+  '        if "who" in body and self.users_active():',
+  '        if False:'),
+
+ ('remote: sign out leaves a hold to arm going', 'ltcplay/remote.py',
+  '                self.cancel_holds("the screen was signed out")',
+  '                pass'),
+
+ ('remote: sign out on the rack screen ends only the page', 'ltcplay/remote.py',
+  '            u.sign_out(getattr(ctx, "token", ""), ctx.source,\n                       local=ctx.local)',
+  '            u.sign_out(getattr(ctx, "token", ""), ctx.source)'),
+
+ ('remote: a screen hold names the device, not the person', 'ltcplay/remote.py',
+  '        if self.users_active():\n            who = self.signed_in_name(ctx, body)\n        token = ctx.device',
+  '        token = ctx.device'),
+
+ ('remote: whoami says a signed-out rack screen may act', 'ltcplay/remote.py',
+  '            out["view_only"] = bool(out["users_active"] and\n                                    not out["user"])',
+  '            out["view_only"] = False'),
+
+ ('remote: the Stream Deck is not told users are on', 'ltcplay/remote.py',
+  '                    "active": bool(u.active()),',
+  '                    "active": False,'),
+
+ ('web: Stop names whoever the body says', 'ltcplay/web.py',
+  '            who = self._authed_who(body)\n            if who is None:\n                who = str(body.get("who")',
+  '            who = None\n            if who is None:\n                who = str(body.get("who")'),
+
+ ("web: a deck journal line names the deck's chosen operator", 'ltcplay/web.py',
+  '            body = self._authed_body(route, body)',
+  '            pass'),
+
+ ('deck: an engine not heard from lets the arm keys arm', 'ltcplay/streamdeck.py',
+  '        if last is None or self._clock() - last[1] > USER_STALE_S:\n            return dict(USER_UNKNOWN)',
+  '        if last is None or self._clock() - last[1] > USER_STALE_S:\n            return None'),
+
+ ('deck: who is signed in not known may arm', 'ltcplay/streamdeck.py',
+  'USER_UNKNOWN = {"name": None, "role": None, "active": None, "stale": True,\n                "may": {"arm": False, "show": False}}',
+  'USER_UNKNOWN = {"name": None, "role": None, "active": None, "stale": False,\n                "may": {"arm": True, "show": True}}'),
+
+ ('deck: unsigned counts as a chosen operator', 'ltcplay/streamdeck.py',
+  '    if current_operator == UNSIGNED:',
+  '    if False:'),
+
+ ('deck: the journal names the chosen operator with users on', 'ltcplay/streamdeck.py',
+  '        if u is not None and u.get("active") is True:\n            return str(u.get("name") or "") or UNSIGNED',
+  '        if False:\n            return str(u.get("name") or "") or UNSIGNED'),
+
+ ('page: Sign out leaves a hold to arm going', 'ltcplay/web/remote.html',
+  '  if(HOLD) armStop("Signed out");\n',
+  ''),
+
+ ('page: the chip never says view only', 'ltcplay/web/remote.html',
+  '  b.textContent = me.user ? me.user : (viewOnly ? "View only: sign in" : "Signed out");',
+  '  b.textContent = me.user ? me.user : "Signed out";'),
 
  ("web: the page's open-beats are written to the audit log", 'ltcplay/web.py',
   '                                         "/api/remote/morning-open",\n                                         "/api/schedule/deck-event")):',

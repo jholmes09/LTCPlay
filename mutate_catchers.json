@@ -2364,7 +2364,6 @@
 "weather: the mesonet's knots are shown as mph": "test_weather_parsers_read_each_source",
 "weather: the page drops the STALE word": "test_weather_block_on_the_rack_screen",
 "weather: the page keeps old numbers when the engine goes quiet": "test_weather_block_on_the_rack_screen",
-"web: a fault in the role check stops the press": "test_safety_presses_pass_signed_out_and_are_logged_unsigned",
 "web: a playback stop that raises loses the halt's steps (third review of #130, 4)": "test_stop_disarms_every_flame_group_without_the_latch",
 "web: odd spellings of every interface are served": "test_remote_no_sign_in_over_the_network",
 "web: the Stream Deck's presses count as nobody": "test_purge_release_can_never_start_a_fire",

@@ -15,14 +15,24 @@ allowed() answers True for "safety" before it looks at anything else.
 Nothing in flamesafe is touched by this module: its sole writer, the
 Abort latch, the link key and hold-to-arm stay exactly as they were.
 
-THE EARLIER PINs (PR #39, removed 2026-10-07): an operator PIN was needed
-on the iPad, and arming from a screen needed a PIN session. Jeff ruled "no
-PINs, no remote arming PIN": on a show night the sign-in stood between the
-crew and the show. So here:
-  - nobody has to sign in for the show to run. Until the first user is
-    made, nothing changes at all; after that, the "Signed out" column of
-    the role matrix says what a screen with nobody signed in may do, and
-    by default that is every show control and arming, as before;
+SIGNED OUT IS VIEW ONLY (Jeff's field report, 2026-10-28, Tier A): once
+any user exists, every press that is not safety needs a signed-in user
+whose role may, on every surface: the rack screen on this machine, an
+iPad, the old page and the Stream Deck (which acts as whoever is signed in
+on this machine's rack screen). Being on the machine itself (loopback) is
+NOT a sign-in. Signed out, a screen sees status, the schedule and the
+alerts, and may only do the safety presses above: Stop, Hold, Abort,
+Acknowledge and every disarm. allowed() refuses every restricted row for
+nobody signed in, whatever the stored matrix says, and the "Signed out"
+column is fixed off (FIXED) so nobody can tick it back on.
+
+Who a press is from (the journal and the audit log): the signed-in user
+only, never a name the page or a process puts in its body, and
+"unsigned" when nobody is (UNSIGNED).
+
+THE EARLIER PINs (PR #39, removed 2026-10-07; the 2026-10-07 "no sign-in
+to run or arm" default was replaced by the rule above on 2026-10-28):
+  - until the first user is made, nothing changes at all;
   - roles restrict only things that are not safety: settings, users,
     show files, unlocking, the show controls and arming;
   - the stdlib PBKDF2 store of the old PinStore is kept in spirit: a salt
@@ -69,6 +79,8 @@ SIGNED_OUT = "signed_out"
 COLUMNS = ROLES + (SIGNED_OUT,)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'_-]{0,39}$")
 RESERVED = ("unsigned", "system", "signed out", "nobody")
+# Who a press is from when nobody is signed in (the journal, the audit).
+UNSIGNED = "unsigned"
 PW_MIN, PW_MAX = 6, 128
 USERS_MAX = 50
 
@@ -112,17 +124,16 @@ SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
                "Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
-# The proposed defaults (Jeff decides; USERS.md). Signed out keeps the
-# 2026-10-07 rule: no sign-in is needed to run or arm on a show night.
+# The defaults (Jeff decides; USERS.md). Signed out is view only (Jeff's
+# field report, 2026-10-28): it may do nothing restricted, and FIXED keeps
+# it that way.
 DEFAULT_MATRIX = {
     "admin": {p: True for p in PERM_KEYS},
     "operator": {"show": True, "arm": True, "unlock": True,
                  "checklist": True, "show_files": True, "settings": False,
                  "users": False},
     "viewer": {p: False for p in PERM_KEYS},
-    SIGNED_OUT: {"show": True, "arm": True, "unlock": True,
-                 "checklist": True, "show_files": False, "settings": False,
-                 "users": False},
+    SIGNED_OUT: {p: False for p in PERM_KEYS},
 }
 # The people LTC Player starts with (Jeff, 2026-10-20). Written once, at
 # first run, with NO password: each chooses their own at their first
@@ -130,7 +141,9 @@ DEFAULT_MATRIX = {
 SEED_USERS = (("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator"),
               ("Dave", "operator"), ("Jared", "operator"))
 # An admin can always manage users, so nobody can lock every admin out.
+# And signed out may do nothing restricted (2026-10-28): view only.
 FIXED = {("admin", "users"): True}
+FIXED.update({(SIGNED_OUT, p): False for p in PERM_KEYS})
 # Sign everyone out this many minutes after the night's last show ended
 # (Jeff, 2026-10-26): on by default; 0 is off.
 LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10
@@ -165,8 +178,11 @@ REMOTE_ROUTES = {
     "layout": "show_files",
     "checklist-tick": "checklist", "checklist-note": "checklist",
     "morning-open": None, "checklist-verify": None,
-    "checklist-tally-retry": None, "open-folder": None, "screen": None,
-    "show-select": None, "show-file-new": "show_files",
+    "checklist-tally-retry": None, "open-folder": "show_files",
+    "screen": None,
+    # Choosing the show in use and opening a folder in the file manager
+    # (the settings folder holds the users file) are setup (2026-10-28).
+    "show-select": "show_files", "show-file-new": "show_files",
     "audit-verify": None, "my-password": None,
     # Open BEYOND (windowfront.py) only moves a window on the show PC.
     "open-beyond": None,
@@ -245,8 +261,16 @@ def classify(route, body=None):
     if route == "/api/override" and body.get("look") == "blackout":
         return "safety"
     if route.startswith("/api/schedule"):
-        # The deck's journal lines and the operator choice: the deck's own
-        # rules already apply to them.
+        # Editing tonight's list is setup; choosing the deck's operator
+        # and saving an incident are show presses; clearing the operator
+        # only takes something away. The deck's journal lines write a line
+        # and nothing else (2026-10-28).
+        if route == "/api/schedule/tonight":
+            return "show_files"
+        if route == "/api/schedule/operator":
+            return "show" if str(body.get("who") or "").strip() else "safety"
+        if route == "/api/schedule/incident":
+            return "show"
         return None
     if route.startswith("/api/announce"):
         return "show"
@@ -270,13 +294,14 @@ def normalise_matrix(doc):
 
 def allowed(matrix, role, perm):
     """May a press of kind `perm` go ahead for `role` (None: nobody signed
-    in)? Safety and harmless presses always may; a role this does not know
-    may do nothing restricted."""
+    in)? Safety and harmless presses always may; nobody signed in and a
+    role this does not know may do nothing restricted (2026-10-28: signed
+    out is view only, whatever a stored matrix says)."""
     if perm == "safety" or perm is None:
         return True
-    col = role if role in ROLES else (SIGNED_OUT if role is None else None)
-    if col is None:
+    if role is None or role not in ROLES:
         return False
+    col = role
     row = (matrix or DEFAULT_MATRIX).get(col) or {}
     return row.get(perm) is True
 
@@ -705,12 +730,25 @@ class Users:
         self._note("sign-in", real, source=source)
         return True, f"Signed in as {real}.", token, False
 
-    def sign_out(self, token, source=""):
+    def sign_out(self, token, source="", local=False):
+        """End this page's session. On this machine itself (`local`, or a
+        session made here) every session made on this machine ends too, so
+        the rack screen and the Stream Deck are signed out together and a
+        sign-out there always leaves the machine view only, even when the
+        page lost its cookie (Jeff's field report, 2026-10-28: a sign-out
+        that changed nothing). True when anything ended."""
         with self._lock:
             s = self._sessions.pop(token, None) if token else None
-        self._note("sign-out", s["name"] if s else "unsigned",
+            gone = []
+            if local or (s is not None and s["local"]):
+                gone = [t for t, x in self._sessions.items() if x["local"]]
+                gone = [(t, self._sessions.pop(t)) for t in gone]
+        self._note("sign-out", s["name"] if s else UNSIGNED,
                    source=source)
-        return s is not None
+        for _t, x in gone:
+            self._note("sign-out", x["name"], source=source,
+                       reason="signed out on this machine")
+        return s is not None or bool(gone)
 
     # -- changes (the Users screen) -----------------------------------------
     def _change(self, fn):
@@ -875,7 +913,12 @@ class Users:
                     if p not in PERM_KEYS or not isinstance(v, bool):
                         raise ValueError(f"{p} is not a row of the matrix.")
                     if (c, p) in FIXED and v != FIXED[(c, p)]:
-                        raise ValueError("An admin can always manage users.")
+                        raise ValueError(
+                            "An admin can always manage users."
+                            if c == "admin" else
+                            "Signed out is view only: nobody signed in "
+                            "may do anything but Stop, Hold, Abort, "
+                            "Acknowledge and disarm.")
                     m[c][p] = v
             doc["matrix"] = m
             return "The role matrix was saved."
