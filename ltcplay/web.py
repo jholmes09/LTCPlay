@@ -2084,11 +2084,20 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     try:
         rs = remote_mod.load_settings(remote_folder)
         if rs.get("booth_alert"):
-            from .boothaudio import BoothPlayer
-            booth = BoothPlayer(rs["booth_alert"], sd=sd)
+            from .boothaudio import BoothPlayer, note_folders
+            # booth_<kind>.wav in Settings and logs\Booth notes (a
+            # person's own copy), then beside the program (the installer's).
+            booth = BoothPlayer(rs["booth_alert"], sd=sd,
+                                folders=note_folders(
+                                    remote_folder or
+                                    remote_mod.settings_folder()))
             problems = booth.check_files()
             for kind, why in sorted(problems.items()):
                 print(f"Booth note for {kind}: {why}")
+            nv = booth.notes()
+            if nv["missing"]:
+                print(f"Booth notes: {nv['found']} of {nv['expected']} "
+                      f"found; missing {', '.join(nv['missing'])}.")
             httpd.remote.alerts.booth = booth
         httpd.remote.alert_pixels = rs.get("alert_pixels")
     except ValueError as e:
