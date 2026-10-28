@@ -424,9 +424,52 @@ nozzle sat at its end stop for the whole show while the preview swept it
  "aim": [1, 7, 13]}
 ```
 
+The wave flamer's channels, per fixture (6 channels: slots 1 to 6, 7 to
+12 and 13 to 18 in the example). Source: Jeff, from the Showven xLights
+model (2026-10-28); there is no Showven DMX chart in this repo.
+
+| Channel | Role | Values | Written by |
+| --- | --- | --- | --- |
+| 1 | Angle (the only `aim` slot) | 0 = -105 deg, 128 = 0 deg (straight up), 255 = +105 deg; 15 steps of 15 deg, e.g. 54 = -60 deg | xLights |
+| 2 | Speed | 0 and 255 = max speed; 1 to 254 slower to faster; xLights sends 255 while moving | xLights |
+| 3 | Ignition | 0 to 253 off, 254 to 255 on | xLights |
+| 4 | Duration | 0 and 255 = fires while ch3 is on (10 s limit); 1 to 254 = value x 10 ms; xLights sends 0 | xLights |
+| 5 | Preset | 0 to 2 none; 3 to 255 = preset N, value = 2 + N x 2.55 (a preset can run a programmed sequence: fire-capable) | xLights |
+| 6 | Pressure / arm (safety slot) | 0 to 49 relief (e-stop), 50 to 200 armed, 201 to 255 relief | flamesafe only (arms at 178) |
+
+Only channel 1 is aim. Channel 2 (speed) lights nothing but stays a fire
+slot under every rule: xLights sends 255 on it while the head moves, so a
+group armed mid-movement is held by the rising-edge check, as before.
+
 - Optional. Each aim slot must be one of the group's own fire slots, listed
   once, and at least one fire slot must stay out of `aim`; anything else is
   refused at start.
+- `aim` is only for a group with a `safety_profile` (the wave flamer); in
+  a G-Flame or Showven group, or a wave flamer whose profile was deleted,
+  it is refused at start.
+- A typo must not free a fuel channel, so `aim` is also refused at start
+  unless: each fixture has at most one aim slot (a fixture's slots are the
+  group's fire slots after the previous safety slot, up to its own; a group
+  with one safety slot is one fixture holding every fire slot), in a group
+  with several safety slots no aim slot lies after the last one, and each
+  aim slot is channel 1 of its fixture: 5 below that fixture's safety slot
+  (channel 6), with the fixture's fire slots exactly that slot and the 4
+  after it. `[1, 7, 13]` is taken; `[1, 7, 14]`, `[2, 7, 13]`,
+  `[2, 8, 14]` and `[2, 3, 4, 5]` are refused, by flamesafe (it does not
+  start) and by ltcplay's reader (`ltc serve` does not start).
+- What this cannot catch: a whole layout moved consistently (safety, fire
+  and aim all shifted by the same amount). Channel 1 is measured from the
+  safety slot the operator writes; only the patch Andy confirms says where
+  each fixture really starts.
+- Restart BOTH flamesafe and ltcplay after editing `aim`: each reads the
+  list once, at start. Deploy and restart them together, from the same
+  release. A flamesafe from before #146 refuses the `aim` key as unknown
+  and does not start (fail closed); the one in #146 accepts `aim` without
+  the per fixture rules above.
+- On every disarm, abort, stale input or lost link the angle goes to 0,
+  like every fire slot, so the head slams to its -105 degree end stop. On
+  a re-arm the flame slots are free after the 3 tick edge-quiet hold while
+  the head may still be swinging back from that end stop.
 - An aim slot is still a fire slot everywhere else: it goes out only while
   the group is armed, it is zero when the group is disarmed, locked out,
   aborted or stale, and the lockout file zeros it like any fire slot.

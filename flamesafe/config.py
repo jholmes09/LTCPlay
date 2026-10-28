@@ -35,7 +35,7 @@ GROUP_KEYS = {"name", "safety", "fire", "arm_value", "safety_profile",
 PROFILE_KEYS = ("arm_value", "enable_lo", "enable_hi", "fire_at")
 
 
-def _aim(g, name, fire):
+def _aim(g, name, fire, safeties, profile):
     """A group's "aim" list: the fire slots that only point a head (the
     Showven's angle channel) and never light it.  Optional.  Each must be
     one of the group's own fire slots, listed once, and at least one fire
@@ -43,6 +43,11 @@ def _aim(g, name, fire):
     all."""
     if "aim" not in g:
         return []
+    if profile is None:
+        raise ConfigError(f"{name}: aim is only for a group with a "
+                          f"safety_profile (the wave flamer's angle, "
+                          f"channel 1). A G-Flame or Showven group has no "
+                          f"aim slot.")
     aim = g.get("aim")
     if not isinstance(aim, list):
         raise ConfigError(f"{name}: aim must be a list of slots.")
@@ -56,7 +61,56 @@ def _aim(g, name, fire):
         raise ConfigError(f"{name}: every fire slot is an aim slot. At "
                           f"least one slot has to light the flame, or the "
                           f"rising-edge check would cover nothing.")
+    _aim_per_fixture(name, aim, fire, safeties, profile)
     return aim
+
+
+def _aim_per_fixture(name, aim, fire, safeties, profile):
+    """A typo in "aim" must not free a fuel slot (review, 2026-10-28):
+    "aim": [2, 7, 13] would arm the wave flamer with slot 2 at 255.  So
+    each fixture has at most one aim slot, every aim slot sits at the same
+    distance from its own fixture's safety slot, and that is channel 1 of
+    the fixture, its angle: 5 below its safety slot (channel 6), with the
+    fixture's fire slots exactly that slot and the 4 after it.  Only a
+    group with a safety_profile (the wave flamer) gets here.  A fixture's
+    slots are the group's fire slots after the previous safety slot, up to
+    its own; a group with one safety slot is one fixture holding every
+    fire slot."""
+    saf = sorted(safeties)
+    block = {}
+    for a in aim:
+        if len(saf) == 1:
+            k = 0
+        else:
+            k = next((i for i, s in enumerate(saf) if a < s), None)
+            if k is None:
+                raise ConfigError(f"{name}: aim slot {a} is after the last "
+                                  f"safety slot, in no fixture of this "
+                                  f"group.")
+        if k in block:
+            raise ConfigError(f"{name}: aim slots {block[k]} and {a} are in "
+                              f"one fixture. A fixture has one angle "
+                              f"channel; the other is a flame channel.")
+        block[k] = a
+    if len({a - saf[k] for k, a in block.items()}) > 1:
+        raise ConfigError(f"{name}: the aim slots {sorted(aim)} are not the "
+                          f"same channel of each fixture. Each fixture's "
+                          f"angle is the same channel.")
+    for k, a in block.items():
+        # The wave flamer: 6 channels, channel 6 the safety slot, so
+        # channel 1 (the angle) is 5 below it (CONTRACT.md's table).
+        if a != saf[k] - 5:
+            raise ConfigError(f"{name}: aim slot {a} is not channel 1 "
+                              f"of its fixture (slot {saf[k] - 5}). On "
+                              f"the wave flamer only channel 1, the "
+                              f"angle, may be an aim slot.")
+        lo = saf[k - 1] if k else 0
+        mine = {f for f in fire if len(saf) == 1 or lo < f < saf[k]}
+        if mine != set(range(a, a + 5)):
+            raise ConfigError(f"{name}: the fixture with safety slot "
+                              f"{saf[k]} is not one 6 channel block: its "
+                              f"fire slots are {sorted(mine)}, not {a} to "
+                              f"{a + 4}.")
 
 
 def _only_known(d, allowed, where):
@@ -582,7 +636,7 @@ def from_dict(d, source="config"):
             arm_value = _int(g, "arm_value", 0, 255, f"{name}: arm_value")
             _validate_arm_value(arm_value, c.gflame_range,
                                 c.accept_unsourced_risk, name)
-        aim = _aim(g, name, fire)
+        aim = _aim(g, name, fire, safeties, profile)
         c.groups.append(Group(name, safeties, fire, arm_value, profile, aim))
 
     names = {}
