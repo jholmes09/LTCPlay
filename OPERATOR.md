@@ -596,12 +596,23 @@ the rig out of the show (flame cues zero, lasers blanked) and stops the
 music. The screen says Playing on the show audio or Paused on the show
 audio.
 
+While Programming is playing, Hold on any screen or the Stream Deck is
+the same as Pause, and Abort (after it disarms every flame group and
+laser, as always) stops the playback the way Stop the show audio does.
+The Rack screen's Stop and the Stream Deck's Stop stop it too. If no
+operator page is open for 60 seconds, the playback stops by itself and
+the night journal says so; press Play from to carry on.
+
+A Pause pressed while a Hold is still fading out freezes where the fade
+ends, and Back and Ahead are refused until it has frozen.
+
 Nothing on the screen arms anything. Flame cues still go only to groups
 an operator has armed, through flamesafe, and nothing fires for half a
 second after a jump, a loop, Play from or Continue; a cue you jump over is not
 played, and a flame already on where you land stays off until it ends.
-The lasers light only through the laser gate and the laser arm, the same
-as in a show; between shows that gate keeps them dark.
+The lasers stay dark in Programming: the laser gate lights them only
+while a scheduled show is live. BEYOND's own timeline still follows the
+timecode, so its position moves with the playhead.
 
 Fire flames while scrubbing, on the Programming screen, lets the show's own
 flame cues fire while you play, jump and loop in Programming. It is off

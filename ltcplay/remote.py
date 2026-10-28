@@ -1234,6 +1234,14 @@ class Remote:
         self.wall = wall
         self._log = log
         self.marks = {"a": None, "b": None}     # loop marks, show seconds
+        # The Programming playhead on the show audio (playhead.py): one
+        # per engine, so its watchdog and its record of the playback it
+        # started outlive a single press.
+        self.playhead = ShowAudioPlayhead(
+            control, schedule, threaded=True,
+            journal=lambda text, outcome: self._journal(
+                "", "Programming screen", "programming playback", outcome,
+                text))
         # Screen arm holds: group index -> {token, who, device, start,
         # beat, id}; per-group disarms waiting for the deck to read them.
         import collections
@@ -2221,8 +2229,37 @@ class Remote:
                 except Exception:
                     pass
             return out
+        # Programming playback on the show audio (review of #142): Hold is
+        # its Pause and Abort its Stop, after every disarm above. A
+        # scheduled show is never this (programming() refuses it).
+        ph = self.playhead if name in ("hold", "abort") else None
+        if ph is not None and not (self.programming()[0] and ph.active()):
+            ph = None
         if name == "abort":
-            return self.abort(who, screen, flames, lasers, pressed)
+            code, out = self.abort(who, screen, flames, lasers, pressed)
+            if ph is not None:
+                try:
+                    said = ph.abort_press(who, screen)
+                except Exception as e:              # noqa: BLE001
+                    said = f"Programming playback did not stop: {e}"
+                self._journal(who, screen, "abort", "done",
+                              f"{who or 'Someone'} pressed Abort on the "
+                              f"{screen}. {said}")
+                out = dict(out, programming=said,
+                           text=f"{out.get('text', '')} {said}".strip())
+            return code, out
+        if ph is not None:                          # hold
+            try:
+                said = ph.hold_press(who, screen)
+            except Exception as e:                  # noqa: BLE001
+                self._journal(who, screen, "hold", "refused",
+                              f"{who or 'Someone'}'s Hold on the {screen} "
+                              f"was refused. {e}")
+                return 409, {"ok": False, "error": str(e), "text": str(e)}
+            self._journal(who, screen, "hold", "done",
+                          f"{who or 'Someone'} pressed Hold on the "
+                          f"{screen}. {said}")
+            return 200, {"ok": True, "text": said}
         if name in TRANSPORT_ROUTES:
             why = self.scrub_transport_refusal(name, body, ctx)
             if why:
@@ -2294,7 +2331,7 @@ class Remote:
         # 2026-10-28): audio, timecode, video, pixels, flame cues and
         # lasers follow it through the show's own paths. Otherwise (GPL, a
         # show following timecode) the free run below, as before.
-        ph = ShowAudioPlayhead(c, self.schedule)
+        ph = self.playhead
         if not ph.applies():
             ph = None
 
@@ -2417,7 +2454,8 @@ class Remote:
                        if p.loop else None)
         out["marks"] = {k: (tl.format(v) if v is not None else None)
                         for k, v in self.marks.items()}
-        ph = ShowAudioPlayhead(self.control, self.schedule)
+        ph = self.playhead
+        ph.seen()            # an operator page is open: the watchdog's beat
         v = ph.view() if ph.applies() else None
         if v is not None:
             # The show audio is the playhead (playhead.py).

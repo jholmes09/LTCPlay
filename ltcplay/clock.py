@@ -1505,7 +1505,8 @@ class AudioMaster(Clock):
         if self.out is not None:
             self.out.close()
 
-    def play(self, position_s, length_s=None, label="", start_s=0.0):
+    def play(self, position_s, length_s=None, label="", start_s=0.0,
+             check_only=False):
         """Run a cue: its audio from the top, the timecode from 00:00:00:00
         as the first sample is heard, the pixels from `position_s`. The
         cue's length is its audio's, whatever `length_s` says.
@@ -1515,7 +1516,8 @@ class AudioMaster(Clock):
         process starts on that sample (the same "play" message a Resume
         after a lost interface sends), and the timecode starts on that
         frame, not on 00:00:00:00. 0, every show start, is the top exactly
-        as before."""
+        as before. `check_only` makes every check and refusal and starts
+        nothing (Play from asks before it moves MadMapper's bank)."""
         got = self.cues.get(label)
         if got is None:
             raise ClockConfigError(
@@ -1551,6 +1553,8 @@ class AudioMaster(Clock):
                    "position_s": float(position_s),
                    "tc_frames": tc_frames}
             sample, first = self._seek_point(cue, start_s)
+            if check_only:
+                return now
             self._reset_cue()
             self._loop = None
             self._token += 1
@@ -1697,7 +1701,6 @@ class AudioMaster(Clock):
                 self._frozen_pos = cue["position_s"] + frame / MASTER_FPS
                 self._last_frame = frame
                 self._last_send_at = None
-                self._stop_frame = None
                 if self._resuming:
                     # A Resume is on its way in: it starts from here
                     # instead.
@@ -1850,8 +1853,17 @@ class AudioMaster(Clock):
             frame = int(math.floor(last * MASTER_FPS / float(self.rate)
                                    + 1e-9))
         else:
-            sec = max(self._pos(now) or 0.0, 0.0)
-            frame = frame_at(sec, MASTER_FPS)
+            pos = self._pos(now)
+            if pos is None:
+                # Paused before the sound of a start or a move was heard
+                # (Play from, Back, Ahead, a loop wrap): the playhead is on
+                # the frame it is starting from, never the top of the cue
+                # (review of #142, finding 1).
+                frame = cue.get("first_frame", 0)
+                sec = cue.get("start_sample", 0) / float(self.rate)
+            else:
+                sec = max(pos, 0.0)
+                frame = frame_at(sec, MASTER_FPS)
         if self._last_frame is not None:
             frame = max(frame, self._last_frame)
         self._frozen_frame = frame

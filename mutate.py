@@ -14927,8 +14927,8 @@ def build():
   '            self._send(("play", role, 0, 0, self._token))'),
 
  ("Play from starts the timecode at 00:00:00:00 whatever the point", "ltcplay/clock.py",
-  '            frame = cue.get("first_frame", 0)',
-  '            frame = 0'),
+  '            frame = cue.get("first_frame", 0)\n        if last is None or',
+  '            frame = 0\n        if last is None or'),
 
  ("a move while playing never restarts the audio", "ltcplay/clock.py",
   "        if self._device_ok and cue[\"role\"] in self._loaded:\n            self._token += 1\n            self._send((\"play\", cue[\"role\"], sample, 0, self._token))\n            self._epoch = None",
@@ -14941,10 +14941,6 @@ def build():
  ("a move while paused leaves the frozen frame where it was", "ltcplay/clock.py",
   "                self._frozen_frame = frame\n                self._frozen_sec = sample / float(self.rate)",
   "                self._frozen_sec = sample / float(self.rate)"),
-
- ("Continue after a paused move plays from the old point", "ltcplay/clock.py",
-  "                self._last_send_at = None\n                self._stop_frame = None\n                if self._resuming:",
-  "                self._last_send_at = None\n                if self._resuming:"),
 
  ("the A/B loop never wraps back to A", "ltcplay/clock.py",
   "        if loop is not None and not self._pause_req and \\\n                pos >= loop[1] - 1e-9:",
@@ -15007,12 +15003,50 @@ def build():
   "        return s.clock_seek(here + float(seconds))"),
 
  ("Programming Play from on the show audio is a free run again", "ltcplay/remote.py",
-  "        ph = ShowAudioPlayhead(c, self.schedule)\n        if not ph.applies():\n            ph = None",
+  "        ph = self.playhead\n        if not ph.applies():\n            ph = None",
   "        ph = None"),
 
  ("the page is not told the show audio is the playhead", "ltcplay/remote.py",
   '            out.update(playhead="show_audio", playing=v["playing"],',
   '            out.update(playing=v["playing"],'),
+
+
+ # Review of #142.
+ ("a Pause before a move is heard freezes at 00:00:00:00", "ltcplay/clock.py",
+  '                frame = cue.get("first_frame", 0)\n                sec = cue.get("start_sample", 0) / float(self.rate)',
+  '                frame = 0\n                sec = 0.0'),
+
+ ("a check-only Play from starts the cue", "ltcplay/clock.py",
+  "            if check_only:\n                return now",
+  "            if False:\n                return now"),
+
+ ("Play from asks nothing before it moves MadMapper's bank", "ltcplay/playhead.py",
+  "        s.clock_play_from(show_s, check_only=True)",
+  "        pass"),
+
+ ("a Stop leaves the conductor recording the flame cues released", "ltcplay/playhead.py",
+  '                cond.intermission("the Programming screen", "")',
+  '                pass'),
+
+ ("Play from straight after a Stop skips putting the conductor right", "ltcplay/playhead.py",
+  "        self.poll()\n        mm = getattr(",
+  "        mm = getattr("),
+
+ ("an unwatched Programming playback runs for ever", "ltcplay/playhead.py",
+  "        if self._clock() - self._seen > WATCHDOG_S:",
+  "        if False:"),
+
+ ("the status poll is not the Programming watchdog's heartbeat", "ltcplay/remote.py",
+  "        ph.seen()            # an operator page is open",
+  "        pass                 # an operator page is open"),
+
+ ("a screen Hold in Programming playback is the scheduler's Hold", "ltcplay/remote.py",
+  "        if ph is not None:                          # hold",
+  "        if False:                                   # hold"),
+
+ ("a screen Abort in Programming playback leaves the music playing", "ltcplay/remote.py",
+  "            if ph is not None:\n                try:\n                    said = ph.abort_press(who, screen)",
+  "            if False:\n                try:\n                    said = ph.abort_press(who, screen)"),
 
 ]
 

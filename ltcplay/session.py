@@ -864,15 +864,25 @@ class Session:
                 f"so it cannot be played from. Fix the render and restart.")
         return cue
 
-    def clock_play_from(self, show_s):
+    def clock_play_from(self, show_s, check_only=False):
         """Play from `show_s` (show seconds, as the timeline counts them):
         the cue in force there, its audio from that sample, its timecode
         from that frame, the pixels following it. The real show start
-        (clock_play) with a start point. Returns (cue, show seconds)."""
+        (clock_play) with a start point. Returns (cue, show seconds).
+        `check_only`: every refusal, nothing started (returns (cue,
+        show_s))."""
         clk = self.playhead_clock()
         if clk is None:
             raise SessionError("This show's clock cannot start part way.")
         cue = self._playhead_cue(float(show_s))
+        if check_only:
+            try:
+                clk.play(cue.tc_seconds, cue.duration, cue.name,
+                         start_s=float(show_s) - cue.tc_seconds,
+                         check_only=True)
+            except ValueError as e:
+                raise SessionError(str(e))
+            return cue, float(show_s)
         if self.player.freerun_epoch is not None:
             self.player.release()
         try:

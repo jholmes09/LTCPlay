@@ -36,7 +36,34 @@ simply not played.
 Used only when the running show's clock can start part way and move
 (Session.playhead_clock: this machine is the clock, AudioMaster). Anything
 else (GPL, a show that follows timecode) keeps the free run, as before.
+
+The lasers stay dark in Programming: the laser gate lights them only while
+a scheduled show is live (SHOW or PAUSED), and Programming is locked then.
+BEYOND's own timeline still follows the timecode.
+
+Review of #142, the ways playback ends that are not this module's own:
+
+  Hold and Abort from a screen or the Stream Deck, while Programming
+  playback is on: Hold is this Pause (the scheduler's Hold would only take
+  the rig out of the show and leave the music running), Abort is Stop
+  (the flame disarm and the laser disarm at the press stay exactly as
+  they are; remote.py calls hold_press and abort_press after them).
+  Any Stop (the Rack screen's, the Stream Deck's), the cue ending, Run or
+  Stop of the session: poll() sees the playback gone and takes the
+  conductor out of the show (intermission), so its record of the flame
+  cues is "zero" again and the next start, Programming or a real show,
+  releases them again. A Stop that zeroed the flame link directly would
+  otherwise leave the record at "released", and the next start would
+  skip the release.
+  No screen at all: with no operator page asking the engine's status for
+  WATCHDOG_S, poll() stops the playback (an A/B loop would otherwise go
+  round for ever), with a journal line.
 """
+import threading
+import time
+
+WATCHDOG_S = 60.0     # no operator page for this long: playback stops
+POLL_S = 0.25
 
 
 class PlayheadError(ValueError):
@@ -49,9 +76,34 @@ class ShowAudioPlayhead:
     `schedule` the scheduler service, whose `conductor` (Fire & Ice) is
     used when there is one."""
 
-    def __init__(self, control, schedule=None):
+    def __init__(self, control, schedule=None, journal=None,
+                 clock=time.monotonic, threaded=False):
         self.control = control
         self.schedule = schedule
+        self._journal = journal          # (text, outcome) -> anything
+        self._clock = clock
+        self.threaded = threaded
+        self._lock = threading.Lock()
+        self._ours = None     # the session whose playback Play from began
+        self._seen = clock()
+        self._thread = None
+
+    def _note(self, text, outcome):
+        if self._journal is not None:
+            try:
+                self._journal(text, outcome)
+            except Exception:                       # noqa: BLE001
+                pass
+
+    def seen(self):
+        """An operator page asked for the engine's status: the
+        watchdog's heartbeat."""
+        self._seen = self._clock()
+
+    def active(self):
+        """True while the show audio is playing a cue in this session."""
+        clk = self.clock()
+        return bool(clk is not None and getattr(clk, "playing", False))
 
     # -- what is there ------------------------------------------------------
     def _session(self):
@@ -123,6 +175,12 @@ class ShowAudioPlayhead:
             # stands.
             raise PlayheadError("An Abort is standing, so nothing plays "
                                 "until someone presses Reset.")
+        # Every refusal the show audio has (still loading, past the end,
+        # before the first cue) before MadMapper's bank is touched.
+        s.clock_play_from(show_s, check_only=True)
+        # A Stop or an Abort since the last Play from: the conductor's
+        # record is put right before the show comes up again.
+        self.poll()
         mm = getattr(getattr(cond, "devices", None), "mm", None)
         if mm is not None:
             try:
@@ -133,6 +191,10 @@ class ShowAudioPlayhead:
                     note(f"Selecting the MadMapper show bank failed: {e}",
                          fault=True, action="video", outcome="failed")
         _cue, at = s.clock_play_from(show_s)
+        with self._lock:
+            self._ours = s
+            self._seen = self._clock()
+        self._watch()
         if cond is not None:
             told = getattr(cond, "music_started", None)
             if told is not None:
@@ -192,9 +254,100 @@ class ShowAudioPlayhead:
         """Stop the playhead: the conductor's out-of-the-show look first
         (flame cues zero, lasers blanked), then the show audio stops."""
         s = self._session()
+        with self._lock:
+            self._ours = None
         cond = self._conductor()
         if cond is not None:
             cond.intermission(who, screen)
-        if s.clock_here() is not None:
+        if s is not None and s.clock_here() is not None:
             s.clock_halt()
         return None
+
+    # -- Hold, Abort, Stop and the watchdog (review of #142) ----------------
+    def hold_press(self, who="", screen=""):
+        """A Hold from any surface while Programming playback is on: the
+        Programming Pause. Returns the sentence."""
+        at = self.pause(who, screen)
+        s = self._session()
+        return (f"Programming playback paused at "
+                f"{s.tl.format(at) if at is not None else 'its frame'}: "
+                f"flame cues zero, lasers blanked, music and timecode "
+                f"frozen. Continue on the Programming screen carries on.")
+
+    def abort_press(self, who="", screen=""):
+        """An Abort from any surface while Programming playback is on,
+        after remote.py has taken the flames and lasers off: Stop the
+        playback."""
+        self.follow(who, screen)
+        return ("Programming playback stopped: the music, the timecode and "
+                "the pixels stop, flame cues zero, lasers blanked.")
+
+    def poll(self):
+        """Once a quarter second while Programming playback is on (the
+        watch thread, or a test). "ended": the playback is gone however it
+        went, and the conductor was taken out of the show; "watchdog": no
+        operator page for WATCHDOG_S, so it was stopped; None otherwise."""
+        with self._lock:
+            ours = self._ours
+        if ours is None:
+            return None
+        s = self._session()
+        clk = self.clock()
+        if s is not ours or clk is None or \
+                not getattr(clk, "playing", False):
+            with self._lock:
+                if self._ours is not ours:
+                    return None
+                self._ours = None
+            cond = self._conductor()
+            if cond is not None:
+                cond.intermission("the Programming screen", "")
+                self._settle(cond)
+            self._note("Programming playback ended. The show conductor "
+                       "took the rig out of the show (flame cues zero, "
+                       "lasers dark), so the next start releases the flame "
+                       "cues again.", "ended")
+            return "ended"
+        if self._clock() - self._seen > WATCHDOG_S:
+            self.follow("the Programming watchdog", "")
+            self._note(f"Programming playback was stopped: no operator "
+                       f"page has been open for {WATCHDOG_S:g} s. Press "
+                       f"Play from to carry on.", "watchdog")
+            return "watchdog"
+        return None
+
+    @staticmethod
+    def _settle(cond):
+        """Let the conductor's out-of-the-show step land before anything
+        newer can supersede it."""
+        try:
+            if getattr(cond, "threaded", False):
+                cond.wait_idle(1.0)
+            else:
+                cond.run_pending()
+        except Exception:                           # noqa: BLE001
+            pass
+
+    def _watch(self):
+        if not self.threaded:
+            return
+        with self._lock:
+            t = self._thread
+            if t is not None and t.is_alive():
+                return
+            t = threading.Thread(target=self._run, daemon=True,
+                                 name="ltcplay-programming-playhead")
+            self._thread = t
+        t.start()
+
+    def _run(self):
+        while True:
+            time.sleep(POLL_S)
+            try:
+                self.poll()
+            except Exception:                       # noqa: BLE001
+                pass
+            with self._lock:
+                if self._ours is None:
+                    self._thread = None
+                    return
