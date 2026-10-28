@@ -49758,6 +49758,7 @@ def test_programming_playhead_drives_the_show_path():
                 return None, s
             self.calls.append(("play_from", s))
             self.at = s
+            self._cue = {"label": "Show", "position_s": 3600.0}
             return None, s
 
         def clock_seek(self, s):
@@ -49775,6 +49776,7 @@ def test_programming_playhead_drives_the_show_path():
         def clock_halt(self):
             self.calls.append(("halt",))
             self.at = None
+            self._cue = None
 
         def clock_pause(self):
             self.calls.append(("clock_pause",))
@@ -49800,7 +49802,8 @@ def test_programming_playhead_drives_the_show_path():
     calls = []
     sess = Sess(calls)
     ctl = types.SimpleNamespace(session=sess)
-    svc = types.SimpleNamespace(conductor=c)
+    svc = types.SimpleNamespace(conductor=c,
+                                machine=types.SimpleNamespace(state="IDLE"))
     ph = ShowAudioPlayhead(ctl, svc)
     check(ph.applies(), "the show audio is not taken as the playhead")
     real_cpf = sess.clock_play_from
@@ -49958,6 +49961,41 @@ def test_programming_playhead_drives_the_show_path():
           f"the watchdog did not stop an unwatched playback: {calls} "
           f"{notes}")
     c.run_pending()
+    # Re-review of #142, P1: a real show started over Programming playback
+    # (Start now or the scheduler swap the cue on the same clock) is never
+    # taken for it: no watchdog stop and no "ended" when its cue ends.
+    for live in ("SHOW", "IDLE"):
+        tnow[0] = 900.0
+        phw.play_from(3600.0, "Andy", "iPad")
+        c.run_pending()
+        sess._cue = {"label": "Show", "position_s": 3600.0}   # a real show
+        svc.machine.state = live
+        check(not phw.active(), f"a real show ({live}) reads as "
+                                f"Programming playback")
+        tnow[0] += ph_mod.WATCHDOG_S + 5
+        del calls[:]
+        del rig.calls[:]
+        n = len(notes)
+        check(phw.poll() == "dropped" and not calls and not rig.calls and
+              len(notes) == n and not phw.active(),
+              f"a real show ({live}) was taken for Programming playback: "
+              f"{calls} {rig.names()} {notes[n:]}")
+        sess.at, sess._cue = None, None         # its cue ends
+        check(phw.poll() is None and not rig.calls and len(notes) == n,
+              f"the real show's end ran the Programming end: "
+              f"{rig.names()} {notes[n:]}")
+        svc.machine.state = "IDLE"
+    # A Play from straight after a Stop is a new start token.
+    phw.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    first = phw._ours
+    phw.follow("Andy", "iPad")
+    phw.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    check(phw._ours is not first and phw._ours[0] is first[0],
+          "a new Play from on the same session kept the old token")
+    phw.follow("Andy", "iPad")
+    c.run_pending()
     # Nothing to move, pause or continue: refused in sentences.
     for f in (lambda: ph.jump(5), lambda: ph.pause(), lambda: ph.cont()):
         try:
@@ -50059,6 +50097,7 @@ def test_session_playhead_loop_stays_in_its_cue():
     print("  ok")
 
 def test_remote_transport_on_the_show_audio():
+    import types
     section("iPad remote: in a programming session on the show audio, Play "
             "from, Back, Ahead, Pause, Continue, the marks, the loop and Stop "
             "drive the show audio playhead, never the free run")
@@ -50187,15 +50226,37 @@ def test_remote_transport_on_the_show_audio():
                             {"seen": R.seen()})
         R.settle()
         check(st == 200, f"Continue after a screen Hold: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"confirmed": True, "seen": R.seen()})
+        R.settle()
+        check(st == 409 and "Stop the Programming playback first" in
+              out.get("error", "") and clk.playing,
+              f"Start now went over Programming playback: {st} {out}")
         n = len(calls)
         st, _h, out = R.ask("POST", "/api/remote/abort",
                             {"confirmed": True, "seen": R.seen()})
         R.settle()
+        check(out.get("stopped") is True and
+              "No show was stopped" not in out.get("text", ""),
+              f"the Abort's answer contradicts itself: {out}")
         check(calls[n:] == [("halt",)] and
               "Programming playback stopped" in out.get("text", "") and
               not clk.playing,
               f"Abort in Programming playback did not stop it: {calls[n:]} "
               f"{out}")
+        # Re-review of #142, P1 b: a show on this machine's own clock Run in
+        # Show mode is not a programming session, though its player's
+        # on_lost reads "hold" (Session.open sets that for every master
+        # clock).
+        sess2 = ctl.session
+        sess2.clock = types.SimpleNamespace(master=True)
+        sess2.on_lost_arg = "freerun"
+        st, _h, out = R.ask("POST", "/api/remote/jump",
+                            {"seconds": 5, "seen": R.seen()})
+        check(st == 409 and "Show mode" in out.get("error", ""),
+              f"a Show mode Run on the show audio was scrubbed: {st} {out}")
+        sess2.on_lost_arg = "hold"
+        del sess2.clock, sess2.on_lost_arg
         # With nothing playing, Hold goes to the scheduler as always.
         st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
         R.settle()

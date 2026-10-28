@@ -884,6 +884,7 @@ class Session:
                 raise SessionError(str(e))
             return cue, float(show_s)
         if self.player.freerun_epoch is not None:
+            # A free run left over would outrank the clock (clock_play).
             self.player.release()
         try:
             clk.play(cue.tc_seconds, cue.duration, cue.name,

@@ -84,7 +84,16 @@ class ShowAudioPlayhead:
         self._clock = clock
         self.threaded = threaded
         self._lock = threading.Lock()
-        self._ours = None     # the session whose playback Play from began
+        # One move of the playhead at a time: Play from, a move, Stop and
+        # the watch's poll each run whole, so a poll that found the last
+        # playback gone can never take the rig out of the show under a
+        # Play from made meanwhile (re-review of #142, P3).
+        self._op = threading.RLock()
+        # (session, the clock's cue Play from started): a fresh tuple per
+        # Play from, compared by identity, so it is a start token too. A
+        # cue on the clock that is not this one (a real show started over
+        # it) is not Programming playback.
+        self._ours = None
         self._seen = clock()
         self._thread = None
 
@@ -100,10 +109,34 @@ class ShowAudioPlayhead:
         watchdog's heartbeat."""
         self._seen = self._clock()
 
-    def active(self):
-        """True while the show audio is playing a cue in this session."""
+    def _live(self):
+        """True while a scheduled show is live (SHOW or PAUSED)."""
+        m = getattr(self.schedule, "machine", None)
+        return getattr(m, "state", None) in ("SHOW", "PAUSED")
+
+    def _mine(self, ours):
+        """True while `ours` is what the show audio is playing now: the
+        same session, the very cue Play from started, no scheduled show
+        live."""
+        if ours is None or self._live():
+            return False
+        s = self._session()
         clk = self.clock()
-        return bool(clk is not None and getattr(clk, "playing", False))
+        return (s is ours[0] and clk is not None and
+                getattr(clk, "playing", False) and
+                getattr(clk, "_cue", None) is ours[1])
+
+    def active(self):
+        """True while Programming playback started by Play from is what the
+        show audio is playing."""
+        return self._mine(self._ours)
+
+    def _adopt(self, s):
+        """The cue now on the clock is ours (Play from, a move into another
+        cue): a new token."""
+        clk = self.clock()
+        with self._lock:
+            self._ours = (s, getattr(clk, "_cue", None))
 
     # -- what is there ------------------------------------------------------
     def _session(self):
@@ -168,6 +201,10 @@ class ShowAudioPlayhead:
 
     def play_from(self, show_s, who="", screen=""):
         """The show start, from `show_s`. Returns show seconds."""
+        with self._op:
+            return self._play_from(show_s, who, screen)
+
+    def _play_from(self, show_s, who, screen):
         s = self._session()
         cond = self._conductor()
         if cond is not None and getattr(cond, "latched", False):
@@ -191,8 +228,8 @@ class ShowAudioPlayhead:
                     note(f"Selecting the MadMapper show bank failed: {e}",
                          fault=True, action="video", outcome="failed")
         _cue, at = s.clock_play_from(show_s)
+        self._adopt(s)
         with self._lock:
-            self._ours = s
             self._seen = self._clock()
         self._watch()
         if cond is not None:
@@ -213,7 +250,12 @@ class ShowAudioPlayhead:
         if here is None:
             raise PlayheadError("Nothing is playing to move. Play from a "
                                 "timecode first.")
-        return s.clock_seek(max(0.0, here + float(seconds)))
+        with self._op:
+            was = self.active()
+            at = s.clock_seek(max(0.0, here + float(seconds)))
+            if was:
+                self._adopt(s)      # a move into another cue is ours too
+            return at
 
     def pause(self, who="", screen=""):
         s = self._session()
@@ -253,15 +295,16 @@ class ShowAudioPlayhead:
     def follow(self, who="", screen=""):
         """Stop the playhead: the conductor's out-of-the-show look first
         (flame cues zero, lasers blanked), then the show audio stops."""
-        s = self._session()
-        with self._lock:
-            self._ours = None
-        cond = self._conductor()
-        if cond is not None:
-            cond.intermission(who, screen)
-        if s is not None and s.clock_here() is not None:
-            s.clock_halt()
-        return None
+        with self._op:
+            s = self._session()
+            with self._lock:
+                self._ours = None
+            cond = self._conductor()
+            if cond is not None:
+                cond.intermission(who, screen)
+            if s is not None and s.clock_here() is not None:
+                s.clock_halt()
+            return None
 
     # -- Hold, Abort, Stop and the watchdog (review of #142) ----------------
     def hold_press(self, who="", screen=""):
@@ -286,14 +329,29 @@ class ShowAudioPlayhead:
         """Once a quarter second while Programming playback is on (the
         watch thread, or a test). "ended": the playback is gone however it
         went, and the conductor was taken out of the show; "watchdog": no
-        operator page for WATCHDOG_S, so it was stopped; None otherwise."""
+        operator page for WATCHDOG_S, so it was stopped; "dropped": a
+        scheduled show is live, or the clock is playing a cue Play from did
+        not start (a real show started over it): that is not Programming
+        playback, so it is let go with nothing sent at all; None
+        otherwise."""
+        with self._op:
+            return self._poll()
+
+    def _poll(self):
         with self._lock:
             ours = self._ours
         if ours is None:
             return None
         s = self._session()
         clk = self.clock()
-        if s is not ours or clk is None or \
+        cue = getattr(clk, "_cue", None) if clk is not None else None
+        if self._live() or (s is ours[0] and cue is not None and
+                            cue is not ours[1]):
+            with self._lock:
+                if self._ours is ours:
+                    self._ours = None
+            return "dropped"
+        if s is not ours[0] or clk is None or \
                 not getattr(clk, "playing", False):
             with self._lock:
                 if self._ours is not ours:

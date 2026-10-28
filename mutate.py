@@ -14999,8 +14999,8 @@ def build():
   "            pass"),
 
  ("Back and Ahead go before the start of the show", "ltcplay/playhead.py",
-  "        return s.clock_seek(max(0.0, here + float(seconds)))",
-  "        return s.clock_seek(here + float(seconds))"),
+  "            at = s.clock_seek(max(0.0, here + float(seconds)))",
+  "            at = s.clock_seek(here + float(seconds))"),
 
  ("Programming Play from on the show audio is a free run again", "ltcplay/remote.py",
   "        ph = self.playhead\n        if not ph.applies():\n            ph = None",
@@ -15047,6 +15047,28 @@ def build():
  ("a screen Abort in Programming playback leaves the music playing", "ltcplay/remote.py",
   "            if ph is not None:\n                try:\n                    said = ph.abort_press(who, screen)",
   "            if False:\n                try:\n                    said = ph.abort_press(who, screen)"),
+
+
+ # Re-review of #142.
+ ("a Show mode Run on this machine's clock counts as Programming", "ltcplay/remote.py",
+  '            asked = getattr(s, "on_lost_arg", None) == "hold"',
+  '            asked = getattr(p, "on_lost", "") == "hold"'),
+
+ ("Start now goes over Programming playback", "ltcplay/remote.py",
+  '        if ph is not None and name == "start-now":',
+  '        if False:'),
+
+ ("a real show started over Programming playback is still watched as it", "ltcplay/playhead.py",
+  "        if self._live() or (s is ours[0] and cue is not None and\n                            cue is not ours[1]):",
+  "        if False:"),
+
+ ("any cue on the clock reads as Programming playback", "ltcplay/playhead.py",
+  '                getattr(clk, "_cue", None) is ours[1])',
+  '                True)'),
+
+ ("a Programming Abort answers that nothing was stopped", "ltcplay/remote.py",
+  "                out = dict(out, programming=said, stopped=True, ok=ok,",
+  "                out = dict(out, programming=said, ok=ok,"),
 
 ]
 

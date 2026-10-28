@@ -2230,11 +2230,21 @@ class Remote:
                     pass
             return out
         # Programming playback on the show audio (review of #142): Hold is
-        # its Pause and Abort its Stop, after every disarm above. A
-        # scheduled show is never this (programming() refuses it).
-        ph = self.playhead if name in ("hold", "abort") else None
+        # its Pause and Abort its Stop, after every disarm above, and no
+        # Start now goes over it. A scheduled show is never this
+        # (programming() refuses it, and active() is only the very cue
+        # Play from started).
+        ph = self.playhead if name in ("hold", "abort", "start-now") \
+            else None
         if ph is not None and not (self.programming()[0] and ph.active()):
             ph = None
+        if ph is not None and name == "start-now":
+            why = ("Stop the Programming playback first (Stop the show "
+                   "audio on the Programming screen). Nothing was started.")
+            self._journal(who, screen, name, "refused",
+                          f"{who or 'Someone'}'s Start now on the {screen} "
+                          f"was refused. {why}")
+            return 409, {"ok": False, "error": why, "text": why}
         if name == "abort":
             code, out = self.abort(who, screen, flames, lasers, pressed)
             if ph is not None:
@@ -2245,8 +2255,17 @@ class Remote:
                 self._journal(who, screen, "abort", "done",
                               f"{who or 'Someone'} pressed Abort on the "
                               f"{screen}. {said}")
-                out = dict(out, programming=said,
-                           text=f"{out.get('text', '')} {said}".strip())
+                # No scheduled show was live to stop: the answer says what
+                # did stop, the Programming playback.
+                text = " ".join(t for t in (flames[1] if flames else "",
+                                            lasers[1], said) if t)
+                ok = not (flames and flames[0] is False)
+                out = dict(out, programming=said, stopped=True, ok=ok,
+                           text=text)
+                out.pop("error", None)
+                if not ok:
+                    out["error"] = text
+                code = 200 if ok else 409
             return code, out
         if ph is not None:                          # hold
             try:
@@ -2307,8 +2326,18 @@ class Remote:
                            "machine choose Programming on the Show file "
                            "card and press Run.")
         cond = getattr(svc, "conductor", None)
+        # A show whose clock is this machine has its player's on_lost set
+        # to "hold" whatever was asked (Session.open), so there the Run's
+        # own choice decides: Programming asks for "hold" (re-review of
+        # #142, P1 b). Any other show, the player's own, as always.
+        clk = getattr(s, "clock", None)
+        if getattr(clk, "master", False) is True and \
+                hasattr(s, "on_lost_arg"):
+            asked = getattr(s, "on_lost_arg", None) == "hold"
+        else:
+            asked = getattr(p, "on_lost", "") == "hold"
         rehearsal = (getattr(s, "no_output", False)
-                     or getattr(p, "on_lost", "") == "hold"
+                     or asked
                      or getattr(cond, "mode", None) == "rehearsal")
         if not rehearsal:
             return False, ("This show was started in Show mode. Scrubbing "
