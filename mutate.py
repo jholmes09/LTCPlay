@@ -626,6 +626,130 @@ MUTATIONS = [
  # -- the iPad remote (2026-10-03; no sign-in since Jeff, 2026-10-07): the
  #    show network, the controls, stale state, no arm route, scrubbing and
  #    the seek guard --
+ # -- the show network from another machine (Jeff, 2026-10-28: the page
+ #    never opened from his Mac): the RFC 1918 picker, the card's view, the
+ #    firewall rule read, the wrong-name page, the fallback to this PC
+ #    only, the start line, the supervisor's flag and the installer's rule --
+ ("show network: the picker offers any address", "ltcplay/remote.py",
+  "        if a not in seen and is_rfc1918(a):",
+  "        if a not in seen:"),
+
+ ("show network: a missing firewall rule reads present", "ltcplay/remote.py",
+  "    if p.returncode != 0:\n        return (\"missing\",",
+  "    if False:\n        return (\"missing\","),
+
+ ("show network: the card gives the address before the engine listens on it",
+  "ltcplay/remote.py",
+  "        url = page_url(addr, port) if on_saved else None",
+  "        url = page_url(addr, port)"),
+
+ ("show network: an API route by another name gets the page, not the refusal",
+  "ltcplay/web.py",
+  "        if why == HOST_REFUSAL and not route.startswith(\"/api/\"):",
+  "        if why == HOST_REFUSAL:"),
+
+ ("show network: a saved address this PC lacks stops the engine",
+  "ltcplay/web.py",
+  "        if not (network_fallback and on_network):\n            raise",
+  "        if True:\n            raise"),
+
+ ("show network: the start line names loopback only", "ltcplay/web.py",
+  "        addrs = [\"127.0.0.1\"] + ([httpd.bind_address] if on_network else [])",
+  "        addrs = [\"127.0.0.1\"]"),
+
+ ("show network: --network-if-saved ignores the saved address",
+  "ltcplay/cli.py",
+  "    args.bind = saved\n    return True",
+  "    return True"),
+
+ ("show network: the supervisor never asks for the saved address",
+  "packaging/windows/supervisor.py",
+  "              \"--no-browser\", \"--network-if-saved\"]",
+  "              \"--no-browser\"]"),
+
+ ("show network: a saved public, VPN or link-local address is served on",
+  "ltcplay/cli.py",
+  "    if not remote_mod.is_rfc1918(saved):",
+  "    if False:"),
+
+ ("show network: the fallback binds every interface", "ltcplay/web.py",
+  "        bind, on_network = \"127.0.0.1\", False\n"
+  "        httpd = ThreadingHTTPServer((bind, port), Handler)",
+  "        bind, on_network = \"0.0.0.0\", True\n"
+  "        httpd = ThreadingHTTPServer((bind, port), Handler)"),
+
+ ("show network: the wrong-name page reflects the Host header",
+  "ltcplay/web.py",
+  "                getattr(self.server, \"bind_address\", \"127.0.0.1\"),\n"
+  "                self.server.server_address[1], self._local()),",
+  "                str(self.headers.get(\"Host\", \"\")).split(\":\")[0],\n"
+  "                self.server.server_address[1], False),"),
+
+ ("show network: the wrong-name page may be sniffed", "ltcplay/web.py",
+  "                         \"X-Content-Type-Options\": \"nosniff\"})",
+  "                         \"X-Content-Type-Options\": \"sniff\"})"),
+
+ ("show network: a Public network is not warned about", "ltcplay/remote.py",
+  "    if cat == \"Public\":",
+  "    if False:"),
+
+ ("show network: the card is silent about a port the rule does not open",
+  "ltcplay/remote.py",
+  "            if port != FIXED_PORT:\n                # The installer's rule",
+  "            if False:\n                # The installer's rule"),
+
+ ("show network: an address with a zone ID or other text is saved",
+  "ltcplay/remote.py",
+  "    if not PLAIN_IP.fullmatch(text) or getattr(ip, \"scope_id\", None):",
+  "    if False:"),
+
+ ("show network: any saved address is looked up in PowerShell",
+  "ltcplay/remote.py",
+  "    if not is_rfc1918(address):\n        return \"unknown\", \"\"",
+  "    if False:\n        return \"unknown\", \"\""),
+
+ ("show network: the address is pasted into the PowerShell command",
+  "ltcplay/remote.py",
+  "                 CATEGORY_COMMAND],",
+  "                 CATEGORY_COMMAND.replace(\"$env:LTC_SHOW_ADDRESS\", "
+  "f\"'{ip}'\")],"),
+
+ ("show network: the address is not handed to PowerShell",
+  "ltcplay/remote.py",
+  "        env[CATEGORY_ENV] = ip",
+  "        pass"),
+
+ ("show network: a Windows program is found by its bare name",
+  "ltcplay/remote.py",
+  "    return path if (exists or os.path.isfile)(path) else None",
+  "    return parts[-1]"),
+
+ ("show network: netsh is started without its full path",
+  "ltcplay/remote.py",
+  "        p = run(f'\"{exe}\" advfirewall firewall show rule '",
+  "        p = run(f'netsh advfirewall firewall show rule '"),
+
+ ("show network: PowerShell is started without its full path",
+  "ltcplay/remote.py",
+  "        p = run([exe, \"-NoProfile\", \"-NonInteractive\", \"-Command\",",
+  "        p = run([\"powershell\", \"-NoProfile\", \"-NonInteractive\", "
+  "\"-Command\","),
+
+ ("show network: a netsh missing from System32 is run anyway",
+  "ltcplay/remote.py",
+  "    if exe is None:\n        return (\"unknown\", \"The Windows Firewall rule",
+  "    if False:\n        return (\"unknown\", \"The Windows Firewall rule"),
+
+ ("show network: a PowerShell missing from System32 is run anyway",
+  "ltcplay/remote.py",
+  "    if exe is None:\n        return \"unknown\", (\"Which kind",
+  "    if False:\n        return \"unknown\", (\"Which kind"),
+
+ ("show network: the firewall rule is open to any address",
+  "packaging/windows/installer.iss",
+  "localport=7878 remoteip=localsubnet profile=any",
+  "localport=7878 remoteip=any profile=any"),
+
  ("remote: the show network can be set from the network", "ltcplay/remote.py",
   "        if name in LOCAL_ONLY and not ctx.local:",
   "        if False:"),

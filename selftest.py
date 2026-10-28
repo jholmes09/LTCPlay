@@ -46354,6 +46354,440 @@ def test_remote_localhost_unaffected_and_proxies_refused():
     print("  ok")
 
 
+def test_show_network_card_firewall_and_wrong_name_page():
+    section("show network (Jeff, 2026-10-28: the page never opened from "
+            "his Mac): 0.0.0.0 still refused; the picker offers RFC 1918 "
+            "addresses only; the card says the address saved, where the "
+            "engine listens, the firewall rule (read only) and the address "
+            "to type; a saved address this PC lacks falls back to this PC "
+            "only; another name for the PC gets a short page naming the "
+            "address; the start line names the addresses; the installer's "
+            "one firewall rule and the smoke test's checks")
+    import tempfile
+    import shutil
+    import types
+    from ltcplay import remote as remote_mod
+    from ltcplay import web as web_mod
+    from ltcplay import cli as cli_mod
+    # Address validation is unchanged: never every interface.
+    for bad in ("0.0.0.0", "::", "127.0.0.1", "224.0.0.1", "nonsense", ""):
+        try:
+            remote_mod.check_show_address(bad)
+            check(False, f"{bad!r} was accepted as a show network address")
+        except ValueError:
+            pass
+    check(remote_mod.check_show_address(" 10.1.2.3 ") == "10.1.2.3",
+          "a private address is still accepted")
+    # The picker: RFC 1918 only, each once, in the order found.
+    got = remote_mod.address_candidates(found=[
+        "127.0.0.1", "169.254.3.4", "10.1.2.3", "172.16.0.9", "172.32.0.1",
+        "192.168.1.5", "8.8.8.8", "100.64.1.1", "10.1.2.3", "0.0.0.0",
+        "fe80::1", "192.169.0.1", "172.31.255.254"])
+    check(got == ["10.1.2.3", "172.16.0.9", "192.168.1.5", "172.31.255.254"],
+          f"the picker offers private IPv4 addresses only: {got}")
+    check(all(isinstance(a, str) for a in remote_mod.address_candidates()),
+          "the real lookup answers a list of addresses")
+    # Windows' own programs by their full path under System32, never a
+    # bare name (security review of #164); missing: "unknown", not run.
+    SYS32 = "C:\\Windows\\System32\\"
+
+    def FIND(*parts):
+        return SYS32 + "\\".join(parts)
+    check(remote_mod.system_tool(*remote_mod.POWERSHELL, root="C:\\Windows",
+                                 exists=lambda p: True) ==
+          SYS32 + "WindowsPowerShell\\v1.0\\powershell.exe" and
+          remote_mod.system_tool(*remote_mod.NETSH, root="C:\\Windows",
+                                 exists=lambda p: True) ==
+          SYS32 + "netsh.exe",
+          "netsh and powershell are found by their full System32 path")
+    check(remote_mod.system_tool(*remote_mod.NETSH, root="C:\\Windows",
+                                 exists=lambda p: False) is None,
+          "a program missing from System32 is None, never a bare name")
+    # The firewall rule, read with netsh and never changed.
+    ran = []
+
+    def fake(code, out="", boom=False):
+        def run(cmd, **kw):
+            ran.append(cmd)
+            if boom:
+                raise OSError("no netsh")
+            return types.SimpleNamespace(returncode=code, stdout=out,
+                                         stderr="")
+        return run
+    st, why = remote_mod.firewall_rule_state(
+        run=fake(0, "Rule Name: LTC Player rack page\nEnabled: Yes\n"),
+        windows=True, find=FIND)
+    check(st == "present" and "subnet" in why and "7878" in why,
+          f"a rule that is there reads present: {st} {why}")
+    st, why = remote_mod.firewall_rule_state(
+        run=fake(0, "Rule Name: LTC Player rack page\nEnabled: No\n"),
+        windows=True, find=FIND)
+    check(st == "off" and "blocked" in why, f"a rule switched off: {st}")
+    st, why = remote_mod.firewall_rule_state(
+        run=fake(1, "No rules match the specified criteria."), windows=True,
+        find=FIND)
+    check(st == "missing" and "installer again" in why,
+          f"no rule reads missing, with what to do: {st} {why}")
+    st, why = remote_mod.firewall_rule_state(run=fake(0, boom=True),
+                                             windows=True, find=FIND)
+    check(st == "unknown", f"netsh failing reads unknown: {st}")
+    n_ran = len(ran)
+    st, why = remote_mod.firewall_rule_state(
+        run=fake(0, "Enabled: Yes\n"), windows=True,
+        find=lambda *p: None)
+    check(st == "unknown" and "System32" in why and len(ran) == n_ran,
+          f"no netsh.exe in System32: unknown, and nothing is run: {st}")
+    check(remote_mod.firewall_rule_state(windows=False)[0] == "none",
+          "not Windows: no rule to read")
+    check(remote_mod.network_category("10.1.2.3", windows=False) ==
+          ("none", ""), "not Windows: no category to read")
+    # Review of #164, B2: an IPv6 zone ID ("%...") takes any characters,
+    # so a saved address could carry PowerShell. Refused when saved and
+    # when read; never looked up; and a looked-up address is never part
+    # of the command text.
+    payloads = ("2001:db8::1%a';Start-Process calc;'",
+                "2001:db8::1%a\";calc;\"", "fe80::1%eth0", "fd00::5%1",
+                "2001:db8::1%a b", "10.1.2.3;calc", "10.1.2.3'", "10.1.2.3 x",
+                "10.1.2.3\n'calc'", "fd00::5", "8.8.8.8", "100.64.1.2")
+    for bad in payloads[:9]:
+        try:
+            remote_mod.check_show_address(bad)
+            check(False, f"{bad!r} was accepted as a show network address")
+        except ValueError:
+            pass
+        work_b = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(work_b, remote_mod.SETTINGS_FILE), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"show_network_address": bad}, fh)
+            try:
+                remote_mod.load_settings(work_b)
+                check(False, f"{bad!r} in ltcplay_remote.json was loaded")
+            except ValueError:
+                pass
+        finally:
+            shutil.rmtree(work_b, ignore_errors=True)
+    looked = []
+
+    def look(cmd, **kw):
+        looked.append((cmd, kw.get("env") or {}))
+        return types.SimpleNamespace(returncode=0, stdout="Public\n",
+                                     stderr="")
+    for bad in payloads:
+        got = remote_mod.network_category(bad, run=look, windows=True,
+                                         find=FIND)
+        check(got == ("unknown", ""), f"{bad!r} is never looked up: {got}")
+    check(not looked, f"nothing but a private IPv4 address reaches "
+                      f"PowerShell: {looked}")
+    got = remote_mod.network_category("10.20.0.5", run=look, windows=True,
+                                      find=lambda *p: None)
+    check(got[0] == "unknown" and "System32" in got[1] and not looked,
+          f"no powershell.exe in System32: unknown, nothing run: {got}")
+    got = remote_mod.network_category("10.20.0.5", run=look, windows=True,
+                                      find=FIND)
+    check(looked and looked[0][0][0] ==
+          SYS32 + "WindowsPowerShell\\v1.0\\powershell.exe",
+          f"PowerShell by its full path: {looked}")
+    check(got[0] == "Public" and len(looked) == 1 and
+          "10.20.0.5" not in " ".join(looked[0][0]) and
+          looked[0][1].get(remote_mod.CATEGORY_ENV) == "10.20.0.5" and
+          "$env:" + remote_mod.CATEGORY_ENV in looked[0][0][-1] and
+          looked[0][1].get("PATH") == os.environ.get("PATH"),
+          f"the address goes in as an environment variable, never in the "
+          f"command text: {looked}")
+    check(ran and all(isinstance(c, str) and c.startswith(
+              '"' + SYS32 + 'netsh.exe" advfirewall firewall show rule ') and
+              'name="LTC Player rack page"' in c and
+              not any(w in c for w in (" add ", " delete ", " set "))
+              for c in ran),
+          f"the page only reads the rule, by its name: {ran}")
+    # The card's view, from a Remote with no supervisor.
+    work = tempfile.mkdtemp()
+    try:
+        rem = remote_mod.Remote(web_mod.Control(work), None, folder=work,
+                                log=lambda t: None)
+        rem._firewall_windows = True
+        rem._tool_find = FIND
+        rem._firewall_run = fake(0, "Enabled: Yes\n")
+        cat_ran = []
+
+        def cat_run(word, code=0):
+            def run(cmd, **kw):
+                cat_ran.append(cmd)
+                return types.SimpleNamespace(returncode=code,
+                                             stdout=word + "\n", stderr="")
+            return run
+        rem._category_run = cat_run("Private")
+        rem.listen = {"addresses": ["127.0.0.1"], "port": 7878, "why": ""}
+        v = rem.network_view()
+        txt = " ".join(v["lines"])
+        check(v["saved"] is None and v["url"] is None and
+              v["restart"] is None and not v["on_saved"] and
+              "No show network address is saved" in txt and
+              "listening on 127.0.0.1:7878" in txt and
+              v["firewall"]["state"] == "present",
+              f"nothing saved: the card says so and where it listens: {v}")
+        code, out = rem.set_network({"address": "0.0.0.0"})
+        check(code == 400 and remote_mod.load_settings(work)[
+                  "show_network_address"] is None,
+              f"0.0.0.0 is refused from the card and nothing is saved: "
+              f"{code}")
+        code, out = rem.set_network({"address": "10.20.0.5"})
+        txt = " ".join(out.get("lines") or [])
+        check(code == 200 and out["saved"] == "10.20.0.5" and
+              not out["on_saved"] and out["url"] is None and
+              out["restart"] and out["restart"]["needed"] and
+              "not listening on 10.20.0.5 yet" in txt and
+              ("restart" in out["note"].lower() or
+               "start it again" in out["note"]),
+              f"saved: a restart is needed, and the card says so: {out}")
+        rem.listen = {"addresses": ["127.0.0.1", "10.20.0.5"],
+                      "port": 7878, "why": ""}
+        v = rem.network_view()
+        txt = " ".join(v["lines"])
+        check(v["on_saved"] and v["url"] == "http://10.20.0.5:7878/" and
+              v["restart"] is None and
+              "type http://10.20.0.5:7878/" in txt and
+              "127.0.0.1:7878 and 10.20.0.5:7878" in txt,
+              f"listening on it: the address to type: {v}")
+        check(v["category"] == "Private" and
+              "Windows calls the network with this address Private." in txt,
+              f"the card names the network's category: {v}")
+        check(cat_ran and all("10.20.0.5" not in " ".join(c) and
+                              "Get-NetConnectionProfile" in " ".join(c) and
+                              "Set-" not in " ".join(c) for c in cat_ran),
+              f"the category is only read: {cat_ran}")
+        rem._category_cache = None
+        rem._category_run = cat_run("Public")
+        v = rem.network_view()
+        txt = " ".join(v["lines"])
+        check(v["category"] == "Public" and "Public" in txt and
+              "Private network" in txt,
+              f"a Public network is warned about in plain words: {v}")
+        rem._category_cache = None
+        rem._category_run = cat_run("", code=1)
+        v = rem.network_view()
+        check(v["category"] == "unknown" and "could not be read" in
+              " ".join(v["lines"]), f"an unread category says so: {v}")
+        rem.listen = {"addresses": ["127.0.0.1", "10.20.0.5"],
+                      "port": 7879, "why": ""}
+        v = rem.network_view()
+        check("runs on port 7879" in " ".join(v["lines"]) and
+              v["url"] == "http://10.20.0.5:7879/",
+              f"a port that is not 7878: the card says the rule blocks it: "
+              f"{v}")
+        rem.listen = {"addresses": ["127.0.0.1", "10.20.0.5"],
+                      "port": 7878, "why": ""}
+        check("runs on port" not in " ".join(rem.network_view()["lines"]),
+              "on 7878 nothing is said about the port")
+        rem._firewall_cache = None
+        rem._firewall_run = fake(1)
+        v = rem.network_view()
+        check(v["firewall"]["state"] == "missing" and
+              "Once the firewall rule is there" in " ".join(v["lines"]),
+              f"no firewall rule: the card says what is missing: {v}")
+        rem.listen = {"addresses": ["127.0.0.1"], "port": 7878,
+                      "why": "The saved show network address 10.20.0.5 "
+                             "could not be used (x)."}
+        v = rem.network_view()
+        check("could not be used" in " ".join(v["lines"]) and
+              not v["on_saved"], f"the fallback's reason is said: {v}")
+        for line in v["lines"] + [out["note"]]:
+            check("\u2014" not in line and "\u2013" not in line,
+                  f"no em or en dash on the card: {line!r}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # --network-if-saved: a saved PRIVATE address, or this PC only.
+    for saved in ("10.20.0.5", "172.16.0.9", "192.168.1.5"):
+        a = types.SimpleNamespace(network_if_saved=True, network=False,
+                                  bind="127.0.0.1")
+        got = cli_mod._network_if_saved(a, load=lambda saved=saved: {
+            "show_network_address": saved})
+        check(got == (True, "") and a.bind == saved,
+              f"a saved private address is served on: {got} {a}")
+    # Review of #164, B1: public, CGNAT/VPN, link-local and IPv6 are never
+    # served on, whatever check_show_address let be saved; each says why.
+    for saved in ("8.8.8.8", "100.64.1.2", "169.254.3.4", "fd00::5",
+                  "2001:db8::5", "172.32.0.1"):
+        a = types.SimpleNamespace(network_if_saved=True, network=False,
+                                  bind="127.0.0.1")
+        got = cli_mod._network_if_saved(a, load=lambda saved=saved: {
+            "show_network_address": saved})
+        check(got[0] is False and a.bind == "127.0.0.1" and
+              f"{saved} is not a private address" in got[1] and
+              "not served on it" in got[1],
+              f"{saved}: this PC only, and why: {got} {a}")
+    a = types.SimpleNamespace(network_if_saved=True, network=False,
+                              bind="127.0.0.1")
+    check(cli_mod._network_if_saved(a, load=lambda: {
+              "show_network_address": None}) == (False, "") and
+          a.bind == "127.0.0.1", "nothing saved: this PC only")
+
+    def broken():
+        raise ValueError("ltcplay_remote.json could not be read")
+    a = types.SimpleNamespace(network_if_saved=True, network=False,
+                              bind="127.0.0.1")
+    got = cli_mod._network_if_saved(a, load=broken)
+    check(got[0] is False and "could not be read" in got[1] and
+          a.bind == "127.0.0.1", "a broken settings file: this PC only")
+    a = types.SimpleNamespace(network_if_saved=False, bind="127.0.0.1")
+    check(cli_mod._network_if_saved(a, load=lambda: {
+              "show_network_address": "10.20.0.5"}) == (False, "") and
+          a.bind == "127.0.0.1", "without the flag nothing changes")
+    # A saved address this PC does not have: this PC only, said why.
+    folder = tempfile.mkdtemp()
+    try:
+        try:
+            h = web_mod.serve(folder, port=0, bind="192.0.2.77")
+            h.server_close()
+            check(False, "an address this PC lacks was served without "
+                         "network_fallback")
+        except OSError:
+            pass
+        h = web_mod.serve(folder, port=0, bind="192.0.2.77",
+                          network_fallback=True)
+        try:
+            ls = h.remote.listen or {}
+            check(h.bind_address == "127.0.0.1" and h.loopback is None and
+                  ls.get("addresses") == ["127.0.0.1"] and
+                  "192.0.2.77 could not be used" in ls.get("why", ""),
+                  f"fallback: this PC only, and why: {ls}")
+        finally:
+            h.server_close()
+        try:
+            web_mod.serve(folder, port=0, bind="0.0.0.0",
+                          network_fallback=True).server_close()
+            check(False, "0.0.0.0 was served with network_fallback")
+        except ValueError:
+            pass
+        h = web_mod.serve(folder, port=0, bind="127.0.0.1")
+        try:
+            check((h.remote.listen or {}).get("addresses") == ["127.0.0.1"],
+                  f"loopback only: {h.remote.listen}")
+        finally:
+            h.server_close()
+        h = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          network_note="8.8.8.8 is not a private address")
+        try:
+            ls = h.remote.listen or {}
+            check(ls.get("addresses") == ["127.0.0.1"] and
+                  "8.8.8.8 is not a private address" in ls.get("why", ""),
+                  f"a refused saved address: the card says why: {ls}")
+        finally:
+            h.server_close()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    # The start line names the addresses, in the journal too.
+    said = []
+    fake_rem = types.SimpleNamespace(
+        _journal=lambda *a: said.append(a), listen=None, schedule=object())
+    fake_h = types.SimpleNamespace(server_address=("10.20.0.5", 7878),
+                                   bind_address="10.20.0.5",
+                                   remote=fake_rem)
+    web_mod._say_listening(fake_h, True)
+    check(said and said[0][2] == "web page" and
+          "listens on 127.0.0.1:7878 and 10.20.0.5:7878" in said[0][4] and
+          fake_rem.listen["addresses"] == ["127.0.0.1", "10.20.0.5"],
+          f"the start line names both addresses: {said}")
+    # Another name for the PC: a short page naming the address that works.
+    S = _sched()
+    if S is not None:
+        R = _RemoteRig(S)
+        try:
+            port = R.httpd.server_address[1]
+            for path in ("/", "/remote"):
+                st, hd, out = R.ask("GET", path,
+                                    host=f"showpc.local:{port}")
+                check(st == 403 and "text/html" in hd.get(
+                          "content-type", [""])[0] and
+                      f'Open this page at <a href="http://10.20.0.5:{port}/"'
+                      in str(out) and "instead" in str(out) and
+                      "showpc.local" not in str(out) and
+                      "default-src 'none'" in hd.get(
+                          "content-security-policy", [""])[0] and
+                      hd.get("x-content-type-options") == ["nosniff"],
+                      f"GET {path} by another name: the short page: {st} "
+                      f"{hd} {str(out)[:300]}")
+            st, hd, out = R.ask("GET", "/api/state",
+                                host=f"showpc.local:{port}")
+            check(st == 403 and isinstance(out, dict) and
+                  out.get("error") == web_mod.HOST_REFUSAL,
+                  f"an API route by another name is the JSON refusal: {out}")
+            st, hd, out = _ask(R.httpd, "GET", "/", client=("127.0.0.1", 5),
+                               host=f"showpc:{port}")
+            check(st == 403 and f"http://127.0.0.1:{port}/" in str(out),
+                  f"on this PC by another name: 127.0.0.1: {str(out)[:200]}")
+            st, _h, out = R.ask("GET", "/remote")
+            check(st == 200, f"the right address still opens it: {st}")
+            st, _h, out = R.ask("GET", "/api/remote/network")
+            check(st == 403, f"the card's view is the show PC's only: {st}")
+            check("\u2014" not in web_mod.wrong_host_page("10.1.2.3", 7878,
+                                                          False) and
+                  "\u2013" not in web_mod.wrong_host_page("10.1.2.3", 7878,
+                                                          False),
+                  "no em or en dash on the short page")
+        finally:
+            R.close()
+    # The Windows supervisor asks for the saved address, never a bind.
+    root = os.path.dirname(os.path.abspath(__file__))
+    sp = os.path.join(root, "packaging", "windows")
+    sys.path.insert(0, sp)
+    was_bc = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    d = tempfile.mkdtemp()
+    try:
+        import supervisor as _sup
+        for mode in ("fire_ice", "plain"):
+            eng = _sup.wanted_args({
+                "show_folder": d, "flamesafe_config": os.path.join(d, "x"),
+                "port": 7878, "run_flamesafe": True, "run_deck": True,
+                "show_mode": mode,
+                "schedule": os.path.join(d, "s.json")})["engine"][0] or []
+            check("--network-if-saved" in eng and "--bind" not in eng and
+                  "--network" not in eng and "0.0.0.0" not in eng,
+                  f"{mode}: the engine is asked for the saved address "
+                  f"only: {eng}")
+    finally:
+        sys.dont_write_bytecode = was_bc
+        shutil.rmtree(d, ignore_errors=True)
+        sys.path.remove(sp)
+        sys.modules.pop("supervisor", None)
+    # The installer's one firewall rule, and the smoke test's checks.
+    with open(os.path.join(sp, "installer.iss"), encoding="utf-8") as fh:
+        iss = fh.read()
+    run_part = iss.split("[Run]", 1)[1].split("[UninstallRun]", 1)[0]
+    un_part = iss.split("[UninstallRun]", 1)[1].split("[", 1)[0]
+    rule = 'name=""LTC Player rack page""'
+    adds = [ln for ln in run_part.splitlines() if "firewall add rule" in ln]
+    dels = [ln for ln in run_part.splitlines()
+            if "firewall delete rule" in ln]
+    check(len(adds) == 1 and len(dels) == 1 and
+          run_part.index(dels[0]) < run_part.index(adds[0]) and
+          rule in adds[0] and rule in dels[0],
+          f"Setup deletes the rule by name, then adds one: {adds} {dels}")
+    if adds:
+        for want in ("dir=in", "action=allow", "protocol=TCP",
+                     "localport=7878", "remoteip=localsubnet",
+                     'program=""{app}\\ltcplay.exe""', "runhidden"):
+            check(want in adds[0], f"the firewall rule has {want}: "
+                                   f"{adds[0]}")
+        check("remoteip=any" not in adds[0].lower() and
+              "0.0.0.0" not in adds[0] and "localport=any" not in
+              adds[0].lower(), "the rule is never open to anywhere")
+    check(any("firewall delete rule" in ln and rule in ln and
+              "RemoveFirewallRule" in ln for ln in un_part.splitlines()),
+          f"the uninstaller deletes the rule: {un_part}")
+    with open(os.path.join(sp, "ci_smoke.py"), encoding="utf-8") as fh:
+        smoke = fh.read()
+    for want in ('check_firewall_rule("after install")',
+                 'check_firewall_rule("after the update")',
+                 "rc, out = firewall_rule()\n        check(rc != 0, ",
+                 "network_check(net_ip, logs)", '"remoteip": "localsubnet"',
+                 'get("/api/remote/network"'):
+        check(want in smoke, f"the smoke test checks {want!r}")
+    print("  ok")
+
+
 def test_live_show_refuses_the_page_transport():
     section("a live scheduled show refuses the page's transport and output "
             "routes (GO, Skip, Stop, Start, looks, reload...) on every door, "
@@ -83356,6 +83790,7 @@ if __name__ == "__main__":
         test_web_page_icons,
         test_remote_cross_site_posts_refused_on_loopback,
         test_remote_localhost_unaffected_and_proxies_refused,
+        test_show_network_card_firewall_and_wrong_name_page,
         test_remote_controls_reach_the_same_paths_and_journal_who_and_where,
         test_deck_fix_round_2_abort_reset_and_disarm,
         test_deck_presses_reach_the_engine_conductor,

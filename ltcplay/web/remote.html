@@ -1222,6 +1222,9 @@ button.fb-pad.na{opacity:.45}
     </div>
     <section class="card" id="admin" hidden>
       <h2>Show network, on this machine</h2>
+      <div id="net-status" style="font-size:14px"></div>
+      <div class="row" id="net-uses" style="margin-top:6px;flex-wrap:wrap"></div>
+      <div class="row" style="margin-top:6px"><button id="net-restart" hidden>Restart the engine</button></div>
       <label for="net-addr">Show Wi-Fi address of this machine (port 7878)</label>
       <div class="row">
         <select id="net-pick" style="flex:1 1 0"></select>
@@ -3937,14 +3940,43 @@ $("annout-save").addEventListener("click", async () => {
   }catch(e){ $("annout-msg").textContent = e.message; }
   $("annout-msg").title = $("annout-msg").textContent;
 });
+// The Show network card (2026-10-28, Jeff could never open the page from
+// his Mac): what is saved, where the engine listens, the firewall rule and
+// the address to type, all in the engine's own words (remote.network_view).
+function renderNetwork(n){
+  $("net-status").innerHTML = (n.lines || []).map(l => `<div>${esc(l)}</div>`).join("") +
+    (n.url ? `<div style="font-size:20px;margin-top:4px"><b>${esc(n.url)}</b></div>` : "");
+  const uses = n.saved ? [] : (n.candidates || []);
+  $("net-uses").innerHTML = uses.map(a => `<button data-addr="${esc(a)}" style="flex:0 0 auto">Use ${esc(a)}</button>`).join("");
+  const r = n.restart || {};
+  $("net-restart").hidden = !r.needed;
+  $("net-restart").disabled = !r.offered || !mayRow(ST, "settings");
+  $("net-restart").title = r.why || "";
+  $("net-save").disabled = !mayRow(ST, "settings");
+  for(const b of $("net-uses").querySelectorAll("button")) b.disabled = !mayRow(ST, "settings");
+}
 async function loadNetwork(){
   try{
     const n = await getJSON("/api/remote/network", 3000);
     fill($("net-pick"), [""].concat(n.candidates || []), false);
     $("net-addr").value = n.saved || "";
     $("net-msg").textContent = n.error || (n.saved ? ("Saved: " + n.saved + ", port " + n.port) : "Not set yet.");
+    renderNetwork(n);
   }catch(e){ $("net-msg").textContent = e.message; }
 }
+async function saveNetwork(addr){
+  try{ const j = await post("/api/remote/network", {address:addr}); $("net-msg").textContent = j.note; renderNetwork(j); }
+  catch(e){ $("net-msg").textContent = e.message; }
+}
+$("net-uses").addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-addr]");
+  if(b) saveNetwork(b.dataset.addr);
+});
+$("net-restart").addEventListener("click", async () => {
+  if(!(await confirmBox("Restart the engine?", "LTC Player restarts the show engine so it listens on the saved show network address. It is refused while a show runs or a flame group is armed. flamesafe and the Stream Deck program keep running.", "Yes, restart", "start"))) return;
+  try{ const j = await post("/api/remote/reload-engine", {}); $("net-msg").textContent = j.text; }
+  catch(e){ $("net-msg").textContent = e.message; }
+});
 // What the switch lets screens do: every one of it (review of PR #90,
 // P2-1). remote.py SCREEN_ARMING_ENABLES says the same words.
 const SCREEN_ARMING_ENABLES = "On, this rack screen and every device on the show network can hold to arm a flame group (through the Stream Deck, with all of its rules and flamesafe's) and disarm one flame group. Devices on the show network can also select and fire a purge, unlock a machine, turn a laser test on and arm a laser (this rack screen does those without this switch).";
@@ -4046,10 +4078,7 @@ $("sf-on").addEventListener("click", async () => {
   $("sf-msg").title = $("sf-msg").textContent;
 });
 $("net-pick").addEventListener("change", () => { if($("net-pick").value) $("net-addr").value = $("net-pick").value; });
-$("net-save").addEventListener("click", async () => {
-  try{ const j = await post("/api/remote/network", {address:$("net-addr").value}); $("net-msg").textContent = j.note; }
-  catch(e){ $("net-msg").textContent = e.message; }
-});
+$("net-save").addEventListener("click", () => saveNetwork($("net-addr").value));
 
 // ---- Morning and Shutdown (Jeff, 2026-10-17) ------------------------
 // The engine owns every decision (morning.py): this view only shows its
