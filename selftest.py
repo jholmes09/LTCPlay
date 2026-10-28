@@ -85329,7 +85329,8 @@ def test_ui2_show_tab_in_a_browser():
             "1920x1080, 1366x768, 1280x800, 1024x768, 820x1180 and "
             "768x1024; Abort 96 px in the corner, never covered or dimmed, "
             "nothing under it; controls 56 px (help and header 44), text "
-            "20 px, nothing cut or overlapping; and pressed: Abort fires on "
+            "20 px, nothing cut or overlapping (a 390x844 phone too, whose "
+            "pane may scroll); and pressed: Abort fires on "
             "the second tap only, Stop only after its Yes, a hold to arm "
             "beats while held and lets go on release")
     one, two = _ui2_pages()
@@ -85350,7 +85351,9 @@ def test_ui2_show_tab_in_a_browser():
         return
     # (A window size: the browser's own frame takes 87 px of its height
     # here, about what the Windows app's frame and an iPad's Safari take.)
-    sizes = UI2_NO_SCROLL
+    # The phone too: its pane may scroll, but nothing is cut, covered or
+    # small there either (the audit's seven windows).
+    sizes = UI2_NO_SCROLL + ((390, 844),)
     runs = [("alerts open", _rack_status_pico(), sizes, ""),
             ("a show running", _ui2_status_running(), sizes, ""),
             ("pressed", _rack_status_pico(many=False), ((1366, 768),),
