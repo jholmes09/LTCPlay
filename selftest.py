@@ -38223,6 +38223,107 @@ def test_refused_starts_say_why_and_what_to_press():
     finally:
         R2.close()
 
+    # Re-review of #144, N1: ANY Hold that is taken ends the wait, the
+    # announcement's and the engine's own at showtime included, not only an
+    # operator's Hold press. N2: while a Stop's halt is under way, Start now
+    # and Run are refused.
+    for how in ("announcement", "engine"):
+        n = _fi_night(armed=False)
+        S, svc = n.S, n.svc
+        clk = _fi_show_cue(n)
+        svc.START_WAIT_S = 5.0
+        n.now[0] = _den(S, 17, 56)
+        svc.tick()
+
+        def hold_later(how=how, svc=svc):
+            time.sleep(0.3)
+            if how == "announcement":
+                svc.hold_for_announcement("Andy", "Rack screen")
+            else:
+                with svc._locked():
+                    svc._apply(S.Event(S.HOLD_ON, "system",
+                                       who="LTC Player", screen="engine",
+                                       detail="held the schedule at "
+                                              "showtime because an alert "
+                                              "is open (test)"))
+            time.sleep(0.3)
+            clk._loaded = {"show"}
+        th = _th.Thread(target=hold_later)
+        th.start()
+        r = svc.operator_press("start-now", "Andy", "Rack screen")
+        th.join()
+        check(r["ok"] is False and r.get("cancelled") is True and
+              svc.machine.state == S.HOLD and not svc.machine.running,
+              f"N1: the {how}'s Hold ends a waiting Start now; no show "
+              f"starts over the Hold: {r} {svc.machine.state}")
+        n.c.close()
+        n.link.close()
+    n = _fi_night(armed=False)
+    S, svc = n.S, n.svc
+    clk = _fi_show_cue(n)
+    clk._loaded = {"show"}
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    svc.halt_begin()
+    try:
+        r = svc.operator_press("start-now", "Andy", "Rack screen")
+        check(r["ok"] is False and r.get("halting") is True and
+              "a Stop is under way" in r["text"] and
+              not svc.machine.running,
+              f"N2: Start now during a Stop's halt is refused: {r}")
+    finally:
+        svc.halt_end()
+    check(not svc.halting(), "and the halt is over after halt_end")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is True, f"after it, Start now works: {r}")
+    n.c.close()
+    n.link.close()
+    # A Hold landing just as the wait ends (after the last look, before
+    # the start is made) is caught again under the lock.
+    R4 = _RemoteRig(S)
+    try:
+        sv = R4.svc
+        calls = [0]
+
+        def blocked_then_held():
+            calls[0] += 1
+            if calls[0] == 1:
+                return {"text": "the show audio is still loading",
+                        "loading": True}
+            sv.cancel_start_wait("the schedule was put on Hold")
+            return None
+        sv.performer = _ty.SimpleNamespace(start_blocked=blocked_then_held,
+                                           start_show=lambda n, who="": None)
+        sv.dry_run = False
+        slots0 = len(sv.machine.slots)
+        r = sv.operator_press("start-now", "Andy", "Rack screen")
+        check(r["ok"] is False and r.get("cancelled") is True and
+              "just before it started" in r["text"] and
+              len(sv.machine.slots) == slots0,
+              f"a Hold just as the wait ended: refused under the lock, "
+              f"nothing started: {r}")
+    finally:
+        R4.close()
+    # N2 on the web side: Run is refused while a halt is under way.
+    from ltcplay import web as _web
+    _src = open(_web.__file__, encoding="utf-8").read()
+    check('if getattr(_svc, "halting", lambda: False)() is True:' in _src
+          and "return self._halt_stop(body, c)" in _src,
+          "Run (/api/start) is refused during a halt, and the deck's halt "
+          "counts as one")
+    R3 = _RemoteRig(S)
+    try:
+        R3.svc.halt_begin()
+        try:
+            st, _h, out = R3.ask("POST", "/api/start", {"timeline": "x"},
+                                 client=("127.0.0.1", 50000))
+        finally:
+            R3.svc.halt_end()
+        check(st == 409 and "a Stop is under way" in str(out),
+              f"Run during a Stop's halt: refused, saying why: {st} {out}")
+    finally:
+        R3.close()
+
     # The other refusals before the show cue's audio, said at once.
     n = _fi_night(armed=False)
     S, svc = n.S, n.svc

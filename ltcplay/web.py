@@ -853,6 +853,31 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         return out
 
+    def _halt_stop(self, body, c):
+        """The Stream Deck's Stop (/api/stop with "halt"): Remote.halt,
+        then playback stops. Answers the request."""
+        out = self._halt(body)
+        try:
+            out["stopped"] = c.stop()
+        except Exception as e:       # noqa: BLE001
+            # The halt ran; only the playback stop failed. The
+            # answer still carries every step (third review of
+            # #130, 4), for the deck to say.
+            out["stopped"] = False
+            out["failed"] = list(out.get("failed") or []) + [
+                "playback stop"]
+            said = f"{type(e).__name__}: {e}"
+            out["playback_error"] = said
+            # The halt's own error, if it had one, is kept
+            # beside this one, never overwritten (review of
+            # #130, low items, 2).
+            out["error"] = (f"{out['error']}; and the playback "
+                            f"stop: {said}" if out.get("error")
+                            else said)
+            c.last_error = said
+            return self._send(500, out)
+        return self._send(200, out)
+
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
         cut, fire while scrubbing ended, then the flame link's disarm_all
@@ -1392,6 +1417,14 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/check":
                 return self._send(200, c.check(body.get("timeline", "")))
             if route == "/api/start":
+                # Never while a Stop's halt is under way (re-review of
+                # #144, N2): a Run from another screen would bring the rig
+                # back in the middle of the Stop.
+                _svc = getattr(self.server, "schedule", None)
+                if getattr(_svc, "halting", lambda: False)() is True:
+                    return self._send(409, {"error": (
+                        "Run was refused: " + _svc.HALTING + ". Nothing was "
+                        "started.")})
                 # Run ends live flame programming first (flameprog.py):
                 # the show's own flame cues and xLights are never both a
                 # source of fire values.
@@ -1454,27 +1487,18 @@ class Handler(BaseHTTPRequestHandler):
                 # ends a live scheduled show (STOP_SHOW). Its fade runs to
                 # the end before playback stops.
                 if self._halt_asked():
-                    out = self._halt(body)
+                    # A Stop's halt under way: Start now and Run are
+                    # refused until it is over (re-review of #144, N2).
+                    svc = getattr(self.server, "schedule", None)
+                    begin = getattr(svc, "halt_begin", None)
+                    if begin is not None:
+                        begin()
                     try:
-                        out["stopped"] = c.stop()
-                    except Exception as e:       # noqa: BLE001
-                        # The halt ran; only the playback stop failed. The
-                        # answer still carries every step (third review of
-                        # #130, 4), for the deck to say.
-                        out["stopped"] = False
-                        out["failed"] = list(out.get("failed") or []) + [
-                            "playback stop"]
-                        said = f"{type(e).__name__}: {e}"
-                        out["playback_error"] = said
-                        # The halt's own error, if it had one, is kept
-                        # beside this one, never overwritten (review of
-                        # #130, low items, 2).
-                        out["error"] = (f"{out['error']}; and the playback "
-                                        f"stop: {said}" if out.get("error")
-                                        else said)
-                        c.last_error = said
-                        return self._send(500, out)
-                    return self._send(200, out)
+                        return self._halt_stop(body, c)
+                    finally:
+                        end = getattr(svc, "halt_end", None)
+                        if end is not None:
+                            end()
                 flames = self._stop_flames(body)
                 out = {"stopped": c.stop()}
                 if flames is not None:

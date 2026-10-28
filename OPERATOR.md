@@ -446,7 +446,10 @@ FAULT line. Right after Run the show audio takes a few seconds to load:
 Start now then says "audio loading, starts when ready". Pressed then, it
 waits for the audio (at most 20 seconds) and reads **Loading, starting when
 ready**; the show starts as soon as the audio is in. Hold, Stop or Abort
-cancels the wait and nothing starts. Only the show's own audio counts: a
+cancels the wait and nothing starts, and so does any Hold the program
+makes itself (for an announcement, or at showtime for an open alert).
+While a Stop is still disarming and fading to dark, Start now and Run on
+any screen are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
 ## Stopping

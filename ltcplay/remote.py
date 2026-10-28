@@ -3544,6 +3544,18 @@ class Remote:
         playback stops, so Run is off. (code, answer) in /api/stop's
         shape: {"flames", "lasers", "lasers_blank", "show", "failed",
         "stopped"}, with "error" when a step failed. Never raises."""
+        svc = self.schedule
+        begin = getattr(svc, "halt_begin", None)
+        if begin is not None:
+            begin()
+        try:
+            return self._stop_press(who, screen)
+        finally:
+            end = getattr(svc, "halt_end", None)
+            if end is not None:
+                end()
+
+    def _stop_press(self, who, screen):
         h = self.halt(who, screen)
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show")
                if h.get(k) is not None}

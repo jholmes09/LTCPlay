@@ -790,6 +790,9 @@ class Service:
         # many wait now, and (number, why) bumped by cancel_start_wait.
         self._start_waiters = 0
         self._start_cancel = (0, "")
+        # Stops under way (halt_begin / halt_end).
+        self._halts = 0
+        self._halt_count_lock = threading.Lock()
         # Whether the operator has pressed Run (a show file is running), set
         # by fire_ice.attach() with the conductor. While it says no, nothing
         # the scheduler decides by itself reaches the show conductor, so no
@@ -1728,6 +1731,17 @@ class Service:
             # until then.
             ev = replace(ev, latched=True)
         out = sch.step(self.machine, ev, now)
+        if not out.refused and ev.kind in (sch.HOLD_ON, sch.ABORT,
+                                          sch.STOP_SHOW):
+            # Any Hold that is taken (an operator's, an announcement's, the
+            # engine's own at showtime for an open alert), an Abort or a
+            # Stop ends a Start now waiting for the show audio: it is
+            # refused under this lock before it can start a show over the
+            # Hold (re-review of #144, N1).
+            self.cancel_start_wait(
+                "the schedule was put on Hold" if ev.kind == sch.HOLD_ON
+                else "the show was aborted" if ev.kind == sch.ABORT
+                else "Stop was pressed")
         self.machine = out.machine
         plan, held = self._hold_back_unattended(
             self._drive_conductor(out, ev), ev)
@@ -3218,6 +3232,12 @@ class Service:
             # A Start now waiting for the show audio never outlives these.
             self.cancel_start_wait(f"{what} was pressed")
         gen = None
+        if kind == sch.START_NOW and self.halting():
+            sentence = (f"Start now was refused: {self.HALTING}. Nothing "
+                        f"was started.")
+            self.journal_press(who, screen, "start-now", "refused",
+                               f"{who}'s Start now was refused. {sentence}")
+            return {"ok": False, "text": sentence, "halting": True}
         if kind == sch.START_NOW:
             # Outside this service's lock: the performer's check reads the
             # show's clock (start_blocked), and it may wait for the audio.
@@ -3225,7 +3245,8 @@ class Service:
             if refused is not None:
                 return refused
         with self._locked():
-            if gen is not None and self._start_cancel[0] != gen:
+            if gen is not None and (self._start_cancel[0] != gen or
+                                    self.halting()):
                 # A Stop, Hold or Abort landed after the wait ended and
                 # before this: the start is not made.
                 why = self._start_cancel[1] or "it was cancelled"
@@ -3299,6 +3320,26 @@ class Service:
         Abort was pressed): it is refused, saying `why`, and starts
         nothing. Cheap, takes no lock, never raises."""
         self._start_cancel = (self._start_cancel[0] + 1, str(why or ""))
+
+    def halt_begin(self):
+        """A Stop's complete halt is under way (Remote.stop_press, web.py's
+        /api/stop with "halt"): until halt_end, Start now is refused, and
+        so is Run (re-review of #144, N2). Also ends any waiting Start
+        now. Never raises."""
+        with self._halt_count_lock:
+            self._halts += 1
+        self.cancel_start_wait("Stop was pressed")
+
+    def halt_end(self):
+        with self._halt_count_lock:
+            self._halts = max(0, self._halts - 1)
+
+    def halting(self):
+        """True while a Stop's halt is under way (halt_begin)."""
+        return self._halts > 0
+
+    HALTING = ("a Stop is under way (the rig is being disarmed and faded "
+               "to dark); wait until it has finished, then press it again")
 
     def start_waiting(self):
         """True while a Start now waits for the show audio to load."""
