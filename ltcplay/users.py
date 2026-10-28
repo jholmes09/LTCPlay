@@ -164,6 +164,7 @@ READ_GRACE_S = 10.0
 # "safety": never restricted. None: harmless, never restricted.
 REMOTE_ROUTES = {
     "abort": "safety", "hold": "safety", "disarm-all": "safety",
+    "stop": "safety",
     "group-disarm": "safety", "arm-release": "safety", "alert": "safety",
     "purge-stop": "safety", "purge-clear": "safety",
     "signin": "safety", "signout": "safety",

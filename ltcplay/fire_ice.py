@@ -1782,6 +1782,13 @@ def _has_status_mirror(path):
 
 # ------------------------------------------------------------- the runner --
 
+def _full_stop(text):
+    """`text` as one sentence ending in a full stop, for a refusal reason
+    that goes on with what to press."""
+    text = str(text or "").strip()
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
 class ShowRunner:
     """What the scheduler's dry run used to make up, done for real, only
     while Service.dry_run is False (config "scheduler_performs": true).
@@ -1832,6 +1839,118 @@ class ShowRunner:
             except Exception:
                 pass
 
+    # Why a start was refused, in plain words, each with what to press
+    # (Jeff's field report, 2026-10-28: the alert said only "The show did
+    # not start" and the reason was in the journal alone). Each is the
+    # slot's reason on the rack screen ("FAULT (...)") and the start
+    # alert's first sentence, so none ends in a full stop.
+    AUTO_START_OFF = ("auto_start is off in ltcplay_fire_ice.json, so the "
+                      "scheduler does not start a show by itself; press "
+                      "Start now to start it")
+    RUN_OFF = ("Run has not been pressed, so nothing may reach the rig; "
+               "press Run on the Programming screen, then Start now")
+    NOT_AUDIO_MASTER = ("the running show file's clock is not "
+                        "\"audio_master\", so this program cannot start it; "
+                        "on the Programming screen press Stop, choose the "
+                        "show file whose clock is \"audio_master\", then "
+                        "press Run")
+    LATCHED = ("the show is aborted, and the show conductor stays latched "
+               "until someone presses Reset; press Reset, then Start now")
+    AUDIO_LOADING = ("the show audio is still loading (it takes a few "
+                     "seconds after Run); wait a moment, then press Start "
+                     "now, which waits for it to finish loading")
+    AUDIO_FAILED = ("the show audio did not load: {why} Replace the file, "
+                    "then on the Programming screen press Stop and Run "
+                    "again")
+    AUDIO_DEVICE = ("the show audio interface is not available: {why} "
+                    "Plug it in or pick it again, then press Start now")
+    NEVER_CONFIRMED = ("the show audio stopped before its timecode was seen "
+                       "moving ({how}); check the show audio interface, "
+                       "then press Start now")
+    SHOW_START_ERROR = ("{why} Fix that, then press Start now")
+
+    def _refusal(self, s, clk):
+        """The sentence a start would be refused with before anything goes
+        out, or "": Run not pressed, a show file this program cannot start,
+        or show audio that is not ready (still loading, failed to load, its
+        interface missing). Reads the clock's own records without its lock:
+        a guess here only words the refusal, never decides a start."""
+        if s is None:
+            return self.RUN_OFF
+        if clk is None:
+            return self.NOT_AUDIO_MASTER
+        try:
+            if getattr(clk, "_live", True) and \
+                    getattr(clk, "_device_ok", True) is False:
+                why = getattr(clk, "_fault", None) or "it has not opened yet."
+                return self.AUDIO_DEVICE.format(why=_full_stop(why))
+            failed = dict(getattr(clk, "_load_failed", None) or {})
+            loaded = set(getattr(clk, "_loaded", None) or ())
+            role = self._show_role(s, clk)
+        except Exception:                        # noqa: BLE001
+            return ""
+        # Only the show cue's own audio (review of #144, F3): a slow or
+        # broken intermission file never holds the show back, exactly as
+        # clock.play judges only the cue it is asked to play.
+        roles = [role] if role is not None else []
+        for role in roles:
+            if role in failed:
+                return self.AUDIO_FAILED.format(why=_full_stop(failed[role]))
+        if any(role not in loaded for role in roles):
+            return self.AUDIO_LOADING
+        return ""
+
+    def _show_role(self, s, clk):
+        """The show audio role of the cue start_show plays (cfg.show_cue,
+        or the show file's first cue), picked the way Session.clock_play
+        picks it, or None when it cannot be told (then nothing is judged
+        here and clock.play says what is wrong)."""
+        cues = list(getattr(getattr(s, "tl", None), "cues", None) or ())
+        table = getattr(clk, "cues", None) or {}
+        want = self.cfg.show_cue
+        if want is None:
+            pick = cues[0] if cues else None
+        else:
+            w = str(want).strip().lower()
+            hits = [c for c in cues
+                    if w in (str(getattr(c, "name", "")).lower(),
+                             os.path.basename(str(getattr(c, "path", "")))
+                             .lower(),
+                             str(getattr(c, "tc_text", "")).lower())]
+            pick = hits[0] if len(hits) == 1 else None
+        if pick is None:
+            # No show file cues to read (or no match): the table's own
+            # entry under the cue's name, if it has one.
+            got = table.get(want) if want is not None else None
+        else:
+            got = table.get(getattr(pick, "name", None))
+        if isinstance(got, tuple) and got:
+            return got[0]
+        return None
+
+    def start_blocked(self):
+        """What an operator's Start now would be refused with right now, as
+        {"text", "loading"}, or None when nothing is in the way (the
+        scheduler's own rules, an Abort latch among them, still apply).
+        Service.operator_press refuses Start now with it before anything is
+        decided, and the rack screen shows it on the button: a start that
+        cannot work is never turned into a FAULT slot and a generic alert
+        (Jeff, 2026-10-28). Never raises."""
+        try:
+            # No lock taken and nothing hooked (show._clock() takes the
+            # show's lock): this is read on every status poll.
+            s = self.show._session()
+            clk = getattr(s, "clock", None) if s is not None else None
+            if clk is not None and \
+                    getattr(clk, "source", None) != "audio_master":
+                clk = None
+            why = self._refusal(s, clk)
+        except Exception:                        # noqa: BLE001
+            return None
+        if not why:
+            return None
+        return {"text": why, "loading": why == self.AUDIO_LOADING}
+
     def start_show(self, n, who="the scheduler"):
         """Called on the scheduler's ordered line of conductor requests,
         off its lock, after tonight is saved; the conductor is told a show
@@ -1842,19 +1961,13 @@ class ShowRunner:
         s = self.show._session()
         auto = who == "the scheduler"
         if auto and self.cfg.auto_start == "off":
-            why = ("auto_start is off in ltcplay_fire_ice.json, so the "
-                   "scheduler does not start a show by itself; press Start "
-                   "now to start it")
+            why = self.AUTO_START_OFF
             with self._lock:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
-        if s is None or clk is None or self.conductor.latched:
-            why = ("Run has not been pressed, so nothing may reach the rig"
-                   if s is None else
-                   "the running show file's clock is not \"audio_master\""
-                   if clk is None else
-                   "the show is aborted, and the show conductor stays "
-                   "latched until someone presses Reset")
+        why = self._refusal(s, clk) or (
+            self.LATCHED if self.conductor.latched else "")
+        if why:
             # Refused before anything went out: the failed start this is
             # reported as sends nothing either (no fade, no MadMapper).
             with self._lock:
@@ -1870,9 +1983,13 @@ class ShowRunner:
         try:
             pick = s.clock_play(self.cfg.show_cue)
         except Exception as e:
+            # The clock's own sentence, then what to press (Jeff,
+            # 2026-10-28): "still loading" says to wait.
+            why = self._refusal(s, clk) or self.SHOW_START_ERROR.format(
+                why=_full_stop(e))
             with self._lock:
-                self._cue = {"show": n, "failed": str(e)}
-            return C.failed(f"Show {n} was not started: {e}")
+                self._cue = {"show": n, "failed": why}
+            return C.failed(f"Show {n} was not started: {why}.")
         # The music is now playing, whatever the conductor's record says:
         # an Abort or Hold before SHOW_CONFIRMED must stop or freeze it (PR
         # #43 review, finding 4).
@@ -1963,6 +2080,8 @@ class ShowRunner:
                 if self._cue is cue:
                     self._cue = None
             how = getattr(clk, "last_ended", "") or "the cue stopped"
+            if not cue["confirmed"]:
+                how = self.NEVER_CONFIRMED.format(how=how)
             self.svc.report("SHOW_ENDED" if cue["confirmed"]
                             else "SHOW_FAILED", how, show=n)
 
