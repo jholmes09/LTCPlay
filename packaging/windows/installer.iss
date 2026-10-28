@@ -16,6 +16,13 @@
 ;     back to the previous version" can run the one before.
 ;   - Settings and show files are never touched: they live in
 ;     %LOCALAPPDATA%\ltcplay and wherever the show folder is.
+;   - Adds one Windows Firewall rule, "LTC Player rack page": inbound TCP
+;     7878, for ltcplay.exe only, from this PC's own subnet only
+;     (remoteip=localsubnet), on every network profile (Windows often marks
+;     a show network Public). It is deleted and added again on every
+;     install, so an update leaves exactly one, and deleted on uninstall.
+;     The engine itself still listens only on 127.0.0.1 and the one show
+;     network address saved on the rack screen, never on every interface.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -115,10 +122,13 @@ Name: "{autodesktop}\LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: 
 Filename: "{app}\LTC Player.exe"; Parameters: "--prune-installers --quiet"; Flags: waituntilterminated
 Filename: "{app}\LTC Player.exe"; Parameters: "--install-task --quiet"; Tasks: autostart; Flags: runasoriginaluser waituntilterminated
 Filename: "{app}\LTC Player.exe"; Parameters: "--remove-task --quiet"; Tasks: not autostart; Flags: waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LTC Player rack page"""; Flags: runhidden waituntilterminated; StatusMsg: "Setting the firewall rule for the rack page..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LTC Player rack page"" dir=in action=allow protocol=TCP localport=7878 remoteip=localsubnet profile=any program=""{app}\ltcplay.exe"" enable=yes description=""LTC Player: the rack page on port 7878, from this PC's own subnet only"""; Flags: runhidden waituntilterminated
 Filename: "{app}\LTC Player.exe"; Parameters: "--start --quiet"; Flags: runasoriginaluser nowait; StatusMsg: "Starting LTC Player..."
 
 [UninstallRun]
 Filename: "{app}\LTC Player.exe"; Parameters: "--remove-task --quiet"; Flags: waituntilterminated; RunOnceId: "RemoveTask"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LTC Player rack page"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewallRule"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\Installers"

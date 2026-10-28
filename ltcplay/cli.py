@@ -1505,6 +1505,7 @@ def _cmd_serve(args):
         args.bind = rs["show_network_address"]
         args.port = remote_mod.FIXED_PORT
         flamesafe_config = flamesafe_config or rs["flamesafe_config"]
+    network_fallback = _network_if_saved(args)
     if flamesafe_config is None and fire_ice is not None:
         # Fire & Ice: the flame link's own flamesafe config also feeds the
         # remote page's flame lamps, and (through its status_mirror_port)
@@ -1516,7 +1517,8 @@ def _cmd_serve(args):
                               token=args.token, schedule=schedule,
                               announce=announce, fire_ice=fire_ice,
                               flamesafe_config=flamesafe_config,
-                              accounts=True, config_watch=cfg_watch)
+                              accounts=True, config_watch=cfg_watch,
+                              network_fallback=network_fallback)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1526,7 +1528,10 @@ def _cmd_serve(args):
         # and found shorter (Jeff, 2026-09-26): nothing was bound or
         # started. See web.serve and clock.derive_show_length_in_folder.
         return _err(str(e))
-    host = "127.0.0.1" if args.bind in web_mod.LOOPBACK else args.bind
+    # Where it really listens: a saved address this PC does not have now
+    # falls back to this PC only (--network-if-saved).
+    bound = getattr(httpd, "bind_address", None) or args.bind
+    host = "127.0.0.1" if bound in web_mod.LOOPBACK else bound
     if ":" in host:
         host = f"[{host}]"
     url = f"http://{host}:{args.port}/"
@@ -1589,6 +1594,29 @@ def _cmd_serve(args):
         _shutdown(httpd)
         _say_blackout(sess)
     return 0
+
+
+def _network_if_saved(args, load=None):
+    """--network-if-saved (the Windows supervisor): the show network
+    address saved on the page (Show network, on the show PC) becomes
+    args.bind when there is one, and True is returned (serve's
+    network_fallback); else args is left on this PC only and False is
+    returned. Never every interface: the address passed check_show_address
+    when it was read. A broken settings file keeps the engine on this PC
+    only instead of stopping it."""
+    if not getattr(args, "network_if_saved", False) or \
+            getattr(args, "network", False):
+        return False
+    from . import remote as remote_mod
+    try:
+        saved = (load or remote_mod.load_settings)()["show_network_address"]
+    except ValueError as e:
+        print(f"The show network is not used: {e}")
+        return False
+    if not saved:
+        return False
+    args.bind = saved
+    return True
 
 
 def _config_watch_at_start(args, schedule):
@@ -2299,6 +2327,11 @@ def main(argv=None):
                     help="serve on the show network address saved on the "
                          "page (ltcplay_remote.json), port 7878; every "
                          "operator signs in with their own PIN")
+    sv.add_argument("--network-if-saved", action="store_true",
+                    dest="network_if_saved",
+                    help="the Windows app: serve on the show network "
+                         "address saved on the page when there is one, "
+                         "else on this machine only")
     sv.add_argument("--flamesafe-config", dest="flamesafe_config",
                     help="flamesafe's config, for the flame lamps on the "
                          "remote page (needs link.status_mirror_port)")

@@ -802,8 +802,12 @@ def wanted_args(settings):
         out["deck"] = (None, "the Stream Deck program is not started: the "
                        "engine is not running")
         return out
+    # The show network (Jeff, 2026-10-28: the page never opened from his
+    # Mac): the address saved on the rack screen's Show network card, on
+    # the show PC, when there is one; else this PC only. Never every
+    # interface. The installer's firewall rule lets this PC's own subnet in.
     engine = ["serve", "--folder", folder, "--port", str(port),
-              "--no-browser"]
+              "--no-browser", "--network-if-saved"]
     if mode == "fire_ice":
         engine += ["--schedule", settings["schedule"]]
         # Operator announcements (announce.py, Jeff 2026-10-26), always on

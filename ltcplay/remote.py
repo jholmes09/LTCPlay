@@ -81,6 +81,16 @@ proxied (a Forwarded, X-Forwarded-For, Via or similar header) is refused,
 from anywhere, loopback included: a proxy or tunnel on the show machine
 would make the whole world look like the machine itself. NEVER put remote
 access software, a tunnel or a port forward on the show machine.
+
+On the Windows show PC (2026-10-28) the supervisor starts the engine with
+--network-if-saved: the saved address when there is one (a saved address
+this PC does not have falls back to this PC only, said on the card), else
+this PC only. The installer's one firewall rule (FIREWALL_RULE) lets in
+port 7878 for ltcplay.exe from this PC's own subnet only. The Show network
+card (network_view) says what is saved, where the engine listens, whether
+that rule is there (read with netsh, never changed) and the address to
+type. A request by another name for this PC gets a short page naming that
+address (web.wrong_host_page); the Host check is not loosened.
 """
 import contextlib
 import hmac
@@ -628,31 +638,111 @@ def save_settings(folder, **changes):
     return load_settings(folder)
 
 
-def address_candidates():
-    """This machine's IPv4 addresses, for the page to offer. Best effort:
-    the stdlib has no interface list, so this asks the name service and
-    the routing table, and the operator can also type one."""
+# The private IPv4 ranges (RFC 1918): the only addresses the page offers
+# to save. Never loopback, link-local (169.254), carrier or public ones; a
+# show network on another range can still be typed, and is checked by
+# check_show_address the same way as always.
+RFC1918 = tuple(ipaddress.ip_network(n) for n in
+                ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+
+
+def is_rfc1918(text):
+    """True for a private IPv4 address (10/8, 172.16/12, 192.168/16)."""
+    try:
+        ip = ipaddress.ip_address(str(text or "").strip())
+    except ValueError:
+        return False
+    return ip.version == 4 and any(ip in n for n in RFC1918)
+
+
+def address_candidates(found=None):
+    """This machine's private IPv4 addresses (RFC 1918 only), for the page
+    to offer. Best effort: the stdlib has no interface list, so this asks
+    the name service and the routing table, and the operator can also type
+    one. `found` replaces that lookup (tests)."""
     seen = []
+    for a in (_local_ipv4s() if found is None else found):
+        if a not in seen and is_rfc1918(a):
+            seen.append(a)
+    return seen
+
+
+def _local_ipv4s():
+    out = []
     try:
         for fam, _t, _p, _c, sa in socket.getaddrinfo(
                 socket.gethostname(), None, socket.AF_INET):
-            a = sa[0]
-            if a not in seen and not a.startswith("127."):
-                seen.append(a)
+            out.append(sa[0])
     except OSError:
         pass
     try:
         k = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             k.connect(("192.0.2.1", 9))        # TEST-NET-1; nothing is sent
-            a = k.getsockname()[0]
-            if a not in seen and not a.startswith("127."):
-                seen.append(a)
+            out.append(k.getsockname()[0])
         finally:
             k.close()
     except OSError:
         pass
-    return seen
+    return out
+
+
+# The Windows Firewall rule the installer adds (installer.iss) and removes
+# on uninstall: inbound TCP 7878, ltcplay.exe only, from this PC's own
+# subnet only. The page only reads it (netsh ... show rule), never changes
+# it.
+FIREWALL_RULE = "LTC Player rack page"
+FIREWALL_READ_S = 30.0
+
+
+def firewall_rule_state(run=None, windows=None):
+    """("present" | "off" | "missing" | "unknown" | "none", sentence) for
+    the Windows Firewall rule, read with netsh. Read only. Never raises.
+    "none": not Windows, no rule needed."""
+    windows = (os.name == "nt") if windows is None else windows
+    if not windows:
+        return ("none", "This is not a Windows PC, so there is no Windows "
+                        "Firewall rule to check.")
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        # One command line as typed: netsh reads name="..." itself.
+        p = run(f'netsh advfirewall firewall show rule '
+                f'name="{FIREWALL_RULE}" verbose',
+                capture_output=True, text=True, timeout=10, **kw)
+        text = (p.stdout or "") + (p.stderr or "")
+    except Exception as e:                       # noqa: BLE001
+        return ("unknown", f"The Windows Firewall rule could not be read "
+                           f"({type(e).__name__}).")
+    if p.returncode != 0:
+        return ("missing", f"The Windows Firewall rule \"{FIREWALL_RULE}\" "
+                           f"is missing, so other machines are blocked. Run "
+                           f"the LTC Player installer again: it adds the "
+                           f"rule.")
+    enabled = [ln.split(":", 1)[1].strip().lower() for ln in
+               text.splitlines() if ln.strip().lower().startswith(
+                   "enabled:")]
+    if enabled and all(v == "no" for v in enabled):
+        return ("off", f"The Windows Firewall rule \"{FIREWALL_RULE}\" is "
+                       f"there but switched off, so other machines are "
+                       f"blocked. Run the LTC Player installer again.")
+    return ("present", f"The Windows Firewall lets machines on this PC's "
+                       f"own subnet in on port {FIXED_PORT} (rule "
+                       f"\"{FIREWALL_RULE}\").")
+
+
+def page_url(address, port=FIXED_PORT):
+    """The address to type on another machine, or None."""
+    if not address:
+        return None
+    a = str(address)
+    if ":" in a:
+        a = f"[{a}]"
+    return f"http://{a}:{port}/"
 
 
 def looks_proxied(headers):
@@ -1232,6 +1322,10 @@ class Remote:
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
+        # Where this engine really listens, set by web.serve:
+        # {"addresses": [...], "port": int, "why": sentence or ""}. None
+        # (a Remote built without serve) reads "not known".
+        self.listen = None
         # configwatch.ConfigWatch, set by web.serve for `ltc serve`: the
         # settings files changed on disk since this engine (or the deck,
         # flamesafe, the supervisor) read them. Display only.
@@ -1916,14 +2010,70 @@ class Remote:
             return 400, {"error": str(e)}, {}
         return 200, {"ok": True, "text": text}, {}
 
+    def firewall_view(self):
+        """firewall_rule_state(), read at most every FIREWALL_READ_S."""
+        now = self.clock()
+        got = getattr(self, "_firewall_cache", None)
+        if got is None or now - got[0] >= FIREWALL_READ_S:
+            got = (now, firewall_rule_state(
+                run=getattr(self, "_firewall_run", None),
+                windows=getattr(self, "_firewall_windows", None)))
+            self._firewall_cache = got
+        return got[1]
+
     def network_view(self):
+        """The Show network card on the show PC (GET network, LOCAL_ONLY):
+        the address saved, whether this engine listens on it, the firewall
+        rule, the address to type on another machine, and whether a
+        restart of the engine is needed. Read only."""
         try:
             saved = load_settings(self.folder)
             err = None
         except ValueError as e:
             saved, err = {}, str(e)
-        return {"saved": saved.get("show_network_address"), "error": err,
-                "port": FIXED_PORT, "candidates": address_candidates()}
+        addr = saved.get("show_network_address")
+        listen = getattr(self, "listen", None) or {}
+        addrs = list(listen.get("addresses") or [])
+        port = listen.get("port") or FIXED_PORT
+        on_saved = bool(addr) and addr in addrs
+        fw_state, fw_text = self.firewall_view()
+        lines = []
+        if err:
+            lines.append(err)
+        elif not addr:
+            lines.append("No show network address is saved, so only this "
+                         "PC can open the page. Pick this PC's address on "
+                         "the show network below and save it.")
+        else:
+            lines.append(f"Saved address: {addr}.")
+        if addrs:
+            lines.append("The engine is listening on " +
+                         " and ".join(f"{a}:{port}" for a in addrs) + ".")
+        else:
+            lines.append("Where the engine is listening is not known.")
+        why = str(listen.get("why") or "")
+        if why:
+            lines.append(why)
+        restart = None
+        if addr and not on_saved and addrs:
+            reason = self.reload_engine_refusal()
+            restart = {"needed": True, "offered": reason is None,
+                       "why": reason or ""}
+            lines.append(f"The engine is not listening on {addr} yet. "
+                         f"Restart the engine between shows to use it.")
+        lines.append(fw_text)
+        url = page_url(addr, port) if on_saved else None
+        if url and fw_state in ("present", "none"):
+            lines.append(f"On your Mac or iPad, on the same network, type "
+                         f"{url}")
+        elif url:
+            lines.append(f"Once the firewall rule is there, type {url} on "
+                         f"your Mac or iPad, on the same network.")
+        return {"saved": addr, "error": err, "port": port,
+                "candidates": address_candidates(),
+                "listening": addrs, "on_saved": on_saved,
+                "firewall": {"state": fw_state, "text": fw_text},
+                "url": url, "restart": restart, "lines": lines}
 
     def set_network(self, body):
         try:
@@ -1931,9 +2081,16 @@ class Remote:
             save_settings(self.folder, show_network_address=addr)
         except (ValueError, OSError) as e:
             return 400, {"error": str(e)}
-        return 200, dict(self.network_view(), ok=True,
-                         note="Saved. Quit the Web ltcplay window and start "
-                              "it again on the show network to use it.")
+        view = self.network_view()
+        if view["on_saved"]:
+            note = "Saved. The engine is already listening on it."
+        elif os.path.isfile(os.path.join(settings_folder(), SHOWPC_FILE)):
+            note = ("Saved. The engine starts listening on it after a "
+                    "restart: press Restart the engine between shows.")
+        else:
+            note = ("Saved. Quit the Web ltcplay window and start it again "
+                    "on the show network to use it.")
+        return 200, dict(view, ok=True, note=note)
 
     def set_screen_arming(self, body, ctx):
         """POST screen-arming {"on": true|false}, on the show machine only

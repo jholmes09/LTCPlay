@@ -626,6 +626,52 @@ MUTATIONS = [
  # -- the iPad remote (2026-10-03; no sign-in since Jeff, 2026-10-07): the
  #    show network, the controls, stale state, no arm route, scrubbing and
  #    the seek guard --
+ # -- the show network from another machine (Jeff, 2026-10-28: the page
+ #    never opened from his Mac): the RFC 1918 picker, the card's view, the
+ #    firewall rule read, the wrong-name page, the fallback to this PC
+ #    only, the start line, the supervisor's flag and the installer's rule --
+ ("show network: the picker offers any address", "ltcplay/remote.py",
+  "        if a not in seen and is_rfc1918(a):",
+  "        if a not in seen:"),
+
+ ("show network: a missing firewall rule reads present", "ltcplay/remote.py",
+  "    if p.returncode != 0:\n        return (\"missing\",",
+  "    if False:\n        return (\"missing\","),
+
+ ("show network: the card gives the address before the engine listens on it",
+  "ltcplay/remote.py",
+  "        url = page_url(addr, port) if on_saved else None",
+  "        url = page_url(addr, port)"),
+
+ ("show network: an API route by another name gets the page, not the refusal",
+  "ltcplay/web.py",
+  "        if why == HOST_REFUSAL and not route.startswith(\"/api/\"):",
+  "        if why == HOST_REFUSAL:"),
+
+ ("show network: a saved address this PC lacks stops the engine",
+  "ltcplay/web.py",
+  "        if not (network_fallback and on_network):\n            raise",
+  "        if True:\n            raise"),
+
+ ("show network: the start line names loopback only", "ltcplay/web.py",
+  "        addrs = [\"127.0.0.1\"] + ([httpd.bind_address] if on_network else [])",
+  "        addrs = [\"127.0.0.1\"]"),
+
+ ("show network: --network-if-saved ignores the saved address",
+  "ltcplay/cli.py",
+  "    args.bind = saved\n    return True",
+  "    return True"),
+
+ ("show network: the supervisor never asks for the saved address",
+  "packaging/windows/supervisor.py",
+  "              \"--no-browser\", \"--network-if-saved\"]",
+  "              \"--no-browser\"]"),
+
+ ("show network: the firewall rule is open to any address",
+  "packaging/windows/installer.iss",
+  "localport=7878 remoteip=localsubnet profile=any",
+  "localport=7878 remoteip=any profile=any"),
+
  ("remote: the show network can be set from the network", "ltcplay/remote.py",
   "        if name in LOCAL_ONLY and not ctx.local:",
   "        if False:"),
