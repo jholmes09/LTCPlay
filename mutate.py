@@ -14370,8 +14370,8 @@ def build():
  # each is a way the wind readout could mislead an operator.
  ("weather: the mesonet's knots are shown as mph",
   "ltcplay/weather.py",
-  "    return {\"speed_mph\": speed * KNOT_MPH,",
-  "    return {\"speed_mph\": speed,"),
+  "    return _in_range({\"speed_mph\": speed * KNOT_MPH,",
+  "    return _in_range({\"speed_mph\": speed,"),
 
  ("weather: km/h from the NWS are shown as mph",
   "ltcplay/weather.py",
@@ -14385,18 +14385,141 @@ def build():
 
  ("weather: a measured reading over 45 min old still shows its number",
   "ltcplay/weather.py",
-  "        elif age is None or age > dead_s:",
-  "        elif age is None:"),
+  "    if age > dead_s:\n        return \"none\", age",
+  "    if False:\n        return \"none\", age"),
 
  ("weather: a measured reading over 20 min old is not STALE",
   "ltcplay/weather.py",
-  "            line.update(level=\"stale\" if age > stale_s else \"ok\",",
-  "            line.update(level=\"ok\","),
+  "    return (\"stale\" if age > stale_s else \"ok\"), max(0.0, age)",
+  "    return \"ok\", max(0.0, age)"),
 
- ("weather: a forecast over 3 h old is not STALE",
+ # The forecast judged on when this PC got it, and the measured backups
+ # (Jeff, 2026-10-28, field report item 15).
+ ("weather: a forecast this PC has not got for over 1 h is not STALE",
   "ltcplay/weather.py",
-  "        line.update(level=\"stale\" if age > fstale_s else \"ok\",",
-  "        line.update(level=\"ok\","),
+  "        if got_age > fstale_s:",
+  "        if False:"),
+
+ ("weather: a forecast the NWS has not updated for 18 h is not STALE",
+  "ltcplay/weather.py",
+  "        if issued_age > fissued_s:",
+  "        if False:"),
+
+ ("weather: a forecast this PC has not got for 6 h still shows its number",
+  "ltcplay/weather.py",
+  "got_age > fdead_s or \\\n            issued_age > fidead_s:",
+  "False or \\\n            issued_age > fidead_s:"),
+
+ ("weather: a forecast the NWS has not updated for 36 h still shows its number",
+  "ltcplay/weather.py",
+  "got_age > fdead_s or \\\n            issued_age > fidead_s:",
+  "got_age > fdead_s or \\\n            False:"),
+
+ ("weather: a forecast timed in the future is shown",
+  "ltcplay/weather.py",
+  "        future = got - now > 15 * 60 or d[\"issued\"] - now > 15 * 60",
+  "        future = False"),
+
+ ("weather: forecast_every_min longer than the stale limit is taken",
+  "ltcplay/weather.py",
+  "    if cfg[\"forecast_every_min\"] >= cfg[\"forecast_stale_hours\"] * 60:",
+  "    if False:"),
+
+ ("weather: the forecast is judged on its issue time again",
+  "ltcplay/weather.py",
+  "        got = d.get(\"fetched_at\")\n",
+  "        got = d[\"issued\"]\n"),
+
+ ("weather: a stalled station blanks the wind though a backup is current",
+  "ltcplay/weather.py",
+  "    usable = [r for r in rows if r[\"st\"] in (\"ok\", \"stale\")]",
+  "    usable = [r for r in rows[:1] if r[\"st\"] in (\"ok\", \"stale\")]"),
+
+ ("weather: a higher STALE reading is hidden by a current lower one",
+  "ltcplay/weather.py",
+  "    pick = max(usable, key=",
+  "    pick = max([r for r in usable if r[\"st\"] == \"ok\"] or usable,"
+  " key="),
+
+ ("weather: the lowest reading leads",
+  "ltcplay/weather.py",
+  "    pick = max(usable, key=",
+  "    pick = min(usable, key="),
+
+ ("weather: a STALE headline is not marked",
+  "ltcplay/weather.py",
+  "        if pick[\"st\"] == \"stale\" and others:\n            text += (f\" STALE: over",
+  "        if False:\n            text += (f\" STALE: over"),
+
+ ("weather: a wind speed of 900 mph is shown",
+  "ltcplay/weather.py",
+  "        if v is not None and not 0 <= v <= MAX_MPH:",
+  "        if False:"),
+
+ ("weather: a millisecond obsTime is read as seconds",
+  "ltcplay/weather.py",
+  "        if valid is None or not 1e9 <= valid < 1e11:",
+  "        if valid is None or valid < 1e9:"),
+
+ ("weather: a backup station's reading is shown as if it were UTALP's",
+  "ltcplay/weather.py",
+  "\"backup\" if pick[\"i\"] > 0 else \"ok\")",
+  "\"ok\")"),
+
+ ("weather: an hourly airport is held to the 5 minute feed's limits",
+  "ltcplay/weather.py",
+  "hourly=name != \"mesonet\")",
+  "hourly=False)"),
+
+ ("weather: station_limits are ignored",
+  "ltcplay/weather.py",
+  "    own = (cfg.get(\"station_limits\") or {}).get(station) or {}",
+  "    own = {}"),
+
+ ("weather: an HTTP error is said as no answer",
+  "ltcplay/weather.py",
+  "        txt = (f\"{short} did not answer: {err}\" if s.get(\"offline\") else",
+  "        txt = (f\"{short} did not answer: {err}\" if True else"),
+
+ ("weather: the page shows a backup reading without amber",
+  "ltcplay/web/remote.html",
+  "cls:lv === \"backup\" ? \"stale\" : lv,",
+  "cls:lv,"),
+
+ ("weather: no current data gives no reason",
+  "ltcplay/weather.py",
+  "                         + \". \".join(_cap(r[\"why\"]) for r in rows) + \".\")",
+  "                         + \"\")"),
+
+ ("weather: a backup reading does not say why the station was passed over",
+  "ltcplay/weather.py",
+  "        if ahead:\n            text += (\" Using the backup because \"",
+  "        if False:\n            text += (\" Using the backup because \""),
+
+ ("weather: a station that stopped reporting is said as not answering",
+  "ltcplay/weather.py",
+  "    if err and not s.get(\"answered\"):",
+  "    if True:"),
+
+ ("weather: a backup that disagrees with the station is not said",
+  "ltcplay/weather.py",
+  "        if others:\n            text += (\" \" + \"; \".join(",
+  "        if False:\n            text += (\" \" + \"; \".join("),
+
+ ("weather: aviationweather.gov's knots are shown as mph",
+  "ltcplay/weather.py",
+  "    return _in_range({\"speed_mph\": to_mph(wspd, unit),",
+  "    return _in_range({\"speed_mph\": wspd,"),
+
+ ("weather: aviationweather.gov's oldest report is used",
+  "ltcplay/weather.py",
+  "        if best is None or best[0] is None or valid > best[0]:",
+  "        if best is None or best[0] is None or valid < best[0]:"),
+
+ ("weather: the backup airports are never asked",
+  "ltcplay/weather.py",
+  "    for sid in cfg.get(\"backup_stations\") or ():",
+  "    for sid in ():"),
 
  ("weather: sources 30 mph apart do not disagree",
   "ltcplay/weather.py",
