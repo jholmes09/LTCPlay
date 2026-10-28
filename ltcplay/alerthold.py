@@ -73,7 +73,8 @@ class AlertHold:
 
     def _holding(self):
         """The open alerts that hold a show at showtime: every one but a
-        display only kind (alerts.DISPLAY_ONLY, the aim slots)."""
+        display only kind (alerts.DISPLAY_ONLY: the aim slots, MadMapper
+        not following)."""
         from .alerts import DISPLAY_ONLY
         return [a for a in self.alerts.open() if a.kind not in DISPLAY_ONLY]
 

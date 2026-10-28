@@ -236,6 +236,11 @@ class ShowAudioPlayhead:
                 if callable(note):
                     note(f"Selecting the MadMapper show bank failed: {e}",
                          fault=True, action="video", outcome="failed")
+            # Following timecode again after a Stop or an Abort stopped
+            # the bank (fire_ice.follow_show_bank says why).
+            from .fire_ice import follow_show_bank
+            follow_show_bank(mm, getattr(cond, "_note", None) or
+                             (lambda *a, **k: None))
         _cue, at = s.clock_play_from(show_s)
         self._adopt(s)
         with self._lock:
