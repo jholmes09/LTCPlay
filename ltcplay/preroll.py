@@ -88,11 +88,30 @@ def outputs_off(items):
             continue
         if i.get("name") in OFF_FOR:
             off.add(OFF_FOR[i["name"]])
+        if i.get("name") == STANDIN:
+            # Nothing could be proven: everything it could leave off.
+            off.update(OFF_FOR.values())
         if i.get("name") in ("Network", "Timecode"):
             for word, out in OFF_WORDS.items():
                 if word in str(i.get("text", "")):
                     off.add(out)
     return frozenset(off)
+
+
+# The one check of the stand-in used when the real ones could not be built
+# (delta review of #162): it always fails, so nothing starts unchecked.
+STANDIN = "Rig check"
+
+
+def standin(why, journal=None, alert=None, clear_alert=None,
+            open_alert=None):
+    """A PreRoll whose only check always fails with `why`: Start now and
+    scheduled shows stay refused or held until the real check is set up,
+    and Continue anyway leaves every output it could leave off off."""
+    return PreRoll([(STANDIN, True,
+                     lambda p, _w=str(why): (False, _w))],
+                   window_s=DEFAULT_S, journal=journal, alert=alert,
+                   clear_alert=clear_alert, open_alert=open_alert)
 
 
 # The checks, in the order the rack screen lists them.

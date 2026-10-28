@@ -82534,6 +82534,57 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
           f"{svc.machine.state} {raised}")
     c.close()
     n.link.close()
+    # The stand-in when the rig check could not be set up (delta review of
+    # #162): Start now refused, a scheduled show never started even with
+    # the alert acknowledged, and Continue anyway leaves everything off.
+    from ltcplay import preroll as P, alerts as AL
+    n = _fi_night()
+    S, svc, c = n.S, n.svc, n.c
+    al = AL.Alerts()
+    svc.preroll = P.standin("the rig check could not be set up (boom)",
+                            alert=al.raise_)
+    svc.tick()
+    _settle(svc, c)
+    for t in ((17, 59, 50), (18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        time.sleep(0.2)
+        al.clear(action="Acknowledge", who="Andy", screen="Rack screen")
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n),
+          f"stand-in, alert acknowledged: the show is not started: "
+          f"{svc.machine.state}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and "could not be set up" in r["text"],
+          f"stand-in: Start now refused, saying why: {r}")
+    r = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] is True and
+          c.outputs_off == {"video", "lasers", "flames"},
+          f"stand-in: Continue anyway leaves every output off: "
+          f"{r} {c.outputs_off}")
+    # The runner's poll never clears what a start set after it read the
+    # state, nor while a show is up.
+    run = n.w.runner
+    seq = run._off_seq
+    run._degraded_over(seq)
+    check(c.outputs_off == {"video", "lasers", "flames"},
+          "a show is up: nothing is cleared")
+    c.close()
+    n.link.close()
+    m = _fi_night()
+    run, c = m.w.runner, m.c
+    seq = run._off_seq
+    run._outputs_off(None, 2, (frozenset(("video",)), "Andy"))
+    run._degraded_over(seq)
+    check(c.outputs_off == {"video"},
+          f"a start since the state was read: kept: {c.outputs_off}")
+    run._degraded_over(run._off_seq)
+    check(c.outputs_off == frozenset(),
+          "no start since, no show up: cleared")
+    c.close()
+    m.link.close()
     print("  ok")
 
 
@@ -83034,9 +83085,15 @@ def test_preroll_wiring_in_the_engine():
     bad = F.FireIceConfig(scheduler_performs=True)
     bad.preroll_s = "ten"
     check(W._attach_preroll(httpd, bad, None) is None and
-          svc.preroll is None and
           [a.kind for a in remote.alerts.open()] == ["preroll"],
           f"not built: the preroll alert is open: {remote.alerts.view()}")
+    sp = svc.preroll
+    got = sp.run(("x", 1), "show 1") if sp is not None else {}
+    check(sp is not None and remote.preroll is sp and
+          got.get("state") == "failed" and
+          "could not be set up" in got.get("text", "") and
+          P.outputs_off(got.get("items")) == {"video", "lasers", "flames"},
+          f"and a stand-in check that always fails is in place: {got}")
     for off in (F.FireIceConfig(scheduler_performs=False),
                 F.FireIceConfig(scheduler_performs=True, preroll_s=0)):
         svc.preroll = None

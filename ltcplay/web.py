@@ -1952,6 +1952,23 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             httpd.remote.alerts.raise_("preroll", text)
         except Exception:                            # noqa: BLE001
             pass
+        # A stand-in whose one check always fails (delta review of #162):
+        # an acknowledged alert must not let shows start unchecked.
+        try:
+            from . import preroll as P
+            al = getattr(httpd.remote, "alerts", None)
+            pr = P.standin(
+                f"the rig check could not be set up ({type(e).__name__}: "
+                f"{e})",
+                alert=getattr(al, "raise_", None),
+                open_alert=(lambda: any(a.kind == P.KIND
+                                        for a in al.open()))
+                if al is not None else None)
+            if httpd.schedule is not None:
+                httpd.schedule.preroll = pr
+            httpd.remote.preroll = pr
+        except Exception:                            # noqa: BLE001
+            pass
         return None
 
 

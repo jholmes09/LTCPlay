@@ -17175,7 +17175,7 @@ def build():
   "            if False:\n                # A Continue anyway's mute"),
 
  ('continue anyway: what it left off stays off after the show', 'ltcplay/fire_ice.py',
-  '        if state not in ("SHOW", "PAUSED"):\n            self._degraded_over()\n',
+  '        if state not in ("SHOW", "PAUSED"):\n            self._degraded_over(off_seq)\n',
   ''),
 
  ('continue anyway: it can be pressed again for another show', 'ltcplay/schedule_service.py',
@@ -17205,6 +17205,18 @@ def build():
  ('pre-roll: a rig check that cannot be built raises no alert', 'ltcplay/web.py',
   '            httpd.remote.alerts.raise_("preroll", text)',
   '            pass'),
+
+ ('continue anyway: the runner clears what a start just set', 'ltcplay/fire_ice.py',
+  '                if self._off_seq != off_seq or (',
+  '                if False and ('),
+
+ ('pre-roll: a rig check that cannot be built leaves no stand-in', 'ltcplay/web.py',
+  '            if httpd.schedule is not None:\n                httpd.schedule.preroll = pr\n',
+  ''),
+
+ ("pre-roll: the stand-in's Continue anyway leaves outputs on", 'ltcplay/preroll.py',
+  '        if i.get("name") == STANDIN:',
+  '        if False:'),
 
  ('continue anyway: a failed video is still faded up', 'ltcplay/conductor.py',
   '        if "video" not in off:\n            self._step(gen, "video", LIT,',

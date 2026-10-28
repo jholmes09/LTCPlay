@@ -817,7 +817,11 @@ does not check; a scheduled show is never started during a Programming
 Run (the journal says so), and Start now checks there too.
 
 **What it proves, now, not from memory.** Unknown counts as failed: a
-check with no answer within the window fails.
+check with no answer within the window fails. If the rig check itself
+cannot be set up when LTC Player starts, a rig check alert says so and
+every check fails with that reason until it is fixed (restart LTC
+Player): no show starts unchecked, even with the alert acknowledged, and
+Continue anyway then leaves video, lasers and flames off.
 
 | Check | Proven by | Required |
 |---|---|---|

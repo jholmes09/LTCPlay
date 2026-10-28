@@ -1938,6 +1938,9 @@ class ShowRunner:
         # Continue anyway (Service.continue_anyway): (outputs off, who), for
         # the next start only. Never set by the scheduler itself.
         self.continue_off = None
+        # Bumped (under _lock) every time a start sets what is left off:
+        # poll clears it only if no start came since it read the state.
+        self._off_seq = 0
 
     def _note(self, text, **fields):
         if self._journal is not None:
@@ -2123,10 +2126,24 @@ class ShowRunner:
                          "failed": None}
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
 
-    def _degraded_over(self):
+    def _degraded_over(self, off_seq):
         """Out of the show: what a Continue anyway left off for it ends
         (the conductor's record, MadMapper's timecode mute). Only ever
-        removes a restriction once no show is up. Never raises."""
+        removes a restriction once no show is up: never when a start has
+        set what is left off since poll() read the state (`off_seq`), nor
+        when the scheduler is in a show again by now (delta review of
+        #162). Never raises."""
+        with self._lock:
+            try:
+                m = self.svc.machine
+                if self._off_seq != off_seq or (
+                        m is not None and m.state in ("SHOW", "PAUSED")):
+                    return
+                self._clear_off()
+            except Exception:                    # noqa: BLE001
+                pass
+
+    def _clear_off(self):
         try:
             if self.conductor.outputs_off:
                 self.conductor.outputs_off = frozenset()
@@ -2142,6 +2159,8 @@ class ShowRunner:
         those dark for the show, and MadMapper is sent no timecode when its
         video failed. Never raises."""
         off, who = got if got else (frozenset(), "")
+        with self._lock:
+            self._off_seq += 1
         try:
             self.conductor.outputs_off = frozenset(off)
             out = getattr(clk, "out", None)
@@ -2191,6 +2210,8 @@ class ShowRunner:
                    outcome="look_cleared")
 
     def poll(self):
+        with self._lock:
+            off_seq = self._off_seq
         sch = self.svc.machine
         state = sch.state if sch is not None else None
         with self._lock:
@@ -2202,7 +2223,7 @@ class ShowRunner:
             return
         self._closing_reported = False
         if state not in ("SHOW", "PAUSED"):
-            self._degraded_over()
+            self._degraded_over(off_seq)
         if cue is None:
             return
         n = cue["show"]
