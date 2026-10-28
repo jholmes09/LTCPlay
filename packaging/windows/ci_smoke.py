@@ -481,6 +481,34 @@ def none_running():
     return not (OURS & tasklist())
 
 
+def preroll_off_refused():
+    """preroll_s 0 (no rig check) is refused in any Fire & Ice settings
+    file that is not a soak kit's, and taken in one that is. Read with the
+    program's own parser from this checkout (the one the installer was
+    built from)."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        from ltcplay import fire_ice
+    except Exception as e:                       # noqa: BLE001
+        error(f"the Fire & Ice settings parser could not be loaded: {e}")
+        return
+    try:
+        fire_ice.FireIceConfig.parse({"preroll_s": 0})
+        error("preroll_s 0 was ACCEPTED outside a soak kit: a normal "
+              "install could turn the rig check off")
+    except fire_ice.FireIceConfigError:
+        pass
+    try:
+        cfg = fire_ice.FireIceConfig.parse({"preroll_s": 0,
+                                            "soak_only": True})
+        check(cfg.preroll_s == 0, "a soak kit's preroll_s 0 was not taken")
+    except fire_ice.FireIceConfigError as e:
+        error(f"a soak kit's preroll_s 0 was refused: {e}")
+
+
 def soak_check():
     """ltcplay-soak.exe must stop LTC Player, run the real programs, measure
     them, write its report, and start LTC Player again. On a shared CI
@@ -532,6 +560,11 @@ def soak_check():
             else:
                 print(f"::warning title=soak timing on a CI runner::{msg}",
                       flush=True)
+    # The soak kit runs with the rig check off (PR #162), and says so; a
+    # normal install can never turn it off.
+    check("Pre-roll check: OFF (soak kit" in text,
+          "the soak report does not say the rig check is off for the soak")
+    preroll_off_refused()
     for need in ("[PASS] Engine's own error counters",
                  "flamesafe output (sACN, sent to this PC only)",
                  "Flame link frames", "Scheduled shows", "Art-Net timecode",
