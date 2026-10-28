@@ -74837,6 +74837,1191 @@ def test_fireball_doc_in_plain_words():
     print("  ok")
 
 
+# -- Wave flamer cleaning (Andy's design, 2026-10-28; cleaning.py) ----------
+# The nightly shutdown routine on the Shutdown part of the Startup page: a
+# dead-man sequence that arms and disarms the wave flamers three times,
+# then fires them in bursts until the operator lets go.
+
+_WC_FS = {"groups": [
+    {"name": "front row", "safety": 401, "fire": [411]},
+    {"name": "wave flamer", "safety": [6, 12, 18],
+     "safety_profile": {"arm_value": 178},
+     "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
+     "aim": [1, 7, 13]}]}
+
+
+class _WcWorld:
+    """A CleaningPanel on a fake clock, a fake flame link and a stand-in
+    for the engine's hold to arm, disarm and flamesafe's status: a hold
+    beaten for 1 s is taken (the deck), flamesafe reports ARMED arm_delay
+    later; a disarm reports disarmed 0.1 s later."""
+
+    def __init__(self, fs=None, **cfg):
+        import types
+        from ltcplay import cleaning as CL
+        self.CL = CL
+        self.t = [100.0]
+        self.link = _FakeFireballLink()
+        self.armed, self.wanted, self.reason = "disarmed", False, ""
+        self.age = 20
+        self.others = {}
+        self.why = ""
+        self.locked = set()
+        self.cfg = dict(CL.DEFAULTS, **cfg)
+        self.cfg_err = ""
+        self.holds = {}
+        self.refuse = ""
+        self.never_arm = False
+        self.arm_delay = 0.1
+        self.pending = None          # (t, "armed" | "disarmed")
+        self.disarm_lands = True
+        self.disarms = 0
+        self.disarm_calls = []
+        self.disarm_all_calls = []
+        self.may_group = True
+        self.burn = []
+        self.lines = []
+        self.events = []
+        self.press_calls = []
+        self.in_beat = False
+        self.ctx = types.SimpleNamespace(device="Rack screen", window="w-a",
+                                         user="Ola", local=True,
+                                         screen="Rack screen")
+        group, problem = CL.find_group(fs if fs is not None else _WC_FS)
+        self.p = CL.CleaningPanel(
+            group, problem, link_get=lambda: self.link,
+            flames_get=self.flames, blockers=lambda: self.why,
+            locked_slots=lambda: self.locked,
+            config_get=lambda: ((None, self.cfg_err) if self.cfg_err
+                                else (dict(self.cfg), "")),
+            press_arm=self.press, release_arm=lambda tok: self.events.append(
+                ("let go", self.t[0])),
+            disarm_group=self.disarm_group, disarm_all=self.disarm_all,
+            disarm_count=lambda: self.disarms,
+            may_disarm_group=lambda: self.may_group,
+            burn_flag=lambda on: self.burn.append(on),
+            journal=lambda text, **k: self.lines.append(text),
+            clock=lambda: self.t[0], threaded=False)
+        self.seq = 0
+
+    def flames(self):
+        return {"connected": True, "stale": self.age is None,
+                "age_ms": self.age,
+                "groups": [{"name": "front row",
+                            "armed": self.others.get("front row", "disarmed"),
+                            "wanted": False},
+                           {"name": "wave flamer", "armed": self.armed,
+                            "wanted": self.wanted, "reason": self.reason}]}
+
+    def press(self, body, ctx):
+        self.press_calls.append((self.t[0], body.get("hold_id"),
+                                 self.in_beat, ctx.device))
+        if self.refuse:
+            return 409, {"error": self.refuse, "let_go": True}
+        hid = body.get("hold_id")
+        if hid is None:
+            hid = len(self.holds) + 1
+            self.holds[hid] = self.t[0]
+            self.events.append(("hold", self.t[0]))
+            return 200, {"ok": True, "hold_id": hid, "held_s": 0.0}
+        if self.t[0] - self.holds[hid] >= 1.0:
+            self.wanted = True
+            if self.never_arm:
+                self.armed = "held"
+            else:
+                self.pending = (self.t[0] + self.arm_delay, "armed")
+            return 200, {"ok": True, "armed": True, "taken": True,
+                         "hold_id": hid}
+        return 200, {"ok": True, "hold_id": hid,
+                     "held_s": self.t[0] - self.holds[hid]}
+
+    def disarm_group(self, ctx):
+        self.disarms += 1
+        self.disarm_calls.append(self.t[0])
+        self.events.append(("disarm", self.t[0]))
+        if self.disarm_lands:
+            self.pending = (self.t[0] + 0.1, "disarmed")
+        return True, "Disarm wave flamer sent."
+
+    def disarm_all(self, who, screen):
+        self.disarm_all_calls.append((self.t[0], who, screen))
+        self.armed, self.wanted, self.pending = "disarmed", False, None
+        return True, "Disarm all flame groups was sent."
+
+    def settle(self):
+        if self.pending is not None and self.t[0] >= self.pending[0] - 1e-9:
+            state = self.pending[1]
+            self.pending = None
+            self.armed = state
+            self.wanted = state == "armed"
+            self.events.append((state, self.t[0]))
+
+    def beat(self, hold=True, run="r1", seq=None, seen_ok=True, ctx=None):
+        if seq is None:
+            self.seq += 1
+            seq = self.seq
+        self.in_beat = True
+        try:
+            return self.p.beat({"hold": hold, "run": run, "seq": seq},
+                               ctx or self.ctx, seen_ok=seen_ok, who="Ola",
+                               screen="Rack screen")
+        finally:
+            self.in_beat = False
+
+    def ign(self):
+        c = self.link.cur
+        return [0, 0, 0] if c is None else [c[2], c[8], c[14]]
+
+    def aim(self):
+        c = self.link.cur
+        return [0, 0, 0] if c is None else [c[0], c[6], c[12]]
+
+    def run_for(self, seconds, run="r1", beats=True, trace=None):
+        """The finger down for `seconds`: a beat every 0.1 s, the watcher
+        every 0.05 s. The last answer, or None."""
+        last = None
+        for i in range(int(round(seconds / 0.05))):
+            self.t[0] = round(self.t[0] + 0.05, 6)
+            self.settle()
+            if beats and i % 2 == 1:
+                last = self.beat(run=run)
+                if last[0] != 200:
+                    return last
+            self.p.tick()
+            if trace is not None:
+                trace.append((self.t[0], self.armed, self.ign(), self.aim(),
+                              self.p.active()))
+        return last
+
+
+def test_cleaning_group_and_config():
+    section("wave flamer cleaning (cleaning.py): each fixture's angle and "
+            "ignition come from flamesafe's wave flamer group (safety slot "
+            "minus 5 and minus 3, only with a safety_profile and aim slots "
+            "that match); anything else is refused in a sentence; the "
+            "defaults are Jeff's (3 times armed 3 s, disarmed 3 s; bursts "
+            "1 s on, 1 s off, straight up at 128) and every setting has "
+            "limits")
+    import json as _j
+    import re as _re
+    from ltcplay import cleaning as CL
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    ex = _j.load(open(os.path.join(here, "flamesafe", "flamesafe.example.json"),
+                      encoding="utf-8"))
+    g, why = CL.find_group(ex)
+    check(g is not None and why == "" and
+          [(f["safety"], f["angle"], f["ignition"]) for f in g["fixtures"]] ==
+          [(6, 1, 3), (12, 7, 9), (18, 13, 15)],
+          f"Jeff's example: angles 1, 7, 13 and ignitions 3, 9, 15: {g} {why}")
+    moved = {"groups": [{"name": " Wave Flamer ", "safety": [112, 106],
+                         "safety_profile": {"arm_value": 178},
+                         "fire": list(range(101, 106)) + list(range(107, 112)),
+                         "aim": [107, 101]}]}
+    g2, why = CL.find_group(moved)
+    check(g2 is not None and [(f["angle"], f["ignition"]) for f in
+                              g2["fixtures"]] == [(101, 103), (107, 109)],
+          f"nothing is written in for slots 1 to 18: a group elsewhere "
+          f"works the same: {g2} {why}")
+    f = CL.frame(g, 128, 255)
+    check(len(f) == 512 and [f[0], f[6], f[12]] == [128] * 3 and
+          [f[2], f[8], f[14]] == [255] * 3 and
+          sum(1 for v in f if v) == 6 and f[5] == f[11] == f[17] == 0,
+          "the frame: the angles and the ignitions, nothing else, never a "
+          "safety slot")
+    for groups, need in (
+            ([], "could not be read"),
+            ([{"name": "front row", "safety": 401, "fire": [411]}],
+             "no group named wave flamer"),
+            ([dict(ex["groups"][2], safety_profile=None)],
+             "needs a safety_profile and aim"),
+            ([{k: v for k, v in ex["groups"][2].items() if k != "aim"}],
+             "needs a safety_profile and aim"),
+            ([dict(ex["groups"][2], aim=[2, 7, 13])], "not channel 1"),
+            ([dict(ex["groups"][2], aim=[1, 7])], "not channel 1"),
+            ([dict(ex["groups"][2], fire=ex["groups"][2]["fire"][:-1])],
+             "are not channels 1 to 5"),
+            ([dict(ex["groups"][2], safety=[6, 12, 19])],
+             "are not channels 1 to 5")):
+        g3, why = CL.find_group({"groups": groups})
+        check(g3 is None and need in why and "—" not in why,
+              f"{need}: {why}")
+    # The settings.
+    check(CL.DEFAULTS["cycles"] == 3 and CL.DEFAULTS["armed_s"] == 3.0 and
+          CL.DEFAULTS["disarmed_s"] == 3.0 and
+          CL.DEFAULTS["burst_on_s"] == 1.0 and
+          CL.DEFAULTS["burst_off_s"] == 1.0 and CL.DEFAULTS["aim"] == 128 and
+          CL.IGNITION_ON == 255, f"Jeff's defaults: {CL.DEFAULTS}")
+    rules_src = open(os.path.join(here, "flamesafe", "config.py"),
+                     encoding="utf-8").read()
+    dwell_min = int(_re.search(r"DWELL_MS_MIN, DWELL_MS_MAX = (\d+)",
+                               rules_src).group(1))
+    check(CL.LIMITS["disarmed_s"][0] >= sd.REARM_REFRACTORY_S + 0.5 and
+          CL.LIMITS["disarmed_s"][0] * 1000 >= dwell_min + 1000,
+          f"the shortest gap allowed covers the deck's re-arm window "
+          f"({sd.REARM_REFRACTORY_S} s) and flamesafe's dwell ({dwell_min} "
+          f"ms) with room: {CL.LIMITS['disarmed_s']}")
+    check(CL.BEAT_STALE_S == 0.25 and CL.WATCH_S <= 0.05 and
+          CL.STATUS_FRESH_S == 0.5 and CL.DISARM_CONFIRM_S == 1.0,
+          "a run with no beat for 0.25 s stops, the watcher looks every 50 "
+          "ms, flamesafe's word has to be under half a second old")
+    check(CL.parse_config(None) == CL.DEFAULTS and
+          CL.parse_config({"cycles": 2, "burst_on_s": 0.5, "notes": "x"}) ==
+          dict(CL.DEFAULTS, cycles=2, burst_on_s=0.5),
+          "no block: the defaults; a block: merged over them")
+    for block, need in (({"cycles": 0}, "from 1 to 10"),
+                        ({"cycles": 2.5}, "whole number"),
+                        ({"cycles": True}, "whole number"),
+                        ({"disarmed_s": 2.0}, "from 2.5 to 30"),
+                        ({"armed_s": "3"}, "has to be a number"),
+                        ({"burst_on_s": 6}, "from 0.2 to 5"),
+                        ({"aim": 256}, "from 0 to 255"),
+                        ({"gap_s": 5}, "does not know: gap_s"),
+                        ({"max_run_min": 31}, "from 1 to 30"),
+                        ({"authorization": "auto"},
+                         "has to be dead_man or hold_to_start"),
+                        ([], "has to be a JSON object")):
+        try:
+            CL.parse_config(block)
+            check(False, f"{block} was taken")
+        except CL.CleaningConfigError as e:
+            check(need in str(e), f"{block}: {e}")
+    work = tempfile.mkdtemp()
+    try:
+        p = os.path.join(work, "ltcplay_morning.json")
+        check(CL.load_config(p) == (CL.DEFAULTS, ""), "no file: the defaults")
+        with open(p, "w", encoding="utf-8") as fh:
+            _j.dump({"cleaning": {"cycles": 99}}, fh)
+        cfg, why = CL.load_config(p)
+        check(cfg is None and "from 1 to 10" in why, f"a bad value: {why}")
+        ex_path = os.path.join(here, "ltcplay", "ltcplay_morning.example.json")
+        ex_doc = _j.load(open(ex_path, encoding="utf-8"))
+        check(CL.parse_config(ex_doc["cleaning"]) == CL.DEFAULTS,
+              "the example file's cleaning block is the defaults")
+        from ltcplay import morning as MO
+        check("cleaning" in MO.TOP_KEYS, "the Startup page's file allows it")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # The words: OPERATOR.md and MORNING.md say it plainly, no dashes.
+    import ast as _ast
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    a = op.index("**Wave flamer cleaning")
+    part = op[a:op.index("**Stream Deck unplugged.**", a)]
+    for need in ("Hold to clean the wave flamers", "Keep holding",
+                 "Letting go stops it at once", "armed 3 s", "disarmed 3 s",
+                 "1 s on, 1 s off", "straight up", "Nothing arms if you\nare "
+                 "not holding", "Fuel valve closed first", "10 minutes",
+                 "Signed out it is view only", "One\nscreen at a time"):
+        check(need in part, f"OPERATOR.md's cleaning section says {need!r}")
+    mo_doc = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
+    a = mo_doc.index("### Wave flamer cleaning")
+    mpart = mo_doc[a:mo_doc.index("## Threat analysis", a)]
+    for need in ("A dead-man sequence", "no new way to arm",
+                 "Remote.arm_hold", "hold_to_start", "max_run_min",
+                 "s-5", "s-3", "2.5 to 30"):
+        check(need in mpart, f"MORNING.md's cleaning section says {need!r}")
+    for text in (part, mpart):
+        check("\u2014" not in text and "\u2013" not in text,
+              "the cleaning's documents have no em or en dashes")
+    src = open(os.path.join(here, "ltcplay", "cleaning.py"),
+               encoding="utf-8").read()
+    words = [n.value for n in _ast.walk(_ast.parse(src))
+             if isinstance(n, _ast.Constant) and isinstance(n.value, str)]
+    check(not [w for w in words if "\u2014" in w or "\u2013" in w],
+          "cleaning.py's sentences have no em or en dashes")
+    print("  ok")
+
+
+def test_cleaning_whole_sequence():
+    section("wave flamer cleaning, the whole sequence on a fake clock: arm "
+            "(the engine's hold to arm, pressed only inside a beat), armed "
+            "3 s from flamesafe's word, disarm, disarmed 3 s from "
+            "flamesafe's word, three times; then arm, the heads to 128, and "
+            "bursts of 1 s on and 1 s off until let go; nothing is set "
+            "before phase 2 is ARMED, the ignition is never up unless "
+            "flamesafe says armed; letting go puts the ignition to 0 first, "
+            "the angle as it was, then disarms")
+    W = _WcWorld()
+    code, out = W.beat()
+    check(code == 200 and out["running"] and out["mine"] and
+          out["progress"]["text"] == "Arming, 1 of 3",
+          f"the first beat starts it: {code} {out.get('progress')}")
+    check(W.burn == [True], "the fuel tracker is told a cleaning frame burns")
+    trace = []
+    W.run_for(32.0, trace=trace)
+    ev = W.events
+    armed_at = [t for k, t in ev if k == "armed"]
+    disarm_at = [t for k, t in ev if k == "disarm"]
+    disarmed_at = [t for k, t in ev if k == "disarmed"]
+    holds_at = [t for k, t in ev if k == "hold"]
+    check(len(armed_at) == 4 and len(disarm_at) == 3 and
+          len(disarmed_at) == 3 and len(holds_at) == 4,
+          f"three arm and disarm cycles, then a fourth arm: {ev}")
+    for a, d in zip(armed_at, disarm_at):
+        check(3.0 - 1e-6 <= d - a <= 3.1,
+              f"armed 3 s from flamesafe's word: {d - a:.2f}")
+    for d, h in zip(disarmed_at, holds_at[1:]):
+        check(3.0 - 1e-6 <= h - d <= 3.15,
+              f"disarmed 3 s from flamesafe's word, then the next hold: "
+              f"{h - d:.2f}")
+    check(all(inb for _t, _h, inb, _d in W.press_calls) and
+          all(d == "Rack screen" for _t, _h, _i, d in W.press_calls),
+          "every arm press is inside a beat, for the screen that holds")
+    first_set = next((t for t, _a, ig, am, _x in trace if any(am) or any(ig)),
+                     None)
+    check(first_set is not None and first_set >= armed_at[3],
+          f"nothing is set before phase 2 reads ARMED: {first_set} "
+          f"{armed_at[3]}")
+    check(all(a == "armed" for _t, a, ig, _am, _x in trace if any(ig)),
+          "the ignition is never up unless flamesafe says armed")
+    up = [t for t, _a, ig, _am, _x in trace if ig == [255] * 3]
+    check(up and up[0] >= armed_at[3] + 1.0 - 1e-6,
+          f"the first burst after the heads had 1 s to come up: "
+          f"{up[:1]} {armed_at[3]}")
+    check(all(am == [128] * 3 for t, _a, _ig, am, _x in trace
+              if t >= armed_at[3] + 0.1),
+          "the angles straight up, 128, all through the bursts")
+    # The bursts: 1 s on, 1 s off.
+    runs, cur, since = [], None, None
+    for t, _a, ig, _am, _x in trace:
+        on = ig == [255] * 3
+        if cur is None or on != cur:
+            if cur is not None:
+                runs.append((cur, round(t - since, 2)))
+            cur, since = on, t
+    bursts = [d for on, d in runs if on]
+    gaps = [d for on, d in runs[1:] if not on]
+    check(len(bursts) >= 2 and all(0.95 <= d <= 1.1 for d in bursts) and
+          gaps and all(0.95 <= d <= 1.1 for d in gaps[1:]),
+          f"1 s on, 1 s off: {runs}")
+    v = W.p.view(("Rack screen", "w-a"))
+    p = v["progress"]
+    check(p["phase"] == 2 and p["bursts"] >= 2 and
+          p["text"] == "Bursts: 1 s on, 1 s off" and
+          p["next"] == "Let go or press Stop to end",
+          f"the page's words: {p}")
+    # Let go: ignition 0 at once, the angle left as it is, then disarmed.
+    n_dis = W.disarms
+    code, out = W.beat(hold=False)
+    check(code == 200 and not W.p.active() and W.ign() == [0, 0, 0] and
+          W.aim() == [128] * 3 and W.disarms == n_dis + 1 and
+          W.burn[-1] is False,
+          f"let go: ignition 0, angle as it was, the disarm sent: "
+          f"{W.ign()} {W.aim()} {W.disarms - n_dis}")
+    W.run_for(0.3, beats=False)
+    check(W.armed == "disarmed" and not W.disarm_all_calls,
+          "flamesafe reports it disarmed; nothing more is needed")
+    code, out = W.beat(run="r1")
+    check(code == 409 and "hold the button again" in out["error"] and
+          not W.p.active(), f"a late beat of that run is refused: {out}")
+    # The words through phase 1, as the page shows them.
+    W2 = _WcWorld()
+    W2.beat(run="w1")
+    said = set()
+    for _i in range(260):
+        W2.run_for(0.1, run="w1")
+        said.add(W2.p.view(("Rack screen", "w-a"))["progress"]["text"])
+    for need in ("Arming, 1 of 3", "Armed 3 s, 1 of 3", "Disarmed 3 s, 1 of 3",
+                 "Armed 3 s, 2 of 3", "Armed 3 s, 3 of 3",
+                 "Disarmed 3 s, 3 of 3", "Arming for the bursts",
+                 "Armed: pointing the heads straight up"):
+        check(need in said, f"the page says {need!r}: {sorted(said)}")
+    W2.p.cut("test")
+    print("  ok")
+
+
+def _wc_to_bursts(**cfg):
+    """A world one cycle in and firing bursts (cycles 1, short gaps)."""
+    W = _WcWorld(**dict(dict(cycles=1, armed_s=1.0, disarmed_s=2.5,
+                             aim_settle_s=0.0), **cfg))
+    W.beat(run="b1")
+    W.run_for(9.0, run="b1")
+    check(W.p.active() and W.p.view()["progress"]["phase"] == 2 and
+          W.p.view()["progress"]["step"] == "burst",
+          f"setup: firing bursts: {W.p.view()['progress']} {W.p.last_cut}")
+    return W
+
+
+def test_cleaning_every_stop_cuts_and_disarms():
+    section("wave flamer cleaning: every stop puts the ignition to 0 at once "
+            "and disarms, and the run never carries on: letting go, no beat "
+            "for 0.25 s (a closed page, a lost connection, sign out), the "
+            "page's Stop, Abort, Stop or Hold zeroing the flame link, a "
+            "disarm pressed anywhere, the group disarming by itself, "
+            "flamesafe stale, a show starting or any blocker, every fixture "
+            "locked out, the page's status stale, a refused arm, an arm "
+            "flamesafe holds; nothing arms without a beat")
+    causes = []
+
+    def stop_by(name, act, zeroed=False, need=""):
+        W = _wc_to_bursts()
+        # Into the on half of a burst so a stop has an ignition to cut.
+        for _i in range(25):
+            if W.ign() == [255] * 3:
+                break
+            W.run_for(0.1, run="b1")
+        check(W.ign() == [255] * 3, f"{name}: setup, a burst is on")
+        n = W.disarms + len(W.disarm_all_calls)
+        presses = len(W.press_calls)
+        act(W)
+        W.t[0] += 0.05
+        W.p.tick()
+        ok = (not W.p.active() and W.ign() == [0, 0, 0] and
+              W.disarms + len(W.disarm_all_calls) > n and
+              W.burn[-1] is False)
+        if zeroed:
+            ok = ok and W.link.cur is None
+        check(ok, f"{name}: stopped, ignition 0, disarm sent: "
+                  f"{W.ign()} {W.p.last_cut!r}")
+        if need:
+            check(need in W.p.last_cut, f"{name}: says why: {W.p.last_cut}")
+        code, out = W.beat(run="b1")
+        W.run_for(1.0, run="b1")
+        check(code == 409 and not W.p.active() and
+              len(W.press_calls) == presses and W.ign() == [0, 0, 0],
+              f"{name}: it never carries on, nothing is pressed: {out}")
+        causes.append(name)
+    stop_by("let go", lambda W: W.beat(hold=False, run="b1"))
+    stop_by("no beat", lambda W: W.run_for(0.3, run="b1", beats=False),
+            need="no heartbeat")
+    stop_by("the page's Stop", lambda W: W.p.stop("Ola pressed Stop"),
+            need="pressed Stop")
+    stop_by("Abort", lambda W: W.p.on_abort("Ola", "Rack screen"),
+            zeroed=True, need="Abort")
+    stop_by("Stop or Hold zeroes the link", lambda W: W.link.zero(),
+            zeroed=True, need="zeroed")
+
+    def other_disarm(W):
+        W.disarms += 1
+    stop_by("a disarm pressed elsewhere", other_disarm,
+            need="a disarm was pressed")
+
+    def deck_disarm(W):
+        W.armed, W.wanted = "disarmed", False
+    stop_by("the group disarmed at the deck", deck_disarm,
+            need="not armed any more")
+
+    def stale(W):
+        W.age = None
+    stop_by("flamesafe stale", stale, need="not known")
+
+    def show(W):
+        W.why = "a scheduled show is live (SHOW)"
+    stop_by("a show starting", show, need="a scheduled show is live")
+
+    def alert(W):
+        W.why = "an alert is open (deck): the Stream Deck is unplugged"
+    stop_by("a blocking alert", alert, need="an alert is open")
+
+    def locked(W):
+        W.locked = {6, 12, 18}
+    stop_by("every fixture locked out", locked, need="locked out")
+
+    def stale_page(W):
+        W.beat(run="b1", seen_ok=False)
+    stop_by("the page's status stale", stale_page, need="1 s old")
+
+    def other_group(W):
+        W.others["front row"] = "armed"
+    stop_by("another group armed", other_group, need="front row")
+    check(len(causes) == 13, f"every cause ran: {causes}")
+    # Phase 1: a stop while armed sets nothing and disarms.
+    W = _WcWorld()
+    W.beat(run="p1")
+    W.run_for(1.6, run="p1")
+    check(W.armed == "armed" and W.link.sets == 0,
+          f"setup: phase 1 armed, nothing set: {W.armed} {W.link.sets}")
+    W.beat(hold=False, run="p1")
+    check(not W.p.active() and W.disarm_calls and W.link.sets == 0,
+          "let go in phase 1: disarmed, and nothing was ever set")
+    # A refused arm: stopped at once, said in its own words.
+    W = _WcWorld()
+    W.refuse = ("The Stream Deck refused it: wave flamer was disarmed less "
+                "than 2 s ago.")
+    code, out = W.beat(run="x1")
+    check(code == 409 and "the arm was refused" in out["error"] and
+          "less than 2 s ago" in out["error"] and not W.p.active() and
+          W.disarm_calls, f"a refused arm stops it, disarmed: {out}")
+    # An arm flamesafe holds (a lockout): stops after arm_wait_s and says
+    # flamesafe's reason.
+    W = _WcWorld()
+    W.never_arm = True
+    W.reason = "held disarmed, every safety slot in it is locked out"
+    W.beat(run="h1")
+    last = W.run_for(10.0, run="h1")
+    check(not W.p.active() and last is not None and last[0] == 409 and
+          "did not arm within 8 s" in W.p.last_cut and
+          "locked out" in W.p.last_cut and W.link.sets == 0 and
+          W.disarm_calls,
+          f"held by flamesafe: stopped after 8 s with its reason, nothing "
+          f"set, disarmed: {W.p.last_cut}")
+    # No beats: never an arm press. One beat starts the hold; the watcher
+    # alone never presses, and stops it 0.25 s on.
+    W = _WcWorld()
+    W.beat(run="n1")
+    W.run_for(0.2, run="n1", beats=False)
+    check(W.p.active() and len(W.press_calls) == 1,
+          "0.2 s with no beat: still running, one press only")
+    W.run_for(0.1, run="n1", beats=False)
+    check(not W.p.active() and len(W.press_calls) == 1 and
+          W.armed == "disarmed",
+          "no beat for 0.25 s: stopped, and the watcher pressed nothing")
+    # A disarm flamesafe does not confirm: Disarm all within 1 s.
+    W = _wc_to_bursts()
+    W.disarm_lands = False
+    W.beat(hold=False, run="b1")
+    W.t[0] += 0.5
+    W.p.tick()
+    check(not W.disarm_all_calls, "0.5 s: still waiting for flamesafe")
+    W.t[0] += 0.6
+    W.p.tick()
+    check(len(W.disarm_all_calls) == 1 and
+          any("Disarm all flame groups was sent" in x for x in W.lines),
+          f"not confirmed within 1 s: Disarm all flame groups: {W.lines[-1:]}")
+    # The per-group disarm cannot go (screen arming off): Disarm all at once.
+    W = _wc_to_bursts()
+    W.may_group = False
+    W.beat(hold=False, run="b1")
+    check(len(W.disarm_all_calls) == 1, "no per-group disarm: Disarm all")
+    print("  ok")
+
+
+def test_cleaning_beats_and_preconditions():
+    section("wave flamer cleaning: one screen at a time; an older beat that "
+            "arrives late is not used; a stopped run never comes back; it "
+            "will not start with the wave flamer or another group armed, a "
+            "blocker, every fixture locked out or a broken setting, and says "
+            "why; a fixture locked out stays off and is named; the fuel "
+            "tracker counts its bursts once, as burn, not purge")
+    import types
+    from ltcplay import cleaning as CL
+    from ltcplay import users as U
+    W = _WcWorld()
+    ipad = types.SimpleNamespace(device="iPad at 10.20.0.44", window="w-b",
+                                 user="Vic", local=False, screen="iPad")
+    W.beat(run="a1", seq=10)
+    code, out = W.beat(run="z1", seq=1, ctx=ipad)
+    check(code == 409 and "One screen at a time" in out["error"] and
+          W.p.active(), f"another screen is refused: {out}")
+    n = len(W.press_calls)
+    code, out = W.beat(run="a1", seq=9)
+    check(code == 200 and out.get("overtaken") and len(W.press_calls) == n,
+          "an older beat arriving late: not used, nothing pressed")
+    code, out = W.beat(run="a2", seq=11)
+    check(code == 409 and not W.p.active() and W.disarm_calls,
+          f"a new run from the same screen while one runs: both stop: {out}")
+    code, out = W.beat(run="a1", seq=12)
+    check(code == 409 and not W.p.active(), "the old run never comes back")
+    code, out = W.beat(run="a3", seq=5)
+    check(code == 409 and not W.p.active(),
+          "a new run with an old beat number is refused")
+    for setup, need in (
+            (lambda W: setattr(W, "armed", "armed"),
+             "starts with it disarmed"),
+            (lambda W: W.others.update({"front row": "armed"}),
+             "front row is armed or being armed"),
+            (lambda W: setattr(W, "why", "Run is pressed"), "Run is pressed"),
+            (lambda W: setattr(W, "locked", {6, 12, 18}),
+             "Every wave flamer is locked out"),
+            (lambda W: setattr(W, "cfg_err",
+                               "ltcplay_morning.json: cleaning cycles is 99"),
+             "cycles is 99"),
+            (lambda W: setattr(W, "age", 900), "half second")):
+        W = _WcWorld()
+        setup(W)
+        code, out = W.beat(run="q1")
+        check(code == 409 and need in out["error"] and not W.p.active() and
+              not W.press_calls and W.link.sets == 0,
+              f"refused before anything, {need!r}: {out}")
+        v = W.p.view()
+        if need != "cycles is 99":
+            check(need in v["blocked"], f"and the view says so: {v['blocked']}")
+    # The authorization switch: hold to start is not approved, so it is
+    # refused before anything; dead_man is the default.
+    check(CL.DEFAULTS["authorization"] == "dead_man" and
+          CL.HOLD_TO_START_APPROVED is False and
+          CL.MODES == ("dead_man", "hold_to_start"),
+          "dead_man is the default; hold to start is not approved")
+    W = _WcWorld(authorization="hold_to_start")
+    code, out = W.beat(run="m1")
+    check(code == 409 and out["error"] == CL.HOLD_TO_START_REFUSED and
+          "not approved" in out["error"] and not W.p.active() and
+          not W.press_calls and W.link.sets == 0,
+          f"hold to start: refused in a sentence, nothing pressed: {out}")
+    # The longest run: max_run_min, whatever else holds.
+    W = _wc_to_bursts(max_run_min=1.0)
+    W.run_for(52.0, run="b1")
+    check(not W.p.active() and "longest time, 1 min" in W.p.last_cut and
+          W.ign() == [0, 0, 0] and W.disarm_calls,
+          f"after max_run_min: stopped, ignition 0, disarmed: "
+          f"{W.p.last_cut}")
+    W = _WcWorld()
+    W.locked = {12}
+    code, out = W.beat(run="l1")
+    v = W.p.view()
+    check(code == 200 and W.p.active() and
+          "safety channel 12" in v["locked_note"] and
+          "stays off" in v["locked_note"],
+          f"one fixture locked out: it runs, the locked one named: "
+          f"{v['locked_note']}")
+    W.p.cut("test")
+    nog = CL.CleaningPanel(None, "flamesafe's config has no group named "
+                                 "wave flamer, so there is nothing to clean.",
+                           threaded=False)
+    code, out = nog.beat({"hold": True, "run": "x", "seq": 1}, W.ctx)
+    check(code == 409 and "no group named wave flamer" in out["error"] and
+          nog.view()["available"] is False, f"no group: says why: {out}")
+    # The role check: a beat that runs it is an arm press; a release and
+    # Stop are safety.
+    check(U.classify("/api/remote/cleaning-beat", {"hold": True}) == "arm" and
+          U.classify("/api/remote/cleaning-beat", {"hold": False}) ==
+          "safety" and
+          U.classify("/api/remote/cleaning-beat", {"hold": 1}) == "safety" and
+          U.classify("/api/remote/cleaning-beat", {}) == "safety" and
+          U.classify("/api/remote/cleaning-stop", {}) == "safety",
+          "running it needs the arm permission; letting go and Stop never "
+          "do (signed out is view only)")
+
+    class _Rem:
+        def __init__(self, active):
+            self.active = active
+            self.wall = lambda: 1000.0
+
+        def users_active(self):
+            return self.active
+
+        def _actor(self, ctx, body):
+            return ctx.user, ctx.device, True
+    signed_out = types.SimpleNamespace(device="Rack screen", window="w-a",
+                                       user="", local=True)
+    W = _WcWorld()
+    code, out = CL.route_post(W.p, _Rem(True), "cleaning-beat",
+                              {"hold": True, "run": "s1", "seq": 1,
+                               "seen": 1000000.0}, signed_out)
+    check(code == 403 and "view only" in out["error"] and
+          not W.press_calls and not W.p.active(),
+          f"signed out, users on: refused at the route too: {out}")
+    code, out = CL.route_post(W.p, _Rem(False), "cleaning-beat",
+                              {"hold": True, "run": "s2", "seq": 2,
+                               "seen": 1000000.0 - 5000}, W.ctx)
+    check(code == 409 and "1 s old" in out["error"],
+          f"a page status 5 s old is refused: {out}")
+    code, out = CL.route_post(W.p, _Rem(True), "cleaning-stop", {},
+                              signed_out)
+    check(code == 200, "Stop works signed out")
+    # The fuel tracker: the cleaning's frames are burns of the show fuel
+    # ("other"), counted once, never as a purge.
+    R = _FuelRig()
+    try:
+        R.tr.purge_is_burn = True
+        R.frames(80, purge=True, on=((3, 255), (1, 128)))
+        w = R.unit("w1")
+        check(_near(w["since"]["other"], 2.0) and w["since"]["purge"] == 0 and
+              w["since"]["show"] == 0,
+              f"2 s of cleaning bursts: 2 s of burn, not a purge: "
+              f"{w['since']}")
+        R.frames(80, purge=True, on=((1, 128),))
+        check(_near(R.unit("w1")["since"]["other"], 2.0),
+              "the angle alone burns nothing")
+        R.tr.purge_is_burn = False
+        R.frames(80, purge=True, on=((3, 255),))
+        check(_near(R.unit("w1")["since"]["other"], 2.0) and
+              R.unit("w1")["since"]["purge"] == 0,
+              "after it, a Showven purge frame is a purge again (not counted)")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_cleaning_at_the_engine():
+    section("wave flamer cleaning on the real engine: its arm presses are "
+            "the engine's own hold to arm (the Stream Deck reads them on "
+            "deck-input and arms only after 1 s of beats), its disarms the "
+            "screen's per-group Disarm; Abort cuts it; the Fireball page and "
+            "the Startup page's purge wait for it, and it for them; Arrange "
+            "mode and arming from a screen switched off refuse it")
+    S = _sched()
+    if S is None:
+        return
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import cleaning as CL
+    from ltcplay import fireball as FB
+    check("cleaning" in RM.GET_ROUTES and "cleaning-beat" in RM.POST_ROUTES
+          and "cleaning-stop" in RM.POST_ROUTES, "the routes exist")
+    R = _morning_rig(S, _MO_CONFIG, link=_FakeFireballLink())
+    try:
+        import json as _j
+        fs = os.path.join(R.work, "flamesafe-wave.json")
+        with open(fs, "w", encoding="utf-8") as fh:
+            _j.dump(_WC_FS, fh)
+        R.m.flamesafe_config = fs
+        R.groups[:] = [{"name": "front row", "armed": "disarmed",
+                        "wanted": False, "reason": ""},
+                       {"name": "wave flamer", "armed": "disarmed",
+                        "wanted": False, "reason": ""}]
+        R.feed()
+        cl = CL.build(R.remote, R.m, R.link, journal=R.remote._morning_journal,
+                      threaded=False, clock=lambda: R.mono[0])
+        R.remote.cleaning = cl
+        check(cl.available, f"built from flamesafe's file: {cl.problem}")
+        ctx = RM.Ctx(True, "127.0.0.1", window="w-wc")
+        seq = [0]
+
+        def beat(hold=True, run="e1"):
+            seq[0] += 1
+            return cl.beat({"hold": hold, "run": run, "seq": seq[0],
+                            "seen": R.seen()}, ctx, seen_ok=True,
+                           who="Ola", screen="Rack screen")
+
+        def wave():
+            return R.groups[1]
+
+        def step(dt=0.1):
+            R.mono[0] += dt
+            R.wall[0] += dt
+            R.remote._deck_seen = R.mono[0]
+            R.feed()
+        code, out = beat()
+        check(code == 200 and out["running"], f"it starts: {code} {out}")
+        di = R.remote.deck_input()
+        holds = di["holds"]
+        check(len(holds) == 1 and holds[0]["group"] == 1 and
+              holds[0]["device"] == "Rack screen",
+              f"the Stream Deck sees a screen hold on the wave flamer, the "
+              f"rack screen's: {holds}")
+        for _i in range(9):
+            step()
+            beat()
+        hid = R.remote.deck_input()["holds"][0]
+        check(0.85 <= hid["held_s"] < 1.0 and hid["fresh"],
+              f"0.9 s of beats: held_s {hid['held_s']}, not yet the 1 s the "
+              f"deck needs")
+        step()
+        beat()
+        hid = R.remote.deck_input()["holds"][0]
+        check(hid["held_s"] >= 1.0, "1 s: the deck may take it now")
+        # The deck takes it and arms; flamesafe reports it.
+        wave().update(armed="armed", wanted=True)
+        R.feed()
+        R.remote.deck_input(f"taken={hid['id']}")
+        step()
+        code, out = beat()
+        check(code == 200 and out["progress"]["text"] == "Armed 3 s, 1 of 3"
+              and not R.remote.deck_input()["holds"],
+              f"armed: the hold is over, armed 3 s begins: {out['progress']}")
+        for _i in range(30):
+            step()
+            beat()
+        dis = R.remote.deck_input()["disarms"]
+        check(dis and dis[-1]["name"] == "wave flamer" and
+              out is not None,
+              f"after 3 s the per-group Disarm goes to the deck: {dis[-1:]}")
+        wave().update(armed="disarmed", wanted=False)
+        step()
+        code, out = beat()
+        check(code == 200 and out["progress"]["text"].startswith(
+            "Disarmed 3 s"), f"disarmed: {out['progress']}")
+        # The Fireball page and the purge wait for it.
+        check("cleaning is running" in FB.engine_blockers(R.remote, R.link),
+              "the Fireball page waits for it")
+        check("cleaning is running" in (R.m.purge_blocker() or ""),
+              "the Startup page's purge waits for it")
+        # Abort stops it.
+        R.m.on_abort("Ola", "Rack screen")
+        check(not cl.active() and "Abort" in cl.last_cut,
+              f"an Abort stops it: {cl.last_cut}")
+        # Arming from a screen off: refused, said.
+        RM.save_settings(R.work, screen_arming=False)
+        step()
+        code, out = beat(run="e2")
+        check(code == 409 and "switched off" in out["error"],
+              f"arming from a screen off: refused: {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        # Arrange mode on the Startup page: refused.
+        R.m.open_beat("Rack screen", arranging=True)
+        step()
+        code, out = beat(run="e3")
+        check(code == 409 and "Arrange" in out["error"],
+              f"Arrange mode: refused: {out}")
+        R.m.open_beat("Rack screen", arranging=False)
+        # The deck not reading: refused.
+        R.mono[0] += 3.0
+        R.wall[0] += 3.0
+        R.feed()
+        code, out = beat(run="e4")
+        check(code == 409 and "Stream Deck" in out["error"],
+              f"the deck not reading: refused: {out}")
+        # An open Stream Deck alert: refused, said.
+        step()
+        R.remote.alerts.raise_("deck", text="The Stream Deck is unplugged.")
+        code, out = beat(run="e6")
+        check(code == 409 and "alert is open (deck)" in out["error"],
+              f"a deck alert open: refused: {out}")
+        R.remote.alerts.clear("deck", who="Ola", screen="Rack screen")
+        # Someone holding to arm another group: refused.
+        with R.remote._arm_lock:
+            R.remote._holds[0] = {"token": "iPad at 10.20.0.44", "who": "Vic",
+                                  "device": "iPad at 10.20.0.44",
+                                  "group": "front row", "start": R.mono[0],
+                                  "beat": R.mono[0], "id": 99}
+        code, out = beat(run="e7")
+        check(code == 409 and "Vic is holding to arm front row" in
+              out["error"], f"another group being held: refused: {out}")
+        R.remote._drop_hold(0)
+        # The Fireball page with a channel on: refused.
+        step()
+        R.remote.fireball = types.SimpleNamespace(active=lambda: True)
+        code, out = beat(run="e5")
+        check(code == 409 and "Fireball" in out["error"],
+              f"the Fireball page busy: refused: {out}")
+        R.remote.fireball = None
+        # GET for anyone.
+        code, v = CL.route_get(cl, ctx)
+        check(code == 200 and v["available"] and not v["running"] and
+              v["settings"]["cycles"] == 3, f"GET: {code}")
+        cl.close()
+    finally:
+        R.close()
+    print("  ok")
+
+
+_CLEANING_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function hits(el){
+  el.scrollIntoView({block:"center", inline:"nearest"});
+  const r = el.getBoundingClientRect(), bad = [];
+  if(r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) bad.push("not wholly inside the window when scrolled to");
+  const ins = Math.min(4, r.width / 4, r.height / 4);
+  for(const [x, y] of [[r.left + r.width/2, r.top + r.height/2], [r.left + ins, r.top + ins], [r.right - ins, r.top + ins], [r.left + ins, r.bottom - ins], [r.right - ins, r.bottom - ins]]){
+    const at = document.elementFromPoint(x, y);
+    if(!at || !(el === at || el.contains(at))) bad.push("covered at " + Math.round(x) + "," + Math.round(y) + " by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
+  }
+  return bad;
+}
+function go(){
+  const wc = document.getElementById("wc");
+  if(!document.querySelector("#mo-field .mach") || !wc || wc.hidden) return setTimeout(go, 100);
+  setTimeout(() => {
+    const out = {vw:innerWidth, vh:innerHeight, sw:document.scrollingElement.scrollWidth, problems:[], small:[],
+      armed:document.getElementById("wc-armed").textContent, prog:document.getElementById("wc-prog").textContent,
+      note:document.getElementById("wc-note").textContent,
+      block:shown(document.getElementById("wc-block")) ? document.getElementById("wc-block").textContent : "",
+      hold:document.getElementById("wc-hold").textContent, na:document.getElementById("wc-hold").classList.contains("na"),
+      disabled:document.getElementById("wc-hold").disabled, buttons:{}};
+    for(const id of ["wc-hold", "wc-stop"]){
+      const b = document.getElementById(id);
+      for(const p of hits(b)) out.problems.push(id + ": " + p);
+      const r = b.getBoundingClientRect();
+      out.buttons[id] = {h:Math.round(r.height), w:Math.round(r.width), px:parseFloat(getComputedStyle(b).fontSize)};
+    }
+    const a = document.getElementById("wc-hold").getBoundingClientRect(), b = document.getElementById("wc-stop").getBoundingClientRect();
+    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) out.problems.push("the two buttons overlap");
+    const tw = document.createTreeWalker(wc, NodeFilter.SHOW_TEXT);
+    for(let n = tw.nextNode(); n; n = tw.nextNode()){
+      const t = n.textContent.trim(); const el = n.parentElement;
+      if(!t || !shown(el)) continue;
+      const px = parseFloat(getComputedStyle(el).fontSize);
+      if(px < 14) out.small.push(px + " px: " + t.slice(0, 30));
+    }
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify([out]);
+    document.body.appendChild(pre);
+  }, 700);
+}
+go();
+})();
+</script>
+"""
+
+
+def _wc_view(**over):
+    """GET /api/remote/cleaning as the engine answers it, idle."""
+    from ltcplay import cleaning as CL
+    g, _w = CL.find_group(_WC_FS)
+    v = {"available": True, "problem": "", "running": False, "owner": None,
+         "mine": False, "run": None, "progress": None, "last_cut": "",
+         "config_error": "", "settings": dict(CL.DEFAULTS),
+         "beat_stale_ms": 250,
+         "group": {"name": "wave flamer", "fixtures": g["fixtures"]},
+         "armed": "disarmed", "armed_why": "", "locked": [],
+         "locked_note": "", "blocked": "", "served_at": 0}
+    v.update(over)
+    return v
+
+
+def test_cleaning_on_the_shutdown_page_in_a_browser():
+    section("wave flamer cleaning on the Shutdown part of the Startup page, "
+            "drawn in a real browser at the show PC's and an iPad's sizes "
+            "(the runner's page is about 143 px shorter than its window): "
+            "the hold button and Stop are big, side by side, never under "
+            "the Abort sign or off the side, text 14 px or more; progress "
+            "in plain words; why it cannot run when it cannot; the page's "
+            "logic in node; no em or en dashes")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('<div class="wc" id="wc" hidden aria-label="Wave flamer '
+                 'cleaning">', 'cleaningView(v === "morning");',
+                 '<button class="disarm wc-stop" id="wc-stop"'):
+        check(need in page, f"the page has {need!r}")
+    a = page.index("<!-- Wave flamer cleaning (Andy's design")
+    b = page.index("</section>", a)
+    js_a = page.index("// ---- Wave flamer cleaning (Andy's design")
+    js_b = page.index("// WEATHER (weather.py, WEATHER.md): its own slow")
+    lg_a = page.index("// Wave flamer cleaning (cleaning.py). One beat")
+    lg_b = page.index("// LOGIC END")
+    for part in (page[a:b], page[js_a:js_b], page[lg_a:lg_b]):
+        check("—" not in part and "–" not in part,
+              "the cleaning's words have no em or en dashes")
+    check("disabled = " not in page[js_a:js_b],
+          "the hold button is never given the disabled attribute")
+    bad = _page_logic_in_node(page, r"""
+const V = (o) => Object.assign({available:true, running:false, mine:false, owner:null, blocked:""}, o || {});
+let b = cleaningBody(true, "r1", 4, true);
+t(JSON.stringify(b) === JSON.stringify({hold:true, run:"r1", seq:4, change:true}), "the body: " + JSON.stringify(b));
+t(cleaningBody(1, "r1", 5).hold === false && cleaningBody("true", "r", 1).hold === false, "only the JSON word true holds");
+let s = cleaningState(V(), false, false, false);
+t(s.ok && !s.cut && !s.block, "idle, fresh: a hold may start");
+s = cleaningState(V({blocked:"a scheduled show is live (SHOW)"}), false, false, false);
+t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && !s.cut, "a blocker says why: " + JSON.stringify(s));
+s = cleaningState(V(), true, true, false);
+t(!s.ok && /not live/.test(s.cut), "a stale page while held: stop: " + JSON.stringify(s));
+s = cleaningState(V({running:true, mine:true}), true, false, true);
+t(/view only/.test(s.cut), "signed out while held: stop: " + JSON.stringify(s));
+s = cleaningState(V({running:true, mine:false, owner:"iPad at 10.20.0.44"}), false, false, false);
+t(!s.ok && /One screen at a time/.test(s.block), "another screen runs it: " + JSON.stringify(s));
+s = cleaningState(V({running:true, mine:true, blocked:"x"}), true, false, false);
+t(s.ok && !s.cut, "this screen's own run: the blocker line is not shown while running");
+s = cleaningState(V({available:false, problem:"no group named wave flamer"}), false, false, false);
+t(!s.ok && s.block === "no group named wave flamer", "no group: says why");
+t(!cleaningState(null, false, false, false).ok, "nothing read yet: nothing starts");
+const w = cleaningWords({phase:1, text:"Armed 3 s, 1 of 3", next:"Disarm", bursts:0, left_s:1.25, elapsed_s:4.7});
+t(w === "Phase 1 of 2: Armed 3 s, 1 of 3 (1.3 s left). Next: Disarm. Bursts: 0. Running 4 s.", "the words: " + w);
+const w2 = cleaningWords({phase:2, text:"Bursts: 1 s on, 1 s off", next:"Let go or press Stop to end", bursts:7, left_s:null, elapsed_s:40});
+t(w2 === "Phase 2 of 2: Bursts: 1 s on, 1 s off. Next: Let go or press Stop to end. Bursts: 7. Running 40 s.", "the burst words: " + w2);
+""")
+    check(bad == [] or bad is None, f"the page's cleaning rules, in node: "
+                                    f"{bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True}
+    mo = _morning_view_pico()
+    running = _wc_view(running=True, mine=True, armed="armed", progress={
+        "phase": 1, "step": "armed", "cycle": 2, "cycles": 3,
+        "text": "Armed 3 s, 2 of 3", "next": "Disarm", "bursts": 0,
+        "fire_on": False, "left_s": 1.4, "elapsed_s": 12.3})
+    for which, v, sizes in (
+            ("idle", _wc_view(), ((1280, 800), (1366, 768), (768, 1024))),
+            ("running", running, ((1366, 768),)),
+            ("blocked", _wc_view(blocked="a scheduled show is live (SHOW)"),
+             ((1366, 768),))):
+        got = _rack_screen_in_chromium(
+            chrome, page, st, sizes, measure_js=_CLEANING_MEASURE_JS,
+            frag="#morning", routes={"/api/remote/morning": mo,
+                                     "/api/remote/cleaning": v})
+        for size, res in got.items():
+            if not check(isinstance(res, list) and res,
+                         f"{which} {size}: drawn: {res!r}"[:600]):
+                continue
+            m = res[0]
+            check(not m["problems"] and m["sw"] <= m["vw"] + 1,
+                  f"{which} {size}: both buttons on the screen, not under "
+                  f"the Abort sign, nothing off the side: {m['problems']} "
+                  f"{m['sw']} {m['vw']}x{m['vh']}")
+            bt = m["buttons"]
+            check(bt["wc-hold"]["h"] >= 60 and bt["wc-stop"]["h"] >= 60 and
+                  bt["wc-hold"]["w"] >= 160 and bt["wc-stop"]["w"] >= 90 and
+                  bt["wc-hold"]["px"] >= 16 and bt["wc-stop"]["px"] >= 16 and
+                  not m["small"] and not m["disabled"],
+                  f"{which} {size}: big touch targets, text 14 px or more: "
+                  f"{bt} {m['small'][:3]}")
+            check("Keep holding the whole time" in m["note"] and
+                  "Armed 3 s, disarmed 3 s, 3 times" in m["note"] and
+                  "1 s on and 1 s off" in m["note"] and
+                  "after 10 min" in m["note"],
+                  f"{which} {size}: says how it runs: {m['note']!r}")
+            if which == "idle":
+                check(m["hold"] == "Hold to clean the wave flamers" and
+                      not m["na"] and m["block"] == "" and
+                      m["armed"] == "Wave flamer: disarmed",
+                      f"idle: ready to hold: {m}")
+            elif which == "running":
+                check(m["prog"].startswith("Phase 1 of 2: Armed 3 s, 2 of 3 "
+                                           "(1.4 s left). Next: Disarm.") and
+                      m["armed"] == "Wave flamer: ARMED",
+                      f"running: the progress in plain words: {m['prog']!r}")
+            else:
+                check(m["na"] and "Not available now: a scheduled show is "
+                      "live" in m["block"],
+                      f"blocked: says why, the button says it may not: "
+                      f"{m['block']!r}")
+    print("  ok")
+
+
+def test_cleaning_button_driven():
+    section("wave flamer cleaning pressed in a real browser: holding the "
+            "button beats every 100 ms, one run, numbered in order, hold "
+            "true; letting go sends one release and nothing more; a refusal, "
+            "losing focus, signing out and leaving the page stop it and "
+            "nothing comes back; a blocked button sends nothing; Stop posts "
+            "cleaning-stop")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True}
+    steps = r"""
+window.__wc = JSON.parse(document.getElementById("wc-seed").textContent);
+const realF = window.fetch;
+window.fetch = async (url, opt) => {
+  if(String(url).indexOf("/api/remote/cleaning") >= 0 && !(opt && opt.method === "POST"))
+    return new Response(JSON.stringify(window.__wc), {status:200, headers:{"Content-Type":"application/json"}});
+  return realF(url, opt);
+};
+const run = Object.assign({}, window.__wc, {running:true, mine:true, progress:{phase:1, step:"arm", cycle:1, cycles:3, text:"Arming, 1 of 3", next:"Armed 3 s", bursts:0, left_s:null, elapsed_s:0.2}});
+window.__answer["cleaning-beat"] = b => b.hold ? [200, run] : [200, window.__wc];
+const btn = document.getElementById("wc-hold");
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const beats = n => since(n).filter(p => p.route === "cleaning-beat").map(p => p.body);
+for(let i = 0; i < 30 && document.getElementById("wc").hidden; i++) await h.sleep(100);
+await h.sleep(300);
+// Held.
+let n = mark();
+h.ev(btn, "pointerdown");
+await h.sleep(560);
+const held = beats(n);
+out.held = {n:held.length, holds:held.every(b => b.hold === true), runs:[...new Set(held.map(b => b.run))].length,
+  seqs:held.map(b => b.seq), cls:btn.className, text:btn.textContent, prog:document.getElementById("wc-prog").textContent};
+n = mark();
+h.ev(btn, "pointerup");
+await h.sleep(400);
+out.lift = since(n).filter(p => p.route.startsWith("cleaning")).map(p => p.route + ":" + p.body.hold + ":" + !!p.body.run);
+out.lift_msg = document.getElementById("wc-msg").textContent;
+// A refusal from the engine: stopped, nothing comes back.
+window.__answer["cleaning-beat"] = b => b.hold ? [409, {error:"The arm was refused: the Stream Deck refused it.", cut:true}] : [200, window.__wc];
+n = mark();
+h.ev(btn, "pointerdown");
+await h.sleep(500);
+out.refused = {holds:beats(n).filter(b => b.hold).length, releases:beats(n).filter(b => !b.hold).length,
+  msg:document.getElementById("wc-msg").textContent, on:btn.classList.contains("on")};
+h.ev(btn, "pointerup");
+window.__answer["cleaning-beat"] = b => b.hold ? [200, run] : [200, window.__wc];
+await h.sleep(200);
+// Losing focus while held.
+h.ev(btn, "pointerdown");
+await h.sleep(250);
+n = mark();
+window.dispatchEvent(new Event("blur"));
+await h.sleep(350);
+out.blur = {after:beats(n).map(b => b.hold), msg:document.getElementById("wc-msg").textContent};
+h.ev(btn, "pointerup");
+await h.sleep(150);
+// Signed out while held.
+h.ev(btn, "pointerdown");
+await h.sleep(250);
+window.__patch = s => Object.assign(s, {me:{users_active:true, view_only:true}});
+await h.sleep(800);
+n = mark();
+await h.sleep(300);
+out.signout = {holds:beats(n).filter(b => b.hold).length, on:btn.classList.contains("on")};
+h.ev(btn, "pointerup");
+// Signed out: a press sends nothing.
+n = mark();
+h.ev(btn, "pointerdown");
+await h.sleep(300);
+h.ev(btn, "pointerup");
+out.viewonly = {holds:beats(n).filter(b => b.hold).length, msg:document.getElementById("wc-msg").textContent};
+window.__patch = null;
+await h.sleep(800);
+// Leaving the page while held.
+h.ev(btn, "pointerdown");
+await h.sleep(250);
+n = mark();
+history.replaceState(null, "", location.pathname);
+showView();
+await h.sleep(350);
+out.left = {after:beats(n).map(b => b.hold), hold:WC_HOLD};
+location.hash = "morning";
+showView();
+await h.sleep(800);
+// Blocked: a press sends nothing, says why.
+window.__wc = Object.assign({}, window.__wc, {blocked:"a scheduled show is live (SHOW)"});
+await h.sleep(800);
+n = mark();
+h.ev(btn, "pointerdown");
+await h.sleep(300);
+h.ev(btn, "pointerup");
+out.blocked = {holds:beats(n).filter(b => b.hold).length, msg:document.getElementById("wc-msg").textContent};
+// Stop.
+n = mark();
+document.getElementById("wc-stop").click();
+await h.sleep(300);
+out.stop = since(n).filter(p => p.route.startsWith("cleaning")).map(p => p.route);
+"""
+    seed = ('<script type="application/json" id="wc-seed">' +
+            json.dumps(_wc_view()) + '</script>')
+    m = _rack_drive(chrome, page.replace("</body>", seed + "</body>", 1), st,
+                    steps, size=(1366, 768), frag="#morning",
+                    routes={"/api/remote/morning": _morning_view_pico(),
+                            "/api/remote/cleaning": _wc_view()},
+                    budget_ms=20000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"the cleaning button, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    hd = m["held"]
+    check(hd["n"] >= 4 and hd["holds"] and hd["runs"] == 1 and
+          hd["seqs"] == sorted(hd["seqs"]) and "on" in hd["cls"].split() and
+          hd["text"] == "Cleaning: keep holding" and
+          hd["prog"].startswith("Phase 1 of 2: Arming, 1 of 3."),
+          f"held: a beat every 100 ms, one run, in order, progress shown: "
+          f"{hd}")
+    check(m["lift"] == ["cleaning-beat:false:true"] and
+          m["lift_msg"].startswith("Stopped: you let go."),
+          f"let go: one release, then nothing: {m['lift']} {m['lift_msg']!r}")
+    r = m["refused"]
+    check(r["holds"] == 1 and r["releases"] == 1 and not r["on"] and
+          "the Stream Deck refused it" in r["msg"],
+          f"a refusal: stopped, said, nothing more: {r}")
+    check(m["blur"]["after"][:1] == [False] and
+          all(x is False for x in m["blur"]["after"]) and
+          "lost focus" in m["blur"]["msg"],
+          f"losing focus: stopped: {m['blur']}")
+    check(m["signout"]["holds"] == 0 and not m["signout"]["on"],
+          f"signed out while held: stopped: {m['signout']}")
+    check(m["viewonly"]["holds"] == 0 and
+          "view only" in m["viewonly"]["msg"],
+          f"signed out: a press sends nothing: {m['viewonly']}")
+    check(m["left"]["after"][:1] == [False] and m["left"]["hold"] is False,
+          f"leaving the page: stopped: {m['left']}")
+    check(m["blocked"]["holds"] == 0 and
+          "a scheduled show is live" in m["blocked"]["msg"],
+          f"blocked: nothing sent, says why: {m['blocked']}")
+    check(m["stop"] == ["cleaning-stop"], f"Stop: {m['stop']}")
+    print("  ok")
+
+
 def test_scrub_flames_seqlock():
     section("fire flames while scrubbing, third review of #117: the move "
             "count is a seqlock; a player tick that lands inside a move "
@@ -76628,6 +77813,13 @@ if __name__ == "__main__":
         test_fireball_page_in_a_browser,
         test_fireball_page_buttons_driven,
         test_fireball_doc_in_plain_words,
+        test_cleaning_group_and_config,
+        test_cleaning_whole_sequence,
+        test_cleaning_every_stop_cuts_and_disarms,
+        test_cleaning_beats_and_preconditions,
+        test_cleaning_at_the_engine,
+        test_cleaning_on_the_shutdown_page_in_a_browser,
+        test_cleaning_button_driven,
         test_scrub_flames_seqlock,
         test_weather_parsers_read_each_source,
         test_weather_rules_age_stale_no_data_disagree_alerts,

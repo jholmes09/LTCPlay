@@ -176,14 +176,19 @@ FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
 FIREBALL_POST_ROUTES = ("fireball-beat", "fireball-off")
+# Wave flamer cleaning (cleaning.py, the Shutdown page): read by anyone; a
+# beat that runs it is an arm press (users.classify), Stop never.
+CLEANING_GET_ROUTES = ("cleaning",)
+CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
-    MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES
+    MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
+    CLEANING_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "scrub-flames") + MORNING_POST_ROUTES + FUEL_POST_ROUTES + \
-    FIREBALL_POST_ROUTES
+    FIREBALL_POST_ROUTES + CLEANING_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1235,6 +1240,7 @@ class Remote:
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
+        self.cleaning = None         # cleaning.CleaningPanel, web.serve
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         # scrubflames.ScrubFlames, set by web.serve (Fire & Ice with a flame
         # link and a flame controller). Always off at start.
@@ -1526,6 +1532,9 @@ class Remote:
         if name in FIREBALL_GET_ROUTES:
             from . import fireball as fireball_mod
             return fireball_mod.route_get(self.fireball, ctx, self.wall)
+        if name in CLEANING_GET_ROUTES:
+            from . import cleaning as cleaning_mod
+            return cleaning_mod.route_get(self.cleaning, ctx, self.wall)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -1567,6 +1576,10 @@ class Remote:
         if name in FIREBALL_POST_ROUTES:
             from . import fireball as fireball_mod
             return (*fireball_mod.route_post(self.fireball, self, name, body,
+                                             ctx),) + ({},)
+        if name in CLEANING_POST_ROUTES:
+            from . import cleaning as cleaning_mod
+            return (*cleaning_mod.route_post(self.cleaning, self, name, body,
                                              ctx),) + ({},)
         if name in ANNOUNCE_ROUTES:
             return (*self.announce_post(name, body, ctx),) + ({},)

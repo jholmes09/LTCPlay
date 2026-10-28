@@ -1074,6 +1074,11 @@ class Handler(BaseHTTPRequestHandler):
                     # The Fireball page: a beat that changes nothing.
                     (short == "fireball-beat" and
                      body.get("run") is not None and
+                     body.get("change") is not True) or
+                    # The wave flamer cleaning: a beat while held.
+                    (short == "cleaning-beat" and
+                     body.get("run") is not None and
+                     body.get("hold") is True and
                      body.get("change") is not True))
             if beat and (ok or route in ("/api/remote/signin",
                                          "/api/remote/signout",
@@ -1917,6 +1922,34 @@ def _attach_fireball(httpd):
     httpd.server_close = _close_fireball
 
 
+def _attach_cleaning(httpd):
+    """Wave flamer cleaning (cleaning.py, the Shutdown page): flamesafe's
+    wave flamer group, the engine's hold to arm and disarm, the Startup
+    page's lockout and purge frame, and the flame link. Closed FIRST, so
+    its ignition is off and its disarm sent before anything else stops."""
+    from . import cleaning as cleaning_mod
+    remote = httpd.remote
+    try:
+        def _journal(text, outcome="done", who="", screen="", fault=False):
+            remote._journal(who or "system", screen or "engine", "cleaning",
+                            outcome, text, fault=fault)
+        remote.cleaning = cleaning_mod.build(
+            remote, httpd.morning, httpd.fire_ice.flame_link,
+            journal=_journal, fuel=getattr(remote, "fuel", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"The wave flamer cleaning could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_cleaning():
+        try:
+            remote.cleaning.close()
+        finally:
+            _close_before()
+    httpd.server_close = _close_cleaning
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
@@ -2313,6 +2346,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         if fire_ice is not None and \
                 getattr(httpd.fire_ice, "flame_link", None) is not None:
             _attach_fireball(httpd)
+            _attach_cleaning(httpd)
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):

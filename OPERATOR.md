@@ -433,6 +433,72 @@ off, with Andy:**
    Valve Open: it goes off within a second.
 7. Only then open the fuel valve, one channel at a time.
 
+**Wave flamer cleaning (the Shutdown part of the Startup page; Andy's
+design).** The nightly shutdown routine for the wave flamers, on one
+button: **Hold to clean the wave flamers**. Keep holding it the whole
+time. Letting go stops it at once. Out of the box it runs:
+
+1. Three times: arm the wave flamers, armed 3 s, disarm, disarmed 3 s.
+   Each 3 s counts from flamesafe saying armed or disarmed, never from a
+   guess, so a slow arm only makes it take longer.
+2. Then arm again, point every head straight up (angle 128), give the
+   heads 1 s to get there, and fire in bursts: 1 s on, 1 s off, over and
+   over until you let go or press Stop.
+
+The page says where it is in plain words ("Phase 1 of 2: Armed 3 s, 1 of
+3 (1.4 s left). Next: Disarm."), the bursts so far and how long it has
+run. Every run also ends by itself after 10 minutes. The timings live in
+ltcplay_morning.json, `cleaning` (MORNING.md says the limits).
+
+**How it arms.** Exactly the way the show screen's Hold to arm does: while
+you hold, each arm is a hold to arm pressed for you through the engine,
+and the Stream Deck arms the wave flamers only after a full second of that
+holding, with all its own rules and all of flamesafe's (the re-arm wait,
+every flame channel at zero on the arm, the lockout). Nothing arms if you
+are not holding. It needs screen arming on (Programming, Arming from a
+screen) and the Stream Deck program running, signed in as someone who may
+arm. Signed out it is view only; Stop always works.
+
+**It stops at once, the ignition off first and then the wave flamers
+disarmed,** on: letting go; Stop (on this page, or the rack screen's or
+the Stream Deck's); Abort; Hold; any disarm anywhere; the wave flamers
+disarming by themselves; flamesafe not reporting; leaving, hiding or
+closing the page, or the window losing focus; signing out; the connection
+dropping; this page's status not being live; a show starting; live flame
+programming or fire while scrubbing going on; another flame group armed;
+an alert about the flames, the flame link or the Stream Deck; every wave
+flamer locked out; any refusal. If flamesafe does not report the wave
+flamers off within a second, Disarm all flame groups goes. Nothing comes
+back by itself: hold the button again.
+
+**When it will not start** it says why: a show live or on Hold, an Abort
+standing, Run pressed, live flame programming or fire while scrubbing on,
+a purge selected (and the purge waits while the cleaning runs), the
+Fireball page with a channel on, any screen in Arrange mode, another flame
+group armed or being armed, the wave flamers already armed (it starts
+from disarmed), every wave flamer locked out, screen arming off, the
+Stream Deck not reading the engine, or a setting out of its limits. One
+screen at a time. A wave flamer that is locked out stays off and the page
+names it; the others are cleaned. Its bursts count on the Fuel page as
+flame (not as a purge).
+
+**First test at the rack, with Andy. Fuel valve closed first:**
+
+1. With every wave flamer disarmed and no other group armed, hold the
+   button. Watch flamesafe's lamp: armed, about 3 s, off, about 3 s, three
+   times. Then armed again: every head swings straight up.
+2. Keep holding: the igniters click 1 s on, 1 s off. Count a few.
+3. Let go mid burst: the click stops at once, the head stays up, the lamp
+   goes off within a second.
+4. Hold again and, during the bursts, try each stop once: Stop on the
+   page, Abort, Hold, the Stream Deck's Stop, Disarm all flame groups,
+   close the browser, pull the iPad's network cable. Each time the click
+   stops at once and the wave flamers disarm.
+5. Lock one wave flamer on the Startup page and run it: that one never
+   moves or clicks, the page names it.
+6. Only then open the fuel valve and run it once with Andy watching each
+   head.
+
 
 **Stream Deck unplugged.** Unplugging or replugging the deck changes nothing
 on the flame groups: whatever was armed stays armed, whatever was off stays

@@ -5833,6 +5833,79 @@ def test_fireball_fire_slots_are_zero_unless_armed():
           "a disarm: the Valve Open is zero on the very next tick")
 
 
+# =========================================================================
+# Wave flamer cleaning (Andy's design, 2026-10-28; ltcplay/cleaning.py): the
+# whole sequence through the composer on the example's wave flamer. Each
+# fixture's angle and ignition are worked out from its safety slot (angle
+# 5 below, ignition 3 below), the same rule ltcplay uses.
+# =========================================================================
+
+def test_wave_cleaning_sequence_through_the_composer():
+    section("wave flamer cleaning: armed 3 s and disarmed 3 s, three times, "
+            "then armed with the heads straight up and the ignition 1 s on "
+            "and 1 s off; every re-arm after the 3 s gap rises cleanly (no "
+            "re-arm dwell, no chatter hold); the ignition reaches the wire "
+            "only while armed and is zero on the tick after a disarm")
+    r = Rig()
+    r.prove_alive()
+    angles = [s - 5 for s in WAVE_SAFETIES]
+    ignitions = [s - 3 for s in WAVE_SAFETIES]
+    check(angles == WAVE_AIM and all(i in WAVE_FLAME for i in ignitions),
+          f"each fixture's angle is its aim slot and its ignition a flame "
+          f"slot: {angles} {ignitions}")
+    ticks_s = int(round(1 / r.period))
+    for cycle in range(1, 4):
+        r.inp.set(WAVE)
+        r.run(2, {})
+        check(safeties_on_wire(r) == [WAVE_ARM] * 3 and
+              r.group(WAVE)["armed"] == "armed",
+              f"cycle {cycle}: the wave flamer arms with every slot at zero "
+              f"after the gap: {r.group(WAVE)['armed']} "
+              f"{r.group(WAVE)['reason']}")
+        r.run(3 * ticks_s, {})
+        r.inp.set(WAVE, on=False)
+        r.step()
+        check(safeties_on_wire(r) == [0, 0, 0],
+              f"cycle {cycle}: the disarm drops every safety at once")
+        r.run(3 * ticks_s, {})
+    check(r.c.stats["chatter_holds"] == 0 and r.c.stats["dwell_blocks"] == 0,
+          f"three cycles 3 s apart: never a chatter hold or a dwell block: "
+          f"{r.c.stats['chatter_holds']} {r.c.stats['dwell_blocks']}")
+    # Phase 2: nothing on the wire until armed; then the angles; then the
+    # bursts.
+    up = {a: 128 for a in angles}
+    burst = dict(up)
+    burst.update({i: 255 for i in ignitions})
+    r.inp.set(WAVE)
+    r.run(2, {})
+    check(r.group(WAVE)["armed"] == "armed", "phase 2: armed again")
+    r.run(1 * ticks_s, up)
+    u = r.out.universe
+    check([u[a - 1] for a in angles] == [128] * 3 and
+          all(u[i - 1] == 0 for i in ignitions),
+          "the heads straight up, no ignition yet")
+    for n in range(3):
+        r.run(1 * ticks_s, burst)
+        u = r.out.universe
+        check(all(u[i - 1] == 255 for i in ignitions) and
+              safeties_on_wire(r) == [WAVE_ARM] * 3,
+              f"burst {n + 1}: ignition 255 on every fixture, armed")
+        r.run(1 * ticks_s, up)
+        check(all(r.out.universe[i - 1] == 0 for i in ignitions),
+              f"burst {n + 1} off: ignition 0")
+    r.run(5, burst)
+    r.inp.set(WAVE, on=False)
+    r.step()
+    check(all(r.out.universe[i - 1] == 0 for i in ignitions) and
+          safeties_on_wire(r) == [0, 0, 0] and
+          all(r.out.universe[a - 1] == 0 for a in angles),
+          "a stop mid-burst: ignition, angle and safety zero on the next tick")
+    # Disarmed, the burst frame never reaches the wire.
+    r.run(10, burst)
+    check(all(r.out.universe[i - 1] == 0 for i in ignitions),
+          "disarmed: a burst frame from ltcplay is zero on the wire")
+
+
 if __name__ == "__main__":
     t0 = time.perf_counter()
     test_rule1_arm_value_is_derived()
@@ -5924,6 +5997,7 @@ if __name__ == "__main__":
     test_safety_profile_config()
     test_safety_profile_composes()
     test_fireball_fire_slots_are_zero_unless_armed()
+    test_wave_cleaning_sequence_through_the_composer()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}
