@@ -25971,14 +25971,22 @@ class _AmOut(_TcOut):
         self.packets_sent += 1
         return True
 
-    # A held end frame (clock.TimecodeOut.send_held): this recorder's one
-    # destination is MadMapper's.
-    send_held = send
+    # A held frame (clock.TimecodeOut.send_held, after the end of a show or
+    # an Abort): this recorder's one destination is MadMapper's. Kept in
+    # `sent` like every frame, and its time in `held_at` too, so a test can
+    # tell it from a frame sent to every receiver (frames(plain=True)).
+    def send_held(self, pkt):
+        self.held_at = getattr(self, "held_at", set())
+        self.held_at.add(len(self.sent))
+        return self.send(pkt)
 
-    def frames(self, since=None):
+    def frames(self, since=None, plain=False):
         out = []
-        for t, p in self.sent:
+        held = getattr(self, "held_at", set())
+        for i, (t, p) in enumerate(self.sent):
             if since is not None and t < since:
+                continue
+            if plain and i in held:
                 continue
             h, m, s, f, _ = _tc_of(p)
             out.append((t, ((h * 60 + m) * 60 + s) * 30 + f))
@@ -27065,7 +27073,12 @@ def test_audio_master_hold_resume_and_abort():
           "the Abort fade is not a fade")
     check(all(v == 0.0 for t, v in lv if t > t_abort + 1.05),
           "sound kept coming after Abort's fade")
-    check(not out.frames(since=r["calls"]["stop"][0] + 1e-9),
+    # After the Abort nothing goes to every receiver; only the frozen last
+    # frame, held for MadMapper alone (send_held), as at a show's end.
+    stop0 = r["calls"]["stop"][0]
+    last = [n for t, n in out.frames() if t <= stop0][-1]
+    check(not out.frames(since=stop0 + 1e-9, plain=True) and
+          {n for _t, n in out.frames(since=stop0 + 1e-9)} == {last},
           "timecode kept going after Abort stopped the cue")
     check(not am.playing and "stopped" in am.last_ended,
           f"after Abort: playing={am.playing} {am.last_ended!r}")
@@ -27335,8 +27348,12 @@ def test_audio_master_the_show_runs_to_its_longest_part():
           f"an Abort in the tail did not stop at once: {am3.playing} "
           f"{am3.last_ended!r} {r3['calls']['stop']} at {t_abort}")
     r3["sim"].run(vc3() + 1.0)
-    check(not r3["out"].frames(since=t_abort + 1e-9),
-          "an Abort in the tail left the timecode running or held")
+    last3 = [n for t, n in r3["out"].frames() if t <= t_abort][-1]
+    check(not r3["out"].frames(since=t_abort + 1e-9, plain=True) and
+          {n for _t, n in r3["out"].frames(since=t_abort + 1e-9)} ==
+          {last3},
+          "an Abort in the tail left the timecode running, or did not "
+          "hold its last frame for MadMapper alone")
     am3.stop()
     # Hold and Resume in the tail carry on to the end.
     r4 = _am_rig(seconds=1.0, lengths={"Show": 2.0})
@@ -39358,7 +39375,7 @@ def test_reset_says_how_the_rig_stands():
           "groups": [{"name": "Wave", "armed": "disarmed"},
                      {"name": "Gas", "armed": "disarmed"}]}
     clk = {"artnet": ["MadMapper 10.250.1.1"], "failing": [],
-           "holding": "00:01:27:10"}
+           "holding": "00:01:27:10", "held_to": ["MadMapper"]}
     mm = {"link": "up", "heartbeat": "quiet"}
     ann = {"configured": True, "ok": True, "device_set": True,
            "device_available": True,
@@ -39409,6 +39426,63 @@ def test_reset_says_how_the_rig_stands():
     check("Flame link OK, 1 group armed: Wave." in
           RH.summary(lamps, clk, None, None, armed, None)[0],
           "an armed group is named")
+    # Review of #161: never "holding for MadMapper" when nothing can take
+    # the held frame (TimecodeOut.held_dests empty), nor when unknown.
+    t, it = RH.summary(lamps, dict(clk, held_to=[]), None, None, fl, None)
+    check("Timecode NOT HELD for MadMapper" in t and
+          "holding" not in t and
+          [i["ok"] for i in it if i["name"] == "timecode"] == [False],
+          f"no MadMapper receiver: said, never 'holding': {t}")
+    t, it = RH.summary(lamps, dict(clk, held_to=None), None, None, fl, None)
+    check("Timecode ready." in t and "holding" not in t,
+          f"where it goes not known: no holding claim: {t}")
+    # A heartbeat listener that cannot listen is said, and flagged.
+    t, it = RH.summary(lamps, clk, {"link": "up", "heartbeat": "silent",
+                                    "heartbeat_why": "The MadMapper "
+                                    "heartbeat could not listen on "
+                                    "127.0.0.1:9001: in use"},
+                       None, fl, None)
+    check("heartbeat listener NOT WORKING (The MadMapper heartbeat could "
+          "not listen on 127.0.0.1:9001: in use)" in t and
+          "not seen yet" not in t and
+          [i["ok"] for i in it if i["name"] == "MadMapper"] == [False],
+          f"a broken heartbeat listener: {t}")
+    # Lasers: a laser arm not known is flagged; "none" is not ready.
+    t, it = RH.summary([{"name": "Lasers", "state": "ok", "word": "black"},
+                        {"name": "Laser arm", "state": "bad",
+                         "word": "not known"}], None, None, None, fl, None)
+    check("Laser arm NOT READY: not known." in t and
+          [i["ok"] for i in it if i["name"] == "lasers"] == [False],
+          f"the laser arm not known: {t}")
+    t, it = RH.summary([{"name": "Lasers", "state": "off", "word": "none"}],
+                       None, None, None, fl, None)
+    check([i["ok"] for i in it if i["name"] == "lasers"] == [None],
+          f"lasers 'none' is not ready: {it}")
+    # A flamesafe fault still names the armed groups.
+    t, it = RH.summary(lamps, clk, None, None,
+                       dict(armed, fault="arm input lost"), None)
+    check("flamesafe reports a fault (arm input lost)" in t and
+          "1 group armed: Wave." in t,
+          f"a fault still names the armed groups: {t}")
+    # The engine asks the running clock where a held frame can go.
+    import tempfile
+    from ltcplay import remote as RM
+    dests = [[]]
+    snap = {"running": True,
+            "clock": {"artnet": ["MadMapper 10.0.0.1"], "failing": [],
+                      "holding": "00:00:07:00"}}
+    ctl = types.SimpleNamespace(
+        state=lambda: snap,
+        session=types.SimpleNamespace(clock=types.SimpleNamespace(
+            out=types.SimpleNamespace(held_dests=lambda: dests[0]))))
+    rm = RM.Remote(ctl, None, folder=tempfile.gettempdir())
+    t = rm.rig_health()[0]
+    check("Timecode NOT HELD for MadMapper" in t,
+          f"the engine: nothing takes the held frame: {t}")
+    dests[0] = [("MadMapper", "10.0.0.1")]
+    t = rm.rig_health()[0]
+    check("holding 00:00:07:00 for MadMapper" in t,
+          f"the engine: MadMapper takes it: {t}")
     t2, it2 = RH.summary(lamps, clk, None, None, fl, None)
     check(not any(i["name"] in ("MadMapper", "BEYOND") for i in it2) and
           "BEYOND" not in t2 and

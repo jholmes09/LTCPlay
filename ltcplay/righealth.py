@@ -58,12 +58,15 @@ def _flames(fl):
     if fl.get("stale"):
         return False, ("Flame link NOT READY: no status from flamesafe. "
                        "Check that flamesafe is running.")
-    if fl.get("fault"):
-        return False, (f"Flame link: flamesafe reports a fault "
-                       f"({fl['fault']}). See the Flames card.")
     groups = [g for g in fl.get("groups") or [] if isinstance(g, dict)]
     armed = [str(g.get("name") or "?") for g in groups
              if str(g.get("armed")).lower() == "armed"]
+    if fl.get("fault"):
+        return False, (f"Flame link: flamesafe reports a fault "
+                       f"({fl['fault']}). See the Flames card. " +
+                       (f"{len(armed)} group{'s' if len(armed) != 1 else ''}"
+                        f" armed: {', '.join(armed)}." if armed else
+                        "All groups disarmed."))
     if armed:
         return True, (f"Flame link OK, {len(armed)} group"
                       f"{'s' if len(armed) != 1 else ''} armed: "
@@ -81,9 +84,16 @@ def _timecode(clk):
                        f"Art-Net timecode. Check the show network.")
     if clk.get("artnet") is None:
         return None, "Timecode: no Art-Net timecode receivers are set."
-    if clk.get("holding"):
+    held_to = clk.get("held_to")     # TimecodeOut.held_dests labels, or None
+    if clk.get("holding") and held_to:
         return True, (f"Timecode ready, holding {clk['holding']} for "
                       f"MadMapper until the next show.")
+    if clk.get("holding") and held_to is not None:
+        return False, ("Timecode NOT HELD for MadMapper: no Art-Net "
+                       "timecode receiver is named MadMapper at an address "
+                       "of its own (away from BEYOND's, not broadcast). "
+                       "Name MadMapper under 'clock.artnet.nodes' at its "
+                       "own address.")
     return True, "Timecode ready."
 
 
@@ -96,6 +106,13 @@ def _madmapper(mm):
                        "project.")
     head = "MadMapper running" if link == "up" else "MadMapper"
     hb = mm.get("heartbeat")
+    if hb == "silent":
+        # Asked with no show playing, silent means the heartbeat listener
+        # itself is broken (madmapperwatch._heartbeat_word: bind_error).
+        return False, (f"{head}: heartbeat listener NOT WORKING "
+                       f"({_cap(mm.get('heartbeat_why')) or 'no reason'}). "
+                       f"Whether the video follows cannot be told until it "
+                       f"is fixed.")
     if hb is None:
         return None, (f"{head}: whether it follows cannot be told (no "
                       f"heartbeat is set up).")
@@ -124,12 +141,16 @@ def _lasers(lamps):
         return None, ""
     if st == "bad":
         return False, f"Lasers NOT READY: {word}."
+    if ast == "bad":
+        return False, f"Laser arm NOT READY: {aword}."
     parts = []
     if st is not None:
         parts.append(f"lasers {word}")
     if ast is not None:
         parts.append(f"laser arm {aword}")
-    return (None if st == "warn" else True), _cap(", ".join(parts)) + "."
+    # Ready only with a known laser state; "none" or "not known" is not.
+    ok = True if st == "ok" and ast in (None, "ok", "off") else None
+    return ok, _cap(", ".join(parts)) + "."
 
 
 def _announcements(ann):

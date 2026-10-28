@@ -2046,8 +2046,21 @@ class Remote:
                 fl = self.flame_status.view() if self.flame_status else None
             except Exception:                    # noqa: BLE001
                 fl = None
+            clk = cs.get("clock")
+            if isinstance(clk, dict):
+                # Where a held frame can go (TimecodeOut.held_dests): never
+                # said to be held for MadMapper when it cannot be.
+                clk = dict(clk, held_to=None)
+                try:
+                    out = getattr(getattr(self.control.session, "clock",
+                                          None), "out", None)
+                    held = getattr(out, "held_dests", None)
+                    if callable(held):
+                        clk["held_to"] = [str(lb) for lb, _ip in held()]
+                except Exception:                # noqa: BLE001
+                    pass
             return righealth.summary(
-                lamps=self.subsystems(cs), clock=cs.get("clock"),
+                lamps=self.subsystems(cs), clock=clk,
                 madmapper=self.madmapper_link(False),
                 beyond=self.beyond_link(), flames=fl,
                 announce=self.announce_view())

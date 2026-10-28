@@ -4406,6 +4406,31 @@ def build():
   '    if armed:\n        return True, (f"Flame link OK',
   '    if False:\n        return True, (f"Flame link OK'),
 
+ ('reset: the frame is said held for MadMapper when nothing takes it',
+  'ltcplay/righealth.py',
+  '    if clk.get("holding") and held_to:',
+  '    if clk.get("holding"):'),
+
+ ('reset: a broken heartbeat listener reads as not seen yet',
+  'ltcplay/righealth.py',
+  '    if hb == "silent":\n',
+  '    if False:\n'),
+
+ ('reset: a laser arm not known reads ready',
+  'ltcplay/righealth.py',
+  '    if ast == "bad":\n        return False, f"Laser arm NOT READY',
+  '    if False:\n        return False, f"Laser arm NOT READY'),
+
+ ('reset: lasers none reads ready',
+  'ltcplay/righealth.py',
+  '    ok = True if st == "ok" and ast in (None, "ok", "off") else None',
+  '    ok = True'),
+
+ ('reset: the rig health never asks where a held frame can go',
+  'ltcplay/remote.py',
+  '                        clk["held_to"] = [str(lb) for lb, _ip in held()]',
+  '                        pass'),
+
  ('reset: what needs attention is not listed',
   'ltcplay/righealth.py',
   '    if bad:\n        text += f" Needs attention',
