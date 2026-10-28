@@ -10,7 +10,7 @@ time comes while an alert is still open.
 - Then a COUNTDOWN_S countdown, shown on the rack screen, and then ONE
   "Delayed" announcement on the PA (announce.py), only when an alert of
   a kind in ANNOUNCE_KINDS was open at the Hold (audio, video, flames,
-  link, timecode, start). deck and gate hold quietly.
+  link, timecode, start, preroll). deck and gate hold quietly.
 - Acknowledge cancels the countdown and the announcement once no alert of
   an announcing kind that was open at the Hold is still open (two loud
   alerts and one acknowledged: the other still counts). It does NOT
@@ -41,8 +41,10 @@ alerts.Alerts.tick.
 import time
 
 COUNTDOWN_S = 60.0
+# "preroll": the rig check before the show failed (preroll.py, Jeff
+# 2026-10-28): the audience is waiting, so it is announced like the rest.
 ANNOUNCE_KINDS = frozenset(("audio", "video", "flames", "link", "timecode",
-                            "start"))
+                            "start", "preroll"))
 ANNOUNCEMENT = "delayed"
 WHO = "LTC Player"
 SCREEN = "engine"
@@ -146,6 +148,31 @@ class AlertHold:
                       "acknowledged the alert within "
                       f"{COUNTDOWN_S:g} s. The show still waits for Resume.",
                       outcome="announced")
+
+    def stop_for_continue(self, who):
+        """Continue anyway was pressed (preroll.py, Jeff 2026-10-28): the
+        countdown ends at once and the Delayed announcement this hold
+        started, if it is still playing, is stopped; the show is about to
+        start. Nothing else changes. Never raises."""
+        h = self.hold
+        if h is None:
+            return
+        try:
+            if h["state"] == "counting":
+                h["state"], h["due"] = "cancelled", None
+                self._journal(f"The Delayed announcement was cancelled: "
+                              f"{who} chose Continue anyway.",
+                              outcome="cancelled")
+            elif h["state"] in ("announcing", "announced"):
+                ann = self._announce()
+                st = ann.status() if ann is not None else {}
+                if (st.get("playing") or {}).get("id") == ANNOUNCEMENT:
+                    ann.stop(WHO, SCREEN, surface=True)
+                    self._journal(f"The Delayed announcement was stopped: "
+                                  f"{who} chose Continue anyway.",
+                                  outcome="stopped")
+        except Exception:                        # noqa: BLE001
+            pass
 
     def _drop(self, h):
         """Forget THIS hold, never a newer one started meanwhile (the

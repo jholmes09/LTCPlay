@@ -177,6 +177,10 @@ class TimecodeOut:
         self._fails = 0
         self._last_open = None
         self.packets_sent = 0
+        # Receivers (their clock.artnet.nodes name, lower case) sent
+        # nothing at all: MadMapper, for a show started by Continue anyway
+        # after its video failed the rig check (fire_ice.ShowRunner).
+        self.muted = frozenset()
         self.send_errors = 0
         self.reopens = 0
         self.last_error = ""
@@ -291,6 +295,8 @@ class TimecodeOut:
             return False
         ok = False
         for label, ip in (self.dests if dests is None else dests):
+            if self.muted and str(label).strip().lower() in self.muted:
+                continue
             if DIVERT:
                 d = DIVERT.get(str(label).lower()) or DIVERT.get(ip)
                 if d is not None:
@@ -2039,6 +2045,25 @@ class AudioMaster(Clock):
                         f"{self._tc_text_of(self._held)} stops")
         self._held = None
         self._held_at = None
+
+    def preroll_frame(self, n):
+        """The pre-roll's video test (preroll.check_video): timecode frame
+        `n` (00:00:00:00 counting up) to MadMapper ALONE, exactly where a
+        finished show's held frame goes (TimecodeOut.held_dests: never
+        BEYOND, never broadcast), and never to the pixels. Refused (False)
+        while a cue is loaded or Run is not in force: never during a show.
+        A finished show's held frame stops first, so the two never
+        interleave. True when it went to at least one receiver."""
+        with self._lock:
+            if not self._live or self._cue is not None or self.out is None:
+                return False
+            self._drop_held("The pre-roll's video test")
+            h, m, s, f = frames_to_tc(int(n), MASTER_FPS)
+            held = getattr(self.out, "send_held", None)
+            if not callable(held):
+                return False
+            return bool(held(arttimecode(h, m, s, f, MASTER_TYPE,
+                                         self.stream_id)))
 
     @staticmethod
     def _tc_text_of(tc):

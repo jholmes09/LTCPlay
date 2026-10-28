@@ -43,11 +43,14 @@ asking before an unattended start.
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-         "timecode", "lasers", "users", "aim")
+         "timecode", "lasers", "users", "aim", "preroll")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
-            "users": "fault", "aim": "warning"}
+            "users": "fault", "aim": "warning",
+            # The rig check before a show failed (preroll.py): it holds the
+            # show at its time like any fault (alerthold.py).
+            "preroll": "fault"}
 # Display only (2026-10-28): an alert of these kinds is shown on every
 # screen and journaled, and cleared like any other, but it never sounds the
 # booth, never runs the pulse, never holds a show at showtime

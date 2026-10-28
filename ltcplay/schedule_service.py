@@ -826,6 +826,15 @@ class Service:
         # Called after every tick of the running scheduler, outside the
         # lock (_run): remote.Remote._alert_tick.
         self.tick_hooks = []
+        # The pre-roll (preroll.PreRoll, Jeff 2026-10-28), set by web.serve
+        # for a Fire & Ice engine whose scheduler performs: the rig is
+        # checked PreRoll.window_s before a show's time, and before Start
+        # now. None: no pre-roll, every start exactly as before.
+        self.preroll = None
+        # (night, show) -> late_ok_s, for a show whose pre-roll could only
+        # run at its time: it starts late rather than unchecked.
+        self._preroll_late = {}
+        self._preroll_seq = 0
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -2385,8 +2394,12 @@ class Service:
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
-            self._hold_at_showtime_for_alerts(now)
-            self._apply(sch.Event(sch.TICK, "scheduler"), now)
+            ev = self._tick_event()
+            self._preroll_lookahead(now)
+            self._preroll_before_gate(now, ev)
+            self._hold_at_showtime_for_alerts(now, ev)
+            if not self._preroll_defers(now, ev):
+                self._apply(ev, now)
             self._sync_latch_marker()
             m = self.machine
         self._after_tick()
@@ -2414,7 +2427,7 @@ class Service:
             got = gate()
             if not got:
                 return
-            probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
+            probe = sch.step(m, self._tick_event(), now)
             shows = [e.show for e in probe.effects
                      if e.kind == sch.START_SHOW][:1]
             if not shows and m.delayed() is None:
@@ -2436,7 +2449,7 @@ class Service:
     # paused show, or one already held, is never touched here.
     SHOWTIME_FROM = (sch.IDLE, sch.STANDBY)
 
-    def _hold_at_showtime_for_alerts(self, now):
+    def _hold_at_showtime_for_alerts(self, now, ev=None):
         """With the lock held, just before the tick: if this tick would
         start a show and an alert is open (showtime_gate), the schedule
         Holds instead, as the engine's own system action, and the show
@@ -2448,7 +2461,7 @@ class Service:
         if gate is None or m is None or m.state not in self.SHOWTIME_FROM:
             return
         try:
-            probe = sch.step(m, sch.Event(sch.TICK, "scheduler"), now)
+            probe = sch.step(m, ev or sch.Event(sch.TICK, "scheduler"), now)
             shows = [e.show for e in probe.effects
                      if e.kind == sch.START_SHOW]
             if not shows:
@@ -2477,6 +2490,239 @@ class Service:
         if hook is not None:
             epoch = self.hold_epoch
             self._pending_hooks.append(lambda: hook(epoch, why))
+
+    # -- the pre-roll (preroll.py, Jeff 2026-10-28) -------------------------
+    def _tick_event(self):
+        """The scheduler's TICK, with the late allowance (late_ok_s) for
+        the next show when its pre-roll could only run at its time."""
+        ev = sch.Event(sch.TICK, "scheduler")
+        m = self.machine
+        if self._preroll_late and m is not None:
+            nxt = m.next_slot()
+            if nxt is not None:
+                late = self._preroll_late.get((str(m.date), nxt.n))
+                if late:
+                    ev = replace(ev, late_show=nxt.n, late_ok_s=late)
+        return ev
+
+    def _preroll_applies(self):
+        """A pre-roll is attached, the scheduler performs, Run is pressed,
+        no Abort stands, no Stop is under way, and it is not Programming
+        (PreRoll.skip). Never raises."""
+        pr = self.preroll
+        if pr is None or self.dry_run or self.performer is None:
+            return False
+        if self.halting() or self._aborted() or not self._run_pressed():
+            return False
+        try:
+            return not pr.skip()
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def _preroll_scheduled(self):
+        """The pre-roll before a show the scheduler starts by itself: only
+        from IDLE or STANDBY, and only when it starts shows by itself
+        (auto_start). Lock held."""
+        m = self.machine
+        if m is None or m.state not in self.SHOWTIME_FROM:
+            return False
+        cfg = getattr(self.performer, "cfg", None)
+        if getattr(cfg, "auto_start", "when_run_pressed") == "off":
+            return False
+        return self._preroll_applies()
+
+    @staticmethod
+    def _starts(probe):
+        shows = [e.show for e in probe.effects if e.kind == sch.START_SHOW]
+        return shows[0] if shows else 0
+
+    def _preroll_kick(self, n):
+        """Queue the pre-roll for show `n` (lock held): it runs on a
+        thread of its own once the lock is free, never under it."""
+        m, pr = self.machine, self.preroll
+        key = (str(m.date), n)
+        slot = m.slot(n)
+        label = f"show {n}" + (f" ({m.hm(slot.start)})" if slot else "")
+        if pr.claim(key, label):
+            self._pending_hooks.append(
+                lambda: pr.run(key, label, show=n))
+
+    def _preroll_lookahead(self, now):
+        """With the lock held, before the tick: a show the scheduler will
+        start within the pre-roll window has its pre-roll begun now, so a
+        healthy rig still starts it at its time. Never raises."""
+        try:
+            if not self._preroll_scheduled():
+                return
+            m = self.machine
+            nxt = m.next_slot()
+            if nxt is None or (nxt.start - now).total_seconds() > \
+                    self.preroll.window_s:
+                return
+            # Would the scheduler start it at its time (no guard, nothing
+            # in the way)? Asked of the pure machine at that instant.
+            n = self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
+                                      max(now, nxt.start)))
+            if n:
+                self._preroll_kick(n)
+        except Exception:                        # noqa: BLE001
+            return
+
+    def _preroll_before_gate(self, now, ev):
+        """At showtime, a failed pre-roll's alert is open, so the alert
+        hold (showtime_gate) holds the show: raised again if someone
+        acknowledged it before the time. Never raises."""
+        try:
+            if not self._preroll_scheduled():
+                return
+            n = self._starts(sch.step(self.machine, ev, now))
+            if not n:
+                return
+            pr = self.preroll
+            key = (str(self.machine.date), n)
+            if pr.verdict(key) == "failed" and not pr.alert_open():
+                pr.raise_alert(pr.failure_text(key))
+        except Exception:                        # noqa: BLE001
+            return
+
+    def _preroll_defers(self, now, ev):
+        """True when this tick must NOT start the show that is due: its
+        pre-roll is still running, never ran (it is started now: the show
+        starts late, said once), or failed. A failed check is never
+        started by the scheduler, not even after an operator's Resume:
+        only Start now (which checks again) or Continue anyway (failed
+        outputs left off) goes on (Jeff, 2026-10-28). A passed pre-roll
+        starts it.
+        Lock held. Never raises (a fault here defers nothing: the start
+        then goes as before, to the performer's own checks)."""
+        try:
+            if not self._preroll_scheduled():
+                return False
+            m, pr = self.machine, self.preroll
+            n = self._starts(sch.step(m, ev, now))
+            if not n:
+                return False
+            key = (str(m.date), n)
+            v = pr.verdict(key)
+            if v == "passed":
+                return False
+            if v == "failed":
+                return True
+            if key not in self._preroll_late:
+                self._preroll_late[key] = pr.late_ok_s()
+                self._journal_line(
+                    "system", f"The rig check (pre-roll) for show {n} could "
+                              f"not finish before its time, so show {n} "
+                              f"starts late, as soon as the rig is checked "
+                              f"(at most {pr.late_ok_s()} s late). Checks "
+                              f"are never skipped.",
+                    action="pre-roll", outcome="late", show=n)
+            if v is None:
+                self._preroll_kick(n)
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def _preroll_for_start_now(self, who, screen, gen):
+        """Start now: the rig is checked first, on the pressing thread,
+        outside this service's lock (at most the pre-roll's budget). A
+        Stop, Hold or Abort meanwhile cancels it. Returns a refusal or
+        None. A failure is never started past here: Continue anyway (a
+        signed-in hold, failed outputs left off) is the only way on."""
+        if not self._preroll_applies():
+            return None
+        pr = self.preroll
+        self._preroll_seq += 1
+        who_ = who or "someone"
+        r = pr.run(("start now", self._preroll_seq), f"Start now by {who_}",
+                   cancelled=lambda: (self._start_cancel[0] != gen or
+                                      self.halting()))
+        if r["state"] == "passed":
+            return None
+        if r["state"] == "cancelled":
+            said = self._start_cancel[1] or "it was cancelled"
+            sentence = (f"Start now was refused: {said} while the rig was "
+                        f"being checked. Nothing was started.")
+            self.journal_press(who, screen, "start-now", "refused",
+                               f"{who_}'s Start now was refused. {sentence}")
+            return {"ok": False, "text": sentence, "cancelled": True}
+        bad = "; ".join(f"{i['name']}: {i['text']}" for i in r["items"]
+                        if i["required"] and not i["ok"])
+        sentence = (f"Start now was refused: the rig check failed ({bad}). "
+                    f"Nothing was started. Fix it and press Start now "
+                    f"again, or hold Continue anyway to start without what "
+                    f"failed.")
+        self.journal_press(who, screen, "start-now", "refused",
+                           f"{who_}'s Start now was refused. {sentence}",
+                           fault=True)
+        return {"ok": False, "text": sentence, "preroll": True}
+
+    def continue_anyway(self, who, screen, on_continue=None):
+        """Continue anyway (Jeff, 2026-10-28): after a failed rig check, a
+        signed-in person with the run permission held the button (the
+        remote checks both). Starts the show NOW (late, and said so), with
+        every output whose check failed left off for this show only
+        (preroll.outputs_off, fire_ice.ShowRunner._outputs_off): it never
+        arms, enables or lights anything. Never past an Abort, a Stop
+        under way or a live show; Resume first when the schedule is held
+        (that Hold's Delayed is then not played: on_continue() stops its
+        countdown, and a Delayed the hold already started). Journaled with
+        who, when and the failed checks. Returns {"ok", "text"}."""
+        pr = self.preroll
+        r = pr.last_failed() if pr is not None else None
+        who_ = who or "someone"
+        if r is None or self.performer is None or self.dry_run:
+            return {"ok": False, "text": "Continue anyway was refused: there "
+                                         "is no failed rig check to continue "
+                                         "past. Nothing was changed."}
+        m = self.machine
+        why = ""
+        if m is None:
+            why = "there is no schedule loaded"
+        elif m.state in (sch.SHOW, sch.PAUSED):
+            why = "a show is live"
+        elif self._aborted():
+            why = "the show is aborted; press Reset first"
+        elif self.halting():
+            why = self.HALTING
+        elif not self._run_pressed():
+            why = "Run has not been pressed"
+        if why:
+            return {"ok": False, "text": f"Continue anyway was refused: "
+                                         f"{why}. Nothing was changed."}
+        from .preroll import outputs_off
+        off = outputs_off(r["items"])
+        failed = "; ".join(f"{i['name']}: {i['text']}" for i in r["items"]
+                           if i["required"] and not i["ok"])
+        self.journal_press(
+            who, screen, "continue anyway", "chosen",
+            f"{who_} chose Continue anyway on the {screen or 'screen'} after "
+            f"the rig check failed ({failed}). The show starts now, late, "
+            f"with " + (", ".join(sorted(off)) + " left off for this show"
+                        if off else "nothing left off (no output's check "
+                                    "failed)") + ".", fault=True)
+        self.performer.continue_off = (off, who_)
+        if on_continue is not None:
+            try:
+                on_continue()
+            except Exception:                    # noqa: BLE001
+                pass
+        if m.state == sch.HOLD:
+            got = self.operator_press("resume", who, screen, surface=True)
+            if not got.get("ok"):
+                self.performer.continue_off = None
+                return got
+        got = self.operator_press("start-now", who, screen, surface=True,
+                                  preroll=False)
+        if self.machine is not None and self.machine.state == sch.SHOW:
+            pr.continued = {"label": r.get("label", ""), "by": who_,
+                            "at": self.clock().isoformat(timespec="seconds"),
+                            "off": off, "failed": failed}
+            return {"ok": True, "text": f"Continue anyway: the show starts "
+                                        f"now, late. Left off for this show: "
+                                        f"{', '.join(sorted(off)) or 'nothing'}."}
+        self.performer.continue_off = None
+        return got
 
     # A conductor request with no answer after this long is a fault: they
     # are meant to return at once (the conductor does its fades on its own
@@ -3195,7 +3441,7 @@ class Service:
                                 sch.CLOSING, sch.OFF))
 
     def operator_press(self, what, who, screen, confirmed=False,
-                       pressed=None, surface=False):
+                       pressed=None, surface=False, preroll=True):
         """One operator press from a screen: Start now, Hold, Resume or
         Abort. `who` must be on the operator list and `screen` on the
         screen list; anything else is refused in the journal and raised as
@@ -3246,7 +3492,7 @@ class Service:
         if kind == sch.START_NOW:
             # Outside this service's lock: the performer's check reads the
             # show's clock (start_blocked), and it may wait for the audio.
-            refused, gen = self._start_now_refusal(who, screen)
+            refused, gen = self._start_now_refusal(who, screen, preroll)
             if refused is not None:
                 return refused
         with self._locked():
@@ -3337,8 +3583,12 @@ class Service:
     def cancel_start_wait(self, why):
         """End any Start now waiting for the show audio (a Stop, Hold or
         Abort was pressed): it is refused, saying `why`, and starts
-        nothing. Cheap, takes no lock, never raises."""
+        nothing. Any pre-roll under way stops too. Cheap, takes no lock,
+        never raises."""
         self._start_cancel = (self._start_cancel[0] + 1, str(why or ""))
+        pr = self.preroll
+        if pr is not None:
+            pr.cancel(why)
 
     def halt_begin(self):
         """A Stop's complete halt is under way (Remote.stop_press, web.py's
@@ -3364,7 +3614,7 @@ class Service:
         """True while a Start now waits for the show audio to load."""
         return self._start_waiters > 0
 
-    def _start_now_refusal(self, who, screen):
+    def _start_now_refusal(self, who, screen, preroll=True):
         """Start now that cannot work, said up front with the real reason
         and what to press (Jeff's field report, 2026-10-28: Start now with
         Run off was "refused" only by a FAULT slot and an alert that said
@@ -3414,7 +3664,11 @@ class Service:
             finally:
                 self._start_waiters -= 1
         if blocked is None:
-            return None, gen
+            if not preroll:
+                # Continue anyway: the person has just seen the failed
+                # check and chosen; it is not run again.
+                return None, gen
+            return self._preroll_for_start_now(who, screen, gen), gen
         why = blocked["text"].rstrip(".")
         sentence = (f"Start now was refused: {why}. Nothing was started and "
                     f"nothing was sent to the rig.")

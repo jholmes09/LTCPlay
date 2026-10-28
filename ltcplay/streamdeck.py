@@ -2104,6 +2104,15 @@ class ScreenKeys:
                      if isinstance(a, dict)
                      and a.get("kind") not in DISPLAY_ONLY)
 
+    def preroll(self):
+        """True while the engine checks the rig before a show (preroll.py),
+        as its last fresh deck-input answer said. Display only."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return False
+        return last[0].get("preroll") is True
+
     def announce(self):
         """The engine's announcements, as its last fresh deck-input answer
         carried them ({"configured", "device_ok", "ready", "missing",
@@ -4041,6 +4050,15 @@ class Controller:
                   fault=not r.ok, action="announce", who=who,
                   screen="Stream Deck")
 
+    def _preroll_checking(self):
+        """The engine is checking the rig before a show (ScreenKeys)."""
+        s = self.screen
+        fn = getattr(s, "preroll", None) if s is not None else None
+        try:
+            return fn() is True if fn is not None else False
+        except Exception:
+            return False
+
     def announce_view(self):
         """The engine's announcements for page 2's faces, or None."""
         s = self.screen
@@ -4492,6 +4510,12 @@ class Controller:
                 bg, text = PLAYING_ON if blink_on else PLAYING_OFF
                 fonts.show_key(d, b0, ["NOW", "PLAYING"], text, bg=bg,
                                kind="sans")
+            elif self._preroll_checking():
+                # The rig check before a show (preroll.py): said on the
+                # key, in Stop's colours, because the key is still Stop
+                # (a hold stops, and cancels the check).
+                fonts.show_key(d, b0, ["CHECKING", "RIG"], CHAMPAGNE,
+                               bg=BRONZE, kind="sans", max_size=14)
             elif self.start_key_mode() == "stop":
                 # Run pressed and playback going: this key is Stop (Jeff,
                 # 2026-10-26), held STOP_HOLD_S: every flame group

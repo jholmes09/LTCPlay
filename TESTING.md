@@ -57,7 +57,7 @@ every run. A mutation runs when:
   conductor, the flame link, the Stream Deck, the scheduler, BEYOND, the laser arm,
   MadMapper, the devices, the trigger, the output, the player, the
   session, the clock, the announcements, the show audio, the one-copy
-  guard): then every flamesafe, conductor and flame link mutation runs,
+  guard, the rig check before a show): then every flamesafe, conductor and flame link mutation runs,
   about 300 of them, whatever else changed;
 - the mutation itself is new or edited in mutate.py;
 - its line in `mutate_expected_misses.txt` changed;

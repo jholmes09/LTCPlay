@@ -868,7 +868,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -1214,6 +1214,13 @@ button.fb-pad.na{opacity:.45}
       <div class="dim" style="font-size:14px">Turned on here on the show machine only (Settings permission). Anyone can turn it off, from any screen, signed in or not. The steps for xLights are in LIVE_FLAME_PROGRAMMING.md.</div>
       <div class="row" style="margin-top:8px"><b id="lf-now" style="flex:2 1 0"></b><button id="lf-on" style="flex:1 1 0">Turn on</button><button id="lf-off" style="flex:1 1 0">Turn off</button></div>
       <div class="toast" id="lf-msg"></div>
+    </section>
+    <section class="card" id="rigcheck" hidden>
+      <h2>Rig check (pre-roll)</h2>
+      <div class="dim" style="font-size:14px">Before every show the engine checks the rig by itself: audio, announcements, timecode, video, the flame link, the lasers and the network. Check the rig runs the same checks now, between shows: nothing is started, armed or played, and the screens go black until the next show.</div>
+      <div class="row" style="margin-top:8px"><b id="rc-now" style="flex:2 1 0"></b><button class="ghost" id="rc-run" style="flex:1 1 0">Check the rig</button></div>
+      <div class="path" id="rc-items" style="font-size:14px;margin-top:6px"></div>
+      <div class="toast" id="rc-msg"></div>
     </section>
     <section class="card" id="folders" hidden>
       <h2>Show folder, on this machine</h2>
@@ -1899,6 +1906,9 @@ function startLook(st, stale, waiting){
     return {mode:"stop", label:"Stop", sub:"end the show, rig dark", disabled:false, title:STOP_CONFIRM, why:""};
   const b = sch.start_blocked;
   const fresh = !stale && !!st && !!sch.attached;
+  if(prerollLook(st && st.preroll).checking)
+    return {mode:"start", label:"Checking", sub:"checking the rig", disabled:true,
+            title:"The rig is being checked before the show. Hold or Stop cancels it.", why:""};
   if(waiting || sch.start_waiting)
     return {mode:"start", label:"Loading", sub:"starting when ready", disabled:true,
             title:"Start now is waiting for the show audio to load. Hold or Stop cancels it.", why:""};
@@ -1931,6 +1941,41 @@ function pressDecision(seen, now, flippedAt, nowMs, busy){
   if(now !== "stop" && flippedAt && nowMs - flippedAt < FLIP_LOCK_MS)
     return {act:"none", say:"The show has just stopped. Nothing was done; wait a moment before starting anything."};
   return {act:now, say:""};
+}
+// The rig check (preroll.py, Jeff 2026-10-28): the state card's word and
+// sentence while it runs, the line a failed one leaves on the rack
+// screen, and the per-check list.
+function prerollLook(pr){
+  const p = pr || {};
+  const checking = p.state === "checking" || p.state === "queued";
+  const items = (p.items || []).map(i => String(i.name || "") + (i.ok ? " OK" : " FAILED: " + String(i.text || "")));
+  const failed = p.state === "failed" && !p.manual && typeof p.age_s === "number" && p.age_s < 600;
+  return {checking:checking, word:"Checking", label:"Checking the rig before " + String(p.label || "the show") + ". Nothing is heard or seen.",
+          trouble: failed ? "Rig check FAILED before " + String(p.label || "the show") + ": " + items.filter(t => / FAILED: /.test(t)).join("; ") + "." : "",
+          now: checking ? "Checking the rig..." : p.state === "passed" ? "Last check passed" : p.state === "failed" ? "Last check FAILED" :
+               p.state === "cancelled" ? "Last check was cancelled" : "Not checked yet",
+          items: items};
+}
+// After a failed rig check before a show, between shows: the failed items
+// and the two choices (check again, or hold to continue anyway), or null.
+// After a Continue anyway: what that show runs without.
+function prerollChoice(pr, sch){
+  const p = pr || {}, s = sch || {};
+  if(p.continued && (s.state === "SHOW" || s.state === "PAUSED")){
+    const c = p.continued;
+    return {continued:true, text:"Continued anyway by " + String(c.by || "someone") + ", late. Left off for this show: " +
+      ((c.off || []).join(", ") || "nothing") + ". Failed: " + String(c.failed || "") + "."};
+  }
+  const f = p.show_check;
+  if(!f || p.continued) return null;
+  if(s.state === "SHOW" || s.state === "PAUSED") return null;
+  const bad = (f.items || []).filter(i => i.required !== false && !i.ok).map(i => String(i.name || "") + ": " + String(i.text || ""));
+  const off = f.off || [];
+  const re = p.manual && p.state !== "checking" && p.state !== "queued" ? " Checked again: " + (p.state === "passed" ? "now passes; press Resume, then Start now (it checks once more)." : String(p.text || "") + ".") : "";
+  return {continued:false, text:"The rig check before " + String(f.label || "the show") + " FAILED: " + bad.join("; ") + "." + re,
+          confirm:"Hold to continue anyway: the show starts now, late" + (off.length ? ", with " + off.join(", ") + " left off for this show" : "") +
+            ". Still failing: " + bad.join("; ") + ".",
+          holdMs:Math.round(1000 * (typeof p.continue_hold_s === "number" ? p.continue_hold_s : 1))};
 }
 // The alert hold (alerthold.py): the state card's word and sentence while
 // the schedule is held at showtime because an alert is open, or null.
@@ -2261,6 +2306,26 @@ function render(){
   }
   // The alert hold (alerthold.py, Jeff 2026-10-26): held at showtime with
   // an alert open, and the Delayed countdown, said on the state card.
+  const prl = prerollLook(s.preroll);
+  if(prl.checking && sch.attached && !sch.aborted && sch.state !== "SHOW" && sch.state !== "PAUSED"){
+    word = prl.word; label = prl.label; cls = "warn";
+  }
+  const rcard = $("rigcheck");
+  rcard.hidden = !s.preroll || !(ME && ME.local);
+  if(s.preroll){
+    $("rc-now").textContent = prl.now;
+    $("rc-items").textContent = prl.items.join(". ");
+    $("rc-run").disabled = prl.checking;
+  }
+  const pch = prerollChoice(s.preroll, sch);
+  $("pr-box").hidden = !pch;
+  if(pch){
+    $("pr-text").textContent = pch.text;
+    $("pr-recheck").hidden = pch.continued || !(ME && ME.local);
+    $("pr-continue").hidden = pch.continued;
+    $("pr-continue").title = pch.confirm || "";
+    PR_HOLD_MS = pch.holdMs || 1000;
+  }
   const ah = alertHoldLook(s.alert_hold);
   // The scheduler's own error is never hidden behind it.
   if(ah){ word = ah.word; label = ah.label + (sch.error ? " " + sch.error : ""); cls = "warn"; }
@@ -2290,7 +2355,7 @@ function render(){
   if(!ABORT_TAP) $("b-abort").title = ABORT_TITLE + " " + $("abort-sub").textContent + ".";
   LOCAL_FAULT["st-trouble"] = !!s.laser_fault;
   LOCAL_LABEL["st-trouble"] = s.laser_fault ? "Lasers" : "Engine";
-  setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
+  setWarn("st-trouble", [(!pch && prl.trouble) || null, s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
 
   let fmsg = "";
   if(!fl.connected) fmsg = fl.why || "flamesafe is not connected.";
@@ -3288,6 +3353,41 @@ function checkWords(f, j){
   if(notes.length) t += `<div class="dim">${notes.map(esc).join(" ")}</div>`;
   return t;
 }
+// Continue anyway: held, never tapped. The engine times the hold itself
+// (begin, then done once it has filled); letting go early sends nothing
+// more and nothing happens.
+let PR_HOLD_MS = 1000, PR_HOLD = null;
+function prHoldEnd(){ if(PR_HOLD){ clearTimeout(PR_HOLD.timer); PR_HOLD = null; $("pr-continue").textContent = "Hold to continue anyway"; } }
+$("pr-continue").addEventListener("pointerdown", async (ev) => {
+  ev.preventDefault();
+  if(PR_HOLD) return;
+  const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
+  $("pr-msg").textContent = $("pr-continue").title;
+  $("pr-continue").textContent = "Keep holding...";
+  const mine = PR_HOLD = {token:token, timer:null};
+  try{ await post("/api/remote/preroll-continue", actor({phase:"begin", token:token})); }
+  catch(e){ prHoldEnd(); $("pr-msg").textContent = e.message; return; }
+  if(PR_HOLD !== mine) return;
+  mine.timer = setTimeout(async () => {
+    if(PR_HOLD !== mine) return;
+    PR_HOLD = null;
+    $("pr-continue").textContent = "Hold to continue anyway";
+    try{ const j = await post("/api/remote/preroll-continue", actor({phase:"done", token:token})); $("pr-msg").textContent = String(j.text || ""); }
+    catch(e){ $("pr-msg").textContent = e.message; }
+  }, PR_HOLD_MS + 100);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(t => $("pr-continue").addEventListener(t, () => {
+  if(PR_HOLD){ prHoldEnd(); $("pr-msg").textContent = "Let go too early: nothing was done."; }
+}));
+$("pr-recheck").addEventListener("click", async () => {
+  try{ const j = await post("/api/remote/preroll-check", actor({})); $("pr-msg").textContent = String(j.text || ""); }
+  catch(e){ $("pr-msg").textContent = e.message; }
+});
+$("rc-run").addEventListener("click", async () => {
+  $("rc-msg").textContent = "";
+  try{ const j = await post("/api/remote/preroll-check", actor({})); $("rc-msg").textContent = String(j.text || ""); }
+  catch(e){ $("rc-msg").textContent = e.message; }
+});
 $("fo-check").addEventListener("click", async () => {
   const f = $("run-file").value;
   if(!f){ $("fo-checked").textContent = "There is no show file to check yet. Make one first."; return; }

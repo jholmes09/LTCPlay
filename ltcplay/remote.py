@@ -217,7 +217,7 @@ SCRUB_FLAMES_ENABLES = (
     "done.")
 # screen-arming (2026-10-22): the switch for arming from a screen, set on
 # the show machine itself, never from the network.
-LOCAL_ONLY = frozenset(("network", "screen-arming"))
+LOCAL_ONLY = frozenset(("network", "screen-arming", "preroll-check"))
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -973,6 +973,11 @@ class FlameStatus:
                             if lk is not None and not stale else None)}
 
 
+def _preroll_hold_s():
+    from .preroll import CONTINUE_HOLD_S
+    return CONTINUE_HOLD_S
+
+
 # ------------------------------------------------------- the remote --
 
 def cookie_token(header):
@@ -1232,6 +1237,9 @@ class Remote:
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
+        # The rig check before each show (preroll.PreRoll), set by
+        # web.serve with the scheduler's; None without one.
+        self.preroll = None
         # Aim slots (2026-10-28): (this engine's aim slots, the flamesafe
         # config it read them from), set by web.serve once the flame link
         # is built; None without one. aim_view compares them with
@@ -1585,13 +1593,19 @@ class Remote:
             return (*self.setup_post(name, body),) + ({},)
         if name in LOCAL_ONLY and not ctx.local:
             what = ("Arming from a screen is switched on and off"
-                    if name == "screen-arming" else "The show network is set")
+                    if name == "screen-arming" else
+                    "The rig is checked" if name == "preroll-check" else
+                    "The show network is set")
             return 403, {"error": f"{what} on the show machine itself, not "
                                   f"from here. Nothing was changed."}, {}
         if name == "network":
             return (*self.set_network(body),) + ({},)
         if name == "screen-arming":
             return (*self.set_screen_arming(body, ctx),) + ({},)
+        if name == "preroll-check":
+            return (*self.preroll_check(body, ctx),) + ({},)
+        if name == "preroll-continue":
+            return (*self.preroll_continue(body, ctx),) + ({},)
         if name == "live-flame":
             return (*self.live_flame_post(body, ctx),) + ({},)
         if name == "scrub-flames":
@@ -1621,6 +1635,108 @@ class Remote:
         if name == "alert":
             return (*self.alert(body, ctx),) + ({},)
         return 404, {"error": "no such thing here"}, {}
+
+    # -- the rig check (preroll.py) ------------------------------------------
+    def preroll_view(self):
+        """The latest rig check for every screen, or None without one.
+        Display only; never raises."""
+        pr = self.preroll
+        if pr is None:
+            return None
+        try:
+            return pr.view()
+        except Exception as e:                   # noqa: BLE001
+            return {"state": "idle", "items": [], "text": "",
+                    "error": f"{type(e).__name__}: {e}"}
+
+    PRECHECK_CLEAR_S = 60.0
+
+    def preroll_check(self, body, ctx):
+        """Pre-check (the rack screen, an admin: the role matrix's
+        Settings row, web.py): the same checks a show's pre-roll makes,
+        with nothing started and no alert raised or cleared. Only between
+        shows, with Run pressed, never in the minute before a show (its
+        own pre-roll runs then). Returns at once; the result is in the
+        status's "preroll"."""
+        pr = self.preroll
+        who = ctx.user or "unsigned"
+        if pr is None:
+            return 409, {"error": "The rig check runs only in the Fire & Ice "
+                                  "engine with the scheduler performing. "
+                                  "Nothing was changed."}
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        why = ""
+        if m is not None and m.state in self.LIVE_STATES:
+            why = "a show is live"
+        elif getattr(self.control, "session", None) is None:
+            why = ("Run has not been pressed; press Run on the Programming "
+                   "screen first")
+        elif self.programming_playback_refusal():
+            why = "Programming is playing"
+        elif pr.checking():
+            why = "the rig is being checked already"
+        elif svc is not None and svc.halting():
+            why = "a Stop is under way"
+        elif m is not None and m.next_slot() is not None:
+            left = (m.next_slot().start - svc.clock()).total_seconds()
+            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s:
+                why = (f"show {m.next_slot().n} is due in {left:.0f} s and "
+                       f"its own rig check runs by itself")
+        if why:
+            return 409, {"error": f"Check the rig was refused: {why}. "
+                                  f"Nothing was changed."}
+        self._precheck_n = getattr(self, "_precheck_n", 0) + 1
+        key = ("pre-check", self._precheck_n)
+        threading.Thread(target=pr.run, daemon=True,
+                         name="ltcplay-precheck",
+                         args=(key, f"a Pre-check by {who}"),
+                         kwargs={"alerts": False, "manual": True}).start()
+        return 200, {"ok": True, "text": "Checking the rig. Nothing is "
+                                         "started, nothing is armed and "
+                                         "nothing is played; the screens "
+                                         "go black until the next show."}
+
+    def preroll_continue(self, body, ctx):
+        """Continue anyway after a failed rig check (Jeff, 2026-10-28): a
+        signed-in person with the run permission (the role matrix's Show
+        row, web.py) HOLDS the button: {"phase": "begin", "token"} when the
+        finger goes down, {"phase": "done", "token"} once it has been held
+        preroll.CONTINUE_HOLD_S, timed here, not by the page. A tap, an
+        unsigned screen or no failed check does nothing. The show then
+        starts now with every failed output left off for it
+        (Service.continue_anyway)."""
+        pr = self.preroll
+        svc = self.schedule
+        if pr is None or svc is None:
+            return 409, {"error": "Continue anyway is only in the Fire & Ice "
+                                  "engine with the rig check. Nothing was "
+                                  "changed."}
+        who = ctx.user or ""
+        if not self.users_active() or not who:
+            return 403, {"error": "Continue anyway needs a signed-in "
+                                  "operator or admin. Nothing was changed."}
+        token = str(body.get("token") or "")[:64]
+        screen = ctx.screen if ctx.local else ctx.device
+        r = pr.last_failed()
+        if r is None:
+            return 409, {"error": "There is no failed rig check to continue "
+                                  "past. Nothing was changed."}
+        if body.get("phase") == "begin":
+            if not token:
+                return 400, {"error": "No hold token. Nothing was changed."}
+            pr.hold_begin(token, who)
+            return 200, {"ok": True, "holding": True,
+                         "hold_s": _preroll_hold_s()}
+        if body.get("phase") != "done" or not pr.hold_done(token, who):
+            return 409, {"error": "Continue anyway needs the button held "
+                                  "until it fills; a tap does nothing. "
+                                  "Nothing was changed."}
+        got = svc.continue_anyway(
+            who, screen,
+            on_continue=lambda: self.alert_hold.stop_for_continue(who))
+        return (200 if got.get("ok") else 409), (
+            got if got.get("ok") else {"error": got.get("text", "")})
 
     # -- alerts (alerts.py) ------------------------------------------------
     def alert(self, body, ctx):
@@ -3059,6 +3175,11 @@ class Remote:
         # open, and any key press acknowledges (alerts.py).
         out = {"enabled": enabled, "holds": holds if enabled else [],
                "disarms": disarms, "alerts": self.alerts.view()}
+        # The rig check under way (preroll.py): the Start key says so.
+        # Display only.
+        pv = self.preroll_view()
+        out["preroll"] = bool(pv) and pv.get("state") in ("queued",
+                                                          "checking")
         # The announcements, for the deck's page 2 keys (display only).
         av = self.announce_view()
         out["announce"] = {
@@ -5775,6 +5896,7 @@ class Remote:
         except Exception as e:                   # noqa: BLE001
             out["alert_hold"] = {"held": False,
                                  "error": f"{type(e).__name__}: {e}"}
+        out["preroll"] = self.preroll_view()
         if ctx.local:
             # Operator announcements: the rack screen's block (announce.py).
             out["announce"] = self.announce_view()

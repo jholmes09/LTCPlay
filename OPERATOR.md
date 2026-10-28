@@ -140,7 +140,7 @@ shows an alert does nothing automatic. But if a show's time comes while
 any alert is open, the schedule goes on Hold at once instead of starting
 the show: the booth note sounds and the state card on the rack screen
 says "Held: alert open". For an audio, video, flames, flame link,
-timecode or start alert, a 60 second countdown shows there; if nobody
+timecode, start or rig check alert, a 60 second countdown shows there; if nobody
 acknowledges the alert by then, the Delayed announcement plays once on
 the PA. A Stream Deck or gate alert holds quietly, with no announcement.
 Acknowledging cancels the countdown and the announcement (with two such
@@ -576,6 +576,84 @@ makes itself (for an announcement, or at showtime for an open alert).
 While a Stop is still disarming and fading to dark, Start now and Run on
 any screen are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
+
+## The rig check before each show (pre-roll)
+
+Jeff, 2026-10-28: "the show starts with an immediate announcement so if
+the video isn't working, we don't actually know until it's too late."
+So before every show LTC Player checks the rig, out of sight and out of
+earshot, and the show starts only if it passes.
+
+**When.** `preroll_s` seconds before a scheduled show's time (in
+ltcplay_fire_ice.json, 3 to 15, default 10). The schedule keeps the real
+time: a show at 6:00:00 is checked from 5:59:50 and, when everything
+passes, starts at 6:00:00 to the second. The rack screen says **Checking
+the rig before show 2** and Start now reads Checking; the Stream Deck's
+Start key reads CHECKING RIG (still Stop if held). Start now checks first
+too, then starts (a few seconds, at most the window). If the check could
+not run in time (Run pressed late, LTC Player started inside the window,
+the schedule changed), the show waits for it and starts late, and the
+journal says so: the check is never skipped. Programming (and its Play
+from) does not check.
+
+**What it proves, now, not from memory.** Unknown counts as failed: a
+check with no answer within the window fails.
+
+| Check | Proven by | Required |
+|---|---|---|
+| Audio | the show audio interface open and taking audio (a new buffer within 1 s), the show's audio loaded | yes |
+| Announcements | the announcement output attached and the Delayed recording playable | yes |
+| Booth speaker | its output attached (only when one is set up) | yes, when set up |
+| Timecode | Art-Net timecode (30 frames a second) going out with no receiver refusing it; BEYOND's black zone stream flowing | yes |
+| Video | MadMapper running; the screens taken to black first; the show bank selected; a test timecode from 00:00:00:00 sent to MadMapper ALONE; its heartbeat (/float-1) answering AND moving at about real time; MadMapper then parked on frame 0 | yes |
+| Flame link | a new flamesafe status frame during the check, no fault, the flame link sending and not locked, the Stream Deck program arming live | yes |
+| Lasers | blanking set up, the laser arm readable, a blank sent now that got out, BEYOND's black zone flowing (timecode blanking), BEYOND running | yes |
+| Network | every device the show uses answers a ping: MadMapper and BEYOND when on another PC, the timecode receivers, the flame node, and every pixel controller that answered a ping since Run (some never answer one at all) | yes |
+
+The video check proves MadMapper is playing this show's timeline. It does
+NOT prove a projector or LED wall shows a picture: nothing tells LTC
+Player that. Without a heartbeat track in the show file it cannot prove
+playback at all and fails, saying to add the /float-1 track, unless
+`preroll_video_unconfirmed_ok` is true in ltcplay_fire_ice.json (off
+unless set).
+
+**What the audience sees and hears: nothing.** Nothing is played, armed,
+fired or lit. The lasers get one more blank (a blank only darkens). The
+screens go black for the video test and stay black until the show's own
+start brings them up (a moment after the first frame). Abort, Stop and
+Hold during the check end it at once; nothing starts.
+
+**When it fails.** A **rig check** alert names each failed check in plain
+words ("Video FAILED: MadMapper did not answer the timecode"), the booth
+note sounds, and at the show's time the alert hold applies exactly as for
+any alert: Held at once, 60 s, then one Delayed on the PA. Acknowledging
+it before the time does not let the show start by itself; it is raised
+again at the time. Resume alone never lets the scheduler start a show
+whose check failed (unlike other alerts): use Start now, which checks
+again, or Continue anyway. A later check that passes clears it. Start now that
+fails its check is refused with the reason.
+
+The show screen (and the iPad) then shows the failed checks and two
+choices:
+
+- **Check the rig again** (an admin, on the show PC): the same checks,
+  nothing started. Also on the Programming screen's Rig check card, any
+  time between shows with Run pressed, never in the minute before a show.
+  Once it passes, press Resume, then Start now (which checks once more).
+- **Hold to continue anyway** (signed in, with the Start now permission):
+  hold the button until it fills, like Hold to arm; a tap does nothing.
+  Its text lists exactly what is still failing. The show starts NOW, late,
+  and what failed stays OFF for that one show: a failed Video gets no
+  bank select, no fade up and no timecode; failed Lasers stay blanked
+  with no laser output; a failed Flame link leaves every flame cue at
+  zero. (A Network failure that names MadMapper, BEYOND or the flame node
+  counts the same.) Audio is never faked: a show does not start without
+  its sound, and Start now then says why. The Delayed countdown stops (and
+  a Delayed already playing is stopped), the alert stays open so the booth
+  sees what is degraded, and the journal records who, when and every
+  failed check. The next show is checked again in full. Continue anyway
+  never gets past an Abort (press Reset), a Stop under way, the hold to
+  arm or the flame link's rules. The scheduler never continues by itself.
 
 ## How long a show runs
 

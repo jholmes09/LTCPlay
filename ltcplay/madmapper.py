@@ -934,6 +934,8 @@ class Watchdog:
         self._last_packet_at = None
         self._last_value = None
         self._heard_at = None          # any packet, armed or not
+        self._heard_value = None
+        self._heard_count = 0
         self._alarmed = False
         self.packets_in = 0
         self._ltcplay_pos = None       # (seconds, at) from note_position()
@@ -1044,8 +1046,11 @@ class Watchdog:
             # not (track_len_s).
             self._measure_track(value, now)
             # Heard at all, armed or not: the rack screen's Video lamp
-            # (madmapperwatch.py) only. Never counted, never a position.
+            # (madmapperwatch.py) and the pre-roll's video test
+            # (preroll.check_video, heard()) only. Never a position here.
             self._heard_at = now
+            self._heard_value = value
+            self._heard_count += 1
             if not self.armed:
                 return
             show_len_s = self._show_len_locked()
@@ -1219,6 +1224,15 @@ class Watchdog:
         with self._lock:
             at = self._heard_at
             return None if at is None else self._clock() - at
+
+    def heard(self):
+        """(packets heard since this listener started, armed or not; the
+        last value; when it came; now), the last two on this watchdog's
+        clock. Read only, for the pre-roll's video test (preroll.py): it
+        never arms, alarms or counts toward the show's own tracking."""
+        with self._lock:
+            return (self._heard_count, self._heard_value, self._heard_at,
+                    self._clock())
 
     def health(self):
         with self._lock:

@@ -743,6 +743,12 @@ class Conductor:
         self._restore_gen = None     # the generation a laser restore is for
         self._async_seq = {}         # output -> the device's latest seq
         self._async = frozenset(getattr(devices, "async_outputs", ()) or ())
+        # Continue anyway (preroll.py, Jeff 2026-10-28): the outputs left
+        # OFF for the show a person started although its rig check failed
+        # ("video", "lasers", "flames"). Set by the show runner at every
+        # show start (empty for every other start), so it lasts one show.
+        # It only ever keeps something dark; it never lights anything.
+        self.outputs_off = frozenset()
         self.faults = 0
         self.journal_errors = 0
         self.lines = []            # the last few lines, for the page
@@ -1204,6 +1210,31 @@ class Conductor:
                 self._set("lasers", BLACK if r.ok else UNKNOWN)
         return r
 
+    def preroll_video_dark(self):
+        """The pre-roll's video test (preroll.check_video) first takes
+        every MadMapper surface to black at once, so its test timecode is
+        never seen. Recorded like any video step (UNKNOWN until MadMapper's
+        link says it went, then BLACK), so the show's own start
+        (show_starting, _run_up) brings the surfaces up as it does after a
+        Hold. Refused while aborted or with a show up: it never darkens a
+        show. Never waits on MadMapper."""
+        with self._lock:
+            if self._latched:
+                return self._refused("Pre-roll video black",
+                                     "the show is aborted")
+            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():
+                return self._refused("Pre-roll video black",
+                                     "a show is up")
+            r = self._call("video black for the pre-roll",
+                           self.devices.video_fade_out, 0.0)
+            if "video" in self._async:
+                self._set("video", UNKNOWN)
+                self._async_seq["video"] = getattr(self.devices,
+                                                   "video_seq", None)
+            else:
+                self._set("video", BLACK if r.ok else UNKNOWN)
+            return r
+
     def _reblank(self, what):
         """A laser blank, sent again on the pressing thread, outside the
         lock, and the sentence that says how the lasers stand now (finding
@@ -1361,8 +1392,12 @@ class Conductor:
             self._step(gen, "music", MUSIC_PLAYING, "music fading in",
                        progress, self.show.music_resume, fade,
                        only_from=(MUSIC_HELD, UNKNOWN))
-        self._step(gen, "video", LIT, "video up", progress,
-                   self.devices.video_restore, fade)
+        off = self.outputs_off
+        if "video" not in off:
+            self._step(gen, "video", LIT, "video up", progress,
+                       self.devices.video_restore, fade)
+        else:
+            progress.append("video left off (failed the rig check)")
         self._step(gen, "pixels", LIT, "pixels up", progress,
                    self.show.pixels_restore, fade)
         if want.get("resume"):
@@ -1379,6 +1414,11 @@ class Conductor:
                            outcome="unconfirmed")
                 return
             progress.append("timecode moving")
+        if "flames" in off:
+            self._restore_lasers(gen, progress)
+            progress.append("flame cues left at zero (the flame link failed "
+                            "the rig check)")
+            return
         self._restore_lasers(gen, progress)
         self._step(gen, "flames", LIVE, "flame cues released", progress,
                    self.show.flames_release)
@@ -1510,7 +1550,11 @@ class Conductor:
         _step re-checks the generation before the call."""
         with self._lock:
             self._check(gen)
-        why = self._ask_gate(gen)
+        if "lasers" in self.outputs_off:
+            why = ("they failed the rig check before this show, and Continue "
+                   "anyway leaves them off for this show")
+        else:
+            why = self._ask_gate(gen)
         if why is not None:
             self._note(f"The lasers stay dark: {why}", action="lasers",
                        outcome="refused")

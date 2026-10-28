@@ -64,7 +64,7 @@ KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
                   "madmapper", "beyond", "flamesafe_config",
                   "flame_controller", "notes", "show_name", "venue",
                   "beyond_blank", "beyond_black_hour", "beyond_timecode_ip",
-                  "soak_only"))
+                  "soak_only", "preroll_s", "preroll_video_unconfirmed_ok"))
 
 # "auto_start": the ONE setting that decides whether the scheduler, once it
 # performs, starts a scheduled show by itself (an open question for Jeff,
@@ -108,7 +108,8 @@ class FireIceConfig:
                  auto_start="when_run_pressed", flamesafe_config=None,
                  flame_controller=None, show_name=None, venue=None,
                  beyond_blank=BEYOND_BLANK_DEFAULT, beyond_black_hour=23,
-                 beyond_timecode_ip=None, soak_only=False):
+                 beyond_timecode_ip=None, soak_only=False, preroll_s=None,
+                 preroll_video_unconfirmed_ok=False):
         # How the lasers are kept dark (beyondtc.py): "osc" (beyond.py's
         # brightness 0/100, the default since Jeff 2026-10-07), "timecode"
         # (BEYOND's own timecode to the black zone) or "both".
@@ -133,6 +134,15 @@ class FireIceConfig:
         self.path = path
         self.flamesafe_config = flamesafe_config
         self.flame_controller = flame_controller
+        # The pre-roll (preroll.py, Jeff 2026-10-28): the rig is checked
+        # this many seconds before a show's time (3 to 15, default 10). 0
+        # (no pre-roll) only in a soak kit's file (soak_only).
+        from . import preroll
+        self.preroll_s = preroll.DEFAULT_S if preroll_s is None \
+            else preroll_s
+        # True: a MadMapper with no heartbeat track passes the video check
+        # as NOT confirmed instead of failing it. Off unless set.
+        self.preroll_video_unconfirmed_ok = preroll_video_unconfirmed_ok
 
     @classmethod
     def parse(cls, doc, where=CONFIG_FILE):
@@ -219,8 +229,24 @@ class FireIceConfig:
                 raise FireIceConfigError(
                     f"{where}: 'beyond_timecode_ip' is BEYOND's address for "
                     f"its timecode, like 127.0.0.2, not {tip!r}.")
+        from . import preroll
+        pre = doc.get("preroll_s", preroll.DEFAULT_S)
+        if isinstance(pre, bool) or not isinstance(pre, int) or not (
+                preroll.MIN_S <= pre <= preroll.MAX_S or
+                (pre == 0 and soak_only)):
+            raise FireIceConfigError(
+                f"{where}: 'preroll_s' is how many seconds before a show the "
+                f"rig is checked, a whole number from {preroll.MIN_S} to "
+                f"{preroll.MAX_S} (default {preroll.DEFAULT_S}), not "
+                f"{pre!r}.")
+        vok = doc.get("preroll_video_unconfirmed_ok", False)
+        if vok is not True and vok is not False:
+            raise FireIceConfigError(
+                f"{where}: 'preroll_video_unconfirmed_ok' has to be true or "
+                f"false, not {vok!r}.")
         titles.update(beyond_blank=blank, beyond_black_hour=hour,
-                      beyond_timecode_ip=tip, soak_only=soak_only)
+                      beyond_timecode_ip=tip, soak_only=soak_only,
+                      preroll_s=pre, preroll_video_unconfirmed_ok=vok)
         mm = bey = None
         if "madmapper" in doc:
             from . import madmapper as madmapper_mod
@@ -1881,6 +1907,9 @@ class ShowRunner:
         self._closing_reported = False
         self._stop = threading.Event()
         self._thread = None
+        # Continue anyway (Service.continue_anyway): (outputs off, who), for
+        # the next start only. Never set by the scheduler itself.
+        self.continue_off = None
 
     def _note(self, text, **fields):
         if self._journal is not None:
@@ -2009,6 +2038,9 @@ class ShowRunner:
         operator who pressed Start now."""
         clk = self.show._clock()
         s = self.show._session()
+        # A Continue anyway is for the start it was pressed for, whatever
+        # happens to it: never carried to a later one.
+        cont, self.continue_off = self.continue_off, None
         auto = who == "the scheduler"
         if auto and self.cfg.auto_start == "off":
             why = self.AUTO_START_OFF
@@ -2024,7 +2056,8 @@ class ShowRunner:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
         self._clear_look(s, n)
-        if self.mm is not None:
+        off = self._outputs_off(clk, n, cont)
+        if self.mm is not None and "video" not in off:
             try:
                 self.mm.select_bank(self.mm.cfg.show_bank, wait=False)
             except Exception as e:
@@ -2060,6 +2093,32 @@ class ShowRunner:
                          "played": clk.cues_played, "confirmed": False,
                          "failed": None}
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
+
+    def _outputs_off(self, clk, n, got):
+        """What this show leaves off: only what a person's Continue anyway
+        named (consumed here, one show), else nothing. The conductor keeps
+        those dark for the show, and MadMapper is sent no timecode when its
+        video failed. Never raises."""
+        off, who = got if got else (frozenset(), "")
+        try:
+            self.conductor.outputs_off = frozenset(off)
+            out = getattr(clk, "out", None)
+            if out is not None:
+                out.muted = frozenset(
+                    str(lbl).strip().lower() for lbl, _ip in
+                    getattr(out, "dests", ()) or ()
+                    if "madmapper" in str(lbl).lower()) \
+                    if "video" in off else frozenset()
+        except Exception as e:                   # noqa: BLE001
+            self._note(f"Continue anyway: what to leave off could not be "
+                       f"set ({type(e).__name__}: {e}).", fault=True,
+                       action="pre-roll", outcome="error")
+        if off:
+            self._note(f"Show {n} started by {who}'s Continue anyway, with "
+                       f"{', '.join(sorted(off))} left off for this show.",
+                       fault=True, action="pre-roll", outcome="degraded",
+                       show=n)
+        return frozenset(off)
 
     def _clear_look(self, s, n):
         """A look the page chose before the show (Preshow, Blackout, any

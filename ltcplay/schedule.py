@@ -749,6 +749,13 @@ class Event:
     # failed start has no effects (Pico, 2026-10-23: a leftover schedule
     # with Run never pressed faded MadMapper every 15 minutes overnight).
     nothing_sent: bool = False
+    # TICK only, filled in by the service (preroll.py, Jeff 2026-10-28):
+    # show `late_show` may still start up to `late_ok_s` seconds past its
+    # late grace, because its pre-roll could only run at its time (Run
+    # pressed late, LTC Player started inside the window). It starts late
+    # rather than without the check. Every other show keeps the grace.
+    late_show: int = 0
+    late_ok_s: int = 0
 
 
 @dataclass(frozen=True)
@@ -1256,7 +1263,10 @@ def _sweep(tx, held=None):
         if late < 0:
             break
         state = tx.m.state
-        if late > tx.m.late_grace_s:
+        grace = tx.m.late_grace_s
+        if tx.ev.late_show and tx.ev.late_show == s.n:
+            grace += max(0, int(tx.ev.late_ok_s))
+        if late > grace:
             if held:
                 _hold_back(tx, s)
                 continue

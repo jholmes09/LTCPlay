@@ -9086,11 +9086,9 @@ def build():
 
  ("alert hold: a show starts at its time with an alert open",
   "ltcplay/schedule_service.py",
-  "            self._hold_at_showtime_for_alerts(now)\n"
-  "            self._apply(sch.Event(sch.TICK, \"scheduler\"), now)\n"
-  "            self._sync_latch_marker()",
-  "            self._apply(sch.Event(sch.TICK, \"scheduler\"), now)\n"
-  "            self._sync_latch_marker()"),
+  "            self._preroll_before_gate(now, ev)\n"
+  "            self._hold_at_showtime_for_alerts(now, ev)\n",
+  "            self._preroll_before_gate(now, ev)\n"),
 
  ("alert hold: the same showtime is held again after Resume",
   "ltcplay/schedule_service.py",
@@ -11470,8 +11468,8 @@ def build():
 
  ('screen arm: the switch answers from the network',
   'ltcplay/remote.py',
-  'LOCAL_ONLY = frozenset(("network", "screen-arming"))',
-  'LOCAL_ONLY = frozenset(("network",))'),
+  'LOCAL_ONLY = frozenset(("network", "screen-arming", "preroll-check"))',
+  'LOCAL_ONLY = frozenset(("network", "preroll-check"))'),
 
  ('screen arm: switching it off keeps the holds',
   'ltcplay/remote.py',
@@ -12394,9 +12392,9 @@ def build():
   '            pass\n'),
  ('madmapper heartbeat: a packet while disarmed is counted',
   'ltcplay/madmapper.py',
-  '            self._heard_at = now\n            if not self.armed:\n'
+  '            self._heard_count += 1\n            if not self.armed:\n'
   '                return\n',
-  '            self._heard_at = now\n            self.packets_in += 1\n'
+  '            self._heard_count += 1\n            self.packets_in += 1\n'
   '            if not self.armed:\n                return\n'),
  ('artnet: an unused show file in the folder is a live fault again',
   'ltcplay/artnodes.py',
@@ -16325,6 +16323,152 @@ def build():
   "                     if isinstance(a, dict)\n                     and a.get(\"kind\") not in DISPLAY_ONLY)",
   "                     if isinstance(a, dict))"),
 
+
+ # -- the pre-roll (preroll.py, Jeff 2026-10-28): the rig checked before the show, and Continue anyway --
+ ('pre-roll: a check with no answer in time counts as passed', 'ltcplay/preroll.py',
+  '                items.append(self._item(\n                    name, required, False,\n                    f"no answer within',
+  '                items.append(self._item(\n                    name, required, True,\n                    f"no answer within'),
+
+ ('pre-roll: a failed check raises no alert', 'ltcplay/preroll.py',
+  '        if alerts and not manual:\n            self.raise_alert(r["alert"])',
+  '        if False:\n            self.raise_alert(r["alert"])'),
+
+ ('pre-roll: a failed run reads as passed', 'ltcplay/preroll.py',
+  '            return self._finish(r, "failed" if bad else "passed", items,',
+  '            return self._finish(r, "passed", items,'),
+
+ ('pre-roll: Hold, Stop and Abort are not seen by the checks', 'ltcplay/preroll.py',
+  '            if self._cancel != gen:\n                return True',
+  '            if False:\n                return True'),
+
+ ('pre-roll: the audio check needs no new buffer from the interface', 'ltcplay/preroll.py',
+  '        if getattr(clk, "_seen_seq", None) != seq0 and \\',
+  '        if True or getattr(clk, "_seen_seq", None) != seq0 and \\'),
+
+ ('pre-roll: the flame check passes on an old status frame', 'ltcplay/preroll.py',
+  '    while getattr(fstatus, "last_at", None) == t0:',
+  '    while False:'),
+
+ ('pre-roll: the video test does not take the screens to black first', 'ltcplay/preroll.py',
+  '    r = conductor.preroll_video_dark()\n',
+  '    r = __import__("ltcplay.conductor", fromlist=["done"]).done("skipped")\n'),
+
+ ("pre-roll: the video test passes when MadMapper's position does not move", 'ltcplay/preroll.py',
+  '    if span < 0.4 or rise <= 0 or any(b[1] < a[1] for a, b in',
+  '    if span < 0.0 and any(b[1] < a[1] for a, b in'),
+
+ ('pre-roll: the video test does not park MadMapper on frame 0', 'ltcplay/preroll.py',
+  '            for _ in range(3):\n                clk.preroll_frame(0)',
+  '            for _ in range(0):\n                clk.preroll_frame(0)'),
+
+ ("pre-roll: the scheduler checks the rig only at the show's time", 'ltcplay/schedule_service.py',
+  '            if nxt is None or (nxt.start - now).total_seconds() > \\\n                    self.preroll.window_s:',
+  '            if nxt is None or (nxt.start - now).total_seconds() > \\\n                    0:'),
+
+ ('pre-roll: an acknowledged failure is not raised again at showtime', 'ltcplay/schedule_service.py',
+  '            if pr.verdict(key) == "failed" and not pr.alert_open():',
+  '            if False:'),
+
+ ('pre-roll: a failed check lets the scheduler start the show', 'ltcplay/schedule_service.py',
+  '            if v == "failed":\n                return True\n',
+  '            if v == "failed":\n                return False\n'),
+
+ ('pre-roll: a show due with no check starts unchecked', 'ltcplay/schedule_service.py',
+  '            if v is None:\n                self._preroll_kick(n)\n            return True',
+  '            return False'),
+
+ ('pre-roll: Hold, Stop and Abort do not cancel the rig check', 'ltcplay/schedule_service.py',
+  '        pr = self.preroll\n        if pr is not None:\n            pr.cancel(why)',
+  '        pr = self.preroll\n        if pr is not None:\n            pass'),
+
+ ('pre-roll: Start now skips the rig check', 'ltcplay/schedule_service.py',
+  '            return self._preroll_for_start_now(who, screen, gen), gen',
+  '            return None, gen'),
+
+ ('pre-roll: the late allowance applies to every show', 'ltcplay/schedule.py',
+  '        if tx.ev.late_show and tx.ev.late_show == s.n:',
+  '        if tx.ev.late_show:'),
+
+ ('pre-roll: the test timecode goes to every receiver, BEYOND too', 'ltcplay/clock.py',
+  '            held = getattr(self.out, "send_held", None)\n            if not callable(held):\n                return False\n            return bool(held(',
+  '            held = getattr(self.out, "send", None)\n            if not callable(held):\n                return False\n            return bool(held('),
+
+ ('pre-roll: the test timecode is sent while a cue plays', 'ltcplay/clock.py',
+  '            if not self._live or self._cue is not None or self.out is None:\n                return False\n            self._drop_held(',
+  '            if not self._live or self.out is None:\n                return False\n            self._drop_held('),
+
+ ('pre-roll: the test timecode and a held frame interleave', 'ltcplay/clock.py',
+  '            self._drop_held("The pre-roll\'s video test")',
+  '            pass'),
+
+ ('pre-roll: the screens are blacked while the show is aborted', 'ltcplay/conductor.py',
+  '            if self._latched:\n                return self._refused("Pre-roll video black",',
+  '            if False:\n                return self._refused("Pre-roll video black",'),
+
+ ('pre-roll: the alert is display only and never holds the show', 'ltcplay/alerts.py',
+  'DISPLAY_ONLY = frozenset(("aim",))',
+  'DISPLAY_ONLY = frozenset(("aim", "preroll"))'),
+
+ ('pre-roll: a pixel controller that never answered a ping holds every show', 'ltcplay/web.py',
+  '            if base is None or ip in base:',
+  '            if True:'),
+
+ ('continue anyway: a failed video is still faded up', 'ltcplay/conductor.py',
+  '        if "video" not in off:\n            self._step(gen, "video", LIT,',
+  '        if True:\n            self._step(gen, "video", LIT,'),
+
+ ('continue anyway: failed lasers are lit through the gate', 'ltcplay/conductor.py',
+  '        if "lasers" in self.outputs_off:\n            why = (',
+  '        if False:\n            why = ('),
+
+ ('continue anyway: the flame cues are released after the flame link failed', 'ltcplay/conductor.py',
+  '        if "flames" in off:\n            self._restore_lasers(gen, progress)\n            progress.append(',
+  '        if False:\n            self._restore_lasers(gen, progress)\n            progress.append('),
+
+ ("continue anyway: MadMapper's bank is selected after its video failed", 'ltcplay/fire_ice.py',
+  '        if self.mm is not None and "video" not in off:',
+  '        if self.mm is not None:'),
+
+ ('continue anyway: MadMapper still gets the show timecode after its video failed', 'ltcplay/clock.py',
+  '            if self.muted and str(label).strip().lower() in self.muted:\n                continue\n',
+  ''),
+
+ ('continue anyway: what it leaves off lasts past its show', 'ltcplay/fire_ice.py',
+  '        cont, self.continue_off = self.continue_off, None\n',
+  '        cont = self.continue_off\n'),
+
+ ('continue anyway: a tap is enough', 'ltcplay/preroll.py',
+  '        return CONTINUE_HOLD_S <= held <= 30.0',
+  '        return True'),
+
+ ('continue anyway: an unsigned screen may continue', 'ltcplay/remote.py',
+  '        if not self.users_active() or not who:\n            return 403, {"error": "Continue anyway needs a signed-in "',
+  '        if False:\n            return 403, {"error": "Continue anyway needs a signed-in "'),
+
+ ('continue anyway: it goes past an Abort', 'ltcplay/schedule_service.py',
+  '        elif self._aborted():\n            why = "the show is aborted; press Reset first"',
+  '        elif False:\n            why = "the show is aborted; press Reset first"'),
+
+ ('continue anyway: the Delayed countdown keeps going', 'ltcplay/schedule_service.py',
+  '            try:\n                on_continue()\n',
+  '            try:\n                pass\n'),
+
+ ('continue anyway: the choice is not journaled', 'ltcplay/schedule_service.py',
+  '        self.journal_press(\n            who, screen, "continue anyway", "chosen",',
+  '        (lambda *a, **k: None)(\n            who, screen, "continue anyway", "chosen",'),
+
+ ("continue anyway: the alert hold's countdown is not cancelled", 'ltcplay/alerthold.py',
+  '            if h["state"] == "counting":\n                h["state"], h["due"] = "cancelled", None\n                self._journal(f"The Delayed announcement was cancelled: "',
+  '            if False:\n                h["state"], h["due"] = "cancelled", None\n                self._journal(f"The Delayed announcement was cancelled: "'),
+
+ ('continue anyway: a network failure naming MadMapper leaves the video on', 'ltcplay/preroll.py',
+  '        if i.get("name") in ("Network", "Timecode"):',
+  '        if False:'),
+
+ ("continue anyway: the next show's check does not end the Continue", 'ltcplay/preroll.py',
+  "            if not manual:\n                # A new show's check: the last Continue anyway is over.\n                self.continued = None",
+  '            if False:\n                self.continued = None'),
+
 ]
 
 
@@ -16771,7 +16915,9 @@ SAFETY_TRIGGERS = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
                    "ltcplay/trigger.py", "ltcplay/output.py",
                    "ltcplay/player.py", "ltcplay/session.py",
                    "ltcplay/clock.py", "ltcplay/announce.py",
-                   "ltcplay/showaudio.py", "ltcplay/onlyone.py")
+                   "ltcplay/showaudio.py", "ltcplay/onlyone.py",
+                   # The rig check before a show decides when it starts.
+                   "ltcplay/preroll.py")
 # The mutations that then always run: the safety program, the conductor
 # (Hold, Resume, Abort, the gates) and the link between them.
 SAFETY_CORE = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py")
