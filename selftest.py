@@ -60943,6 +60943,24 @@ def test_config_watch_supervisor_and_rack_screen_note():
         port = srv.server_address[1]
         check(SUP.engine_restart_refusal(port) == "",
               "the engine says it may: restarted")
+        state = [b'{"running": true}']
+        answer[0] = b'{"refusal": ""}'
+        _get = _H.do_GET
+
+        def do_get(self):
+            if self.path == "/api/state":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(state[0])
+                return
+            _get(self)
+        _H.do_GET = do_get
+        busy, why = SUP.engine_restart_blocked(port)
+        check(busy and "show is running" in why,
+              f"a show running is refused first: {busy} {why!r}")
+        state[0] = b'{"starting": true}'
+        check(SUP.engine_restart_blocked(port)[0], "and one starting")
+        state[0] = b'{}'
         answer[0] = b'{"refusal": "A flame group is armed."}'
         check(SUP.engine_restart_refusal(port) == "A flame group is armed.",
               "the engine says why not: refused with its words")
@@ -64464,9 +64482,25 @@ def test_soak_show_folder_served_is_said_and_followed():
             for need in ("changed = watch.poll()",
                          "settings = dict(settings, show_folder="
                          "changed[\"show_folder\"])",
-                         "            busy, why = show_running(port)\n"
+                         # Never while a show runs or starts, and (since
+                         # 2026-10-28) never while the engine's own
+                         # restart-check refuses: armed groups and the
+                         # like (engine_restart_blocked, show_running
+                         # first, then the engine, failing closed).
+                         "            busy, why = (engine_restart_blocked(port)\n"
+                         "                         if progs[\"engine\"].alive() "
+                         "else (False, \"\"))\n"
                          "            if busy:\n"
                          "                if folder_said != folder_change:",
+                         "    busy, why = show_running(port)\n"
+                         "    if busy:\n"
+                         "        return True, why\n"
+                         "    why = engine_restart_refusal(port)\n"
+                         "    return bool(why), why\n",
+                         "            busy, why = engine_restart_blocked(port)\n"
+                         "            if busy:\n"
+                         "                log(f\"the page asked for an engine "
+                         "restart; refused: {why}\")",
                          "                why = progs[\"engine\"].stop()\n"
                          "                log(f\"{folder_change}: \""):
                 check(need in src, f"the supervisor's loop does {need!r}")
