@@ -187,14 +187,19 @@ FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
 FIREBALL_POST_ROUTES = ("fireball-beat", "fireball-off")
+# Wave flamer cleaning (cleaning.py, the Shutdown page): read by anyone; a
+# beat that runs it is an arm press (users.classify), Stop never.
+CLEANING_GET_ROUTES = ("cleaning",)
+CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
-    MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES
+    MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
+    CLEANING_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "scrub-flames") + MORNING_POST_ROUTES + FUEL_POST_ROUTES + \
-    FIREBALL_POST_ROUTES
+    FIREBALL_POST_ROUTES + CLEANING_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1404,9 +1409,15 @@ class Remote:
         self.madmapper_watch = None
         self.madmapper_heartbeat = None
         self.madmapper_heartbeat_cfg = None
+        # madmapperwatch.FollowCheck, made on the first _follow_work, and
+        # the id of the "follow" alert it raised (Jeff's field report,
+        # 2026-10-28: MadMapper not following the show's timecode).
+        self._follow = None
+        self._follow_alert_id = None
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
+        self.cleaning = None         # cleaning.CleaningPanel, web.serve
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         # scrubflames.ScrubFlames, set by web.serve (Fire & Ice with a flame
         # link and a flame controller). Always off at start.
@@ -1716,6 +1727,9 @@ class Remote:
         if name in FIREBALL_GET_ROUTES:
             from . import fireball as fireball_mod
             return fireball_mod.route_get(self.fireball, ctx, self.wall)
+        if name in CLEANING_GET_ROUTES:
+            from . import cleaning as cleaning_mod
+            return cleaning_mod.route_get(self.cleaning, ctx, self.wall)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -1757,6 +1771,10 @@ class Remote:
         if name in FIREBALL_POST_ROUTES:
             from . import fireball as fireball_mod
             return (*fireball_mod.route_post(self.fireball, self, name, body,
+                                             ctx),) + ({},)
+        if name in CLEANING_POST_ROUTES:
+            from . import cleaning as cleaning_mod
+            return (*cleaning_mod.route_post(self.cleaning, self, name, body,
                                              ctx),) + ({},)
         if name in ANNOUNCE_ROUTES:
             return (*self.announce_post(name, body, ctx),) + ({},)
@@ -2205,6 +2223,21 @@ class Remote:
                       f"{'ON' if on else 'OFF'} on the {screen}.")
         return 200, {"ok": True, "enabled": on, "text": text}
 
+    def _booth_notes(self):
+        """How many of the recorded booth notes this machine has, for the
+        rack screen's booth line (boothaudio.notes_view): the booth
+        player's own files and folders, or with no player the folders a
+        note would be looked for in. None when it cannot be said."""
+        try:
+            from . import boothaudio
+            view = getattr(self.alerts.booth, "notes", None)
+            if callable(view):
+                return view()
+            return boothaudio.notes_view(
+                {}, boothaudio.note_folders(self.folder))
+        except Exception:                        # noqa: BLE001
+            return None
+
     def _alert_tick(self):
         """After each scheduler tick, on the scheduler's thread: wakes the
         alert worker and returns at once. The work itself (the booth
@@ -2258,8 +2291,116 @@ class Remote:
 
     def _booth_work(self):
         """The booth note again for alerts still open. Never raises."""
+        self._follow_work()
         try:
             self.alerts.tick()
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def rig_health(self):
+        """righealth.summary() of this engine as it is now: (sentence,
+        items). Display only: reads what the rack screen already shows.
+        Never raises."""
+        from . import righealth
+        try:
+            try:
+                cs = self.control.state() or {}
+            except Exception:                    # noqa: BLE001
+                cs = {}
+            try:
+                fl = self.flame_status.view() if self.flame_status else None
+            except Exception:                    # noqa: BLE001
+                fl = None
+            clk = cs.get("clock")
+            if isinstance(clk, dict):
+                # Where a held frame can go (TimecodeOut.held_dests): never
+                # said to be held for MadMapper when it cannot be.
+                clk = dict(clk, held_to=None)
+                try:
+                    out = getattr(getattr(self.control.session, "clock",
+                                          None), "out", None)
+                    held = getattr(out, "held_dests", None)
+                    if callable(held):
+                        clk["held_to"] = [str(lb) for lb, _ip in held()]
+                except Exception:                # noqa: BLE001
+                    pass
+            return righealth.summary(
+                lamps=self.subsystems(cs), clock=clk,
+                madmapper=self.madmapper_link(False),
+                beyond=self.beyond_link(), flames=fl,
+                announce=self.announce_view())
+        except Exception as e:                   # noqa: BLE001
+            return (f"The rig's state could not be read "
+                    f"({type(e).__name__}).", [])
+
+    def _reset_health(self, r, who, screen):
+        """A Reset that went through says, in plain words, how every
+        subsystem stands (Jeff's field report, 2026-10-28), in its answer
+        and in the journal. A refused Reset is answered as before. Never
+        raises."""
+        try:
+            if not isinstance(r, dict) or not r.get("ok"):
+                return r
+            text, items = self.rig_health()
+            said = str(r.get("text") or "").strip()
+            if said.startswith("Reset."):
+                said = said[len("Reset."):].strip()
+            out = dict(r, text=" ".join(x for x in ("Reset done.", said,
+                                                    text) if x),
+                       health=items)
+            self._journal(who, screen, "reset", "rig state",
+                          f"After {who or 'someone'}'s Reset on the "
+                          f"{screen}: {text}",
+                          fault=any(i.get("ok") is False for i in items))
+            return out
+        except Exception:                        # noqa: BLE001
+            return r
+
+    def _follow_work(self):
+        """Is MadMapper following the show's timecode (madmapperwatch.
+        FollowCheck)? On the alert worker, after each scheduler tick: a
+        display only "follow" alert (alerts.DISPLAY_ONLY: no booth note,
+        no pulse, never holds a show, never on the Stream Deck) once the
+        timecode has moved for the heartbeat block's follow_s with no
+        heartbeat from MadMapper, cleared when the heartbeat arrives.
+        Only with a "madmapper.heartbeat" block; never while MadMapper is
+        not running (its own alert). Sends nothing anywhere. Never
+        raises."""
+        try:
+            from . import madmapperwatch as mmw
+            wd = self.madmapper_heartbeat
+            cfg = self.madmapper_heartbeat_cfg
+            if wd is None or cfg is None:
+                return
+            if self._follow is None:
+                self._follow = mmw.FollowCheck(clock=self.clock)
+            fc = self._follow
+            aid = self._follow_alert_id
+            if fc.raised and aid is not None and \
+                    not any(a.id == aid for a in self.alerts.open()):
+                fc.dropped()
+                self._follow_alert_id = None
+            _length, pos = mmw.show_reading(
+                getattr(self.control, "session", None))
+            w = self.madmapper_watch
+            link = w.state().get("link") if w is not None else "unknown"
+            can = not getattr(wd, "bind_error", None) and link != "lost"
+            what = fc.step(pos, wd.heard_age_s(),
+                           float(getattr(cfg, "timeout_s", 3.0) or 3.0),
+                           float(getattr(cfg, "follow_s", 5.0) or 5.0), can)
+            if what == "raise":
+                a = self.alerts.raise_("follow", mmw.FOLLOW_TEXT)
+                self._follow_alert_id = getattr(a, "id", None)
+            elif what == "clear":
+                aid, self._follow_alert_id = self._follow_alert_id, None
+                self._journal("system", "engine", "video", "following",
+                              "MadMapper is following timecode again: its "
+                              "heartbeat arrived.")
+                if aid is not None and any(a.id == aid
+                                           for a in self.alerts.open()):
+                    # Only the one raised here, by its id.
+                    self.alerts.clear(id=aid, who="LTC Player",
+                                      action="Confirm", screen="engine")
         except Exception:                        # noqa: BLE001
             pass
 
@@ -2724,6 +2865,7 @@ class Remote:
                 if r is None:
                     r = svc.reset_conductor(who, screen, pressed=pressed,
                                             surface=surface)
+                r = self._reset_health(r, who, screen)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
@@ -3331,6 +3473,15 @@ class Remote:
                     not isinstance(v.get("on"), bool):
                 if live is False:
                     live = None
+        # The wave flamer cleaning running, paused or being held counts as
+        # running too, so the deck's key 0 is Stop (cleaning.py).
+        cl = self.cleaning
+        if cl is not None:
+            try:
+                if cl.active():
+                    live = True
+            except Exception:                    # noqa: BLE001
+                live = None if live is False else live
         out["flames_live"] = live
         # The Morning and Shutdown page (morning.py): whether it is open
         # (the deck re-maps itself while it is), the groups the purge
@@ -6143,7 +6294,8 @@ class Remote:
         self._apply_pulse()
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""
-        out["booth"] = {"configured": bool(booth), "device": booth}
+        out["booth"] = {"configured": bool(booth), "device": booth,
+                        "notes": self._booth_notes()}
         try:
             out["alert_hold"] = self.alert_hold.view()
         except Exception as e:                   # noqa: BLE001
@@ -6169,6 +6321,13 @@ class Remote:
                 out["fuel"] = self.fuel.summary()
             except Exception as e:                   # noqa: BLE001
                 out["fuel"] = {"fault": f"{type(e).__name__}: {e}"}
+        if self.cleaning is not None:
+            # Wave flamer cleaning: every screen's banner and Stop.
+            try:
+                out["cleaning"] = self.cleaning.summary()
+            except Exception as e:                   # noqa: BLE001
+                out["cleaning"] = {"available": False, "state": "unknown",
+                                   "text": f"{type(e).__name__}: {e}"}
         if self.fireball is not None:
             # The Fireball nav button, and whether a channel is on.
             try:

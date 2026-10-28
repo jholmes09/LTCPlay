@@ -564,18 +564,23 @@ class FireballPanel:
 
 # ------------------------------------------------------------ the engine --
 
-def engine_blockers(remote, link=None):
+def engine_blockers(remote, link=None, cleaning=True):
     """Why the engine forbids the Fireball page's controls right now, in a
     sentence, or "": the Startup page's purge rules (a show live or paused,
     an Abort standing, the show clock playing, live flame programming or
     fire flames while scrubbing on, its settings or lock state not
     trusted, flamesafe not holding the engine's locks, Arrange mode, a
-    purge selected or firing), a Hold, Run pressed, and the flame link not
-    sending. Fails closed."""
+    purge selected or firing), a Hold, Run pressed, the flame link not
+    sending, and (with `cleaning`) the wave flamer cleaning running
+    (cleaning.py, which asks the same rules for itself). Fails closed."""
     try:
         m = remote.morning
         if m is None:
             return "the Startup page is not set up in this engine."
+        cl = getattr(remote, "cleaning", None) if cleaning else None
+        if cl is not None and cl.active():
+            return ("the wave flamer cleaning is running on the Shutdown "
+                    "page; stop it first.")
         why = remote.morning_live_refusal() or m._live_or_broken()
         if why:
             return why

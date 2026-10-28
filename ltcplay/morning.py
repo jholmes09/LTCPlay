@@ -59,7 +59,9 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 # in it shows on the Fuel page and never stops this page.
 TOP_KEYS = frozenset(("machines", "groups", "purge", "lasers", "checklists",
                       "names", "tally", "notes", "laser_groups", "fuel",
-                      "fireball_groups", "gflame_groups"))
+                      "fireball_groups", "gflame_groups",
+                      # Wave flamer cleaning (cleaning.py reads it).
+                      "cleaning"))
 MACHINE_KEYS = frozenset(("id", "name", "kind", "group", "fire", "pan",
                           "tilt", "notes", "safety"))
 PURGE_KEYS = frozenset(("gflame_fire", "waver", "fireball"))

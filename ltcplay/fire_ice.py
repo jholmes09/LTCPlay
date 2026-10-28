@@ -1832,6 +1832,34 @@ def _has_status_mirror(path):
 
 # ------------------------------------------------------------- the runner --
 
+def follow_show_bank(mm, note):
+    """MadMapper's show bank set following timecode again, at every show
+    start (Start now, a scheduled show) and Programming's Play from, sent
+    right after its select and before the show audio starts.
+
+    Why (Jeff's field report, 2026-10-28: after Abort, Reset, Start now
+    MadMapper's clock stayed on the aborted frame and its video did not
+    follow the new show): every Abort, stopped show and failed start ends
+    with `/timelines/<show bank>/conductor/stop` (ConductorDevices.
+    video_stop). Bench B2 measured that on a bank chasing Art-Net
+    timecode: "Works, even while chasing: ... counter stopped although
+    timecode kept arriving", and that `/timelines/<bank>/conductor/play
+    ,T` after it had the bank "playing and chasing again". Nothing before
+    this sent that play, so the bank stayed stopped. It is MadMapper's own
+    documented OSC (madmapper.Link.play); no other message is sent.
+
+    `note(text, fault=, action=, outcome=)`. Never raises."""
+    try:
+        mm.play(mm.cfg.show_bank, wait=False)
+    except Exception as e:                   # noqa: BLE001
+        try:
+            note(f"Setting the MadMapper show bank following timecode "
+                 f"again failed: {e}", fault=True, action="video",
+                 outcome="failed")
+        except Exception:                    # noqa: BLE001
+            pass
+
+
 def _full_stop(text):
     """`text` as one sentence ending in a full stop, for a refusal reason
     that goes on with what to press."""
@@ -2030,6 +2058,7 @@ class ShowRunner:
             except Exception as e:
                 self._note(f"Selecting the MadMapper show bank failed: {e}",
                            fault=True, action="video", outcome="failed")
+            follow_show_bank(self.mm, self._note)
         try:
             pick = s.clock_play(self.cfg.show_cue)
         except Exception as e:

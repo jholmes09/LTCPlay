@@ -66,6 +66,21 @@
     "refill_soon_shows": 3
   },
 
+  "cleaning": {
+    "notes": "Wave flamer cleaning on the Shutdown page (MORNING.md). A hold of the button, the same as a Hold to arm, starts phase 1: it pressurizes and depressurizes the pump with no fire, on its own (cycles times armed armed_s, disarmed disarmed_s). Then it waits, disarmed, until a second full hold starts phase 2: the heads straight up (aim), then bursts burst_on_s on and burst_off_s off until Stop. Every key is optional; these are the defaults. cycles 1 to 10. armed_s 1 to 30 and disarmed_s 2.5 to 30, each counted once flamesafe reports it. arm_wait_s: how long to wait for flamesafe to report it armed before stopping (3 to 20); disarm_wait_s the same for disarmed (1 to 5). aim: 128 is straight up (118 to 138, never far off straight up). aim_settle_s: time for the heads to come up before the first burst, from the first frame that points them up (1 to 5). burst_on_s 0.2 to 5, burst_off_s 0.5 to 10. max_burst_min: the bursts end by themselves after this many minutes (1 to 30). pause_max_min: with no second hold it goes back to idle after this many minutes (1 to 60).",
+    "cycles": 3,
+    "armed_s": 3.0,
+    "disarmed_s": 3.0,
+    "arm_wait_s": 8.0,
+    "disarm_wait_s": 2.0,
+    "aim": 128,
+    "aim_settle_s": 1.0,
+    "burst_on_s": 1.0,
+    "burst_off_s": 1.0,
+    "max_burst_min": 10,
+    "pause_max_min": 10
+  },
+
   "tally": {
     "enabled": false,
     "url": "",

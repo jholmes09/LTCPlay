@@ -252,10 +252,40 @@ push those off a small screen), with Stop announcement beside them; on the Strea
 The **booth speaker** is separate from announcements: it plays the short
 alert notes (the Stream Deck unplugged, a show that did not start) to a
 private speaker in the booth, never the PA. It is the "booth_alert" block
-in ltcplay_remote.json: `"device"` (the exact output name), `"channels"`
-(the output pair, like [15, 16]) and `"files"` (a WAV per alert kind). The
-first run writes it with no device, so it is off; the Announcements line
-on the rack screen says "Booth speaker: not set" until it is set.
+in ltcplay_remote.json: `"device"` (the exact output name) and
+`"channels"` (the output pair, like [15, 16]). That is all it needs: the
+notes Jeff recorded ship with the installer (2026-10-28). The first run
+writes the block with no device, so it is off; the Announcements line on
+the rack screen says "Booth speaker: not set" until it is set, and then
+how many notes it found, like "Booth speaker: StudioLive 16R, 23 of 23
+notes found", or which are missing. A missing note stays silent, the
+banner says so and the floor pulse runs instead; nothing else is played
+in its place.
+
+Where a note comes from, first one found wins:
+
+1. `"files"` in the booth_alert block, when it names a WAV for that note,
+   like `"files": {"deck": "C:\\Notes\\my deck.wav"}`. Optional. If that
+   file is missing the note is silent; it is never replaced by another.
+2. Your own copy: `booth_<name>.wav` in a folder named `Booth notes` in
+   Start menu, LTC Player, "Settings and logs". No install, update,
+   rollback or uninstall ever touches that folder. Delete your copy to go
+   back to the shipped note.
+3. The shipped note: `Booth notes` in the LTC Player program folder.
+   Every install and update empties it and puts the shipped set back, so
+   do not edit the notes there.
+
+A note is at most 8 seconds long. Display only alerts (the aim slots
+differ) never sound. Every other alert repeats its note every 30 seconds
+(response_s) until acknowledged. The recorded notes:
+
+| File | Plays when |
+|---|---|
+| booth_gate.wav, booth_audio.wav, booth_video.wav, booth_deck.wav, booth_start.wav, booth_flames.wav, booth_link.wav, booth_timecode.wav, booth_lasers.wav, booth_users.wav | an alert of that kind is open (lasers and users sound from 2026-10-28) |
+| booth_test.wav | a test of the booth speaker; no screen has a button for it yet |
+| booth_held.wav | once, when the schedule holds at showtime for an open alert, before that alert's own note |
+| booth_preroll_audio.wav, booth_preroll_video.wav, booth_preroll_timecode.wav, booth_preroll_lasers.wav, booth_preroll_flames.wav, booth_preroll_network.wav, booth_preroll_hold.wav, booth_preroll_ok.wav, booth_continue_anyway.wav | the pre-roll check, once it is built (PR #162); silent until then |
+| booth_clean_ready.wav, booth_clean_done.wav | the wave flamer cleaning routine, once it is built (PR #159); silent until then |
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
 Run has been pressed and playback is going it reads STOP RUN: hold it for
@@ -454,6 +484,91 @@ off, with Andy:**
    Valve Open: it goes off within a second.
 7. Only then open the fuel valve, one channel at a time.
 
+**Wave flamer cleaning (the Shutdown part of the Startup page; Andy's
+design, Jeff's ruling).** The nightly shutdown routine for the wave
+flamers: it pressurizes and depressurizes the pump, then fires the
+leftover fuel to clear it. One button, **Hold to start the cleaning**, and
+a big **Stop**.
+
+1. **Start: hold the button**, the same hold as a group's Hold to arm (the
+   Stream Deck arms only after its full hold time). Let go too soon and
+   nothing starts. Once it says phase 1 is running you can let go.
+2. **Phase 1 runs on its own, no fire:** armed 3 s, disarmed 3 s, three
+   times. It only pressurizes and depressurizes the pump: no flame value
+   goes out at all. Each 3 s counts from flamesafe saying armed or
+   disarmed.
+3. **Then it waits, disarmed:** "Cycles done. Hold to start the purge
+   bursts". Nothing continues by itself. A tap does nothing; it needs a
+   full hold again. With nobody holding, it goes back to idle after 10
+   minutes.
+4. **Phase 2, after that second hold:** the heads swing straight up (angle
+   128), 1 s to get there, then the leftover fuel fires in bursts, 1 s on,
+   1 s off, until you press **Stop**. You do not have to keep holding. The
+   bursts end by themselves after 10 minutes.
+
+The page says where it is in plain words ("Phase 1 of 2: Pressurizing:
+armed 3 s, 1 of 3 (1.4 s left). Next: Disarm."), and a **WAVE FLAMER
+CLEANING** banner with its own Stop shows on every screen while it runs or
+waits. The timings live in ltcplay_morning.json, `cleaning` (MORNING.md
+says the limits).
+
+**Stop** works from the Shutdown page and the banner on the rack screen or
+an iPad, the rack screen's own Stop, and the Stream Deck's Stop key (the
+deck shows Stop while the cleaning runs or waits). **Abort** always works.
+
+**How it arms.** Every arm is a hold to arm, exactly as on the show screen:
+yours for the start and for the go-ahead, and, in phase 1 only, the same
+hold pressed for you for the second and third arms. The Stream Deck still
+waits its full hold time each time, with all its own rules and all of
+flamesafe's (the re-arm wait, every flame channel at zero on the arm, the
+lockout). It needs screen arming on (Programming, Arming from a screen)
+and the Stream Deck program running, signed in as someone who may arm.
+Signed out it is view only; Stop always works.
+
+**It stops at once, the ignition off first and then the wave flamers
+disarmed,** on: Stop (anywhere); Abort; Hold; any disarm anywhere; the
+wave flamers disarming by themselves; flamesafe not reporting; a wave
+flamer locked or unlocked; a show starting; live flame programming or
+fire while scrubbing going on; another flame group armed; an alert about
+the flames, the flame link or the Stream Deck; screen arming switched off;
+the Stream Deck not reading the engine; the person who started it (or
+gave the go-ahead) signing out; any refusal. If flamesafe does not report
+the wave flamers off within a second, Disarm all flame groups goes.
+Nothing comes back by itself: start again with a hold.
+
+**When it will not start** it says why: a show live or on Hold, an Abort
+standing, Run pressed, live flame programming or fire while scrubbing on,
+a purge selected (and the purge waits while the cleaning runs), the
+Fireball page with a channel on, any screen in Arrange mode, another flame
+group armed or being armed, the wave flamers already armed (it starts
+from disarmed), every wave flamer locked out, screen arming off, the
+Stream Deck not reading the engine, or a setting out of its limits. One
+screen at a time holds the button; the go-ahead may come from any screen
+signed in to arm. A wave flamer locked out before the start stays off and
+the page names it; the others are cleaned. Its bursts count on the Fuel
+page as flame (not as a purge).
+
+**First test at the rack, with Andy. Fuel valve closed first:**
+
+1. With every wave flamer disarmed and no other group armed, tap the
+   button: nothing happens. Hold it: after about a second the lamp goes
+   armed and the page says phase 1 is running. Let go.
+2. Watch the lamp: armed about 3 s, off about 3 s, three times, with no
+   one touching anything, and no click at the heads. Then it says "Cycles
+   done. Hold to start the purge bursts" and stays disarmed.
+3. Tap the button: still paused. Hold it: armed, every head swings
+   straight up, then the igniters click 1 s on, 1 s off. Let go: it keeps
+   going.
+4. Press Stop on the page: the click stops at once, the lamp goes off
+   within a second. Run it again and try each stop once, in phase 1 and
+   in the bursts: the banner's Stop, Abort, Hold, the Stream Deck's Stop,
+   Disarm all flame groups, locking a wave flamer, unplugging the deck.
+   Each time the click stops at once and the wave flamers disarm.
+5. Lock one wave flamer before starting: that one never moves or clicks,
+   the page names it.
+6. Only then open the fuel valve and run it once with Andy watching each
+   head.
+
 
 **Stream Deck unplugged.** Unplugging or replugging the deck changes nothing
 on the flame groups: whatever was armed stays armed, whatever was off stays
@@ -626,6 +741,46 @@ things was:
 - **ABORT** keeps its own meaning: tap twice, the show stops, everything is
   disarmed, and the rig stays latched until Reset.
 
+**Reset says how the rig stands** (Jeff's field report, 2026-10-28). After
+Reset the line under the buttons, and the journal, say each part in plain
+words, in this order: audio, pixels, flame link (and which groups are
+armed), timecode (and the frame it holds for MadMapper), MadMapper (its
+heartbeat), BEYOND, lasers and the laser arm, announcements. For example:
+"Reset done. The rig stays dark until a show starts. Audio ready. Pixels
+ready. Flame link OK, all groups disarmed. Timecode ready, holding
+00:01:27:10 for MadMapper until the next show. MadMapper running:
+heartbeat not seen yet (it must follow once a show starts; Start now sets
+its show bank following timecode again). BEYOND running. Lasers black,
+laser arm disarmed. Announcements ready." Anything not ready says so in
+capitals with what to do ("MadMapper NOT RUNNING: start MadMapper and its
+project."), and the line ends with "Needs attention:" and the list.
+MadMapper's heartbeat only arrives while a show's video is moving, so
+after Reset it reads "not seen yet"; the alert below says if it does not
+follow once the show runs.
+
+**After an Abort the video follows the next show by itself.** Every Abort
+(and a stopped show, and a failed start) ends by stopping MadMapper's
+show bank. On the bench (B2) a stopped bank stayed stopped even while
+timecode kept arriving, until it was told to play again. So every show
+start (Start now, a scheduled show, Programming's Play from) now selects
+the show bank and then tells it to play, MadMapper's own documented
+message, before the show audio starts. Under External Sync that puts the
+bank back to following the timecode: Abort, Reset, Start now should not
+need anything touched in MadMapper.
+
+**MadMapper is not following timecode.** If the show's timecode has been
+moving for 5 seconds and MadMapper's heartbeat has not arrived, every
+screen shows the alert "MadMapper is not following timecode. Re-select
+External Sync in MadMapper's timeline settings." It is display only: no
+booth note, no blue pulse, it never holds a show and it never appears on
+the Stream Deck, and it never replaces another alert. It clears by itself
+as soon as MadMapper's heartbeat arrives, or with Acknowledge. It needs a
+MadMapper heartbeat in the show file; `madmapper.heartbeat.follow_s` sets
+the 5 seconds. It is not raised while MadMapper is not running (that has
+its own alert). The fix in MadMapper: in the show bank's timeline
+settings set Playback to Default and back to External Sync (ArtNet, the
+show network interface, offset 0).
+
 **When a show does not start, it says why.** The alert, and the show's
 line on the Schedule screen, give the real reason and what to press, for
 example "Show 1 did not start: Run has not been pressed, so nothing may
@@ -675,10 +830,17 @@ time the night plans for a show and is not used here.
   zero, lasers blanked) at the real end. The held frame goes to
   MadMapper alone (the timecode receiver named MadMapper in the show
   file), never to BEYOND, never by broadcast, whatever the lasers'
-  blanking mode. The held frame stops when the next show starts, on Abort, or on
+  blanking mode. The held frame stops when the next show starts, or on
   Stop.
-- **Abort and Stop** are as before: they stop the timecode at once,
-  including after the audio has ended. A longer show never delays them.
+- **Abort** (Jeff's field report, 2026-10-28) fades and stops the show as
+  before, and then the timecode HOLDS on the aborted show's last frame for
+  MadMapper, the same way as at the end of a show (MadMapper alone, never
+  BEYOND, never by broadcast, never the pixels), until the next show
+  starts or Stop. An Abort after the end keeps the held frame. Flames,
+  lasers, fuel and the Abort latch are exactly as before: everything is
+  disarmed, the lasers stay blanked, and Reset is still needed.
+- **Stop** is as before: it stops the timecode at once, including after
+  the audio has ended. A longer show never delays Stop or Abort.
 
 ## Stopping
 

@@ -115,6 +115,15 @@ jobs:
           exit 1
       # ================================================================
 
+      # The booth alert notes the installer ships (packaging/windows/booth,
+      # ltcplay/boothaudio.py EXPECTED_FILES). The full set is required
+      # (Jeff's recordings arrived 2026-10-28): a missing or misspelt note,
+      # or one that cannot play (over 8 s, not a WAV this reads), fails the
+      # build and names the file.
+      - name: Check the booth notes
+        shell: bash
+        run: python packaging/windows/check_booth_notes.py --require
+
       - name: Build the installer (Inno Setup)
         shell: pwsh
         run: |

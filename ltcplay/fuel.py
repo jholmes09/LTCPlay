@@ -536,6 +536,10 @@ class FuelTracker:
         self._q = collections.deque(maxlen=QUEUE_MAX)
         self.observed = 0
         self.dropped = 0
+        # True while the wave flamer cleaning (cleaning.py) holds the purge
+        # frame: its frames are burns of the show fuel, not a purge. A
+        # plain attribute: observe() reads it without a lock.
+        self.purge_is_burn = False
         self._dropped_seen = 0
         self._link = None
         self.cfg, self.config_error = parse_config(None), ""
@@ -651,7 +655,8 @@ class FuelTracker:
         q.append((self._clock(), tc,
                   bool(getattr(link, "rehearse_on", False)),
                   bool(getattr(link, "program_on", False)),
-                  getattr(link, "purges_sent", 0), values, ok))
+                  getattr(link, "purges_sent", 0), values, ok,
+                  self.purge_is_burn))
         self.observed += 1
 
     # -- this module's thread -------------------------------------------------
@@ -734,7 +739,7 @@ class FuelTracker:
                 self._end_episode(machines, "its show timecode stopped")
 
     def _frame(self, f, machines, armed, rehearsal):
-        t, tc, rehearse, program, purges, values, ok = f
+        t, tc, rehearse, program, purges, values, ok, burn = f
         dt = 0.0 if self._last_t is None else \
             min(max(t - self._last_t, 0.0), MAX_FRAME_DT_S)
         self._last_t = t
@@ -746,7 +751,9 @@ class FuelTracker:
             self._show_tc(t, secs, machines, rehearsal)
         if not ok or not values or dt <= 0 or not any(values):
             return
-        if rehearse or program:
+        if rehearse or program or (purge and burn):
+            # The wave flamer cleaning's bursts (cleaning.py) go out on the
+            # purge frame but burn the show fuel: "other", like scrubbing.
             source = "other"
         elif purge:
             source = "purge"

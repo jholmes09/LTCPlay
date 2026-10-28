@@ -36,6 +36,10 @@ Rules (the spec, section 2):
   acted on here: Disarm all is the existing disarm-all route, the rest
   come with the pre-start gate (Phase 2) and the B rows (Phase 3).
 
+Every alert kind but the display only ones has a recorded booth note,
+booth_<kind>.wav (boothaudio.py finds it by that name); a one off note
+that is not an alert (the showtime hold's "held") is play_note.
+
 Severity is per kind, in plain words for the strip: a "fault" is
 something broken (the deck gone, the audio gone), a "warning" is the gate
 asking before an unattended start.
@@ -43,18 +47,20 @@ asking before an unattended start.
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-         "timecode", "lasers", "users", "aim")
+         "timecode", "lasers", "users", "aim", "follow")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
-            "users": "fault", "aim": "warning"}
+            "users": "fault", "aim": "warning", "follow": "warning"}
 # Display only (2026-10-28): an alert of these kinds is shown on every
 # screen and journaled, and cleared like any other, but it never sounds the
 # booth, never runs the pulse, never holds a show at showtime
 # (alerthold.py leaves it out) and never reaches the Stream Deck
 # (streamdeck.ScreenKeys.alerts leaves it out: no ACK key). "aim": the wave flamer's aim slots differ
-# between flamesafe and LTC Player (remote.Remote.aim_view).
-DISPLAY_ONLY = frozenset(("aim",))
+# between flamesafe and LTC Player (remote.Remote.aim_view). "follow":
+# MadMapper is not following the show's timecode (madmapperwatch.
+# FollowCheck; Jeff's field report, 2026-10-28).
+DISPLAY_ONLY = frozenset(("aim", "follow"))
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any
@@ -175,6 +181,20 @@ class Alerts:
             if tried is not None and now - tried < every:
                 continue
             self._sound(a)
+
+    def play_note(self, name):
+        """One booth note, once, for an event that is not an alert
+        (boothaudio.HOOKUPS: "held" from the showtime hold, and the notes
+        the pre-roll check and the cleaning routine will play). It never
+        repeats, never runs the pulse, opens no banner and writes no
+        fault line. Never raises. (ok, sentence)."""
+        if self.booth is None:
+            return False, "No booth speaker is configured."
+        try:
+            ok, why = self.booth.play(name)
+        except Exception as e:           # noqa: BLE001  never the caller's
+            ok, why = False, f"{type(e).__name__}: {e}"
+        return bool(ok), str(why or "")
 
     def sound_now(self):
         """Every open alert's booth note at once (the showtime Hold,

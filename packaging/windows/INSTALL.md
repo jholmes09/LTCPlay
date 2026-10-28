@@ -107,7 +107,8 @@ started the engine alone and the Stream Deck "never connected"):
   and nothing plays. The system default output is never used.
 - `ltcplay_remote.json`, only when there is none: the booth speaker block
   (`booth_alert`) with no device, so the booth alert notes stay off until
-  it is set.
+  it is set. Set `"device"` (the exact output name) and `"channels"` (like
+  [15, 16]); nothing else is needed (see "The booth alert notes" below).
 
 All of them live in Start menu, LTC Player, "Settings and logs". A file that
 is already there is never touched. The rack screen's "Getting started"
@@ -150,6 +151,26 @@ networks: either turn that off for this network, or make it Private
 (Settings, Network and internet, Wi-Fi or Ethernet, this network,
 Network profile type: Private network). Never put remote access software,
 a tunnel or a port forward on the show PC.
+
+## The booth alert notes
+
+The installer ships the booth speaker's recorded alert notes into the
+`Booth notes` folder in the LTC Player program folder, one WAV per note,
+named `booth_<name>.wav` (booth_deck.wav, booth_held.wav and so on;
+OPERATOR.md lists them all). Every install and update empties that folder
+and puts the shipped set back, so an update always brings the newest
+recordings and never leaves an old one behind.
+
+To use your own recording of a note, put a WAV with the same name in a
+folder named `Booth notes` inside "Settings and logs" (make the folder).
+Your copy always wins over the shipped one, and no install, update,
+rollback or uninstall ever touches it. Delete it to go back to the
+shipped note. A note named by path in the `"files"` part of `booth_alert`
+wins over both.
+
+The rack screen's Announcements block says "Booth speaker: <device>,
+23 of 23 notes found", or names the missing ones. A missing note is
+silent and the alert banner says the booth speaker is not available.
 
 ## The show folder
 
