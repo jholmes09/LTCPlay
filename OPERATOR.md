@@ -626,6 +626,46 @@ things was:
 - **ABORT** keeps its own meaning: tap twice, the show stops, everything is
   disarmed, and the rig stays latched until Reset.
 
+**Reset says how the rig stands** (Jeff's field report, 2026-10-28). After
+Reset the line under the buttons, and the journal, say each part in plain
+words, in this order: audio, pixels, flame link (and which groups are
+armed), timecode (and the frame it holds for MadMapper), MadMapper (its
+heartbeat), BEYOND, lasers and the laser arm, announcements. For example:
+"Reset done. The rig stays dark until a show starts. Audio ready. Pixels
+ready. Flame link OK, all groups disarmed. Timecode ready, holding
+00:01:27:10 for MadMapper until the next show. MadMapper running:
+heartbeat not seen yet (it must follow once a show starts; Start now sets
+its show bank following timecode again). BEYOND running. Lasers black,
+laser arm disarmed. Announcements ready." Anything not ready says so in
+capitals with what to do ("MadMapper NOT RUNNING: start MadMapper and its
+project."), and the line ends with "Needs attention:" and the list.
+MadMapper's heartbeat only arrives while a show's video is moving, so
+after Reset it reads "not seen yet"; the alert below says if it does not
+follow once the show runs.
+
+**After an Abort the video follows the next show by itself.** Every Abort
+(and a stopped show, and a failed start) ends by stopping MadMapper's
+show bank. On the bench (B2) a stopped bank stayed stopped even while
+timecode kept arriving, until it was told to play again. So every show
+start (Start now, a scheduled show, Programming's Play from) now selects
+the show bank and then tells it to play, MadMapper's own documented
+message, before the show audio starts. Under External Sync that puts the
+bank back to following the timecode: Abort, Reset, Start now should not
+need anything touched in MadMapper.
+
+**MadMapper is not following timecode.** If the show's timecode has been
+moving for 5 seconds and MadMapper's heartbeat has not arrived, every
+screen shows the alert "MadMapper is not following timecode. Re-select
+External Sync in MadMapper's timeline settings." It is display only: no
+booth note, no blue pulse, it never holds a show and it never appears on
+the Stream Deck, and it never replaces another alert. It clears by itself
+as soon as MadMapper's heartbeat arrives, or with Acknowledge. It needs a
+MadMapper heartbeat in the show file; `madmapper.heartbeat.follow_s` sets
+the 5 seconds. It is not raised while MadMapper is not running (that has
+its own alert). The fix in MadMapper: in the show bank's timeline
+settings set Playback to Default and back to External Sync (ArtNet, the
+show network interface, offset 0).
+
 **When a show does not start, it says why.** The alert, and the show's
 line on the Schedule screen, give the real reason and what to press, for
 example "Show 1 did not start: Run has not been pressed, so nothing may
@@ -675,10 +715,17 @@ time the night plans for a show and is not used here.
   zero, lasers blanked) at the real end. The held frame goes to
   MadMapper alone (the timecode receiver named MadMapper in the show
   file), never to BEYOND, never by broadcast, whatever the lasers'
-  blanking mode. The held frame stops when the next show starts, on Abort, or on
+  blanking mode. The held frame stops when the next show starts, or on
   Stop.
-- **Abort and Stop** are as before: they stop the timecode at once,
-  including after the audio has ended. A longer show never delays them.
+- **Abort** (Jeff's field report, 2026-10-28) fades and stops the show as
+  before, and then the timecode HOLDS on the aborted show's last frame for
+  MadMapper, the same way as at the end of a show (MadMapper alone, never
+  BEYOND, never by broadcast, never the pixels), until the next show
+  starts or Stop. An Abort after the end keeps the held frame. Flames,
+  lasers, fuel and the Abort latch are exactly as before: everything is
+  disarmed, the lasers stay blanked, and Reset is still needed.
+- **Stop** is as before: it stops the timecode at once, including after
+  the audio has ended. A longer show never delays Stop or Abort.
 
 ## Stopping
 

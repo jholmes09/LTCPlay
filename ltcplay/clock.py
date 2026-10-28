@@ -1352,7 +1352,11 @@ class AudioMaster(Clock):
 
     Abort (halt): the level fades to zero over abort_fade_ms (1 s), the
     timecode following the audio as it fades, then the cue stops: the
-    audio, the timecode, and on_stop() to hand the pixels back.
+    audio, the timecode, and on_stop() to hand the pixels back. The
+    timecode then HOLDS on its last frame to MadMapper alone, as at the
+    end of a show (below; Jeff's field report, 2026-10-28: a stream that
+    simply stopped at an Abort left MadMapper not following the next
+    show).
 
     The end of the SHOW ends the cue (Jeff's field report, 2026-10-28,
     item 12): the show runs to the longest of its audio, its lights file
@@ -1636,12 +1640,19 @@ class AudioMaster(Clock):
         """Abort: fade the level to zero over abort_fade_ms, then stop.
         `fade_ms` overrides abort_fade_ms for this one call (the show
         conductor's own fade length); None, every caller before it, is
-        abort_fade_ms exactly as before."""
+        abort_fade_ms exactly as before.
+
+        Once stopped, the timecode HOLDS on the last frame sent, to
+        MadMapper alone (_emit_held, TimecodeOut.held_dests: never BEYOND,
+        never broadcast, never the pixels), until the next cue or Stop,
+        exactly as at the end of a show (Jeff's field report, 2026-10-28:
+        after an Abort the stream died, and MadMapper did not follow the
+        next show). The audio, the pixels and every other receiver stop
+        as before."""
         with self._lock:
             if self._cue is None:
-                # A show that finished holds its last frame: an Abort lets
-                # it go, as it always stopped the timecode.
-                self._drop_held("Abort")
+                # A show that finished, or was aborted, holds its last
+                # frame for MadMapper: an Abort keeps it held.
                 return
             if self._halting:
                 return
@@ -1652,7 +1663,7 @@ class AudioMaster(Clock):
             # fade and a longer show never delays an Abort.
             if self._paused or self._mode in ("freerun", "wait", "tail") \
                     or fade <= 0:
-                self._end("stopped", now)
+                self._end("stopped", now, hold=True)
                 return
             self._send(("level", 0.0, fade))
             self._level_down = True
@@ -2009,8 +2020,12 @@ class AudioMaster(Clock):
             p = min(p, self._stop_frame / float(self.rate))
         return p
 
-    def _end(self, why, now, fade=0):
+    def _end(self, why, now, fade=0, hold=False):
+        """The cue ends. `hold`: an Abort's end (halt), which holds the
+        last frame for MadMapper as the end of a show does, once this cue
+        has sent one (an Abort before its first frame holds nothing)."""
         cue = self._cue
+        hold = hold and self._last_frame is not None
         self._cue = None
         self._loop = None
         self._reset_cue()
@@ -2019,11 +2034,12 @@ class AudioMaster(Clock):
         self._set_paused(False)
         label = cue["label"] if cue else ""
         self.last_ended = f"{label or 'cue'} {why}"
-        if why == "finished" and self.last_sent is not None:
+        if (why == "finished" or hold) and self.last_sent is not None:
             self._held = self.last_sent
             self._held_at = now
             self._event(f"the timecode holds on {self._tc_text_of(self._held)}"
-                        f" after {label or 'the cue'} finished")
+                        f" for MadMapper after {label or 'the cue'} "
+                        f"{'finished' if why == 'finished' else 'was aborted'}")
         self._event(f"timecode {'ended with' if why == 'finished' else 'stopped for'}"
                     f" {label or 'the cue'}")
         if self.on_stop is not None:
@@ -2342,7 +2358,7 @@ class AudioMaster(Clock):
             self._stop_frame = None
             self._freeze(now)
         if self._halting:
-            self._end("stopped", now)
+            self._end("stopped", now, hold=True)
             return
         if retry:
             # A handover that did not take: back on this computer's clock,
@@ -2441,7 +2457,7 @@ class AudioMaster(Clock):
                 last = self._last_send_at
             return last + period
         if self._halting and now >= self._halt_end:
-            self._end("stopped", now)
+            self._end("stopped", now, hold=True)
             return now + self.MAX_SLEEP_S
         pos = self._pos(now)
         if pos is None:

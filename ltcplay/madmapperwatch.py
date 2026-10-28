@@ -320,3 +320,79 @@ def _heartbeat_word(watchdog, cfg, playing):
         return {"heartbeat": "quiet",
                 "why": f"the heartbeat could not be read: "
                        f"{type(e).__name__}"}
+
+
+# Jeff's field report, 2026-10-28: after Abort, Reset and Start now the
+# show ran, timecode moving, and MadMapper sat on the aborted frame with no
+# heartbeat, while nothing on the rack screen said so. The plain sentence
+# the rack screen and every page show then (a display only alert,
+# alerts.DISPLAY_ONLY "follow").
+FOLLOW_TEXT = ("MadMapper is not following timecode. Re-select External "
+               "Sync in MadMapper's timeline settings.")
+
+
+class FollowCheck:
+    """Is MadMapper's video following the show's timecode? Pure logic on
+    an injected clock: step() is told, each time it is called, where the
+    show's timecode is while it moves (madmapperwatch.show_reading's
+    position, None while it is not moving: between shows, on Hold, held
+    after the end or an Abort) and how long ago MadMapper's heartbeat
+    last arrived (Watchdog.heard_age_s).
+
+    MadMapper sends its heartbeat only while its video is moving (bench
+    B3), about 60 a second, so a heartbeat no older than `limit_s` (the
+    heartbeat block's timeout_s) is MadMapper following. Once the
+    timecode has moved for `follow_s` (the heartbeat block's follow_s,
+    default 5 s) without one, step() answers "raise", once per run of
+    moving timecode (a run starts when it starts moving, and again when
+    it jumps back: a new show, a Play from). The lone heartbeat MadMapper
+    re-sends at a bank select (bench B9), about 2 s before the show,
+    is older than limit_s by then, so it never counts as following.
+    Once raised, the first fresh heartbeat answers "clear", whether the
+    timecode is moving or not. `can_tell` False (no heartbeat listener,
+    MadMapper not running: its own alert says so) never raises.
+
+    Display only: it decides a sentence, nothing else."""
+
+    JUMP_BACK_S = 1.0
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._since = None        # when this run of moving timecode began
+        self._pos = None          # its last position
+        self._said_for = None     # the run the alert was raised for
+        self.raised = False
+
+    def step(self, pos, heard_age_s, limit_s, follow_s, can_tell=True):
+        """"raise", "clear" or None. Never raises."""
+        try:
+            now = self._clock()
+            if pos is None:
+                self._since = self._pos = None
+            else:
+                if self._since is None or (
+                        self._pos is not None and
+                        pos < self._pos - self.JUMP_BACK_S):
+                    self._since = now
+                self._pos = pos
+            following = heard_age_s is not None and \
+                0 <= heard_age_s <= limit_s
+            if self.raised:
+                if following:
+                    self.raised = False
+                    return "clear"
+                return None
+            if not can_tell or following or self._since is None or \
+                    self._said_for == self._since or \
+                    now - self._since < follow_s:
+                return None
+            self.raised = True
+            self._said_for = self._since
+            return "raise"
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def dropped(self):
+        """The alert was cleared by a person (Acknowledge): this run of
+        moving timecode is not raised again; the next one may be."""
+        self.raised = False
