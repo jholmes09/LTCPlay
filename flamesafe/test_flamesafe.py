@@ -5644,6 +5644,40 @@ def test_aim_slots_point_the_head_and_never_hold_the_arm():
     refused([True], "not one of this group's fire slots")
     refused([1, 1], "listed twice")
     refused(list(WAVE_FIRE), "every fire slot is an aim slot")
+    # A typo must not free a fuel slot (review, 2026-10-28): one aim slot
+    # per fixture, the same channel of each, and with a safety_profile only
+    # each fixture's first channel (the angle).
+    refused([2, 3, 4, 5], "are in one fixture")
+    refused([1, 2], "are in one fixture")
+    refused([1, 7, 14], "not the same channel of each fixture")
+    refused([2, 7, 13], "not the same channel of each fixture")
+    refused([2, 8, 14], "not channel 1 of its fixture (slot 1)")
+    refused([5], "not channel 1 of its fixture (slot 1)")
+    # Channel 1 is pinned by the safety slot, not by the fire list: with
+    # slot 1 left out of fire, the speed channels are still refused.
+    d = example_dict()
+    d["groups"][WAVE].update(aim=[2, 8, 14],
+                             fire=[f for f in WAVE_FIRE if f not in WAVE_AIM])
+    try:
+        config.from_dict(d)
+        check(False, "aim on the speed channels was accepted")
+    except config.ConfigError as e:
+        check("not channel 1 of its fixture" in str(e),
+              f"aim on the speed channels is refused: {e}")
+    d = example_dict()
+    d["groups"][WAVE].update(safety=[6, 12], aim=[1, 13],
+                             fire=[1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13])
+    try:
+        config.from_dict(d)
+        check(False, "an aim slot after the last safety slot was accepted")
+    except config.ConfigError as e:
+        check("in no fixture" in str(e), f"an aim slot after the last "
+                                         f"safety slot is refused: {e}")
+    for ok in ([1, 7, 13], [1, 7], [13]):
+        d = example_dict()
+        d["groups"][WAVE]["aim"] = ok
+        check(config.from_dict(d).groups[WAVE].aim == frozenset(ok),
+              f"aim {ok} (angle channels only) is accepted")
     d = example_dict()
     del d["groups"][WAVE]["aim"]
     check(config.from_dict(d).groups[WAVE].aim == frozenset(),

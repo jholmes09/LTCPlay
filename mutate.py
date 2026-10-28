@@ -1209,8 +1209,28 @@ MUTATIONS = [
 
  ("flame link: an aim slot that is not a fire slot is freed",
   "ltcplay/flamelink.py",
-  "        out.update(a for a in aim if a in fire)",
-  "        out.update(aim)"),
+  "        aim = [a for a in aim if a in fire]",
+  "        aim = list(aim)"),
+
+ ("flame link: aim: two aim slots in one fixture are taken",
+  "ltcplay/flamelink.py",
+  "        if k in block:\n            return f\"slots {block[k]}",
+  "        if False:\n            return f\"slots {block[k]}"),
+
+ ("flame link: aim: the aim slots need not be the same channel",
+  "ltcplay/flamelink.py",
+  "    if len({a - saf[k] for k, a in block.items()}) > 1:\n        return",
+  "    if False:\n        return"),
+
+ ("flame link: aim: a wave flamer may aim with any channel",
+  "ltcplay/flamelink.py",
+  "    for k, a in block.items() if profiled else ():",
+  "    for k, a in ():"),
+
+ ("flame link: aim: an aim slot after the last safety slot is taken",
+  "ltcplay/flamelink.py",
+  "        if k is None:\n            return f\"slot {a} is after",
+  "        if False:\n            return f\"slot {a} is after"),
 
  ("live flame: aim slots wait to be seen at zero again",
   "ltcplay/flameprog.py",
@@ -2431,6 +2451,31 @@ MUTATIONS = [
   "flamesafe/config.py",
   "    if len(set(aim)) >= len(set(fire)):",
   "    if False:"),
+
+ ("flamesafe: aim: an aim slot is sent while the group is disarmed",
+  "flamesafe/composer.py",
+  "                elif armed_now and (not quiet or f in g.aim):",
+  "                elif (armed_now and not quiet) or f in g.aim:"),
+
+ ("flamesafe: aim: two aim slots in one fixture are accepted",
+  "flamesafe/config.py",
+  "        if k in block:\n            raise ConfigError(f\"{name}: aim slots",
+  "        if False:\n            raise ConfigError(f\"{name}: aim slots"),
+
+ ("flamesafe: aim: the aim slots need not be the same channel",
+  "flamesafe/config.py",
+  "    if len({a - saf[k] for k, a in block.items()}) > 1:",
+  "    if False:"),
+
+ ("flamesafe: aim: a wave flamer may aim with any channel",
+  "flamesafe/config.py",
+  "    if profile is not None:\n        for k, a in block.items():",
+  "    if False:\n        for k, a in block.items():"),
+
+ ("flamesafe: aim: an aim slot after the last safety slot is accepted",
+  "flamesafe/config.py",
+  "            if k is None:\n                raise ConfigError(f\"{name}: aim slot {a} is after",
+  "            if False:\n                raise ConfigError(f\"{name}: aim slot {a} is after"),
 
  # rule 2: the rising edge must be clean
  ("flamesafe: a fire slot at exactly 15 no longer blocks the rise",

@@ -53755,6 +53755,25 @@ def test_flame_link_aim_slots_skip_the_seek_guard():
                 check(False, f"aim {bad!r} was taken")
             except fl.FlameLinkConfigError as e:
                 check("'aim'" in str(e), f"aim {bad!r} refused: {e}")
+        # The per fixture rules, as flamesafe's (review, 2026-10-28): a
+        # typo in the wave flamer's aim stops ltc serve, never frees fuel.
+        wave = next(g for g in ex["groups"] if g["name"] == "wave flamer")
+        for bad, why in (([2, 3, 4, 5], "in one fixture"),
+                         ([1, 7, 14], "not the same channel"),
+                         ([2, 7, 13], "not the same channel"),
+                         ([2, 8, 14], "not channel 1 of its fixture"),
+                         ([1, 13], "after the last safety slot"),
+                         ([1], "safety slots cannot be read")):
+            g = dict(wave, aim=bad)
+            if why.startswith("after"):
+                g.update(safety=[6, 12], fire=[1, 2, 3, 7, 8, 13])
+            if why.startswith("safety"):
+                g.update(safety=["6"])
+            try:
+                load([g])
+                check(False, f"wave flamer aim {bad} was taken")
+            except fl.FlameLinkConfigError as e:
+                check(why in str(e), f"wave flamer aim {bad} refused: {e}")
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
