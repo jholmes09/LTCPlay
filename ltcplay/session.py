@@ -353,11 +353,23 @@ class Session:
             # Audio shorter than the lights file (Jeff's field report,
             # 2026-10-28, item 12c): said at Run, first, in plain words.
             # Never a refusal: the show plays to its real end either way.
-            short = clock_mod.audio_length_notes(self.clock, self.tl)
+            # Nothing here may ever fail Run (safety review of #157, 6).
+            try:
+                short = clock_mod.audio_length_notes(self.clock, self.tl)
+                hold = clock_mod.hold_note(self.clock)
+                if hold:
+                    short.append(hold)
+            except Exception as e:               # noqa: BLE001
+                short = [f"How long the show audio is against the lights "
+                         f"file could not be checked ({type(e).__name__}); "
+                         f"the show runs to the longest of the two."]
             self.notes[:0] = short
             if self.log:
                 for t in short:
-                    self.log.event("preflight", t)
+                    try:
+                        self.log.event("preflight", t)
+                    except Exception:            # noqa: BLE001
+                        pass
             # Two receivers on one address, or a node address this PC does
             # not have (soak 2026-10-21): said at show load, never refused
             # here. The rack screen's alert and the Morning card say it too.

@@ -232,8 +232,10 @@ def track_view(watchdog, cfg):
     field report, 2026-10-28, item 14): what it must end at (the show's
     real length, Watchdog.show_len_s) and, once measured, what it ends at
     now. `wrong` is False, or the lamp's few words for a measured track
-    that does not end at the show's end (then the heartbeat reads as
-    drift by the end of the show). Never raises."""
+    that does not end at the show's end (the heartbeat's value would
+    then read wrong by the end of the show; the watchdog's drift alarm
+    is not armed by anything in this build, so no drift alert is raised,
+    and this lamp is how it is told). Never raises."""
     try:
         need = watchdog.show_len_s()
         got = watchdog.track_len_s()

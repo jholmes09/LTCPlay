@@ -255,25 +255,42 @@ class TimecodeOut:
             return None
         return self._clock() - self.last_error_at
 
-    def send_held(self, pkt):
-        """A finished show's held frame (AudioMaster._emit_held): to every
-        receiver except BEYOND and any other destination a gate owns
-        (DIVERT), so a held frame can never keep a laser cue on."""
-        return self.send(pkt, held=True)
+    def held_dests(self):
+        """[(label, ip)] a finished show's held frame may go to: MadMapper
+        alone (its clock.artnet.nodes name says MadMapper), never over
+        broadcast, never at an address another receiver shares, a gate
+        owns (DIVERT) or that is BEYOND's (HOLD_NEVER, set by the Fire &
+        Ice wiring whatever the lasers' blanking mode), so a held frame can
+        never keep a laser cue on (safety review of #157, 1)."""
+        if self.broadcast:
+            return []
+        out = []
+        for label, ip in self.dests:
+            name = str(label).strip().lower()
+            if "madmapper" not in name or ip in HOLD_NEVER or \
+                    DIVERT.get(name) is not None or \
+                    DIVERT.get(ip) is not None or _looks_broadcast(ip) or \
+                    any(o_ip == ip and o_label != label
+                        for o_label, o_ip in self.dests):
+                continue
+            out.append((label, ip))
+        return out
 
-    def send(self, pkt, held=False):
+    def send_held(self, pkt):
+        """A finished show's held frame (AudioMaster._emit_held), to
+        held_dests() only. True when it went to at least one."""
+        dests = self.held_dests()
+        if not dests:
+            return False
+        return self.send(pkt, dests=dests)
+
+    def send(self, pkt, dests=None):
         now = self._clock()
         sock = self._ensure(now)
         if sock is None:
             return False
         ok = False
-        tried = 0
-        for label, ip in self.dests:
-            if held and (str(label).lower() == "beyond" or
-                         DIVERT.get(str(label).lower()) is not None or
-                         DIVERT.get(ip) is not None):
-                continue
-            tried += 1
+        for label, ip in (self.dests if dests is None else dests):
             if DIVERT:
                 d = DIVERT.get(str(label).lower()) or DIVERT.get(ip)
                 if d is not None:
@@ -294,8 +311,6 @@ class TimecodeOut:
             self._fails = 0
             self.last_ok_at = now
             return True
-        if not tried:
-            return False             # nobody to hold for: not a failure
         self._fails += 1
         if self._fails >= self.FAILURES_BEFORE_REOPEN:
             self._fails = 0
@@ -316,6 +331,11 @@ class TimecodeOut:
         if self.last_ok_at is None:
             return None
         return self._clock() - self.last_ok_at
+
+
+# Addresses a finished show's held timecode frame never goes to: BEYOND's
+# (fire_ice.attach registers it in every blanking mode). Empty on GPL.
+HOLD_NEVER = set()
 
 
 # Fire & Ice's BEYOND timecode blanking (beyondtc.TimecodeGate): a packet
@@ -735,8 +755,14 @@ class ArtNetConfig:
 class ZoneConfig:
     """The hour zone table for fallback 3, when MadMapper owns the clock.
 
-    Only read by the LTC slave. It may sit in a show file that uses another
-    source, so switching source is one edit, not two."""
+    The hours and 'forward' are read by the LTC slave only. It may sit in a
+    show file that uses another source, so switching source is one edit,
+    not two. 'show_len_s' is read by the LTC slave (the show length to
+    free run to) AND, since Jeff's field report of 2026-10-28, by
+    "audio_master": there it is the video's length, an explicit override
+    that can only make the show cue run longer than its audio and lights
+    file, and by at most SHOW_LEN_OVER_S (check_show_len_cap refuses Run
+    past that)."""
 
     KEYS = frozenset(("show", "intermission", "forward", "show_len_s",
                       "hold_ms"))
@@ -1338,7 +1364,7 @@ class AudioMaster(Clock):
     end the cue stops through on_stop(), the same way ArtNetMaster's cue
     ends, so the same SHOW_ENDED path works, at the real end. Then the
     timecode HOLDS on the last frame sent, repeated 30 times a second to
-    every receiver but BEYOND, until the next cue, an Abort or Stop: a
+    MadMapper alone, until the next cue, an Abort or Stop: a
     stream that simply stopped made MadMapper rewind its video to the top
     3 s before the end of the show (the same field report).
 
@@ -1874,8 +1900,8 @@ class AudioMaster(Clock):
 
     def _emit_held(self, now):
         """After a show finished: its last frame again, 30 times a second,
-        to every receiver but BEYOND (whose lasers keep the gate's own
-        rules), so MadMapper holds its last picture instead of timing out
+        to MadMapper alone (TimecodeOut.held_dests: never BEYOND, never
+        broadcast), so MadMapper holds its last picture instead of timing out
         and going back to the top. Never the pixels: they went to the idle
         look through on_stop."""
         period = 1.0 / MASTER_FPS
@@ -1887,8 +1913,6 @@ class AudioMaster(Clock):
                 held = getattr(self.out, "send_held", None)
                 if callable(held):
                     held(pkt)
-                else:
-                    self.out.send(pkt)
             at = now if at is None or now - at >= 2 * period else \
                 at + period
             self._held_at = at
@@ -1906,6 +1930,13 @@ class AudioMaster(Clock):
                     f"{self._sa.fmt_len(cue['frames'])}; the timecode and the "
                     f"lights carry on to {self._tc_text(end)} on this "
                     f"computer's clock")
+        if self._pause_req and not self._paused:
+            # A Hold pressed in the audio's last moments, after the audio
+            # process had reached its end: it has no sample left to stop
+            # on and never answers, so the Hold freezes here, at the end
+            # of the audio (safety review of #157, 5).
+            self._stop_frame = None
+            self._freeze(now)
 
     def show_lengths(self, label):
         """{"audio_s", "show_s"} for a cue: its audio's length and the
@@ -2269,6 +2300,8 @@ class AudioMaster(Clock):
                 pos * self.rate >= cue["frames"] and \
                 self._end_frames(cue) > cue["tc_frames"]:
             self._audio_ended(cue, now)
+            if self._paused:
+                return now
         last = self._last_frame
         if last is None:
             # Every cue's timecode starts at 00:00:00:00 (handoff section
@@ -2596,10 +2629,44 @@ def _build_audio_master(cfg, timeline, sink, out, log, on_stop, on_pause,
         engine = showaudio.AudioEngine(
             showaudio.engine_spec(cfg.audio, checked), log=log)
     cues = {c["label"]: (role, c["frames"]) for role, c in checked.items()}
+    check_show_len_cap(cfg, timeline, cues)
     return AudioMaster(cfg, sink=sink, out=out, engine=engine, cues=cues,
                        log=log, on_stop=on_stop, on_pause=on_pause,
                        on_resume=on_resume,
                        lengths=cue_lengths(cfg, timeline, cues))
+
+
+# How far 'clock.zones.show_len_s' may run past the longest of the show
+# cue's audio and lights file (safety review of #157, 3): a video a little
+# longer than both, never a typo's hour of silent timecode.
+SHOW_LEN_OVER_S = 60.0
+
+
+def check_show_len_cap(cfg, timeline, cues):
+    """Refuse Run, in a sentence naming the numbers, when
+    'clock.zones.show_len_s' is more than SHOW_LEN_OVER_S longer than the
+    show cue's audio and lights file."""
+    from . import showaudio
+    want = cfg.zones.show_len_s if cfg.zones is not None else None
+    if not want:
+        return
+    hour = cfg.zones.show
+    for c in getattr(timeline, "cues", ()) or ():
+        if c.name not in cues or c.tc_seconds is None or \
+                int(c.tc_seconds // 3600) != hour:
+            continue
+        audio_s = cues[c.name][1] / float(showaudio.RATE)
+        lights = float(c.duration or 0.0)
+        top = max(audio_s, lights)
+        if float(want) > top + SHOW_LEN_OVER_S:
+            raise ClockConfigError(
+                f"'clock.zones.show_len_s' is {float(want):g} s, but "
+                f"{c.name}'s audio is {audio_s:.2f} s and its lights file "
+                f"{lights:.2f} s: the show would run on in silence for "
+                f"{float(want) - top:.0f} s. It may be at most "
+                f"{SHOW_LEN_OVER_S:.0f} s longer than both, "
+                f"{top + SHOW_LEN_OVER_S:.2f} s. Set it to the video's "
+                f"length in the show file, or take it out.")
 
 
 def cue_lengths(cfg, timeline, cues):
@@ -2625,6 +2692,28 @@ def cue_lengths(cfg, timeline, cues):
     return out
 
 
+def hold_note(clk):
+    """A sentence for Run when a finished show's last timecode frame
+    cannot be held for anyone (TimecodeOut.held_dests is empty: no
+    receiver named MadMapper at an address of its own, away from BEYOND's
+    and not by broadcast), else None. Never raises."""
+    try:
+        if getattr(clk, "source", None) != "audio_master":
+            return None
+        out = getattr(clk, "out", None)
+        held = getattr(out, "held_dests", None)
+        if not callable(held) or held():
+            return None
+    except Exception:                            # noqa: BLE001
+        return None
+    return ("At the end of a show the timecode stops instead of holding "
+            "its last frame: no Art-Net timecode receiver is named "
+            "MadMapper at an address of its own (away from BEYOND's, not "
+            "broadcast), so MadMapper may go back to the start of its "
+            "video. Name MadMapper under 'clock.artnet.nodes' at its own "
+            "address.")
+
+
 def audio_length_notes(clk, timeline):
     """Plain sentences for Run (Jeff's field report, 2026-10-28, item
     12c): each audio cue whose audio is shorter than its lights file or
@@ -2642,14 +2731,27 @@ def audio_length_notes(clk, timeline):
         if show_s - audio_s < 1.0 / MASTER_FPS:
             continue
         lights = float(c.duration or 0.0)
-        what = ("the lights file" if lights >= show_s - 1e-6 else
+        by_lights = lights >= show_s - 1e-6
+        what = ("the lights file" if by_lights else
                 "the show length set in 'clock.zones.show_len_s'")
-        out.append(
-            f"The show audio for {c.name} is {audio_s:.2f} s, shorter than "
-            f"{what} ({show_s:.2f} s). The show runs to {show_s:.2f} s: the "
-            f"last {show_s - audio_s:.2f} s play in silence, and the "
-            f"timecode, the lights and the video carry on to the end. "
-            f"Export the audio to {show_s:.2f} s to hear it to the end.")
+        text = (f"The show audio for {c.name} is {audio_s:.2f} s, shorter "
+                f"than {what} ({show_s:.2f} s). The show runs to "
+                f"{show_s:.2f} s: the last {show_s - audio_s:.2f} s play in "
+                f"silence, and the Art-Net timecode, the lights and the "
+                f"video carry on to the end.")
+        if not by_lights and lights > 0:
+            text += (f" The lights file ends at {lights:.2f} s, so the "
+                     f"last {show_s - max(lights, audio_s):.2f} s have no "
+                     f"lights and no flame cues.")
+        ltc = getattr(getattr(clk, "audio", None), "ltc_output", None)
+        if ltc is not None:
+            # Safety review of #157, 2: the LTC track is part of the show
+            # audio, so it ends with it.
+            text += (f" The LTC timecode track on output {ltc} is part of "
+                     f"the show audio, so it ends at {audio_s:.2f} s with "
+                     f"the audio.")
+        text += f" Export the audio to {show_s:.2f} s to hear it to the end."
+        out.append(text)
     return out
 
 

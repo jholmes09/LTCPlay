@@ -25971,6 +25971,10 @@ class _AmOut(_TcOut):
         self.packets_sent += 1
         return True
 
+    # A held end frame (clock.TimecodeOut.send_held): this recorder's one
+    # destination is MadMapper's.
+    send_held = send
+
     def frames(self, since=None):
         out = []
         for t, p in self.sent:
@@ -27371,10 +27375,79 @@ def test_audio_master_the_show_runs_to_its_longest_part():
     got = clock_mod.cue_lengths(tl.clock, tl, cues)
     check(got == {"Show": 4.0, "Intermission": 2.5},
           f"'clock.zones.show_len_s' is the show cue's override only: {got}")
+    # A cap on it (safety review of #157, 3): at most 60 s past the longest
+    # of the show cue's audio and lights file; a typo refuses Run.
+    tl.clock.zones.show_len_s = 61.5        # 60 s past the 1.5 s lights
+    clock_mod.check_show_len_cap(tl.clock, tl, cues)
+    for bad in (61.6, 4541.7):
+        tl.clock.zones.show_len_s = bad
+        try:
+            clock_mod.check_show_len_cap(tl.clock, tl, cues)
+            check(False, f"show_len_s {bad} s against 1.5 s of show ran")
+        except clock_mod.ClockConfigError as e:
+            check(f"is {bad:g} s" in str(e) and "1.00 s" in str(e) and
+                  "1.50 s" in str(e) and "61.50 s" in str(e),
+                  f"the refusal names the numbers: {e}")
+            _no_dashes(str(e), "the show_len_s refusal")
+    tl.clock.zones.show_len_s = None
+    # The Run notice when the configured length runs past the lights file,
+    # and when the show audio carries an LTC track (safety review of #157,
+    # 2 and 4).
+    am.lengths = {"Show": 3.0}
+    for c in tl.cues:
+        c.duration = 1.5 if c.name == "Show" else None
+    am.audio.ltc_output = 8
+    try:
+        notes = clock_mod.audio_length_notes(am, tl)
+    finally:
+        am.audio.ltc_output = None
+    check(len(notes) == 1 and
+          "shorter than the show length set in 'clock.zones.show_len_s' "
+          "(3.00 s)" in notes[0] and
+          "The lights file ends at 1.50 s, so the last 1.50 s have no "
+          "lights and no flame cues." in notes[0] and
+          "The LTC timecode track on output 8 is part of the show audio, "
+          "so it ends at 1.00 s with the audio." in notes[0],
+          f"the Run notice: {notes}")
+    # A Hold pressed in the audio's last moments, after the audio process
+    # has reached its end but before that is heard, is not lost: it holds
+    # at the end of the audio (safety review of #157, 5).
+    from ltcplay import showaudio as sa
+    r5 = _am_rig(seconds=1.0, lengths={"Show": 2.0})
+    am5, vc5, eng5 = r5["am"], r5["vc"], r5["eng"]
+    am5.play(3600.0, None, "Show")
+    r5["sim"].run(vc5() + 0.9)
+    while vc5() < 1e6:
+        rd = eng5.read()
+        if rd is not None and rd.state == sa.ENDED:
+            break
+        r5["sim"].run(vc5() + 0.001)
+    pos = am5._pos(vc5())
+    check(pos is not None and pos < 1.0 and am5._mode == "follow",
+          f"the case: the audio process has ended, the clock is still in "
+          f"the audio: {pos} {am5._mode}")
+    am5.pause()
+    r5["sim"].run(vc5() + 0.3)
+    check(am5._paused and am5.playing and not am5._pause_req,
+          f"a Hold at the very end of the audio did not hold: paused "
+          f"{am5._paused}, pending {am5._pause_req}, {am5.last_ended!r}")
+    t_held = vc5()
+    r5["sim"].run(vc5() + 0.5)
+    frozen = {n for _t, n in r5["out"].frames(since=t_held)}
+    check(len(frozen) == 1 and r5["calls"]["pause"],
+          f"the Hold did not freeze the timecode: {sorted(frozen)}")
+    am5.resume()
+    r5["sim"].run(vc5() + 1.5)
+    check(not am5.playing and am5.last_ended == "Show finished" and
+          len(r5["calls"]["stop"]) == 1,
+          f"after Resume the tail did not run to the end: "
+          f"{am5.last_ended!r}")
+    am5.stop()
     print("  ok")
 
 
 def test_audio_master_timecode_holds_at_the_end():
+    import types
     section("audio_master: at the end of a show the timecode holds its last "
             "frame for MadMapper (never BEYOND) until the next cue, an "
             "Abort or Stop (Jeff's field report, 2026-10-28, item 12)")
@@ -27463,13 +27536,56 @@ def test_audio_master_timecode_holds_at_the_end():
     o.send(pkt)
     check(sock.to == ["10.0.0.1", "10.0.0.2"],
           f"a show frame went to {sock.to}, not to both")
-    only = clock_mod.TimecodeOut([("BEYOND", "10.0.0.2")],
-                                 socket_factory=lambda: sock)
-    for _ in range(5):
-        only.send_held(pkt)
-    check(only.send_errors == 0 and only.reopens == 0 and
-          only._sock is not None,
-          "holding with nobody to hold for counted as a failing socket")
+    # MadMapper alone, whatever BEYOND is called and however the lasers
+    # are blanked (safety review of #157, 1): BEYOND's addresses
+    # (HOLD_NEVER), any address another receiver shares, broadcast, and
+    # any receiver not named MadMapper get nothing.
+    saved = set(clock_mod.HOLD_NEVER)
+    try:
+        clock_mod.HOLD_NEVER.clear()
+        cases = [
+            ([("MadMapper", "10.0.0.1"), ("Lasers", "10.0.0.2")], set(),
+             False, ["10.0.0.1"]),
+            ([("MadMapper", "10.0.0.2"), ("Lasers", "10.0.0.3")],
+             {"10.0.0.2"}, False, []),
+            ([("MadMapper", "10.0.0.1"), ("Lasers", "10.0.0.1")], set(),
+             False, []),
+            ([("Video", "10.0.0.1"), ("BEYOND", "10.0.0.2")], set(), False,
+             []),
+            ([("MadMapper", "10.0.0.1")], set(), True, []),
+            ([("MadMapper", "10.0.0.255")], set(), False, []),
+            ([("BEYOND", "10.0.0.2")], set(), False, []),
+        ]
+        for dests, never, bc, want in cases:
+            clock_mod.HOLD_NEVER.clear()
+            clock_mod.HOLD_NEVER.update(never)
+            sock.to.clear()
+            o2 = clock_mod.TimecodeOut(dests, broadcast=bc,
+                                       socket_factory=lambda: sock)
+            for _ in range(5):
+                o2.send_held(pkt)
+            check(sorted(set(sock.to)) == want and o2.send_errors == 0
+                  and o2.reopens == 0,
+                  f"a held frame for {dests} (BEYOND at {never}, broadcast "
+                  f"{bc}) went to {sorted(set(sock.to))}, not {want}")
+            hn = clock_mod.hold_note(types.SimpleNamespace(
+                source="audio_master", out=o2))
+            check(bool(hn) == (not want),
+                  f"Run's word on holding for {dests}: {hn}")
+        # Fire & Ice puts every BEYOND address there, in every blanking
+        # mode.
+        F = _fi_mod()
+        clock_mod.HOLD_NEVER.clear()
+        _fi_night()
+        check({"127.0.0.1"} <= clock_mod.HOLD_NEVER,
+              f"attach() did not keep the held frame off BEYOND's OSC host "
+              f"with beyond_blank \"osc\": {clock_mod.HOLD_NEVER}")
+        got = F.beyond_addresses(F.FireIceConfig(
+            beyond_timecode_ip="10.1.1.9", beyond_blank="osc"))
+        check(got == {"10.1.1.9"}, f"BEYOND's timecode address: {got}")
+    finally:
+        clock_mod.HOLD_NEVER.clear()
+        clock_mod.HOLD_NEVER.update(saved)
     print("  ok")
 
 
@@ -27521,6 +27637,42 @@ def test_audio_master_run_warns_when_the_audio_is_shorter():
                 check(not short and real == 1.0,
                       f"audio as long as the lights was warned about: "
                       f"{short} {real}")
+        # The notice can never fail Run (safety review of #157, 6).
+        real_notes = clock_mod.audio_length_notes
+
+        def boom(*a, **k):
+            raise RuntimeError("x")
+        clock_mod.audio_length_notes = boom
+        try:
+            sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                           sd=FakeSD())
+            sess.open()
+            check(sess.clock is not None and
+                  "could not be checked" in sess.notes[0],
+                  f"a notice that raised changed Run: {sess.notes[:1]}")
+            sess.stop()
+        finally:
+            clock_mod.audio_length_notes = real_notes
+        # A typo in 'clock.zones.show_len_s' refuses Run, in a sentence
+        # (safety review of #157, 3).
+        from ltcplay.session import SessionError
+        work = tempfile.mkdtemp()
+        st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+        st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+        doc = _am_clock_doc(
+            [{"file": "music.wav", "gain_db": 0, "channels": [1, 2]},
+             {"file": "sub.wav", "gain_db": -6, "channels": [3]}],
+            [{"file": "loop.wav", "channels": [1, 2]}])
+        doc["zones"] = {"show_len_s": 4541.7}
+        frames[0] = 60                       # a 1.5 s lights file
+        _tl, tlp, net = _am_show(work, 1.0, clock_doc=doc)
+        try:
+            Session(tlp, no_output=True, networks=net, no_log=True,
+                    sd=FakeSD()).open()
+            check(False, "a show_len_s of 4541.7 s against 1.5 s ran")
+        except SessionError as e:
+            check("'clock.zones.show_len_s' is 4541.7 s" in str(e) and
+                  "61.50 s" in str(e), f"the refusal: {e}")
     finally:
         plmod.Player._prepare = real_prepare
         st_mod.path, st_mod.prefs_path = real_path, real_prefs
@@ -39850,6 +40002,25 @@ def test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault():
                       f"{mode}: {over} ms past a {step} ms render: zero and "
                       f"a fault, journaled: {got and got[:2]} {fault!r} "
                       f"{said}")
+            # Past the render because the show deliberately runs longer
+            # than its lights file ('clock.zones.show_len_s', the video):
+            # zero, said, never a FAULT (safety review of #157, 4); past
+            # that configured end it is the fault again.
+            rig.clk.show_lengths = lambda label: (
+                {"audio_s": 1.0, "show_s": 4.0} if label == "Show" else None)
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and fault == "" and
+                  not any(f for _t, f in said) and
+                  "runs on to its configured length" in cues._why,
+                  f"{mode}: a deliberate tail past the lights file read as "
+                  f"a fault: {fault!r} {said} {cues._why!r}")
+            rig.clk.show_lengths = lambda label: (
+                {"audio_s": 1.0, "show_s": 2.0} if label == "Show" else None)
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: past the configured end too: still the "
+                         f"fault: {fault!r}")
+            del rig.clk.show_lengths
             # Within tolerance again after a fault: the fault clears, the
             # output stays zero.
             got, fault, _l = at(99, 25, fill=77)
