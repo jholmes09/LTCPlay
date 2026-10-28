@@ -1967,6 +1967,9 @@ function startPolling(){
       try{
         CD = countdownAnchor(CD, ST && ST.countdown, monoNow());
         render();
+        // Who is signed in, and so whether this screen is view only, is
+        // said the moment the engine says it, not on the chip's own beat.
+        renderUserChip();
         DRAW_ERR = "";
       }catch(e){
         LAST_OK = before;
