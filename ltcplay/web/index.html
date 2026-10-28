@@ -468,14 +468,15 @@ function draw(s){
   // What is actually running beats what the picker says. The caption used to
   // follow the buttons even mid-show, so clicking Rehearsal during a set
   // described behaviour the engine was not using.
-  if(running && s.on_lost){
-    const m = s.on_lost === "hold" ? "rehearsal" : "show";
+  if(running && (s.mode || s.on_lost)){
+    const m = runningMode(s);
     // on_lost has four values now; the toggle only has two. Say which one is
     // actually live rather than rounding it to the nearest button.
     $("m-show").setAttribute("aria-pressed", m === "show");
     $("m-reh").setAttribute("aria-pressed", m === "rehearsal");
     $("modenote").innerHTML = modeText(m, s)
-      + ` <b>This is the running show's setting.</b>`;
+      + ` <b>This is the running show's setting: ${m === "show"
+        ? "Show mode" : "a rehearsal (Programming)"}.</b>`;
   }
   $("ovbox").hidden = !running;
   $("gobox").hidden = !running;
@@ -915,6 +916,16 @@ $("btn-find").addEventListener("click", async () => {
 });
 
 /* ---------- mode ---------- */
+// Which of the two the running show is (Jeff, 2026-10-28: "even when I
+// press show mode, it turns on programming mode"). The engine's own word,
+// "show" or "programming", from what the Run asked for. Never on_lost
+// alone: a show on this machine's own clock (the show audio) always holds
+// when its clock stops, Show and rehearsal alike. Pure.
+function runningMode(s){
+  if(s && s.mode === "programming") return "rehearsal";
+  if(s && s.mode === "show") return "show";
+  return (s && s.on_lost === "hold") ? "rehearsal" : "show";
+}
 // The only thing this switch changes is what the rig does when the feed
 // stops. It used to be labelled "Mode", which invited the reading that one of
 // them was somehow safer, and its captions did not say what either one waits

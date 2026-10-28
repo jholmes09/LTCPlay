@@ -15370,6 +15370,193 @@ def build():
   "ltcplay/web/remote.html",
   "c === \"held\" ? \"; held\" : ",
   ""),
+ # The Programming playhead on the show audio (playhead.py, Jeff
+ # 2026-10-28, field report items 7 and 8).
+ ("Play from starts the show audio at the top, not at the point asked", "ltcplay/clock.py",
+  '            self._send(("play", role, sample, 0, self._token))',
+  '            self._send(("play", role, 0, 0, self._token))'),
+
+ ("Play from starts the timecode at 00:00:00:00 whatever the point", "ltcplay/clock.py",
+  '            frame = cue.get("first_frame", 0)\n        if last is None or',
+  '            frame = 0\n        if last is None or'),
+
+ ("a move while playing never restarts the audio", "ltcplay/clock.py",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n            self._token += 1\n            self._send((\"play\", cue[\"role\"], sample, 0, self._token))\n            self._epoch = None",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n            self._token += 1\n            self._epoch = None"),
+
+ ("a move keeps the old token, so the old position is followed", "ltcplay/clock.py",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n            self._token += 1\n",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n"),
+
+ ("a move while paused leaves the frozen frame where it was", "ltcplay/clock.py",
+  "                self._frozen_frame = frame\n                self._frozen_sec = sample / float(self.rate)",
+  "                self._frozen_sec = sample / float(self.rate)"),
+
+ ("the A/B loop never wraps back to A", "ltcplay/clock.py",
+  "        if loop is not None and not self._pause_req and \\\n                pos >= loop[1] - 1e-9:",
+  "        if False:"),
+
+ ("a loop outlives its cue", "ltcplay/clock.py",
+  "        self._cue = None\n        self._loop = None\n        self._reset_cue()",
+  "        self._cue = None\n        self._reset_cue()"),
+
+ ("a move past the end of the cue is accepted", "ltcplay/clock.py",
+  '        if frame >= cue["tc_frames"] or sample >= cue["frames"]:',
+  '        if False:'),
+
+ ("the audio and the timecode start a move on different frames", "ltcplay/clock.py",
+  "        sample = int(round(frame * self.rate / float(MASTER_FPS)))",
+  "        sample = int(round(start_s * self.rate)) + 7"),
+
+ ("a move with no interface starts the timecode at the top", "ltcplay/clock.py",
+  "            self._epoch = now - sample / float(self.rate)\n            self._mode = \"freerun\"",
+  "            self._epoch = now\n            self._mode = \"freerun\""),
+
+ ("a move into another cue moves inside the one playing", "ltcplay/session.py",
+  '            if cue.name == cur.get("label"):',
+  '            if True:'),
+
+ ("a loop may reach into another cue", "ltcplay/session.py",
+  "        if a < 0 or self._playhead_cue(float(b_show_s) - 1e-6).name != \\\n                cur.get(\"label\"):",
+  "        if a < 0:"),
+
+ ("Play from never starts the show (no conductor show start)", "ltcplay/playhead.py",
+  "            r = cond.show_starting(who, screen)\n            if getattr(r, \"ok\", True) is False:",
+  "            r = None\n            if getattr(r, \"ok\", True) is False:"),
+
+ ("Play from goes ahead with an Abort standing", "ltcplay/playhead.py",
+  '        if cond is not None and getattr(cond, "latched", False):',
+  '        if False:'),
+
+ ("Play from leaves MadMapper on whatever bank it was", "ltcplay/playhead.py",
+  "                mm.select_bank(mm.cfg.show_bank, wait=False)",
+  "                pass"),
+
+ ("a refused show start leaves the music playing", "ltcplay/playhead.py",
+  "                s.clock_halt()\n                self._refused(r, \"Play from\")",
+  "                self._refused(r, \"Play from\")"),
+
+ ("Pause freezes only the clock, not the show's Hold", "ltcplay/playhead.py",
+  '            self._refused(cond.hold(who, screen), "Pause")',
+  '            s.clock_pause()'),
+
+ ("Continue skips the show's Resume", "ltcplay/playhead.py",
+  '            self._refused(cond.resume(who, screen), "Continue")',
+  '            s.clock_resume()'),
+
+ ("Stop leaves the rig in the show look", "ltcplay/playhead.py",
+  "            cond.intermission(who, screen)",
+  "            pass"),
+
+ ("Back and Ahead go before the start of the show", "ltcplay/playhead.py",
+  "            at = s.clock_seek(max(0.0, here + float(seconds)))",
+  "            at = s.clock_seek(here + float(seconds))"),
+
+ ("Programming Play from on the show audio is a free run again", "ltcplay/remote.py",
+  "        ph = self.playhead\n        if not ph.applies():\n            ph = None",
+  "        ph = None"),
+
+ ("the page is not told the show audio is the playhead", "ltcplay/remote.py",
+  '            out.update(playhead="show_audio", playing=v["playing"],',
+  '            out.update(playing=v["playing"],'),
+
+
+ # Review of #142.
+ ("a Pause before a move is heard freezes at 00:00:00:00", "ltcplay/clock.py",
+  '                frame = cue.get("first_frame", 0)\n                sec = cue.get("start_sample", 0) / float(self.rate)',
+  '                frame = 0\n                sec = 0.0'),
+
+ ("a check-only Play from starts the cue", "ltcplay/clock.py",
+  "            if check_only:\n                return now",
+  "            if False:\n                return now"),
+
+ ("Play from asks nothing before it moves MadMapper's bank", "ltcplay/playhead.py",
+  "        s.clock_play_from(show_s, check_only=True)",
+  "        pass"),
+
+ ("a Stop leaves the conductor recording the flame cues released", "ltcplay/playhead.py",
+  '                cond.intermission("the Programming screen", "")',
+  '                pass'),
+
+ ("Play from straight after a Stop skips putting the conductor right", "ltcplay/playhead.py",
+  "        self.poll()\n        mm = getattr(",
+  "        mm = getattr("),
+
+ ("an unwatched Programming playback runs for ever", "ltcplay/playhead.py",
+  "        if self._clock() - self._seen > WATCHDOG_S:",
+  "        if False:"),
+
+ ("the status poll is not the Programming watchdog's heartbeat", "ltcplay/remote.py",
+  "        ph.seen()            # an operator page is open",
+  "        pass                 # an operator page is open"),
+
+ ("a screen Hold in Programming playback is the scheduler's Hold", "ltcplay/remote.py",
+  "        if ph is not None:                          # hold",
+  "        if False:                                   # hold"),
+
+ ("a screen Abort in Programming playback leaves the music playing", "ltcplay/remote.py",
+  "            if ph is not None:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)",
+  "            if False:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)"),
+
+
+ # Re-review of #142.
+ ("a Show mode Run on this machine's clock counts as Programming", "ltcplay/remote.py",
+  '            asked = getattr(s, "on_lost_arg", None) == "hold"',
+  '            asked = getattr(p, "on_lost", "") == "hold"'),
+
+ ("Start now goes over Programming playback", "ltcplay/remote.py",
+  "            why = self.programming_playback_refusal()\n            if why:",
+  "            why = self.programming_playback_refusal()\n            if False:"),
+
+ ("a real show started over Programming playback is still watched as it", "ltcplay/playhead.py",
+  "        if self._live() or (s is ours[0] and cue is not None and\n                            cue is not ours[1]):",
+  "        if False:"),
+
+ ("any cue on the clock reads as Programming playback", "ltcplay/playhead.py",
+  '                getattr(clk, "_cue", None) is ours[1])',
+  '                True)'),
+
+ ("a Programming Abort answers that nothing was stopped", "ltcplay/remote.py",
+  "                out = dict(out, programming=said, stopped=stopped, ok=ok,",
+  "                out = dict(out, programming=said, ok=ok,"),
+
+ # Third review of #142.
+ ("a Programming Hold leaves the schedule running", "ltcplay/remote.py",
+  '            if svc is not None and getattr(m, "state", None) in ("IDLE",',
+  '            if False and getattr(m, "state", None) in ("IDLE",'),
+
+ ("Run goes over Programming playback", "ltcplay/web.py",
+  '                if _why:\n                    return self._send(409, {"error": _why})',
+  '                if False:\n                    return self._send(409, {"error": _why})'),
+
+ ("a failed Programming stop on Abort is reported as stopped", "ltcplay/remote.py",
+  "                ok = stopped and not (flames and flames[0] is False)",
+  "                ok = not (flames and flames[0] is False)"),
+
+ ("the watchdog halts a show that took over meanwhile", "ltcplay/playhead.py",
+  "            if only is not None and not self._mine(only):\n                return False",
+  "            if False:\n                return False"),
+
+ ("a show taking over Programming playback is not journaled", "ltcplay/playhead.py",
+  '            self._note("Programming playback was ended by the show "\n                       "starting.", "taken_over")',
+  "            pass"),
+
+ # #142 after #144 and #149.
+ ("Start now never asks the Programming playhead under the lock", "ltcplay/schedule_service.py",
+  "            if kind == sch.START_NOW and self.start_veto is not None:",
+  "            if False:"),
+
+ ("Play from leaves a waiting Start now waiting", "ltcplay/playhead.py",
+  '                cancel("Play from was pressed on the Programming screen")',
+  '                pass'),
+
+ ("a Programming Hold leaves a waiting Start now waiting", "ltcplay/remote.py",
+  '                    cancel(f"Hold was pressed on the {screen}")',
+  '                    pass'),
+
+ ("Programming playback starts over a Fireball channel that is on", "ltcplay/remote.py",
+  '        if ph is not None and name in ("play-from", "loop") and \\\n                fb is not None and fb.active():',
+  '        if False:'),
 
  # Jeff's field report, 2026-10-28: Stop, Reset from Hold, refusal reasons.
  ("a refused start's alert says only that the show did not start",
@@ -15755,6 +15942,32 @@ def build():
   "  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);",
   "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
   "  fbPress(b.dataset.k, true);"),
+
+ # Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it
+ # turns on programming mode").
+ ("Show on the show audio: the engine's mode follows the player's forced hold", "ltcplay/session.py",
+  "            asked = self.on_lost_arg\n        elif self.player is not None:",
+  "            asked = self.player.on_lost\n        elif self.player is not None:"),
+
+ ("Show or Programming: Rehearse (no output) reads as Show", "ltcplay/session.py",
+  '        if self.no_output:\n            return "programming"\n        clk = self.clock',
+  "        clk = self.clock"),
+
+ ("Show or Programming: the show status always says Show", "ltcplay/session.py",
+  '            "mode": self.run_mode(),',
+  '            "mode": "show",'),
+
+ ("Show on the show audio: the rack screen's Programming goes by the player's forced hold", "ltcplay/remote.py",
+  '        if getattr(clk, "master", False) is True and \\\n                hasattr(s, "on_lost_arg"):',
+  "        if False:"),
+
+ ("old page: the Show or Rehearsal switch reads on_lost again", "ltcplay/web/index.html",
+  "    const m = runningMode(s);",
+  '    const m = s.on_lost === "hold" ? "rehearsal" : "show";'),
+
+ ("old page: the engine's Show is not believed", "ltcplay/web/index.html",
+  '  if(s && s.mode === "show") return "show";\n',
+  ""),
 ]
 
 
