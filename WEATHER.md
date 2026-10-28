@@ -11,9 +11,9 @@ screen. The block says so in small print.
 
 ## What each line means
 
-- **Measured.** A real wind sensor, from the first source in this list
-  that has a current reading (so one stalled feed does not blank the
-  wind):
+- **Measured.** A real wind sensor: the **highest current reading** from
+  these sources (so one stalled feed does not blank the wind, and a
+  backup that reads low never hides a stronger wind measured elsewhere):
   1. **I-15 Point of the Mountain (UTALP).** UDOT's road weather station
      at the Point of the Mountain gap on I-15, about 2 miles northwest of
      the venue and about 250 ft higher. It sits right in the gap where the
@@ -24,18 +24,23 @@ screen. The block says so in small print.
   2. **The backup airports**, Provo (KPVU, about 17 miles south east, in
      the same valley as the venue) and then Salt Lake City (KSLC, about 25
      miles north). Their official airport weather reports (METARs) come
-     through aviationweather.gov's free data service. An airport is
-     farther away than UTALP and is not the venue, so the line says
-     "backup", the airport, how far away it is and why UTALP was passed
-     over, for example: "Measured, backup Provo airport (KPVU), 17 miles
-     away: 12 mph, gusts not reported, from S (180°). 4 min old. Using it
-     because UTALP (Iowa mesonet) stopped reporting at 3:40 AM, last
-     reading 3 h 12 min ago."
+     through aviationweather.gov's free data service, both in one
+     request. An airport is farther away than UTALP and is not the venue
+     (Provo often reads low when the wind funnels through the gap), so a
+     backup reading is **amber**, says "backup station", the airport and
+     how far away it is, and why UTALP was not used or what UTALP reads,
+     for example: "Measured, backup station Provo airport (KPVU), 17 mi
+     away: 12 mph, gusts not reported, from S (180°). 4 min old. Using the
+     backup because UTALP (Iowa mesonet) stopped reporting at 3:40 AM,
+     last reading 3 h 12 min ago."
   3. A Weather Service observation station, only if one is named in the
      settings (`nws_station`).
 
-  When a backup is in use, or two current sources are more than 10 mph
-  apart, the line says which source it uses and why.
+  When UTALP is STALE and only a backup is current, the line shows the
+  backup and says what UTALP last read ("UTALP (Iowa mesonet) reads 30
+  mph, 25 min old, STALE (over its 20 min limit). This line shows the
+  highest current reading."). Any other reading more than 10 mph from the
+  one shown is said the same way.
 - **Forecast for this spot (NWS).** The National Weather Service's hourly
   forecast for the exact spot, for the current hour, with gusts. "Issued"
   is how long ago the Weather Service last updated it; "this PC got it" is
@@ -55,11 +60,16 @@ block shows the last saved values with their true age.
 
 | Line | Shown normally | Amber **STALE** | Grey **NO CURRENT DATA, use on-site wind check** |
 |---|---|---|---|
-| Measured | a source up to 20 min old | no source up to 20 min old, one 20 to 45 min old | every source over 45 min old, failing, or never received |
-| Forecast | this PC got it in the last hour, and the Weather Service issued it in the last 18 h | this PC has not got it for 1 to 6 h, or the Weather Service has not updated it for over 18 h | this PC has not got it for over 6 h, or nothing for this hour |
+| Measured, UTALP (a reading every 5 min) | up to 20 min old | 20 to 45 min old | over 45 min old, failing, or never received |
+| Measured, an airport (a reading every hour) | up to 75 min old (amber: a backup) | 75 to 120 min old | over 120 min old, failing, or never received |
+| Forecast | this PC got it in the last hour, and the Weather Service issued it in the last 18 h | this PC has not got it for 1 to 6 h, or the Weather Service has not updated it for 18 to 36 h | this PC has not got it for over 6 h, the Weather Service has not updated it for over 36 h, its time is in the future, or nothing for this hour |
 
-Grey lines show no number at all. A measured reading over 45 min old is
-never used, from any source.
+The measured line shows the highest reading that is current on its own
+source's limits; if none is current, the highest STALE one; if none, grey.
+Grey lines show no number at all. A reading past its own source's grey
+limit is never shown. The airports report once an hour (around 10 minutes
+before the hour), so their limits are longer; with the 5 minute limits
+they would go blank for part of every hour.
 
 **Why, in plain words.** Each line says why it is not normal. With no
 current measured reading the line says why for each source, for example:
@@ -67,7 +77,8 @@ current measured reading the line says why for each source, for example:
 mesonet) stopped reporting at 3:40 AM, last reading 3 h 12 min ago. KPVU
 (aviationweather.gov) did not answer: no answer in 8 s." "Stopped
 reporting" means the service answered but has nothing newer from that
-station; "did not answer" means this PC could not get an answer, and says
+station; "did not answer" means this PC could not reach the service, and
+"could not be read" means the service answered with an error; both say
 what went wrong. A STALE forecast says "Stale because this PC has not got
 it from the NWS for ..." or "Stale because the NWS has not updated it for
 ...".
@@ -81,8 +92,9 @@ Weather Service's current forecast. The old rule (STALE at 3 h after the
 issue time, grey at 6 h) marked a good forecast STALE most of the day and
 greyed it some afternoons. Now this PC fetches it every 15 minutes and the
 forecast is current as long as a fetch worked in the last hour; the issue
-time only makes it STALE past 18 h, which means the Weather Service missed
-its updates.
+time makes it STALE past 18 h, which means the Weather Service missed
+its updates, and grey past 36 h, so a stuck forecast served as new for days
+never stays on screen as a number.
 
 Other messages:
 
@@ -148,9 +160,13 @@ Nothing has to be set. To change something, add a `"weather"` block to
   "forecast_every_min": 15,
   "stale_min": 20,
   "no_data_min": 45,
+  "backup_stale_min": 75,
+  "backup_no_data_min": 120,
+  "station_limits": {},
   "forecast_stale_hours": 1,
   "forecast_no_data_hours": 6,
   "forecast_issued_stale_hours": 18,
+  "forecast_issued_no_data_hours": 36,
   "disagree_mph": 10
 }
 ```
@@ -165,12 +181,21 @@ Nothing has to be set. To change something, add a `"weather"` block to
   Mountain gap; it can be added if wanted.
 - `nws_station`: a Weather Service observation station to use last, after
   the backups (the self check lists the nearby ones). Empty means none.
-- `stale_min`, `no_data_min`: the measured limits, in minutes (20 and 45).
+- `stale_min`, `no_data_min`: UTALP's limits, in minutes (20 and 45).
+- `backup_stale_min`, `backup_no_data_min`: the airports' limits, in
+  minutes (75 and 120).
+- `station_limits`: limits for one station, over the ones above, like
+  `{"KPVU": {"stale_min": 60, "no_data_min": 90}}` (each 5 to 240 and 10
+  to 720 min; no data has to be more than stale).
 - `forecast_stale_hours`, `forecast_no_data_hours`: how long since this PC
   last got the forecast before it is STALE (1 h) and grey (6 h).
   Before 2026-10-28 these were counted from the issue time, with 3 and 6.
-- `forecast_issued_stale_hours`: how long since the Weather Service last
-  updated the forecast before it is STALE (18 h).
+  The forecast is fetched every `forecast_every_min` (15), which has to be
+  less than `forecast_stale_hours`, or a good forecast would go STALE
+  between fetches; a setting that breaks this is refused with a sentence.
+- `forecast_issued_stale_hours`, `forecast_issued_no_data_hours`: how long
+  since the Weather Service last updated the forecast before it is STALE
+  (18 h) and grey (36 h).
 - `contact`: an email or web address the Weather Service can reach the
   owner at; it goes in each request's User-Agent, as they ask.
 

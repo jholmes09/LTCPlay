@@ -14187,8 +14187,23 @@ def build():
 
  ("weather: a forecast this PC has not got for 6 h still shows its number",
   "ltcplay/weather.py",
-  "    if d is None or sp is None or got_age > fdead_s:",
-  "    if d is None or sp is None:"),
+  "got_age > fdead_s or \\\n            issued_age > fidead_s:",
+  "False or \\\n            issued_age > fidead_s:"),
+
+ ("weather: a forecast the NWS has not updated for 36 h still shows its number",
+  "ltcplay/weather.py",
+  "got_age > fdead_s or \\\n            issued_age > fidead_s:",
+  "got_age > fdead_s or \\\n            False:"),
+
+ ("weather: a forecast timed in the future is shown",
+  "ltcplay/weather.py",
+  "        future = got - now > 15 * 60 or d[\"issued\"] - now > 15 * 60",
+  "        future = False"),
+
+ ("weather: forecast_every_min longer than the stale limit is taken",
+  "ltcplay/weather.py",
+  "    if cfg[\"forecast_every_min\"] >= cfg[\"forecast_stale_hours\"] * 60:",
+  "    if False:"),
 
  ("weather: the forecast is judged on its issue time again",
   "ltcplay/weather.py",
@@ -14202,8 +14217,38 @@ def build():
 
  ("weather: a STALE station is used over a current backup",
   "ltcplay/weather.py",
-  "    pick = next((r for r in usable if r[\"st\"] == \"ok\"), None) or \\",
-  "    pick = None or \\"),
+  "    pool = [r for r in usable if r[\"st\"] == \"ok\"] or usable",
+  "    pool = usable"),
+
+ ("weather: the lowest current reading leads",
+  "ltcplay/weather.py",
+  "    pick = max(pool, key=",
+  "    pick = min(pool, key="),
+
+ ("weather: a backup station's reading is shown as if it were UTALP's",
+  "ltcplay/weather.py",
+  "\"backup\" if pick[\"i\"] > 0 else \"ok\")",
+  "\"ok\")"),
+
+ ("weather: an hourly airport is held to the 5 minute feed's limits",
+  "ltcplay/weather.py",
+  "hourly=name != \"mesonet\")",
+  "hourly=False)"),
+
+ ("weather: station_limits are ignored",
+  "ltcplay/weather.py",
+  "    own = (cfg.get(\"station_limits\") or {}).get(station) or {}",
+  "    own = {}"),
+
+ ("weather: an HTTP error is said as no answer",
+  "ltcplay/weather.py",
+  "        txt = (f\"{short} did not answer: {err}\" if s.get(\"offline\") else",
+  "        txt = (f\"{short} did not answer: {err}\" if True else"),
+
+ ("weather: the page shows a backup reading without amber",
+  "ltcplay/web/remote.html",
+  "cls:lv === \"backup\" ? \"stale\" : lv,",
+  "cls:lv,"),
 
  ("weather: no current data gives no reason",
   "ltcplay/weather.py",
@@ -14212,8 +14257,8 @@ def build():
 
  ("weather: a backup reading does not say why the station was passed over",
   "ltcplay/weather.py",
-  "        if pick[\"i\"] > 0:\n            text += (\" Using it because \"",
-  "        if False:\n            text += (\" Using it because \""),
+  "        if ahead:\n            text += (\" Using the backup because \"",
+  "        if False:\n            text += (\" Using the backup because \""),
 
  ("weather: a station that stopped reporting is said as not answering",
   "ltcplay/weather.py",

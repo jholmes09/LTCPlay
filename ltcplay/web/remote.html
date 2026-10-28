@@ -1810,8 +1810,9 @@ function wxBlock(w, heardAgoS){
   (w.banner || []).forEach(t => L.push({cls:"alert", text:t}));
   if(w.disagree) L.push({cls:"alert", text:w.disagree});
   w.lines.forEach(l => {
-    const lv = l.level === "ok" || l.level === "stale" ? l.level : "none";
-    L.push({cls:lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
+    // "backup": a reading from a backup station, amber but not STALE.
+    const lv = l.level === "ok" || l.level === "stale" ? l.level : l.level === "backup" ? "backup" : "none";
+    L.push({cls:lv === "backup" ? "stale" : lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
   });
   if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
   return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L, foot:foot};
