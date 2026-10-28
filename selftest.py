@@ -77939,6 +77939,7 @@ class _WcWorld:
         self.arm_delay = 0.1
         self.pending = None          # (t, "armed" | "disarmed")
         self.disarm_lands = True
+        self.disarm_delay = 0.1      # flamesafe's disarmed report after it
         self.disarms = 0
         self.disarm_calls = []
         self.disarm_all_calls = []
@@ -78018,7 +78019,7 @@ class _WcWorld:
         self.disarm_calls.append(self.t[0])
         self.events.append(("disarm", self.t[0]))
         if self.disarm_lands:
-            self.pending = (self.t[0] + 0.1, "disarmed")
+            self.pending = (self.t[0] + self.disarm_delay, "disarmed")
         return True, "Disarm wave flamer sent."
 
     def disarm_all(self, who, screen):
@@ -78409,6 +78410,23 @@ def test_cleaning_whole_sequence():
                  "Cycles done. Hold to start the purge bursts"):
         check(need in said, f"the page says {need!r}: {sorted(said)}")
     W2.p.cut("test")
+    # flamesafe reports the disarm 0.4 s after it is sent (re-review of
+    # #159): the 3 s gap counts from that report, never from the send.
+    W4 = _WcWorld(cycles=2)
+    W4.disarm_delay = 0.4
+    W4.hold(1.3, "d1")
+    W4.run_for(12.0, beats=False)
+    ev = W4.events
+    sent = [t for k, t in ev if k == "disarm"]
+    reported = [t for k, t in ev if k == "disarmed"]
+    holds = [t for k, t in ev if k == "hold"]
+    check(len(sent) >= 1 and len(reported) >= 1 and len(holds) >= 2 and
+          abs(reported[0] - sent[0] - 0.4) < 1e-6 and
+          3.0 - 1e-6 <= holds[1] - reported[0] <= 3.1 and
+          holds[1] - sent[0] >= 3.4 - 1e-6,
+          f"a disarm reported 0.4 s late: the next arm 3 s after the report, "
+          f"not after the send: {ev}")
+    W4.p.cut("test")
     # Paused with nobody holding: back to idle after pause_max_min.
     W3 = _wc_paused(pause_max_min=1.0)
     W3.run_for(61.0, beats=False)
