@@ -77309,6 +77309,9 @@ class _WcWorld:
         self.holds = {}
         self.refuse = ""
         self.never_arm = False
+        # Armed by something else (a Stream Deck key): arm_hold then says
+        # armed but not taken (or, "wait", nothing yet: the deck silent).
+        self.foreign = ""
         self.arm_delay = 0.1
         self.pending = None          # (t, "armed" | "disarmed")
         self.disarm_lands = True
@@ -77362,6 +77365,14 @@ class _WcWorld:
         if self.refuse:
             return 409, {"error": self.refuse, "let_go": True}
         hid = body.get("hold_id")
+        if hid is None and (self.armed != "disarmed" or self.wanted):
+            return 409, {"error": "wave flamer is already armed or asked "
+                                  "for.", "let_go": True}
+        if hid is not None and self.foreign == "taken-not":
+            return 200, {"ok": True, "armed": True, "taken": False,
+                         "hold_id": hid}
+        if hid is not None and self.foreign == "wait":
+            return 200, {"ok": True, "hold_id": hid, "held_s": 1.0}
         if hid is None:
             hid = len(self.holds) + 1
             self.holds[hid] = self.t[0]
@@ -77411,6 +77422,11 @@ class _WcWorld:
                                screen="Rack screen")
         finally:
             self.in_beat = False
+
+    def deck_key_arm(self, foreign="taken-not"):
+        """Someone arms the wave flamer with its own Stream Deck key."""
+        self.armed, self.wanted, self.foreign = "armed", True, foreign
+        self.events.append(("deck key", self.t[0]))
 
     def ign(self):
         c = self.link.cur
@@ -77631,6 +77647,8 @@ def test_cleaning_whole_sequence():
     # A release before the hold is complete starts nothing.
     W = _WcWorld()
     W.hold(0.5, "e1")
+    check(not W.p.active() and W.p.view()["state"] == "idle",
+          "the release itself ends the hold at once (not the 0.25 s watch)")
     W.run_for(3.0, beats=False)
     check(not W.p.active() and W.armed == "disarmed" and
           not any(k == "armed" for k, _t in W.events) and
@@ -77691,6 +77709,8 @@ def test_cleaning_whole_sequence():
           "two minutes paused: nothing continues by itself")
     # A tap is not a go-ahead.
     W.hold(0.3, "t1")
+    check(W.p.view()["state"] == "paused" and W.p.view()["holder"] is None,
+          "the release of a short go-ahead ends it at once: paused")
     W.run_for(2.0, beats=False)
     check(W.p.view()["state"] == "paused" and W.armed == "disarmed" and
           W.link.sets == 0 and "Still paused" in W.p.view()["last_note"],
@@ -77758,6 +77778,7 @@ def test_cleaning_whole_sequence():
         W2.run_for(0.1, beats=False)
         said.add(W2.p.view(("Rack screen", "w-a"))["progress"]["text"])
     for need in ("Pressurizing: armed 3 s, 1 of 3",
+                 "Depressurizing: disarming, 1 of 3",
                  "Depressurizing: disarmed 3 s, 1 of 3",
                  "Pressurizing: arming, 2 of 3", "Pressurizing: armed 3 s, 3 of 3",
                  "Depressurizing: disarmed 3 s, 3 of 3",
@@ -77808,6 +77829,10 @@ def test_cleaning_every_stop_cuts_and_disarms():
             ok = ok and W.link.cur is None
         check(ok, f"{name} ({where}): stopped, ignition 0, disarm sent: "
                   f"{W.ign()} {W.p.last_cut!r}")
+        check(not [fr for _t, a, _p, fr in W.frames
+                   if a != "armed" and (fr[2] or fr[8] or fr[14])],
+              f"{name} ({where}): no ignition was ever written while "
+              f"flamesafe did not say armed")
         if need:
             check(need in W.p.last_cut,
                   f"{name} ({where}): says why: {W.p.last_cut}")
@@ -77949,6 +77974,45 @@ def test_cleaning_every_stop_cuts_and_disarms():
         time.sleep(0.01)
     check(not W.p.active() and "Abort" in W.p.last_cut and W.disarm_calls,
           f"and once the lock is free the routine is stopped and disarmed: "
+          f"{W.p.last_cut}")
+    # Review of #159, fix 1: the group armed by anything but this hold (a
+    # Stream Deck key during a short hold) never counts as the hold: the
+    # run stops and disarms, on the start hold and on the go-ahead.
+    for which in ("start", "go-ahead"):
+        for how in ("held on", "let go", "deck silent"):
+            W = _wc_paused() if which == "go-ahead" else _WcWorld()
+            frames0 = len(W.frames)
+            W.beat(run="k1")
+            W.run_for(0.3, run="k1")
+            W.deck_key_arm("wait" if how == "deck silent" else "taken-not")
+            if how == "let go":
+                W.beat(hold=False, run="k1")
+            else:
+                W.run_for(1.5, run="k1")
+                W.beat(hold=False, run="k1")
+            n_press = len(W.press_calls)
+            W.run_for(10.0, beats=False)
+            check(not W.p.active() and W.disarm_calls and
+                  W.armed == "disarmed" and len(W.frames) == frames0 and
+                  len(W.press_calls) == n_press and
+                  ("not by this hold" in W.p.last_cut or
+                   (how == "let go" and which == "start" and
+                    "nothing started" in W.p.last_cut)),
+                  f"{which} hold, a deck key arms it, {how}: the run stops "
+                  f"and disarms; nothing walks away, nothing fires: "
+                  f"{W.p.last_cut!r} {W.p.view()['state']}")
+    # The walk-away never arms phase 2 (white box: a phase 2 arm with no
+    # hold behind it stops, and presses nothing).
+    W = _wc_paused()
+    with W.p._lock:
+        r = W.p._run
+        W.p._to(r, "arm", W.t[0], phase=2, hold=None, asked=False,
+                hold_id=None, authorized=True)
+    n = len(W.press_calls)
+    W.run_for(0.2, beats=False)
+    check(not W.p.active() and len(W.press_calls) == n and
+          "nobody's hold" in W.p.last_cut,
+          f"phase 2 with no hold behind its arm: stopped, nothing pressed: "
           f"{W.p.last_cut}")
     print("  ok")
 

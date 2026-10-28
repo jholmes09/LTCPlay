@@ -16338,13 +16338,6 @@ def build():
   "        if step == \"burst\":\n"
   "            if False:"),
 
- ("cleaning: phase 2 starts before flamesafe says armed",
-  "ltcplay/cleaning.py",
-  "        if step == \"arm\":\n"
-  "            if state == \"armed\":",
-  "        if step == \"arm\":\n"
-  "            if state in (\"armed\", \"wanted\"):"),
-
  ("cleaning: a stop leaves the ignition on",
   "ltcplay/cleaning.py",
   "                        link.purge_set(frame(self.group, r[\"cfg\"][\"aim\"], 0))",
@@ -16470,11 +16463,6 @@ def build():
   "          \"aim_settle_s\": (1.0, 5.0),",
   "          \"aim_settle_s\": (0.0, 5.0),"),
 
- ("cleaning: the settle counts from ARMED, not the first frame written",
-  "ltcplay/cleaning.py",
-  "                    self._to(r, \"burst\", now, burst_at=now, aimed_at=None)",
-  "                    self._to(r, \"burst\", now, burst_at=now, aimed_at=now)"),
-
  ("cleaning: an Abort waits on the panel's lock",
   "ltcplay/cleaning.py",
   "        threading.Thread(target=self._abort_cut, args=(why,), daemon=True,\n"
@@ -16494,15 +16482,6 @@ def build():
   "            try:\n"
   "                link.purge_clear()"),
 
- ("cleaning: the start hold presses the arm from the watcher too",
-  "ltcplay/cleaning.py",
-  "                if h is not None:\n"
-  "                    if press:\n"
-  "                        why = self._press_arm(r, h[\"ctx\"], h[\"seen\"])",
-  "                if h is not None:\n"
-  "                    if True:\n"
-  "                        why = self._press_arm(r, h[\"ctx\"], h[\"seen\"])"),
-
  ("cleaning: a hold whose beats stopped is not ended",
   "ltcplay/cleaning.py",
   "                if h is not None and now - h[\"beat\"] > BEAT_STALE_S:",
@@ -16517,25 +16496,12 @@ def build():
   "            r[\"authorized\"] = True\n"
   "            return"),
 
- ("cleaning: phase 1 fires",
-  "ltcplay/cleaning.py",
-  "                if r[\"phase\"] == 1:\n"
-  "                    self._to(r, \"armed\", now)",
-  "                if r[\"phase\"] == 1:\n"
-  "                    self._to(r, \"burst\", now, burst_at=now, aimed_at=None)"),
-
  ("cleaning: the pause goes on to the bursts by itself",
   "ltcplay/cleaning.py",
   "                    self._to(r, \"paused\", now, paused_at=now, asked=False,\n"
   "                             hold_id=None)",
   "                    self._to(r, \"arm\", now, phase=2, asked=False,\n"
   "                             hold_id=None, authorized=True, hold=None)"),
-
- ("cleaning: the walk-away arms phase 2 too",
-  "ltcplay/cleaning.py",
-  "                elif r[\"phase\"] == 1 and WALK_AWAY_PHASE1 and \\\n"
-  "                        r[\"authorized\"]:",
-  "                elif WALK_AWAY_PHASE1:"),
 
  ("cleaning: a tap is a go-ahead",
   "ltcplay/cleaning.py",
@@ -16621,6 +16587,61 @@ def build():
   "ltcplay/web/remote.html",
   "    if(j.state === \"phase1\" || j.state === \"phase2\"){",
   "    if(false){"),
+
+ ("cleaning: phase 2 starts before flamesafe says armed",
+  "ltcplay/cleaning.py",
+  "            if r[\"asked\"]:\n"
+  "                # The deck confirmed it took THIS hold: wait for ARMED.\n"
+  "                if state == \"armed\":",
+  "            if r[\"asked\"]:\n"
+  "                # The deck confirmed it took THIS hold: wait for ARMED.\n"
+  "                if state in (\"armed\", \"wanted\"):"),
+
+ ("cleaning: the settle counts from ARMED, not the first frame written",
+  "ltcplay/cleaning.py",
+  "                        self._to(r, \"burst\", now, burst_at=now,\n"
+  "                                 aimed_at=None)",
+  "                        self._to(r, \"burst\", now, burst_at=now,\n"
+  "                                 aimed_at=now)"),
+
+ ("cleaning: the start hold presses the arm from the watcher too",
+  "ltcplay/cleaning.py",
+  "            if h is not None:\n"
+  "                if not press:\n"
+  "                    return \"\"",
+  "            if h is not None:\n"
+  "                if False:\n"
+  "                    return \"\""),
+
+ ("cleaning: phase 1 fires",
+  "ltcplay/cleaning.py",
+  "                    if r[\"phase\"] == 1:\n"
+  "                        self._to(r, \"armed\", now)",
+  "                    if r[\"phase\"] == 1:\n"
+  "                        self._to(r, \"burst\", now, burst_at=now, aimed_at=None)"),
+
+ ("cleaning: the walk-away arms phase 2 too",
+  "ltcplay/cleaning.py",
+  "            if r[\"phase\"] != 1 or not WALK_AWAY_PHASE1 or \\\n"
+  "                    not r[\"authorized\"]:",
+  "            if not WALK_AWAY_PHASE1 or not r[\"authorized\"]:"),
+
+ ("cleaning: a hold is credited when the group arms some other way",
+  "ltcplay/cleaning.py",
+  "            if out.get(\"taken\") is not True:",
+  "            if False:"),
+
+ ("cleaning: the group armed some other way during a hold is waited out",
+  "ltcplay/cleaning.py",
+  "                if now - r[\"foreign_at\"] > FOREIGN_GRACE_S:",
+  "                if False:"),
+
+ ("cleaning: a go-ahead that ends with the group armed leaves it paused",
+  "ltcplay/cleaning.py",
+  "        if state != \"disarmed\":\n"
+  "            # Armed or asked for during a go-ahead that never completed:",
+  "        if False:\n"
+  "            # Armed or asked for during a go-ahead that never completed:"),
 
  ("cleaning page: losing focus does not stop it",
   "ltcplay/web/remote.html",

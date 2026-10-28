@@ -107,6 +107,14 @@ WHOLE = ("cycles", "aim")
 # second completed hold, and then runs until Stop. Phase 1's walk-away is
 # the only arm the engine presses on a person's behalf.
 WALK_AWAY_PHASE1 = True
+# A hold is credited only when the Stream Deck says it took THAT hold
+# (arm_hold's "taken"). The group armed or asked for while a hold is not
+# credited: the deck's word on a hold it took follows within
+# remote.TAKEN_WAIT_S (0.5 s); past this, the run stops (review of #159).
+FOREIGN_GRACE_S = 1.0
+ARMED_ELSEWHERE = ("the wave flamer was armed or asked for some other way "
+                   "during the hold (a Stream Deck key, another screen), "
+                   "not by this hold, so it does not count")
 IGNITION_ON = 255            # a Showven fires at 254 or more on channel 3
 UNIVERSE_SIZE = 512
 BEAT_STALE_S = 0.25          # a hold with no beat for this long let go
@@ -615,7 +623,8 @@ class CleaningPanel:
         """A person's hold ended before it was complete (let go, no beat,
         refused). Phase 1's start hold: nothing starts (the run ends, and
         the group is disarmed if the deck took it at the last moment).
-        Phase 2's go-ahead hold: back to paused, disarmed. Under the
+        Phase 2's go-ahead hold: back to paused, or, if the group was
+        armed or asked for meanwhile, the run stops disarmed. Under the
         lock."""
         h = r.get("hold")
         if h is None:
@@ -628,7 +637,11 @@ class CleaningPanel:
             return
         state, _o, _w = self.status()
         if state != "disarmed":
-            self._phase_disarm(r)
+            # Armed or asked for during a go-ahead that never completed:
+            # not by this hold. The run stops, disarmed (fix 1).
+            self.cut(f"{why}; the wave flamer was armed or asked for "
+                     f"during it, not by this hold")
+            return
         self._to(r, "paused", r.get("paused_at", self._clock()),
                  asked=False, hold_id=None)
         self.last_note = (f"The go-ahead hold ended before it was complete "
@@ -656,9 +669,13 @@ class CleaningPanel:
         if out.get("hold_id") is not None:
             r["hold_id"] = out["hold_id"]
         if out.get("armed"):
-            # The deck set it: the hold is complete. Wait for flamesafe.
-            r["asked"] = True
             r["hold_id"] = None
+            if out.get("taken") is not True:
+                # Armed or asked for, but the deck did not say THIS hold
+                # did it (a deck key, another screen): never credited.
+                return ARMED_ELSEWHERE
+            # The deck took this hold: complete. Wait for flamesafe.
+            r["asked"] = True
         return ""
 
     def _let_go(self, r, token):
@@ -719,58 +736,74 @@ class CleaningPanel:
         step = r["step"]
         n = cfg["cycles"]
         if step == "arm":
-            if state == "armed":
-                self._let_go(r, (r["hold"]["ctx"] if r["hold"] is not None
-                                 else r["ctx"]).device)
-                if r["hold"] is not None:
-                    r["done_hold"] = r["hold"]["id"]
-                    r["done_owner"] = r["hold"]["owner"]
-                    r["hold"] = None
-                    r["authorized"] = True
-                if r["phase"] == 1:
-                    self._to(r, "armed", now)
-                else:
-                    self._to(r, "burst", now, burst_at=now, aimed_at=None)
-            elif now - r["step_at"] > cfg["arm_wait_s"]:
+            h = r["hold"]
+            if r["asked"]:
+                # The deck confirmed it took THIS hold: wait for ARMED.
+                if state == "armed":
+                    self._let_go(r, r["ctx"].device)
+                    if r["phase"] == 1:
+                        self._to(r, "armed", now)
+                    else:
+                        # The first frame goes on the next step, so the
+                        # settle counts from a frame actually written.
+                        self._to(r, "burst", now, burst_at=now,
+                                 aimed_at=None)
+                elif now - r["step_at"] > cfg["arm_wait_s"]:
+                    said = (f"flamesafe says: {fs_why}" if fs_why
+                            else "flamesafe never reported it armed")
+                    return self._stop_run(
+                        f"the wave flamer did not arm within "
+                        f"{_fmt_s(cfg['arm_wait_s'])} ({said})")
+                return ""
+            # Not credited yet. Armed or asked for by anything but this
+            # hold (review of #159, fix 1: a deck key during a short
+            # hold) never counts: past the deck's own word on a hold it
+            # took (TAKEN_WAIT_S), the run stops and disarms.
+            if state in ("armed", "wanted"):
+                r.setdefault("foreign_at", now)
+                if now - r["foreign_at"] > FOREIGN_GRACE_S:
+                    return self._stop_run(ARMED_ELSEWHERE)
+            else:
+                r.pop("foreign_at", None)
+            if now - r["step_at"] > cfg["arm_wait_s"]:
                 said = (f"flamesafe says: {fs_why}" if fs_why
                         else "flamesafe never reported it armed")
                 return self._stop_run(
                     f"the wave flamer did not arm within "
                     f"{_fmt_s(cfg['arm_wait_s'])} ({said})")
-            elif not r["asked"]:
-                h = r["hold"]
-                if h is not None:
-                    if press:
-                        why = self._press_arm(r, h["ctx"], h["seen"])
-                        if why:
-                            self._hold_ended(r, f"the arm was refused: {why}")
-                            return f"the arm was refused: {why}"
-                        if r["asked"]:
-                            # The hold is complete: the person may let go.
-                            r["hold"] = None
-                            r["done_hold"] = h["id"]
-                            r["done_owner"] = h["owner"]
-                            r["authorized"] = True
-                            self._note(
-                                f"Wave flamer cleaning: {h['who'] or 'the'}"
-                                f" hold on the {h['owner'][0]} is complete; "
-                                f"{'phase 1 runs on its own' if r['phase'] == 1 else 'the purge bursts start once armed'}.",
-                                outcome="hold complete", who=h["who"],
-                                screen=h["screen"])
-                elif r["phase"] == 1 and WALK_AWAY_PHASE1 and \
-                        r["authorized"]:
-                    # Phase 1's walk-away (Jeff's ruling): the hold to arm
-                    # pressed for the person whose hold started it.
-                    why = self._press_arm(r, r["ctx"],
-                                          int(self._wall() * 1000))
-                    if why:
-                        return self._stop_run(f"the arm was refused: {why}")
-                else:
-                    return self._stop_run("an arm with nobody's hold behind "
-                                          "it")
-            if r["step"] == "arm":
+            if h is not None:
+                if not press:
+                    return ""
+                why = self._press_arm(r, h["ctx"], h["seen"])
+                if why == ARMED_ELSEWHERE:
+                    return self._stop_run(why)
+                if why:
+                    self._hold_ended(r, f"the arm was refused: {why}")
+                    return f"the arm was refused: {why}"
+                if r["asked"]:
+                    # The deck took this hold: complete. The person may
+                    # let go.
+                    r["hold"] = None
+                    r["done_hold"] = h["id"]
+                    r["done_owner"] = h["owner"]
+                    r["authorized"] = True
+                    self._note(
+                        f"Wave flamer cleaning: {h['who'] or 'the'} hold on "
+                        f"the {h['owner'][0]} is complete; "
+                        f"{'phase 1 runs on its own' if r['phase'] == 1 else 'the purge bursts start once armed'}.",
+                        outcome="hold complete", who=h["who"],
+                        screen=h["screen"])
                 return ""
-            step = r["step"]
+            if r["phase"] != 1 or not WALK_AWAY_PHASE1 or \
+                    not r["authorized"]:
+                return self._stop_run("an arm with nobody's hold behind it")
+            # Phase 1's walk-away (Jeff's ruling): the hold to arm pressed
+            # for the person whose completed hold started it.
+            why = self._press_arm(r, r["ctx"], int(self._wall() * 1000))
+            if why:
+                return self._stop_run(why if why == ARMED_ELSEWHERE else
+                                      f"the arm was refused: {why}")
+            return ""
         if step == "armed":
             if state != "armed":
                 return self._stop_run("the wave flamer is not armed any more "
