@@ -34,6 +34,51 @@ driven, and the Terminal window is where to look.
 **A terminal menu.** Double-click **Run ltcplay.command** instead. Same engine,
 same order of operations.
 
+## Signing in: signed out is view only
+
+Once the Users screen has any user (USERS.md), every screen needs someone
+signed in to do anything that is not a stop or a disarm. That includes the
+rack screen on the show machine itself: being at the machine is not a
+sign-in.
+
+- **Signed out, every screen is view only.** It still shows the show
+  state, the schedule, the flame and laser lamps and the alerts. The chip
+  at the top right reads "Sign in to use controls", and Start now, Resume,
+  Reset, Run, every Hold to arm, a laser's Arm, the announcements and the
+  settings switches are greyed out. Hold, Abort, Disarm all and every
+  Disarm stay live.
+- **Always, signed in or not:** Stop, Hold, Abort, Acknowledge an alert,
+  Disarm all flame groups, disarming one group, and disarming lasers.
+- **Needs a signed-in operator or admin:** Start now, Resume, Reset, Run,
+  arming a flame group (hold to arm and Arm all), a purge, arming a laser,
+  a laser test, unlocking, playing an announcement, the checklists,
+  choosing the operator and editing tonight's list. Settings, show files
+  and users need an admin as before.
+- **Sign out** on the Users screen ends the sign-in at the engine. On the
+  show machine it signs that machine out completely (the rack screen and
+  the Stream Deck together), lets go of that screen's hold to arm if one is
+  under way, and the screen is view only straight away. It does not disarm
+  anything or stop live flame programming: use Disarm all or Stop for that.
+- **If the users file is damaged or missing** after users were set up, an
+  alert says so on every screen and every control is locked except Stop,
+  Hold, Abort, Acknowledge and the disarms. Nobody can sign in. A good
+  `ltcplay_users.json` put back in the settings folder is used at once, with
+  no restart. To start over with no users: close LTC Player, remove
+  `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
+  (Start menu, LTC Player, "Settings and logs"), and start it again.
+- **The Stream Deck started before the engine** keeps its arm keys off
+  until it has heard the engine once.
+- **A name with no password yet** chooses it at the rack screen on the show
+  machine, never from an iPad.
+- **The Stream Deck** acts as whoever is signed in on the rack screen. With
+  nobody signed in there, its Start key reads SIGN IN and its arm keys do
+  not arm. Its Stop, Hold, Acknowledge and disarm keys always work. If the
+  deck cannot hear from the engine for 2 seconds, its arm keys wait until
+  it can.
+- **The journal and the audit log name the signed-in person**, never a
+  name picked from a list. A stop or a disarm pressed with nobody signed
+  in is written as "unsigned".
+
 ## Before the first run of the day
 
 Double-click **Run ltcplay.command**. Everything is on that menu, in the order
@@ -535,8 +580,10 @@ Turning it off puts every controller back on the live stream immediately.
 Once, on the show machine: open the page (http://127.0.0.1:7878/remote),
 press Programming, and pick this machine's show Wi-Fi address under "Show
 network". Then start it with the show network on (Run ltcplay, answer y to
-the iPad question). There is no PIN, and signing in is optional (USERS.md): anything on the show
-Wi-Fi that can reach that address can use the page, so keep the show Wi-Fi
+the iPad question). There is no PIN. Once users are set up (USERS.md), an
+iPad signed out is view only, like every screen ("Signing in" above); it
+can still Stop, Hold, Abort, Acknowledge and disarm. Anything on the show
+Wi-Fi that can reach that address can see the page, so keep the show Wi-Fi
 to the crew.
 
 After the last show of the night, everyone is signed out on their own:

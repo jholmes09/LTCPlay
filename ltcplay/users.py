@@ -15,14 +15,24 @@ allowed() answers True for "safety" before it looks at anything else.
 Nothing in flamesafe is touched by this module: its sole writer, the
 Abort latch, the link key and hold-to-arm stay exactly as they were.
 
-THE EARLIER PINs (PR #39, removed 2026-10-07): an operator PIN was needed
-on the iPad, and arming from a screen needed a PIN session. Jeff ruled "no
-PINs, no remote arming PIN": on a show night the sign-in stood between the
-crew and the show. So here:
-  - nobody has to sign in for the show to run. Until the first user is
-    made, nothing changes at all; after that, the "Signed out" column of
-    the role matrix says what a screen with nobody signed in may do, and
-    by default that is every show control and arming, as before;
+SIGNED OUT IS VIEW ONLY (Jeff's field report, 2026-10-28, Tier A): once
+any user exists, every press that is not safety needs a signed-in user
+whose role may, on every surface: the rack screen on this machine, an
+iPad, the old page and the Stream Deck (which acts as whoever is signed in
+on this machine's rack screen). Being on the machine itself (loopback) is
+NOT a sign-in. Signed out, a screen sees status, the schedule and the
+alerts, and may only do the safety presses above: Stop, Hold, Abort,
+Acknowledge and every disarm. allowed() refuses every restricted row for
+nobody signed in, whatever the stored matrix says, and the "Signed out"
+column is fixed off (FIXED) so nobody can tick it back on.
+
+Who a press is from (the journal and the audit log): the signed-in user
+only, never a name the page or a process puts in its body, and
+"unsigned" when nobody is (UNSIGNED).
+
+THE EARLIER PINs (PR #39, removed 2026-10-07; the 2026-10-07 "no sign-in
+to run or arm" default was replaced by the rule above on 2026-10-28):
+  - until the first user is made, nothing changes at all;
   - roles restrict only things that are not safety: settings, users,
     show files, unlocking, the show controls and arming;
   - the stdlib PBKDF2 store of the old PinStore is kept in spirit: a salt
@@ -63,12 +73,18 @@ import threading
 import time
 
 USERS_FILE = "ltcplay_users.json"
+# Written beside it once users exist on this machine: a users file that is
+# then missing was deleted or lost, never "not set up yet", and locks the
+# controls instead of opening them (review of PR #143, 2).
+USERS_MARK = "ltcplay_users.made"
 COOKIE = "ltcplay_user"
 ROLES = ("admin", "operator", "viewer")
 SIGNED_OUT = "signed_out"
 COLUMNS = ROLES + (SIGNED_OUT,)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'_-]{0,39}$")
-RESERVED = ("unsigned", "system", "signed out", "nobody")
+RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")
+# Who a press is from when nobody is signed in (the journal, the audit).
+UNSIGNED = "unsigned"
 PW_MIN, PW_MAX = 6, 128
 USERS_MAX = 50
 
@@ -112,17 +128,16 @@ SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
                "Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
-# The proposed defaults (Jeff decides; USERS.md). Signed out keeps the
-# 2026-10-07 rule: no sign-in is needed to run or arm on a show night.
+# The defaults (Jeff decides; USERS.md). Signed out is view only (Jeff's
+# field report, 2026-10-28): it may do nothing restricted, and FIXED keeps
+# it that way.
 DEFAULT_MATRIX = {
     "admin": {p: True for p in PERM_KEYS},
     "operator": {"show": True, "arm": True, "unlock": True,
                  "checklist": True, "show_files": True, "settings": False,
                  "users": False},
     "viewer": {p: False for p in PERM_KEYS},
-    SIGNED_OUT: {"show": True, "arm": True, "unlock": True,
-                 "checklist": True, "show_files": False, "settings": False,
-                 "users": False},
+    SIGNED_OUT: {p: False for p in PERM_KEYS},
 }
 # The people LTC Player starts with (Jeff, 2026-10-20). Written once, at
 # first run, with NO password: each chooses their own at their first
@@ -130,11 +145,17 @@ DEFAULT_MATRIX = {
 SEED_USERS = (("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator"),
               ("Dave", "operator"), ("Jared", "operator"))
 # An admin can always manage users, so nobody can lock every admin out.
+# And signed out may do nothing restricted (2026-10-28): view only.
 FIXED = {("admin", "users"): True}
+FIXED.update({(SIGNED_OUT, p): False for p in PERM_KEYS})
 # Sign everyone out this many minutes after the night's last show ended
 # (Jeff, 2026-10-26): on by default; 0 is off.
 LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10
 LAST_SHOW_BEAT_S = 5.0     # the sign-out's own beat (Users.start)
+# A users file that is there but cannot be opened is tried again on every
+# read; while it keeps failing for less than this the last good read
+# stands, then it counts as broken (locked) until a read works.
+READ_GRACE_S = 10.0
 
 
 # ---------------------------------------------------- which press is which --
@@ -166,8 +187,11 @@ REMOTE_ROUTES = {
     "layout": "show_files",
     "checklist-tick": "checklist", "checklist-note": "checklist",
     "morning-open": None, "checklist-verify": None,
-    "checklist-tally-retry": None, "open-folder": None, "screen": None,
-    "show-select": None, "show-file-new": "show_files",
+    "checklist-tally-retry": None, "open-folder": "show_files",
+    "screen": None,
+    # Choosing the show in use and opening a folder in the file manager
+    # (the settings folder holds the users file) are setup (2026-10-28).
+    "show-select": "show_files", "show-file-new": "show_files",
     "audit-verify": None, "my-password": None,
     # Open BEYOND (windowfront.py) only moves a window on the show PC.
     "open-beyond": None,
@@ -246,8 +270,16 @@ def classify(route, body=None):
     if route == "/api/override" and body.get("look") == "blackout":
         return "safety"
     if route.startswith("/api/schedule"):
-        # The deck's journal lines and the operator choice: the deck's own
-        # rules already apply to them.
+        # Editing tonight's list is setup; choosing the deck's operator
+        # and saving an incident are show presses; clearing the operator
+        # only takes something away. The deck's journal lines write a line
+        # and nothing else (2026-10-28).
+        if route == "/api/schedule/tonight":
+            return "show_files"
+        if route == "/api/schedule/operator":
+            return "show" if str(body.get("who") or "").strip() else "safety"
+        if route == "/api/schedule/incident":
+            return "show"
         return None
     if route.startswith("/api/announce"):
         return "show"
@@ -271,13 +303,14 @@ def normalise_matrix(doc):
 
 def allowed(matrix, role, perm):
     """May a press of kind `perm` go ahead for `role` (None: nobody signed
-    in)? Safety and harmless presses always may; a role this does not know
-    may do nothing restricted."""
+    in)? Safety and harmless presses always may; nobody signed in and a
+    role this does not know may do nothing restricted (2026-10-28: signed
+    out is view only, whatever a stored matrix says)."""
     if perm == "safety" or perm is None:
         return True
-    col = role if role in ROLES else (SIGNED_OUT if role is None else None)
-    if col is None:
+    if role is None or role not in ROLES:
         return False
+    col = role
     row = (matrix or DEFAULT_MATRIX).get(col) or {}
     return row.get(perm) is True
 
@@ -330,8 +363,8 @@ def check_name(name):
     name = " ".join(str(name or "").split())
     if not NAME_RE.match(name) or name.lower() in RESERVED:
         raise ValueError("A name is 1 to 40 letters, digits, spaces, dots, "
-                         "dashes or apostrophes, and not unsigned, system or "
-                         "nobody.")
+                         "dashes or apostrophes, and not unsigned, system, "
+                         "signed out, deck or nobody.")
     return name
 
 
@@ -366,6 +399,7 @@ class Users:
                  hash_params=None, audit=None):
         self.folder = folder
         self.path = os.path.join(folder, USERS_FILE)
+        self.mark = os.path.join(folder, USERS_MARK)
         self._clock = clock
         self._wall = wall
         self._hash_params = hash_params
@@ -375,9 +409,19 @@ class Users:
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()   # one password check at a time
         self._sessions = {}       # token -> session dict
+        # Each sign-in's place in line: which is the latest is never left
+        # to the clock, whose tick is about 16 ms on Windows, so two
+        # sign-ins in one tick are still told apart.
+        self._signin_seq = 0
         self._fails = {}          # key -> [count, locked_until]
         self._doc = None
         self._mtime = None
+        self._good = None         # the last users file read whole and good
+        self._fail_since = None   # when the opens started failing
+        # Why the file cannot be used: "open" (there, but could not be
+        # opened), "invalid" (read whole, not a users file) or "missing"
+        # (gone after users were set up); "" when it can.
+        self.error_kind = ""
         self.error = ""
         # () -> None, or {"night": the schedule's night, "ended": wall
         # clock seconds the last show of it ended}, only while that last
@@ -394,23 +438,61 @@ class Users:
         try:
             m = os.path.getmtime(self.path)
         except OSError:
+            if os.path.exists(self.mark):
+                # Users were set up here and the file is gone: locked, the
+                # same as a broken file, never back to "nobody set up".
+                self._doc, self._mtime = {"users": {}, "broken": True}, None
+                self.error = (f"{USERS_FILE} is missing, but users were set "
+                              f"up on this machine")
+                self.error_kind = "missing"
+                return self._doc
             self._doc, self._mtime, self.error = {"users": {}}, None, ""
+            self.error_kind = ""
             return self._doc
         if self._doc is not None and m == self._mtime:
+            self._fail_since = None
+            if not self._doc.get("broken"):
+                self.error, self.error_kind = "", ""
             return self._doc
         try:
-            with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
+            # Bytes only here: a file that is not text (not UTF-8) is read
+            # whole and found invalid below, never a failed open (fourth
+            # review of PR #143).
+            with open(self.path, "rb") as fh:
+                raw = fh.read()
+        except OSError as e:
+            # The file is there but could not be opened just now (an
+            # antivirus or indexer holding it): never remembered, so the
+            # next read tries again (re-review of PR #143, 2). Meanwhile
+            # the last good read stands; with none yet, or once it has
+            # failed for READ_GRACE_S, nobody may do anything restricted,
+            # and nobody signed in is signed out by it.
+            now = self._clock()
+            if self._fail_since is None:
+                self._fail_since = now
+            if self._good is not None and \
+                    now - self._fail_since < READ_GRACE_S:
+                return self._good
+            self.error = f"{USERS_FILE} could not be opened: {e}"
+            self.error_kind = "open"
+            return {"users": {}, "broken": True}
+        self._fail_since = None
+        try:
+            doc = json.loads(raw.decode("utf-8-sig"))
             if not isinstance(doc, dict) or not isinstance(
                     doc.get("users", {}), dict):
                 raise ValueError("not a users object")
             doc.setdefault("users", {})
-            self.error = ""
-        except (OSError, ValueError) as e:
-            # A broken file: nobody can sign in, and the matrix is the
-            # defaults. Nothing about the show is held back by it.
+            self.error, self.error_kind = "", ""
+            self._good = doc
+            if doc["users"] and not os.path.exists(self.mark):
+                self._write_mark()
+        except ValueError as e:
+            # Read whole and not a users file: broken until it changes.
+            # Nobody can sign in, and every restricted press is refused.
             doc = {"users": {}, "broken": True}
             self.error = f"{USERS_FILE} could not be read: {e}"
+            self.error_kind = "invalid"
         self._doc, self._mtime = doc, m
         return doc
 
@@ -418,7 +500,23 @@ class Users:
         os.makedirs(self.folder, exist_ok=True)
         clean = {k: v for k, v in doc.items() if k != "broken"}
         _write_private(self.path, clean)
+        if clean.get("users"):
+            self._write_mark()
+        # What was just written is the last good read: a failed open right
+        # after never brings back the copy from before this change (third
+        # review of PR #143, 2).
+        self._good = json.loads(json.dumps(clean))
         self._doc = None
+
+    def _write_mark(self):
+        """USERS_MARK, once: users exist on this machine. Never raises."""
+        try:
+            with open(self.mark, "w", encoding="utf-8") as fh:
+                fh.write("Users were set up on this machine. While this file "
+                         "is here a missing users file locks every control "
+                         "but the stops and disarms.\n")
+        except OSError:
+            pass
 
     def _note(self, action, user, result="accepted", reason="", target="",
               source=""):
@@ -432,9 +530,20 @@ class Users:
 
     # -- reading ----------------------------------------------------------
     def active(self):
-        """True once at least one user exists: only then do roles apply."""
+        """True once at least one user exists: only then do roles apply.
+        Also True while the users file is broken, or missing after users
+        were set up here: then nobody can sign in, so every restricted
+        press is refused (fail closed; review of PR #143, 2). Only a
+        machine never set up (no file, no USERS_MARK) is not active."""
         with self._lock:
-            return bool(self._load().get("users"))
+            doc = self._load()
+            return bool(doc.get("users")) or bool(doc.get("broken"))
+
+    def broken(self):
+        """The sentence saying why the users file cannot be used, or ""."""
+        with self._lock:
+            doc = self._load()
+            return self.error if doc.get("broken") else ""
 
     def matrix(self):
         with self._lock:
@@ -580,7 +689,12 @@ class Users:
             s = self._sessions.get(token)
             if s is None:
                 return None
-            u = self._load().get("users", {}).get(s["name"])
+            doc = self._load()
+            if doc.get("broken"):
+                # Locked while the file cannot be used, but nobody is
+                # signed out by it: a good read brings them back.
+                return None
+            u = doc.get("users", {}).get(s["name"])
             if not isinstance(u, dict):
                 del self._sessions[token]
                 return None
@@ -605,7 +719,7 @@ class Users:
             users = self._load().get("users", {})
             for s in self._sessions.values():
                 if s["local"] and isinstance(users.get(s["name"]), dict) and \
-                        (best is None or s["at"] > best["at"]):
+                        (best is None or s.get("seq", 0) > best.get("seq", 0)):
                     best = s
             if best is None:
                 return None
@@ -674,6 +788,13 @@ class Users:
             self._note("sign-in", name or "unsigned", "refused", why,
                        source=source)
             return False, why, None, False
+        if first and not local:
+            # A name with no password yet is claimed on the show machine
+            # itself, never from the network (review of PR #143, 2).
+            why = (f"{real} has no password yet. Choose it on the show "
+                   f"machine's rack screen first.")
+            self._note("sign-in", real, "refused", why, source=source)
+            return False, why, None, False
         if first or must:
             if not new_password:
                 why = (f"Choose your own password, {real}, to finish "
@@ -700,26 +821,52 @@ class Users:
             for k in keys:
                 self._fails.pop(k, None)
             token = secrets.token_urlsafe(24)
+            self._signin_seq += 1
             self._sessions[token] = {"name": real, "local": bool(local),
+                                     "seq": self._signin_seq,
                                      "source": str(source), "at": now,
                                      "seen": now, "wall_at": self._wall()}
         self._note("sign-in", real, source=source)
         return True, f"Signed in as {real}.", token, False
 
-    def sign_out(self, token, source=""):
+    def sign_out(self, token, source="", local=False):
+        """End this page's session. On this machine itself (`local`, or a
+        session made here) every session made on this machine ends too, so
+        the rack screen and the Stream Deck are signed out together and a
+        sign-out there always leaves the machine view only, even when the
+        page lost its cookie (Jeff's field report, 2026-10-28: a sign-out
+        that changed nothing). True when anything ended."""
         with self._lock:
             s = self._sessions.pop(token, None) if token else None
-        self._note("sign-out", s["name"] if s else "unsigned",
+            gone = []
+            if local or (s is not None and s["local"]):
+                gone = [t for t, x in self._sessions.items() if x["local"]]
+                gone = [(t, self._sessions.pop(t)) for t in gone]
+        self._note("sign-out", s["name"] if s else UNSIGNED,
                    source=source)
-        return s is not None
+        for _t, x in gone:
+            self._note("sign-out", x["name"], source=source,
+                       reason="signed out on this machine")
+        return s is not None or bool(gone)
 
     # -- changes (the Users screen) -----------------------------------------
     def _change(self, fn):
         with self._lock:
-            doc = json.loads(json.dumps(self._load()))
+            loaded = self._load()
+            if self._fail_since is not None:
+                # Only ever changed from a fresh read: a change made from
+                # the last good copy while the file cannot be opened could
+                # undo a change made since.
+                raise ValueError(f"{USERS_FILE} cannot be opened just now "
+                                 f"(another program may be holding it). "
+                                 f"Nothing was changed; try again in a "
+                                 f"moment.")
+            doc = json.loads(json.dumps(loaded))
             if doc.get("broken"):
-                raise ValueError(f"{self.error} Fix or remove the file "
-                                 f"first.")
+                raise ValueError(f"{self.error}. Nothing was changed. To "
+                                 f"start over, close LTC Player, remove "
+                                 f"{USERS_FILE} and {USERS_MARK} from "
+                                 f"{self.folder} and start it again.")
             doc.setdefault("users", {})
             said = fn(doc)
             self._save(doc)
@@ -840,7 +987,9 @@ class Users:
         """First run only (no users file yet): the named people, each with
         no password; each chooses their own at their first sign-in. No
         password is ever shipped. [(name, role)]. True if it wrote."""
-        if os.path.exists(self.path):
+        if os.path.exists(self.path) or os.path.exists(self.mark):
+            # Set up before: a lost file is never seeded again with names
+            # that have no password, which anyone could then claim.
             return False
 
         def fn(doc):
@@ -876,7 +1025,12 @@ class Users:
                     if p not in PERM_KEYS or not isinstance(v, bool):
                         raise ValueError(f"{p} is not a row of the matrix.")
                     if (c, p) in FIXED and v != FIXED[(c, p)]:
-                        raise ValueError("An admin can always manage users.")
+                        raise ValueError(
+                            "An admin can always manage users."
+                            if c == "admin" else
+                            "Signed out is view only: nobody signed in "
+                            "may do anything but Stop, Hold, Abort, "
+                            "Acknowledge and disarm.")
                     m[c][p] = v
             doc["matrix"] = m
             return "The role matrix was saved."
