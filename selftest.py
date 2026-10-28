@@ -45363,10 +45363,51 @@ def test_show_network_card_firewall_and_wrong_name_page():
           "not Windows: no rule to read")
     check(remote_mod.network_category("10.1.2.3", windows=False) ==
           ("none", ""), "not Windows: no category to read")
-    check(remote_mod.network_category("10.1.2.3'; Set-X; '",
-                                      run=fake(0, "Public"),
-                                      windows=True)[0] == "unknown",
-          "only an IP address is ever put in the command")
+    # Review of #164, B2: an IPv6 zone ID ("%...") takes any characters,
+    # so a saved address could carry PowerShell. Refused when saved and
+    # when read; never looked up; and a looked-up address is never part
+    # of the command text.
+    payloads = ("2001:db8::1%a';Start-Process calc;'",
+                "2001:db8::1%a\";calc;\"", "fe80::1%eth0", "fd00::5%1",
+                "2001:db8::1%a b", "10.1.2.3;calc", "10.1.2.3'", "10.1.2.3 x",
+                "10.1.2.3\n'calc'", "fd00::5", "8.8.8.8", "100.64.1.2")
+    for bad in payloads[:9]:
+        try:
+            remote_mod.check_show_address(bad)
+            check(False, f"{bad!r} was accepted as a show network address")
+        except ValueError:
+            pass
+        work_b = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(work_b, remote_mod.SETTINGS_FILE), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"show_network_address": bad}, fh)
+            try:
+                remote_mod.load_settings(work_b)
+                check(False, f"{bad!r} in ltcplay_remote.json was loaded")
+            except ValueError:
+                pass
+        finally:
+            shutil.rmtree(work_b, ignore_errors=True)
+    looked = []
+
+    def look(cmd, **kw):
+        looked.append((cmd, kw.get("env") or {}))
+        return types.SimpleNamespace(returncode=0, stdout="Public\n",
+                                     stderr="")
+    for bad in payloads:
+        got = remote_mod.network_category(bad, run=look, windows=True)
+        check(got == ("unknown", ""), f"{bad!r} is never looked up: {got}")
+    check(not looked, f"nothing but a private IPv4 address reaches "
+                      f"PowerShell: {looked}")
+    got = remote_mod.network_category("10.20.0.5", run=look, windows=True)
+    check(got[0] == "Public" and len(looked) == 1 and
+          "10.20.0.5" not in " ".join(looked[0][0]) and
+          looked[0][1].get(remote_mod.CATEGORY_ENV) == "10.20.0.5" and
+          "$env:" + remote_mod.CATEGORY_ENV in looked[0][0][-1] and
+          looked[0][1].get("PATH") == os.environ.get("PATH"),
+          f"the address goes in as an environment variable, never in the "
+          f"command text: {looked}")
     check(ran and all(isinstance(c, str) and c.startswith(
               "netsh advfirewall firewall show rule ") and
               'name="LTC Player rack page"' in c and
@@ -45424,7 +45465,7 @@ def test_show_network_card_firewall_and_wrong_name_page():
         check(v["category"] == "Private" and
               "Windows calls the network with this address Private." in txt,
               f"the card names the network's category: {v}")
-        check(cat_ran and all("10.20.0.5" in " ".join(c) and
+        check(cat_ran and all("10.20.0.5" not in " ".join(c) and
                               "Get-NetConnectionProfile" in " ".join(c) and
                               "Set-" not in " ".join(c) for c in cat_ran),
               f"the category is only read: {cat_ran}")

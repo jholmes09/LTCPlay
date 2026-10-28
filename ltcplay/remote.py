@@ -504,16 +504,27 @@ def _write_json(path, doc, private=False):
 
 # --------------------------------------------------------- the network --
 
+# A plain IP address and nothing else: digits, hex letters, dots and
+# colons. No IPv6 zone ID (the "%..." suffix ipaddress accepts with any
+# characters in it), no spaces, quotes or semicolons (review of #164, B2).
+PLAIN_IP = re.compile(r"[0-9A-Fa-f.:]+")
+
+
 def check_show_address(text):
     """The show-network address as written, or ValueError with a sentence.
     One real address of this machine: never every interface, never
-    loopback, never multicast."""
+    loopback, never multicast, never a zone ID or anything but the plain
+    address."""
     text = str(text or "").strip()
     try:
         ip = ipaddress.ip_address(text)
     except ValueError:
         raise ValueError(f"{text!r} is not an address. Write this machine's "
                          f"address on the show Wi-Fi, like 10.20.0.5.")
+    if not PLAIN_IP.fullmatch(text) or getattr(ip, "scope_id", None):
+        raise ValueError(f"{text!r} is not a plain address. Write only this "
+                         f"machine's address on the show Wi-Fi, like "
+                         f"10.20.0.5.")
     if ip.is_unspecified:
         raise ValueError(f"{text} means every network this machine is on, "
                          f"the venue's and the internet's included. Use its "
@@ -740,20 +751,29 @@ def firewall_rule_state(run=None, windows=None):
                        f"\"{FIREWALL_RULE}\").")
 
 
+# The address goes in as $env:LTC_SHOW_ADDRESS: PowerShell takes a
+# variable's value as one argument and never parses it as code.
+CATEGORY_ENV = "LTC_SHOW_ADDRESS"
+CATEGORY_COMMAND = ("(Get-NetConnectionProfile -InterfaceIndex "
+                    "(Get-NetIPAddress -IPAddress $env:LTC_SHOW_ADDRESS "
+                    "-ErrorAction Stop).InterfaceIndex -ErrorAction Stop)"
+                    ".NetworkCategory")
+
+
 def network_category(address, run=None, windows=None):
     """(category, sentence) for the network that owns `address` on this
     PC, as Windows names it: "Public", "Private", "DomainAuthenticated",
     "unknown", or "none" (not Windows). Read only (Get-NetIPAddress and
-    Get-NetConnectionProfile). `address` has passed check_show_address
-    (an IP address and nothing else) before it is put in the command.
-    Never raises."""
+    Get-NetConnectionProfile). Only a private IPv4 address (RFC 1918) is
+    ever looked up, and it reaches PowerShell as an environment variable,
+    never pasted into the command text (review of #164, B2). Never
+    raises."""
     windows = (os.name == "nt") if windows is None else windows
     if not windows:
         return "none", ""
-    try:
-        ip = str(ipaddress.ip_address(str(address)))
-    except ValueError:
+    if not is_rfc1918(address):
         return "unknown", ""
+    ip = str(ipaddress.ip_address(str(address).strip()))
     try:
         import subprocess
         if run is None:
@@ -761,11 +781,11 @@ def network_category(address, run=None, windows=None):
         kw = {}
         if os.name == "nt":
             kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        env = dict(os.environ)
+        env[CATEGORY_ENV] = ip
         p = run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                 f"(Get-NetConnectionProfile -InterfaceIndex "
-                 f"(Get-NetIPAddress -IPAddress '{ip}' -ErrorAction Stop)"
-                 f".InterfaceIndex -ErrorAction Stop).NetworkCategory"],
-                capture_output=True, text=True, timeout=15, **kw)
+                 CATEGORY_COMMAND],
+                capture_output=True, text=True, timeout=15, env=env, **kw)
         words = [w.strip() for w in (p.stdout or "").splitlines()
                  if w.strip()]
         cat = words[-1] if p.returncode == 0 and words else ""

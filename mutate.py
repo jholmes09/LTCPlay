@@ -698,6 +698,27 @@ MUTATIONS = [
   "            if port != FIXED_PORT:\n                # The installer's rule",
   "            if False:\n                # The installer's rule"),
 
+ ("show network: an address with a zone ID or other text is saved",
+  "ltcplay/remote.py",
+  "    if not PLAIN_IP.fullmatch(text) or getattr(ip, \"scope_id\", None):",
+  "    if False:"),
+
+ ("show network: any saved address is looked up in PowerShell",
+  "ltcplay/remote.py",
+  "    if not is_rfc1918(address):\n        return \"unknown\", \"\"",
+  "    if False:\n        return \"unknown\", \"\""),
+
+ ("show network: the address is pasted into the PowerShell command",
+  "ltcplay/remote.py",
+  "                 CATEGORY_COMMAND],",
+  "                 CATEGORY_COMMAND.replace(\"$env:LTC_SHOW_ADDRESS\", "
+  "f\"'{ip}'\")],"),
+
+ ("show network: the address is not handed to PowerShell",
+  "ltcplay/remote.py",
+  "        env[CATEGORY_ENV] = ip",
+  "        pass"),
+
  ("show network: the firewall rule is open to any address",
   "packaging/windows/installer.iss",
   "localport=7878 remoteip=localsubnet profile=any",
