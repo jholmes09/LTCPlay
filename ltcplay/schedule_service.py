@@ -790,6 +790,11 @@ class Service:
         # many wait now, and (number, why) bumped by cancel_start_wait.
         self._start_waiters = 0
         self._start_cancel = (0, "")
+        # () -> a sentence that refuses Start now, or "": the Programming
+        # playhead's (remote.programming_playback_refusal, set by the
+        # remote). Asked under this lock after the tick, so a Play from
+        # that landed while a Start now waited is never started over.
+        self.start_veto = None
         # Stops under way (halt_begin / halt_end).
         self._halts = 0
         self._halt_count_lock = threading.Lock()
@@ -3259,6 +3264,18 @@ class Service:
                                    f"{who}'s Start now was refused. "
                                    f"{sentence}")
                 return {"ok": False, "text": sentence, "cancelled": True}
+            veto = ""
+            if kind == sch.START_NOW and self.start_veto is not None:
+                try:
+                    veto = str(self.start_veto() or "")
+                except Exception:                    # noqa: BLE001
+                    veto = ""
+            if veto:
+                sentence = f"Start now was refused: {veto}"
+                self.journal_press(who, screen, "start-now", "refused",
+                                   f"{who}'s Start now was refused. "
+                                   f"{sentence}")
+                return {"ok": False, "text": sentence}
             if self.machine is None:
                 sentence = (self.error or "There is no schedule loaded, so "
                             "there is no show to press anything on.")

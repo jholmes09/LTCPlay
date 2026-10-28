@@ -2328,13 +2328,15 @@ function render(){
 
   setWarn("tr-why", tr.programming ? "" : (tr.why || ""));
   const bits = [];
-  if(tr.freerun) bits.push(tr.paused ? "Paused" : "Playing on this machine's clock");
+  if(tr.playhead === "show_audio") bits.push(tr.paused ? "Paused on the show audio" : tr.playing ? "Playing on the show audio" : "Stopped. Play from a timecode to start the show audio");
+  else if(tr.freerun) bits.push(tr.paused ? "Paused" : "Playing on this machine's clock");
   else if(show.running) bits.push("Following timecode");
   if(tr.marks && (tr.marks.a || tr.marks.b)) bits.push("A " + (tr.marks.a || "none") + ", B " + (tr.marks.b || "none"));
   if(tr.loop) bits.push("Looping " + tr.loop[0] + " to " + tr.loop[1]);
   $("tr-state").textContent = bits.join(". ");
   $("tr-loop").textContent = tr.loop ? "Loop off" : "Loop on";
   $("tr-loop").dataset.on = tr.loop ? "1" : "";
+  $("tr-follow").textContent = tr.playhead === "show_audio" ? "Stop the show audio" : "Follow timecode again";
 
   $("tn-state").textContent = word + (label ? ": " + label : "");
   $("tn-next").textContent = "Next: " + nextText;

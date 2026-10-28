@@ -751,6 +751,45 @@ starts no show. To switch, press Stop, pick the other side of the switch,
 then Run. While a scheduled show is live, Programming is locked and the
 switch says so. Back to the show returns to the show screen.
 
+In Programming on a show that plays its own show audio (Fire & Ice), the
+show audio is the playhead, and everything follows it together: the
+music, the Art-Net timecode (so MadMapper's video and BEYOND follow), the
+pixels and the show's flame cues. Play from starts the show exactly the
+way Start now does, from the point you typed (MadMapper's show bank, the
+audio from that point, then the rig comes up for the show). Back 10 s,
+Back 5 s, Ahead 5 s and Ahead 10 s move the audio, the timecode and the
+pixels at once; while paused they move the paused point, and Continue
+plays from there. Pause is the show's own Hold (flame cues to zero,
+lasers blanked and disarmed, music and timecode frozen) and Continue its
+own Resume. The A/B loop jumps the audio back to mark A each time it
+passes mark B; both marks have to be in the same cue. Stop the show
+audio (the button that says Follow timecode again on other shows) takes
+the rig out of the show (flame cues zero, lasers blanked) and stops the
+music. The screen says Playing on the show audio or Paused on the show
+audio.
+
+While Programming is playing, Hold on any screen or the Stream Deck
+pauses it the same as Pause, and also holds the schedule, so no show
+starts until someone presses Resume (Continue carries the playback on but
+leaves the schedule held). Abort (after it disarms every flame group and
+laser, as always) stops the playback the way Stop the show audio does.
+Start now and Run are refused while Programming is playing: stop the
+Programming playback first.
+The Rack screen's Stop and the Stream Deck's Stop stop it too. If no
+operator page is open for 60 seconds, the playback stops by itself and
+the night journal says so; press Play from to carry on.
+
+A Pause pressed while a Hold is still fading out freezes where the fade
+ends, and Back and Ahead are refused until it has frozen.
+
+Nothing on the screen arms anything. Flame cues still go only to groups
+an operator has armed, through flamesafe, and nothing fires for half a
+second after a jump, a loop, Play from or Continue; a cue you jump over is not
+played, and a flame already on where you land stays off until it ends.
+The lasers stay dark in Programming: the laser gate lights them only
+while a scheduled show is live. BEYOND's own timeline still follows the
+timecode, so its position moves with the playhead.
+
 Fire flames while scrubbing, on the Programming screen, lets the show's own
 flame cues fire while you play, jump and loop in Programming. It is off
 every time LTC Player starts, and only an admin on the show machine can
@@ -844,6 +883,20 @@ the Programming screen). The small "i" button beside it opens a panel with
 this LTC Player's release and build id (also in `/api/remote/status` as
 `version`), the device, the mode sentence, and how to leave a full screen
 window (Alt+F4, or its Close this window button on the show PC).
+
+Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it turns
+on programming mode"). The mode is what Run asked for, nothing else: Run
+with Show picked is a real show and the pill reads SHOW; it reads
+PROGRAMMING only after Run with Programming picked (or Rehearse, or
+Rehearsal on the old page). A Fire & Ice show is on this machine's own
+clock (the show audio), and such a show always holds its frame when its
+clock stops, Show or Programming; before this fix that hold made every
+Fire & Ice Run read PROGRAMMING and turned the switch to Programming after
+a page reload, so the next Run really was a rehearsal. The switch on the
+Show file card starts on the mode the engine is in, and on Show when
+nothing is running (after a restart too); no mode is kept across a
+restart. The old page's "When the timecode stops" switch follows the same
+mode and says it in words under the switch.
 
 On a fresh machine the show screen carries a "Getting started" card with
 the three things to set up and a button for each: the show folder (open
