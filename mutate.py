@@ -17672,6 +17672,18 @@ def build():
   "    p.timer = setTimeout(() => armBeat(h, p), 100);",
   "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
 
+ ("ui2 page: letting go of Continue anyway early still continues", "ltcplay/web/remote2.html",
+  '  if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done."',
+  '  if(false){ prHoldEnd(); say("Let go too early: nothing done."'),
+
+ ("ui2 page: Continue anyway is held for less than 1.0's hold", "ltcplay/web/remote2.html",
+  "  }, PR_HOLD_MS + 100);",
+  "  }, PR_HOLD_MS - 300);"),
+
+ ("ui2 page: the cleaning's Stop is not sent", "ltcplay/web/remote2.html",
+  '    try{ const j = await post("/api/remote/cleaning-stop", actor({}));',
+  '    try{ const j = {};'),
+
  ("ui2 page: a stale page keeps Hold to arm on the group buttons", "ltcplay/web/remote2.html",
   "    if(isSt) setArmMode(el, armOn ? \"disarm\" : \"lamp\", \"unknown\");",
   ""),

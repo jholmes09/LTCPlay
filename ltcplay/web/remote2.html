@@ -345,7 +345,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <svg class="i" id="al-i"><use href="#i-check"/></svg>
       <button class="at" id="al-text" disabled><span class="tt"><b id="al-what">No alerts</b><span id="al-do"></span></span><span class="more" id="al-more"><svg class="i"><use href="#i-info"/></svg><span class="w">Details</span></span></button>
       <button class="b" id="al-next" hidden><span id="al-n"></span><svg class="i"><use href="#i-right"/></svg></button>
-      <button class="b blue" id="al-act" hidden><svg class="i"><use href="#i-check"/></svg><span id="al-act-l">Acknowledge</span></button>
+      <button class="b blue" id="al-act" hidden><div class="fill"></div><svg class="i"><use href="#i-check"/></svg><span id="al-act-l">Acknowledge</span></button>
       <button class="q" data-q="alert" aria-label="Help: alerts">?</button>
     </div>
     <div class="flames">
@@ -621,6 +621,8 @@ function goLook(st, isStaleNow, local, waiting){
   if(sch.attached && sch.aborted) L = {mode:"reset", label:"Reset", icon:"reset", tone:"amber", off:!fresh, why:fresh ? "Clears the Abort" : "No contact"};
   else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};
   else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:"Hold pauses it"};
+  // The rig check before a show (1.0's startLook: Checking, nothing to press).
+  else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:"Hold or Stop cancels"};
   else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:"Starts when ready"};
   else if(!sch.attached) L = {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"No schedule here"};
   else if(!runIsOn(st)) L = local ? {mode:"run", label:"Run show", icon:"power", tone:"green", off:!fresh, why:fresh ? "Turns tonight on" : "No contact"}
@@ -631,7 +633,7 @@ function goLook(st, isStaleNow, local, waiting){
     else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "Starts the next show" : "No contact"};
   }
   // Signed out is view only: none of these is a safety press.
-  if(!["live", "loading", "none"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = "Sign in first"; }
+  if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = "Sign in first"; }
   return L;
 }
 // The line at the top: what to do next, in eight words or fewer.
@@ -642,9 +644,12 @@ function nextStep(st, isStaleNow, local, items){
   const bad = (items || []).filter(i => i.tone === "bad");
   if(sch.attached && sch.aborted) return {tone:"bad", icon:"x", text:"Aborted. Press Reset when it is safe."};
   if(bad.some(i => i.key === "abort")) return {tone:"bad", icon:"warn", text:"Flames NOT disarmed. Use the e-stop."};
+  const pch = prerollChoice(st.preroll, sch);
+  if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
   if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
   if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Sign in to use the controls."};
   if(isHeld(st)) return {tone:"warn", icon:"pause", text:"Held. Press Resume to carry on."};
+  if(sch.attached && !isLive(st) && prerollLook(st.preroll).checking) return {tone:"warn", icon:"clock", text:"Checking the rig before the show."};
   if(bad.length) return {tone:"bad", icon:"warn", text:"Alert: fix it, then Acknowledge."};
   if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Press Run show to start tonight." : "Run is off. Press Run on show PC."};
   const c = countdownRead(CD, monoNow());
@@ -672,6 +677,7 @@ function pillLook(st, isStaleNow){
   if(sch.state === "PAUSED") return {cls:"warn", icon:"pause", text:"SHOW " + (sch.running || "") + " HELD"};
   if(sch.state === "SHOW") return {cls:"ok", icon:"play", text:"SHOW " + (sch.running || "") + " RUNNING"};
   if(isHeld(st)) return {cls:"warn", icon:"pause", text:"SCHEDULE HELD"};
+  if(sch.attached && prerollLook(st.preroll).checking) return {cls:"warn", icon:"clock", text:"CHECKING RIG"};
   if(!sch.attached) return {cls:"off", icon:"info", text:"NO SCHEDULE"};
   if(!runIsOn(st)) return {cls:"off", icon:"power", text:"RUN IS OFF"};
   return {cls:"ok", icon:"check", text:"READY"};
@@ -683,7 +689,7 @@ function pillLook(st, isStaleNow){
 const ALERT_WHAT = {deck:"Stream Deck problem.", audio:"Show audio problem.", video:"Video problem.",
   start:"Show did not start.", flames:"Flame problem.", link:"Flame link problem.", timecode:"Timecode problem.",
   lasers:"Laser problem.", users:"Sign-in file problem.", aim:"Wave aim does not match.", follow:"Video not following.",
-  gate:"Check before the show."};
+  gate:"Check before the show.", preroll:"Rig check failed."};
 const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", video:"Check the video PC.",
   timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm."};
 let ABORT_SAID = null, STOP_SAID = null, ALERT_KEY = null, FAULTS_SEEN = null;
@@ -696,6 +702,15 @@ function alertItems(st){
   const lf = s.live_flame || {}, sf = s.scrub_flames || {};
   if(lf.on === true) items.push({key:"lf", tone:"bad", what:"Live flame mode is on.", do:"Armed groups can fire.", full:"Live flame programming: xLights drives the flames. Only an armed group fires. Never use xLights' test tools while a group is armed. Turned on by " + (lf.who || "someone") + ".", act:"lf-off"});
   if(sf.on === true) items.push({key:"sf", tone:"bad", what:"Rehearsal flames are on.", do:"Armed groups can fire.", full:"Fire flames while scrubbing is on. Only an armed group fires. Turned on by " + (sf.who || "someone") + ".", act:"sf-off"});
+  // The rig check before a show (1.0's pr-box): what failed, and 1.0's
+  // Hold to continue anyway as the slot's one button.
+  const pch = prerollChoice(s.preroll, s.schedule || {});
+  if(pch && pch.continued) items.push({key:"pr-cont", tone:"warn", what:"Continued anyway.", do:"Some outputs are off.", full:pch.text});
+  else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
+  else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
+  // Wave flamer cleaning running (1.0's banner and its Stop).
+  const wc = s.cleaning;
+  if(wc && wc.state && wc.state !== "idle") items.push({key:"wc", tone:"warn", what:wc.state === "unknown" ? "Cleaning state not known." : "Wave cleaning running.", do:"Stop ends it.", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : "."), act:"wc-stop"});
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
     what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.text, act:"ack", id:a.id}));
   const fl = s.flames || {};
@@ -731,11 +746,13 @@ function renderAlertSlot(){
   // holding an arm).
   const fresh = FAULTS_SEEN && keys.find(k => !FAULTS_SEEN.has(k));
   FAULTS_SEEN = new Set(keys);
-  if(fresh && !HOLD && items.length) ALERT_KEY = items[0].key;
+  if(fresh && !HOLD && !PR_HOLD && items.length) ALERT_KEY = items[0].key;
   let idx = items.findIndex(i => i.key === ALERT_KEY);
   if(idx < 0){ idx = 0; ALERT_KEY = items.length ? items[0].key : null; }
   const it = items[idx];
   const box = $("alert");
+  // A Continue anyway hold ends the moment its alert is not the one shown.
+  if(PR_HOLD && !(it && it.act === "pr-continue")){ prHoldEnd(); say("Let go: nothing was done.", "The rig check's alert changed during the hold: nothing was done.", "warn"); }
   if(!it){
     box.className = "none"; setIcon($("al-i"), "check");
     setText($("al-what"), "No alerts"); setText($("al-do"), ""); setText($("al-n"), "");
@@ -748,9 +765,19 @@ function renderAlertSlot(){
   setText($("al-n"), (idx + 1) + " of " + items.length);
   $("al-next").hidden = items.length < 2;
   $("al-text").disabled = !it.full;
-  const act = {ack:"Acknowledge", seen:"Seen", "lf-off":"Turn off", "sf-off":"Turn off"}[it.act];
-  $("al-act").hidden = !act;
-  setText($("al-act-l"), act || "");
+  const act = {ack:"Acknowledge", seen:"Seen", "lf-off":"Turn off", "sf-off":"Turn off", "wc-stop":"Stop cleaning",
+    "pr-continue":"Hold: continue anyway"}[it.act];
+  const ab = $("al-act");
+  ab.hidden = !act;
+  ab.dataset.act = it.act || "";
+  // Continue anyway is a hold, as 1.0's: drawn as a hold button.
+  ab.className = "b " + (it.act === "pr-continue" ? "amber hold" : it.act === "wc-stop" ? "red" : "blue");
+  setIcon(ab.querySelector("svg"), it.act === "pr-continue" ? "ring" : it.act === "wc-stop" ? "stop" : "check");
+  setText($("al-act-l"), it.act === "pr-continue" && PR_HOLD ? "Keep holding..." : (act || ""));
+  // Continue anyway is the run permission's (1.0's engine rule); never
+  // turned off under a finger that holds it.
+  if(!PR_HOLD) ab.disabled = it.act === "pr-continue" && !mayRow(ST, "show");
+  if(it.act === "pr-continue" && it.holdMs) PR_HOLD_MS = it.holdMs;
 }
 function alertStep(d){
   const n = ALERTS.length; if(!n) return;
@@ -758,15 +785,27 @@ function alertStep(d){
   ALERT_KEY = ALERTS[(idx + d + n) % n].key; renderAlertSlot();
 }
 $("al-next").addEventListener("click", () => alertStep(1));
-$("al-text").addEventListener("click", () => {
+$("al-text").addEventListener("click", async () => {
   const it = ALERTS.find(i => i.key === ALERT_KEY); if(!it) return;
-  sheet(it.what, `<div class="full">${esc(it.full)}</div><div class="dim">${esc(it.do || "")}</div>`, [{label:"Close", cls:"blue"}]);
+  // A failed rig check: 1.0's Check the rig again, on the show PC only.
+  const again = it.recheck && ME && ME.local;
+  const v = await sheet(it.what, `<div class="full">${esc(it.full)}</div><div class="dim">${esc(it.do || "")}</div>`,
+    again ? [{label:"Close", value:null}, {label:"Check again", value:"recheck", cls:"blue", icon:"reset"}] : [{label:"Close", cls:"blue"}]);
+  if(v === "recheck"){
+    try{ const j = await post("/api/remote/preroll-check", actor({})); say(short8(j.text, "Checking the rig."), String(j.text || ""), "ok"); }
+    catch(e){ say("Check refused.", e.message, "bad"); }
+  }
 });
 // The alert's one button: 1.0's own presses. Acknowledge is 1.0's body
 // exactly; Turn off is 1.0's live flame and scrub Off.
 $("al-act").addEventListener("click", async () => {
   const it = ALERTS.find(i => i.key === ALERT_KEY); if(!it) return;
-  if(it.act === "ack"){
+  if(it.act === "pr-continue") return;      // a hold, never a tap (below)
+  if(it.act === "wc-stop"){
+    // 1.0's wcStopPress: the cleaning's Stop, always pressable.
+    try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
+    catch(e){ say("Cleaning NOT stopped.", e.message, "bad"); }
+  } else if(it.act === "ack"){
     try{ await post("/api/remote/alert", actor({id:it.id, action:"acknowledge"})); say("Acknowledged.", "", "ok"); }
     catch(e){ say("Not acknowledged.", e.message, "bad"); }
   } else if(it.act === "seen"){
@@ -780,6 +819,42 @@ $("al-act").addEventListener("click", async () => {
     catch(e){ say("Not turned off.", e.message, "bad"); }
   }
 });
+
+// Continue anyway after a failed rig check: 1.0's hold, the same two
+// presses (begin, then done once it has filled; the engine times the hold
+// itself). Letting go early sends nothing more and nothing happens.
+let PR_HOLD_MS = 1000, PR_HOLD = null;
+function prHoldEnd(){
+  if(!PR_HOLD) return;
+  clearTimeout(PR_HOLD.timer); PR_HOLD = null;
+  const f = $("al-act").querySelector(".fill"); if(f){ f.style.transition = "none"; f.style.width = "0"; }
+  setText($("al-act-l"), "Hold: continue anyway");
+}
+$("al-act").addEventListener("pointerdown", async (ev) => {
+  if($("al-act").dataset.act !== "pr-continue" || $("al-act").disabled) return;
+  ev.preventDefault();
+  if(PR_HOLD) return;
+  const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
+  const it = ALERTS.find(i => i.key === ALERT_KEY);
+  say("Keep holding...", it ? it.full : "", "warn");
+  setText($("al-act-l"), "Keep holding...");
+  const f = $("al-act").querySelector(".fill");
+  if(f){ f.style.transition = "none"; f.style.width = "0"; void f.offsetWidth; f.style.transition = "width " + (PR_HOLD_MS + 100) + "ms linear"; f.style.width = "100%"; }
+  const mine = PR_HOLD = {token:token, timer:null};
+  try{ await post("/api/remote/preroll-continue", actor({phase:"begin", token:token})); }
+  catch(e){ prHoldEnd(); say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); return; }
+  if(PR_HOLD !== mine) return;
+  mine.timer = setTimeout(async () => {
+    if(PR_HOLD !== mine) return;
+    prHoldEnd();
+    try{ const j = await post("/api/remote/preroll-continue", actor({phase:"done", token:token})); say("Continuing anyway.", String(j.text || ""), "ok"); }
+    catch(e){ say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); }
+  }, PR_HOLD_MS + 100);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(t => $("al-act").addEventListener(t, () => {
+  if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done.", "Let go too early: nothing was done.", "warn"); }
+}));
+$("al-act").addEventListener("contextmenu", e => e.preventDefault());
 
 // ---- render: every status ----
 function render(){
@@ -1328,15 +1403,18 @@ function renderAnnounce(){
   if(!L.show) return;
   const an = s.announce || {};
   const playing = an.playing;
-  setText($("ann-word"), playing ? "Playing" : (an.held_failed ? "Failed" : "Announce"));
+  // 1.0's announceLook decides; these are its words, shorter. "Playing"
+  // only once the sound has reached the output (1.0's "starting").
+  const starting = !!(playing && playing.heard === false);
+  setText($("ann-word"), playing ? (starting ? "Starting" : "Playing") : (an.held_failed ? "Failed" : "Announce"));
   $("ann-w").style.color = (playing || an.held_failed) ? "var(--amber)" : "";
   let note = "";
-  if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : ": over the show");
-  else if(L.devBad) note = "No output device";
-  else if(an.blocked || an.ok === false) note = "Cannot play now";
+  if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : "");
+  else if(an.ok === false) note = "Cannot play now";
+  else if(L.devBad) note = "No sound output";
   else note = an.over_show ? "Plays over the show" : "Holds the schedule";
   setText($("ann-note"), note);
-  $("ann-note").className = (L.devBad || an.blocked || an.ok === false) ? "bad" : "";
+  $("ann-note").className = (L.devBad || an.ok === false) ? "bad" : "";
   const sig = JSON.stringify([L.buttons, ANN_BUSY, mayRow(s, "show")]);
   if(sig !== ANN_SIG){
     ANN_SIG = sig;
@@ -1534,7 +1612,8 @@ const QHELP = {
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Ends everything. Rig goes dark."],
     ["ABORT", "Emergency stop. Tap twice. Then Reset."]]],
   alert: ["Alerts", [["The box", "What is wrong, and what to do."], ["Details", "The full message from the show PC."],
-    ["Acknowledge", "Clears the alert. Changes nothing on the rig."], ["Arrows", "The other alerts."]]],
+    ["Acknowledge", "Clears the alert. Changes nothing on the rig."], ["Arrows", "The other alerts."],
+    ["Hold: continue anyway", "After a failed rig check: starts late, failed parts off."], ["Stop cleaning", "Stops the wave flamer cleaning."]]],
   flames: ["Flames and lasers", [["Hold to arm", "Press and keep holding until it says ARMED."], ["Disarm", "One tap makes it safe. Always works."],
     ["Hold: arm all", "Press and hold to arm every group."], ["Disarm all", "One tap makes every flame group safe."],
     ["Arm lasers", "Arms every laser, after you confirm."], ["Disarm lasers", "One tap makes every laser safe."]]],

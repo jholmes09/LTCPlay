@@ -84964,9 +84964,28 @@ def test_ui2_page_makes_only_1_0_presses():
                   'credentials:"same-origin", cache:"no-store",',
                   'body:JSON.stringify(actor({}))});',
                   'const r = await post("/api/remote/signin", body);',
-                  'post("/api/remote/signout", {})'):
+                  'post("/api/remote/signout", {})',
+                  'post("/api/remote/preroll-continue", '
+                  'actor({phase:"begin", token:token}))',
+                  'post("/api/remote/preroll-continue", '
+                  'actor({phase:"done", token:token}))',
+                  '}, PR_HOLD_MS + 100);',
+                  'const token = String(Date.now()) + "-" + '
+                  'String(Math.random()).slice(2, 10);',
+                  'post("/api/remote/preroll-check", actor({}))',
+                  'post("/api/remote/cleaning-stop", actor({}))'):
         check(press in one and press in two,
               f"1.0 and 2.0 both press: {press}")
+    # Continue anyway is a hold in both, never a tap: let go early and
+    # nothing more is sent.
+    for page, what in ((one, "1.0"), (two, "2.0")):
+        check(re.search(r'\["pointerup", "pointerleave", "pointercancel"\]'
+                        r'\.forEach\(t => \$\("(?:pr-continue|al-act)"\)'
+                        r'\.addEventListener\(t, \(\) => \{\s*if\(PR_HOLD\)'
+                        r'\{ prHoldEnd\(\);', page),
+              f"{what}: letting go of Continue anyway ends the hold")
+    check('if(it.act === "pr-continue") return;' in two,
+          "2.0: a tap on Continue anyway does nothing")
     check('post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
           '{timeline:f})' in one and
           'post("/api/start", {timeline:f})' in two,
@@ -85049,6 +85068,14 @@ s = base(); s.me = {may:{show:false}};
 t(goLook(s, false, true).off, "signed out: view only");
 s = base(); s.schedule.start_blocked = {text:"The show audio is missing."};
 t(goLook(s, false, true).blocked === "The show audio is missing.", "a start the engine would refuse says why");
+s = base(); s.preroll = {state:"checking", label:"Show 4"};
+t(goLook(s, false, true).mode === "checking" && goLook(s, false, true).off, "the rig being checked: nothing to start (1.0's Checking)");
+t(goLook(s, false, true).mode === startLook(s, false, false).label.toLowerCase(), "the rig check: 1.0 says Checking too");
+t(/Checking the rig/.test(nextStep(s, false, true, []).text) && pillLook(s, false).text === "CHECKING RIG", "the rig check is said");
+s = base(); s.preroll = {state:"failed", label:"Show 4", age_s:5, show_check:{label:"Show 4", items:[{name:"Video", ok:false, text:"no"}], off:["video"]}};
+t(/Rig check failed/.test(nextStep(s, false, true, []).text), "a failed rig check: the next step says so");
+s.schedule.aborted = true;
+t(/Aborted/.test(nextStep(s, false, true, []).text), "an Abort is said before a failed rig check");
 const words = [];
 const states = [null, base()];
 for(const f of [x => x.schedule.aborted = true, x => x.schedule.held = true, x => x.alert_hold = {held:true}, x => x.me.view_only = true,
@@ -85197,11 +85224,42 @@ async function presses(){
   res.routes = [...new Set(posts.map(x => x.u))];
   return res;
 }
+// A failed rig check: Continue anyway is held (1.0's begin, then done once
+// filled), and a tap or an early let go sends nothing more. Then the
+// cleaning's Stop, the slot's next alert.
+async function prPresses(){
+  const res = {};
+  posts.length = 0;
+  const b = document.getElementById("al-act");
+  res.act = b.dataset.act; res.label = document.getElementById("al-act-l").textContent;
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:2};
+  b.click(); await wait(200);
+  res.after_tap = posts.filter(p => /preroll-continue/.test(p.u)).length;
+  b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(300);
+  res.label_held = document.getElementById("al-act-l").textContent;
+  b.dispatchEvent(new PointerEvent("pointerup", o)); await wait(1500);
+  res.early = posts.filter(p => /preroll-continue/.test(p.u)).map(p => JSON.parse(p.b).phase);
+  posts.length = 0;
+  b.dispatchEvent(new PointerEvent("pointerdown", o));
+  const t0 = performance.now(); let done = null;
+  while(performance.now() - t0 < 2500 && done === null){ await wait(25); if(posts.some(p => /preroll-continue/.test(p.u) && JSON.parse(p.b).phase === "done")) done = performance.now() - t0; }
+  b.dispatchEvent(new PointerEvent("pointerup", o));
+  res.full = posts.filter(p => /preroll-continue/.test(p.u)).map(p => JSON.parse(p.b).phase);
+  res.done_ms = done;
+  res.tokens = [...new Set(posts.filter(p => /preroll-continue/.test(p.u)).map(p => JSON.parse(p.b).token))].length;
+  posts.length = 0;
+  for(let i = 0; i < 8 && b.dataset.act !== "wc-stop"; i++){ document.getElementById("al-next").click(); await wait(80); }
+  res.wc_label = document.getElementById("al-act-l").textContent;
+  b.click(); await wait(300);
+  res.routes = posts.map(p => p.u);
+  return res;
+}
 async function go(){
   if(!document.querySelector("#groups .tile") || document.getElementById("next-t").textContent === "Connecting to the show PC") return setTimeout(go, 100);
   await wait(600);
   const res = {layout:measure()};
   if(/presses=1/.test(location.search)) res.presses = await presses();
+  if(/prhold=1/.test(location.search)) res.pr = await prPresses();
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
   document.body.appendChild(pre);
@@ -85240,6 +85298,27 @@ def _ui2_status_running():
     return st
 
 
+def _ui2_status_rigcheck():
+    """Between shows, the rig check before show 4 failed (preroll.py's
+    view), and the wave flamer cleaning running."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None,
+                           "next": {"show": 4, "start": "19:30",
+                                    "in_s": 0}})
+    st["countdown"] = {"kind": "next", "label": "Next show", "s": 0,
+                       "running": True}
+    st["preroll"] = {"state": "failed", "label": "show 4", "age_s": 20.0,
+                     "manual": False, "continue_hold_s": 1.0, "items": [],
+                     "text": "", "show_check": {
+                         "label": "show 4", "off": ["video"], "items": [
+                             {"name": "Video", "ok": False,
+                              "required": True,
+                              "text": "MadMapper did not move"}]}}
+    st["cleaning"] = {"available": True, "state": "phase1",
+                      "text": "Phase 1 of 2: firing the wave flamers"}
+    return st
+
+
 # The SHOW tab must fit these windows whole; a phone may scroll its pane.
 UI2_NO_SCROLL = ((1920, 1080), (1366, 768), (1280, 800), (1024, 768),
                  (820, 1180), (768, 1024))
@@ -85275,7 +85354,10 @@ def test_ui2_show_tab_in_a_browser():
     runs = [("alerts open", _rack_status_pico(), sizes, ""),
             ("a show running", _ui2_status_running(), sizes, ""),
             ("pressed", _rack_status_pico(many=False), ((1366, 768),),
-             "?presses=1&tour=0")]
+             "?presses=1&tour=0"),
+            ("a failed rig check", _ui2_status_rigcheck(), sizes, ""),
+            ("rig check pressed", _ui2_status_rigcheck(), ((1024, 768),),
+             "?prhold=1&tour=0")]
     for what, status, sz, frag in runs:
         if not frag:
             frag = "?tour=0"
@@ -85298,6 +85380,25 @@ def test_ui2_show_tab_in_a_browser():
                   ab["right"] <= 24 and ab["bottom"] <= 24,
                   f"{where}: Abort is 96 px in the bottom right corner: "
                   f"{ab}")
+            pr = res.get("pr")
+            if frag.startswith("?prhold"):
+                check(pr and pr["act"] == "pr-continue" and
+                      pr["label"] == "Hold: continue anyway" and
+                      pr["after_tap"] == 0,
+                      f"{where}: a failed rig check offers 1.0's Continue "
+                      f"anyway as a hold; a tap sends nothing: {pr}")
+                check(pr and pr["label_held"] == "Keep holding..." and
+                      pr["early"] == ["begin"],
+                      f"{where}: let go early, only the begin was sent: "
+                      f"{pr}")
+                check(pr and pr["full"] == ["begin", "done"] and
+                      pr["tokens"] == 1 and pr["done_ms"] is not None and
+                      1050 <= pr["done_ms"] <= 1800,
+                      f"{where}: held, done follows after 1.0's hold "
+                      f"(continue_hold_s + 100 ms), one token: {pr}")
+                check(pr and pr["wc_label"] == "Stop cleaning" and
+                      pr["routes"] == ["/api/remote/cleaning-stop"],
+                      f"{where}: the cleaning's Stop is 1.0's: {pr}")
             p = res.get("presses")
             if frag.startswith("?presses"):
                 check(p and p["abort_after_one"] == 0 and
