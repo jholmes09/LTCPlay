@@ -1598,6 +1598,23 @@ function machineCountLine(g, c, gm){
   return "armed " + n + " of " + m + (m === 1 ? " machine" : " machines") +
     (lk === "untrusted" ? "; lockout not trusted" : k ? (lk === "ok" ? ", " + k + " locked out" : ", " + k + " lock pending") : "");
 }
+// The aim line (2026-10-28), read only, on the card of a group with aim
+// slots (the wave flamer's angle): which slots, whether they are loaded
+// (flamesafe and LTC Player have the same list), the group's state (ARMED,
+// held, disarmed),
+// and what was asked for and sent on them in flamesafe's last frame. ""
+// for a group without aim slots. `g.aim` is the engine's aim_view.
+function aimLine(g, c){
+  const a = g && g.aim;
+  if(!a || !(a.slots || []).length) return "";
+  const j = v => (v && v.length) ? v.join(", ") : "none";
+  let t = "Aim " + j(a.slots) + ": " + (a.loaded ? "loaded" :
+    a.flamesafe === null || a.flamesafe === undefined ? "flamesafe does not say" :
+    "NOT loaded (flamesafe " + j(a.flamesafe) + ", LTC Player " + (a.ltcplay ? j(a.ltcplay) : "not known") + ")");
+  t += c === "armed" ? "; ARMED" : c === "held" ? "; held" : c === "unknown" ? "; armed not known" : "; disarmed";
+  if(c !== "unknown" && a.asked && a.sent) t += "; asked " + j(a.asked) + ", sent " + j(a.sent);
+  return t;
+}
 // The no-show-file line (Jeff, 2026-10-26; review of #113, P2-a and b):
 // what works NOW without a show file, from the status, never a promise.
 // `su` is the engine's setup view, `st` the status. "" when a show file
@@ -1816,8 +1833,9 @@ function wxBlock(w, heardAgoS){
   (w.banner || []).forEach(t => L.push({cls:"alert", text:t}));
   if(w.disagree) L.push({cls:"alert", text:w.disagree});
   w.lines.forEach(l => {
-    const lv = l.level === "ok" || l.level === "stale" ? l.level : "none";
-    L.push({cls:lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
+    // "backup": a reading from a backup station, amber but not STALE.
+    const lv = l.level === "ok" || l.level === "stale" ? l.level : l.level === "backup" ? "backup" : "none";
+    L.push({cls:lv === "backup" ? "stale" : lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
   });
   if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
   return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L, foot:foot};
@@ -2181,6 +2199,8 @@ function renderStale(){
       // Never an old count while nothing is known (second review of #122).
       const sf = el.querySelector(".saf");
       if(sf){ sf.hidden = false; sf.textContent = "armed: not known"; sf.title = ""; }
+      const am = el.querySelector(".aim");
+      if(am){ am.hidden = true; am.textContent = ""; am.title = ""; }
     });
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "0.3";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "0.3";
@@ -2470,7 +2490,7 @@ let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
 // The page's own banners: whether each is a fault now, and its label.
 const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note"};
 const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
-  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check"};
+  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check", aim:"Aim slots"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
@@ -2510,7 +2530,7 @@ function renderLamps(fl){
     LAMP_KEY = key;
     box.innerHTML = groups.map((g, i) =>
       `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b>
-        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><span class="act"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i></div>`).join("");
+        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><span class="act"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i><i class="why aim" hidden></i></div>`).join("");
     // One button (2026-10-26): its mode when the finger went down decides
     // (clickAction). Hold to arm starts on the press and stops on the
     // release; Disarm goes on the click.
@@ -2545,6 +2565,12 @@ function renderLamps(fl){
     se.hidden = !sl;
     se.textContent = sl;
     se.title = sl;
+    // AIM LINE BEGIN
+    const al = aimLine(g, c), ae = el.querySelector(".aim");
+    ae.hidden = !al;
+    ae.textContent = al;
+    ae.title = al;
+    // AIM LINE END
     const as = armState(ST, Date.now(), LAST_OK, i);
     const ab = el.querySelector("[data-arm]");
     if(!holding(i)) ab.disabled = !as.ok;
