@@ -1926,8 +1926,19 @@ def _attach_preroll(httpd, fire_ice, fstatus):
         remote.preroll = pr
         return pr
     except Exception as e:                           # noqa: BLE001
-        print(f"The pre-roll could not be set up: {type(e).__name__}: {e}. "
-              f"Shows start with no rig check.")
+        # Fail closed (review of #162): said in the journal and as an
+        # alert, which holds every show at its time while it is open.
+        text = (f"The rig check could not be set up "
+                f"({type(e).__name__}: {e}), so no show can be checked. "
+                f"Shows are held at their time while this is open; restart "
+                f"LTC Player, and check the journal.")
+        print(text)
+        try:
+            _device_journal(httpd.schedule)(text, action="pre-roll",
+                                            outcome="error", fault=True)
+            httpd.remote.alerts.raise_("preroll", text)
+        except Exception:                            # noqa: BLE001
+            pass
         return None
 
 

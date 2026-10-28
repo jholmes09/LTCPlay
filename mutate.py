@@ -16798,6 +16798,42 @@ def build():
   '            if base is None or ip in base:',
   '            if True:'),
 
+ ("pre-roll: a Continue anyway's MadMapper mute outlives its show", 'ltcplay/clock.py',
+  '            if getattr(self.out, "muted", None):\n                # A Continue anyway\'s mute',
+  "            if False:\n                # A Continue anyway's mute"),
+
+ ('continue anyway: what it left off stays off after the show', 'ltcplay/fire_ice.py',
+  '        if state not in ("SHOW", "PAUSED"):\n            self._degraded_over()\n',
+  ''),
+
+ ('continue anyway: it can be pressed again for another show', 'ltcplay/schedule_service.py',
+  '        if pr is not None and pr.continued is not None:\n            # Once per failed check',
+  '        if False:\n            # Once per failed check'),
+
+ ('continue anyway: a used failure can be continued again', 'ltcplay/preroll.py',
+  '            if r is None or r["state"] != "failed" or r.get("consumed"):',
+  '            if r is None or r["state"] != "failed":'),
+
+ ('continue anyway: a failure of any age is enough', 'ltcplay/preroll.py',
+  '                    self._clock() - r["done"] > CONTINUE_MAX_AGE_S:',
+  '                    self._clock() - r["done"] > 1e12:'),
+
+ ('continue anyway: a Stop does not clear a Continue not yet started', 'ltcplay/schedule_service.py',
+  '            perf.continue_off = None',
+  '            pass'),
+
+ ('pre-roll: a Programming Run lets the scheduler start a show', 'ltcplay/schedule_service.py',
+  '            if pr.skip():\n                # A Programming Run',
+  '            if False:\n                # A Programming Run'),
+
+ ('pre-roll: a broken check lets the show start', 'ltcplay/schedule_service.py',
+  '            self._preroll_broken(f"{type(e).__name__}: {e}")\n            return True',
+  '            return False'),
+
+ ('pre-roll: a rig check that cannot be built raises no alert', 'ltcplay/web.py',
+  '            httpd.remote.alerts.raise_("preroll", text)',
+  '            pass'),
+
  ('continue anyway: a failed video is still faded up', 'ltcplay/conductor.py',
   '        if "video" not in off:\n            self._step(gen, "video", LIT,',
   '        if True:\n            self._step(gen, "video", LIT,'),
@@ -16835,8 +16871,8 @@ def build():
   '        elif False:\n            why = "the show is aborted; press Reset first"'),
 
  ('continue anyway: the Delayed countdown keeps going', 'ltcplay/schedule_service.py',
-  '            try:\n                on_continue()\n',
-  '            try:\n                pass\n'),
+  '                try:\n                    on_continue()\n',
+  '                try:\n                    pass\n'),
 
  ('continue anyway: the choice is not journaled', 'ltcplay/schedule_service.py',
   '        self.journal_press(\n            who, screen, "continue anyway", "chosen",',

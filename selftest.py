@@ -57179,9 +57179,12 @@ def test_booth_notes_by_name_and_shipped_by_the_installer():
     check({"lasers", "users"} <= set(BA.NOTE_KINDS) and
           "aim" not in BA.NOTE_NAMES,
           f"lasers and users have notes, aim none: {BA.NOTE_KINDS}")
-    check(set(AL.KINDS) - AL.DISPLAY_ONLY <= set(BA.NOTE_KINDS),
+    # An alias plays another shipped note (the rig check alert, #162).
+    noted = set(BA.NOTE_KINDS) | {k for k, v in BA.NOTE_ALIAS.items()
+                                  if v in BA.NOTE_NAMES}
+    check(set(AL.KINDS) - AL.DISPLAY_ONLY <= noted,
           f"every alert kind that sounds has a note: "
-          f"{set(AL.KINDS) - AL.DISPLAY_ONLY - set(BA.NOTE_KINDS)}")
+          f"{set(AL.KINDS) - AL.DISPLAY_ONLY - noted}")
     work = tempfile.mkdtemp()
     try:
         shipped = os.path.join(work, "app", BA.FOLDER)
@@ -80982,7 +80985,8 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
           not n.al.open(), f"healthy: checked, started, alert cleared: {r}")
     c.close()
     n.link.close()
-    # Programming: skipped.
+    # A Programming Run (review of #162): Start now still checks, and a
+    # scheduled show is never started by the scheduler, checked or not.
     n = _pr_night({"Lasers": (False, "BEYOND is not running")}, window=3)
     S, svc, c = n.S, n.svc, n.c
     n.pr.skip = lambda: "Programming"
@@ -80990,8 +80994,46 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
     svc.tick()
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     _settle(svc, c)
-    check(r["ok"] is True and n.ran == [],
-          f"Programming: no rig check, the start as before: {r} {n.ran}")
+    check(r["ok"] is False and "Lasers" in n.ran,
+          f"Programming: Start now is checked too: {r} {n.ran}")
+    c.close()
+    n.link.close()
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    n.pr.skip = lambda: "Programming"
+    svc.tick()
+    for t in ((17, 59, 50), (18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n) and
+          n.ran == [],
+          f"Programming Run: the scheduled show is not started: "
+          f"{svc.machine.state} {n.ran}")
+    rows = [x for x in svc.journal if x.get("outcome") == "programming"]
+    check(rows and "Programming Run" in rows[-1]["text"],
+          f"and the journal says why: {rows[-1:]}")
+    c.close()
+    n.link.close()
+    # Fail closed: a check that cannot even be asked never starts it.
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    raised = []
+    svc.alert_sink = lambda kind, text: raised.append((kind, text))
+
+    def boom(key):
+        raise RuntimeError("broken")
+    n.pr.verdict = boom
+    svc.tick()
+    for t in ((18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n) and
+          raised and raised[0][0] == "preroll" and
+          "could not run" in raised[0][1] and len(raised) == 1,
+          f"the check broken: not started, one rig check alert: "
+          f"{svc.machine.state} {raised}")
     c.close()
     n.link.close()
     print("  ok")
@@ -81045,6 +81087,30 @@ def test_preroll_video_test_reaches_madmapper_alone():
           "a cue loaded: refused, nothing sent")
     am.stop()
     check(am.preroll_frame(1) is False, "Run not in force: refused")
+    # Review of #162, B1, on a REAL TimecodeOut: a Continue anyway's mute
+    # on MadMapper ends with its show, so the next check reaches it.
+    from ltcplay import clock as K
+
+    class _Sock:
+        def __init__(self):
+            self.to = []
+
+        def sendto(self, pkt, dest):
+            self.to.append(dest[0])
+
+        def close(self):
+            pass
+    r2 = _am_rig(seconds=2.0)
+    sk = _Sock()
+    real = K.TimecodeOut([("MadMapper", "127.0.0.9")],
+                         socket_factory=lambda: sk)
+    real.muted = frozenset(("madmapper",))
+    r2["am"].out = real
+    check(r2["am"].preroll_frame(0) is True and sk.to == ["127.0.0.9"] and
+          real.muted == frozenset(),
+          f"between shows the test frame reaches MadMapper, the mute "
+          f"ended: {sk.to} {real.muted}")
+    r2["am"].stop()
     # The conductor.
     n = _fi_night()
     if n.S is None:
@@ -81213,8 +81279,19 @@ def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
     check(view.get("continued", {}).get("by") == "Andy" and
           view["continued"]["off"] == ["lasers", "video"],
           f"the screens can say what the show runs without: {view}")
+    # Used once (review of #162, B2): a second press, a stale page or a
+    # POST later never starts another show on the same failure.
+    r2 = svc.continue_anyway("Andy", "Rack screen")
+    check(r2["ok"] is False and "no failed rig check" in r2["text"],
+          f"Continue anyway a second time: refused: {r2}")
     # The next show: checked again in full, and runs with everything.
     svc.report("SHOW_ENDED", "the cue ended", show=svc.machine.running)
+    n.w.runner.poll()
+    check(c.outputs_off == frozenset(),
+          f"out of the show, nothing is left off any more: {c.outputs_off}")
+    r2 = svc.continue_anyway("Andy", "Rack screen")
+    check(r2["ok"] is False and svc.machine.state != S.SHOW,
+          f"after the show, the old failure cannot start another: {r2}")
     n.results.clear()
     n.ran.clear()
     n.now[0] = _den(S, 18, 19, 50)
@@ -81256,6 +81333,23 @@ def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
           f"{log}")
     c.close()
     f.link.close()
+    # A Continue whose start a Stop, Hold or Abort cut off is gone.
+    h = _pr_night()
+    h.w.runner.continue_off = (frozenset(("video",)), "Andy")
+    h.svc.cancel_start_wait("Stop was pressed")
+    check(h.w.runner.continue_off is None,
+          "Stop, Hold or Abort clears a Continue not yet started")
+    h.c.close()
+    h.link.close()
+    # A failure from long ago is no ground to continue on.
+    g = _pr_night({"Video": (False, "x")})
+    g.pr.run(("x", 1), "show 1")
+    g.pr._last_show["done"] -= 700.0
+    check(g.pr.last_failed() is None and
+          not g.svc.continue_anyway("Andy", "Rack screen")["ok"],
+          "a failure over ten minutes old: refused")
+    g.c.close()
+    g.link.close()
     # Refusals: no failed check, a live show, an Abort standing.
     m = _pr_night()
     S, svc, c = m.S, m.svc, m.c
@@ -81436,6 +81530,15 @@ def test_preroll_wiring_in_the_engine():
           all(c[1] for c in pr.checks),
           f"built, every check required, in order: "
           f"{[c[0] for c in getattr(pr, 'checks', [])]}")
+    # Fail closed: a rig check that cannot be built is an alert that holds
+    # every show, never a quiet print.
+    svc.preroll = None
+    bad = F.FireIceConfig(scheduler_performs=True)
+    bad.preroll_s = "ten"
+    check(W._attach_preroll(httpd, bad, None) is None and
+          svc.preroll is None and
+          [a.kind for a in remote.alerts.open()] == ["preroll"],
+          f"not built: the preroll alert is open: {remote.alerts.view()}")
     for off in (F.FireIceConfig(scheduler_performs=False),
                 F.FireIceConfig(scheduler_performs=True, preroll_s=0)):
         svc.preroll = None

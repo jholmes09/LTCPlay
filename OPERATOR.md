@@ -727,8 +727,9 @@ Start key reads CHECKING RIG (still Stop if held). Start now checks first
 too, then starts (a few seconds, at most the window). If the check could
 not run in time (Run pressed late, LTC Player started inside the window,
 the schedule changed), the show waits for it and starts late, and the
-journal says so: the check is never skipped. Programming (and its Play
-from) does not check.
+journal says so: the check is never skipped. Programming's Play from
+does not check; a scheduled show is never started during a Programming
+Run (the journal says so), and Start now checks there too.
 
 **What it proves, now, not from memory.** Unknown counts as failed: a
 check with no answer within the window fails.
@@ -785,7 +786,9 @@ choices:
   its sound, and Start now then says why. The Delayed countdown stops (and
   a Delayed already playing is stopped), the alert stays open so the booth
   sees what is degraded, and the journal records who, when and every
-  failed check. The next show is checked again in full. Continue anyway
+  failed check. It is used once per failed check, and not for a check
+  more than 10 minutes old. When the show ends, everything it left off
+  is back for the next one, which is checked again in full. Continue anyway
   never gets past an Abort (press Reset), a Stop under way, the hold to
   arm or the flame link's rules. The scheduler never continues by itself.
 

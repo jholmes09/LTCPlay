@@ -2074,6 +2074,11 @@ class AudioMaster(Clock):
             if not self._live or self._cue is not None or self.out is None:
                 return False
             self._drop_held("The pre-roll's video test")
+            if getattr(self.out, "muted", None):
+                # A Continue anyway's mute was for its show, which is over
+                # (no cue): the next check reaches MadMapper again (review
+                # of #162, B1).
+                self.out.muted = frozenset()
             h, m, s, f = frames_to_tc(int(n), MASTER_FPS)
             held = getattr(self.out, "send_held", None)
             if not callable(held):

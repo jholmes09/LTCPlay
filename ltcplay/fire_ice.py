@@ -2123,6 +2123,19 @@ class ShowRunner:
                          "failed": None}
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
 
+    def _degraded_over(self):
+        """Out of the show: what a Continue anyway left off for it ends
+        (the conductor's record, MadMapper's timecode mute). Only ever
+        removes a restriction once no show is up. Never raises."""
+        try:
+            if self.conductor.outputs_off:
+                self.conductor.outputs_off = frozenset()
+            out = getattr(self.show._clock(), "out", None)
+            if out is not None and getattr(out, "muted", None):
+                out.muted = frozenset()
+        except Exception:                        # noqa: BLE001
+            pass
+
     def _outputs_off(self, clk, n, got):
         """What this show leaves off: only what a person's Continue anyway
         named (consumed here, one show), else nothing. The conductor keeps
@@ -2188,6 +2201,8 @@ class ShowRunner:
                 self._close()
             return
         self._closing_reported = False
+        if state not in ("SHOW", "PAUSED"):
+            self._degraded_over()
         if cue is None:
             return
         n = cue["show"]

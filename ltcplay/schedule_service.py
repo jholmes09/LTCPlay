@@ -2507,17 +2507,14 @@ class Service:
 
     def _preroll_applies(self):
         """A pre-roll is attached, the scheduler performs, Run is pressed,
-        no Abort stands, no Stop is under way, and it is not Programming
-        (PreRoll.skip). Never raises."""
+        no Abort stands and no Stop is under way. Programming does not
+        skip it (review of #162): only Programming's own Play from, which
+        never comes here, runs unchecked. Never raises."""
         pr = self.preroll
         if pr is None or self.dry_run or self.performer is None:
             return False
-        if self.halting() or self._aborted() or not self._run_pressed():
-            return False
-        try:
-            return not pr.skip()
-        except Exception:                        # noqa: BLE001
-            return False
+        return not (self.halting() or self._aborted() or
+                    not self._run_pressed())
 
     def _preroll_scheduled(self):
         """The pre-roll before a show the scheduler starts by itself: only
@@ -2552,7 +2549,7 @@ class Service:
         start within the pre-roll window has its pre-roll begun now, so a
         healthy rig still starts it at its time. Never raises."""
         try:
-            if not self._preroll_scheduled():
+            if not self._preroll_scheduled() or self.preroll.skip():
                 return
             m = self.machine
             nxt = m.next_slot()
@@ -2603,6 +2600,17 @@ class Service:
             if not n:
                 return False
             key = (str(m.date), n)
+            if pr.skip():
+                # A Programming Run: the scheduler never starts a show
+                # unchecked or over a rehearsal (review of #162).
+                if key not in self._preroll_late:
+                    self._preroll_late[key] = 0
+                    self._journal_line(
+                        "system", f"Show {n} is not started: a Programming "
+                                  f"Run is in force. Press Stop, choose Show, "
+                                  f"then Run, and Start now.",
+                        action="pre-roll", outcome="programming", show=n)
+                return True
             v = pr.verdict(key)
             if v == "passed":
                 return False
@@ -2620,8 +2628,28 @@ class Service:
             if v is None:
                 self._preroll_kick(n)
             return True
+        except Exception as e:                   # noqa: BLE001
+            # Fail closed (review of #162): a rig check that cannot even be
+            # asked never lets the show start. Its alert holds it.
+            self._preroll_broken(f"{type(e).__name__}: {e}")
+            return True
+
+    def _preroll_broken(self, why):
+        """The rig check itself could not run: journaled and alerted once
+        per reason (the alert hold then holds the show). Never raises."""
+        if getattr(self, "_preroll_broke", None) == why:
+            return
+        self._preroll_broke = why
+        text = (f"The rig check before the show could not run ({why}), so "
+                f"the show does not start by itself. Press Start now to try "
+                f"again; the journal has the details.")
+        try:
+            self._journal_line("system", text, action="pre-roll",
+                               outcome="error", fault=True)
+            if self.alert_sink is not None:
+                self.alert_sink("preroll", text)
         except Exception:                        # noqa: BLE001
-            return False
+            pass
 
     def _preroll_for_start_now(self, who, screen, gen):
         """Start now: the rig is checked first, on the pressing thread,
@@ -2671,6 +2699,10 @@ class Service:
         pr = self.preroll
         r = pr.last_failed() if pr is not None else None
         who_ = who or "someone"
+        if pr is not None and pr.continued is not None:
+            # Once per failed check (review of #162, B2): never replayed by
+            # a stale page or a second POST for a later start.
+            r = None
         if r is None or self.performer is None or self.dry_run:
             return {"ok": False, "text": "Continue anyway was refused: there "
                                          "is no failed rig check to continue "
@@ -2702,11 +2734,6 @@ class Service:
                         if off else "nothing left off (no output's check "
                                     "failed)") + ".", fault=True)
         self.performer.continue_off = (off, who_)
-        if on_continue is not None:
-            try:
-                on_continue()
-            except Exception:                    # noqa: BLE001
-                pass
         if m.state == sch.HOLD:
             got = self.operator_press("resume", who, screen, surface=True)
             if not got.get("ok"):
@@ -2715,9 +2742,16 @@ class Service:
         got = self.operator_press("start-now", who, screen, surface=True,
                                   preroll=False)
         if self.machine is not None and self.machine.state == sch.SHOW:
+            pr.consume(r)
             pr.continued = {"label": r.get("label", ""), "by": who_,
                             "at": self.clock().isoformat(timespec="seconds"),
                             "off": off, "failed": failed}
+            # The Delayed countdown ends only once the start is accepted.
+            if on_continue is not None:
+                try:
+                    on_continue()
+                except Exception:                # noqa: BLE001
+                    pass
             return {"ok": True, "text": f"Continue anyway: the show starts "
                                         f"now, late. Left off for this show: "
                                         f"{', '.join(sorted(off)) or 'nothing'}."}
@@ -3589,6 +3623,11 @@ class Service:
         pr = self.preroll
         if pr is not None:
             pr.cancel(why)
+        perf = self.performer
+        if perf is not None and getattr(perf, "continue_off", None):
+            # A Continue anyway whose start a Stop, Hold or Abort cut off
+            # never carries to a later start (review of #162).
+            perf.continue_off = None
 
     def halt_begin(self):
         """A Stop's complete halt is under way (Remote.stop_press, web.py's

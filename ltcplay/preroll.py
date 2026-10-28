@@ -65,6 +65,9 @@ WHO = "LTC Player"
 # Continue anyway (Jeff, 2026-10-28): a person with the run permission,
 # signed in, holds the button this long (the arm buttons' hold).
 CONTINUE_HOLD_S = 1.0
+# Continue anyway answers a failed check this recent at most (a held show
+# waits for a person; a check older than this says nothing about now).
+CONTINUE_MAX_AGE_S = 600.0
 # What a failed check leaves OFF for the show Continue anyway starts:
 # "video" (no bank select, no fade up, no timecode to MadMapper),
 # "lasers" (the laser gate says no: blanked, no output enable) and
@@ -422,7 +425,8 @@ class PreRoll:
                    "manual": bool(r.get("manual")),
                    "continue_hold_s": CONTINUE_HOLD_S}
             sh = self._last_show
-            if sh is not None and sh["state"] == "failed":
+            if sh is not None and sh["state"] == "failed" and \
+                    not sh.get("consumed"):
                 # What Continue anyway is about, even after a Pre-check.
                 out["show_check"] = {
                     "label": sh.get("label", ""),
@@ -438,9 +442,18 @@ class PreRoll:
         Pre-check), else None: what Continue anyway is about."""
         with self._lock:
             r = self._last_show
-            if r is None or r["state"] != "failed":
+            if r is None or r["state"] != "failed" or r.get("consumed"):
+                return None
+            if r["done"] is None or \
+                    self._clock() - r["done"] > CONTINUE_MAX_AGE_S:
+                # A failure from long ago says nothing about the rig now.
                 return None
             return r
+
+    def consume(self, r):
+        """Continue anyway used this failed check: never again."""
+        with self._lock:
+            r["consumed"] = True
 
     # -- Continue anyway's hold (engine timed, like the arm buttons) -------
     def hold_begin(self, token, who):
