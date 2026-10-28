@@ -32783,6 +32783,95 @@ def test_streamdeck_ack_key_while_an_alert_is_open():
     print("  ok")
 
 
+def test_streamdeck_ignores_a_display_only_aim_alert():
+    section("Stream Deck (review of #150): an open aim slots alert is "
+            "display only on the deck too: the Start key keeps START NOW, "
+            "no first press is spent acknowledging it, page 2 stays open; "
+            "any other alert open beside it still does all of that")
+    from ltcplay import streamdeck as sd
+    t = [10.0]
+    ans = {"enabled": False, "holds": [], "disarms": [],
+           "alerts": [{"id": 4, "kind": "aim", "text": "Aim slots do not "
+                       "match", "options": ["Acknowledge"]}]}
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=lambda p: ans,
+                         clock=lambda: t[0])
+    keys.poll_once()
+    check(keys.alerts() == (), f"the aim alert is not handed to the deck: "
+                               f"{keys.alerts()}")
+    names = ["front row", "cat-walk", "wave flamer"]
+    status = _FakeStatus()
+    status.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+                "confirmed": True, "groups": [
+                    {"name": n, "armed": "disarmed", "wanted": False,
+                     "reason": "", "amber": "", "dwell_s": 0}
+                    for n in names]})
+    calls, lines = [], []
+
+    class _Engine:
+        def snapshot(self):
+            return {"latched": False, "look": "BETWEEN"}
+
+        def acknowledge(self, who, screen):
+            calls.append(("acknowledge", who, screen))
+            return sd.EngineResult(True, "alert sent to the engine")
+
+    class _Screen(_FakeScreen):
+        # The deck's screen input, its alerts read through ScreenKeys.
+        def alerts(self):
+            return keys.alerts()
+
+    def run(with_aim):
+        ans["alerts"] = ([{"id": 4, "kind": "aim", "text": "Aim slots do "
+                           "not match", "options": ["Acknowledge"]}]
+                         if with_aim else [])
+        keys.poll_once()
+        del calls[:], lines[:]
+        c = sd.Controller(_FakeArmSocket(3), status, names,
+                          operator_provider=lambda: "Andy",
+                          show_running_provider=lambda: False,
+                          conductor=_Engine(), clock=lambda: t[0],
+                          screen=_Screen(),
+                          journal=lambda text, **kw: lines.append(
+                              (text, kw)))
+        page2 = c._page2_must_close(False, c.alert_pending(), t[0])
+        face = None
+        fonts, faces, restore = _deck_face_recorder(sd)
+        if fonts is not None:
+            try:
+                c.draw(fonts, blink_on=True, chase=0)
+                face = faces[0]
+            finally:
+                restore()
+        c.run_once([True, False, False, False, False, False])
+        c.run_once([False] * 6)
+        return (c.alert_pending(), page2, face, list(calls),
+                [t_ for t_, _ in lines])
+    base, aim = run(False), run(True)
+    check(aim[0] == () and aim[1] == base[1] and
+          aim[1] != "an alert is open",
+          f"nothing is pending on the deck, page 2 is not closed for it: "
+          f"{aim[:2]}")
+    check(aim[2] == base[2] and (aim[2] is None or aim[2][0] != ["ACK",
+                                                               "ALERT"]),
+          f"the Start key's face is what it is with no alert: {aim[2]}")
+    check(aim[3] == base[3] == [] and aim[4] == base[4],
+          f"a Start press does what it does with no alert, never an "
+          f"acknowledge: {aim[3]} {aim[4]}")
+    c = sd.Controller(_FakeArmSocket(3), status, names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      conductor=_Engine(), clock=lambda: t[0],
+                      screen=_Screen(), journal=lambda text, **kw: None)
+    ans["alerts"] = [{"id": 4, "kind": "aim", "text": "x"}]
+    ans["alerts"].append({"id": 5, "kind": "audio", "text": "x"})
+    keys.poll_once()
+    check([a["kind"] for a in keys.alerts()] == ["audio"] and
+          c._page2_must_close(False, c.alert_pending(), t[0]) ==
+          "an alert is open",
+          "another alert beside it still reaches the deck")
+    print("  ok")
+
+
 def test_streamdeck_round4_unplug_keeps_one_real_source_port():
     section("Stream Deck: the same, over a REAL ArmSocket and a real UDP "
             "receiver: every arm frame through no-deck, connect, unplug "
@@ -77860,6 +77949,7 @@ if __name__ == "__main__":
         test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send,
         test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error,
         test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers,
+        test_streamdeck_ignores_a_display_only_aim_alert,
         test_streamdeck_round4_unplug_keeps_one_real_source_port,
         test_streamdeck_round4_reconnect_releases_every_hold,
         test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves,

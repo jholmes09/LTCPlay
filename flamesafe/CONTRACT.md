@@ -490,7 +490,8 @@ group armed mid-movement is held by the rising-edge check, as before.
   edit, or the two read different files) the rack screen raises an alert
   of its own kind, "aim", saying both lists, the file ltcplay read and what
   to do; it clears itself once they agree. Display only: it never holds a
-  show at showtime, plays no announcement and sounds no booth note, it
+  show at showtime, plays no announcement, sounds no booth note and
+  changes nothing on the Stream Deck, it
   never blocks Stop, Hold, Abort or a disarm, and nothing in it reaches a
   flame frame or the arm link.
 

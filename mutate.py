@@ -15967,7 +15967,11 @@ def build():
 
  ("old page: the engine's Show is not believed", "ltcplay/web/index.html",
   '  if(s && s.mode === "show") return "show";\n',
-  ""),
+  ""), ("aim seen: the aim alert turns the deck's Start key to ACK",
+  "ltcplay/streamdeck.py",
+  "                     if isinstance(a, dict)\n                     and a.get(\"kind\") not in DISPLAY_ONLY)",
+  "                     if isinstance(a, dict))"),
+
 ]
 
 

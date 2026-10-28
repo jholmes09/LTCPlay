@@ -50,8 +50,9 @@ SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "users": "fault", "aim": "warning"}
 # Display only (2026-10-28): an alert of these kinds is shown on every
 # screen and journaled, and cleared like any other, but it never sounds the
-# booth, never runs the pulse and never holds a show at showtime
-# (alerthold.py leaves it out). "aim": the wave flamer's aim slots differ
+# booth, never runs the pulse, never holds a show at showtime
+# (alerthold.py leaves it out) and never reaches the Stream Deck
+# (streamdeck.ScreenKeys.alerts leaves it out: no ACK key). "aim": the wave flamer's aim slots differ
 # between flamesafe and LTC Player (remote.Remote.aim_view).
 DISPLAY_ONLY = frozenset(("aim",))
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",

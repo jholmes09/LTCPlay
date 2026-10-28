@@ -819,8 +819,9 @@ the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds
-a show at showtime, never plays the Delayed announcement and never sounds
-the booth speaker. Stop, Hold, Abort and Disarm all work as usual while it
+a show at showtime, never plays the Delayed announcement, never sounds
+the booth speaker and changes nothing on the Stream Deck (no ACK key, page
+2 stays open). Stop, Hold, Abort and Disarm all work as usual while it
 is up, and it clears itself once the lists agree. Both
 programs also write their aim list and the file they read to the journal
 when they start.
