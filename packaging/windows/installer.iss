@@ -16,6 +16,13 @@
 ;     back to the previous version" can run the one before.
 ;   - Settings and show files are never touched: they live in
 ;     %LOCALAPPDATA%\ltcplay and wherever the show folder is.
+;   - Ships the booth alert notes (packaging\windows\booth\booth_*.wav)
+;     into {app}\Booth notes, emptied first, so an update refreshes every
+;     note and leaves no old one behind. A person's own copy of a note
+;     lives in %LOCALAPPDATA%\ltcplay\Booth notes, which this never
+;     touches, and wins over the shipped one (ltcplay\boothaudio.py).
+;     The workflow's check_booth_notes.py --require fails the build when
+;     a note is missing, too long or misnamed.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -76,6 +83,8 @@ Name: "desktopicon"; Description: "Put an LTC Player icon on the desktop"; Flags
 ; The old program files go first, so nothing from an earlier version is
 ; left mixed in with the new one.
 Type: filesandordirs; Name: "{app}\_internal"
+; The shipped booth notes: every install brings the whole set again.
+Type: filesandordirs; Name: "{app}\Booth notes"
 
 [Dirs]
 ; Where "Stop LTC Player" and this installer leave the stop request. The
@@ -91,6 +100,8 @@ Source: "register_soak_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\USERS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\flamesafe\flamesafe.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\ltcplay\ltcplay_schedule.example.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "booth\README.txt"; DestDir: "{app}\Booth notes"; DestName: "READ ME.txt"; Flags: ignoreversion
+Source: "booth\booth_*.wav"; DestDir: "{app}\Booth notes"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{srcexe}"; DestDir: "{app}\Installers"; DestName: "LTC Player Setup {#AppVersion}.exe"; Flags: external ignoreversion; Check: NotRunFromInstallers
 
 [Icons]

@@ -1990,6 +1990,18 @@ function alertHoldLook(ah){
 // output device is set or attached, while one is playing, or while the
 // engine says announcements cannot play at all. Stop is on only while one
 // plays. The engine refuses anything this page lets through anyway.
+// The booth line's note count (boothaudio.notes_view, 2026-10-28):
+// ", 24 of 24 notes found", or which are missing (the first six by name).
+function boothNotesText(n){
+  if(!n || typeof n.expected !== "number" || typeof n.found !== "number") return "";
+  const miss = Array.isArray(n.missing) ? n.missing.map(String) : [];
+  let t = ", " + n.found + " of " + n.expected + " notes found";
+  if(miss.length){
+    t += "; missing " + miss.slice(0, 6).join(", ");
+    if(miss.length > 6) t += " and " + (miss.length - 6) + " more";
+  }
+  return t;
+}
 function announceLook(an, booth){
   const a = an || {};
   if(!a.configured) return {show:false, buttons:[], banner:"", word:"", stopOff:true, device:"", devBad:false, note:""};
@@ -2024,6 +2036,7 @@ function announceLook(an, booth){
   else device = "Output: " + String(a.device || "") + (a.device_available ? "" : " (not attached)");
   const b = booth || {};
   device += b.configured ? ". Booth speaker: " + String(b.device || "") : ". Booth speaker: not set";
+  device += boothNotesText(b.notes);
   let note = bad || (!a.device_set || !a.device_available ? String(a.device_reason || "") : String(a.blocked || ""));
   if(!note && !playing) note = a.over_show ? "A show is running: an announcement plays over it and pauses nothing. Stop ends the show." :
     "Between shows: an announcement holds the schedule first. Only Resume carries on.";
