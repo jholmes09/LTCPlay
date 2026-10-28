@@ -773,10 +773,8 @@ MUTATIONS = [
   "        if False:"),
 
  ("remote: an arm route appears", "ltcplay/remote.py",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n"
-  "                  \"disarm-all\")",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n"
-  "                  \"disarm-all\", \"arm\")"),
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\")",
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"arm\")"),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
   "            return None if \"/api/remote/\" in self.path else {}",
@@ -2209,10 +2207,9 @@ MUTATIONS = [
   '        put("config.json", js(config if config is not None else',
   '        put("config.json", js({"note": "none"} if config is not None else'),
 
- ("the scheduler's own lines stay in memory only, as before",
-  'ltcplay/schedule_service.py',
-  '            self._record_logevent(self._reworded(le))\n            if le.action == sch.SHOW_FAILED and self.alert_sink is not None:',
-  '            self.journal.append(self._reworded(le).to_dict())\n            if le.action == sch.SHOW_FAILED and self.alert_sink is not None:'),
+ ("the scheduler's own lines stay in memory only, as before", "ltcplay/schedule_service.py",
+  "            self._record_logevent(self._reworded(le))\n            # A failure reported too late to be a failed start is a fault",
+  "            self.journal.append(self._reworded(le).to_dict())\n            # A failure reported too late to be a failed start is a fault"),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
   '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
@@ -7208,15 +7205,13 @@ def build():
   "    if cfg.scheduler_performs:\n        runner = ShowRunner(",
   "    if True:\n        runner = ShowRunner("),
 
- ("fire & ice: a show starts before Run is pressed",
-  "ltcplay/fire_ice.py",
-  "        if s is None or clk is None or self.conductor.latched:",
-  "        if s is not None and clk is None:"),
+ ("fire & ice: a show starts before Run is pressed", "ltcplay/fire_ice.py",
+  "        if s is None:\n            return self.RUN_OFF\n        if clk is None:\n            return self.NOT_AUDIO_MASTER",
+  "        if s is not None and clk is None:\n            return self.NOT_AUDIO_MASTER"),
 
- ("fire & ice: a show starts while the conductor is still aborted",
-  "ltcplay/fire_ice.py",
-  "        if s is None or clk is None or self.conductor.latched:",
-  "        if s is None or clk is None:"),
+ ("fire & ice: a show starts while the conductor is still aborted", "ltcplay/fire_ice.py",
+  "            self.LATCHED if self.conductor.latched else \"\")",
+  "            \"\")"),
 
  ("fire & ice: an unconfirmed cue that stops is reported as ended",
   "ltcplay/fire_ice.py",
@@ -12778,7 +12773,7 @@ def build():
 
  ("the refused start alert says the rig went dark",
   "ltcplay/schedule_service.py",
-  "alert = (self.REFUSED_START_ALERT", "alert = (self.FAILED_START_ALERT"),
+  "tail = (self.REFUSED_START_ALERT", "tail = (self.FAILED_START_ALERT"),
 
  ("a leftover soak schedule loads on a show PC",
   "ltcplay/schedule_service.py",
@@ -14543,13 +14538,13 @@ def build():
 
  ("Rack screen: Stop's answer is not read",
   "ltcplay/web/remote.html",
-  "$(\"run-msg\").textContent = stopWords(j); }",
-  "$(\"run-msg\").textContent = \"Stopped.\"; }"),
+  "el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :",
+  "el.textContent = (r.ok || (j && j.failed)) ? \"Stopped.\" :"),
 
  ("Rack screen: the Stop confirm does not say it disarms the flames",
   "ltcplay/web/remote.html",
-  "\"Stop playback and disarm every flame group. No show starts",
-  "\"Stop playback. No show starts"),
+  "\"Stop playback and disarm every flame group. Every laser",
+  "\"Stop playback. Every laser"),
 
  ("deck: a failed Stop disarm is a quiet done",
   "ltcplay/streamdeck.py",
@@ -14654,10 +14649,9 @@ def build():
   "            fn = getattr(m, \"lasers_disarm_now\", None)\n            if fn is not None:\n                try:\n                    r = fn(f\"Stop held",
   "            fn = None\n            if fn is not None:\n                try:\n                    r = fn(f\"Stop held"),
 
- ("halt: playback stops before the scheduler ends the show",
-  "ltcplay/web.py",
-  "                    out = self._halt(body)\n                    try:\n                        out[\"stopped\"] = c.stop()\n",
-  "                    _s = c.stop()\n                    out = self._halt(body)\n                    try:\n                        out[\"stopped\"] = _s\n"),
+ ("halt: playback stops before the scheduler ends the show", "ltcplay/web.py",
+  "        out = self._halt(body)\n        try:\n            out[\"stopped\"] = c.stop()\n",
+  "        _s = c.stop()\n        out = self._halt(body)\n        try:\n            out[\"stopped\"] = _s\n"),
 
  ("halt: the scheduler's Stop latches like an Abort",
   "ltcplay/schedule_service.py",
@@ -14906,10 +14900,9 @@ def build():
   "            doc.setdefault(\"_http_status\", e.code)\n",
   "            pass\n"),
 
- ("web: a playback stop that raises loses the halt's steps (third review of #130, 4)",
-  "ltcplay/web.py",
-  "                        out[\"stopped\"] = c.stop()\n                    except Exception as e:       # noqa: BLE001\n",
-  "                        out[\"stopped\"] = c.stop()\n                    except ZeroDivisionError as e:  # noqa: BLE001\n"),
+ ("web: a playback stop that raises loses the halt's steps (third review of #130, 4)", "ltcplay/web.py",
+  "            out[\"stopped\"] = c.stop()\n        except Exception as e:       # noqa: BLE001\n",
+  "            out[\"stopped\"] = c.stop()\n        except ZeroDivisionError as e:  # noqa: BLE001\n"),
 
 
  # Review of #130, low items.
@@ -14928,14 +14921,12 @@ def build():
   "        if errored and playback_only:\n",
   "        if False:\n"),
 
- ("web: the playback stop's error overwrites the halt's (review of #130, low 2)",
-  "ltcplay/web.py",
-  "                        out[\"error\"] = (f\"{out['error']}; and the playback \"\n                                        f\"stop: {said}\" if out.get(\"error\")\n                                        else said)",
-  "                        out[\"error\"] = said"),
+ ("web: the playback stop's error overwrites the halt's (review of #130, low 2)", "ltcplay/web.py",
+  "            out[\"error\"] = (f\"{out['error']}; and the playback \"\n                            f\"stop: {said}\" if out.get(\"error\")\n                            else said)",
+  "            out[\"error\"] = said"),
 
- ("web: the playback stop's own error is not said apart",
-  "ltcplay/web.py",
-  "                        out[\"playback_error\"] = said\n",
+ ("web: the playback stop's own error is not said apart", "ltcplay/web.py",
+  "            out[\"playback_error\"] = said\n",
   ""),
 
  ("deck: live flames do not count as running (review of #130, low 3)",
@@ -15252,6 +15243,146 @@ def build():
  ("the short-window rules make the controls taller on a short window", "ltcplay/web/remote.html",
   ":where(html.tight) .ctl button{min-height:44px}",
   "html.tight .ctl button{min-height:44px}"),
+
+ # Jeff's field report, 2026-10-28: Stop, Reset from Hold, refusal reasons.
+ ("a refused start's alert says only that the show did not start",
+  "ltcplay/schedule_service.py",
+  '        why = str(why or "").strip().rstrip(".")\n        if not why:',
+  '        why = ""\n        if not why:'),
+
+ ("Start now with Run off becomes a FAULT slot again",
+  "ltcplay/schedule_service.py",
+  "        if kind == sch.START_NOW:\n            # Outside this service's lock",
+  "        if False:\n            # Outside this service's lock"),
+
+ ("Start now while the show audio loads is not said to wait",
+  "ltcplay/fire_ice.py",
+  "        if any(role not in loaded for role in roles):\n"
+  "            return self.AUDIO_LOADING",
+  "        if False:\n            return self.AUDIO_LOADING"),
+
+ ("Reset from Hold does nothing again", "ltcplay/remote.py",
+  "                r = fn(who, screen, surface=surface) if fn else None",
+  "                r = None"),
+
+ ("Reset from a paused show carries the show on",
+  "ltcplay/schedule_service.py",
+  "            if m.state == sch.PAUSED:\n                kinds.append(sch.STOP_SHOW)",
+  "            if m.state == sch.PAUSED:\n                kinds.append(sch.RESUME)"),
+
+ ("Rack screen: Start now never becomes Stop during a show",
+  "ltcplay/web/remote.html",
+  'const live = sch.state === "SHOW" || sch.state === "PAUSED" ||',
+  'const live = false ||'),
+
+ ("Rack screen: Stop is not the complete halt", "ltcplay/web/remote.html",
+  'r = await fetch("/api/remote/stop", ', 'r = await fetch("/api/stop", '),
+
+ ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
+  "        h = self.halt(who, screen)\n        out = {k: h[k]",
+  "        h = {}\n        out = {k: h[k]"),
+
+ ("Reset ends a Hold inside the late grace and the show starts",
+  "ltcplay/schedule.py",
+  "            if lateness_s(s.start, now) < 0:\n                break\n"
+  "            _hold_back(tx, s)",
+  "            if True:\n                break\n            _hold_back(tx, s)"),
+
+ ("Reset counts as the operator's Resume for the alert hold",
+  "ltcplay/schedule_service.py",
+  "                ev.detail != sch.RESET_DETAIL and \\\n",
+  ""),
+
+ ("a broken intermission file blocks every show start",
+  "ltcplay/fire_ice.py",
+  "        roles = [role] if role is not None else []",
+  "        roles = [v[0] for v in (getattr(clk, \"cues\", None) or {}).values()]"),
+
+ ("Start now while the show audio loads is refused at once again",
+  "ltcplay/schedule_service.py",
+  "        if blocked is not None and blocked[\"loading\"]:\n            with self._locked():",
+  "        if False:\n            with self._locked():"),
+
+ ("Hold does not end a Start now waiting for the show audio",
+  "ltcplay/schedule_service.py",
+  "            self.cancel_start_wait(f\"{what} was pressed\")",
+  "            pass"),
+
+ ("Stop does not end a Start now waiting for the show audio",
+  "ltcplay/remote.py",
+  "                cancel(f\"Stop was pressed on the {screen}\")",
+  "                pass"),
+
+ ("Rack screen: Run never becomes Stop while Run is starting",
+  "ltcplay/web/remote.html",
+  "  return (show.running || show.starting) ? {mode:\"stop\"",
+  "  return show.running ? {mode:\"stop\""),
+
+ ("Rack screen: a press is not decided by what was seen at touch-down",
+  "ltcplay/web/remote.html",
+  "  if(seen && seen !== now)\n    return {act:\"none\"",
+  "  if(false)\n    return {act:\"none\""),
+
+ ("Rack screen: Start is not locked after Stop turns back into Start",
+  "ltcplay/web/remote.html",
+  "  if(now !== \"stop\" && flippedAt && nowMs - flippedAt < FLIP_LOCK_MS)",
+  "  if(false)"),
+
+ ("Rack screen: Start now works during a halt",
+  "ltcplay/web/remote.html",
+  "  if(busy) return {act:\"none\", say:\"Stopping: wait until it has finished.\"};\n",
+  ""),
+
+ ("an announcement or engine Hold does not end a waiting Start now",
+  "ltcplay/schedule_service.py",
+  "        if not out.refused and ev.kind in (sch.HOLD_ON, sch.ABORT,\n"
+  "                                          sch.STOP_SHOW):",
+  "        if not out.refused and ev.kind in (sch.ABORT, sch.STOP_SHOW):"),
+
+ ("Start now goes ahead during a Stop's halt",
+  "ltcplay/schedule_service.py",
+  "        if kind == sch.START_NOW and self.halting():",
+  "        if False:"),
+
+ ("Run goes ahead during a Stop's halt", "ltcplay/web.py",
+  '                if getattr(_svc, "halting", lambda: False)() is True:',
+  "                if False:"),
+
+ ("a Start now that waited is not re-checked under the lock",
+  "ltcplay/schedule_service.py",
+  "            if gen is not None and (self._start_cancel[0] != gen or\n"
+  "                                    self.halting()):",
+  "            if False:"),
+
+ ("Rack screen: Start now is not off while a halt runs",
+  "ltcplay/web/remote.html",
+  "    (el.disabled || lk.disabled || HALT_BUSY || flipLocked(\"b-start\"));",
+  "    (el.disabled || lk.disabled || flipLocked(\"b-start\"));"),
+
+ ("Start now's lock re-check runs before the tick's alert Hold",
+  "ltcplay/schedule_service.py",
+  "        with self._locked():\n"
+  "            # The tick first: a Hold it takes (the engine's own at\n"
+  "            # showtime for an open alert) cancels the start below (C1).\n"
+  "            self.tick()\n",
+  "        with self._locked():\n"),
+
+ ("a late failure report raises a did-not-start alert",
+  "ltcplay/schedule_service.py",
+  "                    le.outcome != \"recorded as a fault\" and \\\n",
+  ""),
+
+ ("Rack screen: Run never becomes Stop", "ltcplay/web/remote.html",
+  'return (show.running || show.starting) ? {mode:"stop"',
+  'return false ? {mode:"stop"'),
+
+ ("Rack screen: a scheduler refusal reads Conflict again",
+  "ltcplay/web/remote.html",
+  "  const t = j && (j.error || j.text);", "  const t = j && j.error;"),
+
+ ("Rack screen: no Loading state while the show audio loads",
+  "ltcplay/web/remote.html",
+  "if(b && b.text && b.loading)", "if(false)"),
 
  # The Fireball page (fireball.py, OPERATOR.md, Jeff 2026-10-28; design
  # by Andy): manual control of each Fireball channel.

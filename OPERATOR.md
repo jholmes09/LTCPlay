@@ -300,8 +300,8 @@ cannot read the show computer, or a group is armed for
 anything but the purge (a group the purge selection wants counts as the
 purge's, even if it was armed by hand first): then it is Stop. If FIRE is
 being held when a show or run starts, FIRE ends and the same held key
-becomes a Stop hold at once: keep holding to stop, let go to cancel. The Rack screen's own Stop button is still refused during a show
-(use Hold or Abort there). After an Abort the deck's border goes red and
+becomes a Stop hold at once: keep holding to stop, let go to cancel. The Rack screen's Stop is the same complete halt, during a show
+too (see Stop, Hold and Reset on the rack screen, below). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
 the Rack screen. If Stop stopped playback but could not send the flame
 groups off, the Rack screen says "Stopped, but the flame disarm FAILED"
@@ -506,6 +506,56 @@ Read that first. The short version:
 - **The rig is lit but not moving.** Look at the PLAYING line. If it is
   counting, the program is fine and the problem is downstream.
 
+## Stop, Hold and Reset on the rack screen
+
+Jeff, 2026-10-28. Each screen has one Stop, where the button that started
+things was:
+
+- **Stop.** On the show screen, Start now turns into a red **Stop** while a
+  show is live (playing, or paused on Hold). On the Programming screen, Run
+  turns into **Stop** while Run is in force. Stop asks once, then does
+  exactly what the Stream Deck's Stop does, a complete halt: every flame
+  group and every laser is disarmed first, nothing is fired, a live show
+  ends and fades to dark, then playback stops, so Run is off. Nothing is
+  latched: no Reset is needed. Press Run to bring the rig back; each flame
+  group needs arming again. The line under the buttons says what happened
+  ("Stopped. The show ended and the rig is fading to dark...") or, if any
+  part did not work, which part, and what to press. If the engine refuses,
+  it says why in its own words. Stop works the same from the rack
+  screen, an iPad and the Stream Deck, signed in or not. Right after Stop
+  turns back into Start now (or Run) the button waits 2 seconds before it
+  takes a press, and a press made just as the show ended or started does
+  nothing and says so: a Stop never turns into a start.
+- **Hold** pauses the show where it is (or, between shows, keeps the next
+  show from starting). **Resume** carries on.
+- **Reset** works from Hold. With a show paused on Hold, Reset ends that
+  show: it fades to dark, nothing is latched, and no flame group is
+  disarmed. With the schedule on Hold between shows, Reset ends the Hold.
+  Either way it also clears the fault flag, and it never starts or
+  continues a show by itself: a show whose time has already come waits as
+  a delayed show for Start now (even one still inside the late grace), the
+  next show starts at its own time (only while Run is pressed), and if an
+  alert is open at that time the schedule still holds for it.
+  After an Abort, Reset ends the Abort as it always has; if the schedule is
+  also on Hold, a second Reset ends the Hold.
+- **ABORT** keeps its own meaning: tap twice, the show stops, everything is
+  disarmed, and the rig stays latched until Reset.
+
+**When a show does not start, it says why.** The alert, and the show's
+line on the Schedule screen, give the real reason and what to press, for
+example "Show 1 did not start: Run has not been pressed, so nothing may
+reach the rig; press Run on the Programming screen, then Start now". Start
+now that cannot work is refused at once with the same words, and adds no
+FAULT line. Right after Run the show audio takes a few seconds to load:
+Start now then says "audio loading, starts when ready". Pressed then, it
+waits for the audio (at most 20 seconds) and reads **Loading, starting when
+ready**; the show starts as soon as the audio is in. Hold, Stop or Abort
+cancels the wait and nothing starts, and so does any Hold the program
+makes itself (for an announcement, or at showtime for an open alert).
+While a Stop is still disarming and fading to dark, Start now and Run on
+any screen are refused until it has finished, and say so. Only the show's own audio counts: a
+slow or broken intermission file never holds the show back.
+
 ## Stopping
 
 On the page: Stop and black out. In the terminal: Ctrl-C. Either way the rig is
@@ -678,7 +728,8 @@ Schedule (it was called Tonight) shows the night's shows on one screen; tap
 a show to see its notes (why it was moved, skipped or added, or "No notes";
 tap again to close). Programming has the scrubbing controls and, on the
 show machine only, the Show file card (the Show and Programming switch, the
-show file, Run and Stop), the Stream Deck operator and the show network.
+show file, and Run, which reads Stop in the same place while Run is in
+force), the Stream Deck operator and the show network.
 Show: the scheduler starts each show at its time and scrubbing is off.
 Programming: a rehearsal; play from, jump and loop work and the scheduler
 starts no show. To switch, press Stop, pick the other side of the switch,

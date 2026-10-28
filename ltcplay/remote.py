@@ -110,7 +110,11 @@ FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
 CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",
-                  "disarm-all")
+                  "disarm-all", "stop")
+# Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
+# Deck's complete halt (Remote.halt), then playback stops. A live show's
+# fade is let run this long at most first (web.HALT_FADE_WAIT_S).
+STOP_FADE_WAIT_S = 3.0
 # Programming-session transport (Jeff, 2026-10-03): play from a timecode,
 # jump, pause and continue, an A/B loop, back to following timecode. Only
 # in a programming session (a show started from the page as Rehearse, or in
@@ -2237,6 +2241,10 @@ class Remote:
         stamp = getattr(self.schedule, "stamp_press", None)
         pressed = stamp() if stamp is not None else None
         who, screen, surface = self._actor(ctx, body)
+        if name == "stop":
+            # Only takes risk away: never refused for a stale page or a
+            # missing confirm, from any surface (review of #144, F7).
+            return self.stop_press(who, screen)
         if name in FRESH_ROUTES:
             why = self._stale(body)
             if why:
@@ -2346,8 +2354,14 @@ class Remote:
             # operator list (Jeff, 2026-10-07). Every other rule the
             # scheduler has for these presses still applies.
             if name == "reset":
-                r = svc.reset_conductor(who, screen, pressed=pressed,
-                                        surface=surface)
+                # From a Hold, Reset ends it (and a paused show) and clears
+                # the fault flag; starts nothing (Jeff, 2026-10-28). Else,
+                # and always while an Abort stands, the Abort's Reset.
+                fn = getattr(svc, "reset_hold", None)
+                r = fn(who, screen, surface=surface) if fn else None
+                if r is None:
+                    r = svc.reset_conductor(who, screen, pressed=pressed,
+                                            surface=surface)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
@@ -3640,6 +3654,57 @@ class Remote:
         return ok, ("Lasers blanked at the press." if ok else
                     "The laser blank did NOT go out at the press.")
 
+    def stop_press(self, who, screen):
+        """Stop pressed on a screen, the rack screen or an iPad (Jeff,
+        2026-10-28): exactly the Stream Deck's Stop. halt() first (every
+        flame group and laser disarmed, nothing fired, a live show ended
+        and faded to dark, nothing latched), the fade let run, then
+        playback stops, so Run is off. (code, answer) in /api/stop's
+        shape: {"flames", "lasers", "lasers_blank", "show", "failed",
+        "stopped"}, with "error" when a step failed. Never raises."""
+        svc = self.schedule
+        begin = getattr(svc, "halt_begin", None)
+        if begin is not None:
+            begin()
+        try:
+            return self._stop_press(who, screen)
+        finally:
+            end = getattr(svc, "halt_end", None)
+            if end is not None:
+                end()
+
+    def _stop_press(self, who, screen):
+        h = self.halt(who, screen)
+        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show")
+               if h.get(k) is not None}
+        out["failed"] = list(h.get("failed") or [])
+        if h.get("show_ended"):
+            svc = self.schedule
+            try:
+                svc.flush_conductor(STOP_FADE_WAIT_S)
+            except Exception:                    # noqa: BLE001
+                pass
+            cond = getattr(svc, "conductor", None)
+            if cond is not None and getattr(cond, "threaded", False):
+                try:
+                    cond.wait_idle(STOP_FADE_WAIT_S)
+                except Exception:                # noqa: BLE001
+                    pass
+        try:
+            out["stopped"] = bool(self.control.stop())
+        except Exception as e:                   # noqa: BLE001
+            out["stopped"] = False
+            out["failed"].append("playback stop")
+            out["error"] = f"{type(e).__name__}: {e}"
+        try:
+            self.control._state_cache = None
+        except Exception:                        # noqa: BLE001
+            pass
+        if out["failed"] and "error" not in out:
+            out["error"] = ("Stop did not complete: " +
+                            ", ".join(out["failed"]) + " did NOT work.")
+        return (500 if "error" in out else 200), out
+
     def halt(self, who, screen):
         """The Stream Deck's Stop, a complete halt of everything (Jeff,
         2026-10-26), during a scheduled show too: everything a screen's
@@ -3668,6 +3733,14 @@ class Remote:
         label = who or "An unnamed operator"
         out = {"flames": None, "lasers": None, "lasers_blank": None,
                "show": None, "show_ended": False, "failed": []}
+        # A Start now waiting for the show audio never outlives a Stop
+        # (review of #144, F2).
+        cancel = getattr(self.schedule, "cancel_start_wait", None)
+        if cancel is not None:
+            try:
+                cancel(f"Stop was pressed on the {screen}")
+            except Exception:                    # noqa: BLE001
+                pass
         m = self.morning
         arm = getattr(m, "laser_arm", None)
         if arm is not None:
@@ -5301,6 +5374,7 @@ class Remote:
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),
+                    "start_blocked": st.get("start_blocked"),
                     "slots": tn.get("slots", [])}
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,
@@ -5308,6 +5382,9 @@ class Remote:
         try:
             cs = self.control.state()
             out["show"] = {"running": bool(cs.get("running")),
+                           # Run on its way in (web.py _build_state): the
+                           # page shows Stop then too (review of #144, F4).
+                           "starting": bool(cs.get("starting")),
                            "show": cs.get("show"),
                            "timeline": cs.get("timeline"),
                            "timecode": cs.get("playing") or cs.get("ltc_in"),
