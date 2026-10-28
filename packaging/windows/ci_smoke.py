@@ -30,6 +30,12 @@ What it proves, in order:
   6. "Stop LTC Player" stops it the same way and nothing is left running.
   7. "Stop LTC Player" refuses while a show is running.
   8. The uninstaller removes the app and the task, and keeps the settings.
+Along the way (2026-10-28): Setup adds exactly one Windows Firewall rule,
+"LTC Player rack page" (TCP 7878, ltcplay.exe, LocalSubnet only), an update
+leaves exactly one, and the uninstaller removes it. With this runner's
+private address saved as the show network address, the updated engine
+answers on it, gives a request by another name the short page naming that
+address, and its log names both addresses it listens on.
 """
 import glob
 import hashlib
@@ -335,6 +341,138 @@ def write_settings(shows):
                    "port": 7878, "open_page_at_sign_in": False}, fh)
 
 
+FIREWALL_RULE = "LTC Player rack page"
+
+
+def firewall_rule():
+    """(exit code, netsh's words) for the installer's firewall rule."""
+    try:
+        netsh = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                             "System32", "netsh.exe")
+        r = subprocess.run(f'"{netsh}" advfirewall firewall show rule '
+                           f'name="{FIREWALL_RULE}" verbose',
+                           capture_output=True, text=True, timeout=60,
+                           errors="replace")
+    except subprocess.TimeoutExpired:
+        return 999, "netsh did not answer"
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+def check_firewall_rule(when):
+    """Exactly one rule by that name: inbound, allow, TCP 7878, ltcplay.exe,
+    from LocalSubnet only."""
+    rc, out = firewall_rule()
+    if not check(rc == 0, f"{when}: no firewall rule named "
+                          f"'{FIREWALL_RULE}': {out.strip()[:300]!r}"):
+        return
+    fields = {}
+    for ln in out.splitlines():
+        k, sep, v = ln.partition(":")
+        if sep:
+            fields.setdefault(k.strip().lower(), []).append(v.strip())
+    n = len(fields.get("rule name", []))
+    check(n == 1, f"{when}: {n} firewall rules named '{FIREWALL_RULE}'; "
+                  f"there must be exactly one")
+    want = {"direction": "in", "action": "allow", "protocol": "tcp",
+            "localport": "7878", "remoteip": "localsubnet",
+            "enabled": "yes"}
+    for k, v in want.items():
+        got = [x.lower() for x in fields.get(k, [])]
+        check(got and all(x == v for x in got),
+              f"{when}: the firewall rule's {k} is {got}, not {v!r}")
+    prog = [x.lower() for x in fields.get("program", [])]
+    check(prog and all(x.endswith("\\ltcplay.exe") for x in prog),
+          f"{when}: the firewall rule is not for ltcplay.exe only: {prog}")
+    NOTES.append(f"{when}: one firewall rule '{FIREWALL_RULE}', TCP 7878, "
+                 f"ltcplay.exe, LocalSubnet, profiles "
+                 f"{fields.get('profiles', ['?'])[0]}")
+
+
+def private_ipv4():
+    """This runner's own RFC 1918 address, or None."""
+    import ipaddress
+    try:
+        k = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            k.connect(("192.0.2.1", 9))        # nothing is sent
+            a = k.getsockname()[0]
+        finally:
+            k.close()
+    except OSError:
+        return None
+    ip = ipaddress.ip_address(a)
+    nets = [ipaddress.ip_network(n) for n in
+            ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+    return a if any(ip in n for n in nets) else None
+
+
+def save_show_address(ip):
+    path = os.path.join(LOCAL, "ltcplay_remote.json")
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        doc = {}
+    doc["show_network_address"] = ip
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+
+
+def get_at(ip, path, host=None, timeout=5):
+    """(status, body) of a GET on the show network address, as another
+    machine would send it (Host: `host` when given)."""
+    req = urllib.request.Request(f"http://{ip}:7878{path}")
+    if host:
+        req.add_header("Host", host)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+    except Exception as e:
+        return 0, f"{type(e).__name__}: {e}"
+
+
+def network_check(ip, logs):
+    """The engine started by the update listens on the saved address."""
+    ok = wait(lambda: get_at(ip, "/remote")[0] == 200, 60)
+    st, body = get_at(ip, "/remote")
+    check(ok and "<title>" in body, f"the page did not answer on the saved "
+                                    f"show network address {ip}:7878: {st} "
+                                    f"{body[:200]!r}")
+    st, body = get_at(ip, "/", host="ltc-show-pc:7878")
+    check(st == 403 and f'href="http://{ip}:7878/"' in body and
+          "instead" in body,
+          f"a request by another name did not get the short page naming "
+          f"http://{ip}:7878/: {st} {body[:300]!r}")
+    log_text = (read_text(os.path.join(logs, "engine.log")) or
+                b"").decode("utf-8", "replace")
+    check(f"listens on 127.0.0.1:7878 and {ip}:7878" in log_text,
+          f"the engine's log does not name both addresses it listens on "
+          f"(127.0.0.1:7878 and {ip}:7878)")
+    # The Show network card's view, on the PC itself: listening on the
+    # address, the rule read as present, the network's category read.
+    st, body = get("/api/remote/network", timeout=40)
+    try:
+        card = json.loads(body) if st == 200 else {}
+    except ValueError:
+        card = {}
+    check(card.get("on_saved") is True and
+          card.get("url") == f"http://{ip}:7878/" and
+          (card.get("firewall") or {}).get("state") == "present" and
+          card.get("category") in ("Public", "Private",
+                                   "DomainAuthenticated"),
+          f"the Show network card does not say it listens on {ip}, the "
+          f"rule is there and the network's category: {st} {body[:600]!r}")
+    if card:
+        NOTES.append(f"Show network card: {' '.join(card.get('lines') or [])}"
+                     [:600])
+    if ok:
+        NOTES.append(f"the engine answered on the saved show network "
+                     f"address {ip}:7878, and another name got the short "
+                     f"page")
+
+
 def all_running():
     return OURS <= tasklist()
 
@@ -474,6 +612,7 @@ def main(installer, version=""):
         check(rc == 0, "the sign-in task 'LTC Player' was not created")
         check("<Priority>4</Priority>" in out and "--task" in out,
               "the sign-in task is not the one LTC Player writes")
+        check_firewall_rule("after install")
 
         say("3. self-checks of the installed programs")
         for exe in ("ltcplay.exe", "flamesafe.exe", "ltcplay-deck.exe"):
@@ -599,6 +738,15 @@ def main(installer, version=""):
         show_file = os.path.join(shows, "smoke show file.txt")
         with open(show_file, "w", encoding="utf-8") as fh:
             fh.write("a show file left here by the smoke test\n")
+        # The show network (2026-10-28): this runner's private address
+        # saved as the show PC's; the engine the update starts uses it.
+        net_ip = private_ipv4()
+        if net_ip:
+            save_show_address(net_ip)
+        else:
+            print("::warning title=show network::this runner has no "
+                  "RFC 1918 address; the show network check is skipped",
+                  flush=True)
         mark = listener.mark()
         rc = install(installer, os.path.join(tmp, "setup-2.log"))
         check(rc == 0, f"the update install failed (exit {rc})")
@@ -639,6 +787,9 @@ def main(installer, version=""):
               f"{want}: {booth_notes_status()}")
         NOTES.append("update refreshed the shipped booth notes and kept "
                      "the person's own copy")
+        check_firewall_rule("after the update")
+        if net_ip:
+            network_check(net_ip, logs)
 
         say("5b. the bench soak test, 7 minutes")
         listener.sock.close()      # the soak test listens on 5568 itself
@@ -745,6 +896,9 @@ def main(installer, version=""):
         check(rc != 0, "the sign-in task is still there after uninstall")
         check(os.path.isfile(os.path.join(LOCAL, "showpc.json")),
               "uninstall removed the settings; it must keep them")
+        rc, out = firewall_rule()
+        check(rc != 0, f"the firewall rule '{FIREWALL_RULE}' is still there "
+                       f"after uninstall: {out.strip()[:300]!r}")
     finally:
         for n in ("supervisor", "flamesafe", "engine", "deck"):
             dump(os.path.join(logs, f"{n}.log"), f"{n} log")

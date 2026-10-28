@@ -85,6 +85,30 @@ LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Hold, Resume and Abort "
                      "ended or been aborted.")
 
 
+HOST_REFUSAL = "This page has to be opened by the show machine's address."
+
+
+def wrong_host_page(bind, port, local):
+    """The short page a browser gets when the page was opened by another
+    name for this PC (the Host check in _refusal). It names only this
+    server's own address, never anything from the request."""
+    import html as _html
+    if local or bind in LOOPBACK:
+        addr = "127.0.0.1"
+    else:
+        addr = f"[{bind}]" if ":" in str(bind) else str(bind)
+    url = _html.escape(f"http://{addr}:{int(port)}/")
+    return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,"
+            "initial-scale=1\"><title>LTC Player</title><style>body{"
+            "font:20px/1.4 system-ui,sans-serif;margin:40px 16px;color:#111;"
+            "background:#fff}a{font-weight:bold}</style></head><body>"
+            "<h1>Open this page by its address</h1>"
+            f"<p>Open this page at <a href=\"{url}\">{url}</a> instead.</p>"
+            "<p>LTC Player answers only to the show PC's own address, not "
+            "to another name for it.</p></body></html>")
+
+
 def normalize_bind(bind):
     """The address bind() will really use, written plainly: "127.0.0.1"
     for any loopback spelling, "0.0.0.0" (refused by serve) for any
@@ -1144,7 +1168,7 @@ class Handler(BaseHTTPRequestHandler):
         port = self.server.server_address[1]
         if not remote_mod.host_ok(self.headers.get("Host"), self._local(),
                                   bind, port):
-            return "This page has to be opened by the show machine's address."
+            return HOST_REFUSAL
         if post:
             # Fix round 1 of #39, F2: a sandboxed iframe or a data: page on
             # this machine sends Origin "null", and a text/plain or bodiless
@@ -1322,6 +1346,17 @@ class Handler(BaseHTTPRequestHandler):
         self._ctx_cache = None          # one connection carries many requests
         route = urllib.parse.urlparse(self.path).path
         why = self._refusal()
+        if why == HOST_REFUSAL and not route.startswith("/api/"):
+            # A person typed another name for this PC (its computer name,
+            # a .local name): a short page with the address that works.
+            # The check itself is not loosened; nothing else is served.
+            return self._send(403, wrong_host_page(
+                getattr(self.server, "bind_address", "127.0.0.1"),
+                self.server.server_address[1], self._local()),
+                "text/html; charset=utf-8",
+                headers={"Content-Security-Policy":
+                         "default-src 'none'; style-src 'unsafe-inline'",
+                         "X-Content-Type-Options": "nosniff"})
         if why:
             return self._send(403, {"error": why})
         if not self._local() and not network_may_reach(route):
@@ -2148,7 +2183,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
           remote_folder=None, flamesafe_config=None, flame_disarm=None,
-          accounts=False, config_watch=None):
+          accounts=False, config_watch=None, network_fallback=False,
+          network_note=""):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -2266,7 +2302,25 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     # 2026-10-07): the network is kept to the remote page's own routes by
     # network_may_reach(). `token` is accepted and ignored so an old caller
     # does not break.
-    httpd = ThreadingHTTPServer((bind, port), Handler)
+    # network_fallback (the Windows supervisor's --network-if-saved): a
+    # saved show network address this PC does not have right now (another
+    # network, the cable out) must not stop the show engine. It then
+    # listens on this PC only, and the Show network card says why.
+    # network_note: why a saved address was not even tried (cli.py
+    # _network_if_saved), said on the Show network card.
+    network_why = str(network_note or "")
+    try:
+        httpd = ThreadingHTTPServer((bind, port), Handler)
+    except OSError as e:
+        if not (network_fallback and on_network):
+            raise
+        network_why = (f"The saved show network address {bind} could not "
+                       f"be used ({e}), so the engine listens on this PC "
+                       f"only. Check that this PC is on the show network "
+                       f"with that address, then restart the engine.")
+        print(network_why, flush=True)
+        bind, on_network = "127.0.0.1", False
+        httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.control = control
     httpd.token = None
     httpd.bind_address = bind
@@ -2379,6 +2433,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         threading.Thread(target=lb.serve_forever,
                          kwargs={"poll_interval": 0.2}, daemon=True,
                          name="ltcplay-web-loopback").start()
+    _say_listening(httpd, on_network, network_why)
     httpd.announce = None
     if announce is not None:
         if isinstance(announce, str):
@@ -2672,6 +2727,30 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     if on_ready:
         on_ready(httpd, control, token)
     return httpd
+
+
+def _say_listening(httpd, on_network, why=""):
+    """Where the engine's page really listens: kept for the Show network
+    card (remote.Remote.listen), printed for the log and one journal line
+    at start. Never raises."""
+    try:
+        port = httpd.server_address[1]
+        addrs = ["127.0.0.1"] + ([httpd.bind_address] if on_network else [])
+        httpd.remote.listen = {"addresses": addrs, "port": port, "why": why}
+        line = ("The engine's page listens on " +
+                " and ".join(f"{a}:{port}" for a in addrs) +
+                ("." if on_network else
+                 ", this PC only: no show network address is in use."))
+        print(line, flush=True)
+        if getattr(httpd.remote, "schedule", None) is not None:
+            # The show journal (without a scheduler there is none, and
+            # Remote._journal would only print the line a second time).
+            httpd.remote._journal("system", "engine", "web page",
+                                  "listening",
+                                  f"{line} {why}" if why else line)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Where the page listens could not be noted: "
+              f"{type(e).__name__}: {e}")
 
 
 def _attach_config_watch(httpd, watch):

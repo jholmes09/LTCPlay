@@ -1083,8 +1083,36 @@ Turning it off puts every controller back on the live stream immediately.
 
 Once, on the show machine: open the page (http://127.0.0.1:7878/remote),
 press Programming, and pick this machine's show Wi-Fi address under "Show
-network". Then start it with the show network on (Run ltcplay, answer y to
-the iPad question). There is no PIN. Once users are set up (USERS.md), an
+network". On a Mac, start it with the show network on (Run ltcplay, answer
+y to the iPad question). There is no PIN.
+
+### Open the page from your Mac or iPad
+
+On the Windows show PC the "Show network, on this machine" card on
+Programming says it all in plain words: the address saved (or none), where
+the engine is listening, whether the Windows Firewall rule is there,
+whether Windows calls that network Public or Private (with what to do
+when it is Public), and the address to type on the other machine, for
+example
+`http://10.1.2.3:7878/`.
+
+- Nothing saved: press "Use <address>" for this PC's address on the show
+  network (only private addresses are offered, and only a private
+  address is ever served on). Settings permission, show PC only.
+- "Not listening on it yet": press "Restart the engine" between shows,
+  with every flame group disarmed. It is refused during a show.
+- On the Mac or iPad, type exactly the address the card gives. The PC's
+  name or a `.local` name gets a short page saying which address to open
+  instead.
+- The firewall rule (added by the installer) lets in this PC's own subnet
+  only, on any network type. If the card says it is missing, run the
+  installer again. INSTALL.md has the rest.
+
+A device on the show network signed out is view only, and arming from it
+still needs "Arming from a screen" on. Nothing about Abort, Hold or Stop
+changes.
+
+ Once users are set up (USERS.md), an
 iPad signed out is view only, like every screen ("Signing in" above); it
 can still Stop, Hold, Abort, Acknowledge and disarm. Anything on the show
 Wi-Fi that can reach that address can see the page, so keep the show Wi-Fi
