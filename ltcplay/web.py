@@ -2385,6 +2385,23 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             from . import announce as announce_mod
             announce = announce_mod.AnnounceService(announce)
         httpd.announce = announce
+    if httpd.announce is not None and \
+            getattr(httpd.announce, "show_route", False) is None:
+        # Announcements play through the show audio while a show audio
+        # process runs (Jeff's field report, 2026-10-28, item 9): the
+        # running session's show clock, when it plays audio of its own.
+        # showaudio is imported only once such a clock exists (it has
+        # already loaded it), so the GPL path never loads it.
+        def _show_route(control=control):
+            s = control.session
+            if s is None or not getattr(s, "running", False):
+                return None
+            clk = getattr(s, "clock", None)
+            if clk is None or getattr(clk, "source", None) != "audio_master":
+                return None
+            from . import showaudio
+            return showaudio.ShowRoute.of_clock(clk)
+        httpd.announce.show_route = _show_route
     if httpd.announce is not None and httpd.schedule is not None:
         sched = httpd.schedule
         httpd.announce.state_provider = (
@@ -2671,6 +2688,9 @@ def _attach_config_watch(httpd, watch):
                 getattr(ann, "config_path", None):
             watch.set_reload(ann.config_path, lambda: ann.reload_if_idle(
                 remote.show_busy_for_reload()))
+            # The picker's own save (announce.save_device) tells the watch
+            # the engine's copy is the file on disk.
+            ann.config_watch = watch
         watch.check(remote.programs_now())
         watch.start(remote.programs_now)
         _close_before_cw = httpd.server_close

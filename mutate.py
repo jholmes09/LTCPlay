@@ -3018,30 +3018,27 @@ MUTATIONS = [
  # be refused before anything is Held (Jeff, 2026-10-26).
  ("an announcement with no output device set holds the schedule anyway",
   "ltcplay/announce.py",
-  '            if not self.device_set:\n'
+  '            elif not self.device_set:\n'
   '                text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
   '                        f"Refused: {self.DEVICE_NOT_SET}")',
-  '            if False:\n'
+  '            elif False:\n'
   '                text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
   '                        f"Refused: {self.DEVICE_NOT_SET}")'),
 
  # Over a running show with no Hold: a show that ended during the file
- # read leaves nothing holding the schedule, so the press is refused.
- ("an announcement pressed over a show still plays after the show ended "
-  "while loading", "ltcplay/announce.py",
-  '            if not held and over_show and state not in SHOW_STATES:',
-  '            if False:'),
+ # read leaves nothing holding the schedule. It still plays (Jeff's field
+ # report, 2026-10-28: announcements are independent of the schedule),
+ # and says it holds nothing.
+ ("an announcement over a show that ended while loading never says it "
+  "holds nothing", "ltcplay/announce.py",
+  '            elif over_show and not held and state not in SHOW_STATES:',
+  '            elif False:'),
 
- # Deliberately no mutation here disabling the FIRST checkpoint's own
- # "if hold_refusal:" alone (only the "if self.hold_requester is not
- # None:" gate above it, and the SECOND checkpoint's own check): the
- # second checkpoint re-checks (now read-only: _check_still_held)
- # immediately before the stream starts, on purpose (the TOCTOU
- # recheck), so disabling only the first check's own refusal changes
- # nothing a test can observe -- the second one still refuses. Confirmed
- # equivalent by hand (mutate.py run, 2026-09-26): NOT CAUGHT, correctly.
- # The second checkpoint's own gate is covered instead by "the second
- # check re-Holds instead of only reading the state" (review round 2).
+ # The FIRST checkpoint's own "if hold_refusal:" is covered by "a Hold the
+ # scheduler refuses refuses the announcement again" (Jeff's field report,
+ # 2026-10-28: a refused Hold never refuses the announcement), and the
+ # second, read-only look by "the second check re-Holds instead of only
+ # reading the state".
 
  ("the Hold request does not carry the Play press's own operator and "
   "screen", "ltcplay/announce.py",
@@ -3133,9 +3130,9 @@ MUTATIONS = [
   '                other = LABELS[self.playing]'),
 
  ("an unavailable announcement file plays anyway", "ltcplay/announce.py",
-  '            st = self.status_by_id.get(ann_id, {})\n'
+  '                  self.status_by_id.get(ann_id, {}))\n'
   '            if not st.get("available"):',
-  '            st = self.status_by_id.get(ann_id, {})\n'
+  '                  self.status_by_id.get(ann_id, {}))\n'
   '            if False:'),
 
  ("a name not on the operator list can still press Play",
@@ -3152,8 +3149,7 @@ MUTATIONS = [
   "ltcplay/announce.py",
   '    if not hits:\n'
   '        raise ValueError(f"{_clean(name)!r} is not attached. Nothing else "\n'
-  '                         f"will be used in its place. Outputs on this "\n'
-  '                         f"machine: {_clean(names)}.")',
+  '                         f"will be used in its place.")',
   '    if not hits:\n'
   '        if outputs:\n'
   '            return outputs[0]'),
@@ -3166,23 +3162,234 @@ MUTATIONS = [
   '                          text=text, ann_id=ann_id, who=who, screen=screen,\n'
   '                          state=state)\n'
   '                raise ValueError(text)\n'
-  '            st = self.status_by_id.get(ann_id, {})',
+  '            st = ({"available": True, "length_s": TONE_S} if tone else',
   '                raise ValueError(text)\n'
-  '            st = self.status_by_id.get(ann_id, {})'),
+  '            st = ({"available": True, "length_s": TONE_S} if tone else'),
 
  ("an announcement's device name matches by substring again",
   "ltcplay/announce.py",
   '    hits = [d for d in outputs if d["name"].strip().lower() == want]',
   '    hits = [d for d in outputs if want in d["name"].lower()]'),
 
- ("the announcement interlock is never rechecked before the stream starts",
+ # Jeff's field report, 2026-10-28: "It refuses because the night is
+ # over. That should not be this way. Those things are independent." A
+ # Hold the scheduler refuses never refuses the announcement
+ # (test_announce_hold_refused_still_plays,
+ # test_announce_plays_whatever_the_schedule_state).
+ ("a Hold the scheduler refuses refuses the announcement again",
   "ltcplay/announce.py",
-  '            state = self._current_state()\n'
-  '            refusal = interlock_refusal(state)\n'
-  '            if refusal:\n',
-  '            state = self._current_state()\n'
-  '            refusal = interlock_refusal(state)\n'
-  '            if False:\n'),
+  '                if hold_refusal:\n'
+  '                    claim_epoch = None\n'
+  '                    hold_note = no_hold_note(state, hold_refusal)',
+  '                if hold_refusal:\n'
+  '                    raise ValueError(hold_refusal)'),
+
+ ("an announcement that held nothing never says why",
+  "ltcplay/announce.py",
+  '            if automatic is None and not held and not hold_note:\n'
+  '                hold_note = no_hold_note(state)',
+  '            if False:\n'
+  '                hold_note = no_hold_note(state)'),
+
+ # Jeff's field report, 2026-10-28, item 9: announcements through the
+ # show audio, mixed into its front left and right
+ # (test_announce_plays_through_the_show_audio,
+ # test_announce_bus_mixes_into_the_show_outputs).
+ ("show audio: the announcement bus is never mixed into the outputs",
+  "ltcplay/showaudio.py",
+  "            bus.mix(outdata)",
+  "            pass"),
+
+ ("show audio: an announcement replaces the show's own audio instead of "
+  "adding to it", "ltcplay/showaudio.py",
+  "            out[:k, o] += seg[:, 0] if seg.shape[1] == 1 else seg[:, i]",
+  "            out[:k, o] = seg[:, 0] if seg.shape[1] == 1 else seg[:, i]"),
+
+ ("show audio: the soft clip guard never runs",
+  "ltcplay/showaudio.py",
+  "                self.softened += soft_clip(out[:k, o])",
+  "                pass"),
+
+ ("show audio: the soft clip guard bends the show's audio with no "
+  "announcement playing", "ltcplay/showaudio.py",
+  "        if self.state != PLAYING or self.pcm is None:\n"
+  "            return",
+  "        if self.state != PLAYING or self.pcm is None:\n"
+  "            soft_clip(out)\n"
+  "            return"),
+
+ ("show audio: an older announcement's stop cuts a newer one",
+  "ltcplay/showaudio.py",
+  "        if int(token) != self.token or self.state != PLAYING:",
+  "        if self.state != PLAYING:"),
+
+ ("show audio: a dropped stream leaves the announcement bus playing",
+  "ltcplay/showaudio.py",
+  "        self.mixer.hard_stop()\n"
+  "        self.bus.hard_stop()\n"
+  "        self.devstate = DEV_CLOSED",
+  "        self.mixer.hard_stop()\n"
+  "        self.devstate = DEV_CLOSED"),
+
+ ("announcements: with the show audio running, a second device is opened "
+  "anyway", "ltcplay/announce.py",
+  "            if route_now is not None or route is not None:",
+  "            if False:"),
+
+ ("announcements: the show audio's interface not open still plays",
+  "ltcplay/announce.py",
+  "            if not r.ready():",
+  "            if False:"),
+
+ ("announcements: a show_outputs past the show audio's outputs is not "
+  "said", "ltcplay/announce.py",
+  '            if max(self.options["show_outputs"]) > r.channels:',
+  "            if False:"),
+
+ ("announcements: the gain_db setting is ignored", "ltcplay/announce.py",
+  '            gain = 10.0 ** (self.options["gain_db"] / 20.0)',
+  "            gain = 1.0"),
+
+ ("announcements: web.py never wires the show audio route",
+  "ltcplay/web.py",
+  "        httpd.announce.show_route = _show_route",
+  "        pass"),
+
+ # Item 10: a name on two outputs is said plainly, and the picker chooses.
+ ("announcements: a name on two outputs is used anyway",
+  "ltcplay/announce.py",
+  '    if len(hits) == 1:\n'
+  '        return hits[0]\n'
+  '    if not hits:',
+  '    if hits:\n'
+  '        return hits[0]\n'
+  '    if not hits:'),
+
+ ("announcements: the picked audio system is ignored",
+  "ltcplay/announce.py",
+  "    if hostapi and len(hits) > 1:\n"
+  "        hits = [d for d in hits",
+  "    if False:\n"
+  "        hits = [d for d in hits"),
+
+ ("announcements: anyone may pick the announcement output",
+  "ltcplay/users.py",
+  '    "announce-output": "settings",',
+  '    "announce-output": None,'),
+
+ ("announcements: the announcement output can be picked from the network",
+  "ltcplay/remote.py",
+  'LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",\n',
+  'LOCAL_ONLY = frozenset(("network", "screen-arming",\n'),
+
+ ("announcements: the test tone answers from the network",
+  "ltcplay/remote.py",
+  '                        "announce-test-tone", "preroll-check"))',
+  '                        "preroll-check"))'),
+
+ ("announcements: anyone may play the test tone", "ltcplay/users.py",
+  '"announce-test-tone": "settings",',
+  '"announce-test-tone": None,'),
+
+ # Safety review of #158, and Jeff's field report of 2026-10-28 ("the
+ # screen said playing and nothing was heard").
+ ("announcements: the recording is resampled and sent under the "
+  "announcement lock", "ltcplay/announce.py",
+  "        loaded, load_why = self._load_on_show(token, pcm, rate)\n"
+  "\n"
+  "        with self.lock:\n",
+  "        with self.lock:\n"
+  "            loaded, load_why = self._load_on_show(token, pcm, rate)\n"),
+
+ ("announcements: a recording over 60 s goes through the show audio",
+  "ltcplay/announce.py",
+  "        if length_s is not None and length_s > SHOW_ROUTE_MAX_S:",
+  "        if False:"),
+
+ ("show audio: the callback frees a finished recording",
+  "ltcplay/showaudio.py",
+  "        if end or self.frame >= self.pcm.shape[0]:\n"
+  "            self.state = ENDED\n"
+  "            self._retire()",
+  "        if end or self.frame >= self.pcm.shape[0]:\n"
+  "            self.state = ENDED\n"
+  "            self.pcm = None"),
+
+ ("show audio: retired recordings are never let go",
+  "ltcplay/showaudio.py",
+  "        self.bus.collect()\n",
+  ""),
+
+ ("announcements: a restart of the show audio process is not reported "
+  "at once", "ltcplay/announce.py",
+  "            if self._seen and self.lost is None:",
+  "            if False:"),
+
+ ("announcements: a silent recording is reported as playing",
+  "ltcplay/announce.py",
+  "            if peak < SILENT_DBFS:",
+  "            if False:"),
+
+ ("announcements: an output that never takes audio is not failed",
+  "ltcplay/announce.py",
+  "        never = (self._player.frames_written == 0 and",
+  "        never = (False and"),
+
+ ("announcements: the status says playing before any audio has gone",
+  "ltcplay/announce.py",
+  '"heard": self._player.frames_written > 0,',
+  '"heard": True,'),
+
+ ("announcements: a test tone plays during a show", "ltcplay/announce.py",
+  "            if tone and state in SHOW_STATES:",
+  "            if False:"),
+
+ ("announcements: the test tone takes a Hold", "ltcplay/announce.py",
+  '            elif tone:\n'
+  '                hold_note = "A test tone holds nothing."',
+  '            elif False:\n'
+  '                hold_note = "A test tone holds nothing."'),
+
+ ("announcements: the default level in the show mix is 0 dB",
+  "ltcplay/announce.py",
+  "DEFAULT_GAIN_DB = -6.0",
+  "DEFAULT_GAIN_DB = 0.0"),
+
+ ("announcements: two outputs of one audio system are used anyway",
+  "ltcplay/announce.py",
+  "    if hostapi and len(hits) > 1:\n"
+  "        raise ValueError(same_api_sentence(name, hits))",
+  "    if hostapi and len(hits) > 1:\n"
+  "        return hits[0]"),
+
+ ("announcements: a save writes before checking the whole file",
+  "ltcplay/announce.py",
+  "            parse_config(doc, self.config_path)\n"
+  "            options = parse_options(doc, self.config_path)\n"
+  "            _write_json_atomic(self.config_path, doc)",
+  "            _write_json_atomic(self.config_path, doc)\n"
+  "            parse_config(doc, self.config_path)\n"
+  "            options = parse_options(doc, self.config_path)"),
+
+ ("announcements: the picker's save is not told to the settings watch",
+  "ltcplay/announce.py",
+  "                    cw.refresh(self.config_path)",
+  "                    pass"),
+
+ ("announcements: web.py never gives the announcements the settings watch",
+  "ltcplay/web.py",
+  "            ann.config_watch = watch",
+  "            pass"),
+
+ ("announcements: a reload drops show_outputs, gain_db and hostapi",
+  "ltcplay/announce.py",
+  '                "status_by_id": status, "options": options}',
+  '                "status_by_id": status}'),
+
+ ("announcements: an announcement's Hold leaves Programming playback "
+  "playing", "ltcplay/remote.py",
+  "                self._announce_pauses_programming(who, screen)",
+  "                pass"),
 
  ("a 32-bit float announcement file is read as integers", "ltcplay/announce.py",
   '    if is_float:\n'
@@ -11667,8 +11874,8 @@ def build():
 
  ('screen arm: the switch answers from the network',
   'ltcplay/remote.py',
-  'LOCAL_ONLY = frozenset(("network", "screen-arming", "preroll-check"))',
-  'LOCAL_ONLY = frozenset(("network", "preroll-check"))'),
+  'LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",',
+  'LOCAL_ONLY = frozenset(("network", "announce-output",'),
 
  ('screen arm: switching it off keeps the holds',
   'ltcplay/remote.py',
