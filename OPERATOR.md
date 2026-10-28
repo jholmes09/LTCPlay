@@ -328,6 +328,23 @@ plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
+**WIND on the show screen (Fire & Ice).** Under the lasers. Advisory only:
+it never arms, holds or stops anything; the on-site wind check decides.
+The measured line shows the highest usable reading from UTALP (the I-15
+Point of the Mountain station) and the backup airports (Provo, Salt Lake
+City). A backup reading is amber and says "backup station", the airport,
+how far away it is and why UTALP was not used ("UTALP (Iowa mesonet)
+stopped reporting at 3:40 AM, last reading 3 h 12 min ago") or what UTALP
+reads. If the highest reading is STALE it is still shown, amber and
+marked STALE, with the current ones beside it. NO CURRENT DATA, use
+on-site wind check, with no number, means no
+source has a usable reading (UTALP over 45 min old, an airport over 2 h);
+the line says why for each one. The forecast line goes STALE when this PC
+has not got it from the Weather Service for an hour, or the Weather
+Service has not updated it for 18 h, and grey at 6 h and 36 h; it says
+which. WEATHER.md
+has the rules and the settings.
+
 **Startup (Fire & Ice; it was called Morning and Shutdown).** The rack
 screen has a Startup page (the button in the header). Shutdown is its own
 labelled section on it: one press opens the Shutdown checklist. On it: the laser arm (every
@@ -923,6 +940,31 @@ contact the line reads "armed: not known".
 The wave flamer, with a safety per fixture, keeps its own count of safeties
 up. If the Startup page's machine list cannot be read the line is left
 off.
+
+A group with aim slots (the wave flamer's angle, `aim` in flamesafe.json)
+has one more small line on its card, read only, for example "Aim 1, 7, 13:
+loaded; ARMED; asked 54, 128, 201, sent 54, 128, 201". Loaded means
+flamesafe and LTC Player have the same aim list. Asked is what the show
+asked for on those slots, sent is what flamesafe really sent: 0 while the
+group is not armed (it then reads held or disarmed), by design: the head
+then sits at its end stop. Hover
+the line to read all of it. If it says NOT loaded, an Aim slots alert says
+the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+Player read when it started, and what to do (put the aim list in the
+flamesafe.json flamesafe uses, check LTC Player reads that same file, then
+quit LTC Player and start it again). It is display only: it never holds
+a show at showtime, never plays the Delayed announcement, never sounds
+the booth speaker and changes nothing on the Stream Deck (no ACK key, page
+2 stays open). Stop, Hold, Abort and Disarm all work as usual while it
+is up, and it clears itself once the lists agree. Both
+programs also write their aim list and the file they read to the journal
+when they start.
+
+If the Startup page says a machine does not fit flamesafe's layout (for
+example "slot 1 is on the fixture whose safety slot is None, not 6"), the
+sentence ends with the full path of the flamesafe config it was checked
+against. If that is not the flamesafe.json you edited, LTC Player is
+reading another one.
 
 The button under the groups is two-way. While every group is off it reads
 Hold to arm all flame groups, in green with a green outline: press and HOLD

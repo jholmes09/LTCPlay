@@ -1253,6 +1253,11 @@ class Composer:
                 "safeties_up": list(ups[i]),
                 "safeties_locked": list(locks[i]),
                 "fire_slots": list(g.fire),
+                # Aim slots (2026-10-28): the fire slots that only point a
+                # head, as this program read them at start. ltcplay
+                # compares them with its own list and shows them on the
+                # rack screen. Display only; an older ltcplay ignores it.
+                "aim_slots": sorted(g.aim),
                 "wanted": self._wanted[i],
                 "armed": state,
                 "reason": reason,

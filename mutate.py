@@ -4378,10 +4378,20 @@ def build():
   '                if idx >= f.frame_count and _tail_by_design(',
   '                if False and _tail_by_design('),
 
+ ('fire & ice: a render shorter than its audio is no flame cue fault',
+  'ltcplay/fire_ice.py',
+  '        if not getattr(zones, "show_len_s", None):\n            return False',
+  '        pass'),
+
+ ('fire & ice: show_len_s makes the audio running past the render no fault',
+  'ltcplay/fire_ice.py',
+  '        return show_s > render_s + 1e-6 and show_s > audio_s + 1e-6 and \\',
+  '        return show_s > render_s + 1e-6 and \\'),
+
  ('fire & ice: past the configured end is not a flame cue fault either',
   'ltcplay/fire_ice.py',
-  '        return show_s > render_s + 1e-6 and rel <= show_s + 1.0 / 30.0',
-  '        return show_s > render_s + 1e-6'),
+  '            rel <= show_s + 1.0 / 30.0',
+  '            True'),
 
  ('audio_master: a Hold at the very end of the audio is lost',
   'ltcplay/clock.py',
@@ -10428,8 +10438,8 @@ def build():
 
  ("rack screen: a group's arm value is dropped from the card",
   "ltcplay/remote.py",
-  '                           "arm_value": _arm(g.get("arm_value"))})',
-  '                           "arm_value": None})'),
+  '                           "arm_value": _arm(g.get("arm_value")),',
+  '                           "arm_value": None,'),
 
  ("flamesafe: a profile group arms at the file's arm value",
   "flamesafe/config.py",
@@ -13937,9 +13947,8 @@ def build():
 
  ("fuel: one under the fire value counts as flame",
   "ltcplay/fuel.py",
-  "            if not any(0 < s <= n and values[s - 1] >= at for s in m.fire):",
-  "            if not any(0 < s <= n and values[s - 1] >= at - 1\n"
-  "                       for s in m.fire):"),
+  "            if not any(0 < s <= n and values[s - 1] >= at\n",
+  "            if not any(0 < s <= n and values[s - 1] >= at - 1\n"),
 
  ("fuel: a Showven's purge counts",
   "ltcplay/fuel.py",
@@ -14370,8 +14379,8 @@ def build():
  # each is a way the wind readout could mislead an operator.
  ("weather: the mesonet's knots are shown as mph",
   "ltcplay/weather.py",
-  "    return {\"speed_mph\": speed * KNOT_MPH,",
-  "    return {\"speed_mph\": speed,"),
+  "    return _in_range({\"speed_mph\": speed * KNOT_MPH,",
+  "    return _in_range({\"speed_mph\": speed,"),
 
  ("weather: km/h from the NWS are shown as mph",
   "ltcplay/weather.py",
@@ -14385,18 +14394,141 @@ def build():
 
  ("weather: a measured reading over 45 min old still shows its number",
   "ltcplay/weather.py",
-  "        elif age is None or age > dead_s:",
-  "        elif age is None:"),
+  "    if age > dead_s:\n        return \"none\", age",
+  "    if False:\n        return \"none\", age"),
 
  ("weather: a measured reading over 20 min old is not STALE",
   "ltcplay/weather.py",
-  "            line.update(level=\"stale\" if age > stale_s else \"ok\",",
-  "            line.update(level=\"ok\","),
+  "    return (\"stale\" if age > stale_s else \"ok\"), max(0.0, age)",
+  "    return \"ok\", max(0.0, age)"),
 
- ("weather: a forecast over 3 h old is not STALE",
+ # The forecast judged on when this PC got it, and the measured backups
+ # (Jeff, 2026-10-28, field report item 15).
+ ("weather: a forecast this PC has not got for over 1 h is not STALE",
   "ltcplay/weather.py",
-  "        line.update(level=\"stale\" if age > fstale_s else \"ok\",",
-  "        line.update(level=\"ok\","),
+  "        if got_age > fstale_s:",
+  "        if False:"),
+
+ ("weather: a forecast the NWS has not updated for 18 h is not STALE",
+  "ltcplay/weather.py",
+  "        if issued_age > fissued_s:",
+  "        if False:"),
+
+ ("weather: a forecast this PC has not got for 6 h still shows its number",
+  "ltcplay/weather.py",
+  "got_age > fdead_s or \\\n            issued_age > fidead_s:",
+  "False or \\\n            issued_age > fidead_s:"),
+
+ ("weather: a forecast the NWS has not updated for 36 h still shows its number",
+  "ltcplay/weather.py",
+  "got_age > fdead_s or \\\n            issued_age > fidead_s:",
+  "got_age > fdead_s or \\\n            False:"),
+
+ ("weather: a forecast timed in the future is shown",
+  "ltcplay/weather.py",
+  "        future = got - now > 15 * 60 or d[\"issued\"] - now > 15 * 60",
+  "        future = False"),
+
+ ("weather: forecast_every_min longer than the stale limit is taken",
+  "ltcplay/weather.py",
+  "    if cfg[\"forecast_every_min\"] >= cfg[\"forecast_stale_hours\"] * 60:",
+  "    if False:"),
+
+ ("weather: the forecast is judged on its issue time again",
+  "ltcplay/weather.py",
+  "        got = d.get(\"fetched_at\")\n",
+  "        got = d[\"issued\"]\n"),
+
+ ("weather: a stalled station blanks the wind though a backup is current",
+  "ltcplay/weather.py",
+  "    usable = [r for r in rows if r[\"st\"] in (\"ok\", \"stale\")]",
+  "    usable = [r for r in rows[:1] if r[\"st\"] in (\"ok\", \"stale\")]"),
+
+ ("weather: a higher STALE reading is hidden by a current lower one",
+  "ltcplay/weather.py",
+  "    pick = max(usable, key=",
+  "    pick = max([r for r in usable if r[\"st\"] == \"ok\"] or usable,"
+  " key="),
+
+ ("weather: the lowest reading leads",
+  "ltcplay/weather.py",
+  "    pick = max(usable, key=",
+  "    pick = min(usable, key="),
+
+ ("weather: a STALE headline is not marked",
+  "ltcplay/weather.py",
+  "        if pick[\"st\"] == \"stale\" and others:\n            text += (f\" STALE: over",
+  "        if False:\n            text += (f\" STALE: over"),
+
+ ("weather: a wind speed of 900 mph is shown",
+  "ltcplay/weather.py",
+  "        if v is not None and not 0 <= v <= MAX_MPH:",
+  "        if False:"),
+
+ ("weather: a millisecond obsTime is read as seconds",
+  "ltcplay/weather.py",
+  "        if valid is None or not 1e9 <= valid < 1e11:",
+  "        if valid is None or valid < 1e9:"),
+
+ ("weather: a backup station's reading is shown as if it were UTALP's",
+  "ltcplay/weather.py",
+  "\"backup\" if pick[\"i\"] > 0 else \"ok\")",
+  "\"ok\")"),
+
+ ("weather: an hourly airport is held to the 5 minute feed's limits",
+  "ltcplay/weather.py",
+  "hourly=name != \"mesonet\")",
+  "hourly=False)"),
+
+ ("weather: station_limits are ignored",
+  "ltcplay/weather.py",
+  "    own = (cfg.get(\"station_limits\") or {}).get(station) or {}",
+  "    own = {}"),
+
+ ("weather: an HTTP error is said as no answer",
+  "ltcplay/weather.py",
+  "        txt = (f\"{short} did not answer: {err}\" if s.get(\"offline\") else",
+  "        txt = (f\"{short} did not answer: {err}\" if True else"),
+
+ ("weather: the page shows a backup reading without amber",
+  "ltcplay/web/remote.html",
+  "cls:lv === \"backup\" ? \"stale\" : lv,",
+  "cls:lv,"),
+
+ ("weather: no current data gives no reason",
+  "ltcplay/weather.py",
+  "                         + \". \".join(_cap(r[\"why\"]) for r in rows) + \".\")",
+  "                         + \"\")"),
+
+ ("weather: a backup reading does not say why the station was passed over",
+  "ltcplay/weather.py",
+  "        if ahead:\n            text += (\" Using the backup because \"",
+  "        if False:\n            text += (\" Using the backup because \""),
+
+ ("weather: a station that stopped reporting is said as not answering",
+  "ltcplay/weather.py",
+  "    if err and not s.get(\"answered\"):",
+  "    if True:"),
+
+ ("weather: a backup that disagrees with the station is not said",
+  "ltcplay/weather.py",
+  "        if others:\n            text += (\" \" + \"; \".join(",
+  "        if False:\n            text += (\" \" + \"; \".join("),
+
+ ("weather: aviationweather.gov's knots are shown as mph",
+  "ltcplay/weather.py",
+  "    return _in_range({\"speed_mph\": to_mph(wspd, unit),",
+  "    return _in_range({\"speed_mph\": wspd,"),
+
+ ("weather: aviationweather.gov's oldest report is used",
+  "ltcplay/weather.py",
+  "        if best is None or best[0] is None or valid > best[0]:",
+  "        if best is None or best[0] is None or valid < best[0]:"),
+
+ ("weather: the backup airports are never asked",
+  "ltcplay/weather.py",
+  "    for sid in cfg.get(\"backup_stations\") or ():",
+  "    for sid in ():"),
 
  ("weather: sources 30 mph apart do not disagree",
   "ltcplay/weather.py",
@@ -15473,6 +15605,124 @@ def build():
   ":where(html.tight) .ctl button{min-height:44px}",
   "html.tight .ctl button{min-height:44px}"),
 
+
+ # aim slots seen (2026-10-28): the start lines, the status frame, the
+ # rack screen's aim line and alert, the Startup page's file; fuel burns
+ # a Showven only on its ignition
+ ("aim seen: flamesafe's status frame leaves out the aim slots",
+  "flamesafe/composer.py",
+  "                \"aim_slots\": sorted(g.aim),",
+  "                \"aim_slots\": [],"),
+
+ ("aim seen: flamesafe does not journal its aim slots at start",
+  "flamesafe/__main__.py",
+  "    journal.event(\"config\", aim_line(cfg.groups, argv[0]))\n",
+  ""),
+
+ ("aim seen: flamesafe's aim line leaves out the file",
+  "flamesafe/__main__.py",
+  "            f\"the group is armed), read from {where}\")",
+  "            f\"the group is armed)\")"),
+
+ ("aim seen: the flame link does not journal its aim slots at start",
+  "ltcplay/fire_ice.py",
+  "    if journal is not None:\n        journal(aim_sentence(",
+  "    if journal is None:\n        journal(aim_sentence("),
+
+ ("aim seen: the rack screen is not given the engine's aim slots",
+  "ltcplay/web.py",
+  "            httpd.remote.flame_aim = (",
+  "            httpd.remote.flame_aim_unused = ("),
+
+ ("aim seen: the status view drops flamesafe's aim slots",
+  "ltcplay/remote.py",
+  "                           \"aim_slots\": _ints(g.get(\"aim_slots\")),",
+  "                           \"aim_slots\": None,"),
+
+ ("aim seen: the lists are always taken to agree",
+  "ltcplay/remote.py",
+  "        agree = None if theirs is None or mine is None else theirs == mine",
+  "        agree = None if theirs is None or mine is None else True"),
+
+ ("aim seen: a difference raises no alert",
+  "ltcplay/remote.py",
+  "                a = self.alerts.raise_(\"aim\", text)",
+  "                a = None"),
+
+ ("aim seen: the alert is raised again on every poll",
+  "ltcplay/remote.py",
+  "            if text == self._aim_said:\n                return\n",
+  "            if text == self._aim_said:\n                pass\n"),
+
+ ("aim seen: agreeing again never clears the alert",
+  "ltcplay/remote.py",
+  "                    self.alerts.clear(id=aid, action=\"Confirm\",",
+  "                    self.alerts.clear(id=-1, action=\"Confirm\","),
+
+ ("aim seen: loaded only needs flamesafe's list",
+  "ltcplay/remote.py",
+  "                        \"loaded\": bool(fs) and fs == lt,",
+  "                        \"loaded\": bool(fs),"),
+
+ ("aim seen: sent shows what was asked",
+  "ltcplay/remote.py",
+  "                        \"sent\": at(g.get(\"sent_fire\"))}",
+  "                        \"sent\": at(g.get(\"commanded_fire\"))}"),
+
+ ("aim seen: the card always says loaded",
+  "ltcplay/web/remote.html",
+  "  let t = \"Aim \" + j(a.slots) + \": \" + (a.loaded ? \"loaded\" :",
+  "  let t = \"Aim \" + j(a.slots) + \": \" + (true ? \"loaded\" :"),
+
+ ("aim seen: the card never shows the aim line",
+  "ltcplay/web/remote.html",
+  "    ae.hidden = !al;",
+  "    ae.hidden = true;"),
+
+ ("aim seen: the Startup page error leaves out the flamesafe file",
+  "ltcplay/morning.py",
+  "    return f\" (checked against flamesafe's config {os.path.abspath(path)})\"",
+  "    return \"\""),
+
+ ("fuel: a Showven burns on any fire slot again (angle, speed)",
+  "ltcplay/fuel.py",
+  "                       for s in burn_slots(m)):",
+  "                       for s in m.fire):"),
+
+ ("fuel: a Showven's angle counts as flame again",
+  "ltcplay/fuel.py",
+  "    skip = {c for x in saf for c in (x - 5, x - 4)}",
+  "    skip = {c for x in saf for c in (x - 4,)}"),
+
+ ("fuel: a Showven's preset and duration stop counting",
+  "ltcplay/fuel.py",
+  "    out = [f for f in fire if f not in skip]",
+  "    out = [f for f in fire if f not in skip and f + 3 not in saf]"),
+
+ ("fuel: a Showven with no safety slot counts its angle",
+  "ltcplay/fuel.py",
+  "            skip = {run[0], run[1]}",
+  "            skip = {run[1]}"),
+
+ ("aim seen: the aim alert holds a show at showtime",
+  "ltcplay/alerthold.py",
+  "        return [a for a in self.alerts.open() if a.kind not in DISPLAY_ONLY]",
+  "        return list(self.alerts.open())"),
+
+ ("aim seen: the aim alert sounds the booth",
+  "ltcplay/alerts.py",
+  "        if a.kind in DISPLAY_ONLY:\n            a.booth_ok, a.booth = None, \"display only: no booth note\"\n            return\n",
+  ""),
+
+ ("aim seen: the aim alert shares the flames kind",
+  "ltcplay/remote.py",
+  "                a = self.alerts.raise_(\"aim\", text)",
+  "                a = self.alerts.raise_(\"flames\", text)"),
+
+ ("aim seen: the card says held as disarmed",
+  "ltcplay/web/remote.html",
+  "c === \"held\" ? \"; held\" : ",
+  ""),
  # The Programming playhead on the show audio (playhead.py, Jeff
  # 2026-10-28, field report items 7 and 8).
  ("Play from starts the show audio at the top, not at the point asked", "ltcplay/clock.py",
@@ -16252,7 +16502,11 @@ def build():
 
  ("old page: the engine's Show is not believed", "ltcplay/web/index.html",
   '  if(s && s.mode === "show") return "show";\n',
-  ""),
+  ""), ("aim seen: the aim alert turns the deck's Start key to ACK",
+  "ltcplay/streamdeck.py",
+  "                     if isinstance(a, dict)\n                     and a.get(\"kind\") not in DISPLAY_ONLY)",
+  "                     if isinstance(a, dict))"),
+
 ]
 
 

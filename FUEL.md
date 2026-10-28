@@ -21,7 +21,8 @@ just burns nothing while it is locked.
 
 LTC Player watches the flame frames it sends to flamesafe and counts, for
 each unit, the **seconds its flame is on**: a fire value of 229 or more on a
-G-Flame, 254 or more on a Showven. It never changes or slows a flame frame;
+G-Flame, 254 or more on a Showven's ignition, duration or preset channel (CH3 to
+CH5). It never changes or slows a flame frame;
 it only watches them.
 
 **When in doubt, it reads emptier, never fuller.**
@@ -33,8 +34,11 @@ it only watches them.
   or the tracker fell behind), the page says so at the top and those units
   read **Not sure** until their next refill. A "not sure" bar is never
   green.
-- A Showven firing from its preset sequence channel (CH5) is not counted;
-  only its fire channel is.
+- A Showven's angle (CH1) and speed (CH2, 255 while the head moves) are
+  never counted: they light nothing, so a head that sweeps with no flame
+  burns nothing.
+- A Showven firing from its preset sequence channel (CH5) is counted only
+  while that channel reads 254 or more.
 
 Flame time goes in one of three piles:
 
