@@ -2676,7 +2676,12 @@ def test_property_a_disarmed_group_never_fires():
                     if prev_safety[i] == 0:
                         quiet_left[i] = rules.EDGE_QUIET_FRAMES + 1
                     if quiet_left[i] > 0:
-                        ok &= check(fire == [0] * len(fire),
+                        # An aim slot (2026-10-28) points a head and is
+                        # not held through the window; every other fire
+                        # slot is.
+                        ok &= check(all(v == 0 if f not in g.aim else
+                                        v in (0, commanded[f - 1])
+                                        for f, v in zip(g.fire, fire)),
                                     f"case {case} step {step}: {g.name} "
                                     f"fired inside the edge-quiet window")
                         quiet_left[i] -= 1
@@ -5594,16 +5599,112 @@ def test_safety_profile_composes():
           and r.group(WAVE)["reason"] == composer.ABORT_DISARMED,
           f"the Abort lowers the profile group to 0: {r.group(WAVE)}")
     # The edge gate is the same for a profile group: a fire slot high on
-    # the rising edge holds the arm.
+    # the rising edge holds the arm. Slot 2 (speed): slot 1 is the angle,
+    # an aim slot the gate leaves out (2026-10-28).
     r = Rig()
     r.prove_alive()
-    r.run(2, {1: 200})
+    r.run(2, {2: 200})
     r.inp.set(WAVE)
-    r.run(3, {1: 200})
+    r.run(3, {2: 200})
     check(safeties_on_wire(r) == [0, 0, 0]
           and r.group(WAVE)["armed"] == "held",
           f"a fire slot high on the edge still holds the profile group: "
           f"{r.group(WAVE)}")
+
+
+# The example's wave flamer angle channels (2026-10-28).
+WAVE_AIM = [1, 7, 13]
+WAVE_FLAME = [f for f in WAVE_FIRE if f not in WAVE_AIM]
+
+
+def test_aim_slots_point_the_head_and_never_hold_the_arm():
+    section("aim slots (2026-10-28): the wave flamer's angle at 128 neither "
+            "holds the arm nor is zeroed through the edge-quiet window; "
+            "every flame slot keeps both rules")
+    cfg = make_config()
+    w = cfg.groups[WAVE]
+    check(w.aim == frozenset(WAVE_AIM),
+          f"the example lists the three angle channels as aim: {w.aim}")
+    check(all(not g.aim for i, g in enumerate(cfg.groups) if i != WAVE),
+          "no other example group has aim slots")
+
+    def refused(aim, want):
+        d = example_dict()
+        d["groups"][WAVE]["aim"] = aim
+        try:
+            config.from_dict(d)
+        except config.ConfigError as e:
+            return check(want in str(e), f"aim {aim!r} refused for the "
+                                         f"right reason: {e}")
+        return check(False, f"aim {aim!r} was accepted")
+
+    refused(6, "must be a list")
+    refused([401], "not one of this group's fire slots")
+    refused([6], "not one of this group's fire slots")
+    refused([True], "not one of this group's fire slots")
+    refused([1, 1], "listed twice")
+    refused(list(WAVE_FIRE), "every fire slot is an aim slot")
+    d = example_dict()
+    del d["groups"][WAVE]["aim"]
+    check(config.from_dict(d).groups[WAVE].aim == frozenset(),
+          "a group without aim has none, and behaves as before")
+
+    # Arming with every angle at straight up (128) and every flame slot at
+    # zero: the rise happens.
+    straight_up = {a: 128 for a in WAVE_AIM}
+    r = Rig()
+    r.prove_alive()
+    r.run(2, straight_up)
+    r.inp.set(WAVE)
+    r.run(1, straight_up)
+    check(safeties_on_wire(r) == [WAVE_ARM] * 3
+          and r.group(WAVE)["armed"] == "armed",
+          f"the angles at 128 do not hold the arm: {safeties_on_wire(r)} "
+          f"{r.group(WAVE)['reason']}")
+    # Inside the edge-quiet window: the angles go out, a flame slot does
+    # not.
+    cue = dict(straight_up)
+    cue[3] = 255
+    r.run(1, cue)
+    u = r.out.universe
+    check([u[a - 1] for a in WAVE_AIM] == [128] * 3 and u[3 - 1] == 0,
+          f"in the edge-quiet window the angles are sent and the fire "
+          f"channel is held: {[u[a - 1] for a in WAVE_AIM]} {u[2]}")
+    r.run(rules.EDGE_QUIET_FRAMES + 1, cue)
+    u = r.out.universe
+    check(u[3 - 1] == 255 and u[1 - 1] == 128,
+          f"after the window the fire channel goes out too: {u[2]} {u[0]}")
+    # The head follows the angle while armed.
+    for v in (54, 201, 0, 255):
+        cue[1] = v
+        r.run(1, cue)
+        check(r.out.universe[0] == v,
+              f"the angle follows the show: {v} -> {r.out.universe[0]}")
+    # Disarmed, the angle is zero like every fire slot.
+    r.inp.set(WAVE, on=False)
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15,
+          f"a disarm zeroes the angles too: {r.fire(WAVE)}")
+    # Every real flame slot still holds the arm when high on the edge.
+    for f in WAVE_FLAME:
+        r = Rig()
+        r.prove_alive()
+        hot = dict(straight_up)
+        hot[f] = rules.GFLAME_EDGE_BELOW
+        r.run(2, hot)
+        r.inp.set(WAVE)
+        r.run(3, hot)
+        check(safeties_on_wire(r) == [0, 0, 0]
+              and r.group(WAVE)["reason"] == "dirty edge",
+              f"flame slot {f} high on the edge still holds the arm: "
+              f"{r.group(WAVE)['reason']}")
+    # A locked out angle is zero, like any locked fire slot.
+    r = armed_wave()
+    r.c.note_locked_slots({1})
+    r.run(rules.EDGE_QUIET_FRAMES + 2, straight_up)
+    check(r.out.universe[0] == 0 and r.out.universe[6] == 128,
+          f"a locked out aim slot stays zero: {r.out.universe[0]} "
+          f"{r.out.universe[6]}")
 
 
 if __name__ == "__main__":
@@ -5616,6 +5717,7 @@ if __name__ == "__main__":
     test_rule6_consent()
     test_rule2_dirty_edge_holds_the_arm()
     test_rule3_edge_quiet_frames()
+    test_aim_slots_point_the_head_and_never_hold_the_arm()
     test_rule4_dwell()
     test_rule5_chatter()
     test_rule7_interruptions_clear_the_latches()

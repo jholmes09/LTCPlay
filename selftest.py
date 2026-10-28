@@ -53719,6 +53719,160 @@ def test_screen_arming_switch_and_refusals():
     print("  ok")
 
 
+def test_flame_link_aim_slots_skip_the_seek_guard():
+    section("flame link aim slots (2026-10-28): the wave flamer's angle "
+            "channels are read from flamesafe's config and are never held "
+            "by the zero-first rule; every flame channel still is")
+    import json as _j
+    import os as _os
+    import tempfile as _tf
+    from ltcplay import flamelink as fl
+    ex_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                            "flamesafe", "flamesafe.example.json")
+    with open(ex_path, encoding="utf-8") as fh:
+        ex = _j.load(fh)
+    check(fl.FlameLinkConfig.from_flamesafe_config(ex_path).aim_slots
+          == frozenset({1, 7, 13}),
+          "the example's wave flamer angles are the aim slots")
+    d = _tf.mkdtemp()
+    try:
+        def load(groups):
+            doc = dict(ex)
+            doc["groups"] = groups
+            p = _os.path.join(d, "fs.json")
+            with open(p, "w", encoding="utf-8") as fh:
+                _j.dump(doc, fh)
+            return fl.FlameLinkConfig.from_flamesafe_config(p)
+        check(load([{"name": "a", "safety": 6, "fire": [1, 2]}]).aim_slots
+              == frozenset(), "no aim list, no aim slots")
+        check(load([{"name": "a", "safety": 6, "fire": [1, 2],
+                     "aim": [1, 3]}]).aim_slots == frozenset({1}),
+              "a slot that is not the group's fire slot is never freed")
+        for bad in (5, ["1"], [0], [513], [True], None):
+            try:
+                load([{"name": "a", "safety": 6, "fire": [1, 2],
+                       "aim": bad}])
+                check(False, f"aim {bad!r} was taken")
+            except fl.FlameLinkConfigError as e:
+                check("'aim'" in str(e), f"aim {bad!r} refused: {e}")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+    # The seek guard with the angle on slot 1 at 128 (straight up) the
+    # whole time and the fire channel on slot 3 lit from 10 s.
+    good = {"ip": "127.0.0.1", "port": 5571, "universe": 1,
+            "key": "selftest-key-0123456789", "frame_stale_ms": 500}
+    clk = [100.0]
+    show = {"tc": None}
+
+    def state():
+        t = show["tc"]
+        if t is None:
+            return None, False
+        h, rem = divmod(int(t * 30), 30 * 3600)
+        m, rem = divmod(rem, 30 * 60)
+        s, f = divmod(rem, 30)
+        return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}", True
+
+    def cues(tc):
+        h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
+        t = h * 3600 + m * 60 + s + f / 30
+        v = [0] * 512
+        v[0] = 54 if t >= 10.0 else 128
+        if t >= 10.0:
+            v[2] = 255
+        return v
+
+    def run(link, frm, to, step=0.025):
+        out = []
+        t = frm
+        while t < to - 1e-9:
+            show["tc"] = t
+            out.append((t, link.values_now()[1]))
+            t += step
+            clk[0] += step
+        return out
+    cfg = fl.FlameLinkConfig.parse(good)
+    cfg.aim_slots = frozenset({1})
+    link = fl.FlameLink(cfg, cues=cues, show_state=state,
+                        clock=lambda: clk[0])
+    link.zeroed = False
+    got = run(link, 9.0, 11.0)
+    settled = [(t, v) for t, v in got if t >= 9.55]
+    check(settled and all(v[0] in (128, 54) for t, v in settled),
+          f"the angle goes out once settled though never seen at zero: "
+          f"{settled[0][1][0] if settled else None}")
+    check(any(v[0] == 54 for t, v in settled),
+          "and it follows the show to -60 degrees")
+    check(any(v[2] == 255 for t, v in got if t >= 10.0),
+          "the fire channel, seen at zero first, fires at 10 s")
+    check(not any(v[0] for t, v in got if t < 9.5),
+          "the 0.5 s settle still holds the angle like everything else")
+    # A seek into the burn: the fire channel stays held, the angle does not.
+    got = run(link, 20.0, 21.0)
+    late = [(t, v) for t, v in got if t >= 20.55]
+    check(late and all(v[2] == 0 for t, v in late),
+          "after a seek into a burn the fire channel stays held")
+    check(late and all(v[0] == 54 for t, v in late),
+          "but the angle points where the show says")
+    # Without aim slots the old behaviour stands: the angle is held at 0.
+    clk[0] += 10
+    plain = fl.FlameLink(fl.FlameLinkConfig.parse(good), cues=cues,
+                         show_state=state, clock=lambda: clk[0])
+    plain.zeroed = False
+    got = run(plain, 9.0, 9.9)
+    check(all(v[0] == 0 for t, v in got),
+          "a config with no aim list holds the angle, as before")
+    print("  ok")
+
+
+def test_live_flame_aim_slots_are_not_held():
+    section("live flame programming aim slots (2026-10-28): the angle xLights "
+            "rests at 128 goes out from the first packet; a flame channel "
+            "still waits to be seen at zero, also after its stream ends")
+    R = _LfRig()
+    try:
+        R.link.cfg.aim_slots = frozenset({11})
+        R.on()
+        vals = bytearray(300)
+        vals[10] = 128                      # slot 11: the angle
+        vals[12] = 255                      # slot 13: a flame channel
+        R.feed(R.pk(values=bytes(vals)))
+        v = R.out()
+        check(v[10] == 128 and v[12] == 0,
+              f"the angle goes out at once, the flame waits: {v[10]} {v[12]}")
+        vals[12] = 0
+        R.feed(R.pk(values=bytes(vals)))
+        vals[12] = 255
+        vals[10] = 201
+        R.feed(R.pk(values=bytes(vals)))
+        v = R.out()
+        check(v[10] == 201 and v[12] == 255,
+              f"seen at zero, the flame goes out; the angle follows: "
+              f"{v[10]} {v[12]}")
+        R.feed(R.pk(values=bytes(300), options=0x40))  # stream terminated
+        vals[10], vals[12] = 54, 255
+        R.feed(R.pk(values=bytes(vals)))
+        v = R.out()
+        check(v[10] == 54 and v[12] == 0,
+              f"after the stream ends the flame waits again, the angle "
+              f"does not: {v[10]} {v[12]}")
+    finally:
+        R.close()
+    R = _LfRig()
+    try:
+        R.on()
+        vals = bytearray(300)
+        vals[10] = 128
+        R.feed(R.pk(values=bytes(vals)))
+        check(R.out()[10] == 0,
+              "without aim slots the angle is held at zero, as before")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_flame_link_seek_guard():
     section("flame link seek guard: a flame cue fires in normal rehearsal "
             "playback; nothing fires across a seek, a jump or a loop wrap "
@@ -74134,6 +74288,7 @@ if __name__ == "__main__":
         test_remote_scrubbing_only_in_a_programming_session,
         test_player_free_run_pause_and_loop,
         test_flame_link_seek_guard,
+        test_flame_link_aim_slots_skip_the_seek_guard,
         test_screen_arming_is_off_unless_switched_on,
         test_screen_arm_engine_rules,
         test_screen_arm_deck_rules,
@@ -74233,6 +74388,7 @@ if __name__ == "__main__":
         test_live_flame_listener_binds_loopback_only,
         test_live_flame_entry_refusals,
         test_live_flame_values_and_zero_on_silence,
+        test_live_flame_aim_slots_are_not_held,
         test_live_flame_ends_disarm_and_name_the_reason,
         test_live_flame_engine_routes_roles_and_presses,
         test_live_flame_page_banner_and_card,

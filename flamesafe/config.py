@@ -27,11 +27,36 @@ TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
 DESTINATION_KEYS = {"ip", "port"}
 LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key",
              "arm_ip", "arm_port", "status_mirror_port"}
-GROUP_KEYS = {"name", "safety", "fire", "arm_value", "safety_profile"}
+GROUP_KEYS = {"name", "safety", "fire", "arm_value", "safety_profile",
+              "aim"}
 # A group's safety_profile (Jeff, 2026-10-26, the wave flamer): arm_value is
 # required, the rest are optional guards.  Nothing else is allowed.  See
 # _safety_profile.
 PROFILE_KEYS = ("arm_value", "enable_lo", "enable_hi", "fire_at")
+
+
+def _aim(g, name, fire):
+    """A group's "aim" list: the fire slots that only point a head (the
+    Showven's angle channel) and never light it.  Optional.  Each must be
+    one of the group's own fire slots, listed once, and at least one fire
+    slot must stay out of it, or the group would arm with no edge check at
+    all."""
+    if "aim" not in g:
+        return []
+    aim = g.get("aim")
+    if not isinstance(aim, list):
+        raise ConfigError(f"{name}: aim must be a list of slots.")
+    for a in aim:
+        if isinstance(a, bool) or not isinstance(a, int) or a not in fire:
+            raise ConfigError(f"{name}: aim slot {a!r} is not one of this "
+                              f"group's fire slots.")
+    if len(set(aim)) != len(aim):
+        raise ConfigError(f"{name}: an aim slot is listed twice.")
+    if len(set(aim)) >= len(set(fire)):
+        raise ConfigError(f"{name}: every fire slot is an aim slot. At "
+                          f"least one slot has to light the flame, or the "
+                          f"rising-edge check would cover nothing.")
+    return aim
 
 
 def _only_known(d, allowed, where):
@@ -77,9 +102,10 @@ class Group:
     """
 
     __slots__ = ("name", "safety", "safeties", "fire", "arm_value",
-                 "profile")
+                 "profile", "aim")
 
-    def __init__(self, name, safety, fire, arm_value, profile=None):
+    def __init__(self, name, safety, fire, arm_value, profile=None,
+                 aim=()):
         self.name = str(name)
         if isinstance(safety, (list, tuple)):
             self.safeties = [int(s) for s in safety]
@@ -93,6 +119,12 @@ class Group:
         # The validated safety_profile, or None for a G-Flame/Showven group.
         # The composer reads only arm_value; this is kept for the report.
         self.profile = dict(profile) if profile else None
+        # Aim slots (Jeff, 2026-10-28, the wave flamer's angle channel):
+        # fire slots that only point the head and never light it.  Still
+        # sent only while the group is armed, like every fire slot, but
+        # left out of the rising-edge check and the edge-quiet window,
+        # because a nozzle resting at straight up (128) is not a flame.
+        self.aim = frozenset(int(a) for a in aim)
 
     @property
     def multi_safety(self):
@@ -550,7 +582,8 @@ def from_dict(d, source="config"):
             arm_value = _int(g, "arm_value", 0, 255, f"{name}: arm_value")
             _validate_arm_value(arm_value, c.gflame_range,
                                 c.accept_unsourced_risk, name)
-        c.groups.append(Group(name, safeties, fire, arm_value, profile))
+        aim = _aim(g, name, fire)
+        c.groups.append(Group(name, safeties, fire, arm_value, profile, aim))
 
     names = {}
     seen = {}

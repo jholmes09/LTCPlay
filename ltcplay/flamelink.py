@@ -239,13 +239,16 @@ class FlameLinkConfig:
     written in this repo (CLAUDE.md: never commit keys)."""
 
     def __init__(self, ip, port, universe, key, send_hz=SEND_HZ_DEFAULT,
-                 frame_stale_ms=FRAME_STALE_MS_DEFAULT):
+                 frame_stale_ms=FRAME_STALE_MS_DEFAULT, aim_slots=()):
         self.ip = ip
         self.port = port
         self.universe = universe
         self.key = key
         self.send_hz = send_hz
         self.frame_stale_ms = frame_stale_ms
+        # The flame universe slots (1 to 512) that only aim a head, from
+        # flamesafe's groups' "aim" lists. The zero-first hold skips them.
+        self.aim_slots = frozenset(aim_slots)
 
     @property
     def abort_repeat_s(self):
@@ -322,12 +325,36 @@ class FlameLinkConfig:
         link = doc.get("link") if isinstance(doc, dict) else None
         if not isinstance(link, dict):
             raise FlameLinkConfigError(f"{path}: has no link block.")
-        return cls.parse({"ip": link.get("listen_ip", "127.0.0.1"),
-                          "port": link.get("listen_port"),
-                          "universe": doc.get("universe"),
-                          "key": link.get("key"), "send_hz": send_hz,
-                          "frame_stale_ms": doc.get("frame_stale_ms")},
-                         where=str(path))
+        cfg = cls.parse({"ip": link.get("listen_ip", "127.0.0.1"),
+                         "port": link.get("listen_port"),
+                         "universe": doc.get("universe"),
+                         "key": link.get("key"), "send_hz": send_hz,
+                         "frame_stale_ms": doc.get("frame_stale_ms")},
+                        where=str(path))
+        cfg.aim_slots = aim_slots_of(doc, path)
+        return cfg
+
+
+def aim_slots_of(doc, path="flamesafe's config"):
+    """Every group's "aim" slots (2026-10-28): fire slots that only point a
+    head, like the Showven's angle channel, which rests at 128 (straight
+    up) and so is almost never seen at zero. Read as plain JSON (the wall).
+    A slot counts only when it is also one of that group's fire slots;
+    flamesafe refuses any other, so nothing here can free a slot flamesafe
+    would treat as fire. A malformed list is refused, never skipped."""
+    out = set()
+    groups = doc.get("groups") if isinstance(doc, dict) else None
+    for g in groups if isinstance(groups, list) else ():
+        if not isinstance(g, dict) or "aim" not in g:
+            continue
+        aim, fire = g.get("aim"), g.get("fire")
+        if not isinstance(aim, list) or not isinstance(fire, list) or any(
+                not _is_int(a) or not 1 <= a <= UNIVERSE_SIZE for a in aim):
+            raise FlameLinkConfigError(
+                f"{path}: group {g.get('name')!r} has an 'aim' that is not "
+                f"a list of slots 1 to {UNIVERSE_SIZE}.")
+        out.update(a for a in aim if a in fire)
+    return frozenset(out)
 
 
 def _exc_text(e):
@@ -464,6 +491,9 @@ class FlameLink:
                  clock=time.perf_counter, sleep=time.sleep,
                  tc_fps=TC_FPS_DEFAULT, seek_guard=True):
         self.cfg = cfg
+        # Aim slots as 0-based channel indexes: never held by the zero-
+        # first rule (see _guarded).
+        self._aim = frozenset(s - 1 for s in getattr(cfg, "aim_slots", ()))
         self.tc_fps = float(tc_fps)
         # Always on in the program. Only the selftest's tests of the OTHER
         # rules (moving, released, providers) turn it off, so their cue
@@ -474,7 +504,7 @@ class FlameLink:
         # seen at zero since the last seek. All channels wait at first.
         self._seek_last = None
         self._steady_since = None
-        self._blocked = set(range(UNIVERSE_SIZE))
+        self._blocked = self._guarded()
         self.seeks = 0
         self.cues = cues
         self.show_state = show_state
@@ -1028,13 +1058,21 @@ class FlameLink:
         except Exception:
             return False
 
+    def _guarded(self):
+        """Every channel the zero-first rule holds after a landing: all but
+        the aim slots. An aim slot (the Showven's angle) rests at 128 and
+        is almost never seen at zero, so holding it pinned the head to its
+        end stop for the whole show (Jeff, 2026-10-28). It lights nothing;
+        flamesafe still sends it only while its group is armed."""
+        return set(range(UNIVERSE_SIZE)) - self._aim
+
     # -- fire flames while scrubbing (scrubflames.py) ------------------------
     def _seek_reset(self):
         """The seek guard as a new link has it: the next timecode is a
         landing and every channel waits to be seen at zero."""
         self._seek_last = None
         self._steady_since = None
-        self._blocked = set(range(UNIVERSE_SIZE))
+        self._blocked = self._guarded()
         self._r_anchor = None
 
     def rehearse_begin(self, state, cues):
@@ -1253,7 +1291,7 @@ class FlameLink:
     def _seek(self, frm, to):
         self.seeks += 1
         self._steady_since = None
-        self._blocked = set(range(UNIVERSE_SIZE))
+        self._blocked = self._guarded()
         if frm is not None:
             self._note(f"Flame link: the show timecode jumped from "
                        f"{frm:.2f} s to {to:.2f} s. Flame values are zero "
