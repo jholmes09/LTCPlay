@@ -12,8 +12,8 @@ may be, boothaudio.MAX_NOTE_S) always fails: it would never sound. A
 missing note, or a booth_*.wav that is not an expected name (a misspelt
 one would ship and never play), fails only with --require, or with
 BOOTH_NOTES_REQUIRED=1 in the environment. The windows-app workflow
-passes --require once the repository variable REQUIRE_BOOTH_NOTES is
-true, so the PRs before the recordings arrive stay green.
+passes --require (the recordings are in the repo since 2026-10-28), and
+selftest.py checks the same full set on every PR.
 
 In GitHub Actions each problem is also a ::warning:: or ::error::
 annotation. Exit 0 when nothing fails, 1 when something does.

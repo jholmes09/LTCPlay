@@ -21,8 +21,8 @@
 ;     note and leaves no old one behind. A person's own copy of a note
 ;     lives in %LOCALAPPDATA%\ltcplay\Booth notes, which this never
 ;     touches, and wins over the shipped one (ltcplay\boothaudio.py).
-;     Until the recordings are in the repo the folder holds only its
-;     READ ME; check_booth_notes.py says which are missing.
+;     The workflow's check_booth_notes.py --require fails the build when
+;     a note is missing, too long or misnamed.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"

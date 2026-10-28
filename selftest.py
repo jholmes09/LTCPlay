@@ -57000,10 +57000,24 @@ def test_booth_notes_by_name_and_shipped_by_the_installer():
         rc, out = run("--folder", full)
         check(rc == 1 and "CANNOT PLAY  booth_gate.wav" in out,
               f"a 9 s note fails even when not required: {out[-300:]}")
-        # The repo's own notes, as they are: whatever is there plays (a
-        # real recording over 8 s fails here, on every PR).
-        r = CB.check(os.path.join(here, "packaging", "windows", "booth"))
-        check(not r["bad"], f"the shipped notes can all play: {r['bad']}")
+        # The repo's own notes (Jeff's recordings, 2026-10-28): the full
+        # set, each one plays and is at most 8 s, nothing misnamed; and
+        # each decodes in full, as a real note would.
+        repo = os.path.join(here, "packaging", "windows", "booth")
+        r = CB.check(repo)
+        check(not r["bad"] and not r["missing"] and not r["extra"] and
+              len(r["found"]) == 23,
+              f"the shipped notes are the full set and all play: {r}")
+        for fn in _BOOTH_NOTE_FILES:
+            try:
+                _pcm, _c, _r, length = BA._announce()._wav_info(
+                    os.path.join(repo, fn), decode=True)
+                check(0 < length <= BA.MAX_NOTE_S, f"{fn}: {length} s")
+            except ValueError as e:
+                check(False, f"{fn} does not decode: {e}")
+        nv = BA.notes_view({}, BA.note_folders(None))
+        check(nv == {"expected": 23, "found": 23, "missing": []},
+              f"from source the rack screen reads 23 of 23: {nv}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     # The installer ships the folder, empties it on every install, and
@@ -57032,10 +57046,8 @@ def test_booth_notes_by_name_and_shipped_by_the_installer():
           "person's own copy")
     wf = open(os.path.join(here, ".github", "workflows", "windows-app.yml"),
               encoding="utf-8").read()
-    check("python packaging/windows/check_booth_notes.py" in wf and
-          "vars.REQUIRE_BOOTH_NOTES == 'true'" in wf,
-          "the build checks the notes, and requires the set only when the "
-          "REQUIRE_BOOTH_NOTES variable says so")
+    check("python packaging/windows/check_booth_notes.py --require" in wf,
+          "the installer build requires the full set of booth notes")
     ign = open(os.path.join(here, ".gitignore"), encoding="utf-8").read()
     check("!packaging/windows/booth/booth_*.wav" in ign,
           "the booth notes, and only they, are let past the *.wav rule")
