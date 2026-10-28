@@ -946,7 +946,7 @@ button.fb-pad.na{opacity:.45}
              known (one press, as before); Arm all flame groups while every
              group is off (a hold, the same hold as a group's own button). -->
         <button id="b-disarm" class="disarm" data-mode="disarm" title="A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset."><div class="fill"></div><span class="lbl">Disarm all flame groups</span><small>plain disarm: arm again with a hold</small></button>
-        <div class="toast" id="arm-note">Hold a group's button to arm it. Lift your finger to stop.</div>
+        <div class="toast" id="arm-note">Hold a group's button to arm it.</div>
       </div>
     </div>
     <!-- Operator announcements (announce.py, Jeff 2026-10-26): Delayed,
@@ -1237,6 +1237,19 @@ button.fb-pad.na{opacity:.45}
       <div class="dim" style="font-size:14px">The Stream Deck has to be running for a hold to arm. Off: arm flames from the Stream Deck only; this rack screen can still purge, unlock and test lasers.</div>
       <div class="row" style="margin-top:8px"><b id="sa-now" style="flex:2 1 0"></b><button id="sa-on" style="flex:1 1 0">Turn on</button><button id="sa-off" style="flex:1 1 0">Turn off</button></div>
       <div class="toast" id="sa-msg"></div>
+    </section>
+    <!-- The announcement output (Jeff's field report, 2026-10-28, item 10):
+         announcements play through the show audio while it runs; this is
+         the output they use when it does not. Settings permission. -->
+    <section class="card" id="annout-card" hidden>
+      <h2>Announcement output, on this machine</h2>
+      <div class="dim" style="font-size:14px">While the show audio is running, announcements play through it, on the front left and right (Main L/R). The output picked here is used only when the show audio is not running. The system default is never used.</div>
+      <div class="row" style="margin-top:8px">
+        <select id="annout-pick" style="flex:2 1 0" aria-label="Announcement output"></select>
+        <button id="annout-save" style="flex:1 1 0">Save</button>
+        <button id="annout-tone" class="ghost" style="flex:1 1 0" title="1 s of a soft 440 Hz tone at -20 dBFS through the same route and output as the announcements. Never during a show; holds nothing.">Test tone</button>
+      </div>
+      <div class="toast" id="annout-msg"></div>
     </section>
     <section class="card" id="lf-card">
       <h2>Live flame programming</h2>
@@ -1968,13 +1981,6 @@ function alertHoldLook(ah){
   if(!ah || ah.held !== true) return null;
   return {word:"Held", label:String(ah.text || "Held: alert open.")};
 }
-// Operator announcements (announce.py, Jeff 2026-10-26): what the rack
-// screen's Announcements block and its banner show, from the status's
-// "announce". One press plays. A recording not on this PC yet says
-// Recording missing and its button is off; so is every button while no
-// output device is set or attached, while one is playing, or while the
-// engine says announcements cannot play at all. Stop is on only while one
-// plays. The engine refuses anything this page lets through anyway.
 // The booth line's note count (boothaudio.notes_view, 2026-10-28):
 // ", 24 of 24 notes found", or which are missing (the first six by name).
 function boothNotesText(n){
@@ -1987,28 +1993,43 @@ function boothNotesText(n){
   }
   return t;
 }
+// Operator announcements (announce.py, Jeff 2026-10-26): what the rack
+// screen's Announcements block and its banner show, from the status's
+// "announce". One press plays. A recording not on this PC yet says
+// Recording missing and its button is off; so is every button while the
+// announcement check (a.route: through the show audio, or the
+// announcement's own output while no show audio runs) says it cannot
+// play, while one is playing, or while the file could not be used. The
+// schedule's state never turns them off (Jeff's field report, 2026-10-28:
+// announcements and the schedule are independent). Stop is on only while
+// one plays. The engine refuses anything this page lets through anyway.
 function announceLook(an, booth){
   const a = an || {};
   if(!a.configured) return {show:false, buttons:[], banner:"", word:"", stopOff:true, device:"", devBad:false, note:""};
   const playing = a.playing || null;
   const bad = a.ok === false ? (a.error || "The announcements file could not be used.") : "";
-  const devOk = !!a.device_set && !!a.device_available;
+  const rt = a.route || {};
+  const devOk = !!rt.ok;
   const buttons = (a.items || []).map(i => {
     let sub = "", off = false;
     if(i.missing){ sub = "Recording missing"; off = true; }
     else if(!i.available){ sub = "Cannot play"; off = true; }
     else sub = (typeof i.length_s === "number") ? Math.round(i.length_s) + " s" : "";
-    if(bad || !devOk || a.blocked || playing) off = true;
+    if(bad || !devOk || playing) off = true;
     return {id:String(i.id || ""), label:String(i.name || i.id || ""), sub:sub, off:off,
             missing:!!i.missing, title:String(i.reason || ""), on:!!(playing && playing.id === i.id)};
   });
   let banner = "", word = "";
   if(playing){
-    word = playing.held_schedule ? "HELD FOR ANNOUNCEMENT" : "ANNOUNCEMENT PLAYING";
+    // "Playing" only once audio has gone to the output (heard); until then
+    // it is starting (Jeff's field report, 2026-10-28).
+    const starting = playing.heard === false;
+    word = playing.held_schedule ? "HELD FOR ANNOUNCEMENT" : starting ? "ANNOUNCEMENT STARTING" : "ANNOUNCEMENT PLAYING";
     const el = (typeof playing.elapsed_s === "number") ? Math.round(playing.elapsed_s) : null;
     const len = (typeof playing.length_s === "number") ? Math.round(playing.length_s) : null;
-    banner = String(playing.name || "") + (el !== null && len !== null ? " (" + el + " s of " + len + " s)" : "") +
-      (playing.held_schedule ? ". The schedule stays held until Resume." : ". It plays over the show; nothing was paused.");
+    banner = String(playing.name || "") + (starting ? " (waiting for the output to take it)" : el !== null && len !== null ? " (" + el + " s of " + len + " s)" : "") +
+      (playing.held_schedule ? ". The schedule stays held until Resume." : ". " + String(playing.note || "It plays over the show; nothing was paused.")) +
+      (playing.sent ? " Sent " + sentWords(playing.sent) + "." : "");
   } else if(a.held_failed){
     // The schedule was held for a press whose sound then failed: it stays
     // held until Resume, and this says why (review of PR #129, 4).
@@ -2016,19 +2037,50 @@ function announceLook(an, booth){
     banner = String(a.held_failed.name || "The announcement") + " did not play: " +
       String(a.held_failed.why || "no reason given") + ". The schedule stays held until Resume.";
   }
-  let device = "";
-  if(!a.device_set) device = "Output device: not set";
-  else device = "Output: " + String(a.device || "") + (a.device_available ? "" : " (not attached)");
+  // Where a press plays, said apart from the Show audio lamp (Jeff's
+  // field report, 2026-10-28, item 10): the lamp is the show's own
+  // interface, this line is the announcements' route.
+  let device;
+  if(rt.kind === "show") device = "Plays on: " + String(rt.text || "the show audio") + (devOk ? "" : " (not open)");
+  else if(rt.kind === "device" && a.device_set) device = "Plays on: " + String(rt.text || a.device || "") + (devOk ? "" : " (cannot use it)");
+  else device = "Plays on: the show audio while it runs; no output of its own is picked";
   const b = booth || {};
   device += b.configured ? ". Booth speaker: " + String(b.device || "") : ". Booth speaker: not set";
   device += boothNotesText(b.notes);
-  let note = bad || (!a.device_set || !a.device_available ? String(a.device_reason || "") : String(a.blocked || ""));
+  let note = bad || (!devOk ? String(rt.why || a.device_reason || "") : "");
   if(!note && !playing) note = a.over_show ? "A show is running: an announcement plays over it and pauses nothing. Stop ends the show." :
-    "Between shows: an announcement holds the schedule first. Only Resume carries on.";
+    "Between shows: an announcement holds the schedule first. Only Resume carries on. With no show to hold it just plays.";
   // A stale engine word (announce_view's "stale"): every play button off,
   // but Stop stays pressable, in case one is still playing.
   return {show:true, buttons:buttons, banner:banner, word:word, stopOff:!playing && !a.stale, device:device,
           devBad:!devOk, note:note};
+}
+// What an announcement actually sent, in plain words (remote.py
+// sent_words says the same): route, output, audio system, channels,
+// seconds, peak level.
+function sentWords(x){
+  if(!x || typeof x !== "object") return "";
+  let w = (x.route === "show audio" ? "through the show audio on " : "on its own output ") + String(x.device || "?");
+  if(x.hostapi) w += " (" + String(x.hostapi) + ")";
+  const pk = (typeof x.peak_dbfs === "number") ? x.peak_dbfs.toFixed(1) + " dBFS" : "silence";
+  return w + ", " + x.channels + " channel(s), " + Number(x.length_s || 0).toFixed(1) + " s, peak " + pk;
+}
+// The announcement output picker (Programming, Announcement output): the
+// options for the outputs the engine lists. An output whose name is on
+// more than one output is told apart by its audio system. Pure.
+function annOutputOptions(list, current){
+  const out = [{value:JSON.stringify({device:"", hostapi:null}), label:"None: only through the show audio", picked:false}];
+  (list || []).forEach(o => out.push({
+    value: JSON.stringify({device:String(o.name || ""), hostapi:o.same_name ? String(o.hostapi || "") : null}),
+    label: String(o.label || o.name || "") + (o.picked ? ", picked now" : ""),
+    picked: !!o.picked, disabled: !!o.cannot_pick}));
+  if(!out.some(o => o.picked)){
+    // A name in the file that matches none, or more than one, output:
+    // said at the top until one is chosen; saving it changes nothing.
+    if(current) out.unshift({value:"", label:String(current) + ": choose which output", picked:true});
+    else out[0].picked = true;
+  }
+  return out;
 }
 // The Fireball page (fireball.py). The body of one heartbeat: every
 // control's state, only true for one that is on.
@@ -2173,7 +2225,7 @@ function showView(){
   $("nav-back").hidden = v === "show";
   if(v === "show") lampColumns();
   try{ renderAnnounce(); }catch(e){}
-  if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); }
+  if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); loadAnnOutputs(); }
   morningView(v === "morning");
   fuelView(v === "fuel");
   fireballView(v === "fireball");
@@ -2194,6 +2246,7 @@ async function whoami(){
   $("where").textContent = ME.device || "";
   $("admin").hidden = !ME.local;
   $("arming-card").hidden = !ME.local;
+  $("annout-card").hidden = !ME.local || !(ST && ST.announce && ST.announce.configured);
   $("local-run").hidden = !ME.local;
   $("deck-op").hidden = !ME.local;
   $("folders").hidden = !ME.local;
@@ -2713,7 +2766,7 @@ function renderLamps(fl){
   });
   const on = !!(ST && ST.arming && ST.arming.enabled);
   if(!on && !HOLD && $("arm-note").textContent !== ARMING_OFF) armSay(ARMING_OFF, 1);
-  else if(on && $("arm-note").textContent === ARMING_OFF) armSay("Hold a group's button to arm it. Lift your finger to stop.", 0);
+  else if(on && $("arm-note").textContent === ARMING_OFF) armSay("Hold a group's button to arm it.", 0);
 }
 
 // What a hold, or a refusal of one, says: the note beside Disarm every
@@ -2889,7 +2942,7 @@ function armStop(why){
 // all hold is under way, so the finger never ends up on Disarm all.
 const ALL_WORDS = {
   disarm: ["Disarm all flame groups", "plain disarm: arm again with a hold", "A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset."],
-  arm: ["Hold to arm all flame groups", "press and hold: every group this screen can arm", "Hold to arm every flame group this screen can arm, each by the same rules as its own button. A group that is locked out, waiting or refused stays out and is named. Lift your finger to stop."]};
+  arm: ["Hold to arm all flame groups", "press and hold: every group this screen can arm", "Hold to arm every flame group this screen can arm, each by the same rules as its own button. A group that is locked out, waiting or refused stays out and is named."]};
 function renderAllButton(stale){
   const b = $("b-disarm");
   const mode = (HOLD && HOLD.all) ? "arm" : allButtonMode(ST, stale);
@@ -2953,6 +3006,7 @@ function renderAnnounce(){
   const s = ST || {};
   const L = announceLook(s.announce, s.booth);
   $("ann").hidden = !L.show;
+  $("annout-card").hidden = !(ME && ME.local) || !L.show;
   // On the show screen the block itself says it (its first line and its
   // lit Stop), so the banner is not drawn there too: a second bar would
   // push the flame groups down (review of PR #129, the 1366x600 screen).
@@ -3846,6 +3900,42 @@ $("b-deck-op").addEventListener("click", async () => {
     await post("/api/schedule/operator", {who:$("deck-op-pick").value, screen:"Rack screen"});
     loadDeckOp();
   }catch(e){ $("deck-op-msg").textContent = e.message; }
+});
+// The announcement output picker: the engine's list of outputs, with
+// their audio system and channel count, and what the check says now.
+async function loadAnnOutputs(keep){
+  const an = (ST && ST.announce) || {};
+  if(!an.configured) return;
+  try{
+    const j = await getJSON("/api/remote/announce-outputs", 3000);
+    const opts = annOutputOptions(j.outputs || [], j.device || "");
+    $("annout-pick").innerHTML = opts.map(o => `<option value="${esc(o.value)}"${o.picked ? " selected" : ""}${o.disabled ? " disabled" : ""}>${esc(o.label)}</option>`).join("");
+    const rt = an.route || {};
+    const why = an.device_reason || (rt.ok ? "" : String(rt.why || ""));
+    if(why || !keep) $("annout-msg").textContent = why;
+  }catch(e){ $("annout-msg").textContent = e.message; }
+  $("annout-msg").title = $("annout-msg").textContent;
+  $("annout-save").disabled = !mayRow(ST, "settings");
+  $("annout-tone").disabled = !mayRow(ST, "settings");
+}
+$("annout-tone").addEventListener("click", async () => {
+  try{
+    const j = await post("/api/remote/announce-test-tone", {});
+    $("annout-msg").textContent = j.text;
+    if(j.announce && ST) ST.announce = j.announce;
+  }catch(e){ $("annout-msg").textContent = e.message; }
+  $("annout-msg").title = $("annout-msg").textContent;
+});
+$("annout-save").addEventListener("click", async () => {
+  const v = $("annout-pick").value;
+  if(!v){ $("annout-msg").textContent = "Choose an output first. Nothing was changed."; return; }
+  try{
+    const j = await post("/api/remote/announce-output", JSON.parse(v));
+    $("annout-msg").textContent = j.text;
+    if(j.announce && ST) ST.announce = j.announce;
+    loadAnnOutputs(true);
+  }catch(e){ $("annout-msg").textContent = e.message; }
+  $("annout-msg").title = $("annout-msg").textContent;
 });
 async function loadNetwork(){
   try{
