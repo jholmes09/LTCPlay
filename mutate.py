@@ -14164,8 +14164,8 @@ def build():
 
  ("fuel: live flame programming counts as a show",
   "ltcplay/fuel.py",
-  "        if rehearse or program:\n            source = \"other\"",
-  "        if rehearse:\n            source = \"other\""),
+  "        if rehearse or program or (purge and burn):",
+  "        if rehearse or (purge and burn):"),
 
  ("fuel: a failed start counts as a show",
   "ltcplay/fuel.py",
@@ -16492,6 +16492,378 @@ def build():
   "  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);",
   "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
   "  fbPress(b.dataset.k, true);"),
+
+ # Wave flamer cleaning (cleaning.py, MORNING.md, OPERATOR.md; Andy's
+ # design, 2026-10-28): a dead-man sequence on the Shutdown page.
+ ("cleaning: the watcher does not look at the rules",
+  "ltcplay/cleaning.py",
+  "                    why = self.refusal()\n"
+  "                    if why:\n"
+  "                        self.cut(why)",
+  "                    why = \"\"\n"
+  "                    if why:\n"
+  "                        self.cut(why)"),
+
+ ("cleaning: the flame link zeroed (Stop, Hold, Abort) is not seen",
+  "ltcplay/cleaning.py",
+  "        if link is None or self._gen(link) != r[\"gen\"]:\n"
+  "            return self._stop_run(",
+  "        if link is None:\n"
+  "            return self._stop_run("),
+
+ ("cleaning: a disarm pressed elsewhere is not seen",
+  "ltcplay/cleaning.py",
+  "        if self._count() != r[\"disarms\"]:",
+  "        if False:"),
+
+ ("cleaning: armed 3 s is not counted from flamesafe's word",
+  "ltcplay/cleaning.py",
+  "            if now - r[\"step_at\"] >= cfg[\"armed_s\"]:",
+  "            if now - r[\"step_at\"] >= cfg[\"armed_s\"] - 0.5:"),
+
+ ("cleaning: the gap is counted from the disarm sent, not from flamesafe",
+  "ltcplay/cleaning.py",
+  "        if step == \"disarming\":\n"
+  "            if state == \"disarmed\":",
+  "        if step == \"disarming\":\n"
+  "            if True:"),
+
+ ("cleaning: the bursts go on with the group not armed",
+  "ltcplay/cleaning.py",
+  "        if step == \"burst\":\n"
+  "            if state != \"armed\":",
+  "        if step == \"burst\":\n"
+  "            if False:"),
+
+ ("cleaning: a stop leaves the ignition on",
+  "ltcplay/cleaning.py",
+  "                        link.purge_set(frame(self.group, r[\"cfg\"][\"aim\"], 0))",
+  "                        pass"),
+
+ ("cleaning: a stop's disarm is never confirmed",
+  "ltcplay/cleaning.py",
+  "        if now - c[\"at\"] > DISARM_CONFIRM_S:",
+  "        if False:"),
+
+ ("cleaning: a stopped run can carry on",
+  "ltcplay/cleaning.py",
+  "        if rid in e[\"ids\"]:\n            return True",
+  "        if False:\n            return True"),
+
+ ("cleaning: it starts with the wave flamer already armed",
+  "ltcplay/cleaning.py",
+  "        if starting and state != \"disarmed\":",
+  "        if False:"),
+
+ ("cleaning: another flame group armed is allowed",
+  "ltcplay/cleaning.py",
+  "            elif g.get(\"armed\") != \"disarmed\" or g.get(\"wanted\"):\n"
+  "                others.append(name)",
+  "            elif False:\n"
+  "                others.append(name)"),
+
+ ("cleaning: a stale flamesafe status counts as fresh",
+  "ltcplay/cleaning.py",
+  "                age > STATUS_FRESH_S * 1000:",
+  "                age > 10 ** 9:"),
+
+ ("cleaning: the ignition is channel 4, not 3",
+  "ltcplay/cleaning.py",
+  "                             \"ignition\": s - 3,",
+  "                             \"ignition\": s - 2,"),
+
+ ("cleaning: aim slots that are not the angles are taken",
+  "ltcplay/cleaning.py",
+  "        if set(aim) != {f[\"angle\"] for f in fixtures} or \\\n",
+  "        if False or \\\n"),
+
+ ("cleaning: the gap may be shorter than the deck's re-arm window",
+  "ltcplay/cleaning.py",
+  "          \"disarmed_s\": (2.5, 30.0),",
+  "          \"disarmed_s\": (1.0, 30.0),"),
+
+ ("cleaning: a stale page status is accepted",
+  "ltcplay/cleaning.py",
+  "            if not seen_ok:\n"
+  "                why = (\"The page's status is more than 1 s old.",
+  "            if False:\n"
+  "                why = (\"The page's status is more than 1 s old."),
+
+ ("cleaning: signed out runs it at the route",
+  "ltcplay/cleaning.py",
+  "        if body.get(\"hold\") is True and remote.users_active() and \\\n"
+  "                not ctx.user:",
+  "        if False:"),
+
+ ("cleaning: arming from a screen switched off is not checked",
+  "ltcplay/cleaning.py",
+  "        if not (arming or remote.arming_enabled)():\n"
+  "            return (\"arming from a screen is switched off",
+  "        if False:\n"
+  "            return (\"arming from a screen is switched off"),
+
+ ("cleaning: the Stream Deck not reading is not checked",
+  "ltcplay/cleaning.py",
+  "        if seen is None or remote.clock() - seen > remote.DECK_QUIET_S:",
+  "        if False:"),
+
+ ("cleaning: an open deck alert does not stop it",
+  "ltcplay/cleaning.py",
+  "            if getattr(a, \"kind\", \"\") in BLOCKING_ALERTS:",
+  "            if False:"),
+
+ ("cleaning: someone holding to arm another group is allowed",
+  "ltcplay/cleaning.py",
+  "        if holds:\n"
+  "            return (f\"{holds[0]['who'] or holds[0]['device']} is holding to \"",
+  "        if False:\n"
+  "            return (f\"{holds[0]['who'] or holds[0]['device']} is holding to \""),
+
+ ("cleaning: the Startup page's purge does not wait for it",
+  "ltcplay/cleaning.py",
+  "        return (\"the wave flamer cleaning is running; stop it first.\"\n"
+  "                if panel.active() else \"\")",
+  "        return \"\""),
+
+ ("cleaning: an Abort does not stop it",
+  "ltcplay/cleaning.py",
+  "    morning.abort_hooks.append(panel.on_abort)\n    return panel",
+  "    return panel"),
+
+ ("cleaning: the Fireball page does not wait for it",
+  "ltcplay/fireball.py",
+  "        if cl is not None and cl.active():",
+  "        if False:"),
+
+ ("cleaning: a beat that runs it is a safety press",
+  "ltcplay/users.py",
+  "            return \"arm\" if body.get(\"hold\") is True else \"safety\"",
+  "            return \"safety\""),
+
+ ("cleaning: Stop needs a sign-in",
+  "ltcplay/users.py",
+  "    \"cleaning-stop\": \"safety\",",
+  "    \"cleaning-stop\": \"arm\","),
+
+ ("cleaning: its bursts count as a Showven purge (not counted)",
+  "ltcplay/fuel.py",
+  "        if rehearse or program or (purge and burn):",
+  "        if rehearse or program:"),
+
+ ("cleaning: the angle may be far off straight up",
+  "ltcplay/cleaning.py",
+  "\"aim\": (118, 138),",
+  "\"aim\": (0, 255),"),
+
+ ("cleaning: the heads may get no time to come up",
+  "ltcplay/cleaning.py",
+  "          \"aim_settle_s\": (1.0, 5.0),",
+  "          \"aim_settle_s\": (0.0, 5.0),"),
+
+ ("cleaning: an Abort waits on the panel's lock",
+  "ltcplay/cleaning.py",
+  "        threading.Thread(target=self._abort_cut, args=(why,), daemon=True,\n"
+  "                         name=\"ltcplay-cleaning-abort\").start()",
+  "        self._abort_cut(why)"),
+
+ ("cleaning: an Abort does not drop the frame at once",
+  "ltcplay/cleaning.py",
+  "        self._aborted = why\n"
+  "        link = self._link()\n"
+  "        if link is not None:\n"
+  "            try:\n"
+  "                link.purge_clear()",
+  "        self._aborted = why\n"
+  "        link = self._link()\n"
+  "        if False:\n"
+  "            try:\n"
+  "                link.purge_clear()"),
+
+ ("cleaning: a hold whose beats stopped is not ended",
+  "ltcplay/cleaning.py",
+  "                if h is not None and now - h[\"beat\"] > BEAT_STALE_S:",
+  "                if False:"),
+
+ ("cleaning: a release before the hold is complete still starts it",
+  "ltcplay/cleaning.py",
+  "        if r[\"phase\"] == 1:\n"
+  "            self.cut(f\"{why}; nothing started\", outcome=\"not started\")\n"
+  "            return",
+  "        if r[\"phase\"] == 1:\n"
+  "            r[\"authorized\"] = True\n"
+  "            return"),
+
+ ("cleaning: the pause goes on to the bursts by itself",
+  "ltcplay/cleaning.py",
+  "                    self._to(r, \"paused\", now, paused_at=now, asked=False,\n"
+  "                             hold_id=None)",
+  "                    self._to(r, \"arm\", now, phase=2, asked=False,\n"
+  "                             hold_id=None, authorized=True, hold=None)"),
+
+ ("cleaning: a tap is a go-ahead",
+  "ltcplay/cleaning.py",
+  "        self._to(r, \"paused\", r.get(\"paused_at\", self._clock()),\n"
+  "                 asked=False, hold_id=None)",
+  "        self._to(r, \"burst\", self._clock(), burst_at=self._clock(),\n"
+  "                 aimed_at=None)"),
+
+ ("cleaning: paused never goes back to idle",
+  "ltcplay/cleaning.py",
+  "            if now - r[\"paused_at\"] >= cfg[\"pause_max_min\"] * 60:",
+  "            if False:"),
+
+ ("cleaning: the bursts never end by themselves",
+  "ltcplay/cleaning.py",
+  "            if now - r[\"step_at\"] >= cfg[\"max_burst_min\"] * 60:",
+  "            if False:"),
+
+ ("cleaning: signing out does not stop the walk-away",
+  "ltcplay/cleaning.py",
+  "            if not live:\n"
+  "                return self._stop_run(",
+  "            if False:\n"
+  "                return self._stop_run("),
+
+ ("cleaning: a lockout change mid-routine does not stop it",
+  "ltcplay/cleaning.py",
+  "        if self._locked_fixtures() != r[\"locked\"]:",
+  "        if False:"),
+
+ ("cleaning: a stop leaves it armed",
+  "ltcplay/cleaning.py",
+  "            need = r[\"step\"] not in (\"disarmed\", \"paused\") or \\\n"
+  "                state != \"disarmed\"",
+  "            need = False"),
+
+ ("cleaning: an older beat of a hold arriving late is used",
+  "ltcplay/cleaning.py",
+  "            if h is not None and seq is not None and h[\"seq\"] is not None \\\n"
+  "                    and seq <= h[\"seq\"]:",
+  "            if False:"),
+
+ ("cleaning: another screen takes over a hold",
+  "ltcplay/cleaning.py",
+  "            if h is not None and h[\"owner\"] != owner:\n"
+  "                return 409,",
+  "            if False:\n"
+  "                return 409,"),
+
+ ("cleaning: letting go of a hold does not end it",
+  "ltcplay/cleaning.py",
+  "                    self._hold_ended(r, f\"{who or owner[0]} let go before the \"",
+  "                    (lambda *a: None)(r, f\"{who or owner[0]} let go before the \""),
+
+ ("cleaning: the Stream Deck's key is not Stop while it runs",
+  "ltcplay/remote.py",
+  "                if cl.active():\n"
+  "                    live = True",
+  "                if False:\n"
+  "                    live = True"),
+
+ ("cleaning: the screens' status does not carry it",
+  "ltcplay/remote.py",
+  "                out[\"cleaning\"] = self.cleaning.summary()",
+  "                pass"),
+
+ ("cleaning page: letting go before the hold completes does not end it",
+  "ltcplay/web/remote.html",
+  "  $(\"wc-hold\").addEventListener(ev, () => { if(WC_HOLD) wcLetGo(\"you let go before the hold was complete\"); });",
+  "  $(\"wc-hold\").addEventListener(ev, () => {});"),
+
+ ("cleaning page: signed out is not view only",
+  "ltcplay/web/remote.html",
+  "  else if(viewOnly) out.block = \"Signed out: this screen is view only. Sign in to start the cleaning.\";\n",
+  ""),
+
+ ("cleaning page: the banner never shows",
+  "ltcplay/web/remote.html",
+  "  $(\"wc-banner\").hidden = !on;",
+  "  $(\"wc-banner\").hidden = true;"),
+
+ ("cleaning page: the page keeps beating after the hold completes",
+  "ltcplay/web/remote.html",
+  "    if(j.state === \"phase1\" || j.state === \"phase2\"){",
+  "    if(false){"),
+
+ ("cleaning: phase 2 starts before flamesafe says armed",
+  "ltcplay/cleaning.py",
+  "            if r[\"asked\"]:\n"
+  "                # The deck confirmed it took THIS hold: wait for ARMED.\n"
+  "                if state == \"armed\":",
+  "            if r[\"asked\"]:\n"
+  "                # The deck confirmed it took THIS hold: wait for ARMED.\n"
+  "                if state in (\"armed\", \"wanted\"):"),
+
+ ("cleaning: the settle counts from ARMED, not the first frame written",
+  "ltcplay/cleaning.py",
+  "                        self._to(r, \"burst\", now, burst_at=now,\n"
+  "                                 aimed_at=None)",
+  "                        self._to(r, \"burst\", now, burst_at=now,\n"
+  "                                 aimed_at=now)"),
+
+ ("cleaning: the start hold presses the arm from the watcher too",
+  "ltcplay/cleaning.py",
+  "            if h is not None:\n"
+  "                if not press:\n"
+  "                    return \"\"",
+  "            if h is not None:\n"
+  "                if False:\n"
+  "                    return \"\""),
+
+ ("cleaning: phase 1 fires",
+  "ltcplay/cleaning.py",
+  "                    if r[\"phase\"] == 1:\n"
+  "                        self._to(r, \"armed\", now)",
+  "                    if r[\"phase\"] == 1:\n"
+  "                        self._to(r, \"burst\", now, burst_at=now, aimed_at=None)"),
+
+ ("cleaning: the walk-away arms phase 2 too",
+  "ltcplay/cleaning.py",
+  "            if r[\"phase\"] != 1 or not WALK_AWAY_PHASE1 or \\\n"
+  "                    not r[\"authorized\"]:",
+  "            if not WALK_AWAY_PHASE1 or not r[\"authorized\"]:"),
+
+ ("cleaning: a hold is credited when the group arms some other way",
+  "ltcplay/cleaning.py",
+  "            if out.get(\"taken\") is not True:",
+  "            if False:"),
+
+ ("cleaning: the group armed some other way during a hold is waited out",
+  "ltcplay/cleaning.py",
+  "                if now - r[\"foreign_at\"] > FOREIGN_GRACE_S:",
+  "                if False:"),
+
+ ("cleaning: a go-ahead that ends with the group armed leaves it paused",
+  "ltcplay/cleaning.py",
+  "        if state != \"disarmed\":\n"
+  "            # Armed or asked for during a go-ahead that never completed:",
+  "        if False:\n"
+  "            # Armed or asked for during a go-ahead that never completed:"),
+
+ ("cleaning page: losing focus does not stop it",
+  "ltcplay/web/remote.html",
+  "window.addEventListener(\"blur\", () => { if(WC_HOLD) wcLetGo(\"the page lost focus\"); });\n",
+  ""),
+
+ ("cleaning page: leaving the page leaves it running",
+  "ltcplay/web/remote.html",
+  "  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); wcLetGo(\"the page was left\"); }",
+  "  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); }"),
+
+ ("cleaning page: a refused beat keeps beating",
+  "ltcplay/web/remote.html",
+  "  }catch(e){ if(run === WC_RUN) wcLetGo(e.message.replace(/[.\\s]+$/, \"\")); }",
+  "  }catch(e){}"),
+
+ ("cleaning page: any truthy hold runs it",
+  "ltcplay/web/remote.html",
+  "  return {hold:hold === true, run:",
+  "  return {hold:!!hold, run:"),
+
+ ("cleaning page: a blocked button still starts",
+  "ltcplay/web/remote.html",
+  "  if(!st.ok){ $(\"wc-msg\").textContent = st.block; return; }\n  WC_HOLD = true;",
+  "  WC_HOLD = true;"),
 
  # Settings changed on disk (Jeff's field report 2026-10-28, item 11):
  # configwatch.py, its notice, the live reload of the announcements, Reload
