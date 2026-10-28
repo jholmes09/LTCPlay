@@ -3245,6 +3245,9 @@ class Service:
             if refused is not None:
                 return refused
         with self._locked():
+            # The tick first: a Hold it takes (the engine's own at
+            # showtime for an open alert) cancels the start below (C1).
+            self.tick()
             if gen is not None and (self._start_cancel[0] != gen or
                                     self.halting()):
                 # A Stop, Hold or Abort landed after the wait ended and
@@ -3256,7 +3259,6 @@ class Service:
                                    f"{who}'s Start now was refused. "
                                    f"{sentence}")
                 return {"ok": False, "text": sentence, "cancelled": True}
-            self.tick()
             if self.machine is None:
                 sentence = (self.error or "There is no schedule loaded, so "
                             "there is no show to press anything on.")

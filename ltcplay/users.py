@@ -107,7 +107,7 @@ PERMS = (
     ("show", "Start now, Resume, Reset, Run a show file, rehearsal "
              "scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
-            "keys, a purge, arming a laser"),
+            "keys, a purge, the Fireball page's channels, arming a laser"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -198,7 +198,10 @@ REMOTE_ROUTES = {
     # The Fuel page (fuel.py): not a show control, so no matrix row; the
     # route itself needs a signed-in operator or admin (an undo, an admin).
     "fuel-refill": None, "fuel-undo": None,
+    # The Fireball page (fireball.py): All off only takes risk away.
+    "fireball-off": "safety",
     # These depend on the body: see classify().
+    "fireball-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
     "laser-arm": "arm",
     "lock": "unlock",
@@ -227,6 +230,15 @@ def purge_fire_wanted(body):
     return isinstance(body, dict) and body.get("on") is True
 
 
+def fireball_on_wanted(body):
+    """True only for a fireball-beat body that asks for any Fireball
+    channel ON: a "controls" object with at least one value that is the
+    JSON word true. Every other body only turns things off, which the
+    engine (fireball.py, controls_on) never refuses."""
+    c = body.get("controls") if isinstance(body, dict) else None
+    return isinstance(c, dict) and any(v is True for v in c.values())
+
+
 def classify(route, body=None):
     """"safety", a key of PERMS, or None, for one POST. A press that only
     takes risk away is "safety" whatever its route: a purge selection
@@ -245,6 +257,9 @@ def classify(route, body=None):
         if name == "purge-select" and \
                 body.get("on") is False:
             return "safety"
+        if name == "fireball-beat":
+            # A beat with every channel off only turns things off.
+            return "arm" if fireball_on_wanted(raw) else "safety"
         if name == "laser-test" and body.get("on") is not True:
             return "safety"
         if name == "screen-arming" and body.get("on") is False:

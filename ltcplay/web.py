@@ -1070,7 +1070,11 @@ class Handler(BaseHTTPRequestHandler):
                      body.get("hold_id") is not None) or
                     (short == "purge-fire" and
                      body.get("fire_id") is not None and
-                     body.get("on") is True))   # a release is logged
+                     body.get("on") is True) or   # a release is logged
+                    # The Fireball page: a beat that changes nothing.
+                    (short == "fireball-beat" and
+                     body.get("run") is not None and
+                     body.get("change") is not True))
             if beat and (ok or route in ("/api/remote/signin",
                                          "/api/remote/signout",
                                          "/api/remote/morning-open",
@@ -1885,6 +1889,34 @@ def _attach_fuel(httpd):
     httpd.server_close = _close_fuel
 
 
+def _attach_fireball(httpd):
+    """The Fireball page (fireball.py, OPERATOR.md): the fireball group
+    from the Startup page's reading of flamesafe's config, its purge rules
+    and lockout, and the flame link's purge frame. Closed FIRST, so every
+    channel is off before anything else stops."""
+    from . import fireball as fireball_mod
+    remote = httpd.remote
+    try:
+        def _journal(text, outcome="done", who="", screen="", fault=False):
+            remote._journal(who or "system", screen or "engine", "fireball",
+                            outcome, text, fault=fault)
+        remote.fireball = fireball_mod.build(
+            remote, httpd.morning, httpd.fire_ice.flame_link,
+            journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"The Fireball page could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_fireball():
+        try:
+            remote.fireball.close()
+        finally:
+            _close_before()
+    httpd.server_close = _close_fireball
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
@@ -2278,6 +2310,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                   f"{type(e).__name__}: {e}")
     if httpd.morning is not None:
         _attach_fuel(httpd)
+        if fire_ice is not None and \
+                getattr(httpd.fire_ice, "flame_link", None) is not None:
+            _attach_fireball(httpd)
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):
