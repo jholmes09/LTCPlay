@@ -15312,8 +15312,8 @@ def build():
 
  ("fireball: a cut run can come back",
   "ltcplay/fireball.py",
-  "            if (owner, rid) in self._dead:",
-  "            if False:"),
+  "        if rid in e[\"ids\"]:\n            return True",
+  "        if False:\n            return True"),
 
  ("fireball: an overtaken beat is used",
   "ltcplay/fireball.py",
@@ -15397,8 +15397,30 @@ def build():
 
  ("fireball: the group needs no fire slot count",
   "ltcplay/fireball.py",
-  "        if len(fire) != len(CONTROLS):",
-  "        if not fire:"),
+  "        if len(fire) != len(CONTROLS) or len(set(fire)) != len(fire) or \\\n",
+  "        if not fire or len(set(fire)) != len(fire) or \\\n"),
+
+ ("fireball: the buttons follow the file's order, not the channel number",
+  "ltcplay/fireball.py",
+  "                \"fire\": sorted(fire)}, \"\"",
+  "                \"fire\": fire}, \"\""),
+
+ ("fireball: a beat overtaken while its frame is worked out is written",
+  "ltcplay/fireball.py",
+  "            if self._run is r and seq is not None and r[\"seq\"] != seq:",
+  "            if False:"),
+
+ ("fireball: every screen's all off is remembered, so a flood pushes out "
+  "a real ended run",
+  "ltcplay/fireball.py",
+  "            if not make:\n                return\n",
+  "            pass\n"),
+
+ ("fireball: a new run may start with an old beat number",
+  "ltcplay/fireball.py",
+  "        return starting and seq is not None and e[\"seq\"] is not None and \\\n"
+  "            seq <= e[\"seq\"]",
+  "        return False"),
 
  ("fireball: the Startup page's purge does not wait for it",
   "ltcplay/morning.py",

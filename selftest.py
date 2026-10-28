@@ -72739,7 +72739,7 @@ def _fb_panel(**kw):
 
 def test_fireball_panel_rules():
     section("the Fireball page's engine (fireball.py): the slots come from "
-            "flamesafe's fireball group in its order; 255 on a channel only "
+            "flamesafe's fireball group, by channel number; 255 on a channel only "
             "while flamesafe reports the group ARMED, never on the safety "
             "slot; one run at a time, the page's beats in order; no beat "
             "for 0.25 s, a disarm, a stale flamesafe, the flame link zeroed "
@@ -72772,18 +72772,24 @@ def test_fireball_panel_rules():
                             {"name": " FireBall ", "safeties": [77],
                              "fire": [59, 58, 57, 56, 55]}])
     check(g == {"name": " FireBall ", "index": 1, "safety": 77,
-                "fire": [59, 58, 57, 56, 55]} and why == "",
-          f"found by name in any case, slots in the config's order: {g}")
+                "fire": [55, 56, 57, 58, 59]} and why == "",
+          f"found by name in any case; the buttons go by channel number, "
+          f"lowest first, whatever order the file lists: {g}")
     for groups, need in (
             ([], "could not be read"),
             ([{"name": "front row", "safeties": [401], "fire": [411]}],
              "no group named fireball"),
             ([{"name": "fireball", "safeties": [405], "fire": [451]}],
-             "has 1 fire slot; this page needs 5"),
+             "Fireball page unavailable: flamesafe.json fireball group must "
+             "list five fire slots"),
+            ([{"name": "fireball", "safeties": [405],
+               "fire": [1, 2, 3, 4, 5, 6]}], "must list five fire slots"),
             ([{"name": "fireball", "safeties": [7, 8],
                "fire": [1, 2, 3, 4, 5]}], "2 safety slots"),
             ([{"name": "fireball", "safeties": [7],
-               "fire": [1, 1, 3, 4, 5]}], "five different slots")):
+               "fire": [1, 1, 3, 4, 5]}], "five different slots"),
+            ([{"name": "fireball", "safeties": [7],
+               "fire": [1, 2, 3, 4, 513]}], "five different slots")):
         g, why = FB.find_group(groups)
         check(g is None and need in why, f"{need}: {why}")
     P = _fb_panel()
@@ -72814,10 +72820,15 @@ def test_fireball_panel_rules():
           "a channel ON is an arm press (signed out is view only); all off "
           "and every other body only turn things off: safety")
 
+    bases = {}
+
     def beat(on, run="r1", seq=None, owner=me, **kw):
+        # A page numbers its beats across runs (FB_SEQ): each run's seqs
+        # here start past every earlier run's.
         body = {"controls": {k: True for k in on}, "run": run}
         if seq is not None:
-            body["seq"] = seq
+            body["seq"] = bases.setdefault(run, 1000 * (len(bases) + 1)) + \
+                seq
         return fb.beat(body, owner, **kw)
     # Not armed: nothing, said.
     P.armed[0] = "disarmed"
@@ -72977,6 +72988,48 @@ def test_fireball_panel_rules():
     check(code == 200 and code2 == 409 and link.cur[55] == 255 and
           link.cur[54] == 0, "a new run replaces the old; the old is dead")
     fb.cut("test")
+    # Review of #149, P3-1: a beat whose frame is still being worked out
+    # when a later beat of the same run lands (separate connections) is
+    # not written over the later one: a released valve stays off.
+    start("o1")
+    real_frame = fb.frame
+    late = []
+
+    def frame_then_newer(on):
+        vals = real_frame(on)
+        if "valve" in on and not late:
+            late.append(beat({"fuel"}, run="o1", seq=3))
+        return vals
+    fb.frame = frame_then_newer
+    P.t[0] += 0.05
+    code, out = beat({"fuel", "valve"}, run="o1", seq=2)
+    fb.frame = real_frame
+    check(late and late[0][0] == 200 and code == 200 and
+          out.get("overtaken") and link.cur[56] == 0 and
+          link.cur[54] == 255,
+          f"the older beat (valve held) finishing after the newer one (valve "
+          f"let go) does not put the valve back: {out} {late}")
+    fb.cut("test")
+    # Review of #149, P3-2: no other screen's beats can push a real ended
+    # run out of what is remembered, and this screen's own all offs cannot
+    # either: a late 'on' of it never starts again.
+    start("e1")
+    old = {"controls": {"fuel": True}, "run": "e1",
+           "seq": bases["e1"] + 2}
+    fb.cut("test")
+    for i in range(300):
+        fb.beat({"controls": {}, "run": f"x{i}", "seq": i},
+                (f"iPad at 10.20.0.{i % 250}", f"w-{i}"))
+    code, out = fb.beat(dict(old), me)
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"300 all offs from other screens: the ended run stays ended: "
+          f"{out}")
+    for i in range(200):
+        beat(set(), run=f"own{i}", seq=1)
+    code, out = fb.beat(dict(old), me)
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"200 of this screen's own all offs: a late beat of the ended "
+          f"run still never starts (its beat number is behind): {out}")
     # No group: nothing at all, said.
     from ltcplay import fireball as FB2
     nog = FB2.FireballPanel(None, "flamesafe's config has no group named "
@@ -73061,8 +73114,12 @@ def test_fireball_at_the_engine():
     win_b = {"X-LTC-Window": "w-bbbbbb"}
     link = R.link
 
+    count = [0]
+
     def beat(on, run, seq, client=loop, headers=win_a, seen=None):
-        body = {"controls": {k: True for k in on}, "run": run, "seq": seq,
+        count[0] += 1          # a page's beats are numbered across runs
+        body = {"controls": {k: True for k in on}, "run": run,
+                "seq": count[0],
                 "seen": R.seen() if seen is None else seen}
         st, _h, out = R.ask("POST", "/api/remote/fireball-beat", body,
                             client=client, headers=headers)
@@ -73419,15 +73476,16 @@ def test_fireball_end_to_end_real_flamesafe():
                 break
         return ok
 
+    count = [0]
+
     def beats(on, run, seconds):
         """The page's heartbeat every 100 ms for `seconds`."""
         last = None
         end = time.monotonic() + seconds
-        n = 0
         while time.monotonic() < end:
-            n += 1
+            count[0] += 1
             last = fb.beat({"controls": {k: True for k in on}, "run": run,
-                            "seq": n}, me)
+                            "seq": count[0]}, me)
             if last[0] != 200:
                 return last
             time.sleep(0.1)

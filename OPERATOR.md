@@ -377,8 +377,10 @@ lives.
 
 **The Fireball page (Fire & Ice, when flamesafe's config has a group named
 fireball).** The header's Fireball button opens one big button per Fireball
-channel, numbered from flamesafe's config (on the Pico: 55 to 59), in the
-order the config lists them:
+channel, numbered from flamesafe's config (on the Pico: 55 to 59), lowest
+channel first. The fireball group must list exactly five fire slots; if it
+does not, the page says "Fireball page unavailable: flamesafe.json fireball
+group must list five fire slots" and does nothing.
 
 - **Fuel Charge**, **Air Charge** and **Purge** are toggles: press once for
   ON, press again for OFF.

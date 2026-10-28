@@ -6,8 +6,8 @@ What it is
 ==========
 
 A rack screen page, shown when flamesafe's config has a group named
-"fireball", with one button per fire slot of that group, in the order the
-config lists them:
+"fireball", with one button per fire slot of that group, by channel
+number, lowest first (the group must list exactly five):
 
     1  Fuel Charge   TOGGLE     on until pressed again
     2  Air Charge    TOGGLE
@@ -77,8 +77,8 @@ import threading
 import time
 
 GROUP_NAME = "fireball"
-# (key, label, kind), in the order of the group's fire slots in
-# flamesafe's config (Jeff's: 55, 56, 57, 58, 59).
+# (key, label, kind), one per fire slot of the group, lowest channel
+# first (Jeff's: 55, 56, 57, 58, 59).
 CONTROLS = (("fuel", "Fuel Charge", "toggle"),
             ("air", "Air Charge", "toggle"),
             ("valve", "Valve Open", "momentary"),
@@ -98,7 +98,8 @@ BEAT_STALE_S = 0.25          # the same as flamelink.PURGE_HOLD_S
 STATUS_FRESH_S = 0.5         # flamesafe's status, as arm_stale_ms
 PAGE_FRESH_S = 1.0           # the page's own status (seen)
 WATCH_S = 0.05
-DEAD_RUNS = 64               # ended runs remembered, so none restarts
+DEAD_RUNS = 64               # ended runs remembered per screen
+OWNERS_KEPT = 64             # screens remembered (only ones that ran)
 
 
 def find_group(groups):
@@ -117,19 +118,18 @@ def find_group(groups):
             return None, (f"The fireball group in flamesafe's config has "
                           f"{len(saf)} safety slots; this page needs exactly "
                           f"one.")
-        if len(fire) != len(CONTROLS):
-            return None, (f"The fireball group in flamesafe's config has "
-                          f"{len(fire)} fire slot"
-                          f"{'' if len(fire) == 1 else 's'}; this page needs "
-                          f"{len(CONTROLS)}, in this order: " +
-                          ", ".join(lb for _k, lb, _t in CONTROLS) + ".")
-        if len(set(fire)) != len(fire) or \
+        if len(fire) != len(CONTROLS) or len(set(fire)) != len(fire) or \
                 not all(isinstance(s, int) and 1 <= s <= UNIVERSE_SIZE
                         for s in fire):
-            return None, ("The fireball group's fire slots in flamesafe's "
-                          "config are not five different slots 1 to 512.")
+            return None, (f"Fireball page unavailable: flamesafe.json "
+                          f"fireball group must list five fire slots (five "
+                          f"different slots 1 to 512; it lists "
+                          f"{len(fire)}).")
+        # By channel number, lowest first, whatever order the file lists
+        # them in (review of #149, P2): Fuel Charge, Air Charge, Valve
+        # Open, Igniter, Purge (Jeff's 55, 56, 57, 58, 59).
         return {"name": g["name"], "index": i, "safety": saf[0],
-                "fire": fire}, ""
+                "fire": sorted(fire)}, ""
     return None, ("flamesafe's config has no group named fireball, so this "
                   "page has nothing to control.")
 
@@ -170,7 +170,12 @@ class FireballPanel:
         self._lock = threading.Lock()
         self._run = None        # {"id", "owner", "on", "beat", "gen",
         #                          "start"} while a run is live
-        self._dead = collections.deque(maxlen=DEAD_RUNS)
+        # Per screen that has started a run (review of #149, P3-2): its
+        # ended run ids and the highest beat number seen from it. Only a
+        # screen's own beats touch its record, and a record is made only
+        # by starting a run (an arm press), so no other screen's beats can
+        # push a real ended run out.
+        self._ended = collections.OrderedDict()
         self.runs = 0
         self.last_cut = ""
         self._stop = threading.Event()
@@ -295,8 +300,7 @@ class FireballPanel:
                 r = self._run
                 mine = r is not None and r["owner"] == owner and \
                     (rid is None or rid == r["id"])
-                if rid is not None:
-                    self._dead.append((owner, rid))
+                self._remember(owner, rid, seq)
             if mine:
                 self.cut(f"{owner[0]} turned everything off",
                          who=who, screen=screen, outcome="off")
@@ -335,7 +339,7 @@ class FireballPanel:
                 return 409, {"error": f"{r['owner'][0]} is using the "
                                       f"Fireball controls. One screen at a "
                                       f"time.", "cut": True}
-            if (owner, rid) in self._dead:
+            if self._is_dead(owner, rid, seq, r):
                 return 409, {"error": "Everything was turned off "
                                       f"({self.last_cut or 'the run ended'}). "
                                       "Press again.", "cut": True}
@@ -343,7 +347,7 @@ class FireballPanel:
                 # A new press from this same screen while its last run is
                 # still live (its all off is still on the way): the new one
                 # takes over, the old one can never come back.
-                self._dead.append((owner, r["id"]))
+                self._remember(owner, r["id"], None)
                 r = self._run = None
             if r is None:
                 gen = self._gen(link)
@@ -354,6 +358,7 @@ class FireballPanel:
                 r = self._run = {"id": rid, "owner": owner, "on": set(),
                                  "beat": now, "gen": gen, "start": now,
                                  "seq": seq}
+                self._remember(owner, None, seq, make=True)
                 self.runs += 1
                 started = True
             elif seq is not None and r["seq"] is not None and \
@@ -369,6 +374,12 @@ class FireballPanel:
             r["beat"] = now
         vals = self.frame(on)
         with self._lock:
+            if self._run is r and seq is not None and r["seq"] != seq:
+                # A later beat of this run went past this one while its
+                # frame was worked out (review of #149, P3-1): that one's
+                # frame stands, this one is not written.
+                return 200, {"ok": True, "run": r["id"], "overtaken": True,
+                             "on": [k for k in KEYS if k in r["on"]]}
             if self._run is not r:
                 # A cut that landed while this beat was worked out wins:
                 # nothing is set.
@@ -404,6 +415,37 @@ class FireballPanel:
         return 200, {"ok": True, "run": r["id"],
                      "on": [k for k in KEYS if k in on]}
 
+    def _remember(self, owner, rid, seq, make=False):
+        """Note an ended run id and the highest beat number of `owner`.
+        Under self._lock. A record is made only with `make` (a run
+        starting); otherwise only an existing one is updated."""
+        e = self._ended.get(owner)
+        if e is None:
+            if not make:
+                return
+            e = self._ended[owner] = {"ids": collections.deque(
+                maxlen=DEAD_RUNS), "seq": None}
+            while len(self._ended) > OWNERS_KEPT:
+                self._ended.popitem(last=False)
+        self._ended.move_to_end(owner)
+        if rid is not None and rid not in e["ids"]:
+            e["ids"].append(rid)
+        if seq is not None and (e["seq"] is None or seq > e["seq"]):
+            e["seq"] = seq
+
+    def _is_dead(self, owner, rid, seq, live):
+        """True for a beat that may not start or carry on a run: its run
+        id ended, or (starting a run) its beat number is not past every
+        beat this screen has sent before. Under self._lock."""
+        e = self._ended.get(owner)
+        if e is None:
+            return False
+        if rid in e["ids"]:
+            return True
+        starting = live is None or live["id"] != rid
+        return starting and seq is not None and e["seq"] is not None and \
+            seq <= e["seq"]
+
     def cut(self, why, who="", screen="", outcome="cut"):
         """Everything off now: the run ends, the flame link's frame is
         cleared at once (not at its own expiry), and a beat from that run
@@ -412,7 +454,7 @@ class FireballPanel:
             r, self._run = self._run, None
             if r is not None:
                 self.last_cut = why
-                self._dead.append((r["owner"], r["id"]))
+                self._remember(r["owner"], r["id"], r["seq"])
         link = self._link()
         if r is not None and link is not None:
             try:
