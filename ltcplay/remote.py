@@ -97,6 +97,7 @@ from . import appdata
 from . import settings as settings_mod
 from . import users as users_mod
 from . import version as version_mod
+from .playhead import ShowAudioPlayhead
 
 FIXED_PORT = 7878
 DISK_FILE = "disk-low.txt"          # packaging/windows/housekeeping.DISK_FILE
@@ -2289,8 +2290,21 @@ class Remote:
         c = self.control
         p = c.session.player
         tl = c.session.tl
+        # The show audio as the one playhead (playhead.py, Jeff
+        # 2026-10-28): audio, timecode, video, pixels, flame cues and
+        # lasers follow it through the show's own paths. Otherwise (GPL, a
+        # show following timecode) the free run below, as before.
+        ph = ShowAudioPlayhead(c, self.schedule)
+        if not ph.applies():
+            ph = None
 
         def here():
+            if ph is not None:
+                at = ph.here()
+                if at is None:
+                    raise ValueError("There is no show time yet. Play from "
+                                     "a timecode first.")
+                return at
             if p.freerun_paused_at is not None:
                 return p.freerun_paused_at
             tc = p.tc_seconds
@@ -2309,8 +2323,14 @@ class Remote:
                 if not at:
                     raise ValueError("Type a timecode to play from, like "
                                      "00:01:30:00, or a cue name.")
-                r = c.go(at)
-                said = f"played from {r['at']}"
+                if ph is not None:
+                    pos = ph.resolve(at)
+                    said = (f"played from "
+                            f"{tl.format(ph.play_from(pos, who, screen))} "
+                            f"on the show audio")
+                else:
+                    r = c.go(at)
+                    said = f"played from {r['at']}"
             elif name == "jump":
                 try:
                     secs = float(body.get("seconds"))
@@ -2319,9 +2339,18 @@ class Remote:
                 if not (-JUMP_MAX_S <= secs <= JUMP_MAX_S) or secs == 0:
                     raise ValueError(f"Jump by up to {JUMP_MAX_S:g} s either "
                                      f"way.")
-                ensure_freerun()
-                at = p.nudge(secs)
+                if ph is not None:
+                    at = ph.jump(secs)
+                else:
+                    ensure_freerun()
+                    at = p.nudge(secs)
                 said = f"jumped {secs:+g} s to {tl.format(at)}"
+            elif name == "pause" and ph is not None:
+                at = ph.pause(who, screen)
+                said = f"paused at {tl.format(at)}"
+            elif name == "continue" and ph is not None:
+                at = ph.cont(who, screen)
+                said = f"continued from {tl.format(at)}"
             elif name == "pause":
                 ensure_freerun()
                 at = p.freerun_pause(True)
@@ -2339,14 +2368,23 @@ class Remote:
                     a, b = self.marks["a"], self.marks["b"]
                     if a is None or b is None:
                         raise ValueError("Set mark A and mark B first.")
-                    p.set_loop(a, b)
-                    if p.freerun_epoch is None:
+                    if ph is not None:
+                        ph.loop(a, b, who, screen)
+                    else:
+                        p.set_loop(a, b)
+                    if ph is None and p.freerun_epoch is None:
                         c.go(tl.format(a))
                     said = (f"turned the loop on, {tl.format(a)} to "
                             f"{tl.format(b)}")
                 else:
-                    p.set_loop(None, None)
+                    if ph is not None:
+                        ph.loop(None, None)
+                    else:
+                        p.set_loop(None, None)
                     said = "turned the loop off"
+            elif ph is not None:                    # follow
+                ph.follow(who, screen)
+                said = "stopped the show audio"
             else:                                   # follow
                 c.release()
                 said = "handed the show back to the timecode"
@@ -2379,6 +2417,12 @@ class Remote:
                        if p.loop else None)
         out["marks"] = {k: (tl.format(v) if v is not None else None)
                         for k, v in self.marks.items()}
+        ph = ShowAudioPlayhead(self.control, self.schedule)
+        v = ph.view() if ph.applies() else None
+        if v is not None:
+            # The show audio is the playhead (playhead.py).
+            out.update(playhead="show_audio", playing=v["playing"],
+                       paused=v["paused"], loop=v["loop"], freerun=False)
         return out
 
     # -- arming from a screen (its own PR) ---------------------------------

@@ -14920,6 +14920,100 @@ def build():
   ":where(html.tight) .ctl button{min-height:44px}",
   "html.tight .ctl button{min-height:44px}"),
 
+ # The Programming playhead on the show audio (playhead.py, Jeff
+ # 2026-10-28, field report items 7 and 8).
+ ("Play from starts the show audio at the top, not at the point asked", "ltcplay/clock.py",
+  '            self._send(("play", role, sample, 0, self._token))',
+  '            self._send(("play", role, 0, 0, self._token))'),
+
+ ("Play from starts the timecode at 00:00:00:00 whatever the point", "ltcplay/clock.py",
+  '            frame = cue.get("first_frame", 0)',
+  '            frame = 0'),
+
+ ("a move while playing never restarts the audio", "ltcplay/clock.py",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n            self._token += 1\n            self._send((\"play\", cue[\"role\"], sample, 0, self._token))\n            self._epoch = None",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n            self._token += 1\n            self._epoch = None"),
+
+ ("a move keeps the old token, so the old position is followed", "ltcplay/clock.py",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n            self._token += 1\n",
+  "        if self._device_ok and cue[\"role\"] in self._loaded:\n"),
+
+ ("a move while paused leaves the frozen frame where it was", "ltcplay/clock.py",
+  "                self._frozen_frame = frame\n                self._frozen_sec = sample / float(self.rate)",
+  "                self._frozen_sec = sample / float(self.rate)"),
+
+ ("Continue after a paused move plays from the old point", "ltcplay/clock.py",
+  "                self._last_send_at = None\n                self._stop_frame = None\n                if self._resuming:",
+  "                self._last_send_at = None\n                if self._resuming:"),
+
+ ("the A/B loop never wraps back to A", "ltcplay/clock.py",
+  "        if loop is not None and not self._pause_req and \\\n                pos >= loop[1] - 1e-9:",
+  "        if False:"),
+
+ ("a loop outlives its cue", "ltcplay/clock.py",
+  "        self._cue = None\n        self._loop = None\n        self._reset_cue()",
+  "        self._cue = None\n        self._reset_cue()"),
+
+ ("a move past the end of the cue is accepted", "ltcplay/clock.py",
+  '        if frame >= cue["tc_frames"] or sample >= cue["frames"]:',
+  '        if False:'),
+
+ ("the audio and the timecode start a move on different frames", "ltcplay/clock.py",
+  "        sample = int(round(frame * self.rate / float(MASTER_FPS)))",
+  "        sample = int(round(start_s * self.rate)) + 7"),
+
+ ("a move with no interface starts the timecode at the top", "ltcplay/clock.py",
+  "            self._epoch = now - sample / float(self.rate)\n            self._mode = \"freerun\"",
+  "            self._epoch = now\n            self._mode = \"freerun\""),
+
+ ("a move into another cue moves inside the one playing", "ltcplay/session.py",
+  '            if cue.name == cur.get("label"):',
+  '            if True:'),
+
+ ("a loop may reach into another cue", "ltcplay/session.py",
+  "        if a < 0 or self._playhead_cue(float(b_show_s) - 1e-6).name != \\\n                cur.get(\"label\"):",
+  "        if a < 0:"),
+
+ ("Play from never starts the show (no conductor show start)", "ltcplay/playhead.py",
+  "            r = cond.show_starting(who, screen)\n            if getattr(r, \"ok\", True) is False:",
+  "            r = None\n            if getattr(r, \"ok\", True) is False:"),
+
+ ("Play from goes ahead with an Abort standing", "ltcplay/playhead.py",
+  '        if cond is not None and getattr(cond, "latched", False):',
+  '        if False:'),
+
+ ("Play from leaves MadMapper on whatever bank it was", "ltcplay/playhead.py",
+  "                mm.select_bank(mm.cfg.show_bank, wait=False)",
+  "                pass"),
+
+ ("a refused show start leaves the music playing", "ltcplay/playhead.py",
+  "                s.clock_halt()\n                self._refused(r, \"Play from\")",
+  "                self._refused(r, \"Play from\")"),
+
+ ("Pause freezes only the clock, not the show's Hold", "ltcplay/playhead.py",
+  '            self._refused(cond.hold(who, screen), "Pause")',
+  '            s.clock_pause()'),
+
+ ("Continue skips the show's Resume", "ltcplay/playhead.py",
+  '            self._refused(cond.resume(who, screen), "Continue")',
+  '            s.clock_resume()'),
+
+ ("Stop leaves the rig in the show look", "ltcplay/playhead.py",
+  "            cond.intermission(who, screen)",
+  "            pass"),
+
+ ("Back and Ahead go before the start of the show", "ltcplay/playhead.py",
+  "        return s.clock_seek(max(0.0, here + float(seconds)))",
+  "        return s.clock_seek(here + float(seconds))"),
+
+ ("Programming Play from on the show audio is a free run again", "ltcplay/remote.py",
+  "        ph = ShowAudioPlayhead(c, self.schedule)\n        if not ph.applies():\n            ph = None",
+  "        ph = None"),
+
+ ("the page is not told the show audio is the playhead", "ltcplay/remote.py",
+  '            out.update(playhead="show_audio", playing=v["playing"],',
+  '            out.update(playing=v["playing"],'),
+
 ]
 
 
