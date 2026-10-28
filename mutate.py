@@ -10636,10 +10636,6 @@ def build():
   '  return offs.filter(el => el && el.dataset.mode !== "stop");',
   '  return offs.filter(Boolean);'),
 
- ('page: a sign-in leaves the laser and announcement buttons locked', 'ltcplay/web/remote.html',
-  '    SIGNIN_SIG = sig;\n    redrawForSignIn();\n',
-  '    SIGNIN_SIG = sig;\n'),
-
  ("page: a sign-in leaves the sign-in tooltip", 'ltcplay/web/remote.html',
   '    el.title = el.dataset.title0 || "";\n',
   ''),

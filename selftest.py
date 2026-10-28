@@ -61015,8 +61015,11 @@ def test_rack_screen_locks_controls_signed_out_in_a_browser():
                            "user": "Jeff", "role": "admin",
                            "view_only": False,
                            "may": {p: True for p in perms}})
-    sizes = ((1920, 1080), (1366, 600))
-    for label, st in (("signed out", out_st), ("signed in", in_st)):
+    # One draw each, the short window signed out and the show PC's screen
+    # signed in: the Windows runner's 20 minutes are nearly all used, and
+    # the sign-in and sign-out flip test draws both sizes again.
+    for label, st, sizes in (("signed out", out_st, ((1366, 600),)),
+                             ("signed in", in_st, ((1920, 1080),))):
         got = _rack_screen_in_chromium(chrome, page, st, sizes,
                                        measure_js=_SIGNIN_MEASURE_JS,
                                        head_js=_SIGNIN_HEAD_JS,
@@ -61183,8 +61186,8 @@ def test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser():
                 "role": None, "view_only": True,
                 "may": {p: False for p in perms}}
     words = "Sign in to use controls"
-    got = _rack_screen_in_chromium(chrome, page, st, RACK_SIZES[:2] +
-                                   ((1366, 600),),
+    got = _rack_screen_in_chromium(chrome, page, st,
+                                   ((1920, 1080), (1366, 600)),
                                    measure_js=_SIGNIN_FLIP_MEASURE_JS,
                                    head_js=_SIGNIN_FLIP_HEAD_JS,
                                    budget_ms=12000)
