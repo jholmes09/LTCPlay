@@ -252,10 +252,40 @@ push those off a small screen), with Stop announcement beside them; on the Strea
 The **booth speaker** is separate from announcements: it plays the short
 alert notes (the Stream Deck unplugged, a show that did not start) to a
 private speaker in the booth, never the PA. It is the "booth_alert" block
-in ltcplay_remote.json: `"device"` (the exact output name), `"channels"`
-(the output pair, like [15, 16]) and `"files"` (a WAV per alert kind). The
-first run writes it with no device, so it is off; the Announcements line
-on the rack screen says "Booth speaker: not set" until it is set.
+in ltcplay_remote.json: `"device"` (the exact output name) and
+`"channels"` (the output pair, like [15, 16]). That is all it needs: the
+notes Jeff recorded ship with the installer (2026-10-28). The first run
+writes the block with no device, so it is off; the Announcements line on
+the rack screen says "Booth speaker: not set" until it is set, and then
+how many notes it found, like "Booth speaker: StudioLive 16R, 23 of 23
+notes found", or which are missing. A missing note stays silent, the
+banner says so and the floor pulse runs instead; nothing else is played
+in its place.
+
+Where a note comes from, first one found wins:
+
+1. `"files"` in the booth_alert block, when it names a WAV for that note,
+   like `"files": {"deck": "C:\\Notes\\my deck.wav"}`. Optional. If that
+   file is missing the note is silent; it is never replaced by another.
+2. Your own copy: `booth_<name>.wav` in a folder named `Booth notes` in
+   Start menu, LTC Player, "Settings and logs". No install, update,
+   rollback or uninstall ever touches that folder. Delete your copy to go
+   back to the shipped note.
+3. The shipped note: `Booth notes` in the LTC Player program folder.
+   Every install and update empties it and puts the shipped set back, so
+   do not edit the notes there.
+
+A note is at most 8 seconds long. Display only alerts (the aim slots
+differ) never sound. Every other alert repeats its note every 30 seconds
+(response_s) until acknowledged. The recorded notes:
+
+| File | Plays when |
+|---|---|
+| booth_gate.wav, booth_audio.wav, booth_video.wav, booth_deck.wav, booth_start.wav, booth_flames.wav, booth_link.wav, booth_timecode.wav, booth_lasers.wav, booth_users.wav | an alert of that kind is open (lasers and users sound from 2026-10-28) |
+| booth_test.wav | a test of the booth speaker; no screen has a button for it yet |
+| booth_held.wav | once, when the schedule holds at showtime for an open alert, before that alert's own note |
+| booth_preroll_audio.wav, booth_preroll_video.wav, booth_preroll_timecode.wav, booth_preroll_lasers.wav, booth_preroll_flames.wav, booth_preroll_network.wav, booth_preroll_hold.wav, booth_preroll_ok.wav, booth_continue_anyway.wav | the pre-roll check, once it is built (PR #162); silent until then |
+| booth_clean_ready.wav, booth_clean_done.wav | the wave flamer cleaning routine, once it is built (PR #159); silent until then |
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
 Run has been pressed and playback is going it reads STOP RUN: hold it for

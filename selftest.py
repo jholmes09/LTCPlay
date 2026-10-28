@@ -15765,6 +15765,13 @@ t(L.buttons[2].off && L.buttons[2].sub === "Recording missing" && L.buttons[2].m
 t(L.stopOff && L.banner === "", "nothing playing: Stop off, no banner");
 t(/holds the schedule first/.test(L.note), "between shows the note says it holds: " + L.note);
 t(/Booth speaker: Booth 16R/.test(L.device), "the booth speaker is named: " + L.device);
+t(!/notes found/.test(L.device), "no note count from an engine that sends none: " + L.device);
+L = announceLook(base, {configured:true, device:"StudioLive 16R", notes:{expected:23, found:23, missing:[]}});
+t(/Booth speaker: StudioLive 16R, 23 of 23 notes found$/.test(L.device), "every note found: " + L.device);
+L = announceLook(base, {configured:false, device:"", notes:{expected:23, found:21, missing:["booth_users.wav", "booth_held.wav"]}});
+t(/Booth speaker: not set, 21 of 23 notes found; missing booth_users.wav, booth_held.wav$/.test(L.device), "the missing ones named: " + L.device);
+L = announceLook(base, {configured:true, device:"X", notes:{expected:23, found:15, missing:["a","b","c","d","e","f","g","h"]}});
+t(/15 of 23 notes found; missing a, b, c, d, e, f and 2 more$/.test(L.device), "six named, then how many more: " + L.device);
 L = announceLook(Object.assign({}, base, {over_show:true}), {});
 t(/plays over it and pauses nothing/.test(L.note), "during a show: " + L.note);
 t(/Booth speaker: not set/.test(L.device), "no booth: said");
@@ -56503,9 +56510,13 @@ def test_alerts_route_status_and_acknowledge():
                   "The Stream Deck is unplugged.")
               and al[0]["severity"] == "fault"
               and al[0]["options"] == ["Acknowledge", "Disarm all"]
-              and status.get("booth") == {"configured": False, "device": ""},
+              and {k: v for k, v in (status.get("booth") or {}).items()
+                   if k != "notes"} == {"configured": False, "device": ""}
+              and isinstance(status["booth"].get("notes"), dict)
+              and status["booth"]["notes"].get("expected") == 23,
               f"the status carries the alert and says no booth speaker is "
-              f"configured: {al} {status.get('booth')}")
+              f"configured, with how many booth notes there are: {al} "
+              f"{status.get('booth')}")
         check(al[0]["text"].endswith("Booth speaker not available."),
               f"with no booth speaker the banner says so: {al[0]['text']}")
         st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
@@ -56753,6 +56764,287 @@ def test_boothaudio_never_holds_and_never_uses_the_pa():
             check(False, f"{block} must be refused at load")
         except ValueError as e:
             check(RM.SETTINGS_FILE in str(e), f"refused at load: {e}")
+    print("  ok")
+
+
+# Jeff's recorded booth notes (2026-10-28), in the order he listed them.
+_BOOTH_NOTE_FILES = (
+    "booth_gate.wav", "booth_audio.wav", "booth_video.wav", "booth_deck.wav",
+    "booth_start.wav", "booth_flames.wav", "booth_link.wav",
+    "booth_timecode.wav", "booth_test.wav", "booth_lasers.wav",
+    "booth_users.wav", "booth_preroll_audio.wav", "booth_preroll_video.wav",
+    "booth_preroll_timecode.wav", "booth_preroll_lasers.wav",
+    "booth_preroll_flames.wav", "booth_preroll_network.wav",
+    "booth_preroll_hold.wav", "booth_preroll_ok.wav", "booth_held.wav",
+    "booth_continue_anyway.wav", "booth_clean_ready.wav",
+    "booth_clean_done.wav")
+
+
+def test_booth_notes_by_name_and_shipped_by_the_installer():
+    section("booth notes (Jeff, 2026-10-28): booth_<kind>.wav is found by "
+            "its name, a person's own copy in Settings and logs\\Booth notes "
+            "first, then the shipped one; an explicit files entry wins; a "
+            "missing note is reported and silent, never fatal; lasers and "
+            "users sound, aim never does; the showtime hold plays 'held' "
+            "once before the alert's own note; the installer ships the "
+            "folder and the checker fails only when told to")
+    import io
+    import shutil
+    import tempfile
+    import contextlib
+    from ltcplay import alerthold as AH
+    from ltcplay import alerts as AL
+    from ltcplay import boothaudio as BA
+    here = os.path.dirname(os.path.abspath(__file__))
+    check(BA.EXPECTED_FILES == _BOOTH_NOTE_FILES,
+          f"the expected set is exactly the recorded one: "
+          f"{BA.EXPECTED_FILES}")
+    check({"lasers", "users"} <= set(BA.NOTE_KINDS) and
+          "aim" not in BA.NOTE_NAMES,
+          f"lasers and users have notes, aim none: {BA.NOTE_KINDS}")
+    check(set(AL.KINDS) - AL.DISPLAY_ONLY <= set(BA.NOTE_KINDS),
+          f"every alert kind that sounds has a note: "
+          f"{set(AL.KINDS) - AL.DISPLAY_ONLY - set(BA.NOTE_KINDS)}")
+    work = tempfile.mkdtemp()
+    try:
+        shipped = os.path.join(work, "app", BA.FOLDER)
+        settings = os.path.join(work, "settings")
+        own = os.path.join(settings, BA.FOLDER)
+        os.makedirs(shipped)
+        os.makedirs(own)
+        folders = BA.note_folders(settings)
+        check(folders == (own, BA.shipped_folder()),
+              f"own copies first, then the shipped ones: {folders}")
+        check(BA.shipped_folder() == os.path.join(
+                  here, "packaging", "windows", "booth"),
+              f"from source the shipped notes are the repo's: "
+              f"{BA.shipped_folder()}")
+        folders = (own, shipped)
+        # Lengths tell which file played: 0.20 s shipped, 0.30 s own,
+        # 0.40 s explicit.
+        for name in ("deck", "lasers", "users", "held", "aim_never"):
+            _booth_wav(os.path.join(shipped, f"booth_{name}.wav"), 0.2)
+        _booth_wav(os.path.join(own, "booth_lasers.wav"), 0.3)
+        explicit = _booth_wav(os.path.join(work, "my deck.wav"), 0.4)
+
+        class _SD:
+            devices = [{"name": "StudioLive 16R", "max_output_channels": 18,
+                        "default_samplerate": 48000}]
+
+            def query_devices(self):
+                return self.devices
+        opened = []
+
+        class _Stream:
+            def __init__(self, spec):
+                self.spec = spec
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def write(self, block):
+                opened.append((self.spec, block.shape[0] / 48000.0))
+
+        def opener(sd, index, channels, rate):
+            return _Stream((index, channels, rate))
+
+        def settle(p):
+            check(wait_for(lambda: p.playing == 0, timeout=5),
+                  "the notes finished")
+        cfg = {"device": "StudioLive 16R", "channels": [15, 16]}
+        p = BA.BoothPlayer(cfg, sd=_SD(), opener=opener, folders=folders)
+        check(p.config["files"] == {},
+              "only the device and the channels are set")
+        ok, why = p.play("deck")
+        settle(p)
+        check(ok and len(opened) == 1 and abs(opened[0][1] - 0.2) < 0.01,
+              f"by name: booth_deck.wav from the shipped folder: {why} "
+              f"{opened}")
+        ok, why = p.play("lasers")
+        settle(p)
+        check(ok and abs(opened[-1][1] - 0.3) < 0.01,
+              f"a person's own copy wins over the shipped one: {opened}")
+        q = BA.BoothPlayer(dict(cfg, files={"deck": explicit}), sd=_SD(),
+                           opener=opener, folders=folders)
+        ok, why = q.play("deck")
+        settle(q)
+        check(ok and abs(opened[-1][1] - 0.4) < 0.01,
+              f"an explicit files entry wins over both: {opened}")
+        gone = BA.BoothPlayer(
+            dict(cfg, files={"deck": os.path.join(work, "gone.wav")}),
+            sd=_SD(), opener=opener, folders=folders)
+        n = len(opened)
+        ok, why = gone.play("deck")
+        check(not ok and "gone.wav" in why and len(opened) == n and
+              "deck" in gone.check_files(),
+              f"an explicit file that is missing is silent, never replaced "
+              f"by the shipped one: {why}")
+        # Missing: reported, silent, not fatal.
+        ok, why = p.play("audio")
+        check(not ok and "booth_audio.wav is not in" in why and
+              own in why and shipped in why and len(opened) == n,
+              f"a missing note is silent with a sentence naming the file "
+              f"and the folders: {why}")
+        nv = p.notes()
+        check(nv["expected"] == 23 and nv["found"] == 4 and
+              "booth_audio.wav" in nv["missing"] and
+              "booth_deck.wav" not in nv["missing"] and
+              len(nv["missing"]) == 19,
+              f"the rack screen's count: {nv}")
+        check(p.check_files() == {},
+              f"missing notes are not file problems: {p.check_files()}")
+        long = _booth_wav(os.path.join(shipped, "booth_users.wav"), 9.0)
+        check("users" in p.check_files() and not p.play("users")[0],
+              "a 9 s note is a problem and silent")
+        _booth_wav(long, 0.2)
+        ok, why = p.play("aim_never")
+        check(not ok and "has no booth note" in why and len(opened) == n,
+              f"a name that is no note never plays, whatever file is "
+              f"there: {why}")
+        check(BA.parse_config({"files": {"held": explicit,
+                                         "preroll_ok": explicit,
+                                         "clean_done": explicit}})
+              ["files"]["held"] == explicit,
+              "the future notes are known names in files")
+        # Through the alert service: lasers and users sound, aim never.
+        al = AL.Alerts(booth=p, clock=lambda: 1000.0)
+        for kind in ("lasers", "users"):
+            a = al.raise_(kind, f"The {kind} need a person.")
+            check(a.booth_ok is True, f"{kind} sounds now: {a.booth}")
+        settle(p)
+        check(len(opened) == n + 2, f"two notes played: {opened[n:]}")
+        n = len(opened)
+        a = al.raise_("aim", "The aim slots differ.")
+        settle(p)
+        check(a.booth_ok is None and len(opened) == n,
+              f"aim is display only, never a note: {a.booth}")
+        ok, why = al.play_note("held")
+        settle(p)
+        check(ok and len(opened) == n + 1 and al.view() and
+              len(al.open()) == 3,
+              f"play_note plays once and opens nothing: {why}")
+        check(AL.Alerts(booth=None).play_note("held")[0] is False,
+              "no booth: play_note is a sentence, never an error")
+        # The showtime hold: "held" once, then the alert's own note, in
+        # that order, and the countdown is what it always was.
+        booth = _CountingBooth()
+        al2 = AL.Alerts(booth=booth, clock=lambda: 50.0)
+        al2.raise_("deck", "The Stream Deck is unplugged.")
+        al2.raise_("audio", "The show audio is lost.")
+        booth.played.clear()
+        h = AH.AlertHold(al2, clock=lambda: 500.0)
+        h.started(1, "two alerts")
+        check(booth.played[0] == "held" and booth.played.count("held") == 1
+              and sorted(booth.played[1:]) == ["audio", "deck"],
+              f"held once, first, then each alert's note: {booth.played}")
+        check(h.hold["due"] == 500.0 + AH.COUNTDOWN_S and
+              h.hold["state"] == "counting",
+              f"the hold's countdown is unchanged: {h.hold}")
+        # The order on the speaker itself: one stream at a time, in turn.
+        order, busy = [], [0, 0]
+
+        class _Slow(_Stream):
+            def write(self, block):
+                busy[0] += 1
+                busy[1] = max(busy[1], busy[0])
+                time.sleep(0.1)
+                order.append(round(block.shape[0] / 48000.0, 2))
+                busy[0] -= 1
+        s = BA.BoothPlayer(cfg, sd=_SD(), folders=folders,
+                           opener=lambda sd, i, c, r: _Slow((i, c, r)))
+        _booth_wav(os.path.join(own, "booth_deck.wav"), 0.25)
+        s.play("held")
+        s.play("deck")
+        settle(s)
+        check(order == [0.2, 0.25] and busy[1] == 1,
+              f"held, then deck, never two streams at once: {order} "
+              f"(at most {busy[1]} at once)")
+        # The checker: the full set passes; a missing note fails only when
+        # required; a note that cannot play always fails.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_booth_notes", os.path.join(here, "packaging", "windows",
+                                              "check_booth_notes.py"))
+        CB = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(CB)
+        full = os.path.join(work, "full")
+        os.makedirs(full)
+        for fn in _BOOTH_NOTE_FILES:
+            _booth_wav(os.path.join(full, fn), 0.1)
+
+        def run(*argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = CB.main(list(argv))
+            return rc, buf.getvalue()
+        rc, out = run("--folder", full, "--require")
+        check(rc == 0 and "23 of 23 found" in out,
+              f"the full set passes, required: {rc} {out[-300:]}")
+        os.remove(os.path.join(full, "booth_held.wav"))
+        rc, out = run("--folder", full)
+        check(rc == 0 and "MISSING  booth_held.wav" in out,
+              f"one missing, not required: listed, passes: {out[-300:]}")
+        rc, out = run("--folder", full, "--require")
+        check(rc == 1 and "missing: booth_held.wav" in out,
+              f"required: fails and names it: {out[-300:]}")
+        _booth_wav(os.path.join(full, "booth_held.wav"), 0.1)
+        _booth_wav(os.path.join(full, "Booth_Held2.wav"), 0.1)
+        rc, out = run("--folder", full, "--require")
+        check(rc == 1 and "NOT EXPECTED  Booth_Held2.wav" in out,
+              f"a name that is no note fails when required: {out[-300:]}")
+        os.remove(os.path.join(full, "Booth_Held2.wav"))
+        _booth_wav(os.path.join(full, "booth_gate.wav"), 9.0)
+        rc, out = run("--folder", full)
+        check(rc == 1 and "CANNOT PLAY  booth_gate.wav" in out,
+              f"a 9 s note fails even when not required: {out[-300:]}")
+        # The repo's own notes, as they are: whatever is there plays (a
+        # real recording over 8 s fails here, on every PR).
+        r = CB.check(os.path.join(here, "packaging", "windows", "booth"))
+        check(not r["bad"], f"the shipped notes can all play: {r['bad']}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # The installer ships the folder, empties it on every install, and
+    # never writes the Settings and logs folder; the smoke test proves it
+    # on a real install.
+    iss = open(os.path.join(here, "packaging", "windows", "installer.iss"),
+               encoding="utf-8").read()
+    check('Type: filesandordirs; Name: "{app}\\Booth notes"' in iss,
+          "every install empties {app}\\Booth notes first")
+    check('Source: "booth\\booth_*.wav"; DestDir: "{app}\\Booth notes"; '
+          'Flags: ignoreversion skipifsourcedoesntexist' in iss and
+          'Source: "booth\\README.txt"; DestDir: "{app}\\Booth notes"' in iss,
+          "the installer ships booth\\booth_*.wav and the READ ME into "
+          "{app}\\Booth notes, and builds before the recordings arrive")
+    check(BA.FOLDER == "Booth notes" and "{localappdata}" not in
+          iss.lower() and "{userappdata}" not in iss.lower(),
+          "the installer never writes a person's settings folder")
+    check(os.path.isfile(os.path.join(here, "packaging", "windows", "booth",
+                                      "README.txt")),
+          "the repo's booth folder exists with its READ ME")
+    smoke = open(os.path.join(here, "packaging", "windows", "ci_smoke.py"),
+                 encoding="utf-8").read()
+    check('"Booth notes"' in smoke and "booth_left_over.wav" in smoke and
+          "own_bytes" in smoke,
+          "the smoke test checks the shipped notes, the refresh and the "
+          "person's own copy")
+    wf = open(os.path.join(here, ".github", "workflows", "windows-app.yml"),
+              encoding="utf-8").read()
+    check("python packaging/windows/check_booth_notes.py" in wf and
+          "vars.REQUIRE_BOOTH_NOTES == 'true'" in wf,
+          "the build checks the notes, and requires the set only when the "
+          "REQUIRE_BOOTH_NOTES variable says so")
+    ign = open(os.path.join(here, ".gitignore"), encoding="utf-8").read()
+    check("!packaging/windows/booth/booth_*.wav" in ign,
+          "the booth notes, and only they, are let past the *.wav rule")
+    for name in ("check_booth_notes.py", os.path.join("booth",
+                                                       "README.txt")):
+        src = open(os.path.join(here, "packaging", "windows", name),
+                   encoding="utf-8").read()
+        check("–" not in src and "—" not in src,
+              f"{name} has no em or en dashes")
     print("  ok")
 
 
@@ -79359,6 +79651,7 @@ if __name__ == "__main__":
         test_alerts_pure_logic,
         test_alerts_route_status_and_acknowledge,
         test_boothaudio_never_holds_and_never_uses_the_pa,
+        test_booth_notes_by_name_and_shipped_by_the_installer,
         test_player_alert_look_pulse_shape,
         test_alert_pixels_never_the_flame_controllers,
         test_audio_interface_watch,

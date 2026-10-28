@@ -17,6 +17,11 @@ What it proves, in order:
   5. Running Setup again (an update) stops flamesafe the proper way: zeros,
      then the stream-terminated flag. Then everything comes back, and the
      settings (showpc.json) and the show folder's files are untouched.
+     The booth notes: Setup ships every booth_*.wav in packaging/windows/
+     booth into {app}\Booth notes (the rack screen's count says the engine
+     finds them there); an update empties that folder and ships the set
+     again, and never touches a person's own copy in Settings and logs\
+     Booth notes.
   5c. The engine is killed hard (the one program that may be: flamesafe is
      left alone) and the supervisor starts it again by itself.
   5d. --diagnostics writes a bundle on the Desktop with the logs, settings
@@ -49,6 +54,8 @@ START_MENU = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"),
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
     __file__))))
 SACN_PORT = 5568
+BOOTH_APP = os.path.join(APP, "Booth notes")
+BOOTH_OWN = os.path.join(LOCAL, "Booth notes")
 
 FAILED = []
 NOTES = []      # evidence, printed as one notice at the end
@@ -247,6 +254,44 @@ def get(path, timeout=5):
         return 0, f"{type(e).__name__}: {e}"
 
 
+def booth_expected():
+    """(every expected booth note file name, the ones in the repo's
+    packaging/windows/booth that Setup ships), from boothaudio.py."""
+    sys.path.insert(0, REPO)
+    try:
+        from ltcplay import boothaudio
+    finally:
+        sys.path.remove(REPO)
+    src = os.path.join(REPO, "packaging", "windows", "booth")
+    try:
+        here = set(os.listdir(src))
+    except OSError:
+        here = set()
+    return (list(boothaudio.EXPECTED_FILES),
+            [n for n in boothaudio.EXPECTED_FILES if n in here])
+
+
+def tiny_wav(path):
+    """A 0.1 s silent 16-bit stereo WAV: a stand-in note."""
+    import wave
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with wave.open(path, "wb") as fh:
+        fh.setnchannels(2)
+        fh.setsampwidth(2)
+        fh.setframerate(48000)
+        fh.writeframes(b"\0\0\0\0" * 4800)
+
+
+def booth_notes_status():
+    """The rack screen's booth note count, or {}."""
+    st, body = get("/api/remote/status")
+    try:
+        return ((json.loads(body) if st == 200 else {}).get("booth") or
+                {}).get("notes") or {}
+    except (ValueError, AttributeError):
+        return {}
+
+
 def sha256_of(path):
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -412,6 +457,14 @@ def main(installer, version=""):
                   "flamesafe.example.json"):
             check(os.path.isfile(os.path.join(APP, n)),
                   f"{n} is missing from {APP}")
+        expected, shipped = booth_expected()
+        check(os.path.isfile(os.path.join(BOOTH_APP, "READ ME.txt")),
+              f"the booth notes folder (with its READ ME) is missing: "
+              f"{BOOTH_APP}")
+        lost = [n for n in shipped
+                if not os.path.isfile(os.path.join(BOOTH_APP, n))]
+        check(not lost, f"booth notes in the repo that Setup did not "
+                        f"install into {BOOTH_APP}: {lost}")
         check(os.path.isdir(os.path.join(APP, "Installers")) and
               os.listdir(os.path.join(APP, "Installers")),
               "Setup did not keep a copy of itself for rollback")
@@ -511,6 +564,35 @@ def main(installer, version=""):
               f"the status carries the setup view with the schedule loaded, "
               f"and the deck's sentence: {str(status.get('setup'))[:200]}")
 
+        say("4c. the booth notes: the engine finds the shipped ones; a "
+            "person's own copy and a left over file are planted for the "
+            "update")
+        nv = {}
+        wait(lambda: nv.update(booth_notes_status()) or
+             nv.get("found") == len(shipped), 30)
+        check(nv.get("expected") == len(expected) and
+              nv.get("found") == len(shipped),
+              f"the rack screen's booth count is not {len(shipped)} of "
+              f"{len(expected)} (the notes Setup shipped): {nv}")
+        own = expected[0]
+        own_path = os.path.join(BOOTH_OWN, own)
+        tiny_wav(own_path)
+        own_bytes = read_text(own_path)
+        leftover = os.path.join(BOOTH_APP, "booth_left_over.wav")
+        planted = False
+        try:
+            tiny_wav(leftover)
+            planted = True
+        except OSError as e:
+            NOTES.append(f"could not plant a left over booth note in "
+                         f"{BOOTH_APP} ({e}); that part was not tried")
+        want = len(set(shipped) | {own})
+        check(wait(lambda: booth_notes_status().get("found") == want, 15),
+              f"a person's own {own} in {BOOTH_OWN} is not counted: "
+              f"{booth_notes_status()}")
+        NOTES.append(f"booth notes: {len(shipped)} of {len(expected)} "
+                     f"shipped and found by the engine")
+
         say("5. an update stops flamesafe the proper way, then restarts, "
             "and the settings and show files are untouched")
         settings_before = read_text(os.path.join(LOCAL, "showpc.json"))
@@ -539,6 +621,24 @@ def main(installer, version=""):
                                         "after the update")
         NOTES.append("update in place kept showpc.json, flamesafe.json and "
                      "the show folder's files")
+        check(read_text(own_path) == own_bytes and own_bytes is not None,
+              f"the update changed or removed a person's own booth note "
+              f"{own_path}; it must never touch Settings and logs")
+        if planted:
+            check(not os.path.exists(leftover),
+                  f"the update left an old file in {BOOTH_APP}; it must "
+                  f"empty the folder and ship the set again")
+        lost = [n for n in shipped
+                if not os.path.isfile(os.path.join(BOOTH_APP, n))]
+        check(not lost and os.path.isfile(os.path.join(BOOTH_APP,
+                                                       "READ ME.txt")),
+              f"after the update the shipped booth notes are not all back "
+              f"in {BOOTH_APP}: {lost}")
+        check(wait(lambda: booth_notes_status().get("found") == want, 30),
+              f"after the update the rack screen's booth count is not "
+              f"{want}: {booth_notes_status()}")
+        NOTES.append("update refreshed the shipped booth notes and kept "
+                     "the person's own copy")
 
         say("5b. the bench soak test, 7 minutes")
         listener.sock.close()      # the soak test listens on 5568 itself

@@ -5,8 +5,9 @@ time comes while an alert is still open.
   automatic here (alerts.py re-sounds its booth note until acknowledged).
 - At showtime, with any alert open, the schedule Holds IMMEDIATELY instead
   of starting the show (schedule_service.Service._hold_at_showtime_for_
-  alerts, a system action). The booth note sounds at once and the rack
-  screen says "Held: alert open".
+  alerts, a system action). The booth plays its "held" note once, then
+  each open alert's own note, and the rack screen says "Held: alert
+  open".
 - Then a COUNTDOWN_S countdown, shown on the rack screen, and then ONE
   "Delayed" announcement on the PA (announce.py), only when an alert of
   a kind in ANNOUNCE_KINDS was open at the Hold (audio, video, flames,
@@ -88,6 +89,15 @@ class AlertHold:
                      "due": now + COUNTDOWN_S if loud_ids else None,
                      "state": "counting" if loud_ids else "quiet",
                      "note": ""}
+        # The "held" note once, then each open alert's own note (the booth
+        # player plays them in that order, one after another). The
+        # countdown above is already set: the note changes no timing.
+        play_note = getattr(self.alerts, "play_note", None)
+        if play_note is not None:
+            try:
+                play_note("held")
+            except Exception:                    # noqa: BLE001
+                pass
         try:
             self.alerts.sound_now()
         except Exception:                        # noqa: BLE001

@@ -1968,6 +1968,21 @@ class Remote:
                       f"{'ON' if on else 'OFF'} on the {screen}.")
         return 200, {"ok": True, "enabled": on, "text": text}
 
+    def _booth_notes(self):
+        """How many of the recorded booth notes this machine has, for the
+        rack screen's booth line (boothaudio.notes_view): the booth
+        player's own files and folders, or with no player the folders a
+        note would be looked for in. None when it cannot be said."""
+        try:
+            from . import boothaudio
+            view = getattr(self.alerts.booth, "notes", None)
+            if callable(view):
+                return view()
+            return boothaudio.notes_view(
+                {}, boothaudio.note_folders(self.folder))
+        except Exception:                        # noqa: BLE001
+            return None
+
     def _alert_tick(self):
         """After each scheduler tick, on the scheduler's thread: wakes the
         alert worker and returns at once. The work itself (the booth
@@ -5769,7 +5784,8 @@ class Remote:
         self._apply_pulse()
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""
-        out["booth"] = {"configured": bool(booth), "device": booth}
+        out["booth"] = {"configured": bool(booth), "device": booth,
+                        "notes": self._booth_notes()}
         try:
             out["alert_hold"] = self.alert_hold.view()
         except Exception as e:                   # noqa: BLE001

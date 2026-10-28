@@ -115,6 +115,18 @@ jobs:
           exit 1
       # ================================================================
 
+      # The booth alert notes the installer ships (packaging/windows/booth,
+      # ltcplay/boothaudio.py EXPECTED_FILES). A note that is there but
+      # cannot play (too long, not a WAV this reads) always fails. A
+      # missing or misspelt one is a warning until the repository variable
+      # REQUIRE_BOOTH_NOTES is true (Settings, Secrets and variables,
+      # Actions, Variables); then it fails and names every missing file.
+      - name: Check the booth notes
+        shell: bash
+        env:
+          BOOTH_NOTES_REQUIRED: ${{ vars.REQUIRE_BOOTH_NOTES == 'true' && '1' || '0' }}
+        run: python packaging/windows/check_booth_notes.py
+
       - name: Build the installer (Inno Setup)
         shell: pwsh
         run: |

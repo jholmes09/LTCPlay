@@ -5729,6 +5729,86 @@ def build():
   "        except ValueError as e:\n"
   "            dev = {\"index\": 0, \"name\": name, \"channels\": 64}"),
 
+ # The booth notes by name (Jeff, 2026-10-28).
+ ("booth notes: a note is never looked for by its name",
+  "ltcplay/boothaudio.py",
+  "    for d in folders or ():\n        p = os.path.join(d, fn)",
+  "    for d in ():\n        p = os.path.join(d, fn)"),
+
+ ("booth notes: the shipped note wins over a person's own copy",
+  "ltcplay/boothaudio.py",
+  "    if settings_folder:\n        out.append(os.path.join(settings_folder, FOLDER))\n"
+  "    out.append(shipped_folder())",
+  "    out.append(shipped_folder())\n    if settings_folder:\n"
+  "        out.append(os.path.join(settings_folder, FOLDER))"),
+
+ ("booth notes: an explicit files entry no longer wins",
+  "ltcplay/boothaudio.py",
+  "    explicit = (files or {}).get(name)\n    if explicit:\n        return explicit",
+  "    explicit = (files or {}).get(name)\n    if False:\n        return explicit"),
+
+ ("booth notes: a missing explicit file falls back to the shipped note",
+  "ltcplay/boothaudio.py",
+  "    explicit = (files or {}).get(name)\n    if explicit:\n        return explicit",
+  "    explicit = (files or {}).get(name)\n"
+  "    if explicit and os.path.isfile(explicit):\n        return explicit"),
+
+ ("booth notes: lasers and users stay silent",
+  "ltcplay/boothaudio.py",
+  "              \"timecode\", \"test\", \"lasers\", \"users\")",
+  "              \"timecode\", \"test\")"),
+
+ ("booth notes: any name plays whatever file is there",
+  "ltcplay/boothaudio.py",
+  "        if kind not in NOTE_NAMES:\n            return False, (f\"{kind} has no booth note",
+  "        if False:\n            return False, (f\"{kind} has no booth note"),
+
+ ("booth notes: two notes play at once",
+  "ltcplay/boothaudio.py",
+  "            self._queue.put((sd, dev, block, rate))\n            if self._worker is None:",
+  "            threading.Thread(target=self._write, args=(sd, dev, block, rate),\n"
+  "                             daemon=True).start()\n            if False:"),
+
+ ("booth notes: the rack screen counts a missing note as found",
+  "ltcplay/boothaudio.py",
+  "        if p and os.path.isfile(p):\n            found += 1",
+  "        if True:\n            found += 1"),
+
+ ("booth notes: the status carries no note count",
+  "ltcplay/remote.py",
+  "                        \"notes\": self._booth_notes()}",
+  "                        \"notes\": None}"),
+
+ ("booth notes: the rack screen line never says the count",
+  "ltcplay/web/remote.html",
+  "  device += boothNotesText(b.notes);\n",
+  ""),
+
+ ("booth notes: the showtime hold plays no held note",
+  "ltcplay/alerthold.py",
+  "                play_note(\"held\")",
+  "                pass"),
+
+ ("booth notes: an update leaves old notes behind",
+  "packaging/windows/installer.iss",
+  "Type: filesandordirs; Name: \"{app}\\Booth notes\"\n",
+  ""),
+
+ ("booth notes checker: a missing note never fails",
+  "packaging/windows/check_booth_notes.py",
+  "    if require and (r[\"missing\"] or r[\"extra\"]):\n        failed = True",
+  "    if require and r[\"extra\"]:\n        failed = True"),
+
+ ("booth notes checker: a missing note fails before it is required",
+  "packaging/windows/check_booth_notes.py",
+  "    if require and (r[\"missing\"] or r[\"extra\"]):\n        failed = True",
+  "    if r[\"missing\"] or r[\"extra\"]:\n        failed = True"),
+
+ ("booth notes checker: a too long note passes",
+  "packaging/windows/check_booth_notes.py",
+  "        if length > BA.MAX_NOTE_S:",
+  "        if False:"),
+
  # The blue pulse.
  ("the pulse overlaps the flame controller's channels", "ltcplay/fire_ice.py",
   "    if lo <= f_hi and f_lo <= hi:",
