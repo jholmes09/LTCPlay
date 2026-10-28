@@ -807,6 +807,25 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
 .fu-rec{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--hair-soft);font-size:14px}
 .fu-rec span{flex:1 1 16em}
 .fu-rec button{min-height:40px;font-size:15px;flex:0 0 auto}
+/* ---- Fireball (Jeff, 2026-10-28; design by Andy; fireball.py): one big
+   button per channel, one screen. Toggles stay on until pressed again;
+   Valve Open and Igniter are on only while held. ---- */
+#v-fireball{overflow:auto;display:flex;flex-direction:column;gap:10px}
+#v-fireball > *{flex:0 0 auto}
+.fb-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.fb-top h2{margin:0;flex:0 0 auto}
+.fb-armed{flex:1 1 12em;font:800 clamp(15px,2.2vh,20px)/1.2 var(--sans)}
+.fb-armed.on{color:var(--red)}
+.fb-top button{flex:0 0 auto;min-height:48px}
+#fb-note{font-size:14px;margin-top:6px}
+#fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:10px}
+button.fb-pad{min-height:clamp(96px,20vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:6px;padding:8px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+button.fb-pad b{font:800 clamp(18px,2.8vh,28px)/1.1 var(--sans)}
+button.fb-pad .fb-st{font:800 clamp(16px,2.4vh,24px)/1 var(--caps);letter-spacing:.12em}
+button.fb-pad small{font:400 13px/1.2 var(--sans);color:var(--cream)}
+button.fb-pad.on{background:var(--red-deep);border:3px solid var(--red);color:var(--champ)}
+button.fb-pad.na{opacity:.45}
 </style>
 </head>
 <body>
@@ -830,6 +849,7 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
     <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
     <button id="nav-morning" class="ghost" data-go="morning" hidden>Startup</button>
     <button id="nav-fuel" class="ghost" data-go="fuel" hidden>Fuel</button>
+    <button id="nav-fireball" class="ghost" data-go="fireball" hidden>Fireball</button>
     <button id="nav-back" class="go" data-go="show" hidden>Back to the show</button>
   </nav>
 </header>
@@ -997,6 +1017,22 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
       <div class="dim">A refill logged by mistake can be undone here (admins). It stays in the record as undone.</div>
       <div id="fu-recent"></div>
     </section>
+  </section>
+
+  <!-- Fireball (Jeff, 2026-10-28; design by Andy; fireball.py,
+       OPERATOR.md): manual control of each Fireball channel. Nothing here
+       arms: the Fireball is armed by its hold to arm, as always, and every
+       channel is zero until it is. -->
+  <section id="v-fireball" class="view" hidden>
+    <section class="card" id="fb-head">
+      <div class="fb-top"><h2>Fireball</h2><span class="fb-armed" id="fb-armed">Not known yet</span>
+        <button class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
+        <button class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
+      <div class="warnbox open" id="fb-block" hidden></div>
+      <div class="dim" id="fb-note"></div>
+      <div class="toast" id="fb-msg"></div>
+    </section>
+    <div id="fb-pads"></div>
   </section>
 
   <!-- Users and the audit log (USERS.md): sign in and out, the users, who
@@ -1864,6 +1900,40 @@ function announceLook(an, booth){
   return {show:true, buttons:buttons, banner:banner, word:word, stopOff:!playing && !a.stale, device:device,
           devBad:!devOk, note:note};
 }
+// The Fireball page (fireball.py). The body of one heartbeat: every
+// control's state, only true for one that is on.
+function fireballBody(on, run, seq, change){
+  const c = {};
+  for(const k of ["fuel", "air", "valve", "igniter", "purge"]) c[k] = on[k] === true;
+  return {controls:c, run:run === undefined ? null : run, seq:seq, change:!!change};
+}
+// What the page may do now, and what it says: v is GET fireball, on the
+// page's own channel state, stale and viewOnly the page's.
+// {ok: a press may start, cut: everything on must go off now, armed,
+// text: the line under the heading, block: why nothing may be pressed}.
+function fireballState(v, on, stale, viewOnly){
+  const any = Object.keys(on || {}).some(k => on[k]);
+  const toggles = ["fuel", "air", "purge"].filter(k => (on || {})[k]);
+  const out = {ok:false, cut:"", armed:false, text:"", block:""};
+  if(!v){ out.block = "Not known yet."; return out; }
+  if(!v.available){ out.block = v.problem || "There is no fireball group."; out.cut = any ? out.block : ""; return out; }
+  out.armed = v.armed === "armed";
+  if(stale) out.block = "This page's status is not live, so nothing can be pressed.";
+  else if(viewOnly) out.block = "Signed out: this screen is view only. Sign in to use the Fireball controls.";
+  else if(v.blocked) out.block = "Not available now: " + v.blocked;
+  else if(v.owner && !v.mine) out.block = v.owner + " is using the Fireball controls. One screen at a time.";
+  if(out.block){ out.cut = any ? out.block : ""; }
+  if(!out.armed){
+    out.text = toggles.length ? "Turn " + toggles.map(k => ({fuel:"Fuel", air:"Air", purge:"Purge"})[k]).join(", ") + " off before arming." :
+      (v.armed_why || "The Fireball is not armed.") + " Every channel stays at zero until it is: nothing on this page arms.";
+    if(any && !out.cut) out.cut = "the Fireball is not armed";
+    if(!out.block) out.block = "Arm the Fireball first.";
+  } else {
+    out.text = "Armed. Fuel Charge, Air Charge and Purge stay on until pressed again; Valve Open and Igniter are on only while held. Abort, Hold, Stop and any disarm turn everything off.";
+  }
+  out.ok = !out.block;
+  return out;
+}
 // LOGIC END
 </script>
 <script>
@@ -1926,7 +1996,7 @@ window.addEventListener("resize", applyBottomPad);
 setInterval(applyBottomPad, 1000);
 // Three screens, one page: the show (the default), Tonight and
 // Programming. The Abort bar is on every one of them.
-const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning", users:"v-users", fuel:"v-fuel"};
+const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning", users:"v-users", fuel:"v-fuel", fireball:"v-fireball"};
 function showView(){
   let v = (location.hash || "").replace("#", "");
   if(!VIEWS[v]) v = "show";
@@ -1939,6 +2009,7 @@ function showView(){
   if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); }
   morningView(v === "morning");
   fuelView(v === "fuel");
+  fireballView(v === "fireball");
   if(v === "users") loadUsers();
 }
 document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
@@ -2167,6 +2238,8 @@ function render(){
   // Fuel (fuel.py): amber while any unit needs a refill soon.
   $("nav-fuel").hidden = !s.fuel || (location.hash || "").replace("#", "") === "fuel";
   $("nav-fuel").classList.toggle("soon", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));
+  // Fireball (fireball.py): only when flamesafe's config has a fireball group.
+  $("nav-fireball").hidden = !(s.fireball && s.fireball.available) || (location.hash || "").replace("#", "") === "fireball";
   let lockText = "";
   if(mo && ((mo.locked_machines || []).length || (mo.locked_lasers || []).length)){
     const parts = [];
@@ -4446,6 +4519,142 @@ $("fu-recent").addEventListener("click", async (ev) => {
   const b = ev.target.closest("[data-undo]"); if(!b) return;
   if(await confirmBox("Undo this refill?", "It stays in the record, marked undone, and the tank counts from the refill before it.", "Yes, undo it"))
     fuPress("fuel-undo", {id:Number(b.dataset.undo)});
+});
+
+// ---- Fireball (Jeff, 2026-10-28; design by Andy; fireball.py) --------
+// One button per channel. Toggles (Fuel Charge, Air Charge, Purge) stay on
+// until pressed again; Valve Open and Igniter are on only while a finger
+// holds them. While anything is on the page beats every 100 ms; the engine
+// and the flame link turn everything off 0.25 s after the last beat by
+// themselves. Leaving the page, hiding it, closing it, a stale status,
+// signing out and every refusal turn everything off here at once; losing
+// focus lets go of Valve Open and Igniter. Nothing ever comes back on by
+// itself: after a cut every channel has to be pressed again.
+let FB = null, FB_OPEN = false, FB_TIMER = null, FB_BEAT = null, FB_RUN = null, FB_SEQ = 0, FB_RUNS = 0;
+const FB_ON = {fuel:false, air:false, valve:false, igniter:false, purge:false};
+const FB_KEY = {};
+function fireballView(on){
+  if(on && !FB_OPEN){ FB_OPEN = true; fbPoll(); }
+  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); fbCut("the page was left"); }
+}
+async function fbPoll(){
+  if(!FB_OPEN) return;
+  try{
+    if(!document.hidden){ FB = await getJSON("/api/remote/fireball", 1500); }
+  }catch(e){ $("fb-msg").textContent = e.message; }
+  renderFireball();
+  FB_TIMER = setTimeout(fbPoll, 500);
+}
+function fbAny(){ return Object.keys(FB_ON).some(k => FB_ON[k]); }
+function fbNow(){
+  return fireballState(FB, FB_ON, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+}
+// Everything off here, now, and the engine told: this page's run ends and
+// can never start again (an all off is never refused).
+function fbCut(why){
+  const had = fbAny(), run = FB_RUN;
+  for(const k in FB_ON) FB_ON[k] = false;
+  FB_RUN = null; clearTimeout(FB_BEAT); FB_BEAT = null;
+  if(run !== null) post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, ++FB_SEQ, true))).catch(() => {});
+  if(had) $("fb-msg").textContent = "Everything off: " + why;
+  renderFireball();
+}
+// Let go of Valve Open and Igniter only (the window lost focus).
+function fbRelease(why){
+  if(!FB_ON.valve && !FB_ON.igniter) return;
+  FB_ON.valve = false; FB_ON.igniter = false;
+  $("fb-msg").textContent = "Valve Open and Igniter let go: " + why;
+  fbSend(true);
+}
+// A change: sent at once. Nothing on: the run ends. Something on from
+// everything off: a new run, named here.
+function fbSend(change){
+  clearTimeout(FB_BEAT); FB_BEAT = null;
+  if(!fbAny()){ fbCut("everything was turned off"); return; }
+  const st = fbNow();
+  if(st.cut){ fbCut(st.cut); return; }
+  if(FB_RUN === null) FB_RUN = WINDOW_ID + "-" + (++FB_RUNS) + "-" + Date.now().toString(36);
+  renderFireball();
+  fbBeat(change);
+}
+async function fbBeat(change){
+  clearTimeout(FB_BEAT); FB_BEAT = null;
+  if(!fbAny() || FB_RUN === null) return;
+  const st = fbNow();
+  if(st.cut){ fbCut(st.cut); return; }
+  const run = FB_RUN, seq = ++FB_SEQ;
+  FB_BEAT = setTimeout(() => fbBeat(false), 100);
+  try{ await post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, seq, change))); }
+  catch(e){ if(run === FB_RUN) fbCut(e.message); }
+}
+function fbPress(k, on){
+  if(FB_ON[k] === on) return;
+  if(on){
+    const st = fbNow();
+    if(!st.ok){ $("fb-msg").textContent = st.block; return; }
+  }
+  FB_ON[k] = on;
+  fbSend(true);
+}
+function renderFireball(){
+  const v = FB, st = fbNow();
+  if(st.cut && fbAny()){ fbCut(st.cut); return; }
+  $("fb-armed").textContent = !v ? "Not known yet" : !v.available ? "Not available" :
+    v.armed === "armed" ? "ARMED" + (v.group ? " (safety channel " + v.group.safety + ")" : "") :
+    v.armed === "off" ? "Not armed" : "Armed: not known";
+  $("fb-armed").className = "fb-armed" + (v && v.armed === "armed" ? " on" : "");
+  const blk = st.block && st.block !== "Arm the Fireball first." ? st.block : "";
+  $("fb-block").hidden = !blk; $("fb-block").textContent = blk;
+  $("fb-note").textContent = st.text;
+  $("fb-disarm").hidden = !(v && v.available);
+  const ctl = (v && v.controls) || [];
+  const key = ctl.map(c => c.key + c.slot).join(",");
+  const box = $("fb-pads");
+  if(box.dataset.key !== key){
+    box.dataset.key = key;
+    box.innerHTML = ctl.map(c => `<button class="fb-pad" data-k="${esc(c.key)}" data-kind="${esc(c.kind)}"><b>${esc(c.label)}</b><span class="fb-st">OFF</span><small>${c.kind === "toggle" ? "Press: on, press again: off" : "Hold: on only while held"}, channel ${esc(c.slot)}</small></button>`).join("");
+  }
+  box.querySelectorAll(".fb-pad").forEach(b => {
+    const on = !!FB_ON[b.dataset.k];
+    b.classList.toggle("on", on);
+    b.classList.toggle("na", !st.ok && !on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.setAttribute("aria-disabled", st.ok || on ? "false" : "true");
+    b.querySelector(".fb-st").textContent = on ? "ON" : "OFF";
+  });
+}
+// Never the disabled attribute on a pad: a held button that turned
+// disabled could lose its lift. A pad that may not be pressed only says so.
+$("fb-pads").addEventListener("click", e => {
+  const b = e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "toggle") return;
+  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);
+});
+$("fb-pads").addEventListener("pointerdown", e => {
+  const b = e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "momentary") return;
+  e.preventDefault();
+  try{ b.setPointerCapture(e.pointerId); }catch(err){}
+  fbPress(b.dataset.k, true);
+});
+for(const ev of ["pointerup", "pointercancel", "lostpointercapture"]){
+  $("fb-pads").addEventListener(ev, e => {
+    const b = e.target.closest && e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "momentary") return;
+    fbPress(b.dataset.k, false);
+  });
+}
+$("fb-pads").addEventListener("contextmenu", e => { if(e.target.closest(".fb-pad")) e.preventDefault(); });
+window.addEventListener("blur", () => fbRelease("the page lost focus"));
+document.addEventListener("visibilitychange", () => { if(document.hidden) fbCut("the page was hidden"); });
+window.addEventListener("pagehide", () => fbCut("the page closed"));
+// All off: this page's channels, and any other screen's too.
+$("fb-alloff").addEventListener("click", () => {
+  fbCut("All off pressed");
+  post("/api/remote/fireball-off", actor({})).then(j => { $("fb-msg").textContent = j.text || "All off."; }).catch(e => { $("fb-msg").textContent = e.message; });
+});
+$("fb-disarm").addEventListener("click", async () => {
+  fbCut("Disarm Fireball pressed");
+  if(!FB || !FB.group) return;
+  try{ const j = await post("/api/remote/group-disarm", actor({group:FB.group.name})); $("fb-msg").textContent = j.text || "Disarm sent."; }
+  catch(e){ $("fb-msg").textContent = e.message; }
 });
 
 // WEATHER (weather.py, WEATHER.md): its own slow poll, display only. A

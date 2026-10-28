@@ -5800,6 +5800,65 @@ def test_aim_slots_are_reported_at_start_and_in_status():
     src = open(os.path.join(HERE, "__main__.py"), encoding="utf-8").read()
     check('journal.event("config", aim_line(cfg.groups, argv[0]))' in src,
           "python -m flamesafe journals the aim line at start")
+# =========================================================================
+# The Fireball page (Jeff, 2026-10-28): Jeff's fireball group as the Pico's
+# flamesafe.json has it. Its Valve Open (slot 57) is not a G-Flame channel,
+# so nothing on the head itself holds it: flamesafe must.
+# =========================================================================
+
+FB_SAFETY, FB_FIRE = 77, [55, 56, 57, 58, 59]
+
+
+def fireball_rig():
+    d = example_dict()
+    groups = d["groups"]
+    i = next(k for k, g in enumerate(groups) if g["name"] == "fireball")
+    groups[i] = {"name": "fireball", "safety": FB_SAFETY, "fire": FB_FIRE}
+    r = Rig(gflame_range="60-80%", arm_value=157, accept_unsourced_risk=True,
+            groups=groups)
+    return r, i
+
+
+def test_fireball_fire_slots_are_zero_unless_armed():
+    section("the fireball group (safety 77 at 157, fire 55 to 59): every "
+            "fire slot, the Valve Open (57) included, is zero on the wire "
+            "unless the group is armed; it never arms while a fire slot is "
+            "15 or more; a disarm zeroes them at once")
+    r, i = fireball_rig()
+    r.prove_alive()
+    hot = {s: 255 for s in FB_FIRE}
+    r.run(5, hot)
+    check([r.out.universe[s - 1] for s in FB_FIRE] == [0] * 5 and
+          r.safety(i) == 0,
+          f"disarmed: 255 on every fireball slot from ltcplay is zero on "
+          f"the wire: {[r.out.universe[s - 1] for s in FB_FIRE]}")
+    check(r.out.universe[57 - 1] == 0, "the Valve Open is zero disarmed")
+    for slot in FB_FIRE:
+        r2, i2 = fireball_rig()
+        r2.prove_alive()
+        r2.run(2, {slot: rules.GFLAME_EDGE_BELOW})
+        r2.inp.set(i2)
+        r2.run(4, {slot: rules.GFLAME_EDGE_BELOW})
+        g = r2.group(i2)
+        check(r2.safety(i2) == 0 and g["armed"] == "held" and
+              g["reason"] == "dirty edge",
+              f"slot {slot} at 15 on the arm tick: the fireball does not arm "
+              f"({g['armed']}, {g['reason']})")
+        check(all(r2.out.universe[s - 1] == 0 for s in FB_FIRE),
+              f"and slot {slot} stays zero on the wire")
+    # Clean edge: everything zero, then arm, then the valve.
+    r.run(3, {})
+    r.inp.set(i)
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {})
+    check(r.safety(i) == 157 and r.group(i)["armed"] == "armed",
+          f"everything zero: the fireball arms at 157: {r.group(i)['armed']}")
+    r.run(2, {57: 255})
+    check(r.out.universe[57 - 1] == 255,
+          "armed: the Valve Open passes through")
+    r.inp.set(i, on=False)
+    r.step()
+    check(r.out.universe[57 - 1] == 0 and r.safety(i) == 0,
+          "a disarm: the Valve Open is zero on the very next tick")
 
 
 if __name__ == "__main__":
@@ -5893,6 +5952,7 @@ if __name__ == "__main__":
     test_multi_safety_a_dropped_safety_disarms_the_group()
     test_safety_profile_config()
     test_safety_profile_composes()
+    test_fireball_fire_slots_are_zero_unless_armed()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

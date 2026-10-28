@@ -1029,7 +1029,7 @@ class Purge:
 
     def __init__(self, cfg_get, lockout, link_get, flames_get, live_check,
                  group_names, journal=None, clock=time.monotonic,
-                 locks_ok=lambda: ""):
+                 locks_ok=lambda: "", other=lambda: ""):
         self._cfg = cfg_get              # () -> MorningConfig
         self._lockout = lockout
         self._link = link_get            # () -> FlameLink or None
@@ -1038,6 +1038,9 @@ class Purge:
         self._names = group_names        # () -> flamesafe group names
         self._locks_ok = locks_ok        # () -> refusal while flamesafe has
         #                                  not confirmed the engine's locks
+        self._other = other              # () -> refusal while another page
+        #                                  holds the purge frame (the
+        #                                  Fireball page, fireball.py)
         self._journal = journal
         self._clock = clock
         self._lock = threading.Lock()
@@ -1084,7 +1087,11 @@ class Purge:
             why = f"the lock state could not be read ({type(e).__name__})."
         if why:
             return why
-        return ""
+        try:
+            why = self._other() or ""
+        except Exception as e:                           # noqa: BLE001
+            why = f"the Fireball page could not be read ({type(e).__name__})."
+        return why
 
     def press_live(self, now=None):
         """True while a fire press is going (a heartbeat within
@@ -1447,10 +1454,15 @@ class Morning:
         self._link_get = link_get
         self._flames_get = flames_get
         self._live_check = live_check
+        # The Fireball page (fireball.py) sets these: the purge waits while
+        # it has a channel on, and an Abort cuts it too.
+        self.purge_blocker = lambda: ""
+        self.abort_hooks = []
         self.purge = Purge(lambda: self.cfg, self.lockout, link_get,
                            flames_get, self._live_or_broken, self._group_names,
                            journal=journal, clock=clock,
-                           locks_ok=self._locks_confirmed)
+                           locks_ok=self._locks_confirmed,
+                           other=lambda: self.purge_blocker())
         self._fs_lock_said = False   # the "flamesafe has no lockout_file" line
         self.lasers = lasertest.LaserTests(
             self.cfg.lasers, locked=lambda lid: self.lockout.is_locked(
@@ -1933,6 +1945,11 @@ class Morning:
     def on_abort(self, who="", screen=""):
         """Abort wins over everything: the purge and the laser tests end."""
         self.purge.clear(f"Abort pressed by {who or screen or 'someone'}")
+        for hook in list(self.abort_hooks):
+            try:
+                hook(who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
         self.lasers.all_off("Abort pressed")
 
     def close(self):

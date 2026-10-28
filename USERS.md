@@ -116,7 +116,7 @@ the ticks there. These are the proposed defaults:
 |---|---|---|---|---|
 | **Abort, Hold, Stop, every disarm (flames and lasers), letting go, locking a machine, Acknowledge** | always | always | always | always |
 | Start now, Resume, Reset, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
-| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, arming a laser) | yes | yes | no | never |
+| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, the Fireball page's channels, arming a laser) | yes | yes | no | never |
 | Unlock a machine, turn a laser test on | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | yes | yes | no | never |
 | Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | yes | yes | no | never |

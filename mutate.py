@@ -15352,6 +15352,250 @@ def build():
   "        return [run[2]]",
   "        return [run[0]]"),
 
+ # The Fireball page (fireball.py, OPERATOR.md, Jeff 2026-10-28; design
+ # by Andy): manual control of each Fireball channel.
+ ("fireball: a channel goes on with the group not armed",
+  "ltcplay/fireball.py",
+  "            state, why = self.armed_state()\n"
+  "            if state != \"armed\":\n"
+  "                return why\n",
+  "            state, why = self.armed_state()\n"
+  "            if False:\n"
+  "                return why\n"),
+
+ ("fireball: a stale flamesafe status counts as fresh",
+  "ltcplay/fireball.py",
+  "                age > STATUS_FRESH_S * 1000:",
+  "                age > 10 ** 9:"),
+
+ ("fireball: the frame writes the safety slot",
+  "ltcplay/fireball.py",
+  "            if key in on:\n"
+  "                vals[slot - 1] = ON_VALUE\n"
+  "        return bytes(vals)",
+  "            if key in on:\n"
+  "                vals[slot - 1] = ON_VALUE\n"
+  "                vals[self.group[\"safety\"] - 1] = ON_VALUE\n"
+  "        return bytes(vals)"),
+
+ ("fireball: a channel goes on at 254",
+  "ltcplay/fireball.py",
+  "ON_VALUE = 255",
+  "ON_VALUE = 254"),
+
+ ("fireball: only the JSON word true is not required",
+  "ltcplay/fireball.py",
+  "    return {k for k in KEYS if c.get(k) is True}",
+  "    return {k for k in KEYS if c.get(k)}"),
+
+ ("fireball: the watcher never cuts a run whose beats stopped",
+  "ltcplay/fireball.py",
+  "        if now - r[\"beat\"] > BEAT_STALE_S:\n"
+  "            why = f\"no heartbeat",
+  "        if False:\n"
+  "            why = f\"no heartbeat"),
+
+ ("fireball: the watcher does not see the flame link zeroed",
+  "ltcplay/fireball.py",
+  "            if link is None or self._gen(link) != r[\"gen\"]:",
+  "            if link is None:"),
+
+ ("fireball: the watcher does not look at the rules",
+  "ltcplay/fireball.py",
+  "            else:\n"
+  "                why = self.refusal()\n"
+  "        if why:",
+  "            else:\n"
+  "                why = \"\"\n"
+  "        if why:"),
+
+ ("fireball: a cut run can come back",
+  "ltcplay/fireball.py",
+  "        if rid in e[\"ids\"]:\n            return True",
+  "        if False:\n            return True"),
+
+ ("fireball: an overtaken beat is used",
+  "ltcplay/fireball.py",
+  "            elif seq is not None and r[\"seq\"] is not None and \\\n"
+  "                    seq <= r[\"seq\"]:",
+  "            elif False:"),
+
+ ("fireball: another screen takes over a run",
+  "ltcplay/fireball.py",
+  "            if r is not None and r[\"owner\"] != owner:\n"
+  "                return 409,",
+  "            if False:\n"
+  "                return 409,"),
+
+ ("fireball: a zero that lands during a beat is ignored",
+  "ltcplay/fireball.py",
+  "                lost = self._gen(link) != r[\"gen\"]",
+  "                lost = False"),
+
+ ("fireball: a disarm seen just after the frame went in is ignored",
+  "ltcplay/fireball.py",
+  "        state, why = self.armed_state()\n"
+  "        if state != \"armed\":\n"
+  "            self.cut(",
+  "        state, why = self.armed_state()\n"
+  "        if False:\n"
+  "            self.cut("),
+
+ ("fireball: a cut leaves the frame on the flame link",
+  "ltcplay/fireball.py",
+  "        if r is not None and link is not None:\n"
+  "            try:\n"
+  "                link.purge_clear()",
+  "        if False:\n"
+  "            try:\n"
+  "                link.purge_clear()"),
+
+ ("fireball: a refused beat leaves its run on",
+  "ltcplay/fireball.py",
+  "            if mine:\n"
+  "                self.cut(f\"refused: {why}\", who=who, screen=screen)",
+  "            if False:\n"
+  "                self.cut(f\"refused: {why}\", who=who, screen=screen)"),
+
+ ("fireball: the engine's blockers are not asked",
+  "ltcplay/fireball.py",
+  "            why = self._blockers() or \"\"",
+  "            why = \"\""),
+
+ ("fireball: a locked out slot can fire",
+  "ltcplay/fireball.py",
+  "        hit = sorted(locked & set(self.group[\"fire\"]))",
+  "        hit = []"),
+
+ ("fireball: a stale page may turn a channel on",
+  "ltcplay/fireball.py",
+  "        if not seen_ok:\n"
+  "            why = (\"The page's status",
+  "        if False:\n"
+  "            why = (\"The page's status"),
+
+ ("fireball: Run pressed does not hold it off",
+  "ltcplay/fireball.py",
+  "        if cs.get(\"running\") or cs.get(\"starting\"):",
+  "        if False:"),
+
+ ("fireball: a purge selection does not hold it off",
+  "ltcplay/fireball.py",
+  "        if pg.fire is not None or pg.selected:",
+  "        if False:"),
+
+ ("fireball: a show live does not hold it off",
+  "ltcplay/fireball.py",
+  "        why = remote.morning_live_refusal() or m._live_or_broken()",
+  "        why = m.config_error"),
+
+ ("fireball: the purge switch does not apply",
+  "ltcplay/fireball.py",
+  "        if controls_on(body) and not remote.purge_enabled(ctx.local):",
+  "        if False:"),
+
+ ("fireball: the group needs no fire slot count",
+  "ltcplay/fireball.py",
+  "        if len(fire) != len(CONTROLS) or len(set(fire)) != len(fire) or \\\n",
+  "        if not fire or len(set(fire)) != len(fire) or \\\n"),
+
+ ("fireball: the buttons follow the file's order, not the channel number",
+  "ltcplay/fireball.py",
+  "                \"fire\": sorted(fire)}, \"\"",
+  "                \"fire\": fire}, \"\""),
+
+ ("fireball: a beat overtaken while its frame is worked out is written",
+  "ltcplay/fireball.py",
+  "            if self._run is r and seq is not None and r[\"seq\"] != seq:",
+  "            if False:"),
+
+ ("fireball: every screen's all off is remembered, so a flood pushes out "
+  "a real ended run",
+  "ltcplay/fireball.py",
+  "            if not make:\n                return\n",
+  "            pass\n"),
+
+ ("fireball: a new run may start with an old beat number",
+  "ltcplay/fireball.py",
+  "        return starting and seq is not None and e[\"seq\"] is not None and \\\n"
+  "            seq <= e[\"seq\"]",
+  "        return False"),
+
+ ("fireball: the Startup page's purge does not wait for it",
+  "ltcplay/morning.py",
+  "            why = self._other() or \"\"",
+  "            why = \"\""),
+
+ ("fireball: an Abort on the rack screen does not cut it",
+  "ltcplay/morning.py",
+  "                hook(who, screen)",
+  "                pass"),
+
+ ("fireball: a beat that turns a channel on is a safety press",
+  "ltcplay/users.py",
+  "            return \"arm\" if fireball_on_wanted(raw) else \"safety\"",
+  "            return \"safety\""),
+
+ ("fireball: All off needs a sign-in",
+  "ltcplay/users.py",
+  "    \"fireball-off\": \"safety\",",
+  "    \"fireball-off\": \"arm\","),
+
+ ("fireball: the engine closes it last",
+  "ltcplay/web.py",
+  "        try:\n"
+  "            remote.fireball.close()\n"
+  "        finally:\n"
+  "            _close_before()",
+  "        try:\n"
+  "            _close_before()\n"
+  "        finally:\n"
+  "            remote.fireball.close()"),
+
+ ("fireball page: a held button is not let go on the lift",
+  "ltcplay/web/remote.html",
+  "    const b = e.target.closest && e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"momentary\") return;\n"
+  "    fbPress(b.dataset.k, false);",
+  "    const b = e.target.closest && e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"momentary\") return;"),
+
+ ("fireball page: losing focus holds the valve on",
+  "ltcplay/web/remote.html",
+  "window.addEventListener(\"blur\", () => fbRelease(\"the page lost focus\"));\n",
+  ""),
+
+ ("fireball page: leaving the page leaves the channels on",
+  "ltcplay/web/remote.html",
+  "  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); fbCut(\"the page was left\"); }",
+  "  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); }"),
+
+ ("fireball page: a refused beat leaves the channels on",
+  "ltcplay/web/remote.html",
+  "  catch(e){ if(run === FB_RUN) fbCut(e.message); }",
+  "  catch(e){}"),
+
+ ("fireball page: signed out is not view only",
+  "ltcplay/web/remote.html",
+  "  else if(viewOnly) out.block = \"Signed out: this screen is view only. Sign in to use the Fireball controls.\";\n",
+  ""),
+
+ ("fireball page: the Fireball disarming leaves a toggle on",
+  "ltcplay/web/remote.html",
+  "    if(any && !out.cut) out.cut = \"the Fireball is not armed\";\n",
+  ""),
+
+ ("fireball page: a stale page keeps beating",
+  "ltcplay/web/remote.html",
+  "  if(stale) out.block = \"This page's status is not live, so nothing can be pressed.\";\n"
+  "  else if(viewOnly)",
+  "  if(false) out.block = \"\";\n"
+  "  else if(viewOnly)"),
+
+ ("fireball page: a toggle is on while held only",
+  "ltcplay/web/remote.html",
+  "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
+  "  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);",
+  "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
+  "  fbPress(b.dataset.k, true);"),
 ]
 
 

@@ -57,11 +57,11 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 
 import ltcwin
 import soak_apps
 import soak_exercise
+import soak_signin
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 7878
@@ -604,6 +604,11 @@ class Soak:
         self.deck = False
         self.virtual_deck = False   # the deck program with no hardware
         self.ex = None              # soak_exercise.Exerciser
+        # The rack screen's sign-in (soak_signin): signed out is view only
+        # (PR #143), so Run, the deck's operator, arming and Resume go as
+        # a signed-in operator, through the engine's real sign-in route.
+        self.http = soak_signin.SignedIn(f"http://127.0.0.1:{PORT}",
+                                         note=lambda t: note(t))
         self.judge = None           # soak_exercise.SacnJudge
         self.fs_armed = {}          # group -> armed, from flamesafe status
         self.tc_last_wall = None
@@ -1727,21 +1732,16 @@ class Soak:
                  f"forced to quit")
             return False
 
-    def engine(self, route, body=None, timeout=5):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{PORT}{route}",
-            data=None if body is None else json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as e:
-            try:
-                return {"error": json.loads(e.read()).get("error")}
-            except Exception:
-                return {"error": f"HTTP {e.code}"}
-        except Exception as e:
-            return {"error": f"{type(e).__name__}: {e}"}
+    def engine(self, route, body=None, timeout=5, signed_out=False):
+        """GET (no body) or POST to the engine as the signed-in rack screen
+        (self.http), or with no sign-in at all (`signed_out`). The answer,
+        or {"error": ...}."""
+        st, doc = self.http("GET" if body is None else "POST", route, body,
+                            signed_out=signed_out, timeout=timeout)
+        if st == 200:
+            return doc if isinstance(doc, dict) else {"answer": doc}
+        why = doc.get("error") if isinstance(doc, dict) else None
+        return {"error": why or f"HTTP {st}"}
 
     def start_show(self):
         """Press Run on the show file, once: from then on the scheduler
@@ -1751,12 +1751,19 @@ class Soak:
             if "error" not in self.engine("/api/state"):
                 break
             time.sleep(0.5)
+        # A new engine knows no sign-in (sessions live in its memory): sign
+        # in on this machine first, as the operator would.
+        self.http.sign_in()
         r = self.engine("/api/start", {"timeline": "bench.json"}, timeout=30)
         if r.get("error"):
             note(f"the engine refused Run: {r['error']}")
             return False
         note("Run pressed on the bench show; the scheduler starts each show "
              "from here on")
+        if self.ex is not None and self.ex.ready:
+            # An engine started again (after a crash) knows neither the
+            # sign-in nor the Stream Deck's operator: choose it again.
+            self.ex.sign_in()
         self.loops += 1
         if self.no_run and self.no_run[-1][1] is None:
             self.no_run[-1][1] = time.time()
@@ -1967,7 +1974,7 @@ class Soak:
             threading.Thread(target=self.window_scripter, daemon=True,
                              name="soak-windows").start()
         self.ex = soak_exercise.Exerciser(
-            soak_exercise.Http(f"http://127.0.0.1:{PORT}"),
+            self.http,
             [g["name"] for g in self.fs_cfg_doc["groups"]],
             show_time=self.show_time, show_number=lambda: self.show_starts,
             armed=lambda: dict(self.fs_armed), note=note,
@@ -2017,7 +2024,17 @@ class Soak:
             if self.ex is not None:
                 self.ex.close()
             self.stopping = True
-            self.engine("/api/stop", {})
+            # Signed out first (the rack screen and the deck together), then
+            # Stop pressed signed out: Stop must always work.
+            self.http.sign_out()
+            r = self.engine("/api/stop", {}, signed_out=True)
+            note(f"Stop pressed signed out: "
+                 f"{r.get('error') or 'taken'}")
+            if self.ex is not None and "signed out is view only" in str(
+                    r.get("error") or ""):
+                self.ex.failures.append((time.time(), "Stop pressed signed "
+                                         "out was refused for it: "
+                                         f"{r['error']}"))
             for name in ("deck", "engine"):
                 self.stop_program(name)
             time.sleep(1)
@@ -3504,6 +3521,8 @@ def _self_check():
     for line in soak_apps.self_test():
         yield line
     for line in soak_exercise.self_test():
+        yield line
+    for line in soak_signin.self_test():
         yield line
     import bench_probe
     import contain
