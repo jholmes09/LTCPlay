@@ -3,15 +3,27 @@
 What the Weather block shows
 ============================
 Wind speed, wind direction and gusts at Thanksgiving Point (Lehi, Utah),
-from two places that know nothing of each other, each on its own line with
-its own age:
+from places that know nothing of each other, each with its own age:
 
-  MEASURED   UDOT's road weather station at the I-15 Point of the Mountain
-             gap (UTALP), about 2 miles from the venue, read through the
-             Iowa State mesonet's free currents service (no key; UDOT's own
-             API needs a key Jeff could not get). Optionally also one
-             National Weather Service observation station, named in the
-             settings (off unless named).
+  MEASURED   one line, the HIGHEST usable reading from these sources
+             (Jeff, 2026-10-28: one stalled feed must not blank the wind;
+             the highest, review of PR #154, since an airport can read low
+             when the wind funnels through the Point of the Mountain gap):
+               1. UDOT's road weather station at the I-15 Point of the
+                  Mountain gap (UTALP), about 2 miles from the venue, read
+                  through the Iowa State mesonet's free currents service
+                  (no key; UDOT's own API needs a key Jeff could not get).
+               2. The backup airport stations ("backup_stations", Provo
+                  KPVU then Salt Lake City KSLC by default), their latest
+                  METAR through aviationweather.gov's data API (no key).
+               3. Optionally one National Weather Service observation
+                  station, named in the settings (off unless named).
+             The line names the source it used and its age. A backup
+             station's reading is amber, says "backup station" and how far
+             away it is, and says why UTALP was not used ("UTALP (Iowa
+             mesonet) stopped reporting at 3:40 AM, last reading 3 h 12
+             min ago") or what UTALP reads. With no current reading at all
+             it says NO CURRENT DATA and why, per source, and no number.
   FORECAST   the National Weather Service's hourly forecast for the exact
              spot (its gridpoint data, which carries gusts; the plain
              hourly forecast if that fails).
@@ -33,26 +45,41 @@ at a time, with an 8 second limit on the whole answer (not only on each
 socket read), and the page reads only what that thread last stored, under
 a lock held for a copy. The rack screen asks for it on its own slow timer.
 
-Age, stale and no data (the rules, Jeff, 2026-10-26)
-====================================================
-Every number is shown with its age, and its age is the reading's own time
-(the station's, or the forecast's issue time), never when this PC fetched
-it, so a restart that shows the saved values shows their true age.
+Age, stale and no data (the rules, Jeff, 2026-10-26 and 2026-10-28)
+===================================================================
+Every measured number is shown with its age, and its age is the reading's
+own time (the station's), never when this PC fetched it, so a restart that
+shows the saved values shows their true age.
 
-  measured   up to 20 min old: shown. Over 20 min: amber STALE. Over
-             45 min, or never received: grey NO CURRENT DATA, use on-site
-             wind check (and no number).
-  forecast   issued up to 3 h ago: shown. Older: amber STALE. Over 6 h, or
-             the saved forecast does not reach this hour: grey.
-  disagree   two current lines whose speeds differ by more than 10 mph:
-             "Sources disagree, verify on site".
+  measured   each source on its own limits (station_limits): the 5 minute
+             mesonet feed is current up to 20 min, STALE to 45 min; the
+             hourly airports current up to 75 min, STALE to 120 min. Past
+             its own grey limit, or never received, a reading is not
+             usable and never shown. The line shows the highest usable
+             reading, current or STALE (a STALE one amber and marked so,
+             the current ones said beside it), else none: grey NO
+             CURRENT DATA, use on-site wind check, with no number.
+  forecast   the NWS issues the point forecast when its forecasters update
+             the grid, routinely about twice a day and more often when the
+             weather changes, so its issue time ("updateTime") is often
+             several hours old while it is still the NWS's current
+             forecast. So the forecast's age is mainly how long since this
+             PC last GOT it from the NWS: over 1 h, amber STALE; over 6 h,
+             grey. And as a check on the NWS itself: issued over 18 h ago
+             (missed updates), amber STALE; over 36 h, grey. The saved
+             forecast not reaching this hour, or its time over 15 min in
+             the future (this PC's clock): grey. The line says which.
+  disagree   two current readings (measured from any source, or the
+             forecast) whose speeds differ by more than 10 mph: "Sources
+             disagree, verify on site", and the measured line says what
+             the others read.
   internet   every source's last try could not reach its server at all:
              "No internet", over whatever is saved.
 
 All of those numbers can be changed in ltcplay_remote.json's "weather"
 block (CONFIG_KEYS); nothing has to be there.
 
-Polling: the measured station and the alerts every 5 min, the forecast
+Polling: each measured source and the alerts every 5 min, the forecast
 every 15 min. A failed try is tried again after 1, 2, 4 ... minutes, never
 more often than that and never less often than the normal interval.
 
@@ -89,7 +116,15 @@ PAGE_DEAD_S = 60
 
 NWS = "https://api.weather.gov"
 IEM = "https://mesonet.agron.iastate.edu"
-HOSTS = ("api.weather.gov", "mesonet.agron.iastate.edu")
+AWC = "https://aviationweather.gov"
+HOSTS = ("api.weather.gov", "mesonet.agron.iastate.edu",
+         "aviationweather.gov")
+# How far back aviationweather.gov is asked for a station's reports.
+AWC_HOURS = 2
+# Names for the airport stations near the venue, for the measured line.
+AIRPORT_NAMES = {"KPVU": "Provo airport", "KSLC": "Salt Lake City airport",
+                 "KU42": "South Valley airport, West Jordan",
+                 "KSPK": "Spanish Fork airport"}
 CONTACT_DEFAULT = "https://github.com/jholmes09/ltcplay"
 
 COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
@@ -115,14 +150,20 @@ DEFAULTS = {
     "mesonet_network": "UT_RWIS",
     "mesonet_station": "UTALP",
     "mesonet_name": "I-15 Point of the Mountain",
+    "backup_stations": ["KPVU", "KSLC"],
     "nws_station": "",
     "contact": "",
     "observation_every_min": 5,
     "forecast_every_min": 15,
     "stale_min": 20,
     "no_data_min": 45,
-    "forecast_stale_hours": 3,
+    "backup_stale_min": 75,
+    "backup_no_data_min": 120,
+    "station_limits": {},
+    "forecast_stale_hours": 1,
     "forecast_no_data_hours": 6,
+    "forecast_issued_stale_hours": 18,
+    "forecast_issued_no_data_hours": 36,
     "disagree_mph": 10,
 }
 CONFIG_KEYS = tuple(DEFAULTS)
@@ -130,9 +171,13 @@ _RANGES = {   # key: (lowest, highest)
     "lat": (-90, 90), "lon": (-180, 180),
     "observation_every_min": (2, 60), "forecast_every_min": (5, 180),
     "stale_min": (5, 240), "no_data_min": (10, 720),
+    "backup_stale_min": (5, 240), "backup_no_data_min": (10, 720),
     "forecast_stale_hours": (1, 48), "forecast_no_data_hours": (1, 72),
+    "forecast_issued_stale_hours": (6, 72),
+    "forecast_issued_no_data_hours": (12, 168),
     "disagree_mph": (1, 100),
 }
+MAX_BACKUPS = 4
 _ID = re.compile(r"^[A-Z0-9_]{2,16}$")
 
 
@@ -142,6 +187,8 @@ def check_config(block, where="ltcplay_remote.json, weather"):
     """The weather settings with every default filled in, or ValueError
     with one plain sentence. `block` is the "weather" object (or None)."""
     cfg = dict(DEFAULTS)
+    cfg["backup_stations"] = list(DEFAULTS["backup_stations"])
+    cfg["station_limits"] = {}
     if block is None:
         return cfg
     if not isinstance(block, dict):
@@ -157,6 +204,25 @@ def check_config(block, where="ltcplay_remote.json, weather"):
         if isinstance(d, bool):
             if v is not True and v is not False:
                 raise ValueError(f"{where}: {k} has to be true or false.")
+        elif isinstance(d, dict):
+            v = _check_station_limits(v, f"{where}: {k}")
+        elif isinstance(d, list):
+            if not isinstance(v, list) or \
+                    not all(isinstance(x, str) for x in v):
+                raise ValueError(f"{where}: {k} has to be a list of station "
+                                 f'names in quotes, like ["KPVU", "KSLC"], '
+                                 f"or [] for none.")
+            v = [x.strip().upper() for x in v]
+            for x in v:
+                if not _ID.match(x):
+                    raise ValueError(f"{where}: {k} {x!r} is not a station "
+                                     f"name (capital letters, numbers and "
+                                     f"_ only, like KPVU).")
+            if len(set(v)) != len(v):
+                raise ValueError(f"{where}: {k} names a station twice.")
+            if len(v) > MAX_BACKUPS:
+                raise ValueError(f"{where}: {k} can name at most "
+                                 f"{MAX_BACKUPS} stations.")
         elif isinstance(d, (int, float)):
             if isinstance(v, bool) or not isinstance(v, (int, float)) or \
                     not math.isfinite(v):
@@ -183,10 +249,71 @@ def check_config(block, where="ltcplay_remote.json, weather"):
     if cfg["no_data_min"] <= cfg["stale_min"]:
         raise ValueError(f"{where}: no_data_min ({cfg['no_data_min']}) has "
                          f"to be more than stale_min ({cfg['stale_min']}).")
+    if cfg["backup_no_data_min"] <= cfg["backup_stale_min"]:
+        raise ValueError(f"{where}: backup_no_data_min "
+                         f"({cfg['backup_no_data_min']}) has to be more than "
+                         f"backup_stale_min ({cfg['backup_stale_min']}).")
     if cfg["forecast_no_data_hours"] <= cfg["forecast_stale_hours"]:
         raise ValueError(f"{where}: forecast_no_data_hours has to be more "
                          f"than forecast_stale_hours.")
+    if cfg["forecast_issued_no_data_hours"] <= \
+            cfg["forecast_issued_stale_hours"]:
+        raise ValueError(f"{where}: forecast_issued_no_data_hours has to be "
+                         f"more than forecast_issued_stale_hours.")
+    # A forecast fetched less often than its stale limit would go STALE
+    # between two good fetches.
+    if cfg["forecast_every_min"] >= cfg["forecast_stale_hours"] * 60:
+        raise ValueError(f"{where}: forecast_every_min "
+                         f"({cfg['forecast_every_min']}) has to be less than "
+                         f"forecast_stale_hours ({cfg['forecast_stale_hours']}"
+                         f" h, {cfg['forecast_stale_hours'] * 60:g} min), or "
+                         f"a good forecast goes STALE between fetches.")
+    for sid in cfg["station_limits"]:
+        st, nd = station_limits(cfg, sid,
+                                hourly=sid != cfg["mesonet_station"])
+        if nd <= st:
+            raise ValueError(f"{where}: station_limits {sid}: no_data_min "
+                             f"({nd:g}) has to be more than stale_min "
+                             f"({st:g}).")
     return cfg
+
+
+def _check_station_limits(v, where):
+    """{"KPVU": {"stale_min": 75, "no_data_min": 120}, ...} checked, its
+    names in capitals, or ValueError."""
+    if not isinstance(v, dict):
+        raise ValueError(f'{where} has to be a block like {{"KPVU": '
+                         f'{{"stale_min": 75, "no_data_min": 120}}}}.')
+    out = {}
+    for sid, lim in v.items():
+        sid = str(sid).strip().upper()
+        if not _ID.match(sid):
+            raise ValueError(f"{where}: {sid!r} is not a station name.")
+        if not isinstance(lim, dict) or not lim or \
+                any(k not in ("stale_min", "no_data_min") for k in lim):
+            raise ValueError(f"{where}: {sid} has to be a block with "
+                             f"stale_min and or no_data_min, in minutes.")
+        for k, x in lim.items():
+            lo, hi = _RANGES[k]
+            if isinstance(x, bool) or not isinstance(x, (int, float)) or \
+                    not math.isfinite(x) or not lo <= x <= hi:
+                raise ValueError(f"{where}: {sid} {k} has to be a number "
+                                 f"from {lo} to {hi}.")
+        out[sid] = dict(lim)
+    return out
+
+
+def station_limits(cfg, station, hourly=True):
+    """(stale_min, no_data_min) for a measured station: its own entry in
+    station_limits, else the 5 minute feed's (stale_min, no_data_min) for
+    the mesonet station, the hourly airport's (backup_stale_min,
+    backup_no_data_min) for the others."""
+    if hourly:
+        st, nd = cfg["backup_stale_min"], cfg["backup_no_data_min"]
+    else:
+        st, nd = cfg["stale_min"], cfg["no_data_min"]
+    own = (cfg.get("station_limits") or {}).get(station) or {}
+    return own.get("stale_min", st), own.get("no_data_min", nd)
 
 
 def load_config(folder):
@@ -312,10 +439,10 @@ def parse_mesonet(doc, station):
                          f"speed")
     gust = _num(r.get("gust"))
     drct = _num(r.get("drct"))
-    return {"speed_mph": speed * KNOT_MPH,
-            "gust_mph": None if gust is None else gust * KNOT_MPH,
-            "dir_deg": None if drct is None else drct % 360,
-            "valid": valid}
+    return _in_range({"speed_mph": speed * KNOT_MPH,
+                      "gust_mph": None if gust is None else gust * KNOT_MPH,
+                      "dir_deg": None if drct is None else drct % 360,
+                      "valid": valid}, f"the mesonet's reading for {station}")
 
 
 def parse_nws_observation(doc):
@@ -342,8 +469,93 @@ def parse_nws_observation(doc):
     gv, gu = qv("windGust")
     dv, _du = qv("windDirection")
     d = _num(dv)
-    return {"speed_mph": speed, "gust_mph": to_mph(gv, gu),
-            "dir_deg": None if d is None else d % 360, "valid": valid}
+    return _in_range({"speed_mph": speed, "gust_mph": to_mph(gv, gu),
+                      "dir_deg": None if d is None else d % 360,
+                      "valid": valid}, "the NWS observation")
+
+
+_METAR_WIND = re.compile(r"(?:^|\s)(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?(KT|MPS)"
+                         r"(?=\s|$)")
+
+
+def parse_awc(doc, station, lat=None, lon=None):
+    """aviationweather.gov /api/data/metar?ids=...&format=json: a list of
+    METARs, each {"icaoId", "obsTime" (epoch s), "reportTime", "wdir"
+    (degrees, or "VRB"), "wspd" (knots), "wgst" (knots, missing or null
+    with no gust), "rawOb", "lat", "lon"}. The newest one for `station`.
+    A field it lacks is read from the raw METAR's wind group (like
+    34012G20KT). -> {"speed_mph", "gust_mph", "dir_deg", "variable",
+    "valid", "miles"}."""
+    if doc is None or doc == []:
+        raise ValueError(f"aviationweather.gov has no report from {station} "
+                         f"in the last {AWC_HOURS} h")
+    if not isinstance(doc, list):
+        raise ValueError("aviationweather.gov's answer is not a list of "
+                         "reports")
+    best = None
+    for r in doc:
+        if not isinstance(r, dict) or \
+                str(r.get("icaoId", "")).upper() != station:
+            continue
+        # Epoch seconds (2001 to 5138); anything else, milliseconds
+        # included, is not trusted: the report time stands in.
+        valid = _num(r.get("obsTime"))
+        if valid is None or not 1e9 <= valid < 1e11:
+            try:
+                valid = parse_time(r.get("reportTime"))
+            except (ValueError, TypeError):
+                valid = None
+        if valid is None:
+            if best is None:
+                best = (None, r)
+            continue
+        if best is None or best[0] is None or valid > best[0]:
+            best = (valid, r)
+    if best is None:
+        raise ValueError(f"aviationweather.gov has no report from {station} "
+                         f"in the last {AWC_HOURS} h")
+    valid, r = best
+    if valid is None:
+        raise ValueError(f"aviationweather.gov's report from {station} has "
+                         f"an unreadable time stamp")
+    raw = str(r.get("rawOb") or "")
+    m = _METAR_WIND.search(raw)
+    wdir, wspd, wgst = r.get("wdir"), _num(r.get("wspd")), _num(r.get("wgst"))
+    unit = "kn"
+    if wspd is None and m:
+        wdir, wspd = m.group(1), float(m.group(2))
+        wgst = None if m.group(3) is None else float(m.group(3))
+        unit = "m/s" if m.group(4) == "MPS" else "kn"
+    elif "wgst" not in r and m and m.group(3) and m.group(4) == "KT":
+        wgst = float(m.group(3))      # the field absent: the raw G25KT
+    if wspd is None:
+        raise ValueError(f"aviationweather.gov's report from {station} has "
+                         f"no wind speed")
+    variable = str(wdir).strip().upper() == "VRB"
+    d = None if variable else _num(wdir)
+    miles = None
+    la, lo = _num(r.get("lat")), _num(r.get("lon"))
+    if None not in (la, lo, lat, lon):
+        miles = round(_distance_miles(lat, lon, la, lo), 1)
+    return _in_range({"speed_mph": to_mph(wspd, unit),
+                      "gust_mph": None if wgst is None else to_mph(wgst, unit),
+                      "dir_deg": None if d is None else d % 360,
+                      "variable": variable, "valid": valid, "miles": miles},
+                     f"aviationweather.gov's report from {station}")
+
+
+MAX_MPH = 200     # a wind speed past this, or below 0, is not a reading
+
+
+def _in_range(out, who):
+    """`out` (a parsed reading) when its speed and gust are 0 to 200 mph,
+    else ValueError: no usable reading."""
+    for k, what in (("speed_mph", "wind speed"), ("gust_mph", "gust")):
+        v = out.get(k)
+        if v is not None and not 0 <= v <= MAX_MPH:
+            raise ValueError(f"{who} gave a {what} of {v:.0f} mph, which "
+                             f"cannot be right")
+    return out
 
 
 def _series(layer, conv):
@@ -567,11 +779,15 @@ def http_get(url, headers, timeout=TIMEOUT_S, clock=time.monotonic):
         raise FetchError(f"could not connect: {e}", offline=True)
 
 
-def get_json(get, url, contact="", timeout=TIMEOUT_S):
-    """Decoded JSON from `url` through `get` (http_get's shape)."""
+def get_json(get, url, contact="", timeout=TIMEOUT_S, empty_ok=False):
+    """Decoded JSON from `url` through `get` (http_get's shape). With
+    `empty_ok`, "204 No Content" or an empty body is None (aviationweather.gov
+    answers that way when it has no report)."""
     hdr = {"User-Agent": user_agent(contact),
            "Accept": "application/geo+json, application/json"}
     status, body = get(url, hdr, timeout)
+    if empty_ok and (status == 204 or (status == 200 and not body.strip())):
+        return None
     if status != 200:
         raise FetchError(f"the server answered HTTP {status}")
     try:
@@ -583,6 +799,13 @@ def get_json(get, url, contact="", timeout=TIMEOUT_S):
 def mesonet_url(cfg):
     return (f"{IEM}/api/1/currents.json?network={cfg['mesonet_network']}"
             f"&station={cfg['mesonet_station']}")
+
+
+def awc_url(stations):
+    """One request for every backup airport (a list, or one id)."""
+    ids = stations if isinstance(stations, str) else ",".join(stations)
+    return (f"{AWC}/api/data/metar?ids={ids}&format=json"
+            f"&hours={AWC_HOURS}")
 
 
 def points_url(cfg):
@@ -621,15 +844,22 @@ class Weather:
         self.offline_for_tests = bool(os.environ.get(OFFLINE_ENV))
         obs = self.cfg["observation_every_min"] * 60.0
         fc = self.cfg["forecast_every_min"] * 60.0
-        # name: every_s. The order is the order they are tried.
-        self.every = {"mesonet": obs, "alerts": obs, "forecast": fc}
-        if self.cfg["nws_station"]:
-            self.every["nws_obs"] = obs
-        # name -> {"data", "error", "offline", "fails", "due", "tried",
-        # "ok_at"}; data is what the view reads.
+        # name: every_s. The order is the order they are tried: the
+        # measured sources in their order (measured_sources), then the
+        # alerts and the forecast. The backup airports are one request
+        # ("awc"), whose answer is shared out to each "awc:<id>".
+        names = [n for n, _l, _s in measured_sources(self.cfg)]
+        self.every = {}
+        for n in names:
+            self.every["awc" if n.startswith("awc:") else n] = obs
+        self.every.update(alerts=obs, forecast=fc)
+        # name -> {"data", "error", "offline", "answered", "fails", "due",
+        # "tried"}; data is what the view reads. "answered": the last try
+        # reached the server and got an answer, which had no usable reading.
         self.src = {n: {"data": None, "error": "", "offline": False,
-                        "fails": 0, "due": 0.0, "tried": False}
-                    for n in self.every}
+                        "answered": False, "fails": 0, "due": 0.0,
+                        "tried": False}
+                    for n in list(self.every) + names}
         self.points = None           # parse_points + "got_at", "key"
         self._cache_said = False
         self._load_cache()
@@ -641,6 +871,8 @@ class Weather:
             return f"{c['mesonet_network']}/{c['mesonet_station']}"
         if name == "nws_obs":
             return f"nws/{c['nws_station']}"
+        if name.startswith("awc:"):
+            return f"awc/{name[4:]}"
         return f"{c['lat']:.4f},{c['lon']:.4f}"
 
     # -- the disk cache ---------------------------------------------------
@@ -674,7 +906,7 @@ class Weather:
     def _sane(name, d):
         if not isinstance(d, dict):
             return False
-        if name in ("mesonet", "nws_obs"):
+        if name in ("mesonet", "nws_obs") or name.startswith("awc:"):
             return isinstance(d.get("valid"), (int, float)) and \
                 isinstance(d.get("speed_mph"), (int, float))
         if name == "forecast":
@@ -733,6 +965,19 @@ class Weather:
                                  cfg["mesonet_station"])
         if name == "nws_obs":
             return parse_nws_observation(self._json(nws_obs_url(cfg)))
+        if name == "awc":
+            # Every backup airport in one request: {id: reading, or the
+            # sentence why there is none}.
+            ids = cfg["backup_stations"]
+            doc = get_json(self.get, awc_url(ids), cfg["contact"],
+                           empty_ok=True)
+            out = {}
+            for sid in ids:
+                try:
+                    out[sid] = parse_awc(doc, sid, cfg["lat"], cfg["lon"])
+                except ValueError as e:
+                    out[sid] = str(e)
+            return out
         if name == "alerts":
             return {"checked": self.wall(),
                     "alerts": parse_alerts(self._json(alerts_url(cfg)))}
@@ -746,6 +991,9 @@ class Weather:
                 try:
                     out = parse(self._json(pts[k]), self.wall())
                     out["from"] = "hourly" if k == "forecastHourly" else "grid"
+                    # When this PC last got it: what its staleness is
+                    # mainly judged on (judge, the forecast).
+                    out["fetched_at"] = self.wall()
                     return out
                 except (FetchError, ValueError) as e:
                     first = first or e
@@ -767,26 +1015,48 @@ class Weather:
                     raise FetchError("weather fetching is off for the "
                                      "self test", offline=True)
                 data = self.fetch(name)
-                err, offline = "", False
+                err, offline, answered = "", False, True
             except FetchError as e:
-                data, err, offline = None, str(e), e.offline
+                data, err, offline, answered = None, str(e), e.offline, False
             except (ValueError, KeyError, TypeError) as e:
-                data, err, offline = None, str(e) or type(e).__name__, False
+                data, err, offline, answered = (None, str(e) or
+                                                type(e).__name__, False, True)
             except Exception as e:                   # noqa: BLE001
-                data, err, offline = None, f"{type(e).__name__}: {e}", False
+                data, err, offline, answered = (None, f"{type(e).__name__}: "
+                                                f"{e}", False, False)
             with self._lock:
                 s["tried"] = True
+                if name == "awc":
+                    self._share_awc(data, err, offline, answered)
+                    if data is not None:
+                        data = {"checked": self.wall()}
                 if data is not None:
-                    s.update(data=data, error="", offline=False, fails=0,
+                    s.update(data=data, error="", offline=False,
+                             answered=True, fails=0,
                              due=self.clock() + self.every[name])
                 else:
                     s["fails"] += 1
-                    s.update(error=err, offline=offline,
+                    s.update(error=err, offline=offline, answered=answered,
                              due=self.clock() + self.retry_s(name,
                                                              s["fails"]))
             if data is not None:
                 self._save_cache()
         return tried
+
+    def _share_awc(self, got, err, offline, answered):
+        """The one aviationweather.gov answer, shared out to each backup
+        airport's own entry (under the lock)."""
+        for sid in self.cfg["backup_stations"]:
+            t = self.src[f"awc:{sid}"]
+            t["tried"] = True
+            one = None if got is None else got.get(sid)
+            if isinstance(one, dict):
+                t.update(data=one, error="", offline=False, answered=True)
+            elif got is not None:
+                t.update(error=str(one or "no answer for this station"),
+                         offline=False, answered=True)
+            else:
+                t.update(error=err, offline=offline, answered=answered)
 
     def retry_s(self, name, fails):
         """After `fails` failures in a row: 1, 2, 4 ... min, up to the
@@ -795,7 +1065,7 @@ class Weather:
 
     def next_due_in(self):
         with self._lock:
-            due = min(s["due"] for s in self.src.values())
+            due = min(self.src[n]["due"] for n in self.every)
         return max(0.0, due - self.clock())
 
     # -- the thread -------------------------------------------------------
@@ -846,7 +1116,7 @@ def age_text(s):
     return f"{h // 24} days"
 
 
-def wind_text(speed, gust, deg):
+def wind_text(speed, gust, deg, variable=False):
     """"12 mph, gusts 21 mph, from NNW (338°)"."""
     sp = int(round(speed))
     out = f"{sp} mph"
@@ -857,7 +1127,8 @@ def wind_text(speed, gust, deg):
     if sp == 0 and (deg is None or deg == 0):
         return out + ", calm"
     if deg is None:
-        return out + ", direction not reported"
+        return out + (", direction variable" if variable else
+                      ", direction not reported")
     return out + f", from {compass(deg)} ({int(round(deg)) % 360}°)"
 
 
@@ -867,11 +1138,82 @@ def _clock_text(epoch):
     return f"{h}:{d.minute:02d} {'AM' if d.hour < 12 else 'PM'}"
 
 
+def measured_sources(cfg):
+    """[(name, label, short)] of the measured sources, in the order they
+    are used: the mesonet station, the backup airport stations
+    (aviationweather.gov), then the NWS station if one is named."""
+    out = [("mesonet", f"{cfg['mesonet_name']} ({cfg['mesonet_station']})",
+            f"{cfg['mesonet_station']} (Iowa mesonet)")]
+    for sid in cfg.get("backup_stations") or ():
+        nm = AIRPORT_NAMES.get(sid)
+        out.append((f"awc:{sid}", f"{nm} ({sid})" if nm else sid,
+                    f"{sid} (aviationweather.gov)"))
+    if cfg.get("nws_station"):
+        sid = cfg["nws_station"]
+        out.append(("nws_obs", f"NWS station {sid}",
+                    f"{sid} (api.weather.gov)"))
+    return out
+
+
+def measured_state(d, now, stale_s, dead_s):
+    """(state, age) of one measured source's saved reading `d`: "ok"
+    (current), "stale", "none" (over the no data limit, or no reading:
+    never shown) or "future" (timed over 15 min ahead: this PC's clock)."""
+    if d is None:
+        return "none", None
+    age = now - d["valid"]
+    if age < -15 * 60:
+        return "future", age
+    if age > dead_s:
+        return "none", age
+    return ("stale" if age > stale_s else "ok"), max(0.0, age)
+
+
+def _bare(text):
+    return str(text or "").strip().rstrip(".")
+
+
+def _cap(text):
+    return text[:1].upper() + text[1:]
+
+
+def _why_not(r, now, cfg):
+    """Why measured source row `r` is not current, in plain words, or ""
+    when it is."""
+    short, s, d, st, age = r["short"], r["s"], r["d"], r["st"], r["age"]
+    err = _bare(s.get("error")) if s.get("tried") else ""
+    if st == "ok":
+        return ""
+    if st == "future":
+        return (f"the {short} reading is timed in the future; check this "
+                f"PC's clock")
+    if st == "stale":
+        return (f"the last {short} reading is {age_text(age)} old, over its "
+                f"{r['stale_min']:g} min limit")
+    at_ = ""
+    if d is not None:
+        at_ = (f" at {_clock_text(d['valid'])}" if age < 20 * 3600 else "")
+    if err and not s.get("answered"):
+        txt = (f"{short} did not answer: {err}" if s.get("offline") else
+               f"{short} could not be read: {err}")
+        if d is not None:
+            txt += f"; last reading{at_}, {age_text(age)} ago"
+        return txt
+    if d is not None:
+        txt = (f"{short} stopped reporting{at_}, last reading "
+               f"{age_text(age)} ago")
+        return txt + (f" ({err})" if err else "")
+    if err:
+        return f"{short} answered with no usable reading: {err}"
+    return f"{short} not read yet"
+
+
 def judge(src, cfg, now, config_error="", offline_for_tests=False):
     """The Weather block, as the page draws it: {"enabled", "state",
     "where", "lines": [{"kind", "level", "text"}], "banner": [...],
     "disagree", "internet", "advisory", "error"}. Every number in a line
-    carries its age. `level` is "ok", "stale" (amber) or "none" (grey)."""
+    carries its age. `level` is "ok", "stale" (amber, STALE), "backup"
+    (amber: a current reading from a backup station) or "none" (grey)."""
     out = {"enabled": bool(cfg.get("enabled", True)) and not config_error,
            "where": (f"Thanksgiving Point area ({cfg['lat']:.4f}, "
                      f"{cfg['lon']:.4f})"),
@@ -884,69 +1226,151 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
     if not cfg.get("enabled", True):
         out["state"] = "off"
         return out
-    stale_s, dead_s = cfg["stale_min"] * 60, cfg["no_data_min"] * 60
     fstale_s = cfg["forecast_stale_hours"] * 3600
     fdead_s = cfg["forecast_no_data_hours"] * 3600
-    current = []                 # (label, speed) of every line not grey
+    fissued_s = cfg["forecast_issued_stale_hours"] * 3600
+    fidead_s = cfg["forecast_issued_no_data_hours"] * 3600
+    current = []                 # (who, speed) of every reading not grey
 
     def tail(s):
         if s.get("error") and s.get("tried"):
-            return f" The last try failed: {s['error']}."
+            return f" The last try failed: {_bare(s['error'])}."
         return ""
 
-    def measured(name, label):
-        s = src.get(name)
-        if s is None:
-            return
+    # -- measured: the highest usable reading, any source -----------------
+    # Conservative (review of PR #154): the line leads with the HIGHEST
+    # reading inside its own source's grey limit, current or STALE; a
+    # STALE one is amber and marked so, with the current ones said beside
+    # it. Each source has its own limits: the 5 minute mesonet feed 20 / 45
+    # min, the hourly airports 75 / 120 min (station_limits). A reading
+    # past its grey limit is never a candidate.
+    rows = []
+    for i, (name, label, short) in enumerate(measured_sources(cfg)):
+        s = src.get(name) or {}
         d = s.get("data")
-        line = {"kind": "measured", "source": name}
-        age = None if d is None else now - d["valid"]
-        if age is not None and age < -15 * 60:
-            line.update(level="none", text=f"{label}: {NO_DATA}. The "
-                        f"reading's time is in the future; check this "
-                        f"PC's clock.")
-        elif age is None or age > dead_s:
-            had = ("" if age is None else
-                   f" Last reading {age_text(age)} old.")
-            never = "" if s.get("tried") or d else " Not read yet."
-            line.update(level="none", text=f"{label}: {NO_DATA}.{had}"
-                        f"{never}{tail(s)}")
-        else:
-            age = max(0.0, age)
-            line.update(level="stale" if age > stale_s else "ok",
-                        text=f"{label}: {wind_text(d['speed_mph'], d['gust_mph'], d['dir_deg'])}. "
-                             f"{age_text(age)} old.{tail(s)}",
-                        age_s=int(age), speed_mph=round(d["speed_mph"], 1))
-            current.append((label, d["speed_mph"]))
-        out["lines"].append(line)
+        sid = short.split(" ")[0]
+        st_min, nd_min = station_limits(cfg, sid, hourly=name != "mesonet")
+        st, age = measured_state(d, now, st_min * 60, nd_min * 60)
+        rows.append({"i": i, "name": name, "label": label, "short": short,
+                     "who": sid, "s": s, "d": d, "st": st, "age": age,
+                     "stale_min": st_min, "no_data_min": nd_min})
+    for r in rows:
+        r["why"] = _why_not(r, now, cfg)
+    usable = [r for r in rows if r["st"] in ("ok", "stale")]
+    pick = max(usable, key=lambda r: (r["d"]["speed_mph"], -r["i"])) \
+        if usable else None
+    line = {"kind": "measured",
+            "sources": [{"source": r["name"], "level": r["st"],
+                         "text": r["why"] or "current"} for r in rows]}
+    if pick is None:
+        line.update(source="", level="none",
+                    text=f"Measured wind: {NO_DATA}. "
+                         + ". ".join(_cap(r["why"]) for r in rows) + ".")
+    else:
+        d, age = pick["d"], pick["age"]
+        lab = pick["label"]
+        if pick["i"] > 0:
+            miles = d.get("miles")
+            lab = (f"backup station {lab}"
+                   + (f", {miles:.0f} mi away" if miles else ""))
+        said = wind_text(d["speed_mph"], d["gust_mph"], d["dir_deg"],
+                         d.get("variable", False))
+        text = (f"Measured, {lab}: {said}. "
+                f"{age_text(age)} old.{tail(pick['s'])}")
+        ahead = [r for r in rows[:pick["i"]] if r not in usable]
+        if ahead:
+            text += (" Using the backup because "
+                     + "; ".join(r["why"] for r in ahead) + ".")
+        # Said beside it: UTALP when a backup leads, any reading over the
+        # disagree limit away, and every current one when a STALE one
+        # leads.
+        others = [r for r in usable if r is not pick and
+                  (r["i"] < pick["i"] or
+                   (pick["st"] == "stale" and r["st"] == "ok") or
+                   abs(r["d"]["speed_mph"] - d["speed_mph"]) >
+                   cfg["disagree_mph"])]
+        # The page puts STALE before a stale line; beside other readings
+        # the line also says which one is STALE and why.
+        if pick["st"] == "stale" and others:
+            text += (f" STALE: over its {pick['stale_min']:g} min limit.")
+        if others:
+            text += (" " + "; ".join(
+                _cap(f"{r['short']} reads "
+                     f"{int(round(r['d']['speed_mph']))} mph, "
+                     f"{age_text(r['age'])} old, "
+                     + (f"STALE (over its {r['stale_min']:g} min limit)"
+                        if r["st"] == "stale" else "current"))
+                for r in others)
+                + ". This line shows the highest reading.")
+        level = ("stale" if pick["st"] == "stale" else
+                 "backup" if pick["i"] > 0 else "ok")
+        line.update(source=pick["name"], level=level, text=text,
+                    age_s=int(age), speed_mph=round(d["speed_mph"], 1))
+        # The line's own reading, and any other measured one that differs
+        # from it by more than the limit (the banner below says it too).
+        for r in [pick] + others:
+            if r is pick or abs(r["d"]["speed_mph"] - d["speed_mph"]) > \
+                    cfg["disagree_mph"]:
+                current.append((f"measured {r['who']}",
+                                r["d"]["speed_mph"]))
+    out["lines"].append(line)
 
-    measured("mesonet", f"Measured, {cfg['mesonet_name']} "
-                        f"({cfg['mesonet_station']})")
-    if cfg.get("nws_station"):
-        measured("nws_obs", f"Measured, NWS station {cfg['nws_station']}")
-
-    # The forecast.
+    # -- the forecast -----------------------------------------------------
+    # Judged mainly on when this PC last GOT it (fetched_at): the NWS issue
+    # time is often hours old while it is still the current forecast. Its
+    # issue time is a check on the NWS itself: over 18 h amber, over 36 h
+    # grey (a stuck grid served as new for days).
     s = src.get("forecast") or {}
     d = s.get("data")
     label = "Forecast for this spot (NWS)"
     line = {"kind": "forecast", "source": "forecast"}
     sp = None if d is None else at(d["speed"], now)
-    age = None if d is None else now - d["issued"]
-    if d is None or age is None or age > fdead_s or sp is None:
+    issued_age = got_age = None
+    future = False
+    if d is not None:
+        got = d.get("fetched_at")
+        got = d["issued"] if not isinstance(got, (int, float)) else got
+        future = got - now > 15 * 60 or d["issued"] - now > 15 * 60
+        issued_age = max(0.0, now - d["issued"])
+        got_age = max(0.0, now - got)
+    if d is None or sp is None or future or got_age > fdead_s or \
+            issued_age > fidead_s:
         why = ""
-        if d is not None and sp is None:
+        if future:
+            why = " Its time is in the future; check this PC's clock."
+        elif d is not None and sp is None:
             why = " The saved forecast does not reach this hour."
-        elif age is not None:
-            why = f" Issued {age_text(age)} ago."
+        elif d is not None and got_age > fdead_s:
+            why = (f" This PC last got it from the NWS "
+                   f"{age_text(got_age)} ago, over the "
+                   f"{cfg['forecast_no_data_hours']:g} h limit. Issued "
+                   f"{age_text(issued_age)} ago.")
+        elif d is not None:
+            why = (f" The NWS has not updated it for "
+                   f"{age_text(issued_age)}, over the "
+                   f"{cfg['forecast_issued_no_data_hours']:g} h limit.")
         line.update(level="none", text=f"{label}: {NO_DATA}.{why}"
                     f"{'' if s.get('tried') or d else ' Not read yet.'}"
                     f"{tail(s)}")
     else:
-        age = max(0.0, age)
-        line.update(level="stale" if age > fstale_s else "ok",
+        stale = []
+        if got_age > fstale_s:
+            stale.append(f"this PC has not got it from the NWS for "
+                         f"{age_text(got_age)} (the limit is "
+                         f"{cfg['forecast_stale_hours']:g} h)")
+        if issued_age > fissued_s:
+            stale.append(f"the NWS has not updated it for "
+                         f"{age_text(issued_age)} (it normally does at "
+                         f"least twice a day; the limit is "
+                         f"{cfg['forecast_issued_stale_hours']:g} h)")
+        line.update(level="stale" if stale else "ok",
                     text=f"{label}: {wind_text(sp, at(d['gust'], now), at(d['dir'], now))}. "
-                         f"Issued {age_text(age)} ago.{tail(s)}",
-                    age_s=int(age), speed_mph=round(sp, 1))
+                         f"Issued {age_text(issued_age)} ago; this PC got "
+                         f"it {age_text(got_age)} ago."
+                         + (" Stale because " + " and ".join(stale) + "."
+                            if stale else "") + tail(s),
+                    age_s=int(got_age), issued_age_s=int(issued_age),
+                    speed_mph=round(sp, 1))
         current.append(("forecast", sp))
     out["lines"].append(line)
 
@@ -957,15 +1381,14 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
         if hi[1] - lo[1] > cfg["disagree_mph"]:
             out["disagree"] = (
                 "Sources disagree, verify on site: "
-                + ", ".join(f"{'forecast' if n == 'forecast' else 'measured'}"
-                            f" {int(round(v))} mph" for n, v in current)
+                + ", ".join(f"{n} {int(round(v))} mph" for n, v in current)
                 + ".")
 
     # The NWS alerts.
     s = src.get("alerts") or {}
     d = s.get("data")
     age = None if d is None else now - d["checked"]
-    if d is None or age > dead_s:
+    if d is None or age > cfg["no_data_min"] * 60:
         out["alerts_line"] = {"level": "none", "text":
                               "NWS wind and fire alerts: not checked "
                               "recently." + tail(s)}
@@ -996,6 +1419,11 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
     out["state"] = ("none" if all(lv == "none" for lv in levels) else
                     "stale" if any(lv != "ok" for lv in levels) else "ok")
     return out
+
+
+def hosts_text():
+    """"api.weather.gov, mesonet.agron.iastate.edu and aviationweather.gov"."""
+    return ", ".join(HOSTS[:-1]) + " and " + HOSTS[-1]
 
 
 def view_when_missing():
@@ -1073,10 +1501,8 @@ def run_check(folder, get=None, out=print, raw_chars=1200, wall=time.time):
     if err:
         out(f"FAIL  settings: {err}")
         return 1
-    out(f"Spot: {cfg['lat']}, {cfg['lon']}. Measured station: "
-        f"{cfg['mesonet_network']} {cfg['mesonet_station']}"
-        + (f", NWS station {cfg['nws_station']}" if cfg["nws_station"]
-           else "") + ".")
+    out(f"Spot: {cfg['lat']}, {cfg['lon']}. Measured, in the order used: "
+        + ", ".join(short for _n, _l, short in measured_sources(cfg)) + ".")
     if not cfg["enabled"]:
         out("Note: weather is switched off in the settings (enabled: "
             "false); checking anyway.")
@@ -1122,14 +1548,23 @@ def run_check(folder, get=None, out=print, raw_chars=1200, wall=time.time):
         return doc
 
     def obs_said(d):
-        return (f"{wind_text(d['speed_mph'], d['gust_mph'], d['dir_deg'])},"
-                f" {age_text(now - d['valid'])} old")
+        said = wind_text(d["speed_mph"], d["gust_mph"], d["dir_deg"],
+                         d.get("variable", False))
+        return (f"{said}, {age_text(now - d['valid'])} old"
+                + (f", {d['miles']:.0f} miles away" if d.get("miles")
+                   else ""))
 
     doc = fetch(f"Measured: mesonet {cfg['mesonet_station']}",
                 mesonet_url(cfg))
     verdict(f"measured, mesonet {cfg['mesonet_station']}",
             lambda: obs_said(parse_mesonet(need(doc),
                                            cfg["mesonet_station"])))
+    for sid in cfg["backup_stations"]:
+        doc = fetch(f"Measured, backup: {sid} (aviationweather.gov)",
+                    awc_url(sid))
+        verdict(f"measured, backup {sid} (aviationweather.gov)",
+                lambda doc=doc, sid=sid: obs_said(parse_awc(
+                    need(doc), sid, cfg["lat"], cfg["lon"])))
     if cfg["nws_station"]:
         doc = fetch(f"Measured: NWS station {cfg['nws_station']}",
                     nws_obs_url(cfg))
@@ -1184,5 +1619,5 @@ def run_check(folder, get=None, out=print, raw_chars=1200, wall=time.time):
     out(f"RESULT: FAIL. {results.count(False)} of {len(results)} checks "
         f"failed. If every one says it could not connect, this PC has no "
         f"internet or the firewall blocks it: allow outbound HTTPS (TCP "
-        f"443) to {' and '.join(HOSTS)}.")
+        f"443) to {hosts_text()}.")
     return 1

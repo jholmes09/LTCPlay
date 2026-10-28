@@ -26994,6 +26994,10 @@ class _AmOut(_TcOut):
         self.packets_sent += 1
         return True
 
+    # A held end frame (clock.TimecodeOut.send_held): this recorder's one
+    # destination is MadMapper's.
+    send_held = send
+
     def frames(self, since=None):
         out = []
         for t, p in self.sent:
@@ -27171,7 +27175,8 @@ class _AmSim:
 
 
 def _am_rig(work=None, seconds=6.0, block=480, latency=0.02, drift_ppm=0.0,
-            devices=None, reported_latency=None, silences=(), **audio):
+            devices=None, reported_latency=None, silences=(), lengths=None,
+            **audio):
     """A deterministic audio_master: the show, the clock, a local audio
     engine, and a recorder for everything the clock tells the world."""
     import tempfile
@@ -27198,7 +27203,7 @@ def _am_rig(work=None, seconds=6.0, block=480, latency=0.02, drift_ppm=0.0,
         clock=vc, mono=vc, log=lg, journal=jr, threaded=False,
         on_stop=lambda: calls["stop"].append(vc()),
         on_pause=lambda: calls["pause"].append(vc()),
-        on_resume=lambda: calls["resume"].append(vc()))
+        on_resume=lambda: calls["resume"].append(vc()), lengths=lengths)
     am.start()
     sim = _AmSim(am, eng, vc)
     sim.run(vc() + 0.05)
@@ -28246,7 +28251,9 @@ def test_audio_master_the_audio_ending_ends_the_cue():
     am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
     am.play(3600.0, None, "Show")
     sim.run(vc() + 2.0)
-    frames = [n for _, n in out.frames()]
+    # Up to the end: after it the last frame is held (the next test).
+    stop_at = r["calls"]["stop"][0] if r["calls"]["stop"] else 1e18
+    frames = [n for t, n in out.frames() if t <= stop_at]
     check(frames == list(range(30)),
           f"a 1 s cue sent frames {frames[:3]}..{frames[-3:]}, not 0 to 29")
     check(len(r["calls"]["stop"]) == 1 and not am.playing
@@ -28284,6 +28291,414 @@ def test_audio_master_the_audio_ending_ends_the_cue():
         check("has no show audio" in str(e), f"the refusal: {e}")
     r["am"].stop()
     r2["am"].stop()
+    print("  ok")
+
+
+def test_audio_master_the_show_runs_to_its_longest_part():
+    section("audio_master: a show runs to the longest of its audio, lights "
+            "file and show length; past the audio's end the timecode and "
+            "the lights carry on in silence, with no loss (Jeff's field "
+            "report, 2026-10-28, item 12)")
+    from ltcplay import clock as clock_mod
+    # 1 s of audio, a 1.5 s lights file.
+    r = _am_rig(seconds=1.0, lengths={"Show": 1.5})
+    am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 1.2)
+    check(am.playing and am._mode == "tail",
+          f"past the end of the audio and before the end of the show the "
+          f"cue did not carry on in its tail: playing {am.playing}, mode "
+          f"{am._mode}, {am.last_ended!r}")
+    check(am.losses == 0 and not am.health_warnings() and
+          not r["journal"].faults,
+          f"the audio ending before the lights read as a loss: "
+          f"{am.health_warnings()} {r['journal'].faults}")
+    check(am.snapshot()["audio"]["mode"] == "tail",
+          "the page does not say the cue is in its silent tail")
+    sim.run(vc() + 1.0)
+    stops = r["calls"]["stop"]
+    check(len(stops) == 1 and not am.playing and
+          am.last_ended == "Show finished",
+          f"the cue did not end the normal way at the end of the lights: "
+          f"{stops} {am.last_ended!r}")
+    before = [n for t, n in out.frames() if stops and t <= stops[0]]
+    check(before == list(range(45)),
+          f"a 1 s audio and a 1.5 s lights file sent frames "
+          f"{before[:3]}..{before[-3:]}, not 0 to 44")
+    fed = [pos for _t, pos, _a, _x in r["fed"]]
+    check(fed and abs(max(fed) - (3600.0 + 44 / 30.0)) < 1e-6,
+          f"the pixels did not follow the timecode to the end of the "
+          f"lights: last {max(fed) if fed else None}")
+    first = out.frames()[0][0]
+    check(stops and 1.5 - 1e-6 <= stops[0] - first < 1.5 + 2 / 30.0,
+          f"the show ended {stops[0] - first if stops else None} s after "
+          f"its first frame, not 1.5 s")
+    check(clock_mod.show_len_of(am, r["tl"]) == 1.5 and
+          am.show_lengths("Show") == {"audio_s": 1.0, "show_s": 1.5},
+          f"the show's real length: {am.show_lengths('Show')}")
+    am.stop()
+    # A show length shorter than the audio never cuts the audio short.
+    r2 = _am_rig(seconds=1.0, lengths={"Show": 0.5})
+    r2["am"].play(3600.0, None, "Show")
+    r2["sim"].run(r2["vc"]() + 2.0)
+    s2 = r2["calls"]["stop"]
+    sent = [n for t, n in r2["out"].frames() if s2 and t <= s2[0]]
+    check(sent == list(range(30)),
+          f"a 0.5 s length cut a 1 s audio short: {sent[-3:]}")
+    r2["am"].stop()
+    # Abort in the tail is at once: a longer show never delays it.
+    r3 = _am_rig(seconds=1.0, lengths={"Show": 3.0})
+    am3, vc3 = r3["am"], r3["vc"]
+    am3.play(3600.0, None, "Show")
+    r3["sim"].run(vc3() + 1.3)
+    t_abort = vc3()
+    am3.halt()
+    check(not am3.playing and am3.last_ended == "Show stopped" and
+          r3["calls"]["stop"] == [t_abort],
+          f"an Abort in the tail did not stop at once: {am3.playing} "
+          f"{am3.last_ended!r} {r3['calls']['stop']} at {t_abort}")
+    r3["sim"].run(vc3() + 1.0)
+    check(not r3["out"].frames(since=t_abort + 1e-9),
+          "an Abort in the tail left the timecode running or held")
+    am3.stop()
+    # Hold and Resume in the tail carry on to the end.
+    r4 = _am_rig(seconds=1.0, lengths={"Show": 2.0})
+    am4, vc4 = r4["am"], r4["vc"]
+    am4.play(3600.0, None, "Show")
+    r4["sim"].run(vc4() + 1.3)
+    am4.pause()
+    r4["sim"].run(vc4() + 0.5)
+    check(am4.paused and am4.playing, "a Hold in the tail did not hold")
+    am4.resume()
+    r4["sim"].run(vc4() + 0.2)
+    check(am4.playing and not am4.paused and am4._mode == "tail",
+          f"a Resume in the tail ended the show or lost it: playing "
+          f"{am4.playing}, mode {am4._mode}, {am4.last_ended!r}")
+    r4["sim"].run(vc4() + 1.5)
+    s4 = r4["calls"]["stop"]
+    seen = []
+    for t, n in r4["out"].frames():
+        if s4 and t <= s4[0] and (not seen or n != seen[-1]):
+            seen.append(n)
+    check(len(s4) == 1 and am4.last_ended == "Show finished" and
+          seen == list(range(60)),
+          f"Hold and Resume in the tail did not run on to the end: "
+          f"{seen[-3:]} {am4.last_ended!r}")
+    am4.stop()
+    # The lengths a show file gives: the lights file, and the configured
+    # show length for the show's own cue only.
+    tl = r["tl"]
+    cues = {"Show": ("show", 48000), "Intermission": ("intermission", 48000)}
+    for c in tl.cues:
+        c.duration = 1.5 if c.name == "Show" else 2.5
+    got = clock_mod.cue_lengths(tl.clock, tl, cues)
+    check(got == {"Show": 1.5, "Intermission": 2.5},
+          f"the lights files' lengths: {got}")
+    tl.clock.zones.show_len_s = 4.0
+    got = clock_mod.cue_lengths(tl.clock, tl, cues)
+    check(got == {"Show": 4.0, "Intermission": 2.5},
+          f"'clock.zones.show_len_s' is the show cue's override only: {got}")
+    # A cap on it (safety review of #157, 3): at most 60 s past the longest
+    # of the show cue's audio and lights file; a typo refuses Run.
+    tl.clock.zones.show_len_s = 61.5        # 60 s past the 1.5 s lights
+    clock_mod.check_show_len_cap(tl.clock, tl, cues)
+    for bad in (61.6, 4541.7):
+        tl.clock.zones.show_len_s = bad
+        try:
+            clock_mod.check_show_len_cap(tl.clock, tl, cues)
+            check(False, f"show_len_s {bad} s against 1.5 s of show ran")
+        except clock_mod.ClockConfigError as e:
+            check(f"is {bad:g} s" in str(e) and "1.00 s" in str(e) and
+                  "1.50 s" in str(e) and "61.50 s" in str(e),
+                  f"the refusal names the numbers: {e}")
+            _no_dashes(str(e), "the show_len_s refusal")
+    tl.clock.zones.show_len_s = None
+    # The Run notice when the configured length runs past the lights file,
+    # and when the show audio carries an LTC track (safety review of #157,
+    # 2 and 4).
+    am.lengths = {"Show": 3.0}
+    for c in tl.cues:
+        c.duration = 1.5 if c.name == "Show" else None
+    am.audio.ltc_output = 8
+    try:
+        notes = clock_mod.audio_length_notes(am, tl)
+    finally:
+        am.audio.ltc_output = None
+    check(len(notes) == 1 and
+          "shorter than the show length set in 'clock.zones.show_len_s' "
+          "(3.00 s)" in notes[0] and
+          "The lights file ends at 1.50 s, so the last 1.50 s have no "
+          "lights and no flame cues." in notes[0] and
+          "The LTC timecode track on output 8 is part of the show audio, "
+          "so it ends at 1.00 s with the audio." in notes[0],
+          f"the Run notice: {notes}")
+    # A Hold pressed in the audio's last moments, after the audio process
+    # has reached its end but before that is heard, is not lost: it holds
+    # at the end of the audio (safety review of #157, 5).
+    from ltcplay import showaudio as sa
+    r5 = _am_rig(seconds=1.0, lengths={"Show": 2.0})
+    am5, vc5, eng5 = r5["am"], r5["vc"], r5["eng"]
+    am5.play(3600.0, None, "Show")
+    r5["sim"].run(vc5() + 0.9)
+    while vc5() < 1e6:
+        rd = eng5.read()
+        if rd is not None and rd.state == sa.ENDED:
+            break
+        r5["sim"].run(vc5() + 0.001)
+    pos = am5._pos(vc5())
+    check(pos is not None and pos < 1.0 and am5._mode == "follow",
+          f"the case: the audio process has ended, the clock is still in "
+          f"the audio: {pos} {am5._mode}")
+    am5.pause()
+    r5["sim"].run(vc5() + 0.3)
+    check(am5._paused and am5.playing and not am5._pause_req,
+          f"a Hold at the very end of the audio did not hold: paused "
+          f"{am5._paused}, pending {am5._pause_req}, {am5.last_ended!r}")
+    t_held = vc5()
+    r5["sim"].run(vc5() + 0.5)
+    frozen = {n for _t, n in r5["out"].frames(since=t_held)}
+    check(len(frozen) == 1 and r5["calls"]["pause"],
+          f"the Hold did not freeze the timecode: {sorted(frozen)}")
+    am5.resume()
+    r5["sim"].run(vc5() + 1.5)
+    check(not am5.playing and am5.last_ended == "Show finished" and
+          len(r5["calls"]["stop"]) == 1,
+          f"after Resume the tail did not run to the end: "
+          f"{am5.last_ended!r}")
+    am5.stop()
+    print("  ok")
+
+
+def test_audio_master_timecode_holds_at_the_end():
+    import types
+    section("audio_master: at the end of a show the timecode holds its last "
+            "frame for MadMapper (never BEYOND) until the next cue, an "
+            "Abort or Stop (Jeff's field report, 2026-10-28, item 12)")
+    from ltcplay import clock as clock_mod
+    r = _am_rig(seconds=1.0)
+    am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 1.2)
+    stops = r["calls"]["stop"]
+    check(len(stops) == 1 and not am.playing and
+          am.last_ended == "Show finished",
+          f"the show did not end the normal way: {stops} {am.last_ended!r}")
+    sim.run(vc() + 2.0)
+    after = [n for _t, n in out.frames(since=stops[0] + 1e-9)]
+    check(after and set(after) == {29},
+          f"after the end the timecode did not hold the last frame: "
+          f"{sorted(set(after))[:5]}")
+    check(55 <= len(after) <= 66,
+          f"the held frame was not sent 30 times a second: {len(after)} "
+          f"in about 2.2 s")
+    snap = am.snapshot()
+    check(snap["holding"] == "00:00:00:29" and snap["playing"] is None and
+          snap["sending"] is None,
+          f"the page does not say the timecode is held: {snap['holding']}")
+    check(r["fed"][-1][3] == "00:00:00:29" and
+          all(t <= stops[0] for t, *_ in r["fed"]),
+          "the held frame reached the pixels, which go to the idle look")
+    # The next cue starts from 00:00:00:00, and its Abort stops everything,
+    # with no held frame from the last show left behind.
+    t_play = vc()
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 0.5)
+    nxt = [n for _t, n in out.frames(since=t_play + 1e-9)]
+    check(nxt and nxt[0] == 0 and nxt == sorted(nxt) and 29 not in nxt,
+          f"the next cue did not start at 00:00:00:00: {nxt[:5]}")
+    t_abort = vc()
+    am.halt(fade_ms=0)
+    sim.run(vc() + 1.0)
+    check(not out.frames(since=t_abort + 1e-9) and
+          am.snapshot()["holding"] is None,
+          "an Abort mid-show sent a held frame from the show before")
+    am.stop()
+    # Abort and Stop after the end let the held frame go.
+    for how in ("Abort", "Stop"):
+        r2 = _am_rig(seconds=1.0)
+        am2, vc2 = r2["am"], r2["vc"]
+        am2.play(3600.0, None, "Show")
+        r2["sim"].run(vc2() + 1.5)
+        check(am2.snapshot()["holding"] == "00:00:00:29",
+              f"{how}: nothing held before it")
+        if how == "Abort":
+            am2.halt()
+            t = vc2()
+            r2["sim"].run(vc2() + 1.0)
+            check(not r2["out"].frames(since=t + 1e-9),
+                  "an Abort after the end left the timecode held")
+        else:
+            am2.stop()
+            with am2._lock:
+                am2._emit(vc2() + 1.0)
+            check(am2._held is None and
+                  not r2["out"].frames(since=vc2() + 1e-9),
+                  "Stop after the end left the timecode held")
+        am2.stop()
+    # The real socket: a held frame goes to MadMapper, never to BEYOND,
+    # and a show frame still goes to both.
+
+    class Sock:
+        def __init__(self):
+            self.to = []
+
+        def sendto(self, pkt, addr):
+            self.to.append(addr[0])
+
+        def close(self):
+            pass
+    sock = Sock()
+    o = clock_mod.TimecodeOut([("MadMapper", "10.0.0.1"),
+                               ("BEYOND", "10.0.0.2")],
+                              socket_factory=lambda: sock)
+    pkt = clock_mod.arttimecode(0, 7, 34, 5)
+    o.send_held(pkt)
+    check(sock.to == ["10.0.0.1"],
+          f"a held frame went to {sock.to}, not MadMapper alone")
+    sock.to.clear()
+    o.send(pkt)
+    check(sock.to == ["10.0.0.1", "10.0.0.2"],
+          f"a show frame went to {sock.to}, not to both")
+    # MadMapper alone, whatever BEYOND is called and however the lasers
+    # are blanked (safety review of #157, 1): BEYOND's addresses
+    # (HOLD_NEVER), any address another receiver shares, broadcast, and
+    # any receiver not named MadMapper get nothing.
+    saved = set(clock_mod.HOLD_NEVER)
+    try:
+        clock_mod.HOLD_NEVER.clear()
+        cases = [
+            ([("MadMapper", "10.0.0.1"), ("Lasers", "10.0.0.2")], set(),
+             False, ["10.0.0.1"]),
+            ([("MadMapper", "10.0.0.2"), ("Lasers", "10.0.0.3")],
+             {"10.0.0.2"}, False, []),
+            ([("MadMapper", "10.0.0.1"), ("Lasers", "10.0.0.1")], set(),
+             False, []),
+            ([("Video", "10.0.0.1"), ("BEYOND", "10.0.0.2")], set(), False,
+             []),
+            ([("MadMapper", "10.0.0.1")], set(), True, []),
+            ([("MadMapper", "10.0.0.255")], set(), False, []),
+            ([("BEYOND", "10.0.0.2")], set(), False, []),
+        ]
+        for dests, never, bc, want in cases:
+            clock_mod.HOLD_NEVER.clear()
+            clock_mod.HOLD_NEVER.update(never)
+            sock.to.clear()
+            o2 = clock_mod.TimecodeOut(dests, broadcast=bc,
+                                       socket_factory=lambda: sock)
+            for _ in range(5):
+                o2.send_held(pkt)
+            check(sorted(set(sock.to)) == want and o2.send_errors == 0
+                  and o2.reopens == 0,
+                  f"a held frame for {dests} (BEYOND at {never}, broadcast "
+                  f"{bc}) went to {sorted(set(sock.to))}, not {want}")
+            hn = clock_mod.hold_note(types.SimpleNamespace(
+                source="audio_master", out=o2))
+            check(bool(hn) == (not want),
+                  f"Run's word on holding for {dests}: {hn}")
+        # Fire & Ice puts every BEYOND address there, in every blanking
+        # mode.
+        F = _fi_mod()
+        clock_mod.HOLD_NEVER.clear()
+        _fi_night()
+        check({"127.0.0.1"} <= clock_mod.HOLD_NEVER,
+              f"attach() did not keep the held frame off BEYOND's OSC host "
+              f"with beyond_blank \"osc\": {clock_mod.HOLD_NEVER}")
+        got = F.beyond_addresses(F.FireIceConfig(
+            beyond_timecode_ip="10.1.1.9", beyond_blank="osc"))
+        check(got == {"10.1.1.9"}, f"BEYOND's timecode address: {got}")
+    finally:
+        clock_mod.HOLD_NEVER.clear()
+        clock_mod.HOLD_NEVER.update(saved)
+    print("  ok")
+
+
+def test_audio_master_run_warns_when_the_audio_is_shorter():
+    section("audio_master: Run says, first and in plain words, when the "
+            "show audio is shorter than the lights file, naming both "
+            "lengths, and never refuses (Jeff's field report, 2026-10-28, "
+            "item 12c)")
+    import tempfile
+    from ltcplay.session import Session
+    from ltcplay import clock as clock_mod, settings as st_mod
+    import ltcplay.player as plmod
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    real_prepare = plmod.Player._prepare
+    frames = [60]
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=frames[0])
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    try:
+        for n, want in ((60, True), (40, False)):
+            work = tempfile.mkdtemp()
+            st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+            st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+            plmod.Player._prepare = fake_prepare
+            frames[0] = n
+            _tl, tlp, net = _am_show(work, 1.0)
+            sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                           sd=FakeSD())
+            sess.open()
+            notes = list(sess.notes)
+            real = clock_mod.show_len_of(sess.clock, sess.tl)
+            sess.stop()
+            short = [t for t in notes if "shorter than" in t]
+            if want:
+                check(short and notes[0] == short[0] and
+                      "The show audio for Show is 1.00 s, shorter than the "
+                      "lights file (1.50 s)" in short[0] and
+                      "the last 0.50 s play in silence" in short[0],
+                      f"Run did not say first that the audio is short: "
+                      f"{notes[:2]}")
+                _no_dashes(" ".join(short), "the short audio note")
+                check(real == 1.5, f"the show's real length: {real}")
+            else:
+                check(not short and real == 1.0,
+                      f"audio as long as the lights was warned about: "
+                      f"{short} {real}")
+        # The notice can never fail Run (safety review of #157, 6).
+        real_notes = clock_mod.audio_length_notes
+
+        def boom(*a, **k):
+            raise RuntimeError("x")
+        clock_mod.audio_length_notes = boom
+        try:
+            sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                           sd=FakeSD())
+            sess.open()
+            check(sess.clock is not None and
+                  "could not be checked" in sess.notes[0],
+                  f"a notice that raised changed Run: {sess.notes[:1]}")
+            sess.stop()
+        finally:
+            clock_mod.audio_length_notes = real_notes
+        # A typo in 'clock.zones.show_len_s' refuses Run, in a sentence
+        # (safety review of #157, 3).
+        from ltcplay.session import SessionError
+        work = tempfile.mkdtemp()
+        st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+        st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+        doc = _am_clock_doc(
+            [{"file": "music.wav", "gain_db": 0, "channels": [1, 2]},
+             {"file": "sub.wav", "gain_db": -6, "channels": [3]}],
+            [{"file": "loop.wav", "channels": [1, 2]}])
+        doc["zones"] = {"show_len_s": 4541.7}
+        frames[0] = 60                       # a 1.5 s lights file
+        _tl, tlp, net = _am_show(work, 1.0, clock_doc=doc)
+        try:
+            Session(tlp, no_output=True, networks=net, no_log=True,
+                    sd=FakeSD()).open()
+            check(False, "a show_len_s of 4541.7 s against 1.5 s ran")
+        except SessionError as e:
+            check("'clock.zones.show_len_s' is 4541.7 s" in str(e) and
+                  "61.50 s" in str(e), f"the refusal: {e}")
+    finally:
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
     print("  ok")
 
 
@@ -28974,7 +29389,9 @@ def test_audio_master_review_rules():
     check(len(quiet) > 1400, "the silent stretches were not silent")
     check(am.losses == 0 and eng.proc.opens == 1 and not warned
           and not r["journal"].faults and am.last_ended == "Show finished"
-          and not _am_consecutive(r["out"].frames(since=t0)),
+          and not _am_consecutive(
+              [(t, n) for t, n in r["out"].frames(since=t0)
+               if t <= r["calls"]["stop"][-1]]),
           f"digital silence was taken for a lost interface: losses "
           f"{am.losses}, opens {eng.proc.opens}, faults "
           f"{r['journal'].faults}, health {warned[:1]}")
@@ -33803,6 +34220,95 @@ def test_streamdeck_ack_key_while_an_alert_is_open():
     check(keys.alerts() == (),
           "a stale answer hands on none: a key must not keep reading ACK, "
           "or acknowledge something the engine no longer shows")
+    print("  ok")
+
+
+def test_streamdeck_ignores_a_display_only_aim_alert():
+    section("Stream Deck (review of #150): an open aim slots alert is "
+            "display only on the deck too: the Start key keeps START NOW, "
+            "no first press is spent acknowledging it, page 2 stays open; "
+            "any other alert open beside it still does all of that")
+    from ltcplay import streamdeck as sd
+    t = [10.0]
+    ans = {"enabled": False, "holds": [], "disarms": [],
+           "alerts": [{"id": 4, "kind": "aim", "text": "Aim slots do not "
+                       "match", "options": ["Acknowledge"]}]}
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=lambda p: ans,
+                         clock=lambda: t[0])
+    keys.poll_once()
+    check(keys.alerts() == (), f"the aim alert is not handed to the deck: "
+                               f"{keys.alerts()}")
+    names = ["front row", "cat-walk", "wave flamer"]
+    status = _FakeStatus()
+    status.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+                "confirmed": True, "groups": [
+                    {"name": n, "armed": "disarmed", "wanted": False,
+                     "reason": "", "amber": "", "dwell_s": 0}
+                    for n in names]})
+    calls, lines = [], []
+
+    class _Engine:
+        def snapshot(self):
+            return {"latched": False, "look": "BETWEEN"}
+
+        def acknowledge(self, who, screen):
+            calls.append(("acknowledge", who, screen))
+            return sd.EngineResult(True, "alert sent to the engine")
+
+    class _Screen(_FakeScreen):
+        # The deck's screen input, its alerts read through ScreenKeys.
+        def alerts(self):
+            return keys.alerts()
+
+    def run(with_aim):
+        ans["alerts"] = ([{"id": 4, "kind": "aim", "text": "Aim slots do "
+                           "not match", "options": ["Acknowledge"]}]
+                         if with_aim else [])
+        keys.poll_once()
+        del calls[:], lines[:]
+        c = sd.Controller(_FakeArmSocket(3), status, names,
+                          operator_provider=lambda: "Andy",
+                          show_running_provider=lambda: False,
+                          conductor=_Engine(), clock=lambda: t[0],
+                          screen=_Screen(),
+                          journal=lambda text, **kw: lines.append(
+                              (text, kw)))
+        page2 = c._page2_must_close(False, c.alert_pending(), t[0])
+        face = None
+        fonts, faces, restore = _deck_face_recorder(sd)
+        if fonts is not None:
+            try:
+                c.draw(fonts, blink_on=True, chase=0)
+                face = faces[0]
+            finally:
+                restore()
+        c.run_once([True, False, False, False, False, False])
+        c.run_once([False] * 6)
+        return (c.alert_pending(), page2, face, list(calls),
+                [t_ for t_, _ in lines])
+    base, aim = run(False), run(True)
+    check(aim[0] == () and aim[1] == base[1] and
+          aim[1] != "an alert is open",
+          f"nothing is pending on the deck, page 2 is not closed for it: "
+          f"{aim[:2]}")
+    check(aim[2] == base[2] and (aim[2] is None or aim[2][0] != ["ACK",
+                                                               "ALERT"]),
+          f"the Start key's face is what it is with no alert: {aim[2]}")
+    check(aim[3] == base[3] == [] and aim[4] == base[4],
+          f"a Start press does what it does with no alert, never an "
+          f"acknowledge: {aim[3]} {aim[4]}")
+    c = sd.Controller(_FakeArmSocket(3), status, names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      conductor=_Engine(), clock=lambda: t[0],
+                      screen=_Screen(), journal=lambda text, **kw: None)
+    ans["alerts"] = [{"id": 4, "kind": "aim", "text": "x"}]
+    ans["alerts"].append({"id": 5, "kind": "audio", "text": "x"})
+    keys.poll_once()
+    check([a["kind"] for a in keys.alerts()] == ["audio"] and
+          c._page2_must_close(False, c.alert_pending(), t[0]) ==
+          "an alert is open",
+          "another alert beside it still reaches the deck")
     print("  ok")
 
 
@@ -40655,6 +41161,52 @@ def test_fire_ice_flame_cues_a_tiny_overrun_is_zero_and_no_fault():
                       f"{mode}: {over} ms past a {step} ms render: zero and "
                       f"a fault, journaled: {got and got[:2]} {fault!r} "
                       f"{said}")
+            # Past the render because the show deliberately runs longer
+            # than its lights file ('clock.zones.show_len_s', the video):
+            # zero, said, never a FAULT (safety review of #157, 4); past
+            # that configured end it is the fault again.
+            import types
+            # A render simply shorter than its audio, with no configured
+            # show length, is still the FAULT (review of #157): nothing else
+            # warns of a stale or cut-short render.
+            rig.clk.show_lengths = lambda label: (
+                {"audio_s": 4.0, "show_s": 4.0} if label == "Show" else None)
+            rig.clk.cfg = types.SimpleNamespace(
+                zones=types.SimpleNamespace(show_len_s=None))
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: a render shorter than its audio, no "
+                         f"show_len_s: the FAULT went quiet: {fault!r}")
+            # A show_len_s set, but the audio is what runs past the render:
+            # still the FAULT.
+            rig.clk.cfg.zones.show_len_s = 3.0
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: the audio, not show_len_s, runs past the "
+                         f"render: the FAULT went quiet: {fault!r}")
+            rig.clk.show_lengths = lambda label: (
+                {"audio_s": 1.0, "show_s": 4.0} if label == "Show" else None)
+            # Longer than both, but no show_len_s says so: the FAULT.
+            rig.clk.cfg.zones.show_len_s = None
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: no show_len_s set, yet the tail read as "
+                         f"deliberate: {fault!r}")
+            rig.clk.cfg.zones.show_len_s = 4.0
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and fault == "" and
+                  not any(f for _t, f in said) and
+                  "runs on to its configured length" in cues._why,
+                  f"{mode}: a deliberate tail past the lights file read as "
+                  f"a fault: {fault!r} {said} {cues._why!r}")
+            rig.clk.show_lengths = lambda label: (
+                {"audio_s": 1.0, "show_s": 2.0} if label == "Show" else None)
+            got, fault, said = at(40, 25, fill=77)
+            check(got is None and "past the end of the show's render" in
+                  fault, f"{mode}: past the configured end too: still the "
+                         f"fault: {fault!r}")
+            del rig.clk.show_lengths
+            del rig.clk.cfg
             # Within tolerance again after a fault: the fault clears, the
             # output stays zero.
             got, fault, _l = at(99, 25, fill=77)
@@ -42042,9 +42594,9 @@ def _serve_spy(argv, extra_files=None):
         "    print('SPY ' + json.dumps(out))\n"
         "    raise SystemExit(0)\n"
         "web.serve = spy\n"
-        # The machine's settings folder (the users file and its mark, the
-        # disarm ids) is the temp folder too: on a Mac or Linux it is
-        # beside the program, which is this checkout.
+        # The settings folder too (review of #150): off Windows it is the
+        # program's own folder, and the users file and its marker that
+        # serve writes there must never land in the checkout.
         "from ltcplay import settings as _settings\n"
         f"_settings.folder = lambda: {work!r}\n"
         # Tonight's file and the night journal go in the temp folder, never
@@ -42066,6 +42618,9 @@ def test_ltc_serve_gpl_builds_no_conductor():
     section("GPL: `ltc serve` with a GPL-style config builds no conductor, "
             "no devices and no ShowOutputs; with a schedule (Fire & Ice) "
             "it does")
+    here = os.path.dirname(os.path.abspath(__file__))
+    users_here = [n for n in ("ltcplay_users.json", "ltcplay_users.made")
+                  if os.path.exists(os.path.join(here, n))]
     gpl = _serve_spy(["serve", "--folder", "{work}", "--no-browser",
                       "--port", "0"])
     check(gpl.get("fire_ice") is False and gpl.get("conductor") is False
@@ -42074,6 +42629,7 @@ def test_ltc_serve_gpl_builds_no_conductor():
           f"conductor, devices, fire_ice, madmapper, beyond or the "
           f"scheduler even loaded: {gpl}")
     if _sched() is None:
+        _users_left_alone(here, users_here)
         return
     rule = _sched_doc(weekly={"sat": {"first_start": "18:00",
                                       "interval_min": 20,
@@ -42092,7 +42648,18 @@ def test_ltc_serve_gpl_builds_no_conductor():
                       "ltcplay_fire_ice.json": {"scheduler_performs": True}})
     check(fi2.get("conductor") is True and fi2.get("dry_run") is False,
           f"scheduler_performs true: the scheduler performs: {fi2}")
+    _users_left_alone(here, users_here)
     print("  ok")
+
+
+def _users_left_alone(here, before):
+    """Review of #150: `ltc serve` in a test writes its users file and
+    marker in its own temp folder, never beside the program (a stray
+    marker there with no users file locks every control)."""
+    after = [n for n in ("ltcplay_users.json", "ltcplay_users.made")
+             if os.path.exists(os.path.join(here, n))]
+    check(after == before, f"the test left {sorted(set(after) - set(before))}"
+                           f" beside the program")
 
 
 def test_the_gpl_path_never_loads_the_conductor():
@@ -47341,6 +47908,11 @@ def _rack_status_pico(many=True):
         "artnet_note": "",
     }
     if many:
+        # The wave flamer's aim line (2026-10-28) on its card too, at its
+        # longest: not loaded, both lists and the values said.
+        st["flames"]["groups"][2]["aim"] = {
+            "slots": [1, 7, 13], "flamesafe": [1, 7, 13], "ltcplay": [],
+            "loaded": False, "asked": [54, 128, 201], "sent": [0, 0, 0]}
         st["morning"] = {"locked_machines": ["wave flamer 3"],
                          "locked_lasers": [], "flamesafe_confirmed": True,
                          # Every card's "armed n of m machines" line drawn
@@ -47469,6 +48041,9 @@ function measure(tag){
     if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
       out.problems.push("overlap: the getting-started card and the flame groups");
   }
+  // The wave flamer's aim line (2026-10-28): one line, seen whole.
+  out.aim = [...document.querySelectorAll("#fl-lamps .aim")].filter(shown).map(e =>
+    ({text:e.textContent, h:Math.round(e.getBoundingClientRect().height * 10) / 10, seen:Math.round(clipH(e) * 10) / 10}));
   out.alerts_top = Math.round(rectOf(document.getElementById("alerts")).h);
   // The folded part alone (the live flame programming bar is never folded).
   out.fold_h = ["al-sum", "al-body"].map(id => document.getElementById(id))
@@ -47880,6 +48455,15 @@ console.log(JSON.stringify(out));
                 check(m.get("sum_disarm"),
                       f"{where}: the deck alert's Disarm all is on the "
                       f"folded line")
+            if "live flame" not in size:
+                aim = m.get("aim") or []
+                check(len(aim) == 1 and aim[0]["text"].startswith(
+                          "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, "
+                          "LTC Player none); disarmed") and
+                      0 < aim[0]["h"] <= 20 and
+                      aim[0]["seen"] >= aim[0]["h"] - 0.5,
+                      f"{where}: the wave flamer's aim line is one line, "
+                      f"seen whole: {aim}")
             if m["tag"] == "collapsed" and len(m["alerts"]) > 1:
                 check(m.get("fold_h", 999) <= 56,
                       f"{where}: the banners are one line: "
@@ -48651,7 +49235,12 @@ function measure(){
     key:(document.getElementById("mo-key") || {}).textContent || "",
     focus:shown(document.getElementById("mo-focus")) ? document.getElementById("mo-focus").textContent : null,
     nofile:shown(document.getElementById("nofile")) ? document.getElementById("nofile").textContent : null,
-    tiles:[], scroll_h:document.scrollingElement.scrollHeight};
+    tiles:[], scroll_h:document.scrollingElement.scrollHeight,
+    groups_h:Math.round(document.getElementById("mo-groups").getBoundingClientRect().height),
+    msg_top:Math.round(document.getElementById("mo-msg").getBoundingClientRect().top),
+    field_top:Math.round(document.getElementById("mo-field").getBoundingClientRect().top),
+    grp:[...document.querySelectorAll("#mo-groups [data-grp]")].map(b => ({h:Math.round(b.getBoundingClientRect().height),
+      text:(b.querySelector(".gd") || {}).textContent || "", title:b.title, cls:b.className}))};
   // Every piece of text on the Startup page and the Abort bar.
   const root = [document.getElementById("v-morning"), document.getElementById("abortbar")];
   for(const r of root){
@@ -48823,6 +49412,38 @@ def test_startup_page_readable_at_the_show_pc_sizes():
               f"{w}x{h}: every machine tile's label 16 px or more: "
               f"{m['tile_px']} {m['tiles'][:2]}")
         check(not m["problems"], f"{w}x{h}: {m['problems'][:6]}")
+    # A group button's words (2026-10-28), at their longest: one line,
+    # cut with an ellipsis, the whole in the tooltip; the group row, the
+    # field and the message line do not move.
+    long = ("5 of 6 selected; flamesafe has not armed front row (the "
+            "edge check is still waiting for its dwell) yet; front-row-4 "
+            "locked out; front-row-6 never purged")
+    mo2 = dict(mo, group_state={
+        g: {"state": "part", "any": True, "text": long, "selected": [],
+            "locked": [], "never": []} for g in mo["groups"]})
+    got2 = _rack_screen_in_chromium(
+        chrome, page, st, ((1280, 800), (1366, 768), (1920, 1080)),
+        measure_js=_STARTUP_MEASURE_JS, frag="#morning",
+        routes={"/api/remote/morning": mo2})
+    for (w, h), res in got2.items():
+        a = (got.get((w, h)) or [None])[0]
+        if not check(isinstance(res, list) and res and a,
+                     f"{w}x{h}: drawn with long group words: {res!r}"):
+            continue
+        b = res[0]
+        check(b["groups_h"] == a["groups_h"] and
+              b["field_top"] == a["field_top"] and
+              b["msg_top"] == a["msg_top"],
+              f"{w}x{h}: the long words move nothing: group row "
+              f"{a['groups_h']} -> {b['groups_h']}, field {a['field_top']} "
+              f"-> {b['field_top']}, message line {a['msg_top']} -> "
+              f"{b['msg_top']}")
+        check(b["grp"] and all(x["text"] == long and long in x["title"] and
+                               "part" in x["cls"] for x in b["grp"]),
+              f"{w}x{h}: every group button says it, amber, the whole in "
+              f"its tooltip: {b['grp'][:1]}")
+        check(not b["small"] and not b["problems"],
+              f"{w}x{h}: {b['small'][:4]} {b['problems'][:4]}")
     print("  measured: " + "; ".join(said))
     print("  ok")
 
@@ -56873,9 +57494,11 @@ def test_alerts_pure_logic():
           f"no booth speaker: the pulse runs and the banner says so: "
           f"{x.view()}")
     check(AL.SEVERITY["gate"] == "warning"
+          and all(AL.SEVERITY[k] == "warning" for k in AL.DISPLAY_ONLY)
           and all(AL.SEVERITY[k] == "fault" for k in AL.KINDS
-                  if k != "gate"),
-          "the gate is a warning; everything else is a fault")
+                  if k != "gate" and k not in AL.DISPLAY_ONLY),
+          "the gate and a display only kind (the aim slots) are warnings; "
+          "everything else is a fault")
     print("  ok")
 
 
@@ -57627,6 +58250,248 @@ console.log(JSON.stringify(out));
         check(not bad, f"the card's safety line: {bad}")
 
 
+def test_aim_slots_are_seen_on_the_rack_screen():
+    section("aim slots seen (2026-10-28): the rack screen's wave flamer "
+            "card says whether its aim slots are loaded, its armed state "
+            "and the angle asked for and sent; LTC Player and flamesafe's "
+            "lists are compared and a difference is an alert that says what "
+            "to do, cleared once they agree; the flame link says its list "
+            "and file at start")
+    import types
+    import json as _json
+    import shutil
+    import time as _time
+    import shutil as _sh
+    from ltcplay import remote as RM
+    from ltcplay import fire_ice as FI
+    clk = [100.0]
+    fs = RM.FlameStatus("127.0.0.1", 9, "k", clock=lambda: clk[0])
+    fire = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+    asked = [0] * 15
+    for slot, v in ((1, 54), (7, 128), (13, 201), (3, 254)):
+        asked[fire.index(slot)] = v
+
+    def frame(aim=(1, 7, 13), armed="armed", sent=None, older=False):
+        g = {"name": "wave flamer", "armed": armed, "wanted": True,
+             "fire_slots": fire, "commanded_fire": list(asked),
+             "sent_fire": list(sent if sent is not None else asked)}
+        if not older:
+            g["aim_slots"] = list(aim)
+        front = {"name": "front row", "armed": "disarmed",
+                 "fire_slots": [411], "commanded_fire": [0],
+                 "sent_fire": [0]}
+        if not older:
+            front["aim_slots"] = []
+        fs.last, fs.last_at = {"groups": [front, g]}, clk[0]
+        return fs.view()
+    v = frame()
+    g = v["groups"][1]
+    check(g["aim_slots"] == [1, 7, 13] and g["fire_slots"] == fire and
+          g["commanded_fire"] == asked and g["sent_fire"] == asked,
+          f"the status view carries flamesafe's aim and fire values: {g}")
+    check(frame(older=True)["groups"][1]["aim_slots"] is None,
+          "an older flamesafe that does not send aim_slots: None")
+    lines = []
+    rm = RM.Remote(None, None, folder=tempfile.mkdtemp(),
+                   flame_disarm=lambda reason: type(
+                       "_R", (), {"ok": True, "sentence": "sent"})(),
+                   log=lambda t: None)
+    rm._journal = lambda *a, **k: lines.append(a)
+    path = os.path.abspath(os.path.join("show", "flamesafe.json"))
+    # No flame link: nothing compared, nothing raised.
+    out = rm.aim_view(frame())
+    check(out["agree"] is None and not rm.alerts.open(),
+          f"without a flame link nothing is compared: {out}")
+    rm.flame_aim = (frozenset({1, 7, 13}), path)
+    v = frame()
+    out = rm.aim_view(v)
+    a = v["groups"][1].get("aim") or {}
+    check(out == {"ltcplay": [1, 7, 13], "flamesafe": [1, 7, 13],
+                  "path": path, "agree": True} and not rm.alerts.open(),
+          f"the same lists agree, no alert: {out}")
+    check(a == {"slots": [1, 7, 13], "flamesafe": [1, 7, 13],
+                "ltcplay": [1, 7, 13], "loaded": True,
+                "asked": [54, 128, 201], "sent": [54, 128, 201]} and
+          "aim" not in v["groups"][0],
+          f"the wave flamer's aim: loaded, asked and sent: {a}")
+    v = frame(armed="disarmed", sent=[0] * 15)
+    rm.aim_view(v)
+    check(v["groups"][1]["aim"]["sent"] == [0, 0, 0] and
+          v["groups"][1]["aim"]["asked"] == [54, 128, 201],
+          "disarmed: asked still said, sent zero")
+    # ltcplay started before the edit: it has none, flamesafe has three.
+    rm.flame_aim = (frozenset(), path)
+    v = frame()
+    out = rm.aim_view(v)
+    al = rm.alerts.open()
+    check(out["agree"] is False and len(al) == 1 and
+          al[0].kind == "aim" and
+          "flamesafe has 1, 7, 13 and LTC Player has none" in al[0].text
+          and path in al[0].text and "quit LTC Player and start it again"
+          in al[0].text and "Stop, Hold, Abort and Disarm all work as "
+          "usual" in al[0].text,
+          f"a difference is an aim alert saying what to do: "
+          f"{[x.text for x in al]}")
+    check(v["groups"][1]["aim"]["loaded"] is False and
+          v["groups"][1]["aim"]["ltcplay"] == [],
+          f"the card says not loaded: {v['groups'][1]['aim']}")
+    check(all(ch not in al[0].text for ch in ("\u2013", "\u2014")),
+          "no dashes in the alert")
+    raised = []
+    _raise = rm.alerts.raise_
+    rm.alerts.raise_ = lambda *a_, **k_: (raised.append(a_),
+                                          _raise(*a_, **k_))[1]
+    rm.aim_view(frame())
+    rm.aim_view(frame())
+    check(len(rm.alerts.open()) == 1 and raised == [],
+          f"raised once, not on every poll: {raised}")
+    code, done = rm._disarm_all_forced("Andy", "Rack screen", "a test")
+    check(code == 200 and done.get("ok"),
+          f"with the alert open a disarm still goes: {code} {done}")
+    # A stale frame or an older flamesafe changes nothing.
+    clk[0] += 60
+    rm.aim_view(fs.view())
+    check(len(rm.alerts.open()) == 1, "stale: the alert stands")
+    rm.aim_view(frame(older=True))
+    check(len(rm.alerts.open()) == 1, "older flamesafe: the alert stands")
+    # They agree again: the alert clears itself.
+    rm.flame_aim = (frozenset({1, 7, 13}), path)
+    rm.aim_view(frame())
+    check(not rm.alerts.open() and
+          any("match again" in str(x) for x in lines),
+          f"agreeing clears it and is journaled: {rm.alerts.view()}")
+    # Acknowledged while they still differ: not raised again for the same
+    # sentence; a new difference is.
+    rm.flame_aim = (frozenset({1}), path)
+    rm.aim_view(frame())
+    rm.alerts.clear(kind="aim")
+    rm.aim_view(frame())
+    check(not rm.alerts.open(), "acknowledged: not raised again at once")
+    rm.aim_view(frame(aim=(1, 7)))
+    check(len(rm.alerts.open()) == 1 and "flamesafe has 1, 7 and LTC "
+          "Player has 1" in rm.alerts.open()[0].text,
+          "a different difference is raised")
+    # Its own kind (review of #150): never raised over another open alert
+    # (an unconfirmed Disarm all, a render fault), never clearing one.
+    rm.alerts.clear(kind="aim")
+    other = ("Disarm all flame groups COULD NOT be confirmed: press "
+             "Abort.")
+    rm.alerts.raise_("flames", other)
+    rm.aim_view(frame(aim=(1, 13)))
+    check(sorted((x.kind, x.text == other) for x in rm.alerts.open()) ==
+          [("aim", False), ("flames", True)],
+          f"a new difference opens beside an open flames alert and leaves "
+          f"its sentence alone: {rm.alerts.view()}")
+    # Display only (review of #150): no booth note, no pulse, and it never
+    # holds a show at showtime nor brings the Delayed announcement.
+    from ltcplay import alerthold as AH
+    from ltcplay import alerts as AL
+    aim_a = [x for x in rm.alerts.open() if x.kind == "aim"][0]
+    check(aim_a.booth_ok is None and "aim" in AL.DISPLAY_ONLY and
+          "aim" not in AH.ANNOUNCE_KINDS and aim_a.severity == "warning",
+          f"no booth note, not an announcing kind: {aim_a.booth}")
+    g_ = rm.alert_hold.gate()
+    check(g_ is not None and aim_a.id not in g_[1] and "aim:" not in g_[0],
+          f"the showtime gate holds for the flames alert only: {g_}")
+    rm.alerts.clear(kind="flames")
+    check(rm.alert_hold.gate() is None and not rm.alerts.pulse_wanted(),
+          "with only the aim alert open nothing holds a show start and "
+          "no pulse runs")
+    booth = []
+    rm.alerts.booth = types.SimpleNamespace(
+        play=lambda k: (booth.append(k), (True, "played"))[1], config={})
+    rm.alerts.tick()
+    rm.alerts.sound_now()
+    check(booth == [], f"the booth is never sounded for it: {booth}")
+    rm.alerts.booth = None
+    rm.alerts.raise_("flames", other)
+    rm.flame_aim = (frozenset({1, 13}), path)
+    rm.aim_view(frame(aim=(1, 13)))
+    check([x.text for x in rm.alerts.open()] == [other],
+          "agreeing clears the aim alert only; the flames alert stays")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "remote.py"), encoding="utf-8").read()
+    check('out["flames"]["aim"] = self.aim_view(out["flames"])' in src,
+          "the engine's status carries the aim view")
+    # The flame link says its aim slots and the file at start.
+    check(FI.aim_sentence(frozenset({13, 1, 7}), path) ==
+          f"Flame link: aim slots 1, 7, 13 (a wave flamer's angle, never "
+          f"held at zero) read from {path}." and
+          FI.aim_sentence(frozenset(), path).startswith(
+              f"Flame link: no aim slots in {path}:"),
+          "the start sentence names the slots and the file")
+    work = tempfile.mkdtemp()
+    try:
+        ex = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "flamesafe", "flamesafe.example.json")
+        fsj = os.path.join(work, "flamesafe.json")
+        shutil.copy(ex, fsj)
+        said = []
+        link = FI.build_flame_link(
+            types.SimpleNamespace(flamesafe_config=fsj,
+                                  flame_controller=None),
+            None, types.SimpleNamespace(clock_nolock=lambda: None),
+            journal=lambda t_, **kw: said.append((t_, kw)))
+        until = _time.monotonic() + 5
+        while _time.monotonic() < until and not any(
+                kw.get("outcome") == "aim" for _t, kw in said):
+            _time.sleep(0.02)
+        aim = [t_ for t_, kw in said if kw.get("outcome") == "aim"]
+        check(aim == [FI.aim_sentence(frozenset({1, 7, 13}),
+                                      os.path.abspath(fsj))] and
+              link.flamesafe_path == os.path.abspath(fsj),
+              f"building the flame link journals its aim slots and file: "
+              f"{aim}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    web = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "web.py"), encoding="utf-8").read()
+    check("httpd.remote.flame_aim = (" in web,
+          "web.serve hands the engine's aim slots to the rack screen")
+    # The card's line, from page logic.
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function aimLine" in logic and
+          'const al = aimLine(g, c), ae = el.querySelector(".aim");' in page,
+          "the card draws the aim line from page logic")
+    frag = page[page.find("// AIM LINE BEGIN"):page.find("// AIM LINE END")]
+    check("ae.hidden = !al;" in frag, "the card's aim line block is found")
+    node = _sh.which("node")
+    if node:
+        js = logic + "\nconst FRAG = " + _json.dumps(frag) + ";\n" + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const A = {slots:[1,7,13], flamesafe:[1,7,13], ltcplay:[1,7,13], loaded:true, asked:[54,128,201], sent:[54,128,201]};
+t(aimLine({aim:A}, "armed") === "Aim 1, 7, 13: loaded; ARMED; asked 54, 128, 201, sent 54, 128, 201", "loaded, armed: " + aimLine({aim:A}, "armed"));
+t(aimLine({aim:Object.assign({}, A, {sent:[0,0,0]})}, "disarmed") === "Aim 1, 7, 13: loaded; disarmed; asked 54, 128, 201, sent 0, 0, 0", "off: sent zero");
+t(aimLine({aim:Object.assign({}, A, {ltcplay:[], loaded:false})}, "held") === "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, LTC Player none); held; asked 54, 128, 201, sent 54, 128, 201", "not loaded: both lists, held said as held");
+t(aimLine({aim:Object.assign({}, A, {ltcplay:null, loaded:false})}, "armed").indexOf("LTC Player not known") > 0, "no flame link: not known");
+t(aimLine({aim:Object.assign({}, A, {flamesafe:null, loaded:false})}, "armed").indexOf("flamesafe does not say") > 0, "older flamesafe");
+t(aimLine({aim:A}, "unknown") === "Aim 1, 7, 13: loaded; armed not known", "not known: no values");
+t(aimLine({aim:Object.assign({}, A, {asked:null, sent:null})}, "armed") === "Aim 1, 7, 13: loaded; ARMED", "no fresh values: none said");
+t(aimLine({name:"front row"}, "armed") === "" && aimLine({aim:{slots:[]}}, "armed") === "" && aimLine(null, "armed") === "", "no aim: no line");
+// The card's own lines, run on a stand-in card: shown for an aim group,
+// hidden for one without.
+const draw = (g, c) => { const ae = {hidden:null, textContent:"", title:""}; const el = {querySelector: q => q === ".aim" ? ae : null};
+  eval(FRAG); return ae; };
+const shownA = draw({aim:A}, "armed"), hiddenA = draw({name:"front row"}, "armed");
+t(shownA.hidden === false && shownA.textContent.indexOf("Aim 1, 7, 13: loaded") === 0 && shownA.title === shownA.textContent, "an aim group's card shows the line");
+t(hiddenA.hidden === true && hiddenA.textContent === "", "a group without aim: the line hidden");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=30)
+        try:
+            bad = _json.loads(r.stdout.strip().splitlines()[-1])
+        except Exception:
+            bad = [f"node did not run: {r.stderr[-300:]}"]
+        check(not bad, f"the card's aim line: {bad}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    print("  ok")
+
+
 def test_morning_multi_safety_machines_pair_by_layout():
     """flamesafe multi-safety (2026-10-26), cold review of PR #107, P2-1: a
     wave flamer machine's safety slot is paired with its own fire slots by
@@ -58109,6 +58974,59 @@ def test_morning_unknown_multi_channel_group_is_never_purged():
             pass
     finally:
         import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_morning_layout_error_names_the_flamesafe_file():
+    section("the Startup page (2026-10-28): a machine that does not fit "
+            "flamesafe's layout is refused with the full path of the "
+            "flamesafe config it was checked against, so a show PC reading "
+            "another flamesafe.json than the one edited is seen at once")
+    from ltcplay import morning as MO
+    import json as _json
+    import shutil
+    work = tempfile.mkdtemp()
+    try:
+        fs = os.path.join(work, "flamesafe.json")
+        fire = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+        with open(fs, "w", encoding="utf-8") as fh:
+            _json.dump({"groups": [
+                {"name": "wave flamer", "safety": [6, 12, 18],
+                 "fire": fire}]}, fh)
+        with open(os.path.join(work, MO.CONFIG_FILE), "w",
+                  encoding="utf-8") as fh:
+            _json.dump({"machines": [
+                {"id": "w1", "name": "Wave 1", "kind": "gflame",
+                 "group": "wave flamer", "fire": [1, 2, 3, 4, 5],
+                 "safety": 12}]}, fh)
+        m = MO.Morning(work, flamesafe_config=fs, threaded=False)
+        err = m.config_error
+        check("machines[1]: slot 1 is on the fixture whose safety slot is "
+              "6, not 12" in err and
+              f"(checked against flamesafe's config {os.path.abspath(fs)})"
+              in err,
+              f"the sentence names the flamesafe file: {err}")
+        check(os.path.abspath(fs) in m._live_or_broken() and
+              os.path.abspath(fs) in m.full_view("Rack screen")[
+                  "config_error"],
+              "the Startup page shows it (its purge line and its view)")
+        check("\u2013" not in err and "\u2014" not in err, "no dashes")
+        try:
+            m.close()
+        except Exception:                        # noqa: BLE001
+            pass
+        m = MO.Morning(work, flamesafe_config=None, threaded=False)
+        check(m.config_error == "" or "checked against" not in
+              m.config_error,
+              f"without a flamesafe config nothing is added: "
+              f"{m.config_error}")
+        try:
+            m.close()
+        except Exception:                        # noqa: BLE001
+            pass
+        check(MO.checked_against(None) == "", "no file, no words")
+    finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -60931,7 +61849,8 @@ def test_morning_arrange_mode_arms_nothing():
                  'if(arrangeBlocked("lock", {})) return;',
                  'await post("/api/remote/morning-open", openBeatBody());',
                  'arrangeExit("left");',
-                 'b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));',
+                 'b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);',
+                 '  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));',
                  'wireMachine(el, m);',
                  'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
                  'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
@@ -61439,6 +62358,198 @@ t(renders > 0, "the page was redrawn");
         R.close()
     print("  ok")
 
+
+
+def test_morning_group_button_skips_locked_and_always_disarms():
+    section("Morning and Shutdown, a group button (Jeff, 2026-10-28, on the "
+            "show PC: Ground G-Flames with front-row-4 locked out armed 1 to "
+            "3, never tried 5 and 6, stayed grey, and a second click did not "
+            "disarm): the click arms every member that can take it and "
+            "names each one refused and why; the button is amber for part "
+            "of the group and green only when all of it is selected and "
+            "flamesafe armed it; while any member is selected the next click "
+            "takes the whole group off, and nothing refuses that")
+    S = _sched()
+    if S is None:
+        return
+    import json as _j
+    import shutil
+    from ltcplay import morning as MO
+    ids = [f"fr{i}" for i in range(1, 7)]
+    cfg = _j.loads(_j.dumps(_MO_CONFIG))
+    cfg["machines"] = [{"id": f"fr{i}", "name": f"front-row-{i}",
+                        "kind": "gflame", "group": "cat-walk",
+                        "fire": [420 + i]} for i in range(1, 7)] + \
+        [m for m in cfg["machines"] if m["id"] == "w1"]
+    cfg["groups"] = {"Ground G-Flames": ids, "Scaffold G-Flames": [],
+                     "Scaffold Wavers": ["w1"]}
+    loop = ("127.0.0.1", 5000)
+    grp = "Ground G-Flames"
+    for locked in (True, False):
+        R = _morning_rig(S, cfg)
+        try:
+            if locked:
+                st, _h, out = R.ask("POST", "/api/remote/lock",
+                                    {"kind": "machine", "id": "fr4",
+                                     "on": True}, client=loop)
+                check(st == 200, f"setup: front-row-4 locked out: {out}")
+            R.fs_lockout = {"slots": [424] if locked else [],
+                            "state": "read"}
+            R.feed()
+            R.m.tick()
+            # First click: every member that can take it.
+            st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                                {"machines": ids, "group": grp, "on": True,
+                                 "seen": R.seen()}, client=loop)
+            want = [i for i in ids if i != "fr4"] if locked else ids
+            check(st == 200 and R.m.purge.selected == want and
+                  out["selected"] == want,
+                  f"locked={locked}: the group arms {want}, past any "
+                  f"member refused: {st} {out}")
+            if locked:
+                check("front-row-4 is locked out" in out["text"] and
+                      "5 of 6 armed" in out["text"] and
+                      out["refused"] == [
+                          "front-row-4 is locked out, so it cannot be armed "
+                          "for a purge. Unlock it first."],
+                      f"and names front-row-4 and why: {out}")
+            else:
+                check(out["refused"] == [] and "6 of 6 armed" in out["text"],
+                      f"all six, nothing refused: {out}")
+            R.m.open_beat("Rack screen")
+            dk = R.remote.deck_input()["morning"]["purge"]["wanted_groups"]
+            check(dk == [1], f"the deck is asked to arm the group: {dk}")
+            # flamesafe has not armed the group yet: amber, in words.
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            gs = v["group_state"][grp]
+            check(gs["state"] == "part" and gs["any"] is True and
+                  "flamesafe has not armed cat-walk yet" in gs["text"] and
+                  ("front-row-4 locked out" in gs["text"]) == locked and
+                  gs["locked"] == (["front-row-4"] if locked else []),
+                  f"selected, flamesafe not armed: amber: {gs}")
+            R.groups[1]["armed"] = "armed"
+            R.groups[1]["wanted"] = True
+            R.feed()
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            gs = v["group_state"][grp]
+            if locked:
+                check(gs["state"] == "part" and gs["text"] ==
+                      "5 of 6 selected; flamesafe armed; front-row-4 "
+                      "locked out", f"one locked out: amber, never "
+                                    f"green: {gs}")
+            else:
+                check(gs["state"] == "on" and gs["text"] ==
+                      "6 of 6 selected; flamesafe armed",
+                      f"all six selected and armed: green: {gs}")
+            sw = v["group_state"]["Scaffold Wavers"]
+            check(sw["any"] is False and sw["state"] == "part" and
+                  sw["text"] == "flamesafe still armed wave flamer",
+                  f"another group is untouched, and one flamesafe holds "
+                  f"armed (by hand) is amber, never grey: {sw}")
+            # Second click (the page sends on false while any member is
+            # selected): the whole group off, nothing refuses it, even with
+            # purge arming switched off and the deck quiet.
+            R.remote._deck_seen = R.mono[0] - 10
+            from ltcplay import remote as RM
+            RM.save_settings(R.work, purge_arming=False)
+            st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                                {"machines": ids, "group": grp, "on": False,
+                                 "seen": R.seen() - 5000}, client=loop)
+            check(st == 200 and R.m.purge.selected == [] and
+                  out["text"].startswith(f"{grp} off the purge: "),
+                  f"locked={locked}: the second click clears the group: "
+                  f"{st} {out}")
+            check(R.m.purge.groups_wanted() == [] and
+                  R.m.purge.owner is None, "and nothing is asked armed")
+            RM.save_settings(R.work, purge_arming=True)
+            R.remote._deck_seen = R.mono[0]
+            # flamesafe still reports the group armed (the deck slow or
+            # quiet): amber, saying so, until flamesafe lets it go.
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            gs = v["group_state"][grp]
+            check(gs["state"] == "part" and gs["any"] is False and
+                  gs["text"].startswith("flamesafe still armed cat-walk"),
+                  f"cleared, flamesafe still armed: amber: {gs}")
+            R.groups[1]["armed"] = "disarmed"
+            R.groups[1]["wanted"] = False
+            R.feed()
+            st, _h, v = R.ask("GET", "/api/remote/morning", client=loop)
+            gs = v["group_state"][grp]
+            check(gs["state"] == "off" and "flamesafe" not in gs["text"],
+                  f"flamesafe disarmed it: grey again: {gs}")
+            if locked:
+                # Every member refused: nothing armed, every reason said.
+                R.fs_lockout = {"slots": [], "state": "read"}
+                R.feed()
+                st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                                    {"machines": ids, "group": grp,
+                                     "on": True, "seen": R.seen()},
+                                    client=loop)
+                check(st == 409 and R.m.purge.selected == [] and
+                      out["error"].startswith(f"{grp}: nothing was armed.")
+                      and "until they agree" in out["error"] and
+                      out["error"].count("until they agree") == 1,
+                      f"a rule that refuses every member: nothing armed, "
+                      f"the reason said once: {st} {out}")
+        finally:
+            R.m.close()
+            R.close()
+    # The page: the click's direction comes from ANY member selected.
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.find("// GROUP CLICK BEGIN")
+    b = page.find("// GROUP CLICK END")
+    check(0 < a < b, "the page has its GROUP CLICK block")
+    for need in ('b.classList.toggle("on", gs.state === "on");',
+                 'b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));',
+                 'b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);',
+                 'b.querySelector(".gd").textContent = gs.text || "\\u00a0";',
+                 '.mo-groups button.part{background:var(--amber)'):
+        check(need in page, f"the page wires {need!r}")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not on this machine, so the group click was "
+              "checked by reading only (CI runs it)")
+    else:
+        js = r"""
+const posts = [];
+function moPress(route, extra){ posts.push([route, extra]); }
+let MO = {groups:{"Ground G-Flames":["fr1","fr2","fr3","fr4","fr5","fr6"]},
+          purge_state:{selected:[]}};
+""" + page[page.find("function mayRow("):page.find("function armState(")] + \
+            page[a:b] + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+groupClick("Ground G-Flames");
+t(posts[0][1].on === true && posts[0][1].group === "Ground G-Flames" && posts[0][1].machines.length === 6, "none selected: arm: " + JSON.stringify(posts));
+MO.purge_state.selected = ["fr1","fr2","fr3","fr5","fr6"];
+groupClick("Ground G-Flames");
+t(posts[1][1].on === false && posts[1][1].machines.length === 6, "five of six (one locked): the click disarms: " + JSON.stringify(posts));
+MO.purge_state.selected = ["fr2"];
+groupClick("Ground G-Flames");
+t(posts[2][1].on === false, "any one selected: the click disarms");
+// The button's enabled state: an off (any member selected) is never
+// disabled; an arm is, by purge arming off, Arrange mode or signed out.
+const six = MO.groups["Ground G-Flames"], out_ = {me:{may:{arm:false}}}, in_ = {me:{may:{arm:true}}};
+for(const [mo, arr, st, why] of [[{purge_enabled:false}, false, in_, "purge arming off"], [{purge_enabled:true}, true, in_, "Arrange mode"],
+                                 [{purge_enabled:true}, false, out_, "signed out"], [{purge_enabled:false}, true, out_, "all three"]]){
+  t(groupButtonDisabled(six, true, mo, arr, st) === false, "the off click stays enabled with " + why);
+  t(groupButtonDisabled(six, false, mo, arr, st) === true, "an arm is disabled with " + why);
+}
+t(groupButtonDisabled(six, false, {purge_enabled:true}, false, in_) === false, "an arm, nothing against it: enabled");
+t(groupButtonDisabled([], true, {purge_enabled:true}, false, in_) === true, "an empty group: disabled");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = _j.loads(r.stdout.strip() or "null")
+        except ValueError:
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"the group click, in node: {r.stdout!r} {r.stderr[-600:]!r}")
+    print("  ok")
 
 
 def test_morning_arrange_disables_firing():
@@ -69829,6 +70940,131 @@ def test_lasers_lamp_follows_the_beyond_link():
     print("  ok")
 
 
+def test_madmapper_heartbeat_follows_the_real_show_length():
+    section("MadMapper heartbeat: read against the show's real length, "
+            "MadMapper's /float-1 track length measured, and the rack "
+            "screen says exactly what to set it to (Jeff's field report, "
+            "2026-10-28, item 14)")
+    import tempfile
+    import types
+    from ltcplay import madmapper as MM, madmapperwatch as MW
+    from ltcplay import remote as RM
+    t = [1000.0]
+    pos = [None]
+
+    class Clk:
+        source = "audio_master"
+        cues = {"Show": ("show", int(451.46 * 48000))}
+        paused = False
+        _mode = "follow"
+        _cue = {"label": "Show"}
+
+        def show_lengths(self, label):
+            return ({"audio_s": 451.46, "show_s": 454.17}
+                    if label == "Show" else None)
+
+        def _clock(self):
+            return t[0]
+
+        def _pos(self, now):
+            return pos[0]
+    tl = types.SimpleNamespace(
+        clock=types.SimpleNamespace(zones=types.SimpleNamespace(show=1)),
+        cues=[types.SimpleNamespace(name="Show", tc_seconds=3600.0)])
+    sess = types.SimpleNamespace(clock=Clk(), tl=tl)
+    cfg = MM.HeartbeatConfig(show_len_s=444.42)
+    dog = MM.Watchdog(cfg, clock=lambda: t[0])
+    hv = MW.heartbeat_view
+    got = hv(dog, cfg, True, sess)
+    check(dog.show_len_s() == 454.17,
+          f"the heartbeat is read against {dog.show_len_s()} s, not the "
+          f"show's real 454.17 s")
+    check(got["track"] == ("MadMapper's /float-1 heartbeat track must end "
+                           "at 454.17 s, the show's real length "
+                           "(ltcplay_fire_ice.json says 444.42 s; the "
+                           "heartbeat is read against 454.17 s)") and
+          not got["track_wrong"],
+          f"before any measurement: what it must end at: {got}")
+    hv(dog, cfg, True, None)
+    check(dog.show_len_s() == 444.42,
+          "with no show running the configured length is used")
+    # The drift check reads the real length: MadMapper at 0.5 of a 454.17 s
+    # track while ltcplay is at 227.085 s is in step.
+    dog.arm(show=1)
+    dog.note_position(0.0)
+    dog.on_packet(0.0)
+    dog.follow_show_length(454.17)
+    dog.on_packet(0.0)
+    dog.note_position(227.085)
+    dog.on_packet(0.5)
+    check(dog.last_drift_ms is not None and abs(dog.last_drift_ms) < 1.0,
+          f"in step against the real length, yet {dog.last_drift_ms} ms of "
+          f"drift")
+    dog.disarm()
+    # MadMapper's track ends at 444.42 s: measured from the show playing.
+
+    def play(track):
+        for s in range(60, 300, 5):
+            t[0] += 5.0
+            pos[0] = float(s)
+            hv(dog, cfg, True, sess)
+            t[0] += 0.2
+            dog.on_packet((s + 0.2) / track)
+        return hv(dog, cfg, True, sess)
+    got = play(444.42)
+    check(abs(dog.track_len_s() - 444.42) < 0.01,
+          f"MadMapper's track measured {dog.track_len_s()} s, not 444.42")
+    check(got["track"] == ("set MadMapper's /float-1 heartbeat track to end "
+                           "at 454.17 s, the show's real length; it ends at "
+                           "444.42 s now") and
+          got["track_wrong"] == ("set /float-1 to end at 454.17 s, it ends "
+                                 "at 444.42 s"),
+          f"a short track: said exactly: {got}")
+    _no_dashes(got["track"] + got["track_wrong"], "the heartbeat track words")
+    # A held or stopped show measures nothing.
+    n = len(dog._track_samples)
+    pos[0] = None
+    hv(dog, cfg, True, sess)
+    t[0] += 0.2
+    dog.on_packet(0.6)
+    check(len(dog._track_samples) == n, "a stopped show measured the track")
+    # The rack screen's Video lamp says it.
+    snap = {"applied": {"video": "lit"}, "look": "PLAYING"}
+    cond = types.SimpleNamespace(
+        snapshot=lambda: snap,
+        devices=types.SimpleNamespace(beyond=types.SimpleNamespace(
+            fault="")), _ver={"lasers": 0, "video": 2})
+    sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+    r = RM.Remote(types.SimpleNamespace(session=sess), sched,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+    r.madmapper_watch = MW.MadMapperWatch(lambda: True, clock=lambda: t[0])
+    r.madmapper_watch.check_once()
+    r.madmapper_heartbeat, r.madmapper_heartbeat_cfg = dog, cfg
+
+    def chip():
+        got = [x for x in r.subsystems({"running": True})
+               if x["name"] == "Video"]
+        return got[0] if got else {}
+    c = chip()
+    check((c.get("state"), c.get("word")) == (
+        "warn", "MadMapper running, set /float-1 to end at 454.17 s, it "
+                "ends at 444.42 s") and
+          "Set MadMapper's /float-1 heartbeat track to end at 454.17 s" in
+          c.get("title", ""),
+          f"the Video lamp does not say what to set: {c}")
+    # Set right in MadMapper: the samples roll over and it reads right.
+    pos[0] = None
+    got = play(454.17)
+    check(abs(dog.track_len_s() - 454.17) < 0.01 and
+          not got["track_wrong"] and
+          got["track"] == ("MadMapper's /float-1 heartbeat track ends at "
+                           "454.17 s, the show's real length"),
+          f"a right track: {got}")
+    c = chip()
+    check(c.get("state") == "ok", f"a right track is green: {c}")
+    print("  ok")
+
+
 def test_video_lamp_follows_the_madmapper_watch():
     section("The Video lamp read 'not known' until a show sent something "
             "(Jeff, 2026-10-26): the MadMapper watch says up, lost or "
@@ -74539,7 +75775,7 @@ def test_fuel_flame_seconds_at_the_flame_link():
               "a Fireball is never tracked")
         R.frames(80, tc=True, on=((3, 254),))
         check(_near(R.tr.episode["burn"].get("w1"), 2.0),
-              "254 on any of a Showven's fire slots is flame")
+              "254 on a Showven's ignition (channel 3) is flame")
         R.armed = {"front row"}
         R.frames(80, tc=True, on=((424, 255), (411, 255)))
         ep = R.tr.episode["burn"]
@@ -74591,6 +75827,46 @@ def test_fuel_flame_seconds_at_the_flame_link():
               "a 20 s gap between frames counts one frame at most")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_fuel_showven_burns_only_on_ignition():
+    section("fuel (2026-10-28): a Showven's angle (channel 1, an aim slot "
+            "at 54, 128 or 201) and speed (channel 2, 255 while the head "
+            "moves) are never counted as flame; ignition, duration and "
+            "preset count exactly as before")
+    from ltcplay import fuel as F
+    from ltcplay import morning as MO
+    R = _FuelRig()
+    try:
+        R.frames(400, tc=True, on=((1, 255), (2, 255)))
+        check("w1" not in R.tr.episode["burn"],
+              f"angle and speed at 255 with every other channel off burn "
+              f"nothing: {R.tr.episode['burn']}")
+        for ch in (3, 4, 5):
+            before = R.tr.episode["burn"].get("w1", 0.0)
+            R.frames(40, tc=True, on=((1, 128), (2, 255), (ch, 254)))
+            check(_near(R.tr.episode["burn"].get("w1", 0.0) - before, 1.0),
+                  f"channel {ch} at 254 is flame, as before")
+    finally:
+        R.close()
+    W = "waver"
+    check(F.burn_slots(MO.Machine("w", "W", W, "g", [7, 8, 9, 10, 11],
+                                  safety=12)) == [9, 10, 11],
+          "a fixture: all but its angle and speed, from its safety slot")
+    check(F.burn_slots(MO.Machine("w", "W", W, "g", [7, 8, 9, 10, 11])) ==
+          [9, 10, 11], "no safety slot named: all but the first two of its "
+                       "5 slot run")
+    whole = MO.Machine("w", "W", W, "g",
+                       [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
+                       safeties=[6, 12, 18])
+    check(F.burn_slots(whole) == [3, 4, 5, 9, 10, 11, 15, 16, 17],
+          "one machine for a whole wave flamer group: each fixture's "
+          "channels 3 to 5")
+    check(F.burn_slots(MO.Machine("w", "W", W, "g", [3, 9])) == [3, 9],
+          "channels that cannot be told: every fire slot, as before")
+    check(F.burn_slots(MO.Machine("g", "G", "gflame", "g", [411, 412])) ==
+          [411, 412], "a G-Flame: every fire slot, as before")
     print("  ok")
 
 
@@ -74673,7 +75949,7 @@ def test_fuel_purge_counts_for_gflame_not_showven():
         R.write_config({"kinds": {"waver": {"count_purge": True},
                                   "gflame": {"count_purge": False}}})
         R.tr.tick()
-        R.frames(200, purge=True, on=((411, 255), (1, 255)))
+        R.frames(200, purge=True, on=((411, 255), (3, 255)))
         check(_near(R.unit("w1")["since"]["purge"], 5.0) and
               _near(R.unit("g1")["since"]["purge"], 5.0),
               "count_purge set the other way round: the Showven counts, the "
@@ -75303,7 +76579,7 @@ def test_fuel_settings_are_checked_strictly():
         check(v["config_error"] == "" and
               v["kinds"]["gflame"]["label"] == "Big tank",
               "the edited file is read again on the next pass")
-        R.frames(40, on=((2, 200),))
+        R.frames(40, on=((3, 200),))
         check(_near(R.unit("w1")["since"]["other"], 1.0),
               "a Showven's own fire_at is used")
     finally:
@@ -77339,6 +78615,28 @@ def _wx_obs(update="2026-10-26T17:53:00+00:00"):
                      "qualityControl": "Z"}}}
 
 
+def _wx_awc(station="KPVU", obs=WX_NOW - 240, wdir=180, wspd=10, wgst=None,
+            lat=40.219, lon=-111.723, report=None):
+    """aviationweather.gov /api/data/metar?format=json: a list of METARs.
+    The shape follows the Data API's documented METAR JSON (icaoId,
+    obsTime in epoch seconds, reportTime, wdir as degrees or "VRB", wspd
+    and wgst in knots, rawOb, lat, lon); not fetched live from here."""
+    from datetime import datetime as _dt, timezone as _tz
+    t = _dt.fromtimestamp(obs, _tz.utc)
+    grp = (f"{wdir if wdir == 'VRB' else f'{int(wdir):03d}'}"
+           f"{int(wspd):02d}{'' if wgst is None else f'G{int(wgst):02d}'}KT")
+    return [{"icaoId": station, "receiptTime": t.strftime(
+                 "%Y-%m-%dT%H:%M:%S.000Z"),
+             "obsTime": int(obs),
+             "reportTime": report or t.strftime("%Y-%m-%dT%H:00:00.000Z"),
+             "temp": 12.2, "dewp": -3.9, "wdir": wdir, "wspd": wspd,
+             "wgst": wgst, "visib": "10+", "altim": 1019.6,
+             "rawOb": f"METAR {station} {t.strftime('%d%H%M')}Z {grp} 10SM "
+                      f"CLR 12/M04 A3011 RMK AO2",
+             "name": "Provo Muni, UT, US" if station == "KPVU" else station,
+             "lat": lat, "lon": lon, "elev": 1371}]
+
+
 class _WxNet:
     """Canned answers by URL for weather.Weather(get=...): a dict value is
     JSON, an int an HTTP status, an exception is raised. Counts calls."""
@@ -77370,7 +78668,13 @@ def _wx_all_good():
             base + "/stations": {"features": []},
             base: _wx_grid(),
             W.NWS + "/alerts/active": _wx_alerts("Wind Advisory"),
-            W.NWS + "/stations/": _wx_obs()}
+            W.NWS + "/stations/": _wx_obs(),
+            W.AWC + "/api/data/metar": _wx_awc("KPVU", wspd=10) + _wx_kslc()}
+
+
+def _wx_kslc(**kw):
+    kw.setdefault("wspd", 9)
+    return _wx_awc("KSLC", lat=40.788, lon=-111.978, **kw)
 
 
 def _wx_service(folder, answers, cfg=None, now=None):
@@ -77479,11 +78783,15 @@ def test_weather_parsers_read_each_source():
 def test_weather_rules_age_stale_no_data_disagree_alerts():
     section("weather: every number with its age; measured over 20 min is "
             "amber STALE, over 45 min grey NO CURRENT DATA with no number; "
-            "the forecast stale after 3 h; sources 10 mph apart disagree; "
-            "wind alerts are a banner; no internet is said plainly")
+            "the forecast stale when this PC has not got it for 1 h or the "
+            "NWS has not updated it for 18 h; sources 10 mph apart "
+            "disagree; wind alerts are a banner; no internet is said "
+            "plainly. One measured source here (no backups): the backups "
+            "have their own test")
     from ltcplay import weather as W
     work = tempfile.mkdtemp()
-    w, net, t = _wx_service(work, _wx_all_good())
+    w, net, t = _wx_service(work, _wx_all_good(),
+                            cfg={"backup_stations": []})
     check(sorted(w.poll_once()) == ["alerts", "forecast", "mesonet"],
           "the first poll tries every source")
     v = w.view()
@@ -77494,7 +78802,8 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
           "12 mph, gusts 21 mph, from NNW (340°). 5 min old.",
           f"the measured line: {meas['text']!r}")
     check(fc["text"] == "Forecast for this spot (NWS): 10 mph, gusts 18 "
-          "mph, from S (170°). Issued 44 min ago.",
+          "mph, from S (170°). Issued 44 min ago; this PC got it under 1 "
+          "min ago.",
           f"the forecast line: {fc['text']!r}")
     check(v["banner"] and v["banner"][0].startswith(
           "NWS WIND ADVISORY in effect until ") and "Checked under 1 min "
@@ -77516,16 +78825,54 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
         else:
             check(re.search(r"\d+ min old\.", ln["text"]),
                   f"a number shown carries its age: {ln['text']!r}")
-    # The forecast: stale after 3 h of its issue time, grey after 6 h or
-    # when the saved hours do not reach now.
+    # The forecast (Jeff, 2026-10-28, item 15c): judged on when this PC
+    # last GOT it from the NWS (over 1 h amber, over 6 h grey), and on the
+    # NWS's own issue time only past 18 h, since the NWS often leaves a
+    # good forecast unchanged for hours. Jeff's case: issued 3 h 54 min
+    # ago, got 6 min ago, is current.
     w.src["mesonet"]["data"]["valid"] = WX_NOW
-    issued = w.src["forecast"]["data"]["issued"]
-    for age, lv in ((3 * 3600, "ok"), (3 * 3600 + 60, "stale"),
-                    (6 * 3600 + 60, "none")):
-        t["wall"] = issued + age
-        w.src["forecast"]["data"]["speed"] = [[0, 4e9, 8.0]]
+    fd = w.src["forecast"]["data"]
+    check(fd["fetched_at"] == WX_NOW, f"the fetch time is kept: {fd}")
+    issued = fd["issued"]
+    fd["speed"] = [[0, 4e9, 8.0]]
+    for issued_ago, got_ago, lv, words in (
+            (3 * 3600 + 54 * 60, 6 * 60, "ok",
+             "Issued 3 h 54 min ago; this PC got it 6 min ago."),
+            (3 * 3600 + 54 * 60, 3600, "ok", "this PC got it 1 h ago."),
+            (5 * 3600, 3600 + 60, "stale",
+             "Stale because this PC has not got it from the NWS for 1 h 1 "
+             "min (the limit is 1 h)."),
+            (12 * 3600, 6 * 3600, "stale", "for 6 h (the limit is 1 h)"),
+            (18 * 3600, 6 * 60, "ok", "Issued 18 h ago;"),
+            (18 * 3600 + 60, 6 * 60, "stale",
+             "Stale because the NWS has not updated it for 18 h 1 min (it "
+             "normally does at least twice a day; the limit is 18 h)."),
+            (8 * 3600, 6 * 3600 + 60, "none",
+             "This PC last got it from the NWS 6 h 1 min ago, over the 6 "
+             "h limit. Issued 8 h ago."),
+            (36 * 3600, 6 * 60, "stale", "updated it for 36 h"),
+            (36 * 3600 + 60, 6 * 60, "none",
+             "The NWS has not updated it for 36 h 1 min, over the 36 h "
+             "limit."),
+            (3600, -16 * 60, "none",
+             "Its time is in the future; check this PC's clock."),
+            (3600, -14 * 60, "ok", "this PC got it under 1 min ago.")):
+        t["wall"] = issued + issued_ago
+        fd["fetched_at"] = t["wall"] - got_ago
         ln = w.view()["lines"][1]
-        check(ln["level"] == lv, f"forecast {age} s old reads {lv}: {ln}")
+        check(ln["level"] == lv and words in ln["text"],
+              f"forecast issued {issued_ago} s and got {got_ago} s ago "
+              f"reads {lv}, saying {words!r}: {ln}")
+        if lv == "none":
+            check(not num.search(ln["text"]), f"grey shows no number: {ln}")
+        _no_dashes(ln["text"], "the forecast line")
+    # A forecast saved before this change has no fetch time: its issue
+    # time stands in, the older of the two, so it is never made fresher.
+    del fd["fetched_at"]
+    t["wall"] = issued + 2 * 3600
+    check(w.view()["lines"][1]["level"] == "stale",
+          "no fetch time: judged on its issue time")
+    fd["fetched_at"] = WX_NOW
     t["wall"] = WX_NOW
     w.src["forecast"]["data"]["speed"] = [[0, WX_NOW - 1, 8.0]]
     ln = w.view()["lines"][1]
@@ -77536,7 +78883,7 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     w.src["mesonet"]["data"]["speed_mph"] = 12.0
     v = w.view()
     check(v["disagree"].startswith("Sources disagree, verify on site:") and
-          "measured 12 mph" in v["disagree"] and
+          "measured UTALP 12 mph" in v["disagree"] and
           "forecast 23 mph" in v["disagree"],
           f"11 mph apart: they disagree: {v['disagree']!r}")
     w.src["forecast"]["data"]["speed"] = [[0, 4e9, 22.0]]
@@ -77593,6 +78940,287 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     print("  ok")
 
 
+def test_weather_backup_stations_and_why_no_data():
+    section("weather (Jeff, 2026-10-28, item 15a and b; review of PR #154): "
+            "the measured line shows the HIGHEST current reading of UTALP "
+            "and the airports (aviationweather.gov, one request), names "
+            "its source and age, a backup in amber with how far away it is "
+            "and why UTALP was not used or what it reads; each source has "
+            "its own limits (5 min feed 20 / 45 min, hourly airports 75 / "
+            "120 min) and a reading past its grey limit is never shown; "
+            "with none current it says NO CURRENT DATA and why, per source")
+    from ltcplay import weather as W
+    num = re.compile(r"\d+ mph")
+    stopped = WX_NOW - (3 * 3600 + 12 * 60)
+    at_ = W._clock_text(stopped)
+    old_utalp = _wx_mesonet(valid="2026-10-26T14:48:00Z")
+
+    def run(cfg=None, **over):
+        ans = _wx_all_good()
+        for k, v in over.items():
+            ans[{"mesonet": W.IEM + "/api/1/currents.json",
+                 "awc": W.AWC + "/api/data/metar"}[k]] = v
+        w, net, t = _wx_service(tempfile.mkdtemp(), ans, cfg=cfg)
+        w.poll_once()
+        v = w.view()
+        _no_dashes(json.dumps(v, ensure_ascii=False), "the weather view")
+        return w, net, v, v["lines"][0]
+    # All fresh and agreeing, UTALP the highest: its line, as before.
+    w, net, v, ln = run()
+    check(ln["source"] == "mesonet" and ln["level"] == "ok" and
+          ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 12 "
+          "mph, gusts 21 mph, from NNW (340°). 5 min old." and
+          v["disagree"] == "" and v["state"] == "ok",
+          f"all fresh: the station, as before: {ln}")
+    check(list(w.every) == ["mesonet", "awc", "alerts", "forecast"],
+          f"the order tried: {list(w.every)}")
+    awc = [c[0] for c in net.calls if "aviationweather" in c[0]]
+    check(awc == ["https://aviationweather.gov/api/data/metar?ids=KPVU,"
+                  "KSLC&format=json&hours=2"],
+          f"both airports in one request: {awc}")
+    # Jeff's morning: UTALP stopped reporting, the mesonet still answers
+    # with its last reading. Provo is current: amber, named, and why.
+    _w, _n, v, ln = run(mesonet=old_utalp)
+    check(ln["source"] == "awc:KPVU" and ln["level"] == "backup" and
+          ln["text"] == "Measured, backup station Provo airport (KPVU), 17 "
+          "mi away: 12 mph, gusts not reported, from S (180°). 4 min old. "
+          f"Using the backup because UTALP (Iowa mesonet) stopped reporting "
+          f"at {at_}, last reading 3 h 12 min ago.",
+          f"UTALP stalled: the backup, named, and why: {ln['text']!r}")
+    check(v["state"] == "stale", f"a backup makes the block amber: {v}")
+    # The review's case: UTALP 30 mph but STALE (25 min), Provo 8 mph
+    # current. The highest usable reading leads: UTALP's 30 mph, amber and
+    # marked STALE, with the current ones beside it.
+    _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:35:00Z",
+                                            sknt=26.0),
+                        awc=_wx_awc("KPVU", wspd=7) + _wx_kslc(wspd=7))
+    check(ln["source"] == "mesonet" and ln["level"] == "stale" and
+          ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 30 "
+          "mph, gusts 21 mph, from NNW (340°). 25 min old. STALE: over its "
+          "20 min limit. KPVU (aviationweather.gov) reads 8 mph, 4 min old, "
+          "current; KSLC (aviationweather.gov) reads 8 mph, 4 min old, "
+          "current. This line shows the highest reading." and
+          "measured UTALP 30 mph, measured KPVU 8 mph, measured KSLC 8 mph"
+          in v["disagree"],
+          f"UTALP stale and higher: it leads, STALE, Provo beside it: "
+          f"{ln['text']!r} {v['disagree']!r}")
+    # A reading past its own grey limit is never a candidate, however high.
+    _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:14:00Z",
+                                            sknt=50.0),
+                        awc=_wx_awc("KPVU", wspd=7) + _wx_kslc(wspd=7))
+    check(ln["source"] == "awc:KPVU" and ln["level"] == "backup" and
+          "58 mph" not in ln["text"] and "Using the backup because UTALP "
+          "(Iowa mesonet) stopped reporting" in ln["text"],
+          f"UTALP 46 min old is not used: {ln['text']!r}")
+    # Both current, the backup higher: the highest leads, UTALP said.
+    _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=30, wgst=41) + _wx_kslc())
+    check(ln["source"] == "awc:KPVU" and ln["level"] == "backup" and
+          ln["text"].startswith("Measured, backup station Provo airport "
+                                "(KPVU), 17 mi away: 35 mph, gusts 47 mph")
+          and ln["text"].endswith(
+              "UTALP (Iowa mesonet) reads 12 mph, 5 min old, current; KSLC "
+              "(aviationweather.gov) reads 10 mph, 4 min old, current. This "
+              "line shows the highest reading.") and
+          "measured KPVU 35 mph, measured UTALP 12 mph, measured KSLC 10 "
+          "mph" in v["disagree"],
+          f"the highest current reading leads: {ln['text']!r}")
+    # UTALP higher, a backup over 10 mph lower: UTALP leads, the backup
+    # is said; 9 mph lower is not.
+    _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=0) + _wx_kslc())
+    check(ln["source"] == "mesonet" and ln["level"] == "ok" and
+          ln["text"].endswith("5 min old. KPVU (aviationweather.gov) reads 0 "
+                              "mph, 4 min old, current. This line shows the "
+                              "highest reading.") and
+          "measured UTALP 12 mph, measured KPVU 0 mph" in v["disagree"],
+          f"a backup 12 mph lower is said: {ln['text']!r}")
+    _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=3) + _wx_kslc())
+    check(ln["text"].endswith("5 min old.") and v["disagree"] == "",
+          f"a backup 8 mph lower is not: {ln['text']!r}")
+    # Down: offline, an HTTP error, no report, a report for one only.
+    _w, _n, v, ln = run(mesonet=W.FetchError("no answer in 8 s",
+                                             offline=True), awc=503)
+    check(ln["level"] == "none" and ln["text"] == f"Measured wind: "
+          f"{W.NO_DATA}. UTALP (Iowa mesonet) did not answer: no answer in "
+          "8 s. KPVU (aviationweather.gov) could not be read: the server "
+          "answered HTTP 503. KSLC (aviationweather.gov) could not be "
+          "read: the server answered HTTP 503." and v["internet"] == "",
+          f"down, each reason: {ln['text']!r}")
+    _w, _n, v, ln = run(mesonet=old_utalp, awc=204)
+    check(ln["level"] == "none" and ln["source"] == "" and
+          ln["text"] == f"Measured wind: {W.NO_DATA}. UTALP (Iowa mesonet) "
+          f"stopped reporting at {at_}, last reading 3 h 12 min ago. KPVU "
+          "(aviationweather.gov) answered with no usable reading: "
+          "aviationweather.gov has no report from KPVU in the last 2 h. "
+          "KSLC (aviationweather.gov) answered with no usable reading: "
+          "aviationweather.gov has no report from KSLC in the last 2 h.",
+          f"none current: why, per source: {ln['text']!r}")
+    check(not num.search(ln["text"]) and "speed_mph" not in ln and
+          [x["level"] for x in ln["sources"]] == ["none"] * 3,
+          f"no current data shows no number: {ln}")
+    _w, _n, v, ln = run(mesonet=old_utalp, awc=_wx_kslc())
+    check(ln["source"] == "awc:KSLC" and ln["text"].startswith(
+          "Measured, backup station Salt Lake City airport (KSLC), 25 mi "
+          "away: 10 mph,") and ln["text"].endswith(
+          f"Using the backup because UTALP (Iowa mesonet) stopped reporting "
+          f"at {at_}, last reading 3 h 12 min ago; KPVU (aviationweather.gov)"
+          " answered with no usable reading: aviationweather.gov has no "
+          "report from KPVU in the last 2 h."),
+          f"one airport reporting: {ln['text']!r}")
+    # Hourly airports have hourly limits: 70 min current, 80 min STALE,
+    # 121 min never shown. Per station from the settings.
+    for mins, lv in ((70, "backup"), (80, "stale"), (121, "none")):
+        _w, _n, v, ln = run(mesonet=old_utalp,
+                            awc=_wx_awc("KPVU", obs=WX_NOW - mins * 60))
+        check(ln["level"] == lv, f"Provo {mins} min old reads {lv}: {ln}")
+        if lv == "none":
+            check(not num.search(ln["text"]) and
+                  f"last reading {mins // 60} h {mins % 60} min ago" in
+                  ln["text"], f"past its limit: no number: {ln['text']!r}")
+    _w, _n, v, ln = run(cfg={"station_limits": {"kpvu": {
+        "stale_min": 30, "no_data_min": 60}}}, mesonet=old_utalp,
+        awc=_wx_awc("KPVU", obs=WX_NOW - 70 * 60))
+    check(ln["level"] == "none", f"station_limits for KPVU: {ln}")
+    # A higher STALE backup leads over a current lower UTALP, marked.
+    _w, _n, v, ln = run(awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
+    check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
+          "1 h 20 min old. STALE: over its 75 min limit. UTALP (Iowa "
+          "mesonet) reads 12 mph, 5 min old, current." in ln["text"],
+          f"a higher STALE backup leads, marked: {ln['text']!r}")
+    # Nothing current: the highest STALE reading, amber.
+    _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:35:00Z"),
+                        awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
+    check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
+          ln["text"].endswith("UTALP (Iowa mesonet) reads 12 mph, 25 min "
+                              "old, STALE (over its 20 min limit). This "
+                              "line shows the highest reading."),
+          f"only STALE ones: the highest, amber: {ln['text']!r}")
+    # The setting moves them.
+    w2, net2, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
+                               cfg={"backup_stations": ["kslc"]})
+    w2.poll_once()
+    check([c[0] for c in net2.calls if "aviationweather" in c[0]] ==
+          ["https://aviationweather.gov/api/data/metar?ids=KSLC&format=json"
+           "&hours=2"] and w2.src["awc:KSLC"]["data"] is not None,
+          f"backup_stations from the settings: {net2.calls}")
+    w3, net3, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
+                               cfg={"backup_stations": []})
+    w3.poll_once()
+    check("awc" not in w3.every and
+          not any("aviationweather" in c[0] for c in net3.calls),
+          "no backups: aviationweather.gov is never asked")
+    # Saved values: a restart shows the backup's reading with its true
+    # age; a reading saved for KPVU is never shown as KU42's.
+    work = tempfile.mkdtemp()
+    w4, _n, _t = _wx_service(work, _wx_all_good())
+    w4.poll_once()
+    w5, _n, _t = _wx_service(work, {}, now=WX_NOW + 10 * 60)
+    check(w5.src["awc:KPVU"]["data"]["valid"] == WX_NOW - 240,
+          "a backup's reading is saved")
+    w6, _n, _t = _wx_service(work, {}, cfg={"backup_stations": ["KU42"]})
+    check(w6.src["awc:KU42"]["data"] is None,
+          "another station's saved reading is not this one's")
+    # The thread waits for what is due, not for each airport's entry.
+    check(w4.next_due_in() > 0, f"next due: {w4.next_due_in()}")
+    print("  ok")
+
+
+def test_weather_aviationweather_reports_are_read():
+    section("weather: aviationweather.gov's METAR answer is read: knots "
+            "to mph, the newest report, VRB as variable, the raw METAR's "
+            "wind group when a field is missing, no report said plainly")
+    from ltcplay import weather as W
+    r = W.parse_awc(_wx_awc("KPVU", wdir=340, wspd=12, wgst=20), "KPVU",
+                    40.4263, -111.8875)
+    check(abs(r["speed_mph"] - 12 * W.KNOT_MPH) < 1e-6 and
+          abs(r["gust_mph"] - 20 * W.KNOT_MPH) < 1e-6 and
+          r["dir_deg"] == 340 and r["valid"] == WX_NOW - 240 and
+          r["variable"] is False and 16 < r["miles"] < 18,
+          f"a KPVU report: {r}")
+    two = _wx_awc("KPVU", obs=WX_NOW - 3600, wspd=3) + \
+        _wx_awc("KPVU", obs=WX_NOW - 600, wspd=15) + \
+        _wx_awc("KSLC", obs=WX_NOW, wspd=40)
+    r = W.parse_awc(two, "KPVU")
+    check(r["valid"] == WX_NOW - 600 and
+          abs(r["speed_mph"] - 15 * W.KNOT_MPH) < 1e-6 and r["miles"] is None,
+          f"the newest of this station's reports: {r}")
+    r = W.parse_awc(_wx_awc("KPVU", wdir="VRB", wspd=4), "KPVU")
+    check(r["dir_deg"] is None and r["variable"] and
+          W.wind_text(r["speed_mph"], r["gust_mph"], r["dir_deg"],
+                      r["variable"]) ==
+          "5 mph, gusts not reported, direction variable", f"VRB: {r}")
+    raw = _wx_awc("KPVU", wdir=200, wspd=7, wgst=18)
+    for k in ("wdir", "wspd", "wgst", "obsTime"):
+        raw[0].pop(k)
+    raw[0]["reportTime"] = "2026-10-26 17:00:00"
+    r = W.parse_awc(raw, "KPVU")
+    check(r["dir_deg"] == 200 and abs(r["speed_mph"] - 7 * W.KNOT_MPH) < 1e-6
+          and abs(r["gust_mph"] - 18 * W.KNOT_MPH) < 1e-6 and
+          r["valid"] == WX_NOW - 3600,
+          f"no fields: the raw METAR's wind group and the report time: {r}")
+    g = _wx_awc("KPVU", wdir=180, wspd=10, wgst=25)
+    g[0].pop("wgst")
+    r = W.parse_awc(g, "KPVU")
+    check(abs(r["gust_mph"] - 25 * W.KNOT_MPH) < 1e-6,
+          f"no wgst field: the raw METAR's G25KT: {r}")
+    g = _wx_awc("KPVU", wdir=180, wspd=10, wgst=25)
+    g[0]["wgst"] = None
+    check(W.parse_awc(g, "KPVU")["gust_mph"] is None,
+          "wgst null: no gust, the raw one not guessed at")
+    ms = _wx_awc("KPVU")
+    ms[0]["obsTime"] = int(WX_NOW * 1000)
+    check(W.parse_awc(ms, "KPVU")["valid"] == WX_NOW - 3600,
+          "an obsTime in milliseconds: the report time stands in")
+    ms[0].pop("reportTime")
+    try:
+        W.parse_awc(ms, "KPVU")
+        check(False, "a millisecond obsTime was read as seconds")
+    except ValueError as e:
+        check("unreadable time stamp" in str(e), str(e))
+    for bad in (_wx_awc("KPVU", wspd=250), _wx_awc("KPVU", wspd=10, wgst=900)):
+        try:
+            W.parse_awc(bad, "KPVU")
+            check(False, f"an impossible speed was read: {bad}")
+        except ValueError as e:
+            check("cannot be right" in str(e), str(e))
+    try:
+        W.parse_mesonet(_wx_mesonet(sknt=-5.0), "UTALP")
+        check(False, "a negative speed was read")
+    except ValueError as e:
+        check("cannot be right" in str(e), str(e))
+    calm = W.parse_awc(_wx_awc("KPVU", wdir=0, wspd=0), "KPVU")
+    check(W.wind_text(calm["speed_mph"], calm["gust_mph"],
+                      calm["dir_deg"]).endswith("calm"), "00000KT is calm")
+    for bad, words in ((None, "no report from KPVU in the last 2 h"),
+                       ([], "no report from KPVU in the last 2 h"),
+                       (_wx_awc("KSLC"), "no report from KPVU"),
+                       ({"error": "x"}, "not a list of reports")):
+        try:
+            W.parse_awc(bad, "KPVU")
+            check(False, f"{bad!r} was read as a report")
+        except ValueError as e:
+            check(words in str(e), f"{bad!r}: {e}")
+            _no_dashes(str(e), "an aviationweather.gov refusal")
+    nofield = _wx_awc("KPVU")
+    nofield[0].pop("wspd")
+    nofield[0]["rawOb"] = "METAR KPVU 261756Z AUTO 10SM CLR"
+    try:
+        W.parse_awc(nofield, "KPVU")
+        check(False, "a report with no wind was read")
+    except ValueError as e:
+        check("no wind speed" in str(e), str(e))
+    # aviationweather.gov's "nothing" is 204 No Content: no report, said.
+    for status, body in ((204, b""), (200, b"  ")):
+        check(W.get_json(lambda *_a, st=status, b=body: (st, b),
+                         "https://x/", empty_ok=True) is None,
+              f"{status} with no body is no report")
+    try:
+        W.get_json(lambda *_a: (204, b""), "https://x/")
+        check(False, "204 was taken where an answer is needed")
+    except W.FetchError:
+        pass
+    print("  ok")
+
+
 def test_weather_failure_backoff_and_disk_cache():
     section("weather: a failed source is tried again after 1, 2, 4 min, "
             "never later than its normal interval; the last good values "
@@ -77609,8 +79237,8 @@ def test_weather_failure_backoff_and_disk_cache():
     t["mono"] += 299
     check(w.poll_once() == [], "nothing is fetched before it is due")
     t["mono"] += 1
-    check(sorted(w.poll_once()) == ["alerts", "mesonet"],
-          "the measured station and the alerts at 5 min")
+    check(w.poll_once() == ["mesonet", "awc", "alerts"],
+          "the measured stations, in their order, and the alerts at 5 min")
     ans[W.IEM + "/api/1/currents.json"] = W.FetchError("no answer in 8 s",
                                                        offline=True)
     net.answers = ans
@@ -77660,7 +79288,9 @@ def test_weather_failure_backoff_and_disk_cache():
     # The disk cache: a restart shows the saved values with their TRUE age.
     path = os.path.join(work, W.CACHE_FILE)
     check(os.path.isfile(path), "the good values are saved")
-    w7, net7, t7 = _wx_service(work, {}, now=WX_NOW + 30 * 60)
+    # (UTALP alone here: the backups' own restart is in their test.)
+    w7, net7, t7 = _wx_service(work, {}, now=WX_NOW + 30 * 60,
+                               cfg={"backup_stations": []})
     v = w7.view()
     check(v["lines"][0]["level"] == "stale" and
           "35 min old" in v["lines"][0]["text"],
@@ -77713,6 +79343,16 @@ def test_weather_settings_are_checked():
     put({"screen_arming": False})
     check(W.load_config(work) == (W.DEFAULTS, ""), "no weather block: on")
     put({"weather": {"enabled": False, "nws_station": "ku42",
+                     "stale_min": 15, "contact": " ops@example.com ",
+                     "backup_stations": [" kslc", "KU42"]}})
+    cfg, err = W.load_config(work)
+    check(err == "" and cfg["backup_stations"] == ["KSLC", "KU42"] and
+          W.DEFAULTS["backup_stations"] == ["KPVU", "KSLC"],
+          f"backup_stations is taken, the default untouched: {cfg}")
+    put({"weather": {"backup_stations": []}})
+    check(W.load_config(work)[0]["backup_stations"] == [],
+          "no backups is allowed")
+    put({"weather": {"enabled": False, "nws_station": "ku42",
                      "stale_min": 15, "contact": " ops@example.com "}})
     cfg, err = W.load_config(work)
     check(err == "" and cfg["enabled"] is False and
@@ -77731,6 +79371,31 @@ def test_weather_settings_are_checked():
             ({"stale_min": 50}, "no_data_min (45) has to be more than "
                                 "stale_min (50)"),
             ({"disagree_mph": True}, "disagree_mph has to be a number"),
+            ({"backup_stations": "KPVU"}, "backup_stations has to be a "
+                                          "list of station names"),
+            ({"backup_stations": ["K PVU"]}, "is not a station name"),
+            ({"backup_stations": ["KPVU", "kpvu"]}, "names a station "
+                                                    "twice"),
+            ({"backup_stations": ["A1", "A2", "A3", "A4", "A5"]},
+             "at most 4 stations"),
+            ({"forecast_issued_stale_hours": 2},
+             "forecast_issued_stale_hours has to be from 6 to 72"),
+            ({"forecast_issued_stale_hours": 40},
+             "forecast_issued_no_data_hours has to be more than "
+             "forecast_issued_stale_hours"),
+            ({"forecast_every_min": 60},
+             "forecast_every_min (60) has to be less than "
+             "forecast_stale_hours (1 h, 60 min)"),
+            ({"backup_stale_min": 130}, "backup_no_data_min (120) has to "
+                                        "be more than backup_stale_min"),
+            ({"station_limits": [1]}, "station_limits has to be a block"),
+            ({"station_limits": {"KPVU": {"stale": 5}}},
+             "KPVU has to be a block with stale_min"),
+            ({"station_limits": {"KPVU": {"stale_min": 1}}},
+             "KPVU stale_min has to be a number from 5 to 240"),
+            ({"station_limits": {"UTALP": {"stale_min": 50}}},
+             "station_limits UTALP: no_data_min (45) has to be more than "
+             "stale_min (50)"),
             ([1], "has to be a block in curly brackets")):
         put({"weather": block, "screen_arming": True})
         cfg, err = W.load_config(work)
@@ -77928,7 +79593,11 @@ def test_weather_check_command():
                      wall=lambda: WX_NOW)
     text = "\n".join(lines)
     check(rc == 0 and "RESULT: PASS" in text and
-          text.count("PASS  ") == 5 and '"sknt": 10.4' in text and
+          text.count("PASS  ") == 7 and '"sknt": 10.4' in text and
+          "PASS  measured, backup KPVU (aviationweather.gov): 12 mph" in text
+          and "17 miles away" in text and
+          "Measured, in the order used: UTALP (Iowa mesonet), KPVU "
+          "(aviationweather.gov), KSLC (aviationweather.gov)." in text and
           "HTTP 200" in text, f"all good: pass, raw shown:\n{text[-1500:]}")
     check("UTALP" in text and "KPVU" in text and
           "(airport, not this spot)" in text and
@@ -77940,7 +79609,8 @@ def test_weather_check_command():
     text = "\n".join(lines)
     check(rc == 1 and "RESULT: FAIL" in text and
           "this PC cannot reach it" in text and
-          "TCP 443) to api.weather.gov and mesonet.agron.iastate.edu" in text,
+          "TCP 443) to api.weather.gov, mesonet.agron.iastate.edu and "
+          "aviationweather.gov" in text,
           f"nothing connects: fail, and the firewall named:\n{text[-800:]}")
     with open(os.path.join(work, W.SETTINGS_FILE), "w") as fh:
         json.dump({"weather": {"bogus": 1}}, fh)
@@ -77958,6 +79628,8 @@ def test_weather_check_command():
     here = os.path.dirname(os.path.abspath(__file__))
     doc = open(os.path.join(here, "WEATHER.md"), encoding="utf-8").read()
     for need in ("api.weather.gov", "mesonet.agron.iastate.edu", "443",
+                 "aviationweather.gov", "backup_stations",
+                 "forecast_issued_stale_hours", "stopped reporting",
                  "UNVERIFIED", "ltc weather --check", "STALE",
                  "NO CURRENT DATA"):
         check(need in doc, f"WEATHER.md says {need!r}")
@@ -77968,7 +79640,8 @@ def test_weather_check_command():
 def _wx_page_view():
     """A full Weather view, as the engine serves it, for the page tests."""
     from ltcplay import weather as W
-    w, _n, t = _wx_service(tempfile.mkdtemp(), _wx_all_good())
+    w, _n, t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
+                           cfg={"backup_stations": []})
     w.poll_once()
     w.src["forecast"]["data"]["speed"] = [[0, 4e9, 40.0]]
     t["wall"] = WX_NOW + 22 * 60
@@ -78052,6 +79725,8 @@ const N = Object.assign({}, V, {internet:"No internet: this PC cannot reach the 
 b = wxBlock(N, 1);
 t(b.lines[0].cls === "net" && /^No internet/.test(b.lines[0].text), "no internet leads");
 t(wxBlock(Object.assign({}, V, {lines:[{level:"weird", text:"x"}]}), 1).lines.some(l => l.cls === "none" && l.text === "x"), "an unknown level is grey");
+const bk = wxBlock(Object.assign({}, V, {lines:[{level:"backup", text:"Measured, backup station X"}]}), 1).lines.find(l => /backup station/.test(l.text));
+t(bk && bk.cls === "stale" && bk.text === "Measured, backup station X", "a backup line is amber, without the STALE word: " + JSON.stringify(bk));
 console.log(JSON.stringify(out));
 """
         r = _node_js(node, js, capture_output=True, text=True,
@@ -78429,6 +80104,9 @@ if __name__ == "__main__":
         test_audio_master_hold_resume_and_abort,
         test_audio_master_device_loss_freeruns_and_returns,
         test_audio_master_the_audio_ending_ends_the_cue,
+        test_audio_master_the_show_runs_to_its_longest_part,
+        test_audio_master_timecode_holds_at_the_end,
+        test_audio_master_run_warns_when_the_audio_is_shorter,
         test_audio_master_session_hold_resume_abort,
         test_audio_master_runs_in_its_own_process,
         test_the_gpl_path_never_loads_the_show_audio,
@@ -78531,6 +80209,7 @@ if __name__ == "__main__":
         test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send,
         test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error,
         test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers,
+        test_streamdeck_ignores_a_display_only_aim_alert,
         test_streamdeck_round4_unplug_keeps_one_real_source_port,
         test_streamdeck_round4_reconnect_releases_every_hold,
         test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves,
@@ -78725,7 +80404,9 @@ if __name__ == "__main__":
         test_audio_interface_watch,
         test_morning_config_layout_and_lockout_file,
         test_flamesafe_multi_safety_ltcplay_side,
+        test_aim_slots_are_seen_on_the_rack_screen,
         test_morning_multi_safety_machines_pair_by_layout,
+        test_morning_layout_error_names_the_flamesafe_file,
         test_morning_default_wave_flamer_is_never_purged,
         test_morning_fireball_is_never_purged,
         test_morning_fireball_group_is_never_purged,
@@ -78734,6 +80415,7 @@ if __name__ == "__main__":
         test_purge_frame_on_the_flame_link,
         test_purge_rules_at_the_engine,
         test_morning_deck_remap_and_purge_arming,
+        test_morning_group_button_skips_locked_and_always_disarms,
         test_laser_tests_placeholders_lockout_and_allow_list,
         test_laser_output_allow_list_is_exactly_the_three_addresses,
         test_laser_arm_by_laser_and_group_default_disarmed,
@@ -78785,6 +80467,7 @@ if __name__ == "__main__":
         test_disarm_all_end_to_end_rearms_without_a_cycle,
         test_lasers_lamp_follows_the_beyond_link,
         test_video_lamp_follows_the_madmapper_watch,
+        test_madmapper_heartbeat_follows_the_real_show_length,
         test_artnet_faults_only_for_the_show_in_use,
         test_rack_screen_jeff_2026_10_23_page,
         test_show_mode_stays_show_on_the_show_audio,
@@ -78812,6 +80495,7 @@ if __name__ == "__main__":
         test_scrub_flames_end_to_end_real_flamesafe,
         test_scrub_flames_review_of_117,
         test_fuel_flame_seconds_at_the_flame_link,
+        test_fuel_showven_burns_only_on_ignition,
         test_fuel_observer_never_waits_and_stays_bounded,
         test_fuel_purge_counts_for_gflame_not_showven,
         test_fuel_counts_shows_and_not_rehearsals,
@@ -78832,6 +80516,8 @@ if __name__ == "__main__":
         test_scrub_flames_seqlock,
         test_weather_parsers_read_each_source,
         test_weather_rules_age_stale_no_data_disagree_alerts,
+        test_weather_backup_stations_and_why_no_data,
+        test_weather_aviationweather_reports_are_read,
         test_weather_failure_backoff_and_disk_cache,
         test_weather_settings_are_checked,
         test_weather_is_display_only_and_off_the_show_path,

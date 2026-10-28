@@ -2091,13 +2091,18 @@ class ScreenKeys:
         """The engine's open alerts (alerts.py), as its last fresh answer
         listed them; () when none, or when the engine has not answered
         within SCREEN_STALE_S (a stale list must not keep a key reading
-        ACK, or acknowledge something the engine no longer shows)."""
+        ACK, or acknowledge something the engine no longer shows).
+        A display only kind (alerts.DISPLAY_ONLY, the aim slots,
+        2026-10-28) is left out: it changes nothing on the deck, no ACK
+        face, no swallowed first press, no page 2 closing."""
+        from .alerts import DISPLAY_ONLY
         with self._lock:
             last = self._last
         if last is None or self._clock() - last[1] > SCREEN_STALE_S:
             return ()
         return tuple(a for a in (last[0].get("alerts") or [])
-                     if isinstance(a, dict))
+                     if isinstance(a, dict)
+                     and a.get("kind") not in DISPLAY_ONLY)
 
     def announce(self):
         """The engine's announcements, as its last fresh deck-input answer

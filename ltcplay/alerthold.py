@@ -65,17 +65,23 @@ class AlertHold:
     def gate(self):
         """For Service.showtime_gate: (a sentence naming the open alerts,
         their ids), or None when there is none."""
-        open_ = self.alerts.open()
+        open_ = self._holding()
         if not open_:
             return None
         return ("; ".join(f"{a.kind}: {a.text}" for a in open_),
                 frozenset(a.id for a in open_))
 
+    def _holding(self):
+        """The open alerts that hold a show at showtime: every one but a
+        display only kind (alerts.DISPLAY_ONLY, the aim slots)."""
+        from .alerts import DISPLAY_ONLY
+        return [a for a in self.alerts.open() if a.kind not in DISPLAY_ONLY]
+
     def started(self, epoch, why):
         """Service.on_alert_hold: the Hold took. Sound the booth now and
         start the countdown when an announcing kind is open."""
         now = self._clock()
-        open_ = self.alerts.open()
+        open_ = self._holding()
         loud_ids = {a.id for a in open_ if a.kind in ANNOUNCE_KINDS}
         self.hold = {"epoch": epoch, "why": why, "at": now,
                      "ids": {a.id for a in open_}, "loud": loud_ids,

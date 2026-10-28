@@ -17,6 +17,7 @@ leaves on the wire.
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
@@ -37,6 +38,21 @@ def profile_line(g):
              f"fire guard: below {p['fire_at']}, every single-bit flip too")
     return (f"{g.name}: arms at {g.arm_value} from its safety_profile"
             f"{window}; {guard}")
+
+
+def aim_line(groups, path):
+    """The start line for the aim slots (2026-10-28): every group's aim
+    slots, or that there are none, and the file they were read from, so a
+    journal shows in one line whether the wave flamer's angles are loaded
+    and from which flamesafe.json. Display only."""
+    where = os.path.abspath(str(path))
+    parts = [f"{g.name} {', '.join(str(a) for a in sorted(g.aim))}"
+             for g in groups if g.aim]
+    if not parts:
+        return (f"aim slots: none in {where}. Every fire slot counts as a "
+                f"flame, a wave flamer's angle too.")
+    return (f"aim slots: {'; '.join(parts)} (the angle, sent only while "
+            f"the group is armed), read from {where}")
 
 
 def main(argv=None):
@@ -60,6 +76,7 @@ def main(argv=None):
     for g in cfg.groups:
         if g.profile is not None:
             journal.event("config", profile_line(g))
+    journal.event("config", aim_line(cfg.groups, argv[0]))
     if cfg.link_arm_port is not None:
         arm_input = SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
                                    cfg.link_key, cfg.n, log=journal,

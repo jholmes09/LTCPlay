@@ -11,6 +11,7 @@ No dependencies beyond the standard library, so nothing new can fail to install
 the night before.
 """
 import json
+import math
 import os
 import re
 import secrets
@@ -2002,13 +2003,20 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             if show_path is not None:
                 configured = schedule.rule.show_len_s
                 if configured < derived:
+                    # Plainly what to change (safety review of #157, 3):
+                    # a show now runs to the longest of its audio, lights
+                    # file and clock.zones.show_len_s.
+                    need = int(math.ceil(derived - 1e-9))
                     raise ValueError(
-                        f"The schedule's show_len_s is {configured:g} s, "
-                        f"shorter than the show's own media in "
-                        f"{os.path.basename(show_path)}, which runs "
-                        f"{derived:g} s. Set show_len_s in the schedule to "
-                        f"at least {derived:g}, or leave the show's media "
-                        f"alone to run its own length, before serving.")
+                        f"ltcplay did not start: the schedule's show_len_s "
+                        f"is {configured:g} s, but the show in "
+                        f"{os.path.basename(show_path)} runs {derived:g} s "
+                        f"(the longest of its audio, its lights file and "
+                        f"'clock.zones.show_len_s'), so shows would "
+                        f"overlap. In the schedule file "
+                        f"{os.path.basename(getattr(schedule, 'path', '') or 'ltcplay_schedule.json')}"
+                        f" set \"show_len_s\" to {need} (or more), then "
+                        f"start ltcplay again.")
             elif warning:
                 # Never silently skip the check (review round 2,
                 # 2026-09-26): a schedule that could not be checked
@@ -2249,6 +2257,12 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # older than the layout is an alert from show load on (soak
         # 2026-10-21): it used to be a journal line only.
         httpd.remote.flame_cues = getattr(wiring.flame_link, "cues", None)
+        # Aim slots (2026-10-28): this engine's, and the file they came
+        # from, for the rack screen's aim line and the mismatch alert.
+        if wiring.flame_link is not None:
+            httpd.remote.flame_aim = (
+                frozenset(getattr(wiring.flame_link.cfg, "aim_slots", ())),
+                getattr(wiring.flame_link, "flamesafe_path", ""))
         if hasattr(httpd.remote.flame_cues, "on_render_fault"):
             httpd.remote.flame_cues.on_render_fault = \
                 httpd.remote.render_fault_alert

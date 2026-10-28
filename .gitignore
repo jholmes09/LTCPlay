@@ -52,7 +52,6 @@ ltcplay_lockout.json
 
 # Users and the audit log (USERS.md): password hashes, the upload token
 ltcplay_users.json
-ltcplay_users.made
 ltcplay_audit.json
 
 # Written by Cut a release.command at packaging time
@@ -90,3 +89,6 @@ __pycache__/
 /build/
 /dist/
 packaging/windows/build/
+# The users file and its marker (users.py): machine state, never the repo
+ltcplay_users.json
+ltcplay_users.made

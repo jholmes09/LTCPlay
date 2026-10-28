@@ -843,6 +843,15 @@ def _list(v):
     return v if isinstance(v, list) else []
 
 
+def _ints(v):
+    """A status list of whole numbers, or None when it is not one (a field
+    from an older flamesafe that does not send it, or a bad one)."""
+    if not isinstance(v, list) or any(
+            isinstance(x, bool) or not isinstance(x, int) for x in v):
+        return None
+    return list(v)
+
+
 def _arm(v):
     """A status arm value: a whole number 1..255, else None."""
     if isinstance(v, bool) or not isinstance(v, int) or not 0 < v < 256:
@@ -930,7 +939,16 @@ class FlameStatus:
                            # The value this group arms at (2026-10-26, a
                            # safety_profile may give it its own); None from
                            # an older flamesafe that does not send it.
-                           "arm_value": _arm(g.get("arm_value"))})
+                           "arm_value": _arm(g.get("arm_value")),
+                           # Aim slots (2026-10-28): flamesafe's own list,
+                           # None from an older flamesafe that does not
+                           # send it; with the fire slots and what was asked
+                           # and sent on them, for the card's aim line.
+                           "aim_slots": _ints(g.get("aim_slots")),
+                           "fire_slots": _ints(g.get("fire_slots")) or [],
+                           "commanded_fire": _ints(
+                               g.get("commanded_fire")),
+                           "sent_fire": _ints(g.get("sent_fire"))})
         if not groups:
             groups = [{"name": n, "armed": "unknown", "wanted": False,
                        "reason": "", "dwell_s": 0} for n in self.names]
@@ -1236,6 +1254,15 @@ class Remote:
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
+        # Aim slots (2026-10-28): (this engine's aim slots, the flamesafe
+        # config it read them from), set by web.serve once the flame link
+        # is built; None without one. aim_view compares them with
+        # flamesafe's own and raises a display only "aim" alert while
+        # they differ.
+        self.flame_aim = None
+        self._aim_said = None        # the mismatch sentence last raised
+        self._aim_alert_id = None    # ...and its alert's id
+        self._aim_lock = threading.Lock()
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
         self.beyond_watch = None
@@ -4400,6 +4427,106 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return ""
 
+    def aim_view(self, fl):
+        """The aim slots (2026-10-28), display only: each group of `fl` (a
+        FlameStatus view) with aim slots on either side gets "aim": its
+        slots, flamesafe's list (None from an older flamesafe), this
+        engine's (None without a flame link), "loaded" (both the same and
+        not empty), and the values asked for and sent on those slots in
+        flamesafe's last fresh frame (None while stale). Returns the whole
+        picture, and raises an "aim" alert (display only: alerts.
+        DISPLAY_ONLY) while the two lists differ (cleared once they
+        agree). Nothing here is sent anywhere, and it
+        never touches Stop, Hold, Abort or a disarm. Never raises."""
+        try:
+            return self._aim_view(fl or {})
+        except Exception:                        # noqa: BLE001
+            return {"ltcplay": None, "flamesafe": None, "path": "",
+                    "agree": None}
+
+    def _aim_view(self, fl):
+        src = self.flame_aim
+        mine = (None if src is None
+                else sorted(int(x) for x in (src[0] or ())))
+        path = "" if src is None else str(src[1] or "")
+        groups = fl.get("groups") or []
+        live = bool(fl.get("connected") and not fl.get("stale"))
+        theirs = None
+        if live and groups and all(isinstance(g.get("aim_slots"), list)
+                                   for g in groups):
+            theirs = sorted({int(a) for g in groups for a in g["aim_slots"]})
+        for g in groups:
+            fire = g.get("fire_slots") or []
+            fs = g.get("aim_slots")
+            fs = sorted(fs) if isinstance(fs, list) else None
+            lt = None if mine is None else [x for x in mine if x in fire]
+            slots = sorted(set(fs or ()) | set(lt or ()))
+            if not slots:
+                continue
+
+            def at(vals):
+                if not live or not isinstance(vals, list) or \
+                        len(vals) != len(fire):
+                    return None
+                return [vals[fire.index(x)] for x in slots]
+            g["aim"] = {"slots": slots, "flamesafe": fs, "ltcplay": lt,
+                        "loaded": bool(fs) and fs == lt,
+                        "asked": at(g.get("commanded_fire")),
+                        "sent": at(g.get("sent_fire"))}
+        agree = None if theirs is None or mine is None else theirs == mine
+        self._aim_alert(agree, mine, theirs, path)
+        return {"ltcplay": mine, "flamesafe": theirs, "path": path,
+                "agree": agree}
+
+    @staticmethod
+    def aim_mismatch_text(mine, theirs, path):
+        """The alert's sentence while the lists differ: what each has, the
+        file this engine read, and what to do."""
+        def words(v):
+            return ", ".join(str(x) for x in v) if v else "none"
+        return (f"Aim slots do not match: flamesafe has {words(theirs)} and "
+                f"LTC Player has {words(mine)} (LTC Player read "
+                f"{path or 'flamesafe config'} when it started). Until they "
+                f"match a wave flamer's angle can stay at 0, its end stop. "
+                f"Put the aim list in the flamesafe.json flamesafe uses, "
+                f"check that LTC Player reads that same file, then quit LTC "
+                f"Player and start it again so both read it afresh. Stop, "
+                f"Hold, Abort and Disarm all work as usual meanwhile.")
+
+    def _aim_alert(self, agree, mine, theirs, path):
+        """Raise once per new mismatch sentence; clear the one raised here
+        once the lists agree. Not known (no fresh frame, an older
+        flamesafe, no flame link): nothing changes."""
+        if agree is None:
+            return
+        with self._aim_lock:
+            if agree:
+                aid, self._aim_alert_id = self._aim_alert_id, None
+                was, self._aim_said = self._aim_said, None
+                if was is None:
+                    return
+                self._journal("system", "engine", "aim slots", "match",
+                              f"Aim slots match again: flamesafe and LTC "
+                              f"Player both have "
+                              f"{', '.join(str(x) for x in mine) or 'none'}.")
+                # Only this alert's own id: the "aim" kind is raised
+                # nowhere else.
+                if aid is not None and any(
+                        a.id == aid for a in self.alerts.open()):
+                    self.alerts.clear(id=aid, action="Confirm",
+                                      who="LTC Player", screen="engine")
+                return
+            text = self.aim_mismatch_text(mine, theirs, path)
+            if text == self._aim_said:
+                return
+            self._aim_said = text
+            try:
+                a = self.alerts.raise_("aim", text)
+                self._aim_alert_id = getattr(a, "id", None)
+            except Exception:                    # noqa: BLE001
+                self._journal("system", "engine", "aim slots", "differ",
+                              text, fault=True)
+
     def render_fault_alert(self, text):
         """FlameCues.on_render_fault (web.serve): a render older than the
         layout, found at show load, is a flames alert on every screen and
@@ -4748,10 +4875,15 @@ class Remote:
                   "why": f"the MadMapper watch failed: {type(e).__name__}"}
         from . import madmapperwatch as mmw
         hb = mmw.heartbeat_view(self.madmapper_heartbeat,
-                                self.madmapper_heartbeat_cfg, playing)
+                                self.madmapper_heartbeat_cfg, playing,
+                                getattr(self.control, "session", None))
         if hb is not None:
             st["heartbeat"] = hb["heartbeat"]
             st["heartbeat_why"] = hb["why"]
+            # What MadMapper's heartbeat track must end at, and what it
+            # ends at now once measured (Jeff, 2026-10-28, item 14).
+            st["heartbeat_track"] = hb.get("track")
+            st["heartbeat_track_wrong"] = hb.get("track_wrong") or False
         return st
 
     @staticmethod
@@ -4818,6 +4950,9 @@ class Remote:
             hb = mm.get("heartbeat")
             if hb == "silent":
                 add("Video", "warn", "MadMapper running, no heartbeat")
+            elif mm.get("heartbeat_track_wrong"):
+                add("Video", "warn", f"MadMapper running, "
+                    f"{mm['heartbeat_track_wrong']}")
             elif not last and sent:
                 add("Video", "warn",
                     "MadMapper running, last command not confirmed")
@@ -4831,6 +4966,9 @@ class Remote:
             if mm.get("heartbeat_why"):
                 why = mm["heartbeat_why"][0].upper() + \
                     mm["heartbeat_why"][1:] + ". "
+            if mm.get("heartbeat_track"):
+                why += mm["heartbeat_track"][0].upper() + \
+                    mm["heartbeat_track"][1:] + ". "
         elif last:
             add("Video", "ok", last)
         elif sent:
@@ -5770,6 +5908,7 @@ class Remote:
                                     "Deck."}
         else:
             out["flames"] = self.flame_status.view()
+        out["flames"]["aim"] = self.aim_view(out["flames"])
         self._rearm_words(out["flames"])
         # Review of PR #43, P1-3: the flame cues refused for a reason that
         # is a fault (the render and the layout do not fit, and the like).
