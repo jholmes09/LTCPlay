@@ -40145,6 +40145,11 @@ def _serve_spy(argv, extra_files=None):
         "    print('SPY ' + json.dumps(out))\n"
         "    raise SystemExit(0)\n"
         "web.serve = spy\n"
+        # The settings folder too (review of #150): off Windows it is the
+        # program's own folder, and the users file and its marker that
+        # serve writes there must never land in the checkout.
+        "from ltcplay import settings as _settings\n"
+        f"_settings.folder = lambda: {work!r}\n"
         # Tonight's file and the night journal go in the temp folder, never
         # beside the program.
         + ("from ltcplay import schedule_service as SV\n"
@@ -40164,6 +40169,9 @@ def test_ltc_serve_gpl_builds_no_conductor():
     section("GPL: `ltc serve` with a GPL-style config builds no conductor, "
             "no devices and no ShowOutputs; with a schedule (Fire & Ice) "
             "it does")
+    here = os.path.dirname(os.path.abspath(__file__))
+    users_here = [n for n in ("ltcplay_users.json", "ltcplay_users.made")
+                  if os.path.exists(os.path.join(here, n))]
     gpl = _serve_spy(["serve", "--folder", "{work}", "--no-browser",
                       "--port", "0"])
     check(gpl.get("fire_ice") is False and gpl.get("conductor") is False
@@ -40172,6 +40180,7 @@ def test_ltc_serve_gpl_builds_no_conductor():
           f"conductor, devices, fire_ice, madmapper, beyond or the "
           f"scheduler even loaded: {gpl}")
     if _sched() is None:
+        _users_left_alone(here, users_here)
         return
     rule = _sched_doc(weekly={"sat": {"first_start": "18:00",
                                       "interval_min": 20,
@@ -40190,7 +40199,18 @@ def test_ltc_serve_gpl_builds_no_conductor():
                       "ltcplay_fire_ice.json": {"scheduler_performs": True}})
     check(fi2.get("conductor") is True and fi2.get("dry_run") is False,
           f"scheduler_performs true: the scheduler performs: {fi2}")
+    _users_left_alone(here, users_here)
     print("  ok")
+
+
+def _users_left_alone(here, before):
+    """Review of #150: `ltc serve` in a test writes its users file and
+    marker in its own temp folder, never beside the program (a stray
+    marker there with no users file locks every control)."""
+    after = [n for n in ("ltcplay_users.json", "ltcplay_users.made")
+             if os.path.exists(os.path.join(here, n))]
+    check(after == before, f"the test left {sorted(set(after) - set(before))}"
+                           f" beside the program")
 
 
 def test_the_gpl_path_never_loads_the_conductor():
@@ -45989,7 +46009,7 @@ console.log(JSON.stringify(out));
                 aim = m.get("aim") or []
                 check(len(aim) == 1 and aim[0]["text"].startswith(
                           "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, "
-                          "LTC Player none); NOT armed") and
+                          "LTC Player none); disarmed") and
                       0 < aim[0]["h"] <= 20 and
                       aim[0]["seen"] >= aim[0]["h"] - 0.5,
                       f"{where}: the wave flamer's aim line is one line, "
@@ -54149,9 +54169,11 @@ def test_alerts_pure_logic():
           f"no booth speaker: the pulse runs and the banner says so: "
           f"{x.view()}")
     check(AL.SEVERITY["gate"] == "warning"
+          and all(AL.SEVERITY[k] == "warning" for k in AL.DISPLAY_ONLY)
           and all(AL.SEVERITY[k] == "fault" for k in AL.KINDS
-                  if k != "gate"),
-          "the gate is a warning; everything else is a fault")
+                  if k != "gate" and k not in AL.DISPLAY_ONLY),
+          "the gate and a display only kind (the aim slots) are warnings; "
+          "everything else is a fault")
     print("  ok")
 
 
@@ -54978,12 +55000,12 @@ def test_aim_slots_are_seen_on_the_rack_screen():
     out = rm.aim_view(v)
     al = rm.alerts.open()
     check(out["agree"] is False and len(al) == 1 and
-          al[0].kind == "flames" and
+          al[0].kind == "aim" and
           "flamesafe has 1, 7, 13 and LTC Player has none" in al[0].text
           and path in al[0].text and "quit LTC Player and start it again"
           in al[0].text and "Stop, Hold, Abort and Disarm all work as "
           "usual" in al[0].text,
-          f"a difference is a flames alert saying what to do: "
+          f"a difference is an aim alert saying what to do: "
           f"{[x.text for x in al]}")
     check(v["groups"][1]["aim"]["loaded"] is False and
           v["groups"][1]["aim"]["ltcplay"] == [],
@@ -55017,22 +55039,51 @@ def test_aim_slots_are_seen_on_the_rack_screen():
     # sentence; a new difference is.
     rm.flame_aim = (frozenset({1}), path)
     rm.aim_view(frame())
-    rm.alerts.clear(kind="flames")
+    rm.alerts.clear(kind="aim")
     rm.aim_view(frame())
     check(not rm.alerts.open(), "acknowledged: not raised again at once")
     rm.aim_view(frame(aim=(1, 7)))
     check(len(rm.alerts.open()) == 1 and "flamesafe has 1, 7 and LTC "
           "Player has 1" in rm.alerts.open()[0].text,
           "a different difference is raised")
-    # Another flames alert is never cleared by the aim slots agreeing.
-    rm.alerts.clear(kind="flames")
+    # Its own kind (review of #150): never raised over another open alert
+    # (an unconfirmed Disarm all, a render fault), never clearing one.
+    rm.alerts.clear(kind="aim")
+    other = ("Disarm all flame groups COULD NOT be confirmed: press "
+             "Abort.")
+    rm.alerts.raise_("flames", other)
     rm.aim_view(frame(aim=(1, 13)))
-    rm.alerts.raise_("flames", "Something else about the flames.")
+    check(sorted((x.kind, x.text == other) for x in rm.alerts.open()) ==
+          [("aim", False), ("flames", True)],
+          f"a new difference opens beside an open flames alert and leaves "
+          f"its sentence alone: {rm.alerts.view()}")
+    # Display only (review of #150): no booth note, no pulse, and it never
+    # holds a show at showtime nor brings the Delayed announcement.
+    from ltcplay import alerthold as AH
+    from ltcplay import alerts as AL
+    aim_a = [x for x in rm.alerts.open() if x.kind == "aim"][0]
+    check(aim_a.booth_ok is None and "aim" in AL.DISPLAY_ONLY and
+          "aim" not in AH.ANNOUNCE_KINDS and aim_a.severity == "warning",
+          f"no booth note, not an announcing kind: {aim_a.booth}")
+    g_ = rm.alert_hold.gate()
+    check(g_ is not None and aim_a.id not in g_[1] and "aim:" not in g_[0],
+          f"the showtime gate holds for the flames alert only: {g_}")
+    rm.alerts.clear(kind="flames")
+    check(rm.alert_hold.gate() is None and not rm.alerts.pulse_wanted(),
+          "with only the aim alert open nothing holds a show start and "
+          "no pulse runs")
+    booth = []
+    rm.alerts.booth = types.SimpleNamespace(
+        play=lambda k: (booth.append(k), (True, "played"))[1], config={})
+    rm.alerts.tick()
+    rm.alerts.sound_now()
+    check(booth == [], f"the booth is never sounded for it: {booth}")
+    rm.alerts.booth = None
+    rm.alerts.raise_("flames", other)
     rm.flame_aim = (frozenset({1, 13}), path)
     rm.aim_view(frame(aim=(1, 13)))
-    check([x.text for x in rm.alerts.open()] ==
-          ["Something else about the flames."],
-          "another flames alert raised since stays open")
+    check([x.text for x in rm.alerts.open()] == [other],
+          "agreeing clears the aim alert only; the flames alert stays")
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "ltcplay", "remote.py"), encoding="utf-8").read()
     check('out["flames"]["aim"] = self.aim_view(out["flames"])' in src,
@@ -55080,20 +55131,29 @@ def test_aim_slots_are_seen_on_the_rack_screen():
     check("function aimLine" in logic and
           'const al = aimLine(g, c), ae = el.querySelector(".aim");' in page,
           "the card draws the aim line from page logic")
+    frag = page[page.find("// AIM LINE BEGIN"):page.find("// AIM LINE END")]
+    check("ae.hidden = !al;" in frag, "the card's aim line block is found")
     node = _sh.which("node")
     if node:
-        js = logic + r"""
+        js = logic + "\nconst FRAG = " + _json.dumps(frag) + ";\n" + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 const A = {slots:[1,7,13], flamesafe:[1,7,13], ltcplay:[1,7,13], loaded:true, asked:[54,128,201], sent:[54,128,201]};
 t(aimLine({aim:A}, "armed") === "Aim 1, 7, 13: loaded; ARMED; asked 54, 128, 201, sent 54, 128, 201", "loaded, armed: " + aimLine({aim:A}, "armed"));
-t(aimLine({aim:Object.assign({}, A, {sent:[0,0,0]})}, "disarmed") === "Aim 1, 7, 13: loaded; NOT armed; asked 54, 128, 201, sent 0, 0, 0", "off: sent zero");
-t(aimLine({aim:Object.assign({}, A, {ltcplay:[], loaded:false})}, "held") === "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, LTC Player none); NOT armed; asked 54, 128, 201, sent 54, 128, 201", "not loaded: both lists");
+t(aimLine({aim:Object.assign({}, A, {sent:[0,0,0]})}, "disarmed") === "Aim 1, 7, 13: loaded; disarmed; asked 54, 128, 201, sent 0, 0, 0", "off: sent zero");
+t(aimLine({aim:Object.assign({}, A, {ltcplay:[], loaded:false})}, "held") === "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, LTC Player none); held; asked 54, 128, 201, sent 54, 128, 201", "not loaded: both lists, held said as held");
 t(aimLine({aim:Object.assign({}, A, {ltcplay:null, loaded:false})}, "armed").indexOf("LTC Player not known") > 0, "no flame link: not known");
 t(aimLine({aim:Object.assign({}, A, {flamesafe:null, loaded:false})}, "armed").indexOf("flamesafe does not say") > 0, "older flamesafe");
 t(aimLine({aim:A}, "unknown") === "Aim 1, 7, 13: loaded; armed not known", "not known: no values");
 t(aimLine({aim:Object.assign({}, A, {asked:null, sent:null})}, "armed") === "Aim 1, 7, 13: loaded; ARMED", "no fresh values: none said");
 t(aimLine({name:"front row"}, "armed") === "" && aimLine({aim:{slots:[]}}, "armed") === "" && aimLine(null, "armed") === "", "no aim: no line");
+// The card's own lines, run on a stand-in card: shown for an aim group,
+// hidden for one without.
+const draw = (g, c) => { const ae = {hidden:null, textContent:"", title:""}; const el = {querySelector: q => q === ".aim" ? ae : null};
+  eval(FRAG); return ae; };
+const shownA = draw({aim:A}, "armed"), hiddenA = draw({name:"front row"}, "armed");
+t(shownA.hidden === false && shownA.textContent.indexOf("Aim 1, 7, 13: loaded") === 0 && shownA.title === shownA.textContent, "an aim group's card shows the line");
+t(hiddenA.hidden === true && hiddenA.textContent === "", "a group without aim: the line hidden");
 console.log(JSON.stringify(out));
 """
         r = _node_js(node, js, capture_output=True, text=True, timeout=30)
@@ -71859,36 +71919,40 @@ def test_fuel_flame_seconds_at_the_flame_link():
 
 
 def test_fuel_showven_burns_only_on_ignition():
-    section("fuel (2026-10-28): a Showven burns only on its ignition, "
-            "channel 3; its angle (an aim slot at 54, 128 or 201) and its "
-            "speed (255 while the head moves) are never counted as flame")
+    section("fuel (2026-10-28): a Showven's angle (channel 1, an aim slot "
+            "at 54, 128 or 201) and speed (channel 2, 255 while the head "
+            "moves) are never counted as flame; ignition, duration and "
+            "preset count exactly as before")
     from ltcplay import fuel as F
     from ltcplay import morning as MO
     R = _FuelRig()
     try:
-        R.frames(400, tc=True, on=((1, 255), (2, 255), (4, 255), (5, 255)))
+        R.frames(400, tc=True, on=((1, 255), (2, 255)))
         check("w1" not in R.tr.episode["burn"],
-              f"angle, speed, duration and preset at 255 with ignition off "
-              f"burn nothing: {R.tr.episode['burn']}")
-        R.frames(80, tc=True, on=((1, 128), (2, 255), (3, 254)))
-        check(_near(R.tr.episode["burn"].get("w1"), 2.0),
-              "ignition at 254 is flame, whatever the angle")
+              f"angle and speed at 255 with every other channel off burn "
+              f"nothing: {R.tr.episode['burn']}")
+        for ch in (3, 4, 5):
+            before = R.tr.episode["burn"].get("w1", 0.0)
+            R.frames(40, tc=True, on=((1, 128), (2, 255), (ch, 254)))
+            check(_near(R.tr.episode["burn"].get("w1", 0.0) - before, 1.0),
+                  f"channel {ch} at 254 is flame, as before")
     finally:
         R.close()
     W = "waver"
     check(F.burn_slots(MO.Machine("w", "W", W, "g", [7, 8, 9, 10, 11],
-                                  safety=12)) == [9],
-          "a fixture's ignition is 3 below its own safety slot")
+                                  safety=12)) == [9, 10, 11],
+          "a fixture: all but its angle and speed, from its safety slot")
     check(F.burn_slots(MO.Machine("w", "W", W, "g", [7, 8, 9, 10, 11])) ==
-          [9], "no safety slot named: the middle of its 5 slot run")
+          [9, 10, 11], "no safety slot named: all but the first two of its "
+                       "5 slot run")
     whole = MO.Machine("w", "W", W, "g",
                        [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
                        safeties=[6, 12, 18])
-    check(F.burn_slots(whole) == [3, 9, 15],
+    check(F.burn_slots(whole) == [3, 4, 5, 9, 10, 11, 15, 16, 17],
           "one machine for a whole wave flamer group: each fixture's "
-          "ignition")
+          "channels 3 to 5")
     check(F.burn_slots(MO.Machine("w", "W", W, "g", [3, 9])) == [3, 9],
-          "an ignition that cannot be told: every fire slot, as before")
+          "channels that cannot be told: every fire slot, as before")
     check(F.burn_slots(MO.Machine("g", "G", "gflame", "g", [411, 412])) ==
           [411, 412], "a G-Flame: every fire slot, as before")
     print("  ok")

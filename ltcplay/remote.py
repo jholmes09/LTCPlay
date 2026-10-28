@@ -1230,7 +1230,8 @@ class Remote:
         # Aim slots (2026-10-28): (this engine's aim slots, the flamesafe
         # config it read them from), set by web.serve once the flame link
         # is built; None without one. aim_view compares them with
-        # flamesafe's own and raises a flames alert while they differ.
+        # flamesafe's own and raises a display only "aim" alert while
+        # they differ.
         self.flame_aim = None
         self._aim_said = None        # the mismatch sentence last raised
         self._aim_alert_id = None    # ...and its alert's id
@@ -4030,8 +4031,9 @@ class Remote:
         engine's (None without a flame link), "loaded" (both the same and
         not empty), and the values asked for and sent on those slots in
         flamesafe's last fresh frame (None while stale). Returns the whole
-        picture, and raises a flames alert while the two lists differ
-        (cleared once they agree). Nothing here is sent anywhere, and it
+        picture, and raises an "aim" alert (display only: alerts.
+        DISPLAY_ONLY) while the two lists differ (cleared once they
+        agree). Nothing here is sent anywhere, and it
         never touches Stop, Hold, Abort or a disarm. Never raises."""
         try:
             return self._aim_view(fl or {})
@@ -4104,9 +4106,10 @@ class Remote:
                               f"Aim slots match again: flamesafe and LTC "
                               f"Player both have "
                               f"{', '.join(str(x) for x in mine) or 'none'}.")
+                # Only this alert's own id: the "aim" kind is raised
+                # nowhere else.
                 if aid is not None and any(
-                        a.id == aid and a.text == was
-                        for a in self.alerts.open()):
+                        a.id == aid for a in self.alerts.open()):
                     self.alerts.clear(id=aid, action="Confirm",
                                       who="LTC Player", screen="engine")
                 return
@@ -4115,7 +4118,7 @@ class Remote:
                 return
             self._aim_said = text
             try:
-                a = self.alerts.raise_("flames", text)
+                a = self.alerts.raise_("aim", text)
                 self._aim_alert_id = getattr(a, "id", None)
             except Exception:                    # noqa: BLE001
                 self._journal("system", "engine", "aim slots", "differ",

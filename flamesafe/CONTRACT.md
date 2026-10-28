@@ -332,7 +332,7 @@ Per group, the two lamps of section 8 panel 5:
 | `safety_slots` | every safety slot of the group, in config order (added 2026-10-26, multi-safety). One entry for a group whose config `safety` is one number |
 | `safeties_up` | one per safety slot: true when that slot carries the arm value in this frame (added 2026-10-26). `armed` stays the one state of the whole group; this list is for the rack screen's "2 of 3 safeties up" line |
 | `safeties_locked` | one per safety slot: true when that slot is in the lockout file and so held at zero and left out of the arm (added 2026-10-26). Always false for a one-safety group |
-| `aim_slots` | the group's aim slots as this program read them at start, sorted; `[]` for a group without `aim` (added 2026-10-28). Display only: ltcplay compares them with its own list (an alert while they differ) and the rack screen's aim line shows them with `commanded_fire` and `sent_fire` on those slots. An older ltcplay ignores it |
+| `aim_slots` | the group's aim slots as this program read them at start, sorted; `[]` for a group without `aim` (added 2026-10-28). Display only: ltcplay compares them with its own list (a display only "aim" alert while they differ) and the rack screen's aim line shows them with `commanded_fire` and `sent_fire` on those slots. An older ltcplay ignores it |
 | `sent_fire` | the SENT fire values this tick, one per fire slot |
 | `commanded_fire` | what ltcplay asked for on those slots this tick (COMMANDED). Not a lamp; for the journal and the amber row flag (armed, commanded fire, sent none, for more than 3 frames) |
 
@@ -487,10 +487,12 @@ group armed mid-movement is held by the rising-edge check, as before.
   group's `aim_slots`. ltcplay journals its own list and the file it read
   when the flame link starts (`Flame link: aim slots 1, 7, 13 ... read
   from <path>`). While the two lists differ (ltcplay started before the
-  edit, or the two read different files) the rack screen raises a flames
-  alert saying both lists, the file ltcplay read and what to do; it clears
-  itself once they agree. Display only: it never blocks Stop, Hold, Abort
-  or a disarm, and nothing in it reaches a flame frame or the arm link.
+  edit, or the two read different files) the rack screen raises an alert
+  of its own kind, "aim", saying both lists, the file ltcplay read and what
+  to do; it clears itself once they agree. Display only: it never holds a
+  show at showtime, plays no announcement and sounds no booth note, it
+  never blocks Stop, Hold, Abort or a disarm, and nothing in it reaches a
+  flame frame or the arm link.
 
 What ltcplay does with it: display, journal, the amber row flag. There is no
 path from a status frame to flame output, because ltcplay never writes the

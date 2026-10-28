@@ -722,13 +722,16 @@ has one more small line on its card, read only, for example "Aim 1, 7, 13:
 loaded; ARMED; asked 54, 128, 201, sent 54, 128, 201". Loaded means
 flamesafe and LTC Player have the same aim list. Asked is what the show
 asked for on those slots, sent is what flamesafe really sent: 0 while the
-group is not armed, by design (the head then sits at its end stop). Hover
-the line to read all of it. If it says NOT loaded, a flames alert says the
-same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+group is not armed (it then reads held or disarmed), by design: the head
+then sits at its end stop. Hover
+the line to read all of it. If it says NOT loaded, an Aim slots alert says
+the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
-quit LTC Player and start it again). Stop, Hold, Abort and Disarm all work
-as usual while it is up, and it clears itself once the lists agree. Both
+quit LTC Player and start it again). It is display only: it never holds
+a show at showtime, never plays the Delayed announcement and never sounds
+the booth speaker. Stop, Hold, Abort and Disarm all work as usual while it
+is up, and it clears itself once the lists agree. Both
 programs also write their aim list and the file they read to the journal
 when they start.
 

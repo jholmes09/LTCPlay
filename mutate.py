@@ -15294,7 +15294,7 @@ def build():
 
  ("aim seen: a difference raises no alert",
   "ltcplay/remote.py",
-  "                a = self.alerts.raise_(\"flames\", text)",
+  "                a = self.alerts.raise_(\"aim\", text)",
   "                a = None"),
 
  ("aim seen: the alert is raised again on every poll",
@@ -15306,11 +15306,6 @@ def build():
   "ltcplay/remote.py",
   "                    self.alerts.clear(id=aid, action=\"Confirm\",",
   "                    self.alerts.clear(id=-1, action=\"Confirm\","),
-
- ("aim seen: agreeing clears any flames alert",
-  "ltcplay/remote.py",
-  "                        a.id == aid and a.text == was",
-  "                        a.id == aid"),
 
  ("aim seen: loaded only needs flamesafe's list",
   "ltcplay/remote.py",
@@ -15342,15 +15337,40 @@ def build():
   "                       for s in burn_slots(m)):",
   "                       for s in m.fire):"),
 
- ("fuel: a Showven's burn channel is its angle",
+ ("fuel: a Showven's angle counts as flame again",
   "ltcplay/fuel.py",
-  "    ign = [s - 3 for s in saf if (s - 3) in fire]",
-  "    ign = [s - 5 for s in saf if (s - 5) in fire]"),
+  "    skip = {c for x in saf for c in (x - 5, x - 4)}",
+  "    skip = {c for x in saf for c in (x - 4,)}"),
 
- ("fuel: a Showven with no safety slot burns on its angle",
+ ("fuel: a Showven's preset and duration stop counting",
   "ltcplay/fuel.py",
-  "        return [run[2]]",
-  "        return [run[0]]"),
+  "    out = [f for f in fire if f not in skip]",
+  "    out = [f for f in fire if f not in skip and f + 3 not in saf]"),
+
+ ("fuel: a Showven with no safety slot counts its angle",
+  "ltcplay/fuel.py",
+  "            skip = {run[0], run[1]}",
+  "            skip = {run[1]}"),
+
+ ("aim seen: the aim alert holds a show at showtime",
+  "ltcplay/alerthold.py",
+  "        return [a for a in self.alerts.open() if a.kind not in DISPLAY_ONLY]",
+  "        return list(self.alerts.open())"),
+
+ ("aim seen: the aim alert sounds the booth",
+  "ltcplay/alerts.py",
+  "        if a.kind in DISPLAY_ONLY:\n            a.booth_ok, a.booth = None, \"display only: no booth note\"\n            return\n",
+  ""),
+
+ ("aim seen: the aim alert shares the flames kind",
+  "ltcplay/remote.py",
+  "                a = self.alerts.raise_(\"aim\", text)",
+  "                a = self.alerts.raise_(\"flames\", text)"),
+
+ ("aim seen: the card says held as disarmed",
+  "ltcplay/web/remote.html",
+  "c === \"held\" ? \"; held\" : ",
+  ""),
 
  # The Fireball page (fireball.py, OPERATOR.md, Jeff 2026-10-28; design
  # by Andy): manual control of each Fireball channel.

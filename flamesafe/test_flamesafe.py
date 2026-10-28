@@ -1865,7 +1865,20 @@ def test_round3_foreign_forced_edge_is_not_consent_end_to_end():
         deck_send(want0); keep_flame_alive(); tick()
         for _ in range(dwell_ticks):
             deck_send(want0); keep_flame_alive(); tick()
+        # The clock is the test's own but the arm link is real loopback
+        # UDP: on a busy Windows runner a datagram can land a tick or more
+        # late, so the down edge (and with it the re-arm dwell) is counted
+        # from a later tick than the one it was sent on (CI, 2026-10-28:
+        # held, re-arm dwell, 1 s left). Keep the deck asking, a bounded
+        # number of ticks more, until the dwell has run out; it must then
+        # be armed.
         s = status()
+        for _ in range(4 * dwell_ticks):
+            if s["groups"][0]["armed"] == "armed" or \
+                    s["groups"][0]["reason"] != "re-arm dwell":
+                break
+            deck_send(want0); keep_flame_alive(); tick()
+            s = status()
         check(s["groups"][0]["armed"] == "armed",
               f"a REAL cycle from the locked sender itself still arms the "
               f"group afterwards -- the fix only refuses a FORCED edge, "

@@ -1587,7 +1587,8 @@ function machineCountLine(g, c, gm){
 }
 // The aim line (2026-10-28), read only, on the card of a group with aim
 // slots (the wave flamer's angle): which slots, whether they are loaded
-// (flamesafe and LTC Player have the same list), the group's armed state,
+// (flamesafe and LTC Player have the same list), the group's state (ARMED,
+// held, disarmed),
 // and what was asked for and sent on them in flamesafe's last frame. ""
 // for a group without aim slots. `g.aim` is the engine's aim_view.
 function aimLine(g, c){
@@ -1597,7 +1598,7 @@ function aimLine(g, c){
   let t = "Aim " + j(a.slots) + ": " + (a.loaded ? "loaded" :
     a.flamesafe === null || a.flamesafe === undefined ? "flamesafe does not say" :
     "NOT loaded (flamesafe " + j(a.flamesafe) + ", LTC Player " + (a.ltcplay ? j(a.ltcplay) : "not known") + ")");
-  t += c === "armed" ? "; ARMED" : c === "unknown" ? "; armed not known" : "; NOT armed";
+  t += c === "armed" ? "; ARMED" : c === "held" ? "; held" : c === "unknown" ? "; armed not known" : "; disarmed";
   if(c !== "unknown" && a.asked && a.sent) t += "; asked " + j(a.asked) + ", sent " + j(a.sent);
   return t;
 }
@@ -2400,7 +2401,7 @@ let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
 // The page's own banners: whether each is a fault now, and its label.
 const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note"};
 const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
-  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check"};
+  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check", aim:"Aim slots"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
@@ -2475,10 +2476,12 @@ function renderLamps(fl){
     se.hidden = !sl;
     se.textContent = sl;
     se.title = sl;
+    // AIM LINE BEGIN
     const al = aimLine(g, c), ae = el.querySelector(".aim");
     ae.hidden = !al;
     ae.textContent = al;
     ae.title = al;
+    // AIM LINE END
     const as = armState(ST, Date.now(), LAST_OK, i);
     const ab = el.querySelector("[data-arm]");
     if(!holding(i)) ab.disabled = !as.ok;
