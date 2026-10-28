@@ -186,6 +186,9 @@ REMOTE_ROUTES = {
     "last-show-signout": "settings",
     "users": "users", "role-matrix": "users", "clear-lockouts": "users",
     "schedule-file": "show_files", "show-folder": "show_files",
+    # Reload engine (2026-10-28): a restart of the engine between shows,
+    # a settings press (the Settings row, admin by default).
+    "reload-engine": "settings",
     "layout": "show_files",
     "checklist-tick": "checklist", "checklist-note": "checklist",
     "morning-open": None, "checklist-verify": None,
