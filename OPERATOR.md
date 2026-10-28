@@ -596,9 +596,13 @@ the rig out of the show (flame cues zero, lasers blanked) and stops the
 music. The screen says Playing on the show audio or Paused on the show
 audio.
 
-While Programming is playing, Hold on any screen or the Stream Deck is
-the same as Pause, and Abort (after it disarms every flame group and
+While Programming is playing, Hold on any screen or the Stream Deck
+pauses it the same as Pause, and also holds the schedule, so no show
+starts until someone presses Resume (Continue carries the playback on but
+leaves the schedule held). Abort (after it disarms every flame group and
 laser, as always) stops the playback the way Stop the show audio does.
+Start now and Run are refused while Programming is playing: stop the
+Programming playback first.
 The Rack screen's Stop and the Stream Deck's Stop stop it too. If no
 operator page is open for 60 seconds, the playback stops by itself and
 the night journal says so; press Play from to carry on.

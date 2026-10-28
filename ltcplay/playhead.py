@@ -292,10 +292,15 @@ class ShowAudioPlayhead:
             self.play_from(a, who, screen)
         return s.clock_set_loop(a, b)
 
-    def follow(self, who="", screen=""):
+    def follow(self, who="", screen="", only=None):
         """Stop the playhead: the conductor's out-of-the-show look first
-        (flame cues zero, lasers blanked), then the show audio stops."""
+        (flame cues zero, lasers blanked), then the show audio stops.
+        `only` (the watchdog): stop only while that playback is still the
+        one playing and no show is live, checked again here; False when it
+        was not."""
         with self._op:
+            if only is not None and not self._mine(only):
+                return False
             s = self._session()
             with self._lock:
                 self._ours = None
@@ -348,8 +353,11 @@ class ShowAudioPlayhead:
         if self._live() or (s is ours[0] and cue is not None and
                             cue is not ours[1]):
             with self._lock:
-                if self._ours is ours:
-                    self._ours = None
+                if self._ours is not ours:
+                    return None
+                self._ours = None
+            self._note("Programming playback was ended by the show "
+                       "starting.", "taken_over")
             return "dropped"
         if s is not ours[0] or clk is None or \
                 not getattr(clk, "playing", False):
@@ -367,12 +375,21 @@ class ShowAudioPlayhead:
                        "cues again.", "ended")
             return "ended"
         if self._clock() - self._seen > WATCHDOG_S:
-            self.follow("the Programming watchdog", "")
+            if self.follow("the Programming watchdog", "", only=ours) \
+                    is False:
+                return self._poll()     # a show took over meanwhile
             self._note(f"Programming playback was stopped: no operator "
                        f"page has been open for {WATCHDOG_S:g} s. Press "
                        f"Play from to carry on.", "watchdog")
             return "watchdog"
         return None
+
+    def settle_conductor(self):
+        """Let the conductor's latest request land (a schedule Hold's step
+        before the Programming Pause that follows it)."""
+        cond = self._conductor()
+        if cond is not None:
+            self._settle(cond)
 
     @staticmethod
     def _settle(cond):

@@ -1392,6 +1392,13 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/check":
                 return self._send(200, c.check(body.get("timeline", "")))
             if route == "/api/start":
+                # Never over Programming playback (playhead.py): the same
+                # sentence as Start now's.
+                _rm = getattr(self.server, "remote", None)
+                _why = getattr(_rm, "programming_playback_refusal",
+                               lambda: "")()
+                if _why:
+                    return self._send(409, {"error": _why})
                 # Run ends live flame programming first (flameprog.py):
                 # the show's own flame cues and xLights are never both a
                 # source of fire values.

@@ -15045,8 +15045,8 @@ def build():
   "        if False:                                   # hold"),
 
  ("a screen Abort in Programming playback leaves the music playing", "ltcplay/remote.py",
-  "            if ph is not None:\n                try:\n                    said = ph.abort_press(who, screen)",
-  "            if False:\n                try:\n                    said = ph.abort_press(who, screen)"),
+  "            if ph is not None:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)",
+  "            if False:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)"),
 
 
  # Re-review of #142.
@@ -15055,8 +15055,8 @@ def build():
   '            asked = getattr(p, "on_lost", "") == "hold"'),
 
  ("Start now goes over Programming playback", "ltcplay/remote.py",
-  '        if ph is not None and name == "start-now":',
-  '        if False:'),
+  "            why = self.programming_playback_refusal()\n            if why:",
+  "            why = self.programming_playback_refusal()\n            if False:"),
 
  ("a real show started over Programming playback is still watched as it", "ltcplay/playhead.py",
   "        if self._live() or (s is ours[0] and cue is not None and\n                            cue is not ours[1]):",
@@ -15067,8 +15067,29 @@ def build():
   '                True)'),
 
  ("a Programming Abort answers that nothing was stopped", "ltcplay/remote.py",
-  "                out = dict(out, programming=said, stopped=True, ok=ok,",
+  "                out = dict(out, programming=said, stopped=stopped, ok=ok,",
   "                out = dict(out, programming=said, ok=ok,"),
+
+ # Third review of #142.
+ ("a Programming Hold leaves the schedule running", "ltcplay/remote.py",
+  '            if svc is not None and getattr(m, "state", None) in ("IDLE",',
+  '            if False and getattr(m, "state", None) in ("IDLE",'),
+
+ ("Run goes over Programming playback", "ltcplay/web.py",
+  '                if _why:\n                    return self._send(409, {"error": _why})',
+  '                if False:\n                    return self._send(409, {"error": _why})'),
+
+ ("a failed Programming stop on Abort is reported as stopped", "ltcplay/remote.py",
+  "                ok = stopped and not (flames and flames[0] is False)",
+  "                ok = not (flames and flames[0] is False)"),
+
+ ("the watchdog halts a show that took over meanwhile", "ltcplay/playhead.py",
+  "            if only is not None and not self._mine(only):\n                return False",
+  "            if False:\n                return False"),
+
+ ("a show taking over Programming playback is not journaled", "ltcplay/playhead.py",
+  '            self._note("Programming playback was ended by the show "\n                       "starting.", "taken_over")',
+  "            pass"),
 
 ]
 

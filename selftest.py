@@ -49977,14 +49977,27 @@ def test_programming_playhead_drives_the_show_path():
         del rig.calls[:]
         n = len(notes)
         check(phw.poll() == "dropped" and not calls and not rig.calls and
-              len(notes) == n and not phw.active(),
+              len(notes) == n + 1 and notes[-1][0] == "taken_over" and
+              "ended by the show starting" in notes[-1][1] and
+              not phw.active(),
               f"a real show ({live}) was taken for Programming playback: "
               f"{calls} {rig.names()} {notes[n:]}")
         sess.at, sess._cue = None, None         # its cue ends
-        check(phw.poll() is None and not rig.calls and len(notes) == n,
+        check(phw.poll() is None and not rig.calls and len(notes) == n + 1,
               f"the real show's end ran the Programming end: "
               f"{rig.names()} {notes[n:]}")
         svc.machine.state = "IDLE"
+    # The watchdog's stop checks again that the playback is still ours: a
+    # show that took over between its check and its stop is never halted.
+    phw.play_from(3600.0, "Andy", "iPad")
+    c.run_pending()
+    stale = phw._ours
+    sess._cue = {"label": "Show", "position_s": 3600.0}       # a real show
+    del calls[:]
+    check(phw.follow("the Programming watchdog", "", only=stale) is False
+          and not calls, f"the watchdog halted a real show: {calls}")
+    phw.poll()
+    sess.at, sess._cue = None, None
     # A Play from straight after a Stop is a new start token.
     phw.play_from(3600.0, "Andy", "iPad")
     c.run_pending()
@@ -50217,15 +50230,41 @@ def test_remote_transport_on_the_show_audio():
         R.settle()
         st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
         R.settle()
+        # Jeff's ruling: Hold is a schedule pause too, so the next show
+        # does not start over the paused playback.
+        held = "HOLD" if state0 in ("IDLE", "STANDBY") else state0
         check(st == 200 and "paused" in out.get("text", "") and
               R.c.snapshot()["look"] == "HELD" and
-              R.svc.machine.state == state0,
-              f"Hold in Programming playback did not pause it: {st} {out} "
-              f"{R.c.snapshot()['look']} {R.svc.machine.state}")
+              R.svc.machine.state == held,
+              f"Hold in Programming playback did not pause it and hold the "
+              f"schedule: {st} {out} {R.c.snapshot()['look']} "
+              f"{state0} -> {R.svc.machine.state}")
         st, _h, out = R.ask("POST", "/api/remote/continue",
                             {"seen": R.seen()})
         R.settle()
-        check(st == 200, f"Continue after a screen Hold: {st} {out}")
+        check(st == 200 and R.svc.machine.state == held,
+              f"Continue after a screen Hold lifted the schedule's Hold: "
+              f"{st} {out} {R.svc.machine.state}")
+        # Run over Programming playback: refused with Start now's sentence.
+        st, _h, out = R.ask("POST", "/api/start", {"timeline": "x.json"},
+                            client=("127.0.0.1", 50001))
+        check(st == 409 and "Stop the Programming playback first" in
+              str(out.get("error")), f"Run over Programming playback: "
+                                     f"{st} {out}")
+        # An Abort whose playback stop fails says so: not ok, not stopped.
+        real_ap = R.remote.playhead.abort_press
+
+        def wedged(*a):
+            raise OSError("the clock is wedged")
+        R.remote.playhead.abort_press = wedged
+        st, _h, out = R.ask("POST", "/api/remote/abort",
+                            {"confirmed": True, "seen": R.seen()})
+        R.settle()
+        R.remote.playhead.abort_press = real_ap
+        check(st == 409 and out.get("ok") is False and
+              out.get("stopped") is False and
+              "did NOT stop" in out.get("text", ""),
+              f"a failed Programming stop was reported as done: {st} {out}")
         st, _h, out = R.ask("POST", "/api/remote/start-now",
                             {"confirmed": True, "seen": R.seen()})
         R.settle()

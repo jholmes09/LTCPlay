@@ -2147,6 +2147,13 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
+        if name == "start-now":
+            why = self.programming_playback_refusal()
+            if why:
+                self._journal(who, screen, name, "refused",
+                              f"{who or 'Someone'}'s Start now on the "
+                              f"{screen} was refused. {why}")
+                return 409, {"ok": False, "error": why, "text": why}
         flames = None
         if name == "abort":
             # The flames first, every time (review of PR #43, P0-1): every
@@ -2234,33 +2241,30 @@ class Remote:
         # Start now goes over it. A scheduled show is never this
         # (programming() refuses it, and active() is only the very cue
         # Play from started).
-        ph = self.playhead if name in ("hold", "abort", "start-now") \
-            else None
+        ph = self.playhead if name in ("hold", "abort") else None
         if ph is not None and not (self.programming()[0] and ph.active()):
             ph = None
-        if ph is not None and name == "start-now":
-            why = ("Stop the Programming playback first (Stop the show "
-                   "audio on the Programming screen). Nothing was started.")
-            self._journal(who, screen, name, "refused",
-                          f"{who or 'Someone'}'s Start now on the {screen} "
-                          f"was refused. {why}")
-            return 409, {"ok": False, "error": why, "text": why}
         if name == "abort":
             code, out = self.abort(who, screen, flames, lasers, pressed)
             if ph is not None:
+                stopped = True
                 try:
                     said = ph.abort_press(who, screen)
                 except Exception as e:              # noqa: BLE001
-                    said = f"Programming playback did not stop: {e}"
-                self._journal(who, screen, "abort", "done",
+                    stopped = False
+                    said = (f"Programming playback did NOT stop "
+                            f"({type(e).__name__}: {e}). Press Stop the "
+                            f"show audio, or Stop.")
+                self._journal(who, screen, "abort",
+                              "done" if stopped else "fault",
                               f"{who or 'Someone'} pressed Abort on the "
-                              f"{screen}. {said}")
+                              f"{screen}. {said}", fault=not stopped)
                 # No scheduled show was live to stop: the answer says what
                 # did stop, the Programming playback.
                 text = " ".join(t for t in (flames[1] if flames else "",
                                             lasers[1], said) if t)
-                ok = not (flames and flames[0] is False)
-                out = dict(out, programming=said, stopped=True, ok=ok,
+                ok = stopped and not (flames and flames[0] is False)
+                out = dict(out, programming=said, stopped=stopped, ok=ok,
                            text=text)
                 out.pop("error", None)
                 if not ok:
@@ -2268,6 +2272,30 @@ class Remote:
                 code = 200 if ok else 409
             return code, out
         if ph is not None:                          # hold
+            # Jeff's ruling: Hold is a schedule pause. The schedule's own
+            # Hold first (so the next show does not start until Resume),
+            # and its conductor step let land; then the Programming Pause,
+            # so the music freezes (the schedule's Hold alone only takes
+            # the rig out of the show). Continue does not lift the
+            # schedule's Hold; Resume does.
+            svc = self.schedule
+            m = getattr(svc, "machine", None)
+            sched = ""
+            if svc is not None and getattr(m, "state", None) in ("IDLE",
+                                                                 "STANDBY"):
+                try:
+                    r = svc.operator_press("hold", who, screen,
+                                           pressed=pressed, surface=surface)
+                    sched = str(r.get("text") or "")
+                except ValueError as e:
+                    sched = str(e)
+                flush = getattr(svc, "flush_conductor", None)
+                if flush is not None:
+                    try:
+                        flush(2.0)
+                    except Exception:               # noqa: BLE001
+                        pass
+                ph.settle_conductor()
             try:
                 said = ph.hold_press(who, screen)
             except Exception as e:                  # noqa: BLE001
@@ -2275,6 +2303,7 @@ class Remote:
                               f"{who or 'Someone'}'s Hold on the {screen} "
                               f"was refused. {e}")
                 return 409, {"ok": False, "error": str(e), "text": str(e)}
+            said = f"{sched} {said}".strip()
             self._journal(who, screen, "hold", "done",
                           f"{who or 'Someone'} pressed Hold on the "
                           f"{screen}. {said}")
@@ -2309,6 +2338,18 @@ class Remote:
 
     # -- programming-session transport ----------------------------------
     LIVE_STATES = ("SHOW", "PAUSED")
+    PROGRAMMING_PLAYING = ("Stop the Programming playback first (Stop the "
+                           "show audio on the Programming screen). Nothing "
+                           "was started.")
+
+    def programming_playback_refusal(self):
+        """The sentence that refuses Start now and Run while Programming
+        playback is on (playhead.py), or ""."""
+        try:
+            on = self.programming()[0] and self.playhead.active()
+        except Exception:                           # noqa: BLE001
+            on = False
+        return self.PROGRAMMING_PLAYING if on else ""
 
     def programming(self):
         """(True, "") in a programming session, else (False, why)."""
