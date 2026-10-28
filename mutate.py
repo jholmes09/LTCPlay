@@ -15637,6 +15637,32 @@ def build():
   "  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);",
   "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
   "  fbPress(b.dataset.k, true);"),
+
+ # Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it
+ # turns on programming mode").
+ ("Show on the show audio: the engine's mode follows the player's forced hold", "ltcplay/session.py",
+  "            asked = self.on_lost_arg\n        elif self.player is not None:",
+  "            asked = self.player.on_lost\n        elif self.player is not None:"),
+
+ ("Show or Programming: Rehearse (no output) reads as Show", "ltcplay/session.py",
+  '        if self.no_output:\n            return "programming"\n        clk = self.clock',
+  "        clk = self.clock"),
+
+ ("Show or Programming: the show status always says Show", "ltcplay/session.py",
+  '            "mode": self.run_mode(),',
+  '            "mode": "show",'),
+
+ ("Show on the show audio: the rack screen's Programming goes by the player's forced hold", "ltcplay/remote.py",
+  '        if getattr(clk, "master", False) is True and \\\n                hasattr(s, "on_lost_arg"):',
+  "        if False:"),
+
+ ("old page: the Show or Rehearsal switch reads on_lost again", "ltcplay/web/index.html",
+  "    const m = runningMode(s);",
+  '    const m = s.on_lost === "hold" ? "rehearsal" : "show";'),
+
+ ("old page: the engine's Show is not believed", "ltcplay/web/index.html",
+  '  if(s && s.mode === "show") return "show";\n',
+  ""),
 ]
 
 
