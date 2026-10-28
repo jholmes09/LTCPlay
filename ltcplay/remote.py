@@ -97,6 +97,7 @@ from . import appdata
 from . import settings as settings_mod
 from . import users as users_mod
 from . import version as version_mod
+from .playhead import ShowAudioPlayhead
 
 FIXED_PORT = 7878
 DISK_FILE = "disk-low.txt"          # packaging/windows/housekeeping.DISK_FILE
@@ -842,6 +843,15 @@ def _list(v):
     return v if isinstance(v, list) else []
 
 
+def _ints(v):
+    """A status list of whole numbers, or None when it is not one (a field
+    from an older flamesafe that does not send it, or a bad one)."""
+    if not isinstance(v, list) or any(
+            isinstance(x, bool) or not isinstance(x, int) for x in v):
+        return None
+    return list(v)
+
+
 def _arm(v):
     """A status arm value: a whole number 1..255, else None."""
     if isinstance(v, bool) or not isinstance(v, int) or not 0 < v < 256:
@@ -929,7 +939,16 @@ class FlameStatus:
                            # The value this group arms at (2026-10-26, a
                            # safety_profile may give it its own); None from
                            # an older flamesafe that does not send it.
-                           "arm_value": _arm(g.get("arm_value"))})
+                           "arm_value": _arm(g.get("arm_value")),
+                           # Aim slots (2026-10-28): flamesafe's own list,
+                           # None from an older flamesafe that does not
+                           # send it; with the fire slots and what was asked
+                           # and sent on them, for the card's aim line.
+                           "aim_slots": _ints(g.get("aim_slots")),
+                           "fire_slots": _ints(g.get("fire_slots")) or [],
+                           "commanded_fire": _ints(
+                               g.get("commanded_fire")),
+                           "sent_fire": _ints(g.get("sent_fire"))})
         if not groups:
             groups = [{"name": n, "armed": "unknown", "wanted": False,
                        "reason": "", "dwell_s": 0} for n in self.names]
@@ -1218,6 +1237,15 @@ class Remote:
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
+        # Aim slots (2026-10-28): (this engine's aim slots, the flamesafe
+        # config it read them from), set by web.serve once the flame link
+        # is built; None without one. aim_view compares them with
+        # flamesafe's own and raises a display only "aim" alert while
+        # they differ.
+        self.flame_aim = None
+        self._aim_said = None        # the mismatch sentence last raised
+        self._aim_alert_id = None    # ...and its alert's id
+        self._aim_lock = threading.Lock()
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
         self.beyond_watch = None
@@ -1249,6 +1277,18 @@ class Remote:
         self.wall = wall
         self._log = log
         self.marks = {"a": None, "b": None}     # loop marks, show seconds
+        # The Programming playhead on the show audio (playhead.py): one
+        # per engine, so its watchdog and its record of the playback it
+        # started outlive a single press.
+        self.playhead = ShowAudioPlayhead(
+            control, schedule, threaded=True,
+            journal=lambda text, outcome: self._journal(
+                "", "Programming screen", "programming playback", outcome,
+                text))
+        # Start now asks again under the scheduler's lock, after its tick
+        # and any wait for the show audio (a Play from may have landed).
+        if schedule is not None and hasattr(schedule, "start_veto"):
+            schedule.start_veto = self.programming_playback_refusal
         # Screen arm holds: group index -> {token, who, device, start,
         # beat, id}; per-group disarms waiting for the deck to read them.
         import collections
@@ -2265,6 +2305,13 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
+        if name == "start-now":
+            why = self.programming_playback_refusal()
+            if why:
+                self._journal(who, screen, name, "refused",
+                              f"{who or 'Someone'}'s Start now on the "
+                              f"{screen} was refused. {why}")
+                return 409, {"ok": False, "error": why, "text": why}
         flames = None
         if name == "abort":
             # The flames first, every time (review of PR #43, P0-1): every
@@ -2347,8 +2394,86 @@ class Remote:
                 except Exception:
                     pass
             return out
+        # Programming playback on the show audio (review of #142): Hold is
+        # its Pause and Abort its Stop, after every disarm above, and no
+        # Start now goes over it. A scheduled show is never this
+        # (programming() refuses it, and active() is only the very cue
+        # Play from started).
+        ph = self.playhead if name in ("hold", "abort") else None
+        if ph is not None and not (self.programming()[0] and ph.active()):
+            ph = None
         if name == "abort":
-            return self.abort(who, screen, flames, lasers, pressed)
+            code, out = self.abort(who, screen, flames, lasers, pressed)
+            if ph is not None:
+                stopped = True
+                try:
+                    said = ph.abort_press(who, screen)
+                except Exception as e:              # noqa: BLE001
+                    stopped = False
+                    said = (f"Programming playback did NOT stop "
+                            f"({type(e).__name__}: {e}). Press Stop the "
+                            f"show audio, or Stop.")
+                self._journal(who, screen, "abort",
+                              "done" if stopped else "fault",
+                              f"{who or 'Someone'} pressed Abort on the "
+                              f"{screen}. {said}", fault=not stopped)
+                # No scheduled show was live to stop: the answer says what
+                # did stop, the Programming playback.
+                text = " ".join(t for t in (flames[1] if flames else "",
+                                            lasers[1], said) if t)
+                ok = stopped and not (flames and flames[0] is False)
+                out = dict(out, programming=said, stopped=stopped, ok=ok,
+                           text=text)
+                out.pop("error", None)
+                if not ok:
+                    out["error"] = text
+                code = 200 if ok else 409
+            return code, out
+        if ph is not None:                          # hold
+            # Jeff's ruling: Hold is a schedule pause. The schedule's own
+            # Hold first (so the next show does not start until Resume),
+            # and its conductor step let land; then the Programming Pause,
+            # so the music freezes (the schedule's Hold alone only takes
+            # the rig out of the show). Continue does not lift the
+            # schedule's Hold; Resume does.
+            svc = self.schedule
+            m = getattr(svc, "machine", None)
+            sched = ""
+            # A Start now waiting for the show audio never outlives a Hold
+            # (#144), whatever state the schedule is in.
+            cancel = getattr(svc, "cancel_start_wait", None)
+            if cancel is not None:
+                try:
+                    cancel(f"Hold was pressed on the {screen}")
+                except Exception:                   # noqa: BLE001
+                    pass
+            if svc is not None and getattr(m, "state", None) in ("IDLE",
+                                                                 "STANDBY"):
+                try:
+                    r = svc.operator_press("hold", who, screen,
+                                           pressed=pressed, surface=surface)
+                    sched = str(r.get("text") or "")
+                except ValueError as e:
+                    sched = str(e)
+                flush = getattr(svc, "flush_conductor", None)
+                if flush is not None:
+                    try:
+                        flush(2.0)
+                    except Exception:               # noqa: BLE001
+                        pass
+                ph.settle_conductor()
+            try:
+                said = ph.hold_press(who, screen)
+            except Exception as e:                  # noqa: BLE001
+                self._journal(who, screen, "hold", "refused",
+                              f"{who or 'Someone'}'s Hold on the {screen} "
+                              f"was refused. {e}")
+                return 409, {"ok": False, "error": str(e), "text": str(e)}
+            said = f"{sched} {said}".strip()
+            self._journal(who, screen, "hold", "done",
+                          f"{who or 'Someone'} pressed Hold on the "
+                          f"{screen}. {said}")
+            return 200, {"ok": True, "text": said}
         if name in TRANSPORT_ROUTES:
             why = self.scrub_transport_refusal(name, body, ctx)
             if why:
@@ -2385,6 +2510,18 @@ class Remote:
 
     # -- programming-session transport ----------------------------------
     LIVE_STATES = ("SHOW", "PAUSED")
+    PROGRAMMING_PLAYING = ("Stop the Programming playback first (Stop the "
+                           "show audio on the Programming screen). Nothing "
+                           "was started.")
+
+    def programming_playback_refusal(self):
+        """The sentence that refuses Start now and Run while Programming
+        playback is on (playhead.py), or ""."""
+        try:
+            on = self.programming()[0] and self.playhead.active()
+        except Exception:                           # noqa: BLE001
+            on = False
+        return self.PROGRAMMING_PLAYING if on else ""
 
     def programming(self):
         """(True, "") in a programming session, else (False, why)."""
@@ -2432,8 +2569,33 @@ class Remote:
         c = self.control
         p = c.session.player
         tl = c.session.tl
+        # The show audio as the one playhead (playhead.py, Jeff
+        # 2026-10-28): audio, timecode, video, pixels, flame cues and
+        # lasers follow it through the show's own paths. Otherwise (GPL, a
+        # show following timecode) the free run below, as before.
+        ph = self.playhead
+        if not ph.applies():
+            ph = None
+        fb = self.fireball
+        if ph is not None and name in ("play-from", "loop") and \
+                fb is not None and fb.active():
+            # One source of fire values at a time: the Fireball page has a
+            # channel on (it cuts itself once Run is pressed; this covers
+            # the moment between).
+            why = ("A Fireball channel is on. Turn the Fireball page off "
+                   "first. Nothing was played.")
+            self._journal(who, screen, name, "refused",
+                          f"{label}'s {name} on the {screen} was refused. "
+                          f"{why}")
+            return 409, {"error": why}
 
         def here():
+            if ph is not None:
+                at = ph.here()
+                if at is None:
+                    raise ValueError("There is no show time yet. Play from "
+                                     "a timecode first.")
+                return at
             if p.freerun_paused_at is not None:
                 return p.freerun_paused_at
             tc = p.tc_seconds
@@ -2452,8 +2614,14 @@ class Remote:
                 if not at:
                     raise ValueError("Type a timecode to play from, like "
                                      "00:01:30:00, or a cue name.")
-                r = c.go(at)
-                said = f"played from {r['at']}"
+                if ph is not None:
+                    pos = ph.resolve(at)
+                    said = (f"played from "
+                            f"{tl.format(ph.play_from(pos, who, screen))} "
+                            f"on the show audio")
+                else:
+                    r = c.go(at)
+                    said = f"played from {r['at']}"
             elif name == "jump":
                 try:
                     secs = float(body.get("seconds"))
@@ -2462,9 +2630,18 @@ class Remote:
                 if not (-JUMP_MAX_S <= secs <= JUMP_MAX_S) or secs == 0:
                     raise ValueError(f"Jump by up to {JUMP_MAX_S:g} s either "
                                      f"way.")
-                ensure_freerun()
-                at = p.nudge(secs)
+                if ph is not None:
+                    at = ph.jump(secs)
+                else:
+                    ensure_freerun()
+                    at = p.nudge(secs)
                 said = f"jumped {secs:+g} s to {tl.format(at)}"
+            elif name == "pause" and ph is not None:
+                at = ph.pause(who, screen)
+                said = f"paused at {tl.format(at)}"
+            elif name == "continue" and ph is not None:
+                at = ph.cont(who, screen)
+                said = f"continued from {tl.format(at)}"
             elif name == "pause":
                 ensure_freerun()
                 at = p.freerun_pause(True)
@@ -2482,14 +2659,23 @@ class Remote:
                     a, b = self.marks["a"], self.marks["b"]
                     if a is None or b is None:
                         raise ValueError("Set mark A and mark B first.")
-                    p.set_loop(a, b)
-                    if p.freerun_epoch is None:
+                    if ph is not None:
+                        ph.loop(a, b, who, screen)
+                    else:
+                        p.set_loop(a, b)
+                    if ph is None and p.freerun_epoch is None:
                         c.go(tl.format(a))
                     said = (f"turned the loop on, {tl.format(a)} to "
                             f"{tl.format(b)}")
                 else:
-                    p.set_loop(None, None)
+                    if ph is not None:
+                        ph.loop(None, None)
+                    else:
+                        p.set_loop(None, None)
                     said = "turned the loop off"
+            elif ph is not None:                    # follow
+                ph.follow(who, screen)
+                said = "stopped the show audio"
             else:                                   # follow
                 c.release()
                 said = "handed the show back to the timecode"
@@ -2522,6 +2708,13 @@ class Remote:
                        if p.loop else None)
         out["marks"] = {k: (tl.format(v) if v is not None else None)
                         for k, v in self.marks.items()}
+        ph = self.playhead
+        ph.seen()            # an operator page is open: the watchdog's beat
+        v = ph.view() if ph.applies() else None
+        if v is not None:
+            # The show audio is the playhead (playhead.py).
+            out.update(playhead="show_audio", playing=v["playing"],
+                       paused=v["paused"], loop=v["loop"], freerun=False)
         return out
 
     # -- arming from a screen (its own PR) ---------------------------------
@@ -4103,6 +4296,106 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return ""
 
+    def aim_view(self, fl):
+        """The aim slots (2026-10-28), display only: each group of `fl` (a
+        FlameStatus view) with aim slots on either side gets "aim": its
+        slots, flamesafe's list (None from an older flamesafe), this
+        engine's (None without a flame link), "loaded" (both the same and
+        not empty), and the values asked for and sent on those slots in
+        flamesafe's last fresh frame (None while stale). Returns the whole
+        picture, and raises an "aim" alert (display only: alerts.
+        DISPLAY_ONLY) while the two lists differ (cleared once they
+        agree). Nothing here is sent anywhere, and it
+        never touches Stop, Hold, Abort or a disarm. Never raises."""
+        try:
+            return self._aim_view(fl or {})
+        except Exception:                        # noqa: BLE001
+            return {"ltcplay": None, "flamesafe": None, "path": "",
+                    "agree": None}
+
+    def _aim_view(self, fl):
+        src = self.flame_aim
+        mine = (None if src is None
+                else sorted(int(x) for x in (src[0] or ())))
+        path = "" if src is None else str(src[1] or "")
+        groups = fl.get("groups") or []
+        live = bool(fl.get("connected") and not fl.get("stale"))
+        theirs = None
+        if live and groups and all(isinstance(g.get("aim_slots"), list)
+                                   for g in groups):
+            theirs = sorted({int(a) for g in groups for a in g["aim_slots"]})
+        for g in groups:
+            fire = g.get("fire_slots") or []
+            fs = g.get("aim_slots")
+            fs = sorted(fs) if isinstance(fs, list) else None
+            lt = None if mine is None else [x for x in mine if x in fire]
+            slots = sorted(set(fs or ()) | set(lt or ()))
+            if not slots:
+                continue
+
+            def at(vals):
+                if not live or not isinstance(vals, list) or \
+                        len(vals) != len(fire):
+                    return None
+                return [vals[fire.index(x)] for x in slots]
+            g["aim"] = {"slots": slots, "flamesafe": fs, "ltcplay": lt,
+                        "loaded": bool(fs) and fs == lt,
+                        "asked": at(g.get("commanded_fire")),
+                        "sent": at(g.get("sent_fire"))}
+        agree = None if theirs is None or mine is None else theirs == mine
+        self._aim_alert(agree, mine, theirs, path)
+        return {"ltcplay": mine, "flamesafe": theirs, "path": path,
+                "agree": agree}
+
+    @staticmethod
+    def aim_mismatch_text(mine, theirs, path):
+        """The alert's sentence while the lists differ: what each has, the
+        file this engine read, and what to do."""
+        def words(v):
+            return ", ".join(str(x) for x in v) if v else "none"
+        return (f"Aim slots do not match: flamesafe has {words(theirs)} and "
+                f"LTC Player has {words(mine)} (LTC Player read "
+                f"{path or 'flamesafe config'} when it started). Until they "
+                f"match a wave flamer's angle can stay at 0, its end stop. "
+                f"Put the aim list in the flamesafe.json flamesafe uses, "
+                f"check that LTC Player reads that same file, then quit LTC "
+                f"Player and start it again so both read it afresh. Stop, "
+                f"Hold, Abort and Disarm all work as usual meanwhile.")
+
+    def _aim_alert(self, agree, mine, theirs, path):
+        """Raise once per new mismatch sentence; clear the one raised here
+        once the lists agree. Not known (no fresh frame, an older
+        flamesafe, no flame link): nothing changes."""
+        if agree is None:
+            return
+        with self._aim_lock:
+            if agree:
+                aid, self._aim_alert_id = self._aim_alert_id, None
+                was, self._aim_said = self._aim_said, None
+                if was is None:
+                    return
+                self._journal("system", "engine", "aim slots", "match",
+                              f"Aim slots match again: flamesafe and LTC "
+                              f"Player both have "
+                              f"{', '.join(str(x) for x in mine) or 'none'}.")
+                # Only this alert's own id: the "aim" kind is raised
+                # nowhere else.
+                if aid is not None and any(
+                        a.id == aid for a in self.alerts.open()):
+                    self.alerts.clear(id=aid, action="Confirm",
+                                      who="LTC Player", screen="engine")
+                return
+            text = self.aim_mismatch_text(mine, theirs, path)
+            if text == self._aim_said:
+                return
+            self._aim_said = text
+            try:
+                a = self.alerts.raise_("aim", text)
+                self._aim_alert_id = getattr(a, "id", None)
+            except Exception:                    # noqa: BLE001
+                self._journal("system", "engine", "aim slots", "differ",
+                              text, fault=True)
+
     def render_fault_alert(self, text):
         """FlameCues.on_render_fault (web.serve): a render older than the
         layout, found at show load, is a flames alert on every screen and
@@ -4451,10 +4744,15 @@ class Remote:
                   "why": f"the MadMapper watch failed: {type(e).__name__}"}
         from . import madmapperwatch as mmw
         hb = mmw.heartbeat_view(self.madmapper_heartbeat,
-                                self.madmapper_heartbeat_cfg, playing)
+                                self.madmapper_heartbeat_cfg, playing,
+                                getattr(self.control, "session", None))
         if hb is not None:
             st["heartbeat"] = hb["heartbeat"]
             st["heartbeat_why"] = hb["why"]
+            # What MadMapper's heartbeat track must end at, and what it
+            # ends at now once measured (Jeff, 2026-10-28, item 14).
+            st["heartbeat_track"] = hb.get("track")
+            st["heartbeat_track_wrong"] = hb.get("track_wrong") or False
         return st
 
     @staticmethod
@@ -4521,6 +4819,9 @@ class Remote:
             hb = mm.get("heartbeat")
             if hb == "silent":
                 add("Video", "warn", "MadMapper running, no heartbeat")
+            elif mm.get("heartbeat_track_wrong"):
+                add("Video", "warn", f"MadMapper running, "
+                    f"{mm['heartbeat_track_wrong']}")
             elif not last and sent:
                 add("Video", "warn",
                     "MadMapper running, last command not confirmed")
@@ -4534,6 +4835,9 @@ class Remote:
             if mm.get("heartbeat_why"):
                 why = mm["heartbeat_why"][0].upper() + \
                     mm["heartbeat_why"][1:] + ". "
+            if mm.get("heartbeat_track"):
+                why += mm["heartbeat_track"][0].upper() + \
+                    mm["heartbeat_track"][1:] + ". "
         elif last:
             add("Video", "ok", last)
         elif sent:
@@ -5452,6 +5756,7 @@ class Remote:
                                     "Deck."}
         else:
             out["flames"] = self.flame_status.view()
+        out["flames"]["aim"] = self.aim_view(out["flames"])
         self._rearm_words(out["flames"])
         # Review of PR #43, P1-3: the flame cues refused for a reason that
         # is a fault (the render and the layout do not fit, and the like).

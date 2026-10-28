@@ -328,6 +328,23 @@ plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
+**WIND on the show screen (Fire & Ice).** Under the lasers. Advisory only:
+it never arms, holds or stops anything; the on-site wind check decides.
+The measured line shows the highest usable reading from UTALP (the I-15
+Point of the Mountain station) and the backup airports (Provo, Salt Lake
+City). A backup reading is amber and says "backup station", the airport,
+how far away it is and why UTALP was not used ("UTALP (Iowa mesonet)
+stopped reporting at 3:40 AM, last reading 3 h 12 min ago") or what UTALP
+reads. If the highest reading is STALE it is still shown, amber and
+marked STALE, with the current ones beside it. NO CURRENT DATA, use
+on-site wind check, with no number, means no
+source has a usable reading (UTALP over 45 min old, an airport over 2 h);
+the line says why for each one. The forecast line goes STALE when this PC
+has not got it from the Weather Service for an hour, or the Weather
+Service has not updated it for 18 h, and grey at 6 h and 36 h; it says
+which. WEATHER.md
+has the rules and the settings.
+
 **Startup (Fire & Ice; it was called Morning and Shutdown).** The rack
 screen has a Startup page (the button in the header). Shutdown is its own
 labelled section on it: one press opens the Shutdown checklist. On it: the laser arm (every
@@ -352,6 +369,10 @@ it, or its taskbar button) for Calibration off; it sends nothing to
 BEYOND; if Windows will not let it come
 forward, BEYOND's button on the taskbar flashes, click it); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
+a group button arms every machine in it that can be armed and says which
+it skipped and why, such as one locked out; it is green when all of the
+group is armed, amber with the count and the reason when only part is,
+and while any of it is armed, clicking it again takes the whole group off;
 let go and it stops; nothing fires while a show is live or an Abort
 stands); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
@@ -641,6 +662,45 @@ While a Stop is still disarming and fading to dark, Start now and Run on
 any screen are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
+## How long a show runs
+
+Jeff's field report, 2026-10-28. With the show audio played by ltcplay
+("audio_master"), a show runs to the longest of its audio, its lights
+file (the cue's FSEQ), and the show length set in the show file's
+`clock.zones.show_len_s` when there is one. ltcplay cannot read the
+video's length from MadMapper, so a video longer than both the audio and
+the lights file needs that setting. The schedule's own show_len_s is the
+time the night plans for a show and is not used here.
+
+- **Audio shorter than the lights file.** Run says so first, naming both
+  lengths, for example "The show audio for Show is 451.46 s, shorter than
+  the lights file (454.17 s)". The show still starts. After the audio
+  ends the rest plays in silence on this computer's clock: the Art-Net
+  timecode, the lights, the flame cues and the video carry on to the end,
+  and nothing reads as the audio lost. An LTC timecode track inside the
+  show audio (`clock.audio.ltc_output`) is part of the audio, so it ends
+  with the audio; Run says so when there is one. Export the audio to the
+  full length to hear it to the end.
+- **`clock.zones.show_len_s`** may make the show at most 60 s longer than
+  its audio and lights file. More than that refuses Run, naming the
+  numbers (a typo must never run an hour of silent timecode). Past the
+  end of the lights file the lights and the flame cues are dark, Run says
+  so, and that is not a fault.
+- **The schedule's show_len_s** must be at least the show's real length.
+  If it is shorter, ltcplay does not start and says which number to put
+  in the schedule file.
+- **At the end of a show** the timecode holds its last frame, sent 30
+  times a second, so MadMapper stays on the last picture instead of going
+  back to the start. The show still ends at that moment: the pixels go to
+  the idle look and the scheduler goes to the intermission (flame cues to
+  zero, lasers blanked) at the real end. The held frame goes to
+  MadMapper alone (the timecode receiver named MadMapper in the show
+  file), never to BEYOND, never by broadcast, whatever the lasers'
+  blanking mode. The held frame stops when the next show starts, on Abort, or on
+  Stop.
+- **Abort and Stop** are as before: they stop the timecode at once,
+  including after the audio has ended. A longer show never delays them.
+
 ## Stopping
 
 On the page: Stop and black out. In the terminal: Ctrl-C. Either way the rig is
@@ -799,7 +859,17 @@ is running: MadMapper never answers back, so it cannot tell whether the
 screens show the picture. If the show file has a MadMapper heartbeat, a
 playing show also reads "heartbeat OK", or "MadMapper running, no
 heartbeat" (amber) when MadMapper's heartbeat stops arriving; between
-shows and on Hold a silent heartbeat is normal and nothing is said. Off
+shows and on Hold a silent heartbeat is normal and nothing is said. The
+chip's tooltip also says what MadMapper's heartbeat track (/float-1) must
+end at: the show's real length (see "How long a show runs"), whatever
+ltcplay_fire_ice.json says. Once a show has played a minute, ltcplay
+measures where MadMapper's track really ends; if that is wrong the chip
+turns amber and says exactly what to set, for example "MadMapper
+running, set /float-1 to end at 454.17 s, it ends at 444.42 s". Change
+the track's length in MadMapper and the chip turns green during the next
+show. This lamp is the only place a wrong track length shows: ltcplay's
+heartbeat drift alarm is not switched on in this build, so there is no
+drift alert. Off
 the show PC, or with MadMapper on another machine, it cannot be told:
 the chip reads "not sent yet" (grey) until a show sends something, and
 its tooltip says why.
@@ -820,6 +890,45 @@ Programming: a rehearsal; play from, jump and loop work and the scheduler
 starts no show. To switch, press Stop, pick the other side of the switch,
 then Run. While a scheduled show is live, Programming is locked and the
 switch says so. Back to the show returns to the show screen.
+
+In Programming on a show that plays its own show audio (Fire & Ice), the
+show audio is the playhead, and everything follows it together: the
+music, the Art-Net timecode (so MadMapper's video and BEYOND follow), the
+pixels and the show's flame cues. Play from starts the show exactly the
+way Start now does, from the point you typed (MadMapper's show bank, the
+audio from that point, then the rig comes up for the show). Back 10 s,
+Back 5 s, Ahead 5 s and Ahead 10 s move the audio, the timecode and the
+pixels at once; while paused they move the paused point, and Continue
+plays from there. Pause is the show's own Hold (flame cues to zero,
+lasers blanked and disarmed, music and timecode frozen) and Continue its
+own Resume. The A/B loop jumps the audio back to mark A each time it
+passes mark B; both marks have to be in the same cue. Stop the show
+audio (the button that says Follow timecode again on other shows) takes
+the rig out of the show (flame cues zero, lasers blanked) and stops the
+music. The screen says Playing on the show audio or Paused on the show
+audio.
+
+While Programming is playing, Hold on any screen or the Stream Deck
+pauses it the same as Pause, and also holds the schedule, so no show
+starts until someone presses Resume (Continue carries the playback on but
+leaves the schedule held). Abort (after it disarms every flame group and
+laser, as always) stops the playback the way Stop the show audio does.
+Start now and Run are refused while Programming is playing: stop the
+Programming playback first.
+The Rack screen's Stop and the Stream Deck's Stop stop it too. If no
+operator page is open for 60 seconds, the playback stops by itself and
+the night journal says so; press Play from to carry on.
+
+A Pause pressed while a Hold is still fading out freezes where the fade
+ends, and Back and Ahead are refused until it has frozen.
+
+Nothing on the screen arms anything. Flame cues still go only to groups
+an operator has armed, through flamesafe, and nothing fires for half a
+second after a jump, a loop, Play from or Continue; a cue you jump over is not
+played, and a flame already on where you land stays off until it ends.
+The lasers stay dark in Programming: the laser gate lights them only
+while a scheduled show is live. BEYOND's own timeline still follows the
+timecode, so its position moves with the playhead.
 
 Fire flames while scrubbing, on the Programming screen, lets the show's own
 flame cues fire while you play, jump and loop in Programming. It is off
@@ -852,6 +961,31 @@ contact the line reads "armed: not known".
 The wave flamer, with a safety per fixture, keeps its own count of safeties
 up. If the Startup page's machine list cannot be read the line is left
 off.
+
+A group with aim slots (the wave flamer's angle, `aim` in flamesafe.json)
+has one more small line on its card, read only, for example "Aim 1, 7, 13:
+loaded; ARMED; asked 54, 128, 201, sent 54, 128, 201". Loaded means
+flamesafe and LTC Player have the same aim list. Asked is what the show
+asked for on those slots, sent is what flamesafe really sent: 0 while the
+group is not armed (it then reads held or disarmed), by design: the head
+then sits at its end stop. Hover
+the line to read all of it. If it says NOT loaded, an Aim slots alert says
+the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+Player read when it started, and what to do (put the aim list in the
+flamesafe.json flamesafe uses, check LTC Player reads that same file, then
+quit LTC Player and start it again). It is display only: it never holds
+a show at showtime, never plays the Delayed announcement, never sounds
+the booth speaker and changes nothing on the Stream Deck (no ACK key, page
+2 stays open). Stop, Hold, Abort and Disarm all work as usual while it
+is up, and it clears itself once the lists agree. Both
+programs also write their aim list and the file they read to the journal
+when they start.
+
+If the Startup page says a machine does not fit flamesafe's layout (for
+example "slot 1 is on the fixture whose safety slot is None, not 6"), the
+sentence ends with the full path of the flamesafe config it was checked
+against. If that is not the flamesafe.json you edited, LTC Player is
+reading another one.
 
 The button under the groups is two-way. While every group is off it reads
 Hold to arm all flame groups, in green with a green outline: press and HOLD

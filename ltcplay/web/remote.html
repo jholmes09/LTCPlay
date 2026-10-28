@@ -424,6 +424,12 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .mo-groups button{flex:1 1 9em;min-height:clamp(44px,5.5vh,56px);font-size:clamp(14px,1.8vh,18px);padding:4px 8px}
 .mo-groups button.ghost{flex:0 0 auto}
 .mo-groups button.on{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
+.mo-groups button.part{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
+/* A group button's words (2026-10-28): one line under its name, cut with
+   an ellipsis (the whole of it in the tooltip), so a long sentence never
+   grows the button or pushes the field and the message line down. */
+.mo-groups button[data-grp]{min-width:0;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.mo-groups button .gd{display:block;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px;font-weight:600;line-height:1.15}
 #mo-field{flex:0 0 auto;height:clamp(360px,56vh,680px);position:relative;border:1px solid var(--hair);border-radius:8px;
   background:rgba(7,6,5,.6) linear-gradient(180deg,rgba(212,168,74,.05),rgba(212,168,74,0));overflow:hidden}
 #mo-field .edge{position:absolute;left:8px;right:8px;font:700 14px/1.2 var(--caps);letter-spacing:.14em;
@@ -1622,6 +1628,23 @@ function machineCountLine(g, c, gm){
   return "armed " + n + " of " + m + (m === 1 ? " machine" : " machines") +
     (lk === "untrusted" ? "; lockout not trusted" : k ? (lk === "ok" ? ", " + k + " locked out" : ", " + k + " lock pending") : "");
 }
+// The aim line (2026-10-28), read only, on the card of a group with aim
+// slots (the wave flamer's angle): which slots, whether they are loaded
+// (flamesafe and LTC Player have the same list), the group's state (ARMED,
+// held, disarmed),
+// and what was asked for and sent on them in flamesafe's last frame. ""
+// for a group without aim slots. `g.aim` is the engine's aim_view.
+function aimLine(g, c){
+  const a = g && g.aim;
+  if(!a || !(a.slots || []).length) return "";
+  const j = v => (v && v.length) ? v.join(", ") : "none";
+  let t = "Aim " + j(a.slots) + ": " + (a.loaded ? "loaded" :
+    a.flamesafe === null || a.flamesafe === undefined ? "flamesafe does not say" :
+    "NOT loaded (flamesafe " + j(a.flamesafe) + ", LTC Player " + (a.ltcplay ? j(a.ltcplay) : "not known") + ")");
+  t += c === "armed" ? "; ARMED" : c === "held" ? "; held" : c === "unknown" ? "; armed not known" : "; disarmed";
+  if(c !== "unknown" && a.asked && a.sent) t += "; asked " + j(a.asked) + ", sent " + j(a.sent);
+  return t;
+}
 // The no-show-file line (Jeff, 2026-10-26; review of #113, P2-a and b):
 // what works NOW without a show file, from the status, never a promise.
 // `su` is the engine's setup view, `st` the status. "" when a show file
@@ -1840,8 +1863,9 @@ function wxBlock(w, heardAgoS){
   (w.banner || []).forEach(t => L.push({cls:"alert", text:t}));
   if(w.disagree) L.push({cls:"alert", text:w.disagree});
   w.lines.forEach(l => {
-    const lv = l.level === "ok" || l.level === "stale" ? l.level : "none";
-    L.push({cls:lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
+    // "backup": a reading from a backup station, amber but not STALE.
+    const lv = l.level === "ok" || l.level === "stale" ? l.level : l.level === "backup" ? "backup" : "none";
+    L.push({cls:lv === "backup" ? "stale" : lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
   });
   if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
   return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L, foot:foot};
@@ -2243,6 +2267,8 @@ function renderStale(){
       // Never an old count while nothing is known (second review of #122).
       const sf = el.querySelector(".saf");
       if(sf){ sf.hidden = false; sf.textContent = "armed: not known"; sf.title = ""; }
+      const am = el.querySelector(".aim");
+      if(am){ am.hidden = true; am.textContent = ""; am.title = ""; }
     });
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "0.3";
     $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "0.3";
@@ -2395,13 +2421,15 @@ function render(){
 
   setWarn("tr-why", tr.programming ? "" : (tr.why || ""));
   const bits = [];
-  if(tr.freerun) bits.push(tr.paused ? "Paused" : "Playing on this machine's clock");
+  if(tr.playhead === "show_audio") bits.push(tr.paused ? "Paused on the show audio" : tr.playing ? "Playing on the show audio" : "Stopped. Play from a timecode to start the show audio");
+  else if(tr.freerun) bits.push(tr.paused ? "Paused" : "Playing on this machine's clock");
   else if(show.running) bits.push("Following timecode");
   if(tr.marks && (tr.marks.a || tr.marks.b)) bits.push("A " + (tr.marks.a || "none") + ", B " + (tr.marks.b || "none"));
   if(tr.loop) bits.push("Looping " + tr.loop[0] + " to " + tr.loop[1]);
   $("tr-state").textContent = bits.join(". ");
   $("tr-loop").textContent = tr.loop ? "Loop off" : "Loop on";
   $("tr-loop").dataset.on = tr.loop ? "1" : "";
+  $("tr-follow").textContent = tr.playhead === "show_audio" ? "Stop the show audio" : "Follow timecode again";
 
   $("tn-state").textContent = word + (label ? ": " + label : "");
   $("tn-next").textContent = "Next: " + nextText;
@@ -2530,7 +2558,7 @@ let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
 // The page's own banners: whether each is a fault now, and its label.
 const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note"};
 const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
-  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check"};
+  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check", aim:"Aim slots"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
@@ -2570,7 +2598,7 @@ function renderLamps(fl){
     LAMP_KEY = key;
     box.innerHTML = groups.map((g, i) =>
       `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b>
-        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><span class="act"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i></div>`).join("");
+        <div class="lb"><button class="armb" data-arm="${i}" data-mode="hold"><div class="fill"></div><span class="word"></span><span class="act"></span><small></small></button></div><i class="why"></i><i class="why saf" hidden></i><i class="why aim" hidden></i></div>`).join("");
     // One button (2026-10-26): its mode when the finger went down decides
     // (clickAction). Hold to arm starts on the press and stops on the
     // release; Disarm goes on the click.
@@ -2605,6 +2633,12 @@ function renderLamps(fl){
     se.hidden = !sl;
     se.textContent = sl;
     se.title = sl;
+    // AIM LINE BEGIN
+    const al = aimLine(g, c), ae = el.querySelector(".aim");
+    ae.hidden = !al;
+    ae.textContent = al;
+    ae.title = al;
+    // AIM LINE END
     const as = armState(ST, Date.now(), LAST_OK, i);
     const ab = el.querySelector("[data-arm]");
     if(!holding(i)) ab.disabled = !as.ok;
@@ -3938,7 +3972,7 @@ function renderMorning(){
   const key = JSON.stringify([Object.keys(mo.groups || {}), mo.config_error]);
   if(gb.dataset.key !== key){
     gb.dataset.key = key;
-    gb.innerHTML = Object.keys(mo.groups || {}).map(g => `<button data-grp="${esc(g)}">${esc(g)}</button>`).join("") +
+    gb.innerHTML = Object.keys(mo.groups || {}).map(g => `<button data-grp="${esc(g)}"><b>${esc(g)}</b><small class="gd">\u00a0</small></button>`).join("") +
       `<button class="ghost" id="mo-clear">Clear</button><button class="ghost" id="mo-arrange">Arrange</button>`;
     gb.querySelectorAll("[data-grp]").forEach(b => b.addEventListener("click", () => groupClick(b.dataset.grp)));
     $("mo-clear").addEventListener("click", () => moPress("purge-clear", {}));
@@ -3947,12 +3981,20 @@ function renderMorning(){
   // Arrange mode: the banner with its three ways out shows, the Arrange
   // button and every group button are off (Jeff, 2026-10-19).
   renderArrange();
+  // A group button (Jeff, 2026-10-28): green only when every member is
+  // selected and flamesafe armed it, amber for part of it (the engine's
+  // words name what is locked out or not armed yet), and while ANY member
+  // is selected its click takes the whole group off: a disarm is never
+  // held back.
   gb.querySelectorAll("[data-grp]").forEach(b => {
     const ids = (mo.groups || {})[b.dataset.grp] || [];
-    const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
-    b.classList.toggle("on", !!all);
-    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));
-    b.title = ids.length ? ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
+    const gs = (mo.group_state || {})[b.dataset.grp] || {};
+    const any = groupAnySelected(ids, purge);
+    b.classList.toggle("on", gs.state === "on");
+    b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));
+    b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);
+    b.querySelector(".gd").textContent = gs.text || "\u00a0";
+    b.title = ids.length ? (gs.text ? b.dataset.grp + ": " + gs.text + ". " : "") + (any ? "Click to take the whole group off the purge. " : "") + ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
   });
   // The field: every machine where the layout puts it.
   const field = $("mo-field");
@@ -4131,12 +4173,27 @@ function laserGroupClick(g){
   const la = (MO && MO.laser_arm) || {groups: {}};
   laserArmClick(((la.groups || {})[g] || []).slice());
 }
+// GROUP CLICK BEGIN
+// Any member selected: the click takes the WHOLE group off (the safe way,
+// never blocked by a member that is locked out or was refused). None
+// selected: it asks the engine to arm every member that can take it; the
+// engine skips and names the rest (Jeff, 2026-10-28: a locked front-row-4
+// left the button grey and a second click armed again instead of off).
+function groupAnySelected(ids, purge){
+  const sel = (purge && purge.selected) || [];
+  return ids.some(id => sel.includes(id));
+}
+// Off (any member selected) is never disabled: not by Arrange mode, purge
+// arming switched off or a signed-out screen. Only an arm is.
+function groupButtonDisabled(ids, any, mo, arrange, st){
+  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));
+}
 function groupClick(g){
   const ids = (MO.groups || {})[g] || [];
-  const purge = MO.purge_state || {};
-  const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
-  moPress("purge-select", {machines: ids, on: !all});
+  const any = groupAnySelected(ids, MO.purge_state || {});
+  moPress("purge-select", {machines: ids, group: g, on: !any});
 }
+// GROUP CLICK END
 async function moPress(route, extra, msgEl){
   const el = $(msgEl || "mo-msg");
   // Every press on this page goes through here: in Arrange mode the ones
