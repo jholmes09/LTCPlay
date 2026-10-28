@@ -110,6 +110,20 @@ DELAYED, CANCELLATION, CANNOT_CONTINUE = (
 IDS = (DELAYED, CANCELLATION, CANNOT_CONTINUE)
 LABELS = {DELAYED: "Delayed", CANCELLATION: "Cancellation",
           CANNOT_CONTINUE: "Cannot continue"}
+# The rack screen's Test tone (Jeff's field report, 2026-10-28): 1 s of a
+# soft 440 Hz at -20 dBFS through the same route and output an
+# announcement would use, so the route can be checked with no recording.
+# Never one of IDS: it is never a button of its own and never Holds.
+TEST_TONE = "test_tone"
+LABELS[TEST_TONE] = "Test tone"
+TONE_HZ, TONE_DBFS, TONE_S, TONE_RATE = 440.0, -20.0, 1.0, 48000
+# A recording whose loudest sample is below this is silent (or decoded to
+# nothing): it is never reported as playing (Jeff's field report,
+# 2026-10-28: the screen said playing and nothing was heard).
+SILENT_DBFS = -80.0
+# A device that opened but has taken no audio after this long has failed:
+# "playing" is only ever said once audio has actually gone to it.
+START_S = 1.5
 
 CONFIG_FILE = "ltcplay_announce.json"
 OPERATORS_FILE = "ltcplay_operators.json"
@@ -144,6 +158,12 @@ BUS_STOP_FADE_S = 0.05
 # or an announcement that never lets the lock go.
 MAX_FILE_BYTES = 50 * 1024 * 1024      # 50 MB: generous for a spoken line
 MAX_LENGTH_S = 300.0                   # 5 minutes: a sentence, not a show
+# Through the show audio an announcement is at most a minute (safety review
+# of #158): the recording is held in the show audio process's memory and
+# sent to it in parts, beside the show's own audio. A longer recording is
+# refused there with a plain sentence; on its own output (no show audio
+# running) MAX_LENGTH_S still applies.
+SHOW_ROUTE_MAX_S = 60.0
 STALL_S = 3.0            # no callback at all for this long means the device
                          # has gone away, not that the file is just long
 CALLBACK_ERROR_LIMIT = 20      # the device answers, but every time with a
@@ -234,6 +254,10 @@ def load_operators(folder=None):
 #   "gain_db"       the announcement's level in the show mix, -40 to +6 dB
 OPTIONAL_KEYS = ("hostapi", "show_outputs", "gain_db")
 DEFAULT_SHOW_OUTPUTS = (1, 2)
+# The announcement's level in the show mix unless the file says otherwise:
+# -6 dB, so a recording normalised to full scale over a loud passage of
+# the show is not driven into the soft clip guard (safety review of #158).
+DEFAULT_GAIN_DB = -6.0
 GAIN_DB_RANGE = (-40.0, 6.0)
 
 
@@ -284,13 +308,13 @@ def parse_options(doc, where):
         raise ValueError(f"{where}: show_outputs has to be one or two "
                          f"different show audio outputs counted from 1, "
                          f"like [1, 2] (the front left and right).")
-    g = doc.get("gain_db", 0)
+    g = doc.get("gain_db", DEFAULT_GAIN_DB)
     lo, hi = GAIN_DB_RANGE
     if not (isinstance(g, (int, float)) and not isinstance(g, bool) and
             lo <= g <= hi):
         raise ValueError(f"{where}: gain_db has to be a number of decibels "
-                         f"from {lo:g} to {hi:g}; 0 plays the recording as "
-                         f"it is.")
+                         f"from {lo:g} to {hi:g} ({DEFAULT_GAIN_DB:g} "
+                         f"unless set); 0 plays the recording as it is.")
     return {"hostapi": host.strip() if host else None,
             "show_outputs": tuple(outs), "gain_db": float(g)}
 
@@ -367,9 +391,44 @@ def resolve_output_device(sd, name, hostapi=None):
     if not hits:
         raise ValueError(f"{_clean(name)!r} is not attached. Nothing else "
                          f"will be used in its place.")
+    if hostapi and len(hits) > 1:
+        raise ValueError(same_api_sentence(name, hits))
     choices = "; ".join(describe_output(d) for d in hits)
     raise ValueError(f"{_clean(name)} matches {len(hits)} outputs on this "
                      f"PC: pick one: {choices}.")
+
+
+def same_api_sentence(name, hits):
+    """Two or more outputs with the same name on the same audio system:
+    nothing here can tell them apart, so the operator renames one."""
+    api = hits[0].get("hostapi") or "the same audio system"
+    return (f"{_clean(name)} is the name of {len(hits)} outputs on "
+            f"{_clean(api)}, so they cannot be told apart. Rename one in "
+            f"Windows: Sound settings, More sound settings, Playback, its "
+            f"Properties, then the name at the top. Then pick it again.")
+
+
+def _write_json_atomic(path, doc):
+    """Write `doc` to `path` through a temp file of its own beside it,
+    flushed to the disk, then put in place in one step: a reader sees the
+    old file or the new one, never half of one."""
+    import tempfile
+    folder = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".ltcplay_announce.", suffix=".tmp",
+                               dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ------------------------------------------------------------ the schedule
@@ -663,7 +722,7 @@ class _Player:
 
     __slots__ = ("pcm", "channels", "rate", "total_frames", "frames_written",
                 "done", "_clock", "last_progress_at", "callback_errors",
-                "_fade_total", "_fade_pos", "stop_reason")
+                "_fade_total", "_fade_pos", "stop_reason", "started_at")
 
     def __init__(self, pcm, channels, rate, clock=None):
         self.pcm = pcm
@@ -681,6 +740,7 @@ class _Player:
         # the one clock in the codebase that could disagree.
         self._clock = clock or time.perf_counter
         self.last_progress_at = self._clock()
+        self.started_at = self.last_progress_at
         self.callback_errors = 0
         self._fade_total = 0
         self._fade_pos = 0
@@ -730,13 +790,8 @@ class _Player:
         return self.frames_written / float(self.rate)
 
 
-def to_show_mix(pcm, rate, out_rate, n_outs):
-    """A decoded recording as the show audio's announcement bus takes it:
-    float32 at full scale 1.0, at the show's rate (linear interpolation:
-    plenty for a spoken line), and one channel (played on every one of the
-    show outputs) or exactly `n_outs` (left to the first, right to the
-    second). A recording with more channels than that keeps its first
-    `n_outs`."""
+def as_float(pcm):
+    """Decoded samples as float32 at full scale 1.0, (frames, channels)."""
     import numpy as np
     if pcm.dtype == np.float32:
         f = pcm.astype(np.float32, copy=False)
@@ -748,7 +803,49 @@ def to_show_mix(pcm, rate, out_rate, n_outs):
         f = (pcm.astype(np.float32) - 128.0) / 128.0
     else:
         f = pcm.astype(np.float32)
-    f = f.reshape(f.shape[0], -1)
+    return f.reshape(f.shape[0], -1)
+
+
+def peak_dbfs(pcm):
+    """The loudest sample of a decoded recording, in dBFS (-inf when every
+    sample is zero, or there are none)."""
+    import math
+    import numpy as np
+    f = as_float(pcm)
+    if not f.size:
+        return float("-inf")
+    p = float(np.max(np.abs(f)))
+    return 20.0 * math.log10(p) if p > 0 else float("-inf")
+
+
+def test_tone_pcm(rate=TONE_RATE):
+    """TONE_S of TONE_HZ at TONE_DBFS, mono float32, with 10 ms ramps so it
+    never clicks."""
+    import numpy as np
+    n = int(TONE_S * rate)
+    t = np.arange(n, dtype=np.float64) / rate
+    amp = 10.0 ** (TONE_DBFS / 20.0)
+    x = amp * np.sin(2.0 * np.pi * TONE_HZ * t)
+    r = int(0.01 * rate)
+    env = np.ones(n)
+    env[:r] = np.linspace(0.0, 1.0, r)
+    env[-r:] = np.linspace(1.0, 0.0, r)
+    return (x * env).astype(np.float32).reshape(-1, 1)
+
+
+def _db_text(db):
+    return "silence" if db == float("-inf") else f"{db:.1f} dBFS"
+
+
+def to_show_mix(pcm, rate, out_rate, n_outs):
+    """A decoded recording as the show audio's announcement bus takes it:
+    float32 at full scale 1.0, at the show's rate (linear interpolation:
+    plenty for a spoken line), and one channel (played on every one of the
+    show outputs) or exactly `n_outs` (left to the first, right to the
+    second). A recording with more channels than that keeps its first
+    `n_outs`."""
+    import numpy as np
+    f = as_float(pcm)
     if f.shape[1] > 1:
         f = f[:, :n_outs] if f.shape[1] >= n_outs else f[:, :1]
     if rate != out_rate and f.shape[0]:
@@ -773,16 +870,26 @@ class _BusPlayer:
         self.rate = rate
         self._clock = clock
         self.last_progress_at = clock()
+        self.started_at = self.last_progress_at
         self.callback_errors = 0
         self.stop_reason = None
         self.frames_written = 0
         self._ended = False
         self._fading = False
+        self._seen = False
+        self.lost = None
 
     def poll(self):
         r = self.route.read()
         if r is None or r.get("token") != self.token:
+            if self._seen and self.lost is None:
+                # It was playing, and the bus no longer reports it: the
+                # show audio process restarted (its shared memory starts
+                # again from nothing). Failed at once, said plainly.
+                self.lost = ("the show audio process restarted while it "
+                             "played")
             return
+        self._seen = True
         frame = int(r.get("frame") or 0)
         if frame != self.frames_written:
             self.frames_written = frame
@@ -895,6 +1002,9 @@ class AnnounceService:
         # The one line said when the playing announcement Held nothing:
         # why no Hold was needed or possible (no_hold_note).
         self.hold_note = ""
+        # What the playing (or last) announcement actually sent: route,
+        # device, audio system, channels, seconds, peak level (dBFS).
+        self.sent = None
         self._player = None
         self._stream = None
         self._load()
@@ -1068,19 +1178,25 @@ class AnnounceService:
         except Exception as e:                   # noqa: BLE001
             raise ValueError(f"The audio system could not list its outputs: "
                              f"{_clean(str(e))}")
-        counts = {}
+        counts, per_api = {}, {}
         for d in outs:
             k = d["name"].strip().lower()
             counts[k] = counts.get(k, 0) + 1
+            ka = (k, d["hostapi"].strip().lower())
+            per_api[ka] = per_api.get(ka, 0) + 1
         want = (self.device_name or "").strip().lower()
         host = (self.options.get("hostapi") or "").strip().lower()
         out = []
         for d in outs:
             k = d["name"].strip().lower()
             same = counts[k] > 1
+            twin = per_api[(k, d["hostapi"].strip().lower())] > 1
             out.append({"name": d["name"], "hostapi": d["hostapi"],
                         "channels": d["channels"],
-                        "label": describe_output(d), "same_name": same,
+                        "label": describe_output(d) + (
+                            ", the same name twice here: rename one in "
+                            "Windows Sound settings" if twin else ""),
+                        "same_name": same, "cannot_pick": twin,
                         "picked": bool(want) and k == want and (
                             not same or d["hostapi"].strip().lower() ==
                             host)})
@@ -1107,6 +1223,8 @@ class AnnounceService:
                 h = (hostapi or "").strip().lower() \
                     if isinstance(hostapi, str) else ""
                 pick = [d for d in hits if d["hostapi"].strip().lower() == h]
+                if len(pick) > 1:
+                    raise ValueError(same_api_sentence(name, pick))
                 if len(pick) != 1:
                     raise ValueError(
                         f"{_clean(name)} matches {len(hits)} outputs on "
@@ -1133,14 +1251,13 @@ class AnnounceService:
                 doc["hostapi"] = host
             else:
                 doc.pop("hostapi", None)
-            parse_config(doc, self.config_path)      # nothing written if bad
-            tmp = self.config_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(doc, fh, indent=2)
-                fh.write("\n")
-            os.replace(tmp, self.config_path)
+            # Checked BEFORE anything is written: a bad key anywhere in
+            # the file refuses the save and leaves the file as it was.
+            parse_config(doc, self.config_path)
+            options = parse_options(doc, self.config_path)
+            _write_json_atomic(self.config_path, doc)
             self.device_name = name
-            self.options = parse_options(doc, self.config_path)
+            self.options = options
         text = (f"Announcement output saved: "
                 f"{_clean(name)}{' on ' + _clean(host) if host else ''}. It "
                 f"is used while the show audio is not running." if name else
@@ -1318,6 +1435,22 @@ class AnnounceService:
                                f"finished normally.",
                           ann_id=ann_id, state=state)
             return
+        never = (self._player.frames_written == 0 and
+                 self._clock() - self._player.started_at > START_S)
+        lost = getattr(self._player, "lost", None) or (
+            f"the output took no audio within {START_S:g} s of opening "
+            f"(a wrong or disabled output?), so nothing was heard"
+            if never else None)
+        if lost:
+            elapsed = self._player.elapsed_s
+            state = self._current_state()
+            self._finish()
+            self._emit(actor="system", action="play", outcome="failed",
+                      reason=lost,
+                      text=f"{label} stopped after {elapsed:.0f} s: {lost}. "
+                           f"Marked failed so another announcement can be "
+                           f"played.", ann_id=ann_id, state=state)
+            return
         stalled = (self._clock() - self._player.last_progress_at) > STALL_S
         too_many_errors = self._player.callback_errors >= CALLBACK_ERROR_LIMIT
         if stalled or too_many_errors:
@@ -1418,7 +1551,8 @@ class AnnounceService:
             surface = True
         who = _clean((who or "").strip())
         screen = _clean((screen or "").strip())
-        if ann_id not in IDS:
+        tone = ann_id == TEST_TONE and surface and automatic is None
+        if ann_id not in IDS and not tone:
             raise ValueError(f"{ann_id!r} is not one of {', '.join(IDS)}.")
         label = LABELS[ann_id]
         screen_txt = f" on the {screen}"
@@ -1426,6 +1560,15 @@ class AnnounceService:
         with self.lock:
             self._settle()
             state = self._current_state()
+            if tone and state in SHOW_STATES:
+                text = (f"{who} pressed Test tone{screen_txt}, but a show "
+                        f"is running. A test tone never plays during a "
+                        f"show. Nothing was changed.")
+                self._emit(actor=actor, action="test tone",
+                          outcome="refused", reason="a show is running",
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(text)
             missing = self._operator_problem(who, screen)
             if missing:
                 text = (f"A Play press on {label} did not say {missing}. "
@@ -1459,7 +1602,8 @@ class AnnounceService:
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)
                 raise ValueError(text)
-            st = self.status_by_id.get(ann_id, {})
+            st = ({"available": True, "length_s": TONE_S} if tone else
+                  self.status_by_id.get(ann_id, {}))
             if not st.get("available"):
                 text = (f"{who} pressed Play on {label}{screen_txt}, but "
                         f"it is not available: {st.get('reason')}")
@@ -1475,6 +1619,10 @@ class AnnounceService:
             dev = None
             if route is not None:
                 chk = self.route_check()
+                if chk["ok"]:
+                    too_long = self._too_long(st.get("length_s"))
+                    if too_long:
+                        chk = {"ok": False, "why": too_long}
                 if not chk["ok"]:
                     why = chk["why"] or "the show audio is not ready."
                     text = (f"{who} pressed Play on {label}{screen_txt}. "
@@ -1535,6 +1683,8 @@ class AnnounceService:
                               ann_id=ann_id, who=who, screen=screen,
                               state=state)
                     raise ValueError(text)
+            elif tone:
+                hold_note = "A test tone holds nothing."
             elif self.hold_requester is not None and not over_show:
                 hold_refusal, claim_epoch = self._request_hold(
                     who, screen,
@@ -1570,6 +1720,10 @@ class AnnounceService:
             my_gen = self._claim_gen
             self.playing = ann_id
             self.held_schedule = held
+            # The show audio's token for this attempt, taken now so the
+            # recording can be sent to the audio process without the lock.
+            self._route_token += 1
+            token = self._route_token
 
         # The file read happens WITHOUT the lock held: self.files never
         # changes after startup, so this is safe to do unlocked, and it is
@@ -1577,7 +1731,20 @@ class AnnounceService:
         # across it would block Stop, a status poll and every other
         # operator action for as long as the read takes (review, minor).
         try:
-            pcm, channels, rate = self._decode(ann_id)
+            if tone:
+                pcm = test_tone_pcm()
+                channels, rate = 1, TONE_RATE
+            else:
+                pcm, channels, rate = self._decode(ann_id)
+            # What is about to be sent, measured before anything is: a
+            # recording that decoded to silence is never reported as
+            # playing (Jeff's field report, 2026-10-28).
+            peak = peak_dbfs(pcm)
+            if peak < SILENT_DBFS:
+                raise ValueError(
+                    f"the recording is silent or unreadable: its loudest "
+                    f"sample is {_db_text(peak)}, below "
+                    f"{SILENT_DBFS:g} dBFS, so nothing was played")
         except Exception as e:
             with self.lock:
                 # Only touch shared state if this is still the current
@@ -1597,6 +1764,13 @@ class AnnounceService:
                               text=text, ann_id=ann_id, who=who,
                               screen=screen, state=self._current_state())
             raise ValueError(_clean(str(e)))
+
+        # Through the show audio: the recording is made ready for it (48
+        # kHz, its outputs) and sent to the audio process in parts here,
+        # still WITHOUT the lock (safety review of #158: none of this may
+        # hold up Stop, a status poll or a show starting). Only the small
+        # start message is sent under the lock below.
+        loaded, load_why = self._load_on_show(token, pcm, rate)
 
         with self.lock:
             if self._claim_gen != my_gen or self.playing != ann_id:
@@ -1651,6 +1825,16 @@ class AnnounceService:
                 chk = self.route_check() if route_now is not None else {
                     "ok": False, "why": "The show audio stopped while the "
                                         "announcement was loading."}
+                if chk["ok"]:
+                    too_long = self._too_long(pcm.shape[0] / float(rate)
+                                              if rate else 0.0)
+                    if too_long:
+                        chk = {"ok": False, "why": too_long}
+                    elif loaded is None or \
+                            loaded[0].engine is not route_now.engine:
+                        chk = {"ok": False, "why": load_why or (
+                            "The show audio started or changed while the "
+                            "announcement was loading.")}
                 if not chk["ok"]:
                     self.playing = None
                     why = chk["why"] or "the show audio is not ready."
@@ -1663,7 +1847,7 @@ class AnnounceService:
                               ann_id=ann_id, who=who, screen=screen,
                               state=state)
                     raise ValueError(text)
-                started = self._start_on_show(route_now, pcm, channels, rate,
+                started = self._start_on_show(route_now, token, loaded[1],
                                               ann_id, label, who, screen,
                                               screen_txt, held, claim_epoch,
                                               actor, state)
@@ -1672,14 +1856,20 @@ class AnnounceService:
                                                 ann_id, label, who, screen,
                                                 screen_txt, held,
                                                 claim_epoch, actor, state)
-            player, stream, where = started
+            player, stream, where, detail = started
             self.held_failed = None
             self._player = player
             self._stream = stream
             self.hold_note = hold_note
-            length = st.get("length_s") or 0.0
-            text = (f"{who} played {label}{screen_txt} on {where}. It runs "
-                    f"{length:.0f} s. " +
+            length = (pcm.shape[0] / float(rate)) if rate else 0.0
+            detail.update(length_s=round(length, 2),
+                          peak_dbfs=(None if peak == float("-inf") else
+                                     round(peak, 1)))
+            self.sent = detail
+            text = (f"{who} played {label}{screen_txt} on {where}"
+                    f"{', ' + _clean(detail['hostapi']) if detail.get('hostapi') else ''}"
+                    f", {detail['channels']} channel(s), {length:.1f} s "
+                    f"sent, peak {_db_text(peak)}. " +
                     ("The schedule is held for it; only Resume carries on."
                      if held else
                      "It plays while the schedule is on the alert hold; "
@@ -1695,18 +1885,45 @@ class AnnounceService:
                       state=state)
             return self.status()
 
-    def _start_on_show(self, route, pcm, channels, rate, ann_id, label, who,
+    def _too_long(self, length_s):
+        """The sentence when a recording is too long for the show audio
+        (SHOW_ROUTE_MAX_S), or None."""
+        if length_s is not None and length_s > SHOW_ROUTE_MAX_S:
+            return (f"It is {length_s:.0f} s long; through the show audio "
+                    f"an announcement is at most {SHOW_ROUTE_MAX_S:.0f} s. "
+                    f"Shorten the recording.")
+        return None
+
+    def _load_on_show(self, token, pcm, rate):
+        """Called WITHOUT the lock, after the file read: when the show audio
+        runs and the recording is not too long for it, resample it for the
+        show and send it to the audio process in parts. Returns ((route,
+        frames), None) when it went, else (None, why or None)."""
+        route = self._show_route()
+        if route is None:
+            return None, None
+        if rate and self._too_long(pcm.shape[0] / float(rate)):
+            return None, None
+        try:
+            mix = to_show_mix(pcm, rate, route.rate,
+                              len(self.options["show_outputs"]))
+            if not route.load(token, mix):
+                return None, ("The show audio process did not take the "
+                              "recording.")
+            return (route, mix.shape[0]), None
+        except Exception as e:                   # noqa: BLE001
+            return None, (f"The recording could not be made ready for the "
+                          f"show audio: {_clean(str(e))}.")
+
+    def _start_on_show(self, route, token, frames, ann_id, label, who,
                        screen, screen_txt, held, claim_epoch, actor, state):
-        """Hand the decoded recording to the show audio's announcement bus,
-        on the stream the show already has open. Called with the lock
-        held. Returns (player, stream, where), or raises ValueError."""
+        """Start the recording _load_on_show sent, on the show audio's
+        announcement bus: one small message. Called with the lock held.
+        Returns (player, stream, where), or raises ValueError."""
         outs = self.options["show_outputs"]
         try:
-            mix = to_show_mix(pcm, rate, route.rate, len(outs))
-            self._route_token += 1
-            token = self._route_token
             gain = 10.0 ** (self.options["gain_db"] / 20.0)
-            sent = route.play(token, mix, [o - 1 for o in outs], gain)
+            sent = route.play(token, [o - 1 for o in outs], gain)
         except Exception as e:                   # noqa: BLE001
             sent, why = False, _clean(str(e))
         else:
@@ -1722,11 +1939,12 @@ class AnnounceService:
                       screen=screen, state=state)
             raise ValueError(f"{label} could not be played: {why}")
         self.last_good_device = route.device
-        player = _BusPlayer(route, token, mix.shape[0], route.rate,
-                            self._clock)
+        player = _BusPlayer(route, token, frames, route.rate, self._clock)
         return (player, _BusStream(route, token, route.rate),
                 f"the show audio ({self._outs_text()} on "
-                f"{_clean(route.device)})")
+                f"{_clean(route.device)})",
+                {"route": "show audio", "device": route.device,
+                 "hostapi": None, "channels": len(outs)})
 
     def _start_on_device(self, dev, pcm, channels, rate, ann_id, label, who,
                          screen, screen_txt, held, claim_epoch, actor,
@@ -1787,7 +2005,9 @@ class AnnounceService:
             raise ValueError(f"{label} could not be played: "
                              f"{_clean(str(e))}")
         self.last_good_device = dev["name"]
-        return player, stream, _clean(dev["name"])
+        return (player, stream, _clean(dev["name"]),
+                {"route": "own output", "device": dev["name"],
+                 "hostapi": dev.get("hostapi") or None, "channels": out_ch})
 
     @staticmethod
     def _automatic_refusal(check):
@@ -1798,6 +2018,12 @@ class AnnounceService:
         except Exception as e:                   # noqa: BLE001
             return f"its check could not be made ({_clean(str(e))})."
         return _clean(why) if why else None
+
+    def test_tone(self, who, screen):
+        """The rack screen's Test tone: 1 s of a soft 440 Hz at -20 dBFS
+        through the same route and output an announcement would use now,
+        never during a show and never with a Hold. Returns the status."""
+        return self.play(TEST_TONE, who, screen, surface=True)
 
     def stop(self, who, screen, surface=False):
         """Stop the playing announcement's audio. Only the audio: the
@@ -1863,8 +2089,14 @@ class AnnounceService:
                           "held_schedule": bool(self.held_schedule),
                           "note": self.hold_note or None,
                           "elapsed_s": self._player.elapsed_s,
-                          "length_s": self.status_by_id[self.playing]
-                                            .get("length_s")}
+                          # Only once audio has actually gone to the
+                          # output: until then it is starting, not
+                          # playing (Jeff's field report, 2026-10-28).
+                          "heard": self._player.frames_written > 0,
+                          "sent": self.sent,
+                          "length_s": (self.sent or {}).get("length_s")
+                          or self.status_by_id.get(self.playing, {})
+                          .get("length_s")}
             return {"ok": not self.error, "error": self.error or None,
                     "device": self.device_name or None,
                     "device_set": self.device_set,
@@ -1872,6 +2104,7 @@ class AnnounceService:
                     "device_reason": device_reason,
                     "hostapi": self.options.get("hostapi"),
                     "route": route,
+                    "last_sent": self.sent,
                     "last_good_device": self.last_good_device,
                     "announcements": items, "playing": playing,
                     "show_state": state,

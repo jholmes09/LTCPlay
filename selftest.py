@@ -13435,7 +13435,12 @@ def _ann_write_wav(path, seconds=1.0, rate=8000, channels=1):
         w.setnchannels(channels)
         w.setsampwidth(2)
         w.setframerate(rate)
-        w.writeframes(struct.pack(f"<{n * channels}h", *([0] * (n * channels))))
+        # A quiet square wave (-30 dBFS), never all zeros: a recording
+        # that decodes to silence is refused (Jeff's field report,
+        # 2026-10-28).
+        w.writeframes(struct.pack(f"<{n * channels}h", *[
+            1000 if (i // (channels * 8)) % 2 else -1000
+            for i in range(n * channels)]))
     return n / float(rate)
 
 
@@ -13466,7 +13471,11 @@ def _ann_write_24bit(path, seconds=1.0, rate=8000):
         w.setnchannels(1)
         w.setsampwidth(3)
         w.setframerate(rate)
-        w.writeframes(b"\x00\x00\x00" * n)
+        # A quiet tone, never all zeros (a silent recording is refused).
+        w.writeframes(b"".join(
+            (40000 if (i // 8) % 2 else -40000).to_bytes(3, "little",
+                                                         signed=True)
+            for i in range(n)))
 
 
 def _ann_write_float32(path, seconds=1.0, rate=8000, value=0.9):
@@ -16050,6 +16059,10 @@ def test_announce_plays_through_the_show_audio():
                      rate=8000, levels=(0.5,))
     _ann_write_level(os.path.join(work, "cancellation.wav"), seconds=0.5,
                      rate=48000, levels=(0.5, -0.25))
+    g6 = 10 ** (A.DEFAULT_GAIN_DB / 20.0)
+    check(A.DEFAULT_GAIN_DB == -6.0,
+          "the default level in the show mix is -6 dB (safety review of "
+          "#158)")
     eng = _AnnBusEngine()
     if not check(eng.device_open(),
                  f"setup: the show audio is open: {eng.msgs}"):
@@ -16083,8 +16096,8 @@ def test_announce_plays_through_the_show_audio():
     check("on the show audio (outputs 1 and 2 on Show DSP)" in
           started["text"], f"the journal says where: {started['text']}")
     blk = eng.pump(2)
-    check(np.allclose(blk[:, 0], 0.75, atol=2e-4) and
-          np.allclose(blk[:, 1], 0.75, atol=2e-4) and
+    check(np.allclose(blk[:, 0], 0.25 + 0.5 * g6, atol=2e-4) and
+          np.allclose(blk[:, 1], 0.25 + 0.5 * g6, atol=2e-4) and
           np.allclose(blk[:, 2:], 0.25),
           f"8 kHz mono, resampled to 48 kHz, on outputs 1 and 2 on top of "
           f"the show; every other output is the show alone: "
@@ -16093,13 +16106,13 @@ def test_announce_plays_through_the_show_audio():
     # only.
     eng.proc.command(("pause", 0, 1))
     blk = eng.pump(1)
-    check(np.allclose(blk[:, 0], 0.5, atol=2e-4) and
+    check(np.allclose(blk[:, 0], 0.5 * g6, atol=2e-4) and
           np.allclose(blk[:, 2:], 0),
           f"the show held: its audio stops, the announcement goes on: "
           f"{blk[0].tolist()}")
     eng.proc.command(("level", 0.0, 0))
     blk = eng.pump(1)
-    check(np.allclose(blk[:, 0], 0.5, atol=2e-4),
+    check(np.allclose(blk[:, 0], 0.5 * g6, atol=2e-4),
           "an Abort's level fade never touches the announcement")
     eng.proc.command(("level", 1.0, 0))
     eng.proc.command(("resume", 0, 1))
@@ -16123,11 +16136,16 @@ def test_announce_plays_through_the_show_audio():
     check(st["playing"] is None and
           [j for j in svc.journal if j["outcome"] == "finished"],
           f"a natural end is noticed: {st['playing']}")
+    check(eng.proc.bus.pcm is None and len(eng.proc.bus.retired) >= 1,
+          "the callback never frees a finished recording: it is retired")
+    eng.proc.step(0.0)
+    check(len(eng.proc.bus.retired) == 0,
+          "the process's main thread lets the retired recordings go")
     # Stereo at 48 kHz: left to output 1, right to output 2.
     svc.play(A.CANCELLATION, "Andy", "rack screen")
     blk = eng.pump(1)
-    check(np.allclose(blk[:, 0], 0.75, atol=2e-4) and
-          np.allclose(blk[:, 1], 0.0, atol=2e-4),
+    check(np.allclose(blk[:, 0], 0.25 + 0.5 * g6, atol=2e-4) and
+          np.allclose(blk[:, 1], 0.25 - 0.25 * g6, atol=2e-4),
           f"stereo: left and right to the front left and right: "
           f"{blk[0, :3].tolist()}")
     # A show starting fades it out (SHOW_START_STOPS_ANNOUNCEMENT).
@@ -16148,6 +16166,21 @@ def test_announce_plays_through_the_show_audio():
     check(st["playing"] is None and
           [j for j in svc.journal if j["outcome"] == "failed"],
           "an announcement the show audio stopped playing is marked failed")
+    # The audio process restarting mid-announcement (its shared memory
+    # starts again from nothing): failed at once, said plainly, with no
+    # wait for the stall watchdog.
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    eng.pump(1)
+    svc.status()
+    for i in range(len(eng.arr)):
+        eng.arr[i] = 0.0
+    st = svc.status()
+    rows = [j for j in svc.journal if j["outcome"] == "failed"]
+    check(st["playing"] is None and rows and
+          "the show audio process restarted" in rows[-1]["text"],
+          f"a restart is reported at once: {rows[-1:]}")
+    _no_dashes(rows[-1]["text"] if rows else "", "restart")
+    eng.proc.bus.hard_stop()
     # The show audio's interface not open: refused BEFORE any Hold, with
     # a sentence that names the Show audio lamp, and the deck's word.
     state[0] = "STANDBY"
@@ -16216,7 +16249,7 @@ def test_announce_plays_through_the_show_audio():
     # The level and the outputs come from ltcplay_announce.json.
     with open(cfg, encoding="utf-8") as fh:
         doc = json.load(fh)
-    doc.update(show_outputs=[3, 4], gain_db=-6)
+    doc.update(show_outputs=[3, 4], gain_db=0)
     with open(cfg, "w", encoding="utf-8") as fh:
         json.dump(doc, fh)
     svc2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
@@ -16224,11 +16257,10 @@ def test_announce_plays_through_the_show_audio():
                              show_route=lambda: route)
     svc2.play(A.DELAYED, "Andy", "rack screen")
     blk = eng.pump(1)
-    g = 10 ** (-6 / 20.0)
-    check(np.allclose(blk[:, 2], 0.25 + 0.5 * g, atol=3e-4) and
-          np.allclose(blk[:, 3], 0.25 + 0.5 * g, atol=3e-4) and
+    check(np.allclose(blk[:, 2], 0.75, atol=3e-4) and
+          np.allclose(blk[:, 3], 0.75, atol=3e-4) and
           np.allclose(blk[:, 0], 0.25),
-          f"show_outputs [3, 4] at gain_db -6: {blk[0, :4].tolist()}")
+          f"show_outputs [3, 4] at gain_db 0: {blk[0, :4].tolist()}")
     svc2.stop("Andy", "rack screen")
     for bad in ({"show_outputs": [0, 1]}, {"show_outputs": [1, 1]},
                 {"gain_db": 12}, {"gain_db": True}, {"hostapi": ""},
@@ -16450,6 +16482,370 @@ def test_announce_output_picker():
           page.count("Hold a group's button to arm it.") >= 2,
           "the arm hint no longer says to lift your finger (Jeff, "
           "2026-10-28)")
+    print("  ok")
+
+
+def _ann_tone_wav(path, rate, channels, kind, seconds=0.25, level=0.5):
+    """A real WAV of a 440 Hz tone at `level`, written by hand in every way
+    the PA recordings can plausibly come: kind "pcm16", "pcm24", "float32",
+    "ext_pcm24" (WAVE_FORMAT_EXTENSIBLE) or "ext_float32"."""
+    import math
+    import struct
+    n = int(seconds * rate)
+    vals = [level * math.sin(2 * math.pi * 440.0 * i / rate)
+            for i in range(n)]
+    if kind in ("pcm16",):
+        bits, data = 16, b"".join(struct.pack("<h", int(v * 32767)) * channels
+                                  for v in vals)
+    elif kind in ("pcm24", "ext_pcm24"):
+        bits = 24
+        data = b"".join(int(v * 8388607).to_bytes(3, "little", signed=True)
+                        * channels for v in vals)
+    else:
+        bits, data = 32, b"".join(struct.pack("<f", v) * channels
+                                  for v in vals)
+    if kind.startswith("ext_"):
+        guid = _SUBTYPE_FLOAT if kind == "ext_float32" else _SUBTYPE_PCM
+        fmt = _fmt_extensible(channels, rate, bits, guid)
+    else:
+        tag = 3 if kind == "float32" else 1
+        ba = channels * bits // 8
+        fmt = _chunk(b"fmt ", struct.pack("<HHIIHH", tag, channels, rate,
+                                          rate * ba, ba, bits))
+    with open(path, "wb") as fh:
+        fh.write(_riff(fmt + _chunk(b"data", data)))
+    return n
+
+
+def test_announce_every_recording_kind_decodes_loud():
+    section("announcements (Jeff's field report, 2026-10-28: 'playing' and "
+            "nothing heard): every WAV the PA recordings can plausibly be "
+            "(16 and 24-bit PCM, 32-bit float, WAVE_FORMAT_EXTENSIBLE, mono "
+            "and stereo, 44.1, 48 and 96 kHz) decodes to the tone it holds, "
+            "at the right length, and is made ready for the show audio at "
+            "48 kHz; a recording that decodes to silence is never reported "
+            "as playing")
+    import numpy as np
+    A = _ann()
+    work = tempfile.mkdtemp()
+    for kind in ("pcm16", "pcm24", "float32", "ext_pcm24", "ext_float32"):
+        for rate in (44100, 48000, 96000):
+            for ch in (1, 2):
+                path = os.path.join(work, f"{kind}_{rate}_{ch}.wav")
+                n = _ann_tone_wav(path, rate, ch, kind)
+                what = f"{kind} {rate} Hz {ch} ch"
+                try:
+                    pcm, c2, r2, length = A._wav_info(path, decode=True)
+                except ValueError as e:
+                    check(False, f"{what}: refused: {e}")
+                    continue
+                peak = A.peak_dbfs(pcm)
+                check(c2 == ch and r2 == rate and pcm.shape[0] == n and
+                      -7.0 < peak < -5.0,
+                      f"{what}: decodes to the tone, peak about -6 dBFS: "
+                      f"{c2} {r2} {pcm.shape} {peak:.2f}")
+                mix = A.to_show_mix(pcm, rate, 48000, 2)
+                check(abs(mix.shape[0] - round(n * 48000 / rate)) <= 1 and
+                      float(np.max(np.abs(mix))) > 0.4 and
+                      mix.dtype == np.float32,
+                      f"{what}: ready for the show audio at 48 kHz: "
+                      f"{mix.shape} {float(np.max(np.abs(mix))):.3f}")
+    # A silent recording: refused, said plainly, journaled, nothing plays.
+    w2, cfg, _l = _ann_workdir()
+    import struct
+    import wave as _wave
+    with _wave.open(os.path.join(w2, "delayed.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(struct.pack("<8000h", *([0] * 8000)))
+    sd = FakeSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=w2,
+                            state_provider=lambda: "SHOW")
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "a silent recording must not be reported as playing")
+    except ValueError as e:
+        check("silent or unreadable" in str(e) and svc.playing is None and
+              not sd.output_opened,
+              f"said plainly, nothing opened: {e}")
+        _no_dashes(str(e), "silent recording")
+    rows = [j for j in svc.journal if j["outcome"] == "failed"]
+    check(rows and "silent or unreadable" in rows[-1]["text"],
+          f"journaled: {rows[-1:]}")
+    print("  ok")
+
+
+def test_announce_says_exactly_what_was_sent():
+    section("announcements (Jeff's field report, 2026-10-28): after a press "
+            "the status, the journal and the rack screen say what was sent "
+            "(route, output, audio system, channels, seconds, peak dBFS); "
+            "it reads as playing only once the output has taken audio, and "
+            "an output that opened but never took any is failed with a "
+            "plain reason; the Test tone plays a soft 440 Hz through the "
+            "same route, never during a show, holding nothing")
+    A = _ann()
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import showaudio as sa
+    work, cfg, _l = _ann_workdir(device="StudioLive WDM 1/2 (StudioLive 16R)")
+    with open(cfg, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    doc["hostapi"] = "Windows WASAPI"
+    with open(cfg, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    sd = _AnnPickSD()
+    t = [10.0]
+    state = ["STANDBY"]
+    asked = []
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: state[0],
+                            clock=lambda: t[0])
+    svc.hold_requester = lambda who, screen, detail=None: (
+        asked.append(who) or (None, 1))
+    svc.hold_still_claimed = lambda e: True
+    r = svc.play(A.DELAYED, "Andy", "rack screen")
+    p = r["playing"]
+    sent = p["sent"]
+    check(p["heard"] is False and sent["route"] == "own output" and
+          sent["device"] == "StudioLive WDM 1/2 (StudioLive 16R)" and
+          sent["hostapi"] == "Windows WASAPI" and sent["channels"] == 1 and
+          abs(sent["length_s"] - 1.0) < 0.01 and
+          -31.0 < sent["peak_dbfs"] < -29.0,
+          f"what was sent, before any audio has gone: {p}")
+    started = [j for j in svc.journal if j["outcome"] == "started"][-1]
+    check("Windows WASAPI" in started["text"] and "1 channel(s)" in
+          started["text"] and "1.0 s sent" in started["text"] and
+          "dBFS" in started["text"],
+          f"the journal says it too: {started['text']}")
+    words = RM.sent_words(sent)
+    check("on its own output StudioLive WDM 1/2 (StudioLive 16R) (Windows "
+          "WASAPI), 1 channel(s), 1.0 s, peak -30" in words, words)
+    _no_dashes(words + started["text"], "sent words")
+    sd.output_streams[-1].pump(256)
+    check(svc.status()["playing"]["heard"] is True,
+          "playing once audio has gone to the output")
+    svc.stop("Andy", "rack screen")
+    # An output that opens and never takes audio: failed, plainly.
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    t[0] += A.START_S + 0.1
+    st = svc.status()
+    rows = [j for j in svc.journal if j["outcome"] == "failed"]
+    check(st["playing"] is None and rows and
+          "took no audio within" in rows[-1]["text"],
+          f"never started: failed with a plain reason: {rows[-1:]}")
+    # The Test tone: between shows it holds nothing.
+    del asked[:]
+    r = svc.test_tone("Jeff", "Rack screen")
+    p = r["playing"]
+    check(p["id"] == A.TEST_TONE and p["held_schedule"] is False and
+          asked == [] and abs(p["sent"]["peak_dbfs"] - A.TONE_DBFS) < 0.1
+          and abs(p["sent"]["length_s"] - A.TONE_S) < 0.01 and
+          p["sent"]["device"] == "StudioLive WDM 1/2 (StudioLive 16R)",
+          f"the tone, through the same output, holding nothing: {p} "
+          f"{asked}")
+    svc.stop("Jeff", "Rack screen")
+    state[0] = "SHOW"
+    try:
+        svc.test_tone("Jeff", "Rack screen")
+        check(False, "a test tone never plays during a show")
+    except ValueError as e:
+        check("never plays during a show" in str(e), f"{e}")
+    check(not hasattr(A, "IDS") or A.TEST_TONE not in A.IDS,
+          "the tone is never one of the announcements")
+    try:
+        svc.play(A.TEST_TONE, "Andy", "rack screen")
+        check(False, "the tone is not an announcement anyone can play")
+    except ValueError:
+        pass
+    # Through the show audio, the same.
+    eng = _AnnBusEngine()
+    route = sa.ShowRoute(eng, "Show DSP", 8)
+    svc2 = A.AnnounceService(cfg, sd=_AnnPickSD(), operators_folder=work,
+                             state_provider=lambda: "IDLE",
+                             show_route=lambda: route)
+    r = svc2.test_tone("Jeff", "Rack screen")
+    check(r["playing"]["sent"]["route"] == "show audio" and
+          r["playing"]["sent"]["channels"] == 2,
+          f"the tone goes the announcements' way: {r['playing']}")
+    import numpy as np
+    blk = eng.pump(20)
+    check(0.04 < float(np.max(np.abs(blk[:, 0]))) < 0.11 and
+          float(np.max(np.abs(blk[:, 2]))) == 0.0,
+          "a soft tone on outputs 1 and 2 only")
+    svc2.stop("Jeff", "Rack screen")
+    check(U.classify("/api/remote/announce-test-tone", {}) == "settings"
+          and "announce-test-tone" in RM.LOCAL_ONLY,
+          "the Test tone: Settings permission, the show machine only")
+    print("  ok")
+
+
+def test_announce_review_fixes_of_158():
+    section("announcements, safety review of #158: through the show audio a "
+            "recording is at most 60 s; it is resampled and sent in parts "
+            "WITHOUT the announcement lock; a name on two outputs of the "
+            "same audio system is said plainly; a save checks the whole "
+            "file before writing; the settings watch is told of the "
+            "picker's own save; an announcement's Hold pauses Programming "
+            "playback like the Hold press")
+    S = _sched()
+    if S is None:
+        return
+    import numpy as np
+    A = _ann()
+    from ltcplay import showaudio as sa
+    work, cfg, _l = _ann_workdir(device="")
+    _ann_write_level(os.path.join(work, "cannot_continue.wav"), seconds=61,
+                     rate=8000, levels=(0.5,))
+    eng = _AnnBusEngine()
+    route = sa.ShowRoute(eng, "Show DSP", 8)
+    asked = []
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY",
+                            show_route=lambda: route)
+    svc.hold_requester = lambda who, screen, detail=None: (
+        asked.append(who) or (None, 1))
+    svc.hold_still_claimed = lambda e: True
+    try:
+        svc.play(A.CANNOT_CONTINUE, "Andy", "rack screen")
+        check(False, "61 s through the show audio: refused")
+    except ValueError as e:
+        check("at most 60 s" in str(e) and asked == [] and
+              "ann_part" not in eng.sent,
+              f"refused before any Hold, nothing sent: {e} {asked}")
+    # Nothing heavy under the lock: the resampling and every part are made
+    # while another thread can take the announcement lock at once.
+    seen = []
+
+    def lock_free():
+        got = []
+
+        def take():
+            ok = svc.lock.acquire(timeout=0.5)
+            got.append(ok)
+            if ok:
+                svc.lock.release()
+        th = threading.Thread(target=take)
+        th.start()
+        th.join(2)
+        return bool(got and got[0])
+    real_mix, real_load = A.to_show_mix, route.load
+
+    def mix_spy(*a, **k):
+        seen.append(("mix", lock_free()))
+        return real_mix(*a, **k)
+
+    def load_spy(token, pcm):
+        seen.append(("load", lock_free()))
+        return real_load(token, pcm)
+    A.to_show_mix, route.load = mix_spy, load_spy
+    try:
+        r = svc.play(A.DELAYED, "Andy", "rack screen")
+    finally:
+        A.to_show_mix = real_mix
+        route.load = real_load
+    check(r["playing"] and seen == [("mix", True), ("load", True)],
+          f"resampled and sent with the lock free: {seen}")
+    check(eng.sent.count("ann_part") >= 1 and eng.sent[-1] == "ann_play",
+          f"sent in parts, then one small start: {eng.sent[-4:]}")
+    blk = eng.pump(1)
+    check(float(np.max(np.abs(blk[:, 0]))) > 0.0, "and it plays")
+    svc.stop("Andy", "rack screen")
+    eng.pump(8)
+    # Same name twice on the same audio system.
+
+    class TwinSD(_AnnPickSD):
+        def __init__(self):
+            super().__init__()
+            self.devices.append(dict(self.devices[1]))
+    tsd = TwinSD()
+    name = "StudioLive WDM 1/2 (StudioLive 16R)"
+    try:
+        A.resolve_output_device(tsd, name, "Windows WASAPI")
+        check(False, "twins on one audio system cannot be picked")
+    except ValueError as e:
+        check("cannot be told apart" in str(e) and "Rename one" in str(e),
+              f"{e}")
+        _no_dashes(str(e), "twins")
+    w3, cfg3, _l3 = _ann_workdir(device="")
+    svc3 = A.AnnounceService(cfg3, sd=tsd, operators_folder=w3)
+    outs = svc3.outputs()
+    check([o["cannot_pick"] for o in outs] == [False, True, False, True]
+          and "rename one" in outs[1]["label"],
+          f"the picker marks them: {[o['label'] for o in outs]}")
+    try:
+        svc3.save_device(name, "Windows WASAPI")
+        check(False, "twins: refused")
+    except ValueError as e:
+        check("cannot be told apart" in str(e), f"{e}")
+    # A bad optional key in the file: the save is refused, the file kept.
+    with open(cfg3, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    doc["gain_db"] = 99
+    with open(cfg3, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    before = open(cfg3, encoding="utf-8").read()
+    try:
+        svc3.save_device("Speakers (Realtek)")
+        check(False, "a bad key in the file: the save is refused")
+    except ValueError as e:
+        check("gain_db" in str(e), f"{e}")
+    check(open(cfg3, encoding="utf-8").read() == before and
+          not [f for f in os.listdir(w3) if f.endswith(".tmp")],
+          "the file is exactly as it was, and no temp file is left")
+    # The picker's own save tells the settings watch (#155).
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        doc["gain_db"] = -6
+        with open(cfg3, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        R.remote.announce = svc3
+
+        class CW:
+            def __init__(self):
+                self.paths = []
+
+            def refresh(self, path):
+                self.paths.append(path)
+        R.remote.config_watch = cw = CW()
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-output",
+                           {"device": "Speakers (Realtek)"}, client=loop)
+        check(st == 200 and cw.paths == [svc3.config_path],
+              f"the settings watch is told the engine's copy is the file: "
+              f"{st} {out} {cw.paths}")
+        # An announcement's Hold during Programming playback pauses it,
+        # through the Hold press's own hook (playhead.hold_press).
+
+        class PH:
+            def __init__(self):
+                self.holds = []
+
+            def active(self):
+                return True
+
+            def hold_press(self, who, screen):
+                self.holds.append((who, screen))
+                return "Programming playback paused at T1.0."
+        ph = PH()
+        R.remote.playhead = ph
+        R.remote.programming = lambda: (True, "")
+        sv = R.svc
+        check(sv.machine.state in ("IDLE", "STANDBY"),
+              f"setup: between shows: {sv.machine.state}")
+        hold = R.remote.announce_hold(sv)
+        refusal, _e = hold("Andy", "Rack screen", detail="played Delayed")
+        R.settle()
+        check(refusal is None and sv.machine.state == "HOLD" and
+              ph.holds == [("Andy", "Rack screen")],
+              f"the Programming music is paused with the Hold: "
+              f"{sv.machine.state} {ph.holds}")
+        R.remote.programming = lambda: (False, "no")
+        ph.holds.clear()
+        R.remote._announce_pauses_programming("Andy", "Rack screen")
+        check(ph.holds == [], "no Programming playback: nothing is paused")
+    finally:
+        R.close()
     print("  ok")
 
 
@@ -17764,7 +18160,14 @@ def test_alert_hold_at_showtime_then_one_delayed_announcement():
         check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
               f"showtime with an alert open: held, the show not started: "
               f"{sv.machine.state}")
-        rows = [r for r in sv.journal if r.get("action") == S.HOLD_ON]
+        # The scheduler's own thread writes the journal row just after it
+        # moves the state, so the row is waited for too (on a busy Windows
+        # runner the check could read the journal between the two).
+        def hold_rows():
+            return [r for r in list(sv.journal)
+                    if r.get("action") == S.HOLD_ON]
+        wait_for(lambda: bool(hold_rows()), timeout=3)
+        rows = hold_rows()
         check(rows and rows[-1]["actor"] == "system" and
               "alert is open" in rows[-1]["text"],
               f"journaled as the engine's system action: {rows[-1:]}")
@@ -41639,6 +42042,11 @@ def _serve_spy(argv, extra_files=None):
         "    print('SPY ' + json.dumps(out))\n"
         "    raise SystemExit(0)\n"
         "web.serve = spy\n"
+        # The machine's settings folder (the users file and its mark, the
+        # disarm ids) is the temp folder too: on a Mac or Linux it is
+        # beside the program, which is this checkout.
+        "from ltcplay import settings as _settings\n"
+        f"_settings.folder = lambda: {work!r}\n"
         # Tonight's file and the night journal go in the temp folder, never
         # beside the program.
         + ("from ltcplay import schedule_service as SV\n"
@@ -77954,6 +78362,9 @@ if __name__ == "__main__":
         test_announce_bus_mixes_into_the_show_outputs,
         test_announce_plays_through_the_show_audio,
         test_announce_output_picker,
+        test_announce_every_recording_kind_decodes_loud,
+        test_announce_says_exactly_what_was_sent,
+        test_announce_review_fixes_of_158,
         test_streamdeck_announcements_page_two,
         test_announce_at_showtime_never_pauses_the_show_that_just_started,
         test_announce_held_then_failed_says_so,

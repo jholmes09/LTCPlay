@@ -179,7 +179,7 @@ REMOTE_ROUTES = {
     "arm-hold": "arm",
     "network": "settings", "screen-arming": "settings",
     # The announcement output picker (remote.announce_output).
-    "announce-output": "settings",
+    "announce-output": "settings", "announce-test-tone": "settings",
     "live-flame": "settings", "scrub-flames": "settings",
     "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",

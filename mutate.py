@@ -3130,9 +3130,9 @@ MUTATIONS = [
   '                other = LABELS[self.playing]'),
 
  ("an unavailable announcement file plays anyway", "ltcplay/announce.py",
-  '            st = self.status_by_id.get(ann_id, {})\n'
+  '                  self.status_by_id.get(ann_id, {}))\n'
   '            if not st.get("available"):',
-  '            st = self.status_by_id.get(ann_id, {})\n'
+  '                  self.status_by_id.get(ann_id, {}))\n'
   '            if False:'),
 
  ("a name not on the operator list can still press Play",
@@ -3162,9 +3162,9 @@ MUTATIONS = [
   '                          text=text, ann_id=ann_id, who=who, screen=screen,\n'
   '                          state=state)\n'
   '                raise ValueError(text)\n'
-  '            st = self.status_by_id.get(ann_id, {})',
+  '            st = ({"available": True, "length_s": TONE_S} if tone else',
   '                raise ValueError(text)\n'
-  '            st = self.status_by_id.get(ann_id, {})'),
+  '            st = ({"available": True, "length_s": TONE_S} if tone else'),
 
  ("an announcement's device name matches by substring again",
   "ltcplay/announce.py",
@@ -3267,8 +3267,10 @@ MUTATIONS = [
 
  ("announcements: the picked audio system is ignored",
   "ltcplay/announce.py",
-  "    if hostapi and len(hits) > 1:",
-  "    if False:"),
+  "    if hostapi and len(hits) > 1:\n"
+  "        hits = [d for d in hits",
+  "    if False:\n"
+  "        hits = [d for d in hits"),
 
  ("announcements: anyone may pick the announcement output",
   "ltcplay/users.py",
@@ -3277,8 +3279,107 @@ MUTATIONS = [
 
  ("announcements: the announcement output can be picked from the network",
   "ltcplay/remote.py",
-  'LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output"))',
-  'LOCAL_ONLY = frozenset(("network", "screen-arming"))'),
+  'LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",\n',
+  'LOCAL_ONLY = frozenset(("network", "screen-arming",\n'),
+
+ ("announcements: the test tone answers from the network",
+  "ltcplay/remote.py",
+  '                        "announce-test-tone"))',
+  '                        ))'),
+
+ ("announcements: anyone may play the test tone", "ltcplay/users.py",
+  '"announce-test-tone": "settings",',
+  '"announce-test-tone": None,'),
+
+ # Safety review of #158, and Jeff's field report of 2026-10-28 ("the
+ # screen said playing and nothing was heard").
+ ("announcements: the recording is resampled and sent under the "
+  "announcement lock", "ltcplay/announce.py",
+  "        loaded, load_why = self._load_on_show(token, pcm, rate)\n"
+  "\n"
+  "        with self.lock:\n",
+  "        with self.lock:\n"
+  "            loaded, load_why = self._load_on_show(token, pcm, rate)\n"),
+
+ ("announcements: a recording over 60 s goes through the show audio",
+  "ltcplay/announce.py",
+  "        if length_s is not None and length_s > SHOW_ROUTE_MAX_S:",
+  "        if False:"),
+
+ ("show audio: the callback frees a finished recording",
+  "ltcplay/showaudio.py",
+  "        if end or self.frame >= self.pcm.shape[0]:\n"
+  "            self.state = ENDED\n"
+  "            self._retire()",
+  "        if end or self.frame >= self.pcm.shape[0]:\n"
+  "            self.state = ENDED\n"
+  "            self.pcm = None"),
+
+ ("show audio: retired recordings are never let go",
+  "ltcplay/showaudio.py",
+  "        self.bus.collect()\n",
+  ""),
+
+ ("announcements: a restart of the show audio process is not reported "
+  "at once", "ltcplay/announce.py",
+  "            if self._seen and self.lost is None:",
+  "            if False:"),
+
+ ("announcements: a silent recording is reported as playing",
+  "ltcplay/announce.py",
+  "            if peak < SILENT_DBFS:",
+  "            if False:"),
+
+ ("announcements: an output that never takes audio is not failed",
+  "ltcplay/announce.py",
+  "        never = (self._player.frames_written == 0 and",
+  "        never = (False and"),
+
+ ("announcements: the status says playing before any audio has gone",
+  "ltcplay/announce.py",
+  '"heard": self._player.frames_written > 0,',
+  '"heard": True,'),
+
+ ("announcements: a test tone plays during a show", "ltcplay/announce.py",
+  "            if tone and state in SHOW_STATES:",
+  "            if False:"),
+
+ ("announcements: the test tone takes a Hold", "ltcplay/announce.py",
+  '            elif tone:\n'
+  '                hold_note = "A test tone holds nothing."',
+  '            elif False:\n'
+  '                hold_note = "A test tone holds nothing."'),
+
+ ("announcements: the default level in the show mix is 0 dB",
+  "ltcplay/announce.py",
+  "DEFAULT_GAIN_DB = -6.0",
+  "DEFAULT_GAIN_DB = 0.0"),
+
+ ("announcements: two outputs of one audio system are used anyway",
+  "ltcplay/announce.py",
+  "    if hostapi and len(hits) > 1:\n"
+  "        raise ValueError(same_api_sentence(name, hits))",
+  "    if hostapi and len(hits) > 1:\n"
+  "        return hits[0]"),
+
+ ("announcements: a save writes before checking the whole file",
+  "ltcplay/announce.py",
+  "            parse_config(doc, self.config_path)\n"
+  "            options = parse_options(doc, self.config_path)\n"
+  "            _write_json_atomic(self.config_path, doc)",
+  "            _write_json_atomic(self.config_path, doc)\n"
+  "            parse_config(doc, self.config_path)\n"
+  "            options = parse_options(doc, self.config_path)"),
+
+ ("announcements: the picker's save is not told to the settings watch",
+  "ltcplay/remote.py",
+  "                cw.refresh(ann.config_path)",
+  "                pass"),
+
+ ("announcements: an announcement's Hold leaves Programming playback "
+  "playing", "ltcplay/remote.py",
+  "                self._announce_pauses_programming(who, screen)",
+  "                pass"),
 
  ("a 32-bit float announcement file is read as integers", "ltcplay/announce.py",
   '    if is_float:\n'
@@ -11336,8 +11437,8 @@ def build():
 
  ('screen arm: the switch answers from the network',
   'ltcplay/remote.py',
-  'LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output"))',
-  'LOCAL_ONLY = frozenset(("network", "announce-output"))'),
+  'LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",',
+  'LOCAL_ONLY = frozenset(("network", "announce-output",'),
 
  ('screen arm: switching it off keeps the holds',
   'ltcplay/remote.py',

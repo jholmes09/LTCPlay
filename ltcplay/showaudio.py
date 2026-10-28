@@ -837,7 +837,12 @@ class AnnounceBus:
     show's own rate, (frames, 1) or (frames, len(outs)): a mono recording
     plays on every one of `outs`, a stereo one left to the first and right
     to the second. `token` is the main program's, so it can tell its own
-    announcement's progress from an earlier one's."""
+    announcement's progress from an earlier one's.
+
+    The callback never frees a recording (up to tens of MB): one that is
+    done, stopped or replaced is put on `retired`, and the process's main
+    thread lets it go (collect()), so the callback never pays for the
+    free."""
 
     def __init__(self, out_channels):
         self.out_channels = int(out_channels)
@@ -850,6 +855,18 @@ class AnnounceBus:
         self._fade_total = 0
         self._fade_done = 0
         self.softened = 0
+        self.retired = deque()
+
+    def _retire(self):
+        if self.pcm is not None:
+            self.retired.append(self.pcm)
+            self.pcm = None
+
+    def collect(self):
+        """On the process's main thread: let the retired recordings go."""
+        q = self.retired
+        while q:
+            q.popleft()
 
     def play(self, token, pcm, outs, gain):
         outs = [int(o) for o in outs]
@@ -857,6 +874,7 @@ class AnnounceBus:
             return False
         if pcm.ndim != 2 or pcm.shape[1] not in (1, len(outs)):
             return False
+        self._retire()
         self.pcm = pcm
         self.outs = outs
         self.gain = float(gain)
@@ -874,14 +892,14 @@ class AnnounceBus:
             return False
         if int(fade) <= 0:
             self.state = ENDED
-            self.pcm = None
+            self._retire()
         elif not self._fade_total:
             self._fade_total, self._fade_done = int(fade), 0
         return True
 
     def hard_stop(self):
         self.state = IDLE
-        self.pcm = None
+        self._retire()
         self._fade_total = self._fade_done = 0
 
     def mix(self, out):
@@ -911,7 +929,7 @@ class AnnounceBus:
         self.frame = a + k
         if end or self.frame >= self.pcm.shape[0]:
             self.state = ENDED
-            self.pcm = None
+            self._retire()
 
 
 def apply_announce(bus, msg):
@@ -1216,6 +1234,7 @@ class AudioProcess:
         self.name = spec["device"]
         self.mixer = Mixer(spec["channels"], spec.get("rate", RATE))
         self.bus = AnnounceBus(spec["channels"])
+        self._ann_parts = {}             # token -> parts, see command()
         self.cmdq = deque()
         self.stream = None
         self.opened_at = None
@@ -1255,9 +1274,28 @@ class AudioProcess:
                 self.cmdq.append(msg)
             else:
                 apply_command(self.mixer, msg)
+        elif kind == "ann_part":
+            # An announcement arrives in parts (ShowRoute.load), so no one
+            # message is big and the show's own commands go between them.
+            # At most the two newest tokens' parts are kept.
+            parts = self._ann_parts
+            parts.setdefault(msg[1], []).append(msg[2])
+            while len(parts) > 2:           # an abandoned load's parts
+                del parts[min(parts)]
         elif kind in ANNOUNCE_COMMANDS:
             # Only onto a running stream: with no stream nothing would ever
             # play it, and the main program, seeing no progress, says so.
+            if kind == "ann_play" and msg[2] is None:
+                # Its parts, joined here on the main thread, never in the
+                # callback.
+                parts = self._ann_parts.pop(msg[1], None)
+                for t in [t for t in self._ann_parts if t < msg[1]]:
+                    del self._ann_parts[t]
+                if not parts:
+                    return
+                import numpy as np
+                msg = ("ann_play", msg[1], np.concatenate(parts),
+                       msg[3], msg[4])
             if self.stream is not None:
                 self.cmdq.append(msg)
 
@@ -1408,6 +1446,7 @@ class AudioProcess:
 
     def step(self, now):
         self.pub.heartbeat(now, self.devstate, self.opens)
+        self.bus.collect()
         self._finish_loads()
         if self.stream is not None:
             why = None
@@ -1930,8 +1969,25 @@ class ShowRoute:
         except Exception:
             return False
 
-    def play(self, token, pcm, outs, gain):
-        return bool(self.engine.send(("ann_play", int(token), pcm,
+    # One part of an announcement is at most this many frames (1 s at
+    # 48 kHz, 384 KB for two channels): the show's own commands are never
+    # queued behind a big message.
+    PART_FRAMES = RATE
+
+    def load(self, token, pcm):
+        """Send the recording to the audio process in parts. Called with no
+        lock of announce.py's held: the parts are only joined there, and
+        play() starts it. Returns True when every part went."""
+        for a in range(0, max(1, pcm.shape[0]), self.PART_FRAMES):
+            if not self.engine.send(("ann_part", int(token),
+                                     pcm[a:a + self.PART_FRAMES])):
+                return False
+        return True
+
+    def play(self, token, outs, gain):
+        """Start the recording load() sent for this token: one small
+        message."""
+        return bool(self.engine.send(("ann_play", int(token), None,
                                       list(outs), float(gain))))
 
     def stop(self, token, fade=0):

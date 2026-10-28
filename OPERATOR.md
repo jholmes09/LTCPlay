@@ -245,8 +245,36 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   and 2 is rounded off just under it instead of clipping hard; the show
   on its own is never touched. Two optional settings in
   ltcplay_announce.json: `"gain_db"` (the announcement's level in the
-  mix, -40 to +6, 0 plays the recording as it is) and `"show_outputs"`
-  (which show outputs it plays on, [1, 2] unless set).
+  mix, -40 to +6; -6 unless set, so a full-scale recording over a loud
+  passage is not pushed into the guard; 0 plays the recording as it is)
+  and `"show_outputs"` (which show outputs it plays on, [1, 2] unless
+  set).
+- **At most a minute through the show audio.** A recording longer than
+  60 seconds is refused there with a plain sentence (shorten it); on its
+  own output the limit stays 5 minutes.
+- **What was sent.** After a press the message under the buttons, the
+  banner and the log say exactly what went out: through the show audio or
+  on its own output, which output and audio system, how many channels,
+  how many seconds, and the loudest level sent (dBFS). It reads
+  ANNOUNCEMENT STARTING until the output has really taken audio, then
+  PLAYING. An output that opens but takes nothing within a second and a
+  half is reported failed, with that reason. A recording that decodes to
+  silence (quieter than -80 dBFS) is never played: it says "the recording
+  is silent or unreadable". If the show audio process restarts while one
+  plays, it is reported failed at once.
+- **Test tone.** Beside the picker (Programming, Announcement output),
+  Test tone plays one second of a soft 440 Hz tone at -20 dBFS through
+  exactly the route and output an announcement would use now, so you can
+  check the PA without a recording. Admin, on the show PC only, never
+  during a show, and it holds nothing.
+- **A show starting or a Resume still fades an announcement** that is
+  playing (over 0.15 s), so the show starts on time with its own sound.
+  Stop and Abort on the show never touch it. Stop announcement fades only
+  the announcement.
+- **Programming.** If you are playing the show in Programming when an
+  announcement holds the schedule, the Programming playback pauses with it
+  (the same as pressing Hold): the music does not play on under the
+  announcement. Continue on the Programming screen carries on.
 - **When the show audio is not running** (the PC idle, nothing Run, or a
   show file with no audio of its own), an announcement plays on its own
   output instead, never the system default. Pick it on the rack screen:
@@ -262,7 +290,11 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   "StudioLive WDM 1/2 (StudioLive 16R) matches 2 outputs on this PC: pick
   one: ... (MME, 2 outputs); ... (Windows WASAPI, 2 outputs)", and the
   picker's top line reads "choose which output". Choose one; the file
-  then also says which audio system (`"hostapi"`).
+  then also says which audio system (`"hostapi"`). If two outputs have the
+  same name on the same audio system, nothing can tell them apart: the
+  picker greys them out and says to rename one in Windows (Sound
+  settings, More sound settings, Playback, its Properties, the name at
+  the top).
 - **Two lamps, two questions.** The header's **Show audio** lamp is the
   show's own interface. The **Announcements** lamp beside it, and the
   "Plays on:" line in the Announcements block, say where a press plays

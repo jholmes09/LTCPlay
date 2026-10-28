@@ -1211,6 +1211,7 @@ button.fb-pad.na{opacity:.45}
       <div class="row" style="margin-top:8px">
         <select id="annout-pick" style="flex:2 1 0" aria-label="Announcement output"></select>
         <button id="annout-save" style="flex:1 1 0">Save</button>
+        <button id="annout-tone" class="ghost" style="flex:1 1 0" title="1 s of a soft 440 Hz tone at -20 dBFS through the same route and output as the announcements. Never during a show; holds nothing.">Test tone</button>
       </div>
       <div class="toast" id="annout-msg"></div>
     </section>
@@ -1954,11 +1955,15 @@ function announceLook(an, booth){
   });
   let banner = "", word = "";
   if(playing){
-    word = playing.held_schedule ? "HELD FOR ANNOUNCEMENT" : "ANNOUNCEMENT PLAYING";
+    // "Playing" only once audio has gone to the output (heard); until then
+    // it is starting (Jeff's field report, 2026-10-28).
+    const starting = playing.heard === false;
+    word = playing.held_schedule ? "HELD FOR ANNOUNCEMENT" : starting ? "ANNOUNCEMENT STARTING" : "ANNOUNCEMENT PLAYING";
     const el = (typeof playing.elapsed_s === "number") ? Math.round(playing.elapsed_s) : null;
     const len = (typeof playing.length_s === "number") ? Math.round(playing.length_s) : null;
-    banner = String(playing.name || "") + (el !== null && len !== null ? " (" + el + " s of " + len + " s)" : "") +
-      (playing.held_schedule ? ". The schedule stays held until Resume." : ". " + String(playing.note || "It plays over the show; nothing was paused."));
+    banner = String(playing.name || "") + (starting ? " (waiting for the output to take it)" : el !== null && len !== null ? " (" + el + " s of " + len + " s)" : "") +
+      (playing.held_schedule ? ". The schedule stays held until Resume." : ". " + String(playing.note || "It plays over the show; nothing was paused.")) +
+      (playing.sent ? " Sent " + sentWords(playing.sent) + "." : "");
   } else if(a.held_failed){
     // The schedule was held for a press whose sound then failed: it stays
     // held until Resume, and this says why (review of PR #129, 4).
@@ -1983,6 +1988,16 @@ function announceLook(an, booth){
   return {show:true, buttons:buttons, banner:banner, word:word, stopOff:!playing && !a.stale, device:device,
           devBad:!devOk, note:note};
 }
+// What an announcement actually sent, in plain words (remote.py
+// sent_words says the same): route, output, audio system, channels,
+// seconds, peak level.
+function sentWords(x){
+  if(!x || typeof x !== "object") return "";
+  let w = (x.route === "show audio" ? "through the show audio on " : "on its own output ") + String(x.device || "?");
+  if(x.hostapi) w += " (" + String(x.hostapi) + ")";
+  const pk = (typeof x.peak_dbfs === "number") ? x.peak_dbfs.toFixed(1) + " dBFS" : "silence";
+  return w + ", " + x.channels + " channel(s), " + Number(x.length_s || 0).toFixed(1) + " s, peak " + pk;
+}
 // The announcement output picker (Programming, Announcement output): the
 // options for the outputs the engine lists. An output whose name is on
 // more than one output is told apart by its audio system. Pure.
@@ -1991,7 +2006,7 @@ function annOutputOptions(list, current){
   (list || []).forEach(o => out.push({
     value: JSON.stringify({device:String(o.name || ""), hostapi:o.same_name ? String(o.hostapi || "") : null}),
     label: String(o.label || o.name || "") + (o.picked ? ", picked now" : ""),
-    picked: !!o.picked}));
+    picked: !!o.picked, disabled: !!o.cannot_pick}));
   if(!out.some(o => o.picked)){
     // A name in the file that matches none, or more than one, output:
     // said at the top until one is chosen; saving it changes nothing.
@@ -3759,14 +3774,23 @@ async function loadAnnOutputs(keep){
   try{
     const j = await getJSON("/api/remote/announce-outputs", 3000);
     const opts = annOutputOptions(j.outputs || [], j.device || "");
-    $("annout-pick").innerHTML = opts.map(o => `<option value="${esc(o.value)}"${o.picked ? " selected" : ""}>${esc(o.label)}</option>`).join("");
+    $("annout-pick").innerHTML = opts.map(o => `<option value="${esc(o.value)}"${o.picked ? " selected" : ""}${o.disabled ? " disabled" : ""}>${esc(o.label)}</option>`).join("");
     const rt = an.route || {};
     const why = an.device_reason || (rt.ok ? "" : String(rt.why || ""));
     if(why || !keep) $("annout-msg").textContent = why;
   }catch(e){ $("annout-msg").textContent = e.message; }
   $("annout-msg").title = $("annout-msg").textContent;
   $("annout-save").disabled = !mayRow(ST, "settings");
+  $("annout-tone").disabled = !mayRow(ST, "settings");
 }
+$("annout-tone").addEventListener("click", async () => {
+  try{
+    const j = await post("/api/remote/announce-test-tone", {});
+    $("annout-msg").textContent = j.text;
+    if(j.announce && ST) ST.announce = j.announce;
+  }catch(e){ $("annout-msg").textContent = e.message; }
+  $("annout-msg").title = $("annout-msg").textContent;
+});
 $("annout-save").addEventListener("click", async () => {
   const v = $("annout-pick").value;
   if(!v){ $("annout-msg").textContent = "Choose an output first. Nothing was changed."; return; }
