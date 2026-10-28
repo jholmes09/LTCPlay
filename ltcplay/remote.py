@@ -1397,15 +1397,57 @@ class Remote:
     def context(self, local, ip):
         return Ctx(local, ip)
 
-    @staticmethod
-    def _actor(ctx, body=None):
-        """(who, screen, surface) for a press. From the network: the
-        surface it came from, by the request's own address, whatever the
-        body says. On the machine itself the Stream Deck process names its
-        chosen operator (or none) and "Stream Deck" (EngineConductor), and
-        that is kept, checked against the lists as before; the page sends
-        neither, and is the Rack screen."""
+    def users_active(self):
+        """True once any user exists (users.py): then every name in the
+        journal is the signed-in user's, never one a body carries. False
+        without users, or when the users file cannot be asked."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return False
+        try:
+            return bool(u.active())
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def signed_in_name(self, ctx, body=None):
+        """The authenticated name a press is from, with users on: this
+        page's own session, or for the Stream Deck process (this machine,
+        screen "Stream Deck") whoever is signed in on this machine's rack
+        screen; users.UNSIGNED when nobody is. Never a name from the body
+        (Jeff's field report, 2026-10-28: the journal said "By Jeff" with
+        nobody signed in)."""
+        from . import users as users_mod
+        name = getattr(ctx, "user", "")
+        if name:
+            return name
         body = body if isinstance(body, dict) else {}
+        if getattr(ctx, "local", False) and \
+                str(body.get("screen") or "") == "Stream Deck":
+            try:
+                mu = self.users.machine_user()
+            except Exception:                    # noqa: BLE001
+                mu = None
+            if mu and mu.get("name"):
+                return mu["name"]
+        return users_mod.UNSIGNED
+
+    def _actor(self, ctx, body=None):
+        """(who, screen, surface) for a press. With users on (users.py):
+        who is the signed-in user (signed_in_name), or "unsigned", and
+        never looked up on the operator list; the screen is the one the
+        Stream Deck process names on this machine, else the request's own.
+        Without users, as before: from the network the surface it came
+        from, by the request's own address, whatever the body says; on the
+        machine itself the Stream Deck process names its chosen operator
+        (or none) and "Stream Deck" (EngineConductor), and that is kept,
+        checked against the lists as before; the page sends neither, and
+        is the Rack screen."""
+        body = body if isinstance(body, dict) else {}
+        if self.users_active():
+            screen = ctx.screen
+            if ctx.local:
+                screen = str(body.get("screen") or "").strip() or screen
+            return self.signed_in_name(ctx, body), screen, True
         if ctx.local:
             who = str(body.get("who") or "").strip()
             screen = str(body.get("screen") or "").strip()
@@ -1477,6 +1519,11 @@ class Remote:
         """(code, body, extra headers)."""
         name = route[len("/api/remote/"):]
         body = body if isinstance(body, dict) else {}
+        if "who" in body and self.users_active():
+            # A name in the body (the Morning page's checklist, the Stream
+            # Deck's chosen operator) is never who pressed: the signed-in
+            # user is, or "unsigned" (2026-10-28).
+            body = dict(body, who=self.signed_in_name(ctx, body))
         if name in SETUP_POST_ROUTES:
             if not ctx.local:
                 return 403, {"error": "The show folder, the schedule file "
@@ -1582,6 +1629,27 @@ class Remote:
                 out["users_active"] = u.active()
             except Exception:                    # noqa: BLE001
                 out["users_active"] = False
+            # The truth about this screen (Jeff's field report,
+            # 2026-10-28): with users on and nobody signed in it is view
+            # only, on this machine too; "may" is what the role matrix lets
+            # this page do, the same answer the web layer gives a press.
+            # Safety presses are not in it: they always may.
+            from . import users as users_mod
+            try:
+                out["may"] = {p: bool(u.may(out["role"], p))
+                              for p in users_mod.PERM_KEYS}
+            except Exception:                    # noqa: BLE001
+                out["may"] = {p: False for p in users_mod.PERM_KEYS}
+            out["view_only"] = bool(out["users_active"] and
+                                    not out["user"])
+            if ctx.local:
+                # Who the Stream Deck acts as: whoever is signed in on
+                # this machine's rack screen, or nobody.
+                try:
+                    mu = u.machine_user()
+                except Exception:                # noqa: BLE001
+                    mu = None
+                out["machine_user"] = (mu or {}).get("name") or None
         a = self.audit
         if a is not None:
             try:
@@ -1604,10 +1672,17 @@ class Remote:
         try:
             mu = u.machine_user()
             role = mu["role"] if mu else None
+            # "active": users are on, so the deck names the signed-in user
+            # (or unsigned) in its journal, never its chosen operator.
             return {"name": mu["name"] if mu else None, "role": role,
+                    "active": bool(u.active()),
                     "may": {p: u.may(role, p) for p in ("arm", "show")}}
         except Exception:                        # noqa: BLE001
-            return None
+            # Who is signed in could not be worked out: the deck may not
+            # arm or start on it (fail closed; review of PR #143, 5). Its
+            # Stop, Hold and disarms never ask.
+            return {"name": None, "role": None, "active": True,
+                    "fault": True, "may": {"arm": False, "show": False}}
 
     def users_get(self, ctx):
         """GET users: what the sign-in card and the Users screen show. The
@@ -1681,8 +1756,26 @@ class Remote:
             return 200, {"ok": True, "text": text}, {
                 "Set-Cookie": cookie % token}
         if name == "signout":
-            u.sign_out(getattr(ctx, "token", ""), ctx.source)
-            return 200, {"ok": True, "text": "Signed out."}, {
+            # The session ends at the engine, not just in the page: on this
+            # machine every session made here ends with it (users.sign_out),
+            # and any hold to arm under way on a screen is let go now
+            # (Jeff's field report, 2026-10-28).
+            ended = u.sign_out(getattr(ctx, "token", ""), ctx.source,
+                               local=ctx.local)
+            if ended:
+                # Only this device's own hold (a hold belongs to the device
+                # it came from), and only when a sign-in really ended: a
+                # sign-out from somewhere else never lets go of another
+                # screen's hold (review of PR #143, 1).
+                try:
+                    self.cancel_holds("the screen was signed out",
+                                      device=ctx.device)
+                except Exception:                # noqa: BLE001
+                    pass
+            return 200, {"ok": True, "text": "Signed out. This screen is "
+                                             "view only now: Stop, Hold, "
+                                             "Abort, Acknowledge and every "
+                                             "disarm still work."}, {
                 "Set-Cookie": (cookie % "") + "; Max-Age=0"}
         me = getattr(ctx, "session", None) or {}
         if name == "my-password":
@@ -2463,11 +2556,18 @@ class Remote:
                 return h
         return None
 
-    def cancel_holds(self, why):
+    def cancel_holds(self, why, device=None):
         """Every screen arm hold let go, at once (an Abort, a Hold, a
-        disarm). The deck sees them gone on its next read."""
+        disarm), or with `device` only that device's own (a sign-out). The
+        deck sees them gone on its next read."""
         with self._arm_lock:
-            gone, self._holds = self._holds, {}
+            if device is None:
+                gone, self._holds = self._holds, {}
+            else:
+                gone = {i: h for i, h in self._holds.items()
+                        if h["token"] == device}
+                for i in gone:
+                    del self._holds[i]
         for h in gone.values():
             self._journal(h["who"], h["device"], "arm hold", "cancelled",
                           f"{h['who']}'s hold to arm group {h['group']} on "
@@ -2485,8 +2585,12 @@ class Remote:
             return 403, {"error": ARMING_OFF, "let_go": True,
                          "arming_off": True}
         # The hold belongs to the surface it came from: one device, one
-        # hold, and another device cannot carry it on.
+        # hold, and another device cannot carry it on. With users on it is
+        # the signed-in user's, by name (the web layer refused it already
+        # for nobody signed in), so the Stream Deck's journal names them.
         who, device = ctx.device, ctx.screen
+        if self.users_active():
+            who = self.signed_in_name(ctx, body)
         token = ctx.device
         try:
             i, gname = self._group_index(body)
@@ -2686,6 +2790,7 @@ class Remote:
         rack screen; nothing here acts on it."""
         now = self.clock()
         self._deck_seen = now
+        self.users_file_check()
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)
         self._deck_layout_default = deck_layout_default(query)
@@ -5106,7 +5211,62 @@ class Remote:
             # P1): False only on the deck's fresh word that it has none.
             g["deck_key"] = not (fresh and i in nokey)
 
+    def users_file_check(self):
+        """A users file that is broken, or missing after users were set up
+        here, locks every control but the stops and disarms (users.py,
+        fail closed; review of PR #143, 2). Said loudly, once for each
+        reason: an alert on every screen and the deck, and the journal.
+        Asked on every status and deck read. Never raises."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return
+        try:
+            why = u.broken()
+        except Exception:                        # noqa: BLE001
+            return
+        said = getattr(self, "_users_alert_said", None)
+        if not why:
+            if said:
+                # A good file is back: used at once, and the alert goes.
+                self._users_alert_said = None
+                try:
+                    self.alerts.clear(kind="users", action="Confirm",
+                                      who="system", screen="engine")
+                except Exception:                # noqa: BLE001
+                    pass
+            return
+        if why == said:
+            return
+        self._users_alert_said = why
+        from . import users as users_mod
+        locked = ("Every control is locked except Stop, Hold, Abort, "
+                  "Acknowledge and every disarm, and nobody can sign in.")
+        if getattr(u, "error_kind", "") == "open":
+            # There, but held by something: nothing to delete. It is tried
+            # again on every read (third review of PR #143, 4).
+            text = (f"The users file cannot be opened just now: {why}. "
+                    f"{locked} It is tried again all the time and used the "
+                    f"moment it opens, with no restart. Another program may "
+                    f"be holding it, such as an antivirus scan: if this "
+                    f"lasts, check that program, and that {u.folder} can be "
+                    f"read.")
+        else:
+            text = (f"The users file cannot be used: {why}. {locked} If a "
+                    f"good {users_mod.USERS_FILE} is put back in "
+                    f"{u.folder}, it is used at once, with no restart. To "
+                    f"start over with no users instead: close LTC Player, "
+                    f"remove {users_mod.USERS_FILE} and "
+                    f"{users_mod.USERS_MARK} from that folder, and start "
+                    f"LTC Player again; then each person chooses a password "
+                    f"at the rack screen.")
+        try:
+            self.alerts.raise_("users", text)
+        except Exception:                        # noqa: BLE001
+            self._journal("system", "engine", "users", "fault", text,
+                          fault=True)
+
     def status(self, ctx):
+        self.users_file_check()
         out = {"served_at": int(self.wall() * 1000), "fresh_s": FRESH_S,
                "me": self.whoami(ctx), "version": self.version_line()}
         svc = self.schedule

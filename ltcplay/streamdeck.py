@@ -994,6 +994,11 @@ def role_gate(user, action):
     rules then decide alone, as before users existed."""
     if action in ("abort", "disarm", "hold") or not isinstance(user, dict):
         return None
+    if user.get("stale"):
+        return (f"the Stream Deck's {action} key was pressed, but the deck "
+                f"has not heard from the engine, so who is signed in on the "
+                f"Rack screen is not known. Nothing was done; it works again "
+                f"once the engine answers.")
     may = user.get("may") if isinstance(user.get("may"), dict) else {}
     if may.get(action) is not False:
         return None
@@ -1045,6 +1050,17 @@ def deck_key_name(k, names, latched=False, morning=False, ack=False,
 
 
 USER_TOAST_S = 3.0      # the Start key names a new sign-in this long
+# Who is signed in, as the engine last said, is trusted this long; past it
+# the deck's arm keys wait (ScreenKeys.user, role_gate). Longer than the
+# screen holds' SCREEN_STALE_S so a slow engine answer does not refuse an
+# arm, short enough that a sign-out reaches the keys at once.
+USER_STALE_S = 2.0
+# What ScreenKeys.user() answers while the engine is not heard from.
+USER_UNKNOWN = {"name": None, "role": None, "active": None, "stale": True,
+                "may": {"arm": False, "show": False}}
+# Who the deck's journal names when users are on and nobody is signed in
+# on this machine (users.UNSIGNED; this module never imports users.py).
+UNSIGNED = "unsigned"
 
 
 def operator_gate(current_operator, action):
@@ -1060,6 +1076,12 @@ def operator_gate(current_operator, action):
     or disarm call site; that would be undoing a deliberate decision."""
     if action in ("abort", "disarm"):
         return None
+    if current_operator == UNSIGNED:
+        # Users are on and nobody is signed in on this machine (2026-10-28):
+        # the deck is view only, like the rack screen.
+        return (f"the Stream Deck's {action} key was pressed but nobody is "
+                f"signed in on the Rack screen. Sign in there first. Nothing "
+                f"was done.")
     if current_operator:
         return None
     return (f"the Stream Deck's {action} key was pressed but no operator is "
@@ -1839,6 +1861,11 @@ class ScreenKeys:
         self.report_nokey = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
+        # Whether the engine last said users are on (deck-input "user"):
+        # None never heard, False no users at all, True on. Kept through an
+        # unreachable engine, so a deck on a machine with no users decides
+        # alone as before while the engine is quiet (review of PR #143, 4).
+        self._users_on = None
         # Screen holds this deck would not take: hold id -> (code, clock),
         # carried on the next deck-input reads (remote.DECK_REFUSALS).
         self._refused = {}
@@ -1990,6 +2017,9 @@ class ScreenKeys:
                 self._last = None          # unreachable: every hold let go
                 return
             self._last = (ans, self._clock())
+            u = ans.get("user")
+            self._users_on = isinstance(u, dict) and \
+                u.get("active") is not False
             evs = [e for e in (ans.get("disarms") or [])
                    if isinstance(e, dict) and isinstance(e.get("id"), int)]
             if self._seen_disarm is None:
@@ -2082,15 +2112,25 @@ class ScreenKeys:
         return a if isinstance(a, dict) else None
 
     def user(self):
-        """Who is signed in on this machine, as the engine's last fresh
-        answer said (users.py, deck-input "user"): {"name": str or None,
-        "role", "may": {"arm": bool, ...}}. None when the engine has not
-        answered within SCREEN_STALE_S: then the deck's own rules decide
-        alone, exactly as before users existed."""
+        """Who is signed in on this machine, as the engine's last answer
+        said (users.py, deck-input "user"): {"name": str or None, "role",
+        "active", "may": {"arm": bool, ...}}. None when the engine answers
+        with no users at all: then the deck's own rules decide alone, as
+        before users existed. When the engine has not answered within
+        USER_STALE_S, who is signed in is not known, and that is never
+        taken as permission (Jeff's field report, 2026-10-28): USER_UNKNOWN,
+        which may not arm. Abort, Stop, Hold and every disarm never ask."""
         with self._lock:
-            last = self._last
-        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
-            return None
+            last, users_on = self._last, self._users_on
+        if last is None or self._clock() - last[1] > USER_STALE_S:
+            # Not heard lately. With no users at all (the engine's last
+            # word), the deck's own rules decide alone, as before users
+            # existed; otherwise, never heard or users on, not known.
+            # Never heard includes a deck started before the engine on a
+            # machine with no users: its arm keys wait until it has heard
+            # the engine once (fail safe, re-review of PR #143, 4; its
+            # operator gate needs the engine then anyway).
+            return None if users_on is False else dict(USER_UNKNOWN)
         u = last[0].get("user")
         return u if isinstance(u, dict) else None
 
@@ -3027,6 +3067,24 @@ class Controller:
             return None
         return u if isinstance(u, dict) else None
 
+    def _who(self):
+        """Who a deck press is from. With users on at the engine (the
+        deck-input "user" says active): whoever is signed in on this
+        machine's rack screen, or UNSIGNED, never the chosen operator, so
+        the journal names a real sign-in (Jeff's field report, 2026-10-28:
+        "By Jeff" with nobody signed in) and operator_gate refuses an arm
+        or a start for nobody. Without users: the chosen operator, as
+        before."""
+        u = self._user()
+        if u is not None and (u.get("active") is True or u.get("stale")):
+            # Signed in, or users on and who is signed in not known: never
+            # the chosen operator's name, which nobody signed in to.
+            return str(u.get("name") or "") or UNSIGNED
+        try:
+            return self.operator_provider() or ""
+        except Exception:
+            return ""
+
     def _audit_event(self, action, target="", result="accepted", reason=""):
         """One line in this process's audit file (audit.py). Never blocks
         and never raises: the event goes on a queue, or is counted lost."""
@@ -3141,7 +3199,7 @@ class Controller:
         self._purge_armed.clear()
         self._log(f"Stream Deck: {why}: every flame group's wanted state "
                   f"was sent false at once. Nothing was latched.",
-                  action="disarm", who=self.operator_provider() or "",
+                  action="disarm", who=self._who(),
                   screen="Stream Deck")
 
     def alert_pending(self):
@@ -3163,7 +3221,7 @@ class Controller:
         still does its own job (a group key still disarms) after this. Never
         behind the operator gate: seeing the banner is not an action on
         the rig."""
-        who = self.operator_provider() or ""
+        who = self._who()
         kinds = ", ".join(str(a.get("kind") or "?") for a in pending)
         ack = getattr(self.conductor, "acknowledge", None)
         if ack is None:
@@ -3300,7 +3358,7 @@ class Controller:
         own. Never behind the operator gate or a role: it only takes risk
         away ("safety" in users.WEB_ROUTES)."""
         self._disarm_all_groups("Stop held")
-        who = self.operator_provider() or ""
+        who = self._who()
         fn = getattr(self.conductor, "stop_run", None)
         if fn is None:
             self._log("Stream Deck Stop pressed: no engine is connected in "
@@ -3312,7 +3370,7 @@ class Controller:
                   action="stop", who=who, screen="Stream Deck")
 
     def _do_start_now(self):
-        who = self.operator_provider() or ""
+        who = self._who()
         refusal = operator_gate(who, "start")
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="start")
@@ -3370,7 +3428,7 @@ class Controller:
         self._disarmed_at[i] = self._clock()
         self._purge_armed.discard(i)
         if who is None:
-            who = self.operator_provider() or ""
+            who = self._who()
         where = "" if screen == "Stream Deck" else f" on the {screen}"
         self._log(f"Stream Deck: {self.names[i]} disarm pressed{where} by "
                   f"{who or 'an operator the deck could not name'}.",
@@ -3516,7 +3574,7 @@ class Controller:
             # refractory window re-checked at the moment of arming, and the
             # operator gate (a purge needs a chosen operator on the deck,
             # like any arm). Only the hold itself is waived (Jeff).
-            who = self.operator_provider() or ""
+            who = self._who()
             if self._in_rearm_refractory(i, now) > 0:
                 self._purge_refused[i] = "refractory"   # reporting only
             else:
@@ -3567,12 +3625,12 @@ class Controller:
                       "purge on the Morning page; refused.", action="purge",
                       screen="Stream Deck")
             return
-        pf.start(who=self.operator_provider() or "")
+        pf.start(who=self._who())
 
     def _fire_release(self, why):
         pf = self.purge_fire
         if pf is not None and getattr(pf, "firing", False):
-            pf.stop(who=self.operator_provider() or "")
+            pf.stop(who=self._who())
             self._log(f"Stream Deck FIRE released: {why}.", action="purge",
                       screen="Stream Deck")
 
@@ -3615,7 +3673,7 @@ class Controller:
                       f"after its last disarm. Wait, then hold the key "
                       f"again.", action="arm-refused")
             return
-        who = self.operator_provider() or ""
+        who = self._who()
         refusal = operator_gate(who, "arm")
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
@@ -3664,7 +3722,7 @@ class Controller:
                       f"the hold); refused.", action="arm-refused")
             return "refractory"
         if who is None:
-            who = self.operator_provider() or ""
+            who = self._who()
         refusal = operator_gate(who, "arm")
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
@@ -3951,7 +4009,7 @@ class Controller:
         """One press, one announcement (no double tap, no hold). Not behind
         the operator gate: the engine names the deck's chosen operator, or
         the Stream Deck, and decides every rule itself."""
-        who = self.operator_provider() or ""
+        who = self._who()
         fn = getattr(self.conductor, "announce", None)
         if fn is None:
             self._log("Stream Deck announcement pressed: no engine is "
@@ -3966,7 +4024,7 @@ class Controller:
                   screen="Stream Deck")
 
     def _announce_stop(self):
-        who = self.operator_provider() or ""
+        who = self._who()
         fn = getattr(self.conductor, "announce_stop", None)
         if fn is None:
             self._log("Stream Deck announcement Stop pressed: no engine is "
@@ -4407,7 +4465,7 @@ class Controller:
         else:
             running = self.show_running_provider() is True
             held = self._held_hint()
-            op = self.operator_provider()
+            op = self._who()
             if stop_frac > 0:
                 # Stop being held: the ring fills; let go early, nothing.
                 # During a scheduled show too (Jeff, 2026-10-26).
@@ -4451,6 +4509,11 @@ class Controller:
                 # seconds, only while nothing else needs this key.
                 fonts.show_key(d, b0, self.user_toast(now), CHAMPAGNE,
                                kind="sans", max_size=16)
+            elif op == UNSIGNED:
+                # Users on and nobody signed in here (2026-10-28): view
+                # only, like the rack screen.
+                fonts.show_key(d, b0, ["SIGN", "IN"], DIM_TEXT, kind="sans",
+                               max_size=16)
             elif operator_gate(op, "start"):
                 fonts.show_key(d, b0, ["PICK", "OPERATOR"], DIM_TEXT, kind="sans",
                               max_size=16)
@@ -4613,7 +4676,7 @@ class Controller:
         for USER_TOAST_S after that changes; None otherwise. The first
         answer after the deck starts names them too."""
         u = self._user()
-        if u is not None:
+        if u is not None and not u.get("stale"):
             key = (u.get("name") or "",)
             if key != self._user_seen:
                 self._user_seen = key

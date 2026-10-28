@@ -387,6 +387,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #nav-user{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #nav-user.in{border-color:var(--amber);color:var(--champ)}
 #nav-user.fault{border-color:var(--red);color:var(--red)}
+#nav-user.viewonly{border-color:var(--red);color:var(--red);font-weight:700}
+.signin-off{opacity:.45}
 .utab{width:100%;border-collapse:collapse;font-size:14px}
 .utab th,.utab td{padding:4px 6px;border-bottom:1px solid var(--hair);text-align:left;vertical-align:middle}
 .utab td.c,.utab th.c{text-align:center}
@@ -1276,10 +1278,20 @@ const ARMING_OFF = "Arming from a screen is switched off on this show PC. To tur
 // arming switched on, a status heard within the arming
 // freshness (1 s), flamesafe's real state reported within 1 s, and the
 // group not already armed or asked for.
+// Signed out is view only (2026-10-28): what the engine's whoami says
+// this screen may do (st.me.may), the same answer it gives a press. A row
+// the engine does not mention (no users) may. Stop, Hold, Abort,
+// Acknowledge and every disarm are never asked.
+const SIGN_IN_WORDS = "Sign in to use controls. Stop, Hold, Abort, Acknowledge and every disarm still work.";
+function mayRow(st, perm){
+  const m = st && st.me && st.me.may;
+  return !(m && m[perm] === false);
+}
 function armState(st, nowMs, lastOkMs, i){
   const a = (st && st.arming) || {};
   const fl = (st && st.flames) || {};
   const g = (fl.groups || [])[i];
+  if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};
   if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};
   if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last second."};
   if(!fl.connected || fl.stale || fl.age_ms === null || fl.age_ms === undefined || fl.age_ms > 1000)
@@ -1955,6 +1967,9 @@ function startPolling(){
       try{
         CD = countdownAnchor(CD, ST && ST.countdown, monoNow());
         render();
+        // Who is signed in, and so whether this screen is view only, is
+        // said the moment the engine says it, not on the chip's own beat.
+        renderUserChip();
         DRAW_ERR = "";
       }catch(e){
         LAST_OK = before;
@@ -1997,6 +2012,7 @@ function renderStale(){
   $("b-abort").disabled = !cs.abort;
   $("b-disarm").disabled = !cs.disarm;
   document.querySelectorAll("[data-tr]").forEach(el => { el.disabled = !cs.transport; });
+  lockForSignIn();
   if(stale){
     // Never show an old lamp or timecode as if it were now.
     document.querySelectorAll(".lamp").forEach(el => {
@@ -2670,6 +2686,7 @@ function renderAnnounce(){
       `${b.off || ANN_BUSY ? " disabled" : ""} title="${esc(b.title)}">${esc(b.label)}<small>${esc(b.sub)}</small></button>`).join("");
   }
   $("ann-stop").disabled = L.stopOff || ANN_BUSY;
+  lockForSignIn();
 }
 async function annPress(route, extra){
   if(ANN_BUSY) return;            // one press, one announcement
@@ -2690,6 +2707,70 @@ $("ann-btns").addEventListener("click", e => {
 });
 $("ann-stop").addEventListener("click", () => annPress("announce-stop"));
 $("ann-banner-stop").addEventListener("click", () => annPress("announce-stop"));
+
+// Signed out with users on, every control that is not a stop or a disarm
+// is off, with the reason in its tooltip (2026-10-28). A pure overlay on
+// what each control's own redraw decides: run after each redraw, it locks
+// what this screen may not do and unlocks the rest, putting back the
+// control's own tooltip. When what this screen may do changes (a sign-in
+// or a sign-out), every redraw that keeps its last drawing runs again, so
+// a control unlocked by a sign-in shows its own real state at once
+// (re-review of PR #143, 1). Never touches Stop, Hold, Abort, Acknowledge,
+// a disarm or Disarm all.
+let SIGNIN_SIG = null;
+function signinLocked(){
+  const offs = [];
+  if(!mayRow(ST, "show")){
+    offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),
+      ...document.querySelectorAll("[data-tr], #ann-btns button[data-ann]"));
+  }
+  if(!mayRow(ST, "arm")){
+    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));
+  }
+  if(!mayRow(ST, "settings")) offs.push($("sa-on"), $("lf-on"), $("sf-on"));
+  // A control that is a Stop just now (Start now or Run while a show is
+  // live or starting) is never locked: Stop always works (third review of
+  // PR #143, 1).
+  return offs.filter(el => el && el.dataset.mode !== "stop");
+}
+function lockForSignIn(){
+  const offs = signinLocked();
+  for(const el of offs){
+    if(!el.classList.contains("signin-off")){
+      // What the control was before the lock, put back when it lifts;
+      // a control's own redraw then decides again.
+      el.dataset.title0 = el.title === SIGN_IN_WORDS ? "" : (el.title || "");
+      el.dataset.dis0 = el.disabled ? "1" : "";
+      el.classList.add("signin-off");
+    }
+    el.disabled = true;
+    el.title = SIGN_IN_WORDS;
+  }
+  document.querySelectorAll(".signin-off").forEach(el => {
+    if(offs.includes(el)) return;
+    el.classList.remove("signin-off");
+    if(el.dataset.mode !== "stop"){
+      el.title = el.dataset.title0 || "";
+      el.disabled = el.dataset.dis0 === "1";
+    }
+    delete el.dataset.title0;
+    delete el.dataset.dis0;
+  });
+  const sig = ["show", "arm", "settings"].map(p => mayRow(ST, p) ? "1" : "0").join("");
+  if(SIGNIN_SIG !== null && sig !== SIGNIN_SIG){
+    SIGNIN_SIG = sig;
+    redrawForSignIn();
+  }
+  SIGNIN_SIG = sig;
+}
+function redrawForSignIn(){
+  const box = $("lz-chips");
+  if(box) box.dataset.html = "";
+  ANN_SIG = "";
+  for(const f of [renderStale, renderAnnounce, renderArmingCard, renderLiveFlame, renderScrubFlames]){
+    try{ f(); }catch(e){ }
+  }
+}
 
 // The stop sign's tooltip (2026-10-26); the line under it says the rest.
 const ABORT_TITLE = "Abort: tap twice to stop the show.";
@@ -3347,6 +3428,8 @@ function renderLaserStrip(la, stale){
   const html = look.chips.map(c => `<button class="${c.cls}" data-lz="${esc(c.ids.join("\n"))}" title="${esc(c.title)}"${c.off ? " disabled" : ""}><b>${esc(c.label)}</b><i>${esc(c.word)}</i></button>`).join("");
   const box = $("lz-chips");
   if(box.dataset.html !== html){ box.dataset.html = html; box.innerHTML = html; }
+  // Signed out: a laser's Arm is off (lockForSignIn, outside this block).
+  if(typeof lockForSignIn === "function") lockForSignIn();
 }
 $("lz-chips").addEventListener("click", e => {
   const b = e.target.closest("[data-lz]");
@@ -3398,7 +3481,7 @@ $("sa-what").textContent = SCREEN_ARMING_ENABLES;
 function renderArmingCard(){
   const on = !!(ST && ST.arming && ST.arming.enabled);
   $("sa-now").textContent = ST ? (on ? "ON" : "OFF") : "";
-  $("sa-on").disabled = on; $("sa-off").disabled = !on;
+  $("sa-on").disabled = on || !mayRow(ST, "settings"); $("sa-off").disabled = !on;
 }
 setInterval(renderArmingCard, 500);
 $("sa-on").addEventListener("click", async () => {
@@ -3432,7 +3515,7 @@ function renderLiveFlame(){
   $("lf-now").textContent = !ST ? "" : on ? "ON" : (lf.available === false ? "Not available in this engine" : "OFF");
   if(!on && le && le.reason && !$("lf-msg").dataset.mine) $("lf-msg").textContent = "Last ended: " + le.reason;
   $("lf-on").hidden = !(ME && ME.local);
-  $("lf-on").disabled = on || lf.available === false;
+  $("lf-on").disabled = on || lf.available === false || !mayRow(ST, "settings");
   $("lf-off").disabled = !on;
 }
 setInterval(renderLiveFlame, 250);
@@ -3468,7 +3551,7 @@ function renderScrubFlames(){
   $("sf-now").textContent = !ST ? "" : on ? "Fire flames while scrubbing: ON" : (sf.available === false ? "Fire flames while scrubbing: not available in this engine" : "Fire flames while scrubbing: OFF");
   if(!on && le && le.reason && !$("sf-msg").dataset.mine) $("sf-msg").textContent = "Last ended: " + le.reason;
   $("sf-on").hidden = !(ME && ME.local);
-  $("sf-on").disabled = on || sf.available === false;
+  $("sf-on").disabled = on || sf.available === false || !mayRow(ST, "settings");
   $("sf-on").title = (!on && sf.blocked) ? sf.blocked : "";
   $("sf-off").disabled = !on;
 }
@@ -3553,7 +3636,7 @@ function renderMorning(){
     const ids = (mo.groups || {})[b.dataset.grp] || [];
     const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
     b.classList.toggle("on", !!all);
-    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;
+    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));
     b.title = ids.length ? ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
   });
   // The field: every machine where the layout puts it.
@@ -3662,7 +3745,7 @@ function renderMorning(){
     const all = ids.length && ids.every(id => armedIds.includes(id));
     b.classList.toggle("on", !!all);
     b.textContent = (all ? "Disarm " : "Arm ") + b.dataset.lgrp;
-    b.disabled = !all && ARRANGE;
+    b.disabled = !all && (ARRANGE || !mayRow(ST, "arm"));
   });
   const lst = $("mo-larm-st");
   lst.className = "st" + (armedIds.length ? " armed" : "");
@@ -4091,9 +4174,16 @@ function renderUserChip(){
   if(me.users_active === undefined && !("user" in me)){ b.hidden = true; return; }
   b.hidden = false;
   const fault = me.audit_fault || "";
-  b.textContent = me.user ? me.user : "Signed out";
-  b.className = "ghost" + (me.user ? " in" : "") + (fault ? " fault" : "");
-  b.title = (me.user ? ("Signed in as " + me.user + " (" + (me.role || "") + ")") : "Nobody is signed in on this screen") +
+  // Signed out with users on is view only, on the rack screen too
+  // (2026-10-28): the chip says so, and a hold to arm under way stops.
+  const viewOnly = !!me.view_only;
+  document.body.classList.toggle("view-only", viewOnly);
+  if(viewOnly && HOLD) armStop("Signed out: this screen is view only");
+  b.textContent = me.user ? me.user : (viewOnly ? "Sign in to use controls" : "Signed out");
+  b.className = "ghost" + (me.user ? " in" : "") + (viewOnly ? " viewonly" : "") + (fault ? " fault" : "");
+  b.title = (me.user ? ("Signed in as " + me.user + " (" + (me.role || "") + ")") :
+    (viewOnly ? "Nobody is signed in on this screen, so it is view only. Stop, Hold, Abort, Acknowledge and every disarm still work. Press here to sign in" :
+      "Nobody is signed in on this screen")) +
     (fault ? ". AUDIT LOG FAULT: " + fault : "") + ". Users, who may do what, and the audit log.";
 }
 setInterval(renderUserChip, 1000);
@@ -4195,7 +4285,19 @@ $("u-go").addEventListener("click", async () => {
   loadUsers();
 });
 $("u-out").addEventListener("click", async () => {
+  // Signing out ends the session at the engine and leaves nothing behind
+  // here: a hold to arm is let go first, typed passwords are cleared, and
+  // the chip reads View only at once (2026-10-28).
+  if(HOLD) armStop("Signed out");
   try{ const r = await post("/api/remote/signout", {}); uMsg("u-msg", r.text); }catch(e){ uMsg("u-msg", e.message, true); }
+  UNEED = false; $("u-newbox").hidden = true;
+  $("u-pw").value = ""; $("u-new").value = ""; $("u-old").value = ""; $("u-new1").value = "";
+  if(ST && ST.me && ST.me.users_active){
+    const no = {}; Object.keys(ST.me.may || {}).forEach(k => { no[k] = false; });
+    ST.me = Object.assign({}, ST.me, {user:null, role:null, view_only:true, may:no});
+  }
+  renderUserChip();
+  lockForSignIn();
   loadUsers();
 });
 $("u-chg").addEventListener("click", async () => {
