@@ -1224,8 +1224,18 @@ MUTATIONS = [
 
  ("flame link: aim: a wave flamer may aim with any channel",
   "ltcplay/flamelink.py",
-  "    for k, a in block.items() if profiled else ():",
-  "    for k, a in ():"),
+  "        if a != saf[k] - 5:\n            return",
+  "        if False:\n            return"),
+
+ ("flame link: aim: a group without a safety_profile may aim",
+  "ltcplay/flamelink.py",
+  "               if \"safety_profile\" in g else",
+  "               if True else"),
+
+ ("flame link: aim: an aimed fixture need not be one 6 channel block",
+  "ltcplay/flamelink.py",
+  "        if {f for f in fire if len(saf) == 1 or lo < f < saf[k]} != set(",
+  "        if False and {f for f in fire if len(saf) == 1 or lo < f < saf[k]} != set("),
 
  ("flame link: aim: an aim slot after the last safety slot is taken",
   "ltcplay/flamelink.py",
@@ -2469,8 +2479,18 @@ MUTATIONS = [
 
  ("flamesafe: aim: a wave flamer may aim with any channel",
   "flamesafe/config.py",
-  "    if profile is not None:\n        for k, a in block.items():",
-  "    if False:\n        for k, a in block.items():"),
+  "        if a != saf[k] - 5:\n            raise",
+  "        if False:\n            raise"),
+
+ ("flamesafe: aim: a group without a safety_profile may aim",
+  "flamesafe/config.py",
+  "    if profile is None:\n        raise ConfigError(f\"{name}: aim is only",
+  "    if False:\n        raise ConfigError(f\"{name}: aim is only"),
+
+ ("flamesafe: aim: an aimed fixture need not be one 6 channel block",
+  "flamesafe/config.py",
+  "        if mine != set(range(a, a + 5)):",
+  "        if False:"),
 
  ("flamesafe: aim: an aim slot after the last safety slot is accepted",
   "flamesafe/config.py",

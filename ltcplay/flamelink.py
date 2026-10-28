@@ -342,10 +342,11 @@ def aim_slots_of(doc, path="flamesafe's config"):
     An aim slot that is not one of its group's fire slots is ignored here
     (flamesafe refuses that file at start). The per fixture rules are
     flamesafe's own and are checked again here, so a typo that would free
-    a fuel slot stops `ltc serve` too: at most one aim slot per fixture,
-    each the same channel of its own fixture, and in a group with a
-    safety_profile (the wave flamer) only channel 1 of each fixture, the
-    angle, 5 below the fixture's safety slot (channel 6).
+    a fuel slot stops `ltc serve` too: aim only in a group with a
+    safety_profile (the wave flamer), at most one aim slot per fixture,
+    each channel 1 of its own fixture (the angle, 5 below the fixture's
+    safety slot, channel 6), and the fixture's fire slots exactly that
+    slot and the 4 after it.
     A malformed list is refused, never skipped. This is a second reader,
     not the guard: flamesafe still refuses the file on its own, and it
     sends an aim slot only while the group is armed."""
@@ -361,8 +362,9 @@ def aim_slots_of(doc, path="flamesafe's config"):
                 f"{path}: group {g.get('name')!r} has an 'aim' that is not "
                 f"a list of slots 1 to {UNIVERSE_SIZE}.")
         aim = [a for a in aim if a in fire]
-        bad = _aim_fixture_fault(aim, g.get("safety"),
-                                 "safety_profile" in g)
+        bad = (_aim_fixture_fault(aim, fire, g.get("safety"))
+               if "safety_profile" in g else
+               "aim is only for a group with a safety_profile.")
         if bad:
             raise FlameLinkConfigError(
                 f"{path}: group {g.get('name')!r} 'aim': {bad} flamesafe "
@@ -371,7 +373,7 @@ def aim_slots_of(doc, path="flamesafe's config"):
     return frozenset(out)
 
 
-def _aim_fixture_fault(aim, safety, profiled):
+def _aim_fixture_fault(aim, fire, safety):
     """Why these aim slots would free a flame channel, or None. The same
     rules as flamesafe's config._aim_per_fixture."""
     saf = safety if isinstance(safety, list) else [safety]
@@ -389,9 +391,13 @@ def _aim_fixture_fault(aim, safety, profiled):
         block[k] = a
     if len({a - saf[k] for k, a in block.items()}) > 1:
         return f"{sorted(aim)} are not the same channel of each fixture."
-    for k, a in block.items() if profiled else ():
+    for k, a in block.items():
         if a != saf[k] - 5:
             return f"slot {a} is not channel 1 of its fixture."
+        lo = saf[k - 1] if k else 0
+        if {f for f in fire if len(saf) == 1 or lo < f < saf[k]} != set(
+                range(a, a + 5)):
+            return f"the fixture of slot {a} is not one 6 channel block."
     return None
 
 

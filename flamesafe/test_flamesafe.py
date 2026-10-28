@@ -5365,6 +5365,7 @@ def _plain(**over):
     """The example with no safety_profile anywhere (as before 2026-10-26)."""
     d = example_dict()
     d["groups"][WAVE].pop("safety_profile")
+    d["groups"][WAVE].pop("aim")   # aim needs a profile (review of #147)
     d["groups"][WAVE].update(over)
     return d
 
@@ -5673,6 +5674,36 @@ def test_aim_slots_point_the_head_and_never_hold_the_arm():
     except config.ConfigError as e:
         check("in no fixture" in str(e), f"an aim slot after the last "
                                          f"safety slot is refused: {e}")
+    # aim exists only for a safety_profile group (review of #147): a
+    # G-Flame's fuel slot, or the wave flamer with its profile deleted,
+    # is refused.
+    for gname, aim, upd in (("front row", [413], {}),
+                            ("cat-walk", [423], {}),
+                            ("wave flamer", [3, 9, 15],
+                             {"safety_profile": None})):
+        d = example_dict()
+        g = next(x for x in d["groups"] if x["name"] == gname)
+        g["aim"] = aim
+        for k, v in upd.items():
+            g.pop(k)
+        try:
+            config.from_dict(d)
+            check(False, f"{gname} aim {aim} was accepted")
+        except config.ConfigError as e:
+            check("only for a group with a safety_profile" in str(e),
+                  f"{gname} aim {aim} is refused: {e}")
+    # Each aimed fixture is one 6 channel block: a safety slot typo with
+    # the aim moved to match is refused.
+    d = example_dict()
+    d["groups"][WAVE].update(safety=[8, 14, 20], aim=[3, 9, 15],
+                             fire=[1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13,
+                                   15, 16, 17, 18, 19])
+    try:
+        config.from_dict(d)
+        check(False, "a fixture that is not one 6 channel block was taken")
+    except config.ConfigError as e:
+        check("is not one 6 channel block" in str(e),
+              f"a fixture that is not one 6 channel block is refused: {e}")
     for ok in ([1, 7, 13], [1, 7], [13]):
         d = example_dict()
         d["groups"][WAVE]["aim"] = ok

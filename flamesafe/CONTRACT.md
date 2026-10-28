@@ -444,19 +444,28 @@ group armed mid-movement is held by the rising-edge check, as before.
 - Optional. Each aim slot must be one of the group's own fire slots, listed
   once, and at least one fire slot must stay out of `aim`; anything else is
   refused at start.
+- `aim` is only for a group with a `safety_profile` (the wave flamer); in
+  a G-Flame or Showven group, or a wave flamer whose profile was deleted,
+  it is refused at start.
 - A typo must not free a fuel channel, so `aim` is also refused at start
   unless: each fixture has at most one aim slot (a fixture's slots are the
   group's fire slots after the previous safety slot, up to its own; a group
-  with one safety slot is one fixture), every aim slot is the same channel
-  of its own fixture, no aim slot lies after the group's last safety slot,
-  and in a group with a `safety_profile` (the wave flamer) each aim slot is
-  its fixture's first fire slot, channel 1. `[1, 7, 13]` is taken;
-  `[1, 7, 14]`, `[2, 7, 13]`, `[2, 8, 14]` and `[2, 3, 4, 5]` are refused,
-  by flamesafe (it does not start) and by ltcplay's reader (`ltc serve`
-  does not start).
+  with one safety slot is one fixture holding every fire slot), in a group
+  with several safety slots no aim slot lies after the last one, and each
+  aim slot is channel 1 of its fixture: 5 below that fixture's safety slot
+  (channel 6), with the fixture's fire slots exactly that slot and the 4
+  after it. `[1, 7, 13]` is taken; `[1, 7, 14]`, `[2, 7, 13]`,
+  `[2, 8, 14]` and `[2, 3, 4, 5]` are refused, by flamesafe (it does not
+  start) and by ltcplay's reader (`ltc serve` does not start).
+- What this cannot catch: a whole layout moved consistently (safety, fire
+  and aim all shifted by the same amount). Channel 1 is measured from the
+  safety slot the operator writes; only the patch Andy confirms says where
+  each fixture really starts.
 - Restart BOTH flamesafe and ltcplay after editing `aim`: each reads the
-  list once, at start. A flamesafe older than this section refuses the
-  `aim` key as unknown and does not start (fail closed).
+  list once, at start. Deploy and restart them together, from the same
+  release. A flamesafe from before #146 refuses the `aim` key as unknown
+  and does not start (fail closed); the one in #146 accepts `aim` without
+  the per fixture rules above.
 - On every disarm, abort, stale input or lost link the angle goes to 0,
   like every fire slot, so the head slams to its -105 degree end stop. On
   a re-arm the flame slots are free after the 3 tick edge-quiet hold while

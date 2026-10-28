@@ -43,6 +43,11 @@ def _aim(g, name, fire, safeties, profile):
     all."""
     if "aim" not in g:
         return []
+    if profile is None:
+        raise ConfigError(f"{name}: aim is only for a group with a "
+                          f"safety_profile (the wave flamer's angle, "
+                          f"channel 1). A G-Flame or Showven group has no "
+                          f"aim slot.")
     aim = g.get("aim")
     if not isinstance(aim, list):
         raise ConfigError(f"{name}: aim must be a list of slots.")
@@ -64,11 +69,13 @@ def _aim_per_fixture(name, aim, fire, safeties, profile):
     """A typo in "aim" must not free a fuel slot (review, 2026-10-28):
     "aim": [2, 7, 13] would arm the wave flamer with slot 2 at 255.  So
     each fixture has at most one aim slot, every aim slot sits at the same
-    distance from its own fixture's safety slot, and a group with a
-    safety_profile (the wave flamer) may aim only with channel 1 of each
-    fixture, its angle: 5 below that fixture's safety slot (channel 6).  A fixture's slots are the group's fire
-    slots after the previous safety slot, up to its own; a group with one
-    safety slot is one fixture holding every fire slot."""
+    distance from its own fixture's safety slot, and that is channel 1 of
+    the fixture, its angle: 5 below its safety slot (channel 6), with the
+    fixture's fire slots exactly that slot and the 4 after it.  Only a
+    group with a safety_profile (the wave flamer) gets here.  A fixture's
+    slots are the group's fire slots after the previous safety slot, up to
+    its own; a group with one safety slot is one fixture holding every
+    fire slot."""
     saf = sorted(safeties)
     block = {}
     for a in aim:
@@ -89,15 +96,21 @@ def _aim_per_fixture(name, aim, fire, safeties, profile):
         raise ConfigError(f"{name}: the aim slots {sorted(aim)} are not the "
                           f"same channel of each fixture. Each fixture's "
                           f"angle is the same channel.")
-    if profile is not None:
-        for k, a in block.items():
-            # The wave flamer: 6 channels, channel 6 the safety slot, so
-            # channel 1 (the angle) is 5 below it (CONTRACT.md's table).
-            if a != saf[k] - 5:
-                raise ConfigError(f"{name}: aim slot {a} is not channel 1 "
-                                  f"of its fixture (slot {saf[k] - 5}). On "
-                                  f"the wave flamer only channel 1, the "
-                                  f"angle, may be an aim slot.")
+    for k, a in block.items():
+        # The wave flamer: 6 channels, channel 6 the safety slot, so
+        # channel 1 (the angle) is 5 below it (CONTRACT.md's table).
+        if a != saf[k] - 5:
+            raise ConfigError(f"{name}: aim slot {a} is not channel 1 "
+                              f"of its fixture (slot {saf[k] - 5}). On "
+                              f"the wave flamer only channel 1, the "
+                              f"angle, may be an aim slot.")
+        lo = saf[k - 1] if k else 0
+        mine = {f for f in fire if len(saf) == 1 or lo < f < saf[k]}
+        if mine != set(range(a, a + 5)):
+            raise ConfigError(f"{name}: the fixture with safety slot "
+                              f"{saf[k]} is not one 6 channel block: its "
+                              f"fire slots are {sorted(mine)}, not {a} to "
+                              f"{a + 4}.")
 
 
 def _only_known(d, allowed, where):

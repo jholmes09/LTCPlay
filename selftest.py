@@ -53745,8 +53745,9 @@ def test_flame_link_aim_slots_skip_the_seek_guard():
             return fl.FlameLinkConfig.from_flamesafe_config(p)
         check(load([{"name": "a", "safety": 6, "fire": [1, 2]}]).aim_slots
               == frozenset(), "no aim list, no aim slots")
-        check(load([{"name": "a", "safety": 6, "fire": [1, 2],
-                     "aim": [1, 3]}]).aim_slots == frozenset({1}),
+        check(load([{"name": "a", "safety": 6, "fire": [1, 2, 3, 4, 5],
+                     "safety_profile": {"arm_value": 178},
+                     "aim": [1, 7]}]).aim_slots == frozenset({1}),
               "a slot that is not the group's fire slot is never freed")
         for bad in (5, ["1"], [0], [513], [True], None):
             try:
@@ -53763,17 +53764,31 @@ def test_flame_link_aim_slots_skip_the_seek_guard():
                          ([2, 7, 13], "not the same channel"),
                          ([2, 8, 14], "not channel 1 of its fixture"),
                          ([1, 13], "after the last safety slot"),
-                         ([1], "safety slots cannot be read")):
+                         ([1], "safety slots cannot be read"),
+                         ([3, 9, 15], "only for a group with a safety_"),
+                         ([3, 9, 15], "is not one 6 channel block")):
             g = dict(wave, aim=bad)
             if why.startswith("after"):
                 g.update(safety=[6, 12], fire=[1, 2, 3, 7, 8, 13])
             if why.startswith("safety"):
                 g.update(safety=["6"])
+            if why.startswith("only"):
+                del g["safety_profile"]
+            if why.startswith("is not"):
+                g.update(safety=[8, 14, 20], fire=[1, 2, 3, 4, 5, 6, 7, 9,
+                         10, 11, 12, 13, 15, 16, 17, 18, 19])
             try:
                 load([g])
                 check(False, f"wave flamer aim {bad} was taken")
             except fl.FlameLinkConfigError as e:
                 check(why in str(e), f"wave flamer aim {bad} refused: {e}")
+        front = next(g for g in ex["groups"] if g["name"] == "front row")
+        try:
+            load([dict(front, aim=[413])])
+            check(False, "a G-Flame fuel slot was taken as aim")
+        except fl.FlameLinkConfigError as e:
+            check("only for a group with a safety_profile" in str(e),
+                  f"a G-Flame fuel slot as aim is refused: {e}")
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
