@@ -14150,8 +14150,8 @@ def build():
  # each is a way the wind readout could mislead an operator.
  ("weather: the mesonet's knots are shown as mph",
   "ltcplay/weather.py",
-  "    return {\"speed_mph\": speed * KNOT_MPH,",
-  "    return {\"speed_mph\": speed,"),
+  "    return _in_range({\"speed_mph\": speed * KNOT_MPH,",
+  "    return _in_range({\"speed_mph\": speed,"),
 
  ("weather: km/h from the NWS are shown as mph",
   "ltcplay/weather.py",
@@ -14215,15 +14215,31 @@ def build():
   "    usable = [r for r in rows if r[\"st\"] in (\"ok\", \"stale\")]",
   "    usable = [r for r in rows[:1] if r[\"st\"] in (\"ok\", \"stale\")]"),
 
- ("weather: a STALE station is used over a current backup",
+ ("weather: a higher STALE reading is hidden by a current lower one",
   "ltcplay/weather.py",
-  "    pool = [r for r in usable if r[\"st\"] == \"ok\"] or usable",
-  "    pool = usable"),
+  "    pick = max(usable, key=",
+  "    pick = max([r for r in usable if r[\"st\"] == \"ok\"] or usable,"
+  " key="),
 
- ("weather: the lowest current reading leads",
+ ("weather: the lowest reading leads",
   "ltcplay/weather.py",
-  "    pick = max(pool, key=",
-  "    pick = min(pool, key="),
+  "    pick = max(usable, key=",
+  "    pick = min(usable, key="),
+
+ ("weather: a STALE headline is not marked",
+  "ltcplay/weather.py",
+  "        if pick[\"st\"] == \"stale\" and others:\n            text += (f\" STALE: over",
+  "        if False:\n            text += (f\" STALE: over"),
+
+ ("weather: a wind speed of 900 mph is shown",
+  "ltcplay/weather.py",
+  "        if v is not None and not 0 <= v <= MAX_MPH:",
+  "        if False:"),
+
+ ("weather: a millisecond obsTime is read as seconds",
+  "ltcplay/weather.py",
+  "        if valid is None or not 1e9 <= valid < 1e11:",
+  "        if valid is None or valid < 1e9:"),
 
  ("weather: a backup station's reading is shown as if it were UTALP's",
   "ltcplay/weather.py",
@@ -14272,13 +14288,13 @@ def build():
 
  ("weather: aviationweather.gov's knots are shown as mph",
   "ltcplay/weather.py",
-  "    return {\"speed_mph\": to_mph(wspd, unit),",
-  "    return {\"speed_mph\": wspd,"),
+  "    return _in_range({\"speed_mph\": to_mph(wspd, unit),",
+  "    return _in_range({\"speed_mph\": wspd,"),
 
  ("weather: aviationweather.gov's oldest report is used",
   "ltcplay/weather.py",
-  "        if best is None or valid > best[0]:",
-  "        if best is None or valid < best[0]:"),
+  "        if best is None or best[0] is None or valid > best[0]:",
+  "        if best is None or best[0] is None or valid < best[0]:"),
 
  ("weather: the backup airports are never asked",
   "ltcplay/weather.py",

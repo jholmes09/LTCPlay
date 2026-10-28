@@ -11,7 +11,7 @@ screen. The block says so in small print.
 
 ## What each line means
 
-- **Measured.** A real wind sensor: the **highest current reading** from
+- **Measured.** A real wind sensor: the **highest usable reading** from
   these sources (so one stalled feed does not blank the wind, and a
   backup that reads low never hides a stronger wind measured elsewhere):
   1. **I-15 Point of the Mountain (UTALP).** UDOT's road weather station
@@ -36,11 +36,12 @@ screen. The block says so in small print.
   3. A Weather Service observation station, only if one is named in the
      settings (`nws_station`).
 
-  When UTALP is STALE and only a backup is current, the line shows the
-  backup and says what UTALP last read ("UTALP (Iowa mesonet) reads 30
-  mph, 25 min old, STALE (over its 20 min limit). This line shows the
-  highest current reading."). Any other reading more than 10 mph from the
-  one shown is said the same way.
+  A STALE reading still counts if it is the highest: when UTALP reads 30
+  mph but is 25 min old and Provo reads 8 mph and is current, the line
+  shows UTALP's 30 mph, amber and marked STALE, and says Provo's beside it
+  ("STALE: over its 20 min limit. KPVU (aviationweather.gov) reads 8 mph,
+  4 min old, current."). Any other reading more than 10 mph from the one
+  shown is said the same way.
 - **Forecast for this spot (NWS).** The National Weather Service's hourly
   forecast for the exact spot, for the current hour, with gusts. "Issued"
   is how long ago the Weather Service last updated it; "this PC got it" is
@@ -64,8 +65,9 @@ block shows the last saved values with their true age.
 | Measured, an airport (a reading every hour) | up to 75 min old (amber: a backup) | 75 to 120 min old | over 120 min old, failing, or never received |
 | Forecast | this PC got it in the last hour, and the Weather Service issued it in the last 18 h | this PC has not got it for 1 to 6 h, or the Weather Service has not updated it for 18 to 36 h | this PC has not got it for over 6 h, the Weather Service has not updated it for over 36 h, its time is in the future, or nothing for this hour |
 
-The measured line shows the highest reading that is current on its own
-source's limits; if none is current, the highest STALE one; if none, grey.
+The measured line shows the highest reading inside its own source's grey
+limit, current or STALE; if there is none, grey. A wind speed below 0 or
+over 200 mph is not a reading.
 Grey lines show no number at all. A reading past its own source's grey
 limit is never shown. The airports report once an hour (around 10 minutes
 before the hour), so their limits are longer; with the 5 minute limits

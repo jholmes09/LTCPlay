@@ -76674,27 +76674,38 @@ def test_weather_backup_stations_and_why_no_data():
           f"UTALP stalled: the backup, named, and why: {ln['text']!r}")
     check(v["state"] == "stale", f"a backup makes the block amber: {v}")
     # The review's case: UTALP 30 mph but STALE (25 min), Provo 8 mph
-    # current. Provo leads (current), amber, and UTALP's 30 mph is said.
+    # current. The highest usable reading leads: UTALP's 30 mph, amber and
+    # marked STALE, with the current ones beside it.
     _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:35:00Z",
                                             sknt=26.0),
                         awc=_wx_awc("KPVU", wspd=7) + _wx_kslc(wspd=7))
+    check(ln["source"] == "mesonet" and ln["level"] == "stale" and
+          ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 30 "
+          "mph, gusts 21 mph, from NNW (340°). 25 min old. STALE: over its "
+          "20 min limit. KPVU (aviationweather.gov) reads 8 mph, 4 min old, "
+          "current; KSLC (aviationweather.gov) reads 8 mph, 4 min old, "
+          "current. This line shows the highest reading." and
+          "measured UTALP 30 mph, measured KPVU 8 mph, measured KSLC 8 mph"
+          in v["disagree"],
+          f"UTALP stale and higher: it leads, STALE, Provo beside it: "
+          f"{ln['text']!r} {v['disagree']!r}")
+    # A reading past its own grey limit is never a candidate, however high.
+    _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:14:00Z",
+                                            sknt=50.0),
+                        awc=_wx_awc("KPVU", wspd=7) + _wx_kslc(wspd=7))
     check(ln["source"] == "awc:KPVU" and ln["level"] == "backup" and
-          ln["text"].endswith(
-              "4 min old. UTALP (Iowa mesonet) reads 30 mph, 25 min old, "
-              "STALE (over its 20 min limit). This line shows the highest "
-              "current reading.") and
-          "measured KPVU 8 mph, measured UTALP 30 mph" in v["disagree"],
-          f"UTALP stale and higher: both said: {ln['text']!r} "
-          f"{v['disagree']!r}")
+          "58 mph" not in ln["text"] and "Using the backup because UTALP "
+          "(Iowa mesonet) stopped reporting" in ln["text"],
+          f"UTALP 46 min old is not used: {ln['text']!r}")
     # Both current, the backup higher: the highest leads, UTALP said.
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=30, wgst=41) + _wx_kslc())
     check(ln["source"] == "awc:KPVU" and ln["level"] == "backup" and
           ln["text"].startswith("Measured, backup station Provo airport "
                                 "(KPVU), 17 mi away: 35 mph, gusts 47 mph")
           and ln["text"].endswith(
-              "UTALP (Iowa mesonet) reads 12 mph, 5 min old; KSLC "
-              "(aviationweather.gov) reads 10 mph, 4 min old. This line "
-              "shows the highest current reading.") and
+              "UTALP (Iowa mesonet) reads 12 mph, 5 min old, current; KSLC "
+              "(aviationweather.gov) reads 10 mph, 4 min old, current. This "
+              "line shows the highest reading.") and
           "measured KPVU 35 mph, measured UTALP 12 mph, measured KSLC 10 "
           "mph" in v["disagree"],
           f"the highest current reading leads: {ln['text']!r}")
@@ -76703,8 +76714,8 @@ def test_weather_backup_stations_and_why_no_data():
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=0) + _wx_kslc())
     check(ln["source"] == "mesonet" and ln["level"] == "ok" and
           ln["text"].endswith("5 min old. KPVU (aviationweather.gov) reads 0 "
-                              "mph, 4 min old. This line shows the highest "
-                              "current reading.") and
+                              "mph, 4 min old, current. This line shows the "
+                              "highest reading.") and
           "measured UTALP 12 mph, measured KPVU 0 mph" in v["disagree"],
           f"a backup 12 mph lower is said: {ln['text']!r}")
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=3) + _wx_kslc())
@@ -76754,13 +76765,20 @@ def test_weather_backup_stations_and_why_no_data():
         "stale_min": 30, "no_data_min": 60}}}, mesonet=old_utalp,
         awc=_wx_awc("KPVU", obs=WX_NOW - 70 * 60))
     check(ln["level"] == "none", f"station_limits for KPVU: {ln}")
+    # A higher STALE backup leads over a current lower UTALP, marked.
+    _w, _n, v, ln = run(awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
+    check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
+          "1 h 20 min old. STALE: over its 75 min limit. UTALP (Iowa "
+          "mesonet) reads 12 mph, 5 min old, current." in ln["text"],
+          f"a higher STALE backup leads, marked: {ln['text']!r}")
     # Nothing current: the highest STALE reading, amber.
     _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:35:00Z"),
                         awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
     check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
-          ln["text"].endswith("This line shows the highest reading; none "
-                              "is current."),
-          f"only STALE ones: the highest, amber: {ln}")
+          ln["text"].endswith("UTALP (Iowa mesonet) reads 12 mph, 25 min "
+                              "old, STALE (over its 20 min limit). This "
+                              "line shows the highest reading."),
+          f"only STALE ones: the highest, amber: {ln['text']!r}")
     # The setting moves them.
     w2, net2, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
                                cfg={"backup_stations": ["kslc"]})
@@ -76824,6 +76842,36 @@ def test_weather_aviationweather_reports_are_read():
           and abs(r["gust_mph"] - 18 * W.KNOT_MPH) < 1e-6 and
           r["valid"] == WX_NOW - 3600,
           f"no fields: the raw METAR's wind group and the report time: {r}")
+    g = _wx_awc("KPVU", wdir=180, wspd=10, wgst=25)
+    g[0].pop("wgst")
+    r = W.parse_awc(g, "KPVU")
+    check(abs(r["gust_mph"] - 25 * W.KNOT_MPH) < 1e-6,
+          f"no wgst field: the raw METAR's G25KT: {r}")
+    g = _wx_awc("KPVU", wdir=180, wspd=10, wgst=25)
+    g[0]["wgst"] = None
+    check(W.parse_awc(g, "KPVU")["gust_mph"] is None,
+          "wgst null: no gust, the raw one not guessed at")
+    ms = _wx_awc("KPVU")
+    ms[0]["obsTime"] = int(WX_NOW * 1000)
+    check(W.parse_awc(ms, "KPVU")["valid"] == WX_NOW - 3600,
+          "an obsTime in milliseconds: the report time stands in")
+    ms[0].pop("reportTime")
+    try:
+        W.parse_awc(ms, "KPVU")
+        check(False, "a millisecond obsTime was read as seconds")
+    except ValueError as e:
+        check("unreadable time stamp" in str(e), str(e))
+    for bad in (_wx_awc("KPVU", wspd=250), _wx_awc("KPVU", wspd=10, wgst=900)):
+        try:
+            W.parse_awc(bad, "KPVU")
+            check(False, f"an impossible speed was read: {bad}")
+        except ValueError as e:
+            check("cannot be right" in str(e), str(e))
+    try:
+        W.parse_mesonet(_wx_mesonet(sknt=-5.0), "UTALP")
+        check(False, "a negative speed was read")
+    except ValueError as e:
+        check("cannot be right" in str(e), str(e))
     calm = W.parse_awc(_wx_awc("KPVU", wdir=0, wspd=0), "KPVU")
     check(W.wind_text(calm["speed_mph"], calm["gust_mph"],
                       calm["dir_deg"]).endswith("calm"), "00000KT is calm")

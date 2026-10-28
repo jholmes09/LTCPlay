@@ -5,7 +5,7 @@ What the Weather block shows
 Wind speed, wind direction and gusts at Thanksgiving Point (Lehi, Utah),
 from places that know nothing of each other, each with its own age:
 
-  MEASURED   one line, the HIGHEST current reading from these sources
+  MEASURED   one line, the HIGHEST usable reading from these sources
              (Jeff, 2026-10-28: one stalled feed must not blank the wind;
              the highest, review of PR #154, since an airport can read low
              when the wind funnels through the Point of the Mountain gap):
@@ -55,9 +55,10 @@ shows the saved values shows their true age.
              mesonet feed is current up to 20 min, STALE to 45 min; the
              hourly airports current up to 75 min, STALE to 120 min. Past
              its own grey limit, or never received, a reading is not
-             usable and never shown. The line shows the highest current
-             reading, else the highest STALE one (amber), else none: grey
-             NO CURRENT DATA, use on-site wind check, with no number.
+             usable and never shown. The line shows the highest usable
+             reading, current or STALE (a STALE one amber and marked so,
+             the current ones said beside it), else none: grey NO
+             CURRENT DATA, use on-site wind check, with no number.
   forecast   the NWS issues the point forecast when its forecasters update
              the grid, routinely about twice a day and more often when the
              weather changes, so its issue time ("updateTime") is often
@@ -438,10 +439,10 @@ def parse_mesonet(doc, station):
                          f"speed")
     gust = _num(r.get("gust"))
     drct = _num(r.get("drct"))
-    return {"speed_mph": speed * KNOT_MPH,
-            "gust_mph": None if gust is None else gust * KNOT_MPH,
-            "dir_deg": None if drct is None else drct % 360,
-            "valid": valid}
+    return _in_range({"speed_mph": speed * KNOT_MPH,
+                      "gust_mph": None if gust is None else gust * KNOT_MPH,
+                      "dir_deg": None if drct is None else drct % 360,
+                      "valid": valid}, f"the mesonet's reading for {station}")
 
 
 def parse_nws_observation(doc):
@@ -468,8 +469,9 @@ def parse_nws_observation(doc):
     gv, gu = qv("windGust")
     dv, _du = qv("windDirection")
     d = _num(dv)
-    return {"speed_mph": speed, "gust_mph": to_mph(gv, gu),
-            "dir_deg": None if d is None else d % 360, "valid": valid}
+    return _in_range({"speed_mph": speed, "gust_mph": to_mph(gv, gu),
+                      "dir_deg": None if d is None else d % 360,
+                      "valid": valid}, "the NWS observation")
 
 
 _METAR_WIND = re.compile(r"(?:^|\s)(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?(KT|MPS)"
@@ -495,18 +497,27 @@ def parse_awc(doc, station, lat=None, lon=None):
         if not isinstance(r, dict) or \
                 str(r.get("icaoId", "")).upper() != station:
             continue
+        # Epoch seconds (2001 to 5138); anything else, milliseconds
+        # included, is not trusted: the report time stands in.
         valid = _num(r.get("obsTime"))
-        if valid is None or valid < 1e9:
+        if valid is None or not 1e9 <= valid < 1e11:
             try:
                 valid = parse_time(r.get("reportTime"))
             except (ValueError, TypeError):
-                continue
-        if best is None or valid > best[0]:
+                valid = None
+        if valid is None:
+            if best is None:
+                best = (None, r)
+            continue
+        if best is None or best[0] is None or valid > best[0]:
             best = (valid, r)
     if best is None:
         raise ValueError(f"aviationweather.gov has no report from {station} "
                          f"in the last {AWC_HOURS} h")
     valid, r = best
+    if valid is None:
+        raise ValueError(f"aviationweather.gov's report from {station} has "
+                         f"an unreadable time stamp")
     raw = str(r.get("rawOb") or "")
     m = _METAR_WIND.search(raw)
     wdir, wspd, wgst = r.get("wdir"), _num(r.get("wspd")), _num(r.get("wgst"))
@@ -515,6 +526,8 @@ def parse_awc(doc, station, lat=None, lon=None):
         wdir, wspd = m.group(1), float(m.group(2))
         wgst = None if m.group(3) is None else float(m.group(3))
         unit = "m/s" if m.group(4) == "MPS" else "kn"
+    elif "wgst" not in r and m and m.group(3) and m.group(4) == "KT":
+        wgst = float(m.group(3))      # the field absent: the raw G25KT
     if wspd is None:
         raise ValueError(f"aviationweather.gov's report from {station} has "
                          f"no wind speed")
@@ -524,10 +537,25 @@ def parse_awc(doc, station, lat=None, lon=None):
     la, lo = _num(r.get("lat")), _num(r.get("lon"))
     if None not in (la, lo, lat, lon):
         miles = round(_distance_miles(lat, lon, la, lo), 1)
-    return {"speed_mph": to_mph(wspd, unit),
-            "gust_mph": None if wgst is None else to_mph(wgst, unit),
-            "dir_deg": None if d is None else d % 360,
-            "variable": variable, "valid": valid, "miles": miles}
+    return _in_range({"speed_mph": to_mph(wspd, unit),
+                      "gust_mph": None if wgst is None else to_mph(wgst, unit),
+                      "dir_deg": None if d is None else d % 360,
+                      "variable": variable, "valid": valid, "miles": miles},
+                     f"aviationweather.gov's report from {station}")
+
+
+MAX_MPH = 200     # a wind speed past this, or below 0, is not a reading
+
+
+def _in_range(out, who):
+    """`out` (a parsed reading) when its speed and gust are 0 to 200 mph,
+    else ValueError: no usable reading."""
+    for k, what in (("speed_mph", "wind speed"), ("gust_mph", "gust")):
+        v = out.get(k)
+        if v is not None and not 0 <= v <= MAX_MPH:
+            raise ValueError(f"{who} gave a {what} of {v:.0f} mph, which "
+                             f"cannot be right")
+    return out
 
 
 def _series(layer, conv):
@@ -1209,12 +1237,13 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
             return f" The last try failed: {_bare(s['error'])}."
         return ""
 
-    # -- measured: the highest current reading, any source ----------------
+    # -- measured: the highest usable reading, any source -----------------
     # Conservative (review of PR #154): the line leads with the HIGHEST
-    # reading that is current (inside its own source's stale limit); only
-    # when none is current, the highest STALE one. Each source has its own
-    # limits: the 5 minute mesonet feed 20 / 45 min, the hourly airports
-    # 75 / 120 min (station_limits).
+    # reading inside its own source's grey limit, current or STALE; a
+    # STALE one is amber and marked so, with the current ones said beside
+    # it. Each source has its own limits: the 5 minute mesonet feed 20 / 45
+    # min, the hourly airports 75 / 120 min (station_limits). A reading
+    # past its grey limit is never a candidate.
     rows = []
     for i, (name, label, short) in enumerate(measured_sources(cfg)):
         s = src.get(name) or {}
@@ -1228,9 +1257,8 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
     for r in rows:
         r["why"] = _why_not(r, now, cfg)
     usable = [r for r in rows if r["st"] in ("ok", "stale")]
-    pool = [r for r in usable if r["st"] == "ok"] or usable
-    pick = max(pool, key=lambda r: (r["d"]["speed_mph"], -r["i"])) \
-        if pool else None
+    pick = max(usable, key=lambda r: (r["d"]["speed_mph"], -r["i"])) \
+        if usable else None
     line = {"kind": "measured",
             "sources": [{"source": r["name"], "level": r["st"],
                          "text": r["why"] or "current"} for r in rows]}
@@ -1253,20 +1281,27 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
         if ahead:
             text += (" Using the backup because "
                      + "; ".join(r["why"] for r in ahead) + ".")
+        # Said beside it: UTALP when a backup leads, any reading over the
+        # disagree limit away, and every current one when a STALE one
+        # leads.
         others = [r for r in usable if r is not pick and
                   (r["i"] < pick["i"] or
+                   (pick["st"] == "stale" and r["st"] == "ok") or
                    abs(r["d"]["speed_mph"] - d["speed_mph"]) >
                    cfg["disagree_mph"])]
+        # The page puts STALE before a stale line; beside other readings
+        # the line also says which one is STALE and why.
+        if pick["st"] == "stale" and others:
+            text += (f" STALE: over its {pick['stale_min']:g} min limit.")
         if others:
             text += (" " + "; ".join(
                 _cap(f"{r['short']} reads "
                      f"{int(round(r['d']['speed_mph']))} mph, "
-                     f"{age_text(r['age'])} old"
-                     + (f", STALE (over its {r['stale_min']:g} min limit)"
-                        if r["st"] == "stale" else "")) for r in others)
-                + ". This line shows the highest "
-                + ("current reading." if pick["st"] == "ok" else
-                   "reading; none is current."))
+                     f"{age_text(r['age'])} old, "
+                     + (f"STALE (over its {r['stale_min']:g} min limit)"
+                        if r["st"] == "stale" else "current"))
+                for r in others)
+                + ". This line shows the highest reading.")
         level = ("stale" if pick["st"] == "stale" else
                  "backup" if pick["i"] > 0 else "ok")
         line.update(source=pick["name"], level=level, text=text,
