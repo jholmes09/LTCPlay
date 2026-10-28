@@ -103,6 +103,9 @@ HOOKUPS = (
                    "(play_note, once)"),
 )
 NOTE_NAMES = NOTE_KINDS + tuple(name for name, _who in HOOKUPS)
+# An alert kind that plays a recorded note of another name: the rig check
+# alert (preroll.py, PR #162) plays booth_preroll_hold.wav.
+NOTE_ALIAS = {"preroll": "preroll_hold"}
 # The folder of notes, beside the program and in the Settings and logs
 # folder alike (installer.iss ships it as {app}\\Booth notes).
 FOLDER = "Booth notes"
@@ -310,6 +313,7 @@ class BoothPlayer:
         if not name:
             return False, ("No booth speaker is configured, so the alert "
                            "note was not played.")
+        kind = NOTE_ALIAS.get(kind, kind)
         if kind not in NOTE_NAMES:
             return False, (f"{kind} has no booth note, so nothing was "
                            f"played.")

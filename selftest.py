@@ -18184,7 +18184,7 @@ def test_alert_hold_at_showtime_then_one_delayed_announcement():
     loop = ("127.0.0.1", 5000)
     try:
         check(AH.ANNOUNCE_KINDS == {"audio", "video", "flames", "link",
-                                    "timecode", "start"},
+                                    "timecode", "start", "preroll"},
               "the announcing kinds are Jeff's")
         sv = R.svc
         R.remote.alerts.raise_("audio", "The show audio is lost.")
@@ -58668,9 +58668,12 @@ def test_booth_notes_by_name_and_shipped_by_the_installer():
     check({"lasers", "users"} <= set(BA.NOTE_KINDS) and
           "aim" not in BA.NOTE_NAMES,
           f"lasers and users have notes, aim none: {BA.NOTE_KINDS}")
-    check(set(AL.KINDS) - AL.DISPLAY_ONLY <= set(BA.NOTE_KINDS),
+    # An alias plays another shipped note (the rig check alert, #162).
+    noted = set(BA.NOTE_KINDS) | {k for k, v in BA.NOTE_ALIAS.items()
+                                  if v in BA.NOTE_NAMES}
+    check(set(AL.KINDS) - AL.DISPLAY_ONLY <= noted,
           f"every alert kind that sounds has a note: "
-          f"{set(AL.KINDS) - AL.DISPLAY_ONLY - set(BA.NOTE_KINDS)}")
+          f"{set(AL.KINDS) - AL.DISPLAY_ONLY - noted}")
     work = tempfile.mkdtemp()
     try:
         shipped = os.path.join(work, "app", BA.FOLDER)
@@ -83283,6 +83286,1372 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+
+# ---------------------------------------------------------------------------
+# The pre-roll (preroll.py, Jeff 2026-10-28): the rig is checked before the
+# show starts, inside the lead-up, and a failed check holds the show.
+
+class _PrAudio:
+    """Stands in for clock.AudioMaster as the pre-roll reads it: a new
+    buffer from the audio process on every read while `ticking`."""
+    source = "audio_master"
+
+    def __init__(self, ticking=True, device_ok=True):
+        self.ticking = ticking
+        self._live, self._device_ok = True, device_ok
+        self._cue = None
+        self._fault = None if device_ok else "Show DSP is not attached."
+        self._device_desc = "Show DSP"
+        self._n = 0
+        self.frames = []
+
+    @property
+    def _seen_seq(self):
+        if self.ticking:
+            self._n += 1
+        return self._n
+
+    def preroll_frame(self, n):
+        self.frames.append(n)
+        cb = getattr(self, "on_frame", None)
+        if cb is not None:
+            cb(n)
+        return True
+
+
+class _PrWatchdog:
+    """MadMapper's heartbeat as the pre-roll reads it (heard()): `mode`
+    "plays" answers each test frame with its position, "silent" never
+    answers, "stuck" answers with the same value."""
+
+    def __init__(self, mode="plays", length=60.0):
+        self.mode, self.length = mode, length
+        self.count, self.value, self.at = 0, None, None
+        self.bind_error = None
+
+    def heard(self):
+        return self.count, self.value, self.at, time.monotonic()
+
+    def show_len_s(self):
+        return self.length
+
+    def feed(self, n):
+        if self.mode == "silent":
+            return
+        self.count += 1
+        self.at = time.monotonic()
+        self.value = 0.5 if self.mode == "stuck" else \
+            (n / 30.0) / self.length
+
+
+class _PrLink:
+    def __init__(self, calls):
+        import types
+        self.cfg = types.SimpleNamespace(show_bank="Bank-1")
+        self.calls = calls
+
+    def select_bank(self, name, wait=True):
+        self.calls.append(("select", name))
+
+    def play(self, name, wait=True):
+        self.calls.append(("play", name))
+
+
+class _PrConductor:
+    def __init__(self, calls, video_ok=True, blank_ok=True):
+        from ltcplay import conductor as C
+        self.C, self.calls = C, calls
+        self.video_ok, self.blank_ok = video_ok, blank_ok
+        self.applied = {"video": "lit", "lasers": "unknown"}
+
+    def preroll_video_dark(self):
+        self.calls.append(("video black",))
+        if not self.video_ok:
+            return self.C.failed("the show is aborted")
+        self.applied["video"] = "black"
+        return self.C.done("black")
+
+    def lasers_dark_now(self, what=""):
+        self.calls.append(("lasers dark", what))
+        if not self.blank_ok:
+            return self.C.failed("no packet got out to BEYOND")
+        self.applied["lasers"] = "black"
+        return self.C.done("dark")
+
+    def snapshot(self):
+        return {"applied": dict(self.applied)}
+
+
+def _pr_probe(s=4.0, cancelled=None):
+    from ltcplay import preroll as P
+    return P.Probe(time.monotonic() + s, cancelled or (lambda: False),
+                   time.monotonic)
+
+
+def test_preroll_checks_prove_each_device_and_fail_closed():
+    section("pre-roll (Jeff, 2026-10-28): each check, passing and failing, "
+            "on fakes; a stale, silent or unknown status is a failure; the "
+            "video test blacks the screens first, sends MadMapper alone a "
+            "test timecode, needs its heartbeat to answer AND advance, and "
+            "parks it on frame 0")
+    import types
+    from ltcplay import preroll as P
+    # Audio: taking buffers, or not.
+    ok, t = P.check_audio(_pr_probe(), _PrAudio())
+    check(ok is True and "Show DSP" in t, f"audio taking buffers: {ok} {t}")
+    ok, t = P.check_audio(_pr_probe(), _PrAudio(ticking=False))
+    check(ok is False and "took no audio" in t,
+          f"audio open but no buffer for a second: failed: {t}")
+    ok, t = P.check_audio(_pr_probe(), _PrAudio(device_ok=False))
+    check(ok is False and "not open" in t, f"interface missing: {t}")
+    ok, t = P.check_audio(_pr_probe(), _PrAudio(), "the show audio is "
+                          "still loading")
+    check(ok is False and "loading" in t, f"the runner's refusal: {t}")
+    ok, t = P.check_audio(_pr_probe(), None)
+    check(ok is False, f"no audio_master clock: failed: {t}")
+    playing = _PrAudio()
+    playing._cue = {"label": "Show"}
+    check(P.check_audio(_pr_probe(), playing)[0] is False,
+          "a cue already playing: failed, never a pass")
+    # Announcements.
+    good = {"ok": True, "device_available": True,
+            "announcements": [{"id": "delayed", "available": True}]}
+    ann = types.SimpleNamespace(status=lambda: good)
+    check(P.check_announcements(_pr_probe(), ann) == (True, ""),
+          "announcements: the Delayed could play")
+    check(P.check_announcements(_pr_probe(), None)[0] is False,
+          "no announcements in the engine: failed")
+    bad = dict(good, device_available=False, device_reason="not attached")
+    check(P.check_announcements(_pr_probe(), types.SimpleNamespace(
+        status=lambda: bad))[0] is False, "output missing: failed")
+    miss = dict(good, announcements=[{"id": "delayed", "available": False,
+                                      "reason": "Recording missing"}])
+    ok, t = P.check_announcements(_pr_probe(), types.SimpleNamespace(
+        status=lambda: miss))
+    check(ok is False and "Delayed" in t, f"Delayed missing: {t}")
+    # Booth speaker: only when set up.
+    check(P.check_booth(_pr_probe(), None)[0] is None,
+          "no booth speaker set: not used")
+    booth = types.SimpleNamespace(enabled=True, device_name="Booth")
+
+    def gone(name):
+        raise ValueError("no output named Booth")
+    check(P.check_booth(_pr_probe(), booth, gone)[0] is False,
+          "booth speaker set and missing: failed")
+    check(P.check_booth(_pr_probe(), booth, lambda n: None)[0] is True,
+          "booth speaker attached: OK")
+
+    # Flame link: a NEW status frame has to arrive during the check.
+    class _Fs:
+        def __init__(self, fresh=True, fault=""):
+            self.last_at, self.fresh, self.fault = 1.0, fresh, fault
+            self.reads = 0
+
+        def view(self):
+            return {"stale": not self.fresh, "fault": self.fault}
+
+    def ticking(fs):
+        def go():
+            for _ in range(20):
+                time.sleep(0.05)
+                fs.last_at += 1.0
+        threading.Thread(target=go, daemon=True).start()
+        return fs
+    link = types.SimpleNamespace(snapshot=lambda: {"sending_ok": True,
+                                                   "lock_alarm": ""})
+    deck_ok = lambda: ("ok", "ok")                       # noqa: E731
+    check(P.check_flame_link(_pr_probe(), ticking(_Fs()), link,
+                             deck_ok) == (True, ""),
+          "flamesafe answering, link sending, deck live: OK")
+    ok, t = P.check_flame_link(_pr_probe(), _Fs(), link, deck_ok)
+    check(ok is False and "no status" in t,
+          f"no new status frame during the check: unknown is failed: {t}")
+    check(P.check_flame_link(_pr_probe(), ticking(_Fs(fresh=False)), link,
+                             deck_ok)[0] is False, "a stale status: failed")
+    check(P.check_flame_link(_pr_probe(), ticking(_Fs(fault="x")), link,
+                             deck_ok)[0] is False, "a flamesafe fault: failed")
+    locked = types.SimpleNamespace(snapshot=lambda: {
+        "sending_ok": True, "lock_alarm": "something else holds the key"})
+    check(P.check_flame_link(_pr_probe(), ticking(_Fs()), locked,
+                             deck_ok)[0] is False, "the link locked: failed")
+    ok, t = P.check_flame_link(_pr_probe(), ticking(_Fs()), link,
+                               lambda: ("bad", "not arming"))
+    check(ok is False and "not arming" in t, f"deck not live: {t}")
+    check(P.check_flame_link(_pr_probe(), None, None, None)[0] is None,
+          "no flame link in the show: not used")
+    # Lasers.
+    calls = []
+    arm = types.SimpleNamespace(view=lambda: {"armed": 0})
+    bl = types.SimpleNamespace(fault=None, gate=None)
+    ok, t = P.check_lasers(_pr_probe(), bl, arm, _PrConductor(calls),
+                           lambda: True)
+    check(ok is True and calls == [("lasers dark", "the pre-roll")],
+          f"lasers: one blank sent (it only darkens), nothing armed: "
+          f"{ok} {t} {calls}")
+    check(P.check_lasers(_pr_probe(), bl, arm, _PrConductor([]),
+                         lambda: False)[0] is False,
+          "BEYOND not running: failed")
+    check(P.check_lasers(_pr_probe(), bl, None, _PrConductor([]))[0] is
+          False, "no laser arm: failed")
+    check(P.check_lasers(_pr_probe(), bl, arm,
+                         _PrConductor([], blank_ok=False))[0] is False,
+          "the blank did not get out: failed")
+    check(P.check_lasers(_pr_probe(), types.SimpleNamespace(
+        fault="Lasers: blanking not set up", gate=None), arm,
+        _PrConductor([]))[0] is False, "blanking not set up: failed")
+    gate = types.SimpleNamespace(lit=False, black_frames=0, send_errors=0,
+                                 show_frames=0, ip="10.0.0.5")
+    ok, t = P.check_lasers(_pr_probe(), types.SimpleNamespace(
+        fault=None, gate=gate), arm, _PrConductor([]))
+    check(ok is False and "not flowing" in t,
+          f"the black zone timecode not flowing: failed: {t}")
+    check(P.check_lasers(_pr_probe(), None, None, None)[0] is None,
+          "no lasers in the show: not used")
+    # Timecode.
+    out = types.SimpleNamespace(dests=[("MadMapper", "127.0.0.1")],
+                                packets_sent=0, failing_labels=[],
+                                seconds_since_error=None, last_error="",
+                                held_dests=lambda: [("MadMapper",
+                                                     "127.0.0.1")])
+    ok, t = P.check_timecode(_pr_probe(2.0), out)
+    check(ok is False and "no Art-Net timecode" in t,
+          f"no packet went out during the check: failed: {t}")
+
+    def sending():
+        for _ in range(10):
+            time.sleep(0.05)
+            out.packets_sent += 1
+    threading.Thread(target=sending, daemon=True).start()
+    check(P.check_timecode(_pr_probe(), out)[0] is True,
+          "packets went out: OK")
+    out.failing_labels = ["MadMapper (127.0.0.1)"]
+    threading.Thread(target=sending, daemon=True).start()
+    check(P.check_timecode(_pr_probe(), out)[0] is False,
+          "a receiver refusing timecode: failed")
+    # Network.
+    ok, t = P.check_network(_pr_probe(), [("MadMapper", "10.0.0.2"),
+                                          ("pixel controller", "10.0.0.9")],
+                            lambda ip: ip != "10.0.0.9")
+    check(ok is False and "10.0.0.9" in t and "10.0.0.2" not in t,
+          f"one controller silent: named: {t}")
+    check(P.check_network(_pr_probe(), [("a", "10.0.0.2")],
+                          lambda ip: True)[0] is True, "all answer: OK")
+
+    # Video: black first, the bank, the test timecode, the heartbeat.
+    def video(mode, unconfirmed_ok=False, wd=True, cond_ok=True):
+        calls = []
+        clk = _PrAudio()
+        w = _PrWatchdog(mode) if wd else None
+        if w is not None:
+            clk.on_frame = w.feed
+        c = _PrConductor(calls, video_ok=cond_ok)
+        orig = clk.preroll_frame
+
+        def frame(n):
+            calls.append(("frame", c.applied["video"]))
+            return orig(n)
+        clk.preroll_frame = frame
+        got = P.check_video(_pr_probe(), _PrLink(calls), w, clk, c,
+                            lambda: True, unconfirmed_ok, frames_s=1.2)
+        return got, calls, clk
+    (ok, t), calls, clk = video("plays")
+    check(ok is True, f"MadMapper plays the bank: OK: {t}")
+    check(calls[0] == ("video black",) and calls[1] == ("select", "Bank-1")
+          and calls[2] == ("play", "Bank-1")
+          and all(c == ("frame", "black") for c in calls[3:]),
+          f"the screens black first (confirmed), then the show bank "
+          f"selected and set following timecode (#161), then only test "
+          f"frames, every one with the screens black: {calls[:4]}")
+    check(clk.frames[:3] == [0, 1, 2] and clk.frames[-3:] == [0, 0, 0],
+          f"timecode from 00:00:00:00, then parked on frame 0: "
+          f"{clk.frames[:3]} {clk.frames[-3:]}")
+    (ok, t), _c, _k = video("silent")
+    check(ok is False and t == "MadMapper did not answer the timecode",
+          f"no heartbeat answer: {t}")
+    _no_dashes(t, "the video failure")
+    (ok, t), _c, clk = video("stuck")
+    check(ok is False and "did not move" in t and clk.frames[-1] == 0,
+          f"answers but does not advance: failed, still parked: {t}")
+    (ok, t), _c, _k = video("plays", wd=False)
+    check(ok is False and "/float-1" in t,
+          f"no heartbeat set up: cannot be proven, failed, says what to add: "
+          f"{t}")
+    (ok, t), _c, _k = video("plays", unconfirmed_ok=True, wd=False)
+    check(ok is True and "NOT confirmed" in t,
+          f"the admin switch: passes, saying it is not confirmed: {t}")
+    (ok, t), calls, clk = video("plays", cond_ok=False)
+    check(ok is False and clk.frames == [] and
+          not any(c[0] == "select" for c in calls),
+          f"the screens could not go black: nothing is sent to MadMapper: "
+          f"{t} {calls}")
+    check(P.check_video(_pr_probe(), None, None, None, None)[0] is None,
+          "no MadMapper in the show: not used")
+    check(P.check_video(_pr_probe(), _PrLink([]), _PrWatchdog(), _PrAudio(),
+                        _PrConductor([]), lambda: False)[0] is False,
+          "MadMapper not running: failed")
+    print("  ok")
+
+
+def test_preroll_runner_unknown_is_failure_and_cancel_is_clean():
+    section("pre-roll: a check that hangs, raises or says nothing in time "
+            "is a FAILURE (unknown is not healthy); a failure raises the "
+            "'preroll' alert and a later pass clears it; a cancel stops "
+            "the checks and raises nothing; the per-device line reads "
+            "'Audio OK, ..., Lasers FAILED: ...'")
+    from ltcplay import preroll as P, alerts as AL, alerthold as AH
+    check("preroll" in AL.KINDS and AL.SEVERITY["preroll"] == "fault" and
+          "preroll" not in AL.DISPLAY_ONLY and "preroll" in
+          AH.ANNOUNCE_KINDS, "the alert kind holds at showtime and "
+                             "announces like the other faults")
+    al = AL.Alerts()
+    lines = []
+    state = {"Lasers": (False, "BEYOND is not running")}
+    stop = threading.Event()
+
+    def mk(name):
+        def fn(p):
+            if name == "Hang":
+                stop.wait(10)
+                return True, ""
+            if name == "Boom":
+                raise RuntimeError("bad")
+            return state.get(name, (True, ""))
+        return fn
+    pr = P.PreRoll([(n, True, mk(n)) for n in ("Audio", "Video", "Lasers")],
+                   window_s=3, journal=lambda t, **k: lines.append((t, k)),
+                   alert=al.raise_,
+                   clear_alert=lambda k: al.clear(kind=k, action="Confirm",
+                                                  who="LTC Player",
+                                                  screen="engine"),
+                   open_alert=lambda: any(a.kind == "preroll"
+                                          for a in al.open()))
+    r = pr.run(("n", 1), "show 1 (18:00)")
+    check(r["state"] == "failed" and r["text"] == "Audio OK, Video OK, "
+          "Lasers FAILED: BEYOND is not running",
+          f"the per-device line: {r['state']} {r['text']}")
+    check([a.kind for a in al.open()] == ["preroll"] and
+          "Lasers FAILED: BEYOND is not running" in al.open()[0].text,
+          f"a failure raises the preroll alert: {al.view()}")
+    check(pr.verdict(("n", 1)) == "failed" and pr.alert_open(),
+          "the verdict stands for its show")
+    check(any(k.get("fault") and "FAILED" in t for t, k in lines),
+          "journaled as a fault")
+    _no_dashes(al.open()[0].text, "the pre-roll alert")
+    state.clear()
+    r = pr.run(("n", 2), "show 2")
+    check(r["state"] == "passed" and not al.open(),
+          f"a later pass clears the preroll alert: {al.view()}")
+    # Unknown: a check that hangs past the budget, and one that raises.
+    pr2 = P.PreRoll([("Audio", True, mk("Audio")), ("Video", True,
+                                                     mk("Hang")),
+                     ("Lasers", True, mk("Boom"))], window_s=3)
+    t0 = time.monotonic()
+    r = pr2.run(("n", 3), "show 3")
+    took = time.monotonic() - t0
+    stop.set()
+    items = {i["name"]: i for i in r["items"]}
+    check(r["state"] == "failed" and not items["Video"]["ok"] and
+          "not known to work" in items["Video"]["text"] and
+          not items["Lasers"]["ok"] and "failed" in items["Lasers"]["text"],
+          f"a hung check and a raising one both FAIL: {r['text']}")
+    check(took < P.budget_s(3) + 1.0, f"and the run keeps to its budget: "
+                                      f"{took:.2f} s")
+    # Not used counts as OK; a non-required failure does not fail the run.
+    pr3 = P.PreRoll([("Video", True, lambda p: (None, "no MadMapper")),
+                     ("Extra", False, lambda p: (False, "x"))], window_s=3)
+    r = pr3.run(("n", 4), "show 4")
+    check(r["state"] == "passed", f"not used and informational: passed: "
+                                  f"{r['text']}")
+    # Cancel: the check sees it, nothing is raised.
+    al2 = AL.Alerts()
+    seen = []
+
+    def waits(p):
+        while not p.cancelled():
+            time.sleep(0.01)
+        seen.append("cancelled")
+        return False, "cancelled"
+    pr4 = P.PreRoll([("Video", True, waits)], window_s=5, alert=al2.raise_)
+    th = threading.Thread(target=pr4.run, args=(("n", 5), "show 5"))
+    th.start()
+    check(wait_for(pr4.checking, 2), "checking")
+    check(pr4.view()["state"] == "checking", "the screen says checking")
+    pr4.cancel("Hold was pressed")
+    th.join(3)
+    check(seen == ["cancelled"] and pr4.view()["state"] == "cancelled" and
+          not al2.open() and pr4.verdict(("n", 5)) is None,
+          f"cancelled: the check stopped, no alert, no verdict: "
+          f"{pr4.view()} {al2.view()}")
+    print("  ok")
+
+
+def _pr_night(results=None, window=10, hold_until=None,
+              names=("Audio", "Video", "Lasers")):
+    """_fi_night with a pre-roll of fake checks (results: name -> (ok,
+    text); a check named in `hold_until` waits on that Event, or until
+    cancelled) and the alert hold at showtime, as web.serve wires them."""
+    from ltcplay import preroll as P, alerts as AL, alerthold as AH
+    n = _fi_night()
+    if n.S is None:
+        return None
+    results = dict(results or {})
+    ran = []
+
+    def mk(name):
+        def fn(p):
+            ran.append(name)
+            if hold_until is not None and name in hold_until:
+                ev = hold_until[name]
+                while not ev.is_set() and not p.cancelled():
+                    time.sleep(0.01)
+                if p.cancelled():
+                    return False, "cancelled"
+            res = results.get(name, (True, ""))
+            if len(res) == 3:
+                time.sleep(res[2])
+            return res[:2]
+        return fn
+    al = AL.Alerts()
+    hold = AH.AlertHold(al, n.svc)
+    n.svc.showtime_gate = hold.gate
+    pr = P.PreRoll([(x, True, mk(x)) for x in names],
+                   window_s=window, alert=al.raise_,
+                   clear_alert=lambda k: al.clear(kind=k, action="Confirm",
+                                                  who="LTC Player",
+                                                  screen="engine"),
+                   open_alert=lambda: any(a.kind == "preroll"
+                                          for a in al.open()))
+    n.svc.preroll = pr
+    n.pr, n.al, n.ran, n.results = pr, al, ran, results
+    return n
+
+
+def _pr_key(n, show=1):
+    return (str(n.svc.machine.date), show)
+
+
+def _pr_audio_started(n):
+    return [c for c in n.calls if c[0] == "music_play"]
+
+
+def test_preroll_scheduled_show_starts_at_its_time_when_healthy():
+    section("pre-roll, a scheduled show: the scheduler begins the rig check "
+            "preroll_s (10 s) BEFORE the show's time and not earlier; a "
+            "healthy rig starts the show at its time to the second, the "
+            "audio not before; with no pre-roll attached, the start is as "
+            "before")
+    n = _pr_night()
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.STANDBY, f"preshow: {svc.machine.state}")
+    n.now[0] = _den(S, 17, 59, 49)
+    svc.tick()
+    time.sleep(0.2)
+    check(n.ran == [] and n.pr.verdict(_pr_key(n)) is None,
+          f"11 s before the show: no check yet: {n.ran}")
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "passed", 3),
+          f"10 s before: the rig check ran and passed: {n.pr.view()}")
+    check(sorted(n.ran) == ["Audio", "Lasers", "Video"] and
+          svc.machine.state == S.STANDBY and not _pr_audio_started(n),
+          f"during the check: the show has not started, no audio: "
+          f"{svc.machine.state}")
+    n.now[0] = _den(S, 17, 59, 59)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.STANDBY and not _pr_audio_started(n),
+          "a second before: still not started")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    s1 = svc.machine.slot(1)
+    check(svc.machine.state == S.SHOW and s1.fired_at == _den(S, 18, 0) and
+          len(_pr_audio_started(n)) == 1,
+          f"at its time to the second: started, the show audio playing: "
+          f"{svc.machine.state} {s1.fired_at}")
+    check(n.ran.count("Video") == 1, "checked once, not again at the start")
+    rows = [r for r in svc.journal if "starts late" in str(r.get("text"))]
+    check(not rows, f"on time: nothing says late: {rows}")
+    c.close()
+    n.link.close()
+    # No pre-roll attached: exactly as before.
+    m = _fi_night()
+    m.svc.tick()
+    m.now[0] = _den(S, 18, 0)
+    m.svc.tick()
+    _settle(m.svc, m.c)
+    check(m.svc.preroll is None and m.svc.machine.state == S.SHOW,
+          "without a pre-roll the show starts at its time as before")
+    m.c.close()
+    m.link.close()
+    print("  ok")
+
+
+def test_preroll_failure_holds_the_show_with_no_sound_and_no_fire():
+    section("pre-roll, a required check fails: no show audio, no flame "
+            "release, no laser lit, no show start; the 'preroll' alert is "
+            "open and at the show's time the alert hold applies (Held at "
+            "once); an Acknowledge before the time does not let the show "
+            "start by itself")
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode")})
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    del n.calls[:]
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+          "the check failed")
+    al = n.al.open()
+    check(al and al[0].kind == "preroll" and "MadMapper did not answer the "
+          "timecode" in al[0].text, f"the alert says why: {n.al.view()}")
+    # Someone acknowledges it before the time: it is raised again at the
+    # time, and the show holds.
+    n.al.clear(action="Acknowledge", who="Andy", screen="Rack screen")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    _mm_flush(n.link)
+    check(svc.machine.state == S.HOLD,
+          f"at the show's time: Held, not started: {svc.machine.state}")
+    check([a.kind for a in n.al.open()] == ["preroll"],
+          "the alert is open again for the hold")
+    log = _fi_log(n.calls)
+    check(not _pr_audio_started(n) and ("flames", "release") not in log
+          and ("lasers", "lit") not in log and
+          ("laser output", "on") not in log and ("music", "play") not in log,
+          f"no show audio, no flame release, no laser lit: {log}")
+    rows = [r for r in svc.journal if r.get("action") == S.HOLD_ON]
+    check(rows and "alert is open" in rows[-1]["text"],
+          f"held by the alert hold: {rows[-1:]}")
+    # Later ticks inside the grace never start it.
+    n.now[0] = _den(S, 18, 0, 10)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.HOLD and not _pr_audio_started(n),
+          "still held, still silent")
+    # Even a Resume inside a late grace does not let the scheduler start a
+    # show whose check failed: only Start now (checks again) or Continue
+    # anyway (failed outputs off).
+    import dataclasses
+    svc.machine = dataclasses.replace(svc.machine, late_grace_s=15)
+    r = svc.operator_press("resume", "Andy", "Rack screen")
+    for sec in (11, 12):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    check(r["ok"] and svc.machine.state != S.SHOW and
+          not _pr_audio_started(n),
+          f"Resumed inside the grace: still not started by the scheduler: "
+          f"{r} {svc.machine.state}")
+    c.close()
+    n.link.close()
+    # With no alert hold in the engine at all, a failed check still never
+    # lets the scheduler start the show by itself.
+    n = _pr_night({"Audio": (False, "the show audio interface is not "
+                                    "open")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.showtime_gate = None
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 55)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+          "failed")
+    for sec in (0, 1):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n),
+          f"no alert hold: still not started: {svc.machine.state}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preroll_late_start_hold_and_abort_during_the_check():
+    section("pre-roll: when it could not run before the time (Run pressed "
+            "late, the app started inside the window) the show waits for "
+            "the check and starts LATE, said in the journal, never "
+            "unchecked; Hold and Abort during the check cancel it cleanly "
+            "and nothing starts")
+    n = _pr_night()
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    # The first tick of the night is at the show's time: no check yet.
+    gate = threading.Event()
+    n2 = _pr_night(hold_until={"Video": gate})
+    S, svc, c = n2.S, n2.svc, n2.c
+    n2.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state in (S.IDLE, S.STANDBY) and
+          not _pr_audio_started(n2) and n2.pr.checking(),
+          f"at its time with no check yet: not started, checking now: "
+          f"{svc.machine.state}")
+    rows = [r for r in svc.journal if r.get("action") == "pre-roll"]
+    check(rows and "starts late" in rows[-1]["text"],
+          f"the journal says it starts late: {rows[-1:]}")
+    _no_dashes(rows[-1]["text"], "the late line")
+    n2.now[0] = _den(S, 18, 0, 4)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n2),
+          "4 s late, past the grace (0 s), still checking: not started, "
+          "not missed")
+    check(svc.machine.slot(1).status == S.PENDING,
+          f"the show still waits: {svc.machine.slot(1)}")
+    gate.set()
+    check(wait_for(lambda: n2.pr.verdict(_pr_key(n2)) == "passed", 3),
+          "the check passed")
+    n2.now[0] = _den(S, 18, 0, 6)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW and
+          svc.machine.slot(1).fired_at == _den(S, 18, 0, 6) and
+          len(_pr_audio_started(n2)) == 1,
+          f"then it starts, 6 s late: {svc.machine.state}")
+    c.close()
+    n2.link.close()
+    n.c.close()
+    n.link.close()
+    # Hold during the check.
+    for how in ("hold", "abort", "stop"):
+        gate = threading.Event()
+        n3 = _pr_night(hold_until={"Video": gate})
+        S, svc, c = n3.S, n3.svc, n3.c
+        svc.tick()
+        _settle(svc, c)
+        n3.now[0] = _den(S, 17, 59, 52)
+        svc.tick()
+        check(wait_for(n3.pr.checking, 2), f"{how}: checking")
+        if how == "hold":
+            r = svc.operator_press("hold", "Andy", "Rack screen")
+            check(r["ok"], f"{how} taken: {r}")
+        elif how == "abort":
+            # Between shows the scheduler has no show to abort, but the
+            # press still ends the check (operator_press, first thing).
+            svc.operator_press("abort", "Andy", "Rack screen",
+                               confirmed=True)
+        else:
+            # Stop's complete halt (Remote.stop_press): halt_begin first.
+            svc.halt_begin()
+            n3.sess = None
+            n3.control.session = None
+            svc.halt_end()
+        _settle(svc, c)
+        check(wait_for(lambda: n3.pr.view()["state"] == "cancelled", 3),
+              f"{how}: the check was cancelled: {n3.pr.view()}")
+        check(not n3.al.open(), f"{how}: a cancel raises no alert")
+        gate.set()
+        n3.now[0] = _den(S, 18, 0)
+        svc.tick()
+        _settle(svc, c)
+        n3.now[0] = _den(S, 18, 0, 20)
+        svc.tick()
+        _settle(svc, c)
+        n3.w.runner.poll() if how == "stop" else None
+        # After Stop, Run is off: the start goes to the runner as before
+        # this change and is refused there (a failed start, nothing sent).
+        check((how == "stop" or svc.machine.state != S.SHOW) and
+              not _pr_audio_started(n3),
+              f"{how}: nothing starts: {svc.machine.state}")
+        c.close()
+        n3.link.close()
+    print("  ok")
+
+
+def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
+    section("pre-roll, Start now: the rig is checked first (the screen says "
+            "Checking the rig); a failure refuses the start with the reason "
+            "and raises the alert, every time it is pressed (only Continue "
+            "anyway goes on); healthy, it starts; Programming skips it")
+    n = _pr_night({"Lasers": (False, "BEYOND is not running"),
+                   "Audio": (True, "", 0.3)}, window=3)
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    n.now[0] = _den(S, 18, 10)
+    svc.tick()
+    _settle(svc, c)
+    seen = []
+    th = threading.Thread(target=lambda: seen.append(wait_for(
+        n.pr.checking, 3)))
+    th.start()
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    th.join()
+    check(seen == [True], "the screen could see Checking during it")
+    check(r["ok"] is False and r.get("preroll") and
+          "rig check failed" in r["text"] and "BEYOND is not running" in
+          r["text"] and "Continue anyway" in r["text"],
+          f"refused with the reason and the way on: {r}")
+    _no_dashes(r["text"], "Start now's refusal")
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n),
+          "nothing started, no audio")
+    check([a.kind for a in n.al.open()] == ["preroll"], "the alert is open")
+    for _ in range(2):
+        r = svc.operator_press("start-now", "Andy", "Rack screen")
+        _settle(svc, c)
+        check(r["ok"] is False and svc.machine.state != S.SHOW and
+              not _pr_audio_started(n),
+              f"pressed again: checked again, refused again: {r}")
+    # Healthy: Start now checks, then starts.
+    n.results.clear()
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] is True and svc.machine.state == S.SHOW and
+          not n.al.open(), f"healthy: checked, started, alert cleared: {r}")
+    c.close()
+    n.link.close()
+    # A Programming Run (review of #162): Start now still checks, and a
+    # scheduled show is never started by the scheduler, checked or not.
+    n = _pr_night({"Lasers": (False, "BEYOND is not running")}, window=3)
+    S, svc, c = n.S, n.svc, n.c
+    n.pr.skip = lambda: "Programming"
+    n.now[0] = _den(S, 18, 10)
+    svc.tick()
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] is False and "Lasers" in n.ran,
+          f"Programming: Start now is checked too: {r} {n.ran}")
+    c.close()
+    n.link.close()
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    n.pr.skip = lambda: "Programming"
+    svc.tick()
+    for t in ((17, 59, 50), (18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n) and
+          n.ran == [],
+          f"Programming Run: the scheduled show is not started: "
+          f"{svc.machine.state} {n.ran}")
+    rows = [x for x in svc.journal if x.get("outcome") == "programming"]
+    check(rows and "Programming Run" in rows[-1]["text"],
+          f"and the journal says why: {rows[-1:]}")
+    c.close()
+    n.link.close()
+    # Fail closed: a check that cannot even be asked never starts it.
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    raised = []
+    svc.alert_sink = lambda kind, text: raised.append((kind, text))
+
+    def boom(key):
+        raise RuntimeError("broken")
+    n.pr.verdict = boom
+    svc.tick()
+    for t in ((18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n) and
+          raised and raised[0][0] == "preroll" and
+          "could not run" in raised[0][1] and len(raised) == 1,
+          f"the check broken: not started, one rig check alert: "
+          f"{svc.machine.state} {raised}")
+    c.close()
+    n.link.close()
+    # The stand-in when the rig check could not be set up (delta review of
+    # #162): Start now refused, a scheduled show never started even with
+    # the alert acknowledged, and Continue anyway leaves everything off.
+    from ltcplay import preroll as P, alerts as AL
+    n = _fi_night()
+    S, svc, c = n.S, n.svc, n.c
+    al = AL.Alerts()
+    svc.preroll = P.standin("the rig check could not be set up (boom)",
+                            alert=al.raise_)
+    svc.tick()
+    _settle(svc, c)
+    for t in ((17, 59, 50), (18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        time.sleep(0.2)
+        al.clear(action="Acknowledge", who="Andy", screen="Rack screen")
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n),
+          f"stand-in, alert acknowledged: the show is not started: "
+          f"{svc.machine.state}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and "could not be set up" in r["text"],
+          f"stand-in: Start now refused, saying why: {r}")
+    r = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] is True and
+          c.outputs_off == {"video", "lasers", "flames"},
+          f"stand-in: Continue anyway leaves every output off: "
+          f"{r} {c.outputs_off}")
+    # The runner's poll never clears what a start set after it read the
+    # state, nor while a show is up.
+    run = n.w.runner
+    seq = run._off_seq
+    run._degraded_over(seq)
+    check(c.outputs_off == {"video", "lasers", "flames"},
+          "a show is up: nothing is cleared")
+    c.close()
+    n.link.close()
+    m = _fi_night()
+    run, c = m.w.runner, m.c
+    seq = run._off_seq
+    run._outputs_off(None, 2, (frozenset(("video",)), "Andy"))
+    run._degraded_over(seq)
+    check(c.outputs_off == {"video"},
+          f"a start since the state was read: kept: {c.outputs_off}")
+    run._degraded_over(run._off_seq)
+    check(c.outputs_off == frozenset(),
+          "no start since, no show up: cleared")
+    c.close()
+    m.link.close()
+    print("  ok")
+
+
+def test_preroll_late_allowance_is_for_its_show_only():
+    section("pre-roll (schedule.py): a TICK's late_ok_s lets only the show "
+            "whose check ran at its time start past the late grace; any "
+            "other show keeps the grace exactly")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S, grace=0)
+    m = S.new_night(rule, __import__("datetime").date(2026, 11, 14))
+    m = S.step(m, S.Event(S.BOOT_DONE, "system"), _den(S, 17, 0)).machine
+    late = _den(S, 18, 0, 7)
+    plain = S.step(m, S.Event(S.TICK, "scheduler"), late)
+    check(not any(e.kind == S.START_SHOW for e in plain.effects) and
+          plain.machine.slot(1).status == S.MISSED,
+          "7 s late with grace 0: missed, as always")
+    ok = S.step(m, S.Event(S.TICK, "scheduler", late_show=1, late_ok_s=15),
+                late)
+    check(any(e.kind == S.START_SHOW and e.show == 1 for e in ok.effects),
+          "with the allowance for show 1: it starts, late")
+    other = S.step(m, S.Event(S.TICK, "scheduler", late_show=2,
+                              late_ok_s=15), late)
+    check(other.machine.slot(1).status == S.MISSED,
+          "an allowance for another show changes nothing for this one")
+    print("  ok")
+
+
+def test_preroll_video_test_reaches_madmapper_alone():
+    section("pre-roll: the real AudioMaster's test timecode goes where a "
+            "held frame goes (MadMapper alone: never BEYOND, broadcast or "
+            "the pixels), stops a held frame first, and is refused while a "
+            "cue plays; the real conductor takes the screens to black and "
+            "records it, and refuses while aborted")
+    r = _am_rig(seconds=2.0)
+    am, out = r["am"], r["out"]
+    sent = []
+    out.send = lambda pkt, dests=None: sent.append("all") or True
+    out.send_held = lambda pkt: sent.append("held") or True
+    fed0 = len(r["fed"])
+    am._held = (0, 1, 0, 0)
+    check(am.preroll_frame(0) is True and sent == ["held"] and
+          am._held is None and len(r["fed"]) == fed0,
+          f"to MadMapper alone, the held frame stopped, no pixels: {sent}")
+    label = list(am.cues)[0]
+    am.play(0.0, label=label)
+    check(am.preroll_frame(5) is False and sent == ["held"],
+          "a cue loaded: refused, nothing sent")
+    am.stop()
+    check(am.preroll_frame(1) is False, "Run not in force: refused")
+    # Review of #162, B1, on a REAL TimecodeOut: a Continue anyway's mute
+    # on MadMapper ends with its show, so the next check reaches it.
+    from ltcplay import clock as K
+
+    class _Sock:
+        def __init__(self):
+            self.to = []
+
+        def sendto(self, pkt, dest):
+            self.to.append(dest[0])
+
+        def close(self):
+            pass
+    r2 = _am_rig(seconds=2.0)
+    sk = _Sock()
+    real = K.TimecodeOut([("MadMapper", "127.0.0.9")],
+                         socket_factory=lambda: sk)
+    real.muted = frozenset(("madmapper",))
+    r2["am"].out = real
+    check(r2["am"].preroll_frame(0) is True and sk.to == ["127.0.0.9"] and
+          real.muted == frozenset(),
+          f"between shows the test frame reaches MadMapper, the mute "
+          f"ended: {sk.to} {real.muted}")
+    r2["am"].stop()
+    # The conductor.
+    n = _fi_night()
+    if n.S is None:
+        return
+    c = n.c
+    del n.calls[:]
+    got = c.preroll_video_dark()
+    _mm_flush(n.link)
+    c.run_pending()
+    check(got.ok and c.snapshot()["applied"]["video"] == "black" and
+          _fi_log(n.calls) == [("video", "fade 0 to 0")],
+          f"surfaces to 0 at once, recorded black: {_fi_log(n.calls)} "
+          f"{c.snapshot()['applied']}")
+    c._latched = True
+    check(not c.preroll_video_dark().ok, "aborted: refused")
+    c._latched = False
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preroll_settings_and_screens():
+    section("pre-roll settings (ltcplay_fire_ice.json preroll_s 3 to 15, "
+            "default 10; 0 only in a soak kit; preroll_video_unconfirmed_ok "
+            "true or false), the rack screen's Checking the rig, the Stream "
+            "Deck's CHECKING RIG, and Check the rig is an admin's")
+    F = _fi_mod()
+    from ltcplay import users as U
+    check(F.FireIceConfig.parse({}).preroll_s == 10 and
+          F.FireIceConfig.parse({}).preroll_video_unconfirmed_ok is False,
+          "defaults: 10 s, video must be confirmed")
+    check(F.FireIceConfig.parse({"preroll_s": 3}).preroll_s == 3 and
+          F.FireIceConfig.parse({"preroll_s": 15}).preroll_s == 15,
+          "3 and 15 are allowed")
+    for bad in (2, 16, 0, "10", True, 10.5):
+        try:
+            F.FireIceConfig.parse({"preroll_s": bad})
+            check(False, f"preroll_s {bad!r} should be refused")
+        except F.FireIceConfigError as e:
+            _no_dashes(str(e), "preroll_s refusal")
+    check(F.FireIceConfig.parse({"preroll_s": 0, "soak_only": True})
+          .preroll_s == 0, "0 (off) only in a soak kit's file")
+    try:
+        F.FireIceConfig.parse({"preroll_video_unconfirmed_ok": "yes"})
+        check(False, "a non-bool switch should be refused")
+    except F.FireIceConfigError:
+        pass
+    check(U.classify("/api/remote/preroll-check") == "settings",
+          "Check the rig needs the Settings row (an admin)")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function prerollLook" in logic, "the page's rig check words are "
+                                          "in its logic block")
+    import shutil as _sh
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const ck = prerollLook({state:"checking", label:"show 2 (18:00)", items:[]});
+t(ck.checking && ck.word === "Checking" && /^Checking the rig before show 2/.test(ck.label), "checking: " + JSON.stringify(ck));
+const sl = startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}, preroll:{state:"checking"}}, false, false);
+t(sl.label === "Checking" && sl.disabled === true && sl.sub === "checking the rig", "Start now reads Checking: " + JSON.stringify(sl));
+const fl = prerollLook({state:"failed", label:"show 2", age_s:3, items:[{name:"Audio", ok:true}, {name:"Video", ok:false, text:"MadMapper did not answer the timecode"}]});
+t(/Video FAILED: MadMapper did not answer the timecode/.test(fl.trouble) && !/Audio/.test(fl.trouble), "the failure line: " + JSON.stringify(fl));
+t(prerollLook({state:"failed", manual:true, age_s:3, items:[]}).trouble === "", "a Pre-check's failure is no rack line");
+t(prerollLook(null).checking === false, "no pre-roll: nothing");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
+        check(not bad, f"the page's rig check words: {bad}")
+    seg = page[page.find('<section class="card" id="rigcheck"'):]
+    seg = seg[:seg.find("</section>")]
+    _no_dashes(seg, "the Rig check card")
+    # The Stream Deck reads it from deck-input and says so on its key.
+    from ltcplay import streamdeck as SD
+    sk = SD.ScreenKeys("http://127.0.0.1:1", fetcher=lambda u: {})
+    sk._last = ({"preroll": True}, sk._clock())
+    check(sk.preroll() is True, "the deck reads the engine's checking")
+    sk._last = ({"preroll": True}, sk._clock() - 60)
+    check(sk.preroll() is False, "a stale answer is not checking")
+    src = open(SD.__file__, encoding="utf-8").read()
+    check('["CHECKING", "RIG"]' in src, "the deck's key words")
+    print("  ok")
+
+
+
+def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
+    section("pre-roll, Continue anyway (Jeff, 2026-10-28): after a failed "
+            "check holds the show, a person's Continue starts it NOW (late), "
+            "journaled with who and the failed checks; the failed video and "
+            "lasers stay OFF for that show (no bank select, no fade up, no "
+            "timecode to MadMapper, no laser output, no unblank), the "
+            "Delayed countdown stops, the alert stays open; the next show "
+            "is checked again in full and runs with everything; never past "
+            "an Abort, never by the scheduler itself")
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode"),
+                   "Lasers": (False, "BEYOND is not running")})
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+          "failed")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.HOLD, "held at the show's time")
+    # Never by itself: minutes later it is still held, nothing started.
+    for mi in (1, 2):
+        n.now[0] = _den(S, 18, mi)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state == S.HOLD and not _pr_audio_started(n),
+          "unattended, it never continues by itself")
+    check(n.w.runner.continue_off is None, "nothing set to continue")
+    del n.calls[:]
+    stopped = []
+    n.now[0] = _den(S, 18, 2, 30)
+    r = svc.continue_anyway("Andy", "Rack screen",
+                            on_continue=lambda: stopped.append(True))
+    _settle(svc, c)
+    _mm_flush(n.link)
+    check(r["ok"] is True and svc.machine.state == S.SHOW and
+          stopped == [True],
+          f"started now, the Delayed countdown told to stop: {r}")
+    _no_dashes(r["text"], "Continue anyway's answer")
+    s1 = svc.machine.slot(svc.machine.running)
+    check(s1.fired_at == _den(S, 18, 2, 30),
+          f"started at the press, late, not back-dated: {s1.fired_at}")
+    rows = [x for x in svc.journal if x.get("action") == "continue anyway"]
+    check(rows and "Andy" in rows[-1]["text"] and
+          "MadMapper did not answer the timecode" in rows[-1]["text"] and
+          "BEYOND is not running" in rows[-1]["text"] and
+          rows[-1].get("fault"),
+          f"journaled: who and every failed check: {rows[-1:]}")
+    check(c.outputs_off == {"video", "lasers"} and
+          n.w.runner.continue_off is None,
+          f"this start took the outputs off: {c.outputs_off}")
+    check([a.kind for a in n.al.open()] == ["preroll"],
+          "the alert stays open, so the booth sees what is degraded")
+    # The show confirms: everything but video and lasers comes up.
+    n.sess.clock._last_frame = 30
+    n.w.runner.poll()
+    _settle(svc, c)
+    _mm_flush(n.link)
+    log = _fi_log(n.calls)
+    check(("video", "select_bank") not in log and
+          not any(e[0] == "video" and e[1].endswith("to 1") for e in log) and
+          ("lasers", "lit") not in log and ("laser output", "on") not in log,
+          f"video and lasers left off: no bank, no fade up, no laser "
+          f"output, no unblank: {log}")
+    check(("music", "play") in log and ("flames", "release") in log,
+          f"the show audio and the flame cues (their link passed) run: {log}")
+    view = n.pr.view()
+    check(view.get("continued", {}).get("by") == "Andy" and
+          view["continued"]["off"] == ["lasers", "video"],
+          f"the screens can say what the show runs without: {view}")
+    # Used once (review of #162, B2): a second press, a stale page or a
+    # POST later never starts another show on the same failure.
+    r2 = svc.continue_anyway("Andy", "Rack screen")
+    check(r2["ok"] is False and "no failed rig check" in r2["text"],
+          f"Continue anyway a second time: refused: {r2}")
+    # The next show: checked again in full, and runs with everything.
+    svc.report("SHOW_ENDED", "the cue ended", show=svc.machine.running)
+    n.w.runner.poll()
+    check(c.outputs_off == frozenset(),
+          f"out of the show, nothing is left off any more: {c.outputs_off}")
+    r2 = svc.continue_anyway("Andy", "Rack screen")
+    check(r2["ok"] is False and svc.machine.state != S.SHOW,
+          f"after the show, the old failure cannot start another: {r2}")
+    n.results.clear()
+    n.ran.clear()
+    n.now[0] = _den(S, 18, 19, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n, 2)) == "passed", 3),
+          f"the next show's check runs again: {n.pr.view()}")
+    check(sorted(n.ran) == ["Audio", "Lasers", "Video"] and
+          n.pr.view().get("continued") is None and not n.al.open(),
+          "in full, the Continue is over, the alert cleared by the pass")
+    del n.calls[:]
+    n.now[0] = _den(S, 18, 20)
+    svc.tick()
+    _settle(svc, c)
+    _mm_flush(n.link)
+    check(svc.machine.state == S.SHOW and c.outputs_off == frozenset() and
+          ("video", "select_bank") in _fi_log(n.calls),
+          f"show 2: nothing left off, the bank selected again: "
+          f"{c.outputs_off} {_fi_log(n.calls)}")
+    c.close()
+    n.link.close()
+    # A failed flame link: the show runs with its flame cues at zero.
+    f = _pr_night({"Flame link": (False, "flamesafe's status is stale")},
+                  names=("Audio", "Flame link"))
+    S, svc, c = f.S, f.svc, f.c
+    f.now[0] = _den(S, 18, 10)
+    svc.tick()
+    f.pr.run(("x", 1), "show 2")
+    del f.calls[:]
+    r = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    f.sess.clock._last_frame = 30
+    f.w.runner.poll()
+    _settle(svc, c)
+    _mm_flush(f.link)
+    log = _fi_log(f.calls)
+    check(r["ok"] and ("flames", "release") not in log and
+          ("music", "play") in log and ("lasers", "lit") in log,
+          f"flame link failed: flame cues never released, the rest runs: "
+          f"{log}")
+    c.close()
+    f.link.close()
+    # A Continue whose start a Stop, Hold or Abort cut off is gone.
+    h = _pr_night()
+    h.w.runner.continue_off = (frozenset(("video",)), "Andy")
+    h.svc.cancel_start_wait("Stop was pressed")
+    check(h.w.runner.continue_off is None,
+          "Stop, Hold or Abort clears a Continue not yet started")
+    h.c.close()
+    h.link.close()
+    # A failure from long ago is no ground to continue on.
+    g = _pr_night({"Video": (False, "x")})
+    g.pr.run(("x", 1), "show 1")
+    g.pr._last_show["done"] -= 700.0
+    check(g.pr.last_failed() is None and
+          not g.svc.continue_anyway("Andy", "Rack screen")["ok"],
+          "a failure over ten minutes old: refused")
+    g.c.close()
+    g.link.close()
+    # Refusals: no failed check, a live show, an Abort standing.
+    m = _pr_night()
+    S, svc, c = m.S, m.svc, m.c
+    svc.tick()
+    r = svc.continue_anyway("Andy", "Rack screen")
+    check(r["ok"] is False and "no failed rig check" in r["text"],
+          f"no failed check: refused: {r}")
+    m.results["Video"] = (False, "x")
+    m.pr.run(("x", 1), "show 1")
+    c._latched = True
+    r = svc.continue_anyway("Andy", "Rack screen")
+    check(r["ok"] is False and "aborted" in r["text"] and
+          svc.machine.state != S.SHOW,
+          f"an Abort standing: refused, the latch untouched: {r}")
+    c._latched = False
+    c.close()
+    m.link.close()
+    print("  ok")
+
+
+def test_preroll_continue_anyway_needs_a_signed_in_hold():
+    section("pre-roll, Continue anyway's press: a signed-in person with the "
+            "run permission (the Show row), the button HELD for the arm "
+            "buttons' hold, timed by the engine; a tap, an unsigned screen "
+            "or another person's finish does nothing; the Delayed is "
+            "stopped; the page says exactly what fails")
+    import types
+    from ltcplay import remote as RM, preroll as P, users as U
+    from ltcplay import alerthold as AH, alerts as AL
+    check(U.classify("/api/remote/preroll-continue") == "show",
+          "the run permission (the Show row)")
+    pr = P.PreRoll([("Video", True, lambda p: (False, "MadMapper did not "
+                                                      "answer the timecode"))],
+                   window_s=3)
+    pr.run(("s", 1), "show 1 (18:00)")
+    said = []
+    svc = types.SimpleNamespace(continue_anyway=lambda who, screen,
+                                on_continue=None: (
+        said.append((who, screen)), on_continue and on_continue(),
+        {"ok": True, "text": "started"})[-1])
+    stopped = []
+    me = types.SimpleNamespace(
+        preroll=pr, schedule=svc, users_active=lambda: True,
+        alert_hold=types.SimpleNamespace(
+            stop_for_continue=lambda who: stopped.append(who)))
+    ctx = types.SimpleNamespace(user="Andy", local=True, screen="Rack screen",
+                                device="rack")
+    go = lambda body, cx=ctx: RM.Remote.preroll_continue(me, body, cx)  # noqa
+    st, out = go({"phase": "begin", "token": "t1"},
+                 types.SimpleNamespace(user="", local=True, screen="Rack",
+                                       device="rack"))
+    check(st == 403, f"unsigned: refused: {st} {out}")
+    st, out = go({"phase": "done", "token": "t1"})
+    check(st == 409 and said == [], f"done with no begin: nothing: {out}")
+    go({"phase": "begin", "token": "t2"})
+    st, out = go({"phase": "done", "token": "t2"})
+    check(st == 409 and said == [] and "held" in out["error"],
+          f"a tap (done at once): nothing: {out}")
+    _no_dashes(out["error"], "the tap refusal")
+    go({"phase": "begin", "token": "t3"})
+    time.sleep(P.CONTINUE_HOLD_S + 0.05)
+    st, out = go({"phase": "done", "token": "t3"},
+                 types.SimpleNamespace(user="Bea", local=True,
+                                       screen="Rack screen", device="rack"))
+    check(st == 409 and said == [], "another person's finish: nothing")
+    go({"phase": "begin", "token": "t4"})
+    time.sleep(P.CONTINUE_HOLD_S + 0.05)
+    st, out = go({"phase": "done", "token": "t4"})
+    check(st == 200 and said == [("Andy", "Rack screen")] and
+          stopped == ["Andy"], f"held: continued, the Delayed stopped: "
+                               f"{st} {out} {said} {stopped}")
+    st, out = go({"phase": "done", "token": "t4"})
+    check(st == 409 and len(said) == 1, "a hold is used once")
+    # The alert hold's countdown, and a Delayed it already started.
+    al = AL.Alerts()
+    al.raise_("preroll", "The rig check failed.")
+    played = []
+    ann = types.SimpleNamespace(
+        status=lambda: {"playing": {"id": "delayed"}},
+        stop=lambda who, screen, surface=False: played.append("stop"))
+    ah = AH.AlertHold(al, None, announce=lambda: ann)
+    ah.started(1, "preroll: x")
+    check(ah.hold["state"] == "counting", "counting")
+    ah.stop_for_continue("Andy")
+    check(ah.hold["state"] == "cancelled", "Continue ends the countdown")
+    ah.hold["state"] = "announced"
+    ah.stop_for_continue("Andy")
+    check(played == ["stop"], "and stops a Delayed already playing")
+    # What a Continue leaves off, from the failed checks.
+    off = P.outputs_off([
+        {"name": "Video", "ok": False}, {"name": "Audio", "ok": False},
+        {"name": "Network", "ok": False, "text": "no answer from BEYOND "
+                                                 "10.0.0.5, flame node "
+                                                 "10.0.0.7"},
+        {"name": "Lasers", "ok": True}])
+    check(off == {"video", "lasers", "flames"},
+          f"video, and what the network check names: {off}")
+    # The real timecode socket sends MadMapper nothing while it is muted.
+    from ltcplay import clock as K
+
+    class _Sock:
+        def __init__(self):
+            self.to = []
+
+        def sendto(self, pkt, dest):
+            self.to.append(dest[0])
+    sk = _Sock()
+    out = K.TimecodeOut([("MadMapper", "127.0.0.9"), ("Other", "127.0.0.8")],
+                        socket_factory=lambda: sk)
+    out.muted = frozenset(("madmapper",))
+    out.send(b"x" * 19)
+    check(sk.to == ["127.0.0.8"], f"muted MadMapper gets nothing: {sk.to}")
+    out.muted = frozenset()
+    out.send(b"x" * 19)
+    check(sk.to[1:] == ["127.0.0.9", "127.0.0.8"], "unmuted: both again")
+    # The page: the failed items and the two choices.
+    import shutil as _sh
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    for need in ('"pointerdown"', '{phase:"begin", token:token}',
+                 '{phase:"done", token:token}', 'id="pr-continue"',
+                 'id="pr-recheck"', "Let go too early: nothing was done."):
+        check(need in page, f"the page has {need!r}")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const pr = {state:"failed", continue_hold_s:1, show_check:{label:"show 1 (18:00)", off:["video"], items:[{name:"Audio", ok:true, required:true}, {name:"Video", ok:false, required:true, text:"MadMapper did not answer the timecode"}]}};
+const ch = prerollChoice(pr, {state:"HOLD"});
+t(ch && /FAILED: Video: MadMapper did not answer the timecode\./.test(ch.text) && !/Audio/.test(ch.text), "the failed items: " + JSON.stringify(ch));
+t(ch && /starts now, late, with video left off for this show/.test(ch.confirm) && /Still failing: Video/.test(ch.confirm) && ch.holdMs === 1000, "the confirm text: " + JSON.stringify(ch));
+t(prerollChoice(pr, {state:"SHOW"}) === null, "not during a show");
+const cont = prerollChoice({continued:{by:"Andy", off:["lasers", "video"], failed:"Video: x"}}, {state:"SHOW"});
+t(cont && cont.continued && /Continued anyway by Andy, late\. Left off for this show: lasers, video/.test(cont.text), "during the continued show: " + JSON.stringify(cont));
+const re = prerollChoice(Object.assign({}, pr, {state:"passed", manual:true}), {state:"HOLD"});
+t(re && /now passes; press Resume, then Start now/.test(re.text), "after a passing re-check: " + JSON.stringify(re));
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
+        check(not bad, f"the page's Continue anyway words: {bad}")
+    print("  ok")
+
+
+
+def test_preroll_wiring_in_the_engine():
+    section("pre-roll wiring (web.serve): built only for a Fire & Ice "
+            "scheduler that performs with preroll_s above 0, with every "
+            "check in order on the scheduler and the rack screen; the "
+            "Network check's list: MadMapper and BEYOND off this PC, the "
+            "timecode receivers, the flame node, and the pixel controllers "
+            "that answered a ping since Run, never loopback")
+    import types
+    from ltcplay import web as W, preroll as P
+    F = _fi_mod()
+    cfg = F.FireIceConfig(scheduler_performs=True)
+    svc = types.SimpleNamespace(preroll=None, _journal_line=lambda *a, **k:
+                                None)
+    from ltcplay import alerts as AL
+    remote = types.SimpleNamespace(preroll=None, alerts=AL.Alerts(),
+                                   programming=lambda: (False, ""))
+    wiring = types.SimpleNamespace(runner=None, devices=None,
+                                   conductor=None, flame_link=None,
+                                   laser_arm=None)
+    httpd = types.SimpleNamespace(schedule=svc, fire_ice=wiring,
+                                  remote=remote, control=None,
+                                  madmapper=None, announce=None)
+    pr = W._attach_preroll(httpd, cfg, None)
+    check(isinstance(pr, P.PreRoll) and svc.preroll is pr and
+          remote.preroll is pr and pr.window_s == 10 and
+          [c[0] for c in pr.checks] == list(P.NAMES) and
+          all(c[1] for c in pr.checks),
+          f"built, every check required, in order: "
+          f"{[c[0] for c in getattr(pr, 'checks', [])]}")
+    # Fail closed: a rig check that cannot be built is an alert that holds
+    # every show, never a quiet print.
+    svc.preroll = None
+    bad = F.FireIceConfig(scheduler_performs=True)
+    bad.preroll_s = "ten"
+    check(W._attach_preroll(httpd, bad, None) is None and
+          [a.kind for a in remote.alerts.open()] == ["preroll"],
+          f"not built: the preroll alert is open: {remote.alerts.view()}")
+    sp = svc.preroll
+    got = sp.run(("x", 1), "show 1") if sp is not None else {}
+    check(sp is not None and remote.preroll is sp and
+          got.get("state") == "failed" and
+          "could not be set up" in got.get("text", "") and
+          P.outputs_off(got.get("items")) == {"video", "lasers", "flames"},
+          f"and a stand-in check that always fails is in place: {got}")
+    for off in (F.FireIceConfig(scheduler_performs=False),
+                F.FireIceConfig(scheduler_performs=True, preroll_s=0)):
+        svc.preroll = None
+        check(W._attach_preroll(httpd, off, None) is None and
+              svc.preroll is None, "a dry run, or preroll_s 0: none")
+    MM = types.SimpleNamespace(host="10.0.0.2")
+    cfg = types.SimpleNamespace(madmapper=MM,
+                                beyond=types.SimpleNamespace(
+                                    host="127.0.0.1"),
+                                flamesafe_config=None)
+    out = types.SimpleNamespace(dests=[("MadMapper", "10.0.0.2"),
+                                       ("Wall", "10.0.0.3"),
+                                       ("All", "10.255.255.255")])
+    rig = types.SimpleNamespace(ips=["10.0.1.1", "10.0.1.2"],
+                                baseline={"10.0.1.1"})
+    sess = types.SimpleNamespace(clock=types.SimpleNamespace(out=out),
+                                 rig=rig)
+    h = types.SimpleNamespace(control=types.SimpleNamespace(session=sess),
+                              fire_ice=None)
+    got = W._preroll_hosts(h, cfg)
+    ips = [ip for _l, ip in got]
+    check("10.0.0.2" in ips and "10.0.0.3" in ips and "10.0.1.1" in ips
+          and "10.0.1.2" not in ips and "127.0.0.1" not in ips and
+          "10.255.255.255" not in ips,
+          f"the network list: {got}")
+    rig.baseline = None
+    check("10.0.1.2" in [ip for _l, ip in W._preroll_hosts(h, cfg)],
+          "before the first sweep: every pixel controller")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -83545,6 +84914,18 @@ if __name__ == "__main__":
         test_alert_hold_acknowledge_during_the_file_read,
         test_alert_hold_never_re_holds_after_resume,
         test_alert_hold_respects_any_operator_resume,
+        test_preroll_checks_prove_each_device_and_fail_closed,
+        test_preroll_runner_unknown_is_failure_and_cancel_is_clean,
+        test_preroll_scheduled_show_starts_at_its_time_when_healthy,
+        test_preroll_failure_holds_the_show_with_no_sound_and_no_fire,
+        test_preroll_late_start_hold_and_abort_during_the_check,
+        test_preroll_start_now_checks_first_and_never_starts_on_a_failure,
+        test_preroll_late_allowance_is_for_its_show_only,
+        test_preroll_video_test_reaches_madmapper_alone,
+        test_preroll_settings_and_screens,
+        test_preroll_continue_anyway_starts_now_with_failed_outputs_off,
+        test_preroll_continue_anyway_needs_a_signed_in_hold,
+        test_preroll_wiring_in_the_engine,
         test_alert_booth_never_waits_behind_the_delayed,
         test_alert_hold_an_old_hold_never_clears_a_newer_one,
         test_alert_hold_resume_covers_only_its_own_show,

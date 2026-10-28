@@ -179,6 +179,10 @@ REMOTE_ROUTES = {
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
     "network": "settings", "screen-arming": "settings",
+    # Check the rig (preroll.py): an admin's, between shows.
+    "preroll-check": "settings",
+    # Continue anyway after a failed rig check: a run press (Show row).
+    "preroll-continue": "show",
     # The announcement output picker (remote.announce_output).
     "announce-output": "settings", "announce-test-tone": "settings",
     "live-flame": "settings", "scrub-flames": "settings",

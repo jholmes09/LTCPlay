@@ -1829,6 +1829,184 @@ def _startup_lasers_dark(wiring):
 
 
 
+def _preroll_hosts(httpd, fire_ice):
+    """(label, address) of every device on the network the show uses, for
+    the pre-roll's Network check: MadMapper and BEYOND when not on this
+    PC, the timecode receivers, the flame node flamesafe sends to, and the
+    pixel controllers. Loopback and broadcast are left out (the program
+    checks cover this PC). Never raises."""
+    import ipaddress
+    from . import fire_ice as fire_ice_mod
+    out = []
+
+    def add(label, ip):
+        try:
+            a = ipaddress.IPv4Address(str(ip))
+        except ValueError:
+            return
+        if a.is_loopback or str(ip).endswith(".255") or a.is_multicast:
+            return
+        out.append((label, str(ip)))
+    try:
+        mm = getattr(fire_ice, "madmapper", None)
+        if mm is not None:
+            add("MadMapper", mm.host)
+        bey = getattr(fire_ice, "beyond", None)
+        if bey is not None:
+            add("BEYOND", bey.host)
+        gate = getattr(getattr(getattr(httpd, "fire_ice", None), "devices",
+                               None), "beyond", None)
+        gate = getattr(gate, "gate", None)
+        if gate is not None and gate.ip:
+            add("BEYOND timecode", gate.ip)
+        if getattr(fire_ice, "flamesafe_config", None):
+            dest = fire_ice_mod.flamesafe_destination(
+                fire_ice.flamesafe_config)
+            if dest is not None:
+                add("flame node", dest[0])
+        s = getattr(httpd.control, "session", None)
+        clk = getattr(s, "clock", None)
+        for label, ip in getattr(getattr(clk, "out", None), "dests",
+                                 None) or []:
+            add(f"timecode to {label}", ip)
+        rig = getattr(s, "rig", None)
+        # Pixel controllers: every one that answered a ping since Run
+        # (rigwatch's baseline; many Art-Net nodes never answer ICMP, and
+        # one that never did would hold every show). Before the first
+        # sweep, every one.
+        base = getattr(rig, "baseline", None)
+        for ip in getattr(rig, "ips", None) or []:
+            if base is None or ip in base:
+                add("pixel controller", ip)
+    except Exception:                                # noqa: BLE001
+        pass
+    return out
+
+
+def _attach_preroll(httpd, fire_ice, fstatus):
+    """The pre-roll (preroll.py, Jeff 2026-10-28): the rig checked before
+    every show the scheduler starts and before Start now, on the schedule
+    service (Service.preroll) and the rack screen (Remote.preroll). Only
+    for a scheduler that performs, and preroll_s above 0. Never raises."""
+    try:
+        from . import preroll as P
+        from . import rigwatch
+        svc = httpd.schedule
+        wiring = httpd.fire_ice
+        if svc is None or wiring is None or \
+                not getattr(fire_ice, "scheduler_performs", False) or \
+                not getattr(fire_ice, "preroll_s", 0):
+            return None
+        remote = httpd.remote
+        control = httpd.control
+
+        def clk():
+            s = getattr(control, "session", None)
+            c = getattr(s, "clock", None)
+            return c if getattr(c, "source", None) == "audio_master" else None
+
+        def refusal():
+            got = wiring.runner.start_blocked() if wiring.runner else None
+            return (got or {}).get("text", "")
+
+        def booth_resolve(name):
+            from . import announce as announce_mod
+            from . import boothaudio
+            sd = remote.alerts.booth._sd or boothaudio._import_sounddevice()
+            if sd is None:
+                raise ValueError("sounddevice is not installed here")
+            announce_mod.resolve_output_device(sd, name)
+        mm = httpd.madmapper if isinstance(httpd.madmapper, tuple) else None
+        mm_cfg = getattr(fire_ice, "madmapper", None)
+        hb = getattr(getattr(mm_cfg, "heartbeat", None), "show_len_s", None)
+
+        def mm_running():
+            w = getattr(remote, "madmapper_watch", None)
+            return w.check_once() if w is not None else None
+
+        def bey_running():
+            w = getattr(remote, "beyond_watch", None)
+            return w.check_once() if w is not None else None
+        blanking = getattr(wiring.devices, "beyond", None) \
+            if getattr(fire_ice, "beyond", None) is not None else None
+        checks = [
+            ("Audio", True, lambda p: P.check_audio(p, clk(), refusal())),
+            ("Announcements", True,
+             lambda p: P.check_announcements(p, httpd.announce)),
+            ("Booth speaker", True,
+             lambda p: P.check_booth(p, remote.alerts.booth, booth_resolve)),
+            ("Timecode", True, lambda p: P.check_timecode(
+                p, getattr(clk(), "out", None),
+                getattr(blanking, "gate", None))),
+            ("Video", True, lambda p: P.check_video(
+                p, mm[0] if mm else None,
+                mm[1] if mm and hb is not None else None, clk(),
+                wiring.conductor, mm_running,
+                fire_ice.preroll_video_unconfirmed_ok)),
+            ("Flame link", True, lambda p: P.check_flame_link(
+                p, fstatus, wiring.flame_link, remote.deck_chip
+                if fstatus is not None else None)),
+            ("Lasers", True, lambda p: P.check_lasers(
+                p, blanking, wiring.laser_arm, wiring.conductor,
+                bey_running if getattr(remote, "beyond_watch", None)
+                else None)),
+            ("Network", True, lambda p: P.check_network(
+                p, _preroll_hosts(httpd, fire_ice),
+                lambda ip: rigwatch.ping(ip, 1.0))),
+        ]
+        journal = _device_journal(svc)
+
+        def note(text, fault=False, outcome=""):
+            journal(text, action="pre-roll", outcome=outcome, fault=fault)
+
+        def skip():
+            return "Programming" if remote.programming()[0] else ""
+        pr = P.PreRoll(
+            checks, window_s=fire_ice.preroll_s, journal=note,
+            alert=remote.alerts.raise_,
+            clear_alert=lambda kind: remote.alerts.clear(
+                kind=kind, action="Confirm", who="LTC Player (a later rig "
+                "check passed)", screen="engine"),
+            open_alert=lambda: any(a.kind == P.KIND
+                                   for a in remote.alerts.open()),
+            skip=skip)
+        svc.preroll = pr
+        remote.preroll = pr
+        return pr
+    except Exception as e:                           # noqa: BLE001
+        # Fail closed (review of #162): said in the journal and as an
+        # alert, which holds every show at its time while it is open.
+        text = (f"The rig check could not be set up "
+                f"({type(e).__name__}: {e}), so no show can be checked. "
+                f"Shows are held at their time while this is open; restart "
+                f"LTC Player, and check the journal.")
+        print(text)
+        try:
+            _device_journal(httpd.schedule)(text, action="pre-roll",
+                                            outcome="error", fault=True)
+            httpd.remote.alerts.raise_("preroll", text)
+        except Exception:                            # noqa: BLE001
+            pass
+        # A stand-in whose one check always fails (delta review of #162):
+        # an acknowledged alert must not let shows start unchecked.
+        try:
+            from . import preroll as P
+            al = getattr(httpd.remote, "alerts", None)
+            pr = P.standin(
+                f"the rig check could not be set up ({type(e).__name__}: "
+                f"{e})",
+                alert=getattr(al, "raise_", None),
+                open_alert=(lambda: any(a.kind == P.KIND
+                                        for a in al.open()))
+                if al is not None else None)
+            if httpd.schedule is not None:
+                httpd.schedule.preroll = pr
+            httpd.remote.preroll = pr
+        except Exception:                            # noqa: BLE001
+            pass
+        return None
+
+
 def _attach_live_flame(httpd, fire_ice, flamesafe_config):
     """Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md):
     built for the Fire & Ice engine with a flame link and a flame
@@ -2371,6 +2549,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         if hasattr(httpd.remote.flame_cues, "on_render_fault"):
             httpd.remote.flame_cues.on_render_fault = \
                 httpd.remote.render_fault_alert
+        # The rig check before each show (preroll.py), before the
+        # scheduler's first tick.
+        _attach_preroll(httpd, fire_ice, fstatus)
         httpd_schedule.start()
         _close_before_fire_ice = httpd.server_close
 
