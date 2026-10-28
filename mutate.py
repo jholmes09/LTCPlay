@@ -4378,10 +4378,20 @@ def build():
   '                if idx >= f.frame_count and _tail_by_design(',
   '                if False and _tail_by_design('),
 
+ ('fire & ice: a render shorter than its audio is no flame cue fault',
+  'ltcplay/fire_ice.py',
+  '        if not getattr(zones, "show_len_s", None):\n            return False',
+  '        pass'),
+
+ ('fire & ice: show_len_s makes the audio running past the render no fault',
+  'ltcplay/fire_ice.py',
+  '        return show_s > render_s + 1e-6 and show_s > audio_s + 1e-6 and \\',
+  '        return show_s > render_s + 1e-6 and \\'),
+
  ('fire & ice: past the configured end is not a flame cue fault either',
   'ltcplay/fire_ice.py',
-  '        return show_s > render_s + 1e-6 and rel <= show_s + 1.0 / 30.0',
-  '        return show_s > render_s + 1e-6'),
+  '            rel <= show_s + 1.0 / 30.0',
+  '            True'),
 
  ('audio_master: a Hold at the very end of the audio is lost',
   'ltcplay/clock.py',
