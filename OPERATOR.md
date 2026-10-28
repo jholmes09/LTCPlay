@@ -484,6 +484,91 @@ off, with Andy:**
    Valve Open: it goes off within a second.
 7. Only then open the fuel valve, one channel at a time.
 
+**Wave flamer cleaning (the Shutdown part of the Startup page; Andy's
+design, Jeff's ruling).** The nightly shutdown routine for the wave
+flamers: it pressurizes and depressurizes the pump, then fires the
+leftover fuel to clear it. One button, **Hold to start the cleaning**, and
+a big **Stop**.
+
+1. **Start: hold the button**, the same hold as a group's Hold to arm (the
+   Stream Deck arms only after its full hold time). Let go too soon and
+   nothing starts. Once it says phase 1 is running you can let go.
+2. **Phase 1 runs on its own, no fire:** armed 3 s, disarmed 3 s, three
+   times. It only pressurizes and depressurizes the pump: no flame value
+   goes out at all. Each 3 s counts from flamesafe saying armed or
+   disarmed.
+3. **Then it waits, disarmed:** "Cycles done. Hold to start the purge
+   bursts". Nothing continues by itself. A tap does nothing; it needs a
+   full hold again. With nobody holding, it goes back to idle after 10
+   minutes.
+4. **Phase 2, after that second hold:** the heads swing straight up (angle
+   128), 1 s to get there, then the leftover fuel fires in bursts, 1 s on,
+   1 s off, until you press **Stop**. You do not have to keep holding. The
+   bursts end by themselves after 10 minutes.
+
+The page says where it is in plain words ("Phase 1 of 2: Pressurizing:
+armed 3 s, 1 of 3 (1.4 s left). Next: Disarm."), and a **WAVE FLAMER
+CLEANING** banner with its own Stop shows on every screen while it runs or
+waits. The timings live in ltcplay_morning.json, `cleaning` (MORNING.md
+says the limits).
+
+**Stop** works from the Shutdown page and the banner on the rack screen or
+an iPad, the rack screen's own Stop, and the Stream Deck's Stop key (the
+deck shows Stop while the cleaning runs or waits). **Abort** always works.
+
+**How it arms.** Every arm is a hold to arm, exactly as on the show screen:
+yours for the start and for the go-ahead, and, in phase 1 only, the same
+hold pressed for you for the second and third arms. The Stream Deck still
+waits its full hold time each time, with all its own rules and all of
+flamesafe's (the re-arm wait, every flame channel at zero on the arm, the
+lockout). It needs screen arming on (Programming, Arming from a screen)
+and the Stream Deck program running, signed in as someone who may arm.
+Signed out it is view only; Stop always works.
+
+**It stops at once, the ignition off first and then the wave flamers
+disarmed,** on: Stop (anywhere); Abort; Hold; any disarm anywhere; the
+wave flamers disarming by themselves; flamesafe not reporting; a wave
+flamer locked or unlocked; a show starting; live flame programming or
+fire while scrubbing going on; another flame group armed; an alert about
+the flames, the flame link or the Stream Deck; screen arming switched off;
+the Stream Deck not reading the engine; the person who started it (or
+gave the go-ahead) signing out; any refusal. If flamesafe does not report
+the wave flamers off within a second, Disarm all flame groups goes.
+Nothing comes back by itself: start again with a hold.
+
+**When it will not start** it says why: a show live or on Hold, an Abort
+standing, Run pressed, live flame programming or fire while scrubbing on,
+a purge selected (and the purge waits while the cleaning runs), the
+Fireball page with a channel on, any screen in Arrange mode, another flame
+group armed or being armed, the wave flamers already armed (it starts
+from disarmed), every wave flamer locked out, screen arming off, the
+Stream Deck not reading the engine, or a setting out of its limits. One
+screen at a time holds the button; the go-ahead may come from any screen
+signed in to arm. A wave flamer locked out before the start stays off and
+the page names it; the others are cleaned. Its bursts count on the Fuel
+page as flame (not as a purge).
+
+**First test at the rack, with Andy. Fuel valve closed first:**
+
+1. With every wave flamer disarmed and no other group armed, tap the
+   button: nothing happens. Hold it: after about a second the lamp goes
+   armed and the page says phase 1 is running. Let go.
+2. Watch the lamp: armed about 3 s, off about 3 s, three times, with no
+   one touching anything, and no click at the heads. Then it says "Cycles
+   done. Hold to start the purge bursts" and stays disarmed.
+3. Tap the button: still paused. Hold it: armed, every head swings
+   straight up, then the igniters click 1 s on, 1 s off. Let go: it keeps
+   going.
+4. Press Stop on the page: the click stops at once, the lamp goes off
+   within a second. Run it again and try each stop once, in phase 1 and
+   in the bursts: the banner's Stop, Abort, Hold, the Stream Deck's Stop,
+   Disarm all flame groups, locking a wave flamer, unplugging the deck.
+   Each time the click stops at once and the wave flamers disarm.
+5. Lock one wave flamer before starting: that one never moves or clicks,
+   the page names it.
+6. Only then open the fuel valve and run it once with Andy watching each
+   head.
+
 
 **Stream Deck unplugged.** Unplugging or replugging the deck changes nothing
 on the flame groups: whatever was armed stays armed, whatever was off stays

@@ -840,6 +840,25 @@ button.fb-pad .fb-st{font:800 clamp(16px,2.4vh,24px)/1 var(--caps);letter-spacin
 button.fb-pad small{font:400 13px/1.2 var(--sans);color:var(--cream)}
 button.fb-pad.on{background:var(--red-deep);border:3px solid var(--red);color:var(--champ)}
 button.fb-pad.na{opacity:.45}
+/* ---- Wave flamer cleaning (Andy's design, 2026-10-28; cleaning.py,
+   MORNING.md): on the Shutdown part of the Startup page. One big button
+   held for the whole sequence (it stops the moment it is let go) and a
+   big Stop beside it. ---- */
+#mo-shut .wc{display:flex;flex-direction:column;gap:6px;margin-top:8px;border-top:1px solid var(--hair);padding-top:8px}
+#mo-shut .wc[hidden]{display:none}
+#mo-shut .wc-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+#mo-shut .wc-head b{font:800 clamp(16px,2vh,19px)/1.2 var(--sans)}
+#mo-shut .wc-armed{font:700 15px/1.2 var(--sans);color:var(--muted)}
+#mo-shut .wc-armed.on{color:var(--red)}
+#mo-shut .wc-row{display:flex;gap:10px;flex-wrap:wrap}
+#mo-shut button.wc-hold{flex:1 1 13em;min-height:clamp(64px,9vh,96px);font:800 clamp(17px,2.2vh,22px)/1.15 var(--sans);
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;white-space:normal}
+#mo-shut button.wc-hold.on{background:var(--red-deep);border:3px solid var(--red);color:var(--champ)}
+#mo-shut button.wc-hold.na{opacity:.45}
+#mo-shut button.wc-stop{flex:0 0 auto;min-width:7em;min-height:clamp(64px,9vh,96px);font:800 clamp(18px,2.4vh,24px)/1 var(--sans)}
+#mo-shut .wc-prog{font:700 clamp(15px,1.9vh,18px)/1.35 var(--sans);color:var(--champ)}
+#mo-shut .wc-prog:empty{display:none}
+#mo-shut .wc-note,#mo-shut .wc .warnbox{font-size:14px}
 </style>
 </head>
 <body>
@@ -868,7 +887,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -985,6 +1004,17 @@ button.fb-pad.na{opacity:.45}
       <section class="card compact" id="mo-shut">
         <h2>Shutdown</h2>
         <div class="shutrow"><span class="dim" id="mo-shut-st">At the end of the night: the Shutdown checklist, then lock the machines.</span><button class="ghost" id="mo-shut-go">Shutdown checklist</button></div>
+        <!-- Wave flamer cleaning (Andy's design, Jeff's ruling 2026-10-28;
+             cleaning.py, MORNING.md): a hold starts phase 1, a second hold
+             starts the purge bursts, Stop ends it. -->
+        <div class="wc" id="wc" hidden aria-label="Wave flamer cleaning">
+          <div class="wc-head"><b>Wave flamer cleaning</b><span class="wc-armed" id="wc-armed">Not known yet</span></div>
+          <div class="wc-row"><button class="wc-hold" id="wc-hold" title="Hold it like a Hold to arm button. Phase 1 then runs on its own; when it waits, hold again to fire the leftover fuel.">Hold to start the cleaning</button><button class="disarm wc-stop" id="wc-stop" title="Stops the cleaning and disarms the wave flamers, in any phase. Always works.">Stop</button></div>
+          <div class="wc-prog" id="wc-prog" aria-live="polite"></div>
+          <div class="warnbox open" id="wc-block" hidden></div>
+          <div class="dim wc-note" id="wc-note"></div>
+          <div class="toast" id="wc-msg"></div>
+        </div>
       </section>
     </div>
     <div id="mo-right">
@@ -2034,6 +2064,43 @@ function fireballState(v, on, stale, viewOnly){
   out.ok = !out.block;
   return out;
 }
+// Wave flamer cleaning (cleaning.py). One beat of a hold on the button:
+// "hold" is true only while the finger is down.
+function cleaningBody(hold, run, seq, change){
+  return {hold:hold === true, run:run === undefined ? null : run, seq:seq, change:!!change};
+}
+// What the page may do now: v is GET cleaning (or a beat's reply),
+// holding the page's own hold, stale and viewOnly the page's.
+// {ok: a hold may start, cut: a hold under way must end now, block,
+// word: the button's own words, na: the button is not for pressing now}.
+function cleaningState(v, holding, stale, viewOnly){
+  const out = {ok:false, cut:"", block:"", word:"Hold to start the cleaning", na:true};
+  const st = v && v.state || "idle";
+  if(!v) out.block = "Not known yet.";
+  else if(!v.available) out.block = v.problem || "There is no wave flamer group.";
+  else if(stale) out.block = "This page's status is not live, so a hold cannot start.";
+  else if(viewOnly) out.block = "Signed out: this screen is view only. Sign in to start the cleaning.";
+  else if((st === "starting" || st === "acking") && !v.mine) out.block = (v.holder || "Another screen") + " is holding the button. One screen at a time.";
+  else if((st === "idle" || st === "paused") && v.blocked) out.block = "Not available now: " + v.blocked;
+  if(st === "phase1"){ out.word = "Phase 1 runs on its own: you can let go"; if(!out.block) out.block = "Phase 1 is running on its own. Press Stop to end it."; }
+  else if(st === "phase2"){ out.word = "Firing the leftover fuel"; if(!out.block) out.block = "The purge bursts are running. Press Stop to end them."; }
+  else if(st === "paused" || st === "acking") out.word = holding ? "Keep holding..." : "Hold to start the purge bursts";
+  else out.word = holding ? "Keep holding..." : "Hold to start the cleaning";
+  out.cut = holding && out.block && st !== "phase1" && st !== "phase2" ? out.block : "";
+  out.ok = !out.block;
+  out.na = !out.ok && !holding;
+  return out;
+}
+// Where a run is, in plain words, from the engine's progress.
+function cleaningWords(p){
+  if(!p) return "";
+  const parts = [(p.phase === 1 ? "Phase 1 of 2: " : "Phase 2 of 2: ") + p.text +
+    (p.left_s !== null && p.left_s !== undefined ? " (" + Number(p.left_s).toFixed(1) + " s left)" : "") + "."];
+  if(p.next) parts.push("Next: " + p.next + ".");
+  if(p.phase === 2) parts.push("Bursts: " + (p.bursts || 0) + ".");
+  parts.push("Running " + Math.floor(p.elapsed_s || 0) + " s.");
+  return parts.join(" ");
+}
 // LOGIC END
 </script>
 <script>
@@ -2110,6 +2177,7 @@ function showView(){
   morningView(v === "morning");
   fuelView(v === "fuel");
   fireballView(v === "fireball");
+  cleaningView(v === "morning");
   if(v === "users") loadUsers();
 }
 document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
@@ -4900,6 +4968,130 @@ $("fb-disarm").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/group-disarm", actor({group:FB.group.name})); $("fb-msg").textContent = j.text || "Disarm sent."; }
   catch(e){ $("fb-msg").textContent = e.message; }
 });
+
+// ---- Wave flamer cleaning (Andy's design, Jeff's ruling 2026-10-28;
+// cleaning.py) -----------------------------------------------------------
+// Two deliberate holds, each the same kind of hold as a group's Hold to
+// arm: the first starts phase 1 (pressurize and depressurize, no fire),
+// which then runs on its own; the second, once it waits paused, starts
+// the purge bursts, which run until Stop. While a hold is going the page
+// beats every 100 ms; letting go before it is complete, pointer cancel,
+// losing focus, hiding or closing the page, leaving it, a stale status,
+// signing out and every refusal end the hold here at once and tell the
+// engine, which ends it by itself 0.25 s after the last beat anyway. Stop
+// is on this page and in the banner on every screen.
+let WC = null, WC_OPEN = false, WC_TIMER = null, WC_BEAT = null, WC_RUN = null, WC_SEQ = 0, WC_RUNS = 0, WC_HOLD = false;
+function cleaningView(on){
+  if(on && !WC_OPEN){ WC_OPEN = true; wcPoll(); }
+  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); wcLetGo("the page was left"); }
+}
+async function wcPoll(){
+  if(!WC_OPEN) return;
+  try{
+    if(!document.hidden && !WC_HOLD) WC = await getJSON("/api/remote/cleaning", 1500);
+  }catch(e){ if(e.status === 404) WC = null; else $("wc-msg").textContent = e.message; }
+  renderCleaning();
+  WC_TIMER = setTimeout(wcPoll, 500);
+}
+function wcNow(){
+  return cleaningState(WC, WC_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+}
+// End this page's hold here, now, and tell the engine (a release is never
+// refused, and once a hold is complete it changes nothing).
+function wcLetGo(why){
+  const had = WC_HOLD, run = WC_RUN;
+  WC_HOLD = false; WC_RUN = null; clearTimeout(WC_BEAT); WC_BEAT = null;
+  if(run !== null) post("/api/remote/cleaning-beat", actor(cleaningBody(false, run, ++WC_SEQ, true))).catch(() => {});
+  if(had && why) $("wc-msg").textContent = "Hold ended: " + why + ". Nothing new started.";
+  renderCleaning();
+}
+function wcStart(){
+  if(WC_HOLD) return;
+  const st = wcNow();
+  if(!st.ok){ $("wc-msg").textContent = st.block; return; }
+  WC_HOLD = true;
+  WC_RUN = WINDOW_ID + "-c" + (++WC_RUNS) + "-" + Date.now().toString(36);
+  $("wc-msg").textContent = "Keep holding, as for a Hold to arm.";
+  renderCleaning();
+  wcBeat(true);
+}
+async function wcBeat(change){
+  clearTimeout(WC_BEAT); WC_BEAT = null;
+  if(!WC_HOLD || WC_RUN === null) return;
+  const st = wcNow();
+  if(st.cut){ wcLetGo(st.cut.replace(/[.\s]+$/, "")); return; }
+  const run = WC_RUN, seq = ++WC_SEQ;
+  WC_BEAT = setTimeout(() => wcBeat(false), 100);
+  try{
+    const j = await post("/api/remote/cleaning-beat", actor(cleaningBody(true, run, seq, change)));
+    if(run !== WC_RUN || j.overtaken) return;
+    WC = j;
+    if(j.state === "phase1" || j.state === "phase2"){
+      // The hold is complete: the routine runs on its own now.
+      WC_HOLD = false; WC_RUN = null; clearTimeout(WC_BEAT); WC_BEAT = null;
+      $("wc-msg").textContent = j.state === "phase1" ? "Phase 1 is running on its own. You can let go." :
+        "The purge bursts are starting. You can let go; press Stop to end them.";
+    } else if(!j.mine){ wcLetGo(j.last_note || j.last_cut || "the engine ended it"); return; }
+    renderCleaning();
+  }catch(e){ if(run === WC_RUN) wcLetGo(e.message.replace(/[.\s]+$/, "")); }
+}
+function renderCleaning(){
+  const v = WC, box = $("wc");
+  // Only for an engine that has the cleaning (its answer says available).
+  box.hidden = !v || typeof v.available !== "boolean";
+  if(box.hidden) return;
+  const st = wcNow();
+  if(st.cut && WC_HOLD){ wcLetGo(st.cut.replace(/[.\s]+$/, "")); return; }
+  $("wc-armed").textContent = !v.available ? "Not available" : v.armed === "armed" ? "Wave flamer: ARMED" :
+    v.armed === "disarmed" ? "Wave flamer: disarmed" : v.armed === "unknown" ? "Wave flamer: not known" : "Wave flamer: being armed";
+  $("wc-armed").className = "wc-armed" + (v.armed === "armed" ? " on" : "");
+  const hb = $("wc-hold");
+  hb.classList.toggle("on", WC_HOLD);
+  hb.classList.toggle("na", st.na);
+  hb.setAttribute("aria-pressed", WC_HOLD ? "true" : "false");
+  hb.setAttribute("aria-disabled", st.na ? "true" : "false");
+  hb.textContent = st.word;
+  $("wc-prog").textContent = v.running ? cleaningWords(v.progress) : "";
+  const blk = WC_HOLD ? "" : st.block;
+  $("wc-block").hidden = !blk; $("wc-block").textContent = blk;
+  const s = v.settings || {};
+  $("wc-note").textContent = (s.cycles ? "Phase 1 pressurizes and depressurizes the pump, no fire: armed " + s.armed_s + " s, disarmed " + s.disarmed_s + " s, " + s.cycles +
+    " times, on its own once your hold is complete. Then it waits, disarmed. Hold again to fire the leftover fuel: the heads straight up, bursts " + s.burst_on_s + " s on and " +
+    s.burst_off_s + " s off until you press Stop (at most " + s.max_burst_min + " min). " : "") +
+    "Each hold is the same as a Hold to arm: let go too soon and nothing starts." +
+    (v.locked_note ? " " + v.locked_note : "") + (v.config_error ? " " + v.config_error : "") +
+    (v.state === "paused" && v.last_note ? " " + v.last_note : "");
+}
+// The banner on every screen while it is running, paused or held, with
+// its Stop (the rack screen's and the Stream Deck's Stop end it too).
+function renderCleaningBanner(){
+  const c = (ST && ST.cleaning) || null;
+  const on = !!(c && c.state && c.state !== "idle");
+  $("wc-banner").hidden = !on;
+  if(on) $("wc-banner-text").textContent = c.text + (c.state === "paused" ? " (on the Startup page, Shutdown)." : ".");
+}
+setInterval(renderCleaningBanner, 250);
+async function wcStopPress(){
+  wcLetGo("Stop pressed");
+  try{ const j = await post("/api/remote/cleaning-stop", actor({})); $("wc-msg").textContent = j.text || "Stopped."; }
+  catch(e){ $("wc-msg").textContent = e.message; }
+}
+// Never the disabled attribute on the button: a held button that turned
+// disabled could lose its lift. One that may not be pressed only says so.
+$("wc-hold").addEventListener("pointerdown", e => {
+  e.preventDefault();
+  try{ $("wc-hold").setPointerCapture(e.pointerId); }catch(err){}
+  wcStart();
+});
+for(const ev of ["pointerup", "pointercancel", "lostpointercapture"]){
+  $("wc-hold").addEventListener(ev, () => { if(WC_HOLD) wcLetGo("you let go before the hold was complete"); });
+}
+$("wc-hold").addEventListener("contextmenu", e => e.preventDefault());
+window.addEventListener("blur", () => { if(WC_HOLD) wcLetGo("the page lost focus"); });
+document.addEventListener("visibilitychange", () => { if(document.hidden && WC_HOLD) wcLetGo("the page was hidden"); });
+window.addEventListener("pagehide", () => wcLetGo("the page closed"));
+$("wc-stop").addEventListener("click", wcStopPress);
+$("wc-banner-stop").addEventListener("click", wcStopPress);
 
 // WEATHER (weather.py, WEATHER.md): its own slow poll, display only. A
 // reply that does not come leaves the block to grey itself (wxBlock).
