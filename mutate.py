@@ -9474,8 +9474,17 @@ def build():
  ("morning: Abort leaves a purge selection and the laser tests as they are (T7)",
   "ltcplay/morning.py",
   '''        self.purge.clear(f"Abort pressed by {who or screen or 'someone'}")
+        for hook in list(self.abort_hooks):
+            try:
+                hook(who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
         self.lasers.all_off("Abort pressed")''',
-  '''        return'''),
+  '''        for hook in list(self.abort_hooks):
+            try:
+                hook(who, screen)
+            except Exception:                    # noqa: BLE001
+                pass'''),
 
  ("morning: a laser test turns on while a show is live (T10)",
   "ltcplay/morning.py",
