@@ -715,38 +715,86 @@ class AnnounceService:
         if why:
             self._emit(actor="system", action="operators", outcome="note",
                        reason=why, text=why)
+        for k, v in self._read_config(self.config_path).items():
+            setattr(self, k, v)
+
+    @classmethod
+    def _read_config(cls, config_path):
+        """{"error", "device_name", "files", "status_by_id"}: the
+        attributes the file at `config_path` sets, read and probed without
+        touching this service, so a reload can look at a new file before
+        anything live changes. error is "" when the file could be used. A
+        setting added to the file later goes in this dict, and both _load
+        and reload_if_idle apply it."""
+        error, device_name, files, status = "", None, {}, {}
         try:
-            with open(self.config_path, encoding="utf-8-sig") as fh:
+            with open(config_path, encoding="utf-8-sig") as fh:
                 doc = json.load(fh)
         except FileNotFoundError:
-            self.error = (f"There is no announcements file at "
-                         f"{_clean(self.config_path)}.")
+            error = (f"There is no announcements file at "
+                     f"{_clean(config_path)}.")
         except OSError as e:
-            self.error = (f"The announcements file "
-                         f"{_clean(self.config_path)} cannot be read: "
-                         f"{_clean(str(e))}.")
+            error = (f"The announcements file {_clean(config_path)} "
+                     f"cannot be read: {_clean(str(e))}.")
         except ValueError as e:
-            self.error = (f"The announcements file "
-                         f"{_clean(self.config_path)} is not valid JSON: "
-                         f"{_clean(str(e))}.")
+            error = (f"The announcements file {_clean(config_path)} is not "
+                     f"valid JSON: {_clean(str(e))}.")
         else:
             try:
-                self.device_name, files = parse_config(doc, self.config_path)
+                device_name, raw_files = parse_config(doc, config_path)
             except ValueError as e:
-                self.error = str(e)
+                error = str(e)
             else:
-                base = os.path.dirname(os.path.abspath(self.config_path))
+                base = os.path.dirname(os.path.abspath(config_path))
                 for aid in IDS:
-                    raw = files[aid]
-                    self.files[aid] = (raw if os.path.isabs(raw) else
-                                       os.path.join(base, raw))
+                    raw = raw_files[aid]
+                    files[aid] = (raw if os.path.isabs(raw) else
+                                  os.path.join(base, raw))
         for aid in IDS:
-            if self.error:
-                self.status_by_id[aid] = {"available": False,
-                                          "reason": self.error,
-                                          "length_s": None}
+            if error:
+                status[aid] = {"available": False, "reason": error,
+                               "length_s": None}
             else:
-                self.status_by_id[aid] = self._probe_file(self.files[aid])
+                status[aid] = cls._probe_file(files[aid])
+        return {"error": error, "device_name": device_name, "files": files,
+                "status_by_id": status}
+
+    def reload_if_idle(self, show_busy=False):
+        """(True, "") once ltcplay_announce.json (and the operator list)
+        have been read again, as at startup (configwatch.py, Jeff
+        2026-10-28: the rack screen showed the old value after the file was
+        edited). Else (False, a sentence saying why), and nothing changes:
+        while a show is running or starting (`show_busy`), while an
+        announcement plays, or when the new file cannot be used (missing,
+        half written, not valid): then the engine keeps the settings it
+        has. The file is read and probed WITHOUT the lock; the new
+        settings replace the old ones, under the lock, only when they are
+        good and nothing is playing, so a Play press sees either the old
+        settings or the new ones, never a mix."""
+        if show_busy:
+            return False, ("it reads it again by itself once no show is "
+                           "running")
+        new = self._read_config(self.config_path)
+        error = new["error"]
+        if error:
+            return False, (f"the file is not valid ({error.rstrip('.')}), "
+                           f"so the engine keeps the old settings")
+        operators, op_why = load_operators(self.operators_folder)
+        with self.lock:
+            if self.playing is not None:
+                return False, ("it reads it again by itself once no "
+                               "announcement is playing")
+            for k, v in new.items():
+                setattr(self, k, v)
+            if not op_why:
+                self.operators = operators
+            said = (f"device {self.device_name}" if self.device_set
+                    else self.DEVICE_NOT_SET)
+            self._emit(actor="system", action="config", outcome="reloaded",
+                       reason="the file changed on disk",
+                       text=f"The announcements file {self.config_path} "
+                            f"changed on disk and was read again: {said}")
+        return True, ""
 
     @staticmethod
     def _probe_file(path):
@@ -815,7 +863,8 @@ class AnnounceService:
     def _decode(self, ann_id):
         """Read and validate the file off disk: the one part of a Play
         press that touches disk. Deliberately called WITHOUT self.lock held
-        (see play()): self.files never changes after startup, so this is
+        (see play()): self.files is replaced only by reload_if_idle, under
+        the lock and never while an announcement is claimed, so this is
         safe to run unlocked, and it must never hold up Stop, a status
         poll, or another operator's press for as long as it takes (review,
         minor: do not read a big file while holding the lock)."""
@@ -1217,8 +1266,9 @@ class AnnounceService:
             self.playing = ann_id
             self.held_schedule = held
 
-        # The file read happens WITHOUT the lock held: self.files never
-        # changes after startup, so this is safe to do unlocked, and it is
+        # The file read happens WITHOUT the lock held: self.files changes
+        # only in reload_if_idle, under the lock and never while an
+        # announcement is claimed, so this is safe to do unlocked, and it is
         # the one part of a Play press that touches disk. Holding the lock
         # across it would block Stop, a status poll and every other
         # operator action for as long as the read takes (review, minor).

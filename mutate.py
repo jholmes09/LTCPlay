@@ -13967,8 +13967,8 @@ def build():
 
  ("fuel: live flame programming counts as a show",
   "ltcplay/fuel.py",
-  "        if rehearse or program:\n            source = \"other\"",
-  "        if rehearse:\n            source = \"other\""),
+  "        if rehearse or program or (purge and burn):",
+  "        if rehearse or (purge and burn):"),
 
  ("fuel: a failed start counts as a show",
   "ltcplay/fuel.py",
@@ -16667,6 +16667,188 @@ def build():
   "ltcplay/web/remote.html",
   "  if(!st.ok){ $(\"wc-msg\").textContent = st.block; return; }\n  WC_HOLD = true;",
   "  WC_HOLD = true;"),
+
+ # Settings changed on disk (Jeff's field report 2026-10-28, item 11):
+ # configwatch.py, its notice, the live reload of the announcements, Reload
+ # engine and the supervisor's word in programs.json.
+ ("settings watch: the engine's copy is never judged changed",
+  "ltcplay/configwatch.py",
+  "        return e.digest(e.path) != e.value\n",
+  "        return False\n"),
+
+ ("settings watch: the deck and flamesafe are never named behind",
+  "ltcplay/configwatch.py",
+  "                    if theirs != now:\n",
+  "                    if False:\n"),
+
+ ("settings watch: a save of a setting read live counts as a change",
+  "ltcplay/configwatch.py",
+  "    return lambda path: _json_hash(path, lambda d: {k: d.get(k)\n"
+  "                                                    for k in keys})\n",
+  "    return lambda path: _json_hash(path, lambda d: d)\n"),
+
+ ("settings watch: the notice never says to restart LTC Player",
+  "ltcplay/configwatch.py",
+  "        text += \" \" + RESTART + \" \" + RUNNING_OLD\n",
+  "        pass\n"),
+
+ ("settings watch: the notice is never journaled",
+  "ltcplay/configwatch.py",
+  "        if text:\n            self._line(text)\n",
+  "        if text:\n            pass\n"),
+
+ ("settings watch: the announcements are read again during a show",
+  "ltcplay/announce.py",
+  "        if show_busy:\n            return False, (\"it reads it again by itself once no show is \"\n",
+  "        if False:\n            return False, (\"it reads it again by itself once no show is \"\n"),
+
+ ("settings watch: the announcements are read again while one plays",
+  "ltcplay/announce.py",
+  "            if self.playing is not None:\n"
+  "                return False, (\"it reads it again by itself once no \"\n",
+  "            if False:\n"
+  "                return False, (\"it reads it again by itself once no \"\n"),
+
+ ("Reload engine: offered while a flame group is armed",
+  "ltcplay/remote.py",
+  "        if any(g.get(\"armed\") != \"disarmed\" or g.get(\"wanted\")\n"
+  "               for g in groups):\n"
+  "            return \"A flame group is armed.",
+  "        if False:\n"
+  "            return \"A flame group is armed."),
+
+ ("Reload engine: offered while flamesafe's state is not seen",
+  "ltcplay/remote.py",
+  "        if v.get(\"stale\") or not groups:\n",
+  "        if v.get(\"stale\"):\n"),
+
+ ("Reload engine: offered with no flamesafe status at all",
+  "ltcplay/remote.py",
+  "        if fs is None:\n            return (\"flamesafe's status is not connected",
+  "        if False:\n            return (\"flamesafe's status is not connected"),
+
+ ("Reload engine: a check that fails lets the restart go",
+  "ltcplay/remote.py",
+  "            return (f\"Whether the engine may restart could not be checked \"\n"
+  "                    f\"({type(e).__name__}).\")\n",
+  "            return \"\"\n"),
+
+ ("Reload engine: offered with live flame programming on",
+  "ltcplay/remote.py",
+  "        if lf is not None and lf.on:\n            return \"Live flame programming is on. Turn it off first.\"\n",
+  ""),
+
+ ("Reload engine: offered with fire flames while scrubbing on",
+  "ltcplay/remote.py",
+  "        if sf is not None and sf.on:\n            return \"Fire flames while scrubbing is on. Turn it off first.\"\n",
+  ""),
+
+ ("Reload engine: offered with the Fireball page in use",
+  "ltcplay/remote.py",
+  "            if sm.get(\"on\") or sm.get(\"owner\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: offered with a purge selected",
+  "ltcplay/remote.py",
+  "            if mv.get(\"purge\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: offered with a laser test on",
+  "ltcplay/remote.py",
+  "            if mv.get(\"laser_tests_on\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: offered with a laser armed",
+  "ltcplay/remote.py",
+  "            if (mv.get(\"laser_arm\") or {}).get(\"armed\"):\n",
+  "            if False:\n"),
+
+ ("Reload engine: the supervisor never asks the engine again",
+  "packaging/windows/supervisor.py",
+  "    why = engine_restart_refusal(port)\n    return bool(why), why\n",
+  "    return False, \"\"\n"),
+
+ ("Reload engine: an engine that does not answer may be restarted",
+  "packaging/windows/supervisor.py",
+  "        return (f\"the engine did not say whether it may be restarted \"\n"
+  "                f\"({type(e).__name__}), so it is left running\")\n",
+  "        return \"\"\n"),
+
+ ("settings watch: a half written announcements file is taken",
+  "ltcplay/announce.py",
+  "        if error:\n            return False, (f\"the file is not valid",
+  "        if False:\n            return False, (f\"the file is not valid"),
+
+ ("settings watch: a BOM or Windows line ends count as a change",
+  "ltcplay/configwatch.py",
+  "    return raw.replace(b\"\\r\\n\", b\"\\n\")\n",
+  "    return raw\n"),
+
+ ("supervisor: hashes a file differently from the engine",
+  "packaging/windows/supervisor.py",
+  "    return hashlib.sha256(raw.replace(b\"\\r\\n\", b\"\\n\")).hexdigest()\n",
+  "    return hashlib.sha256(raw).hexdigest()\n"),
+
+ ("supervisor: programs.json never says what a program read",
+  "packaging/windows/supervisor.py",
+  "                    doc[n][\"read\"] = dict(read)\n",
+  "                    pass\n"),
+
+ ("settings watch: the fuel block counts as a Morning change",
+  "ltcplay/configwatch.py",
+  "                                                    if k not in keys})\n",
+  "                                                    if True})\n"),
+
+ ("settings watch: the operators written at first start are a change",
+  "ltcplay/configwatch.py",
+  "        if missing is None:\n            return None\n",
+  "        return None\n"),
+
+ ("settings watch: the notice never says when to restart",
+  "ltcplay/configwatch.py",
+  "RESTART = (\"Restart LTC Player between shows, when nothing is armed, to \"\n",
+  "RESTART = (\"Restart LTC Player to \"\n"),
+
+ ("Reload engine: offered while a show runs",
+  "ltcplay/remote.py",
+  "        if self.show_busy_for_reload():\n"
+  "            return \"A show is running. Reload the engine between shows.\"\n",
+  ""),
+
+ ("settings watch: the status never carries the notice",
+  "ltcplay/remote.py",
+  "        out[\"config_changed\"] = self.config_changed_view(ctx)\n",
+  ""),
+
+ ("settings watch: ltc serve never notes flamesafe's config",
+  "ltcplay/cli.py",
+  "    watch.add(\"flamesafe config\", path, others=(cw.DECK, cw.FLAMESAFE))\n",
+  "    pass\n"),
+
+ ("supervisor: programs.json never says when a program started",
+  "packaging/windows/supervisor.py",
+  "                doc[n][\"started\"] = started\n",
+  "                pass\n"),
+
+ ("supervisor: a show folder change counts as a showpc.json change",
+  "packaging/windows/supervisor.py",
+  "    return sorted(k for k in keys if k != \"show_folder\" and\n",
+  "    return sorted(k for k in keys if True and\n"),
+
+ ("supervisor: a restart never names who kept the older copy",
+  "packaging/windows/supervisor.py",
+  "             progs[n].started_wall < changed]\n",
+  "             progs[n].started_wall < 0]\n"),
+
+ ("rack screen: Reload engine shown when not offered",
+  "ltcplay/web/remote.html",
+  "  $(\"cfg-reload\").hidden = !cn.offer || !mayRow(s, \"settings\");\n",
+  "  $(\"cfg-reload\").hidden = false;\n"),
+
+ ("rack screen: the settings note leaves out flamesafe's own restart",
+  "ltcplay/web/remote.html",
+  "    (r.flamesafe ? \", so for a changed flamesafe.json stop LTC Player and start it again.\" : \".\");\n",
+  "    \".\";\n"),
 
  # Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it
  # turns on programming mode").
