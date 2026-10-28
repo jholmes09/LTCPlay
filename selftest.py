@@ -13839,11 +13839,12 @@ def test_announce_device_exact_match_only():
 
 
 def test_announce_toctou_recheck_before_start():
-    section("announcements: the SECOND check, immediately before the "
-            "stream actually starts, is read-only -- it refuses the "
-            "announcement rather than re-Holding a show the operator "
-            "resumed during the file read (review round 2, 2026-09-26: "
-            "audit15_resume_race.py)")
+    section("announcements: the SECOND look at the Hold, immediately before "
+            "the sound starts, is read-only: an operator's Resume during the "
+            "file read wins, nothing is Held again, and the announcement "
+            "still plays, with nothing held (review round 2, 2026-09-26: "
+            "audit15_resume_race.py; Jeff's field report, 2026-10-28: "
+            "announcements are independent of the schedule)")
     A = _ann()
     work, cfg, _lengths = _ann_workdir()
     fake = {"state": "STANDBY", "epoch": 0}
@@ -13882,77 +13883,106 @@ def test_announce_toctou_recheck_before_start():
 
     svc._decode = decode_and_flip
     try:
-        check(A.interlock_refusal(svc._current_state()) is None,
-              "setup: the interlock legitimately allows it at the first "
-              "check")
-        try:
-            svc.play(A.DELAYED, "Andy", "rack screen")
-            check(False, "a Resume during the file read must refuse the "
-                         "announcement, not silently re-Hold the show")
-        except ValueError as e:
-            check("resumed while the announcement was loading" in str(e),
-                  f"the refusal must say why: {e}")
+        r = svc.play(A.DELAYED, "Andy", "rack screen")
     finally:
         svc._decode = real_decode
-    check(svc.playing is None, "a refused claim must never start playing")
+    check(r["playing"] and r["playing"]["id"] == A.DELAYED,
+          f"a Resume during the file read never stops the announcement "
+          f"playing: {r['playing']}")
+    check(r["playing"]["held_schedule"] is False and
+          "resumed while it loaded" in (r["playing"]["note"] or ""),
+          f"it plays with nothing held, and says the schedule was "
+          f"resumed: {r['playing']}")
+    check(fake["state"] == "SHOW",
+          "the operator's Resume stands: nothing re-Held the show")
     check(len(hold_calls) == 1,
           f"Hold must be requested only ONCE, before the file read: the "
-          f"second check must be read-only, never Hold again: {hold_calls}")
+          f"second look must be read-only, never Hold again: {hold_calls}")
     check(len(claimed_checks) == 1 and claimed_checks[0] == 1,
-          f"the second check must ask about the epoch captured at the "
+          f"the second look must ask about the epoch captured at the "
           f"FIRST Hold, not the current one: {claimed_checks}")
+    svc.stop("Andy", "rack screen")
     print("  ok")
 
 
-def test_announce_interlock_recheck_catches_a_state_provider_with_no_hold():
-    section("announcements: the interlock recheck immediately before the "
-            "stream starts still matters on its own -- not made redundant "
-            "by hold_still_claimed -- when state_provider is wired but "
-            "hold_requester is not, the one configuration "
-            "test_announce_interlock_matrix already proves the module "
-            "must support even though web.serve() never wires it that "
-            "way: the epoch has nothing to compare there, so the interlock "
-            "recheck is the ONLY thing standing between a state that goes "
-            "away mid-decode and an announcement playing into it blind "
-            "(coordinator review, 2026-09-26, on CI's shard 1 survivor)")
+def test_announce_plays_whatever_the_schedule_state():
+    section("announcements are independent of the schedule (Jeff's field "
+            "report, 2026-10-28: \"It refuses because the night is over. "
+            "That should not be this way.\"): every announcement plays with "
+            "the scheduler closed (night over), in BOOT, with no schedule "
+            "loaded, with no scheduler at all, during a running show, and "
+            "on HOLD or PAUSED; a Hold is taken only between shows, and "
+            "when none can be taken the press says so in one line")
     A = _ann()
     work, cfg, _lengths = _ann_workdir()
-    fake = {"state": "STANDBY"}
-    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
-                            state_provider=lambda: fake["state"])
-    check(svc.hold_requester is None and svc.hold_still_claimed is None,
-          "setup: state_provider only, exactly as "
-          "test_announce_interlock_matrix wires it -- no scheduler is Held "
-          "and there is no epoch to ask about")
-    real_decode = svc._decode
+    # The real scheduler's own refusals, by state, for HOLD_ON (schedule.py
+    # _why_not), and None where hold_for_announcement succeeds.
+    refusals = {"OFF": "The night is over, so there is nothing to hold.",
+                "CLOSING": "The night is over, so there is nothing to hold.",
+                "BOOT": "The scheduler is still starting up and has not "
+                        "worked out the night yet.",
+                None: "There is no schedule loaded."}
+    cases = [("OFF", True), ("CLOSING", True), ("BOOT", True),
+             (None, True), ("NOSCHED", False), ("SHOW", True),
+             ("PAUSED", True), ("HOLD", True), ("IDLE", True),
+             ("STANDBY", True)]
+    for state, wired in cases:
+        for aid in A.IDS:
+            fake = {"state": None if state == "NOSCHED" else state,
+                    "epoch": 0}
+            calls = []
 
-    def decode_and_drop(ann_id):
-        # Stands in for the scheduler going away entirely during the file
-        # read (unloaded, its rule file failed to reload, the process that
-        # owned it exited) -- with no hold_requester wired, nothing bumps
-        # an epoch for this to be caught by; the state provider itself is
-        # the only signal left, and it now says "I don't know".
-        fake["state"] = None
-        return real_decode(ann_id)
+            def hold(who, screen, detail=None, fake=fake, calls=calls):
+                calls.append(fake["state"])
+                st = fake["state"]
+                if st in ("HOLD", "PAUSED", "SHOW"):
+                    return None, fake["epoch"]
+                if st in ("IDLE", "STANDBY"):
+                    fake["state"] = "HOLD"
+                    fake["epoch"] += 1
+                    return None, fake["epoch"]
+                return refusals[st], fake["epoch"]
 
-    svc._decode = decode_and_drop
-    try:
-        check(A.interlock_refusal(svc._current_state()) is None,
-              "setup: the interlock legitimately allows it at the first "
-              "check")
-        try:
-            svc.play(A.DELAYED, "Andy", "rack screen")
-            check(False, "the state going away during the file read must "
-                         "refuse the announcement, not let it play blind "
-                         "into an unknown show state")
-        except ValueError as e:
-            check("inert" in str(e),
-                  f"the refusal must be the plain interlock sentence, the "
-                  f"only guard left once hold_requester is not wired: {e}")
-    finally:
-        svc._decode = real_decode
-    check(svc.playing is None,
-          "a refused claim must never start playing")
+            def still(epoch, fake=fake):
+                return epoch == fake["epoch"] and \
+                    fake["state"] in ("HOLD", "PAUSED")
+
+            svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                    state_provider=lambda f=fake: f["state"])
+            if wired:
+                svc.hold_requester = hold
+                svc.hold_still_claimed = still
+            try:
+                r = svc.play(aid, "Andy", "rack screen", surface=True)
+            except ValueError as e:
+                check(False, f"{aid} in {state}: refused: {e}")
+                continue
+            p = r["playing"] or {}
+            check(p.get("id") == aid, f"{aid} in {state}: it plays: {p}")
+            want_held = wired and state in ("IDLE", "STANDBY", "HOLD")
+            check(p.get("held_schedule") is want_held,
+                  f"{aid} in {state}: held_schedule {want_held}: {p}")
+            check(calls == ([] if not wired or state in ("SHOW", "PAUSED")
+                            else
+                            [state if state != "NOSCHED" else None]),
+                  f"{aid} in {state}: a Hold is asked for only when no show "
+                  f"is running: {calls}")
+            if state in ("OFF", "CLOSING", "BOOT", None):
+                check("No hold was possible" in (p.get("note") or "") and
+                      refusals[state].rstrip(".") in p.get("note"),
+                      f"{aid} in {state}: one line says why nothing was "
+                      f"held: {p}")
+            if state == "NOSCHED":
+                check("nothing was held" in (p.get("note") or ""),
+                      f"{aid} with no scheduler: said: {p}")
+            if state in ("SHOW", "PAUSED"):
+                check("nothing was paused" in (p.get("note") or ""),
+                      f"{aid} over a show: said: {p}")
+            line = [j for j in svc.journal if j["outcome"] == "started"]
+            check(bool(line), f"{aid} in {state}: journaled as started")
+            if line:
+                _no_dashes(line[-1]["text"], f"{aid} in {state}")
+            svc.stop("Andy", "rack screen", surface=True)
     print("  ok")
 
 
@@ -14448,50 +14478,35 @@ def test_announce_reentrant_claim_does_not_orphan_a_stream():
 
 
 def test_announce_interlock_matrix():
-    section("announcements: the interlock, every scheduler state (a show "
-            "running or paused is no longer refused HERE, since Play "
-            "Holds it first instead, Jeff, 2026-09-26)")
+    section("announcements: every scheduler state, with a state provider but "
+            "no Hold wired: every announcement plays (nothing can Hold, and "
+            "the schedule's state is never a reason to refuse; Jeff's field "
+            "report, 2026-10-28)")
     from ltcplay import schedule as sch_mod
     A = _ann()
     states = (sch_mod.BOOT, sch_mod.IDLE, sch_mod.STANDBY, sch_mod.SHOW,
               sch_mod.PAUSED, sch_mod.CLOSING, sch_mod.OFF, sch_mod.HOLD)
     check(len(set(states)) == 8,
           "the matrix must cover all 8 scheduler states")
-    for state in states + (None,):
-        refusal = A.interlock_refusal(state)
-        if state is None:
-            check(refusal is not None and "inert" in refusal,
-                  f"no scheduler: announcements must be inert, got "
-                  f"{refusal!r}")
-        else:
-            check(refusal is None,
-                  f"{state}: the interlock itself must not refuse a real "
-                  f"state any more; a show running or paused is Held "
-                  f"first instead. Got {refusal!r}")
-        _no_dashes(refusal or "", f"interlock refusal in {state}")
+    check(not hasattr(A, "interlock_refusal"),
+          "there is no interlock any more: nothing refuses on state alone")
     # Abort is still the only way out of SHOW or PAUSED in the real
-    # machine, and it always lands in STANDBY; unrelated to the interlock
-    # change above, this is a schedule.py fact that used to matter here too.
+    # machine, and it always lands in STANDBY.
     check(sch_mod.ALLOWED[sch_mod.ABORT] ==
           frozenset((sch_mod.SHOW, sch_mod.PAUSED)),
           "Abort must be exactly the exit from SHOW and PAUSED")
-
-    # With state_provider set but no hold_requester -- an announcements
-    # config with no scheduler ALSO wired for Hold, which web.serve() never
-    # actually does (see test_announce_routes), but which the interlock's
-    # own contract above has to hold for regardless -- a real state is
-    # allowed straight through: nothing can Hold it, and the interlock no
-    # longer refuses a running show on its own.
     work, cfg, _lengths = _ann_workdir()
-    for state in states:
+    for state in states + (None,):
         svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
                                 state_provider=(lambda s=state: s))
         check(svc.hold_requester is None, "setup: no scheduler wired")
         for aid in A.IDS:
-            svc.play(aid, "Andy", "rack screen")
+            r = svc.play(aid, "Andy", "rack screen")
             check(svc.playing == aid,
                   f"{state}, no hold_requester: {aid} must be allowed to "
                   f"play")
+            check(r["playing"]["held_schedule"] is False,
+                  f"{state}: nothing held: {r['playing']}")
             svc.stop("Andy", "rack screen")
             check(svc.playing is None, "Stop must clear it for the next id")
     print("  ok")
@@ -14623,9 +14638,11 @@ def test_announce_hold_during_show():
     print("  ok")
 
 
-def test_announce_hold_refused_refuses_the_announcement():
-    section("announcements: if Hold is refused (the night is over), the "
-            "announcement is refused too, with the same sentence")
+def test_announce_hold_refused_still_plays():
+    section("announcements: with the REAL scheduler, a Hold it refuses (the "
+            "night is over) or cannot take (no schedule file) never refuses "
+            "the announcement: it plays with nothing held, and the press "
+            "says so in one line (Jeff's field report, 2026-10-28)")
     A, S, SV = _ann(), *_sched_and_service_modules()
     work, cfg, _lengths = _ann_workdir()
     swork = tempfile.mkdtemp()
@@ -14640,21 +14657,37 @@ def test_announce_hold_refused_refuses_the_announcement():
     svc.tick()
     check(svc.machine.state in (S.CLOSING, S.OFF),
           f"setup: the night is over: {svc.machine.state}")
-    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
-                            state_provider=lambda: svc.machine.state
-                                if svc.machine else None)
-    svc.on_show_started = ann.on_show_started
-    ann.hold_requester = svc.hold_for_announcement
-
-    try:
-        ann.play(A.DELAYED, "Andy", "rack screen")
-        check(False, "Hold being refused must refuse the announcement too")
-    except ValueError as e:
-        msg = str(e)
-        check("over" in msg and "hold" in msg.lower(),
-              f"the refusal must carry Hold's own plain sentence: {msg}")
-        _no_dashes(msg, "hold-refused announcement refusal")
-    check(ann.playing is None, "nothing must have started playing")
+    # No schedule file at all: the scheduler loads with no machine.
+    nwork = tempfile.mkdtemp()
+    none_svc = SV.Service(os.path.join(nwork, SV.RULE_FILE),
+                          clock=lambda: now[0], ntp_query=lambda: 0.0,
+                          state_dir=nwork)
+    none_svc.tick()
+    check(none_svc.machine is None, "setup: no schedule loaded")
+    for sv, what in ((svc, "the night is over"),
+                     (none_svc, "no schedule file")):
+        before = sv.machine.state if sv.machine else None
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda sv=sv:
+                                    sv.machine.state if sv.machine else None)
+        sv.on_show_started = ann.on_show_started
+        ann.hold_requester = sv.hold_for_announcement
+        ann.hold_still_claimed = sv.hold_still_claimed
+        for aid in A.IDS:
+            try:
+                r = ann.play(aid, "Andy", "rack screen")
+            except ValueError as e:
+                check(False, f"{what}: {aid} was refused: {e}")
+                continue
+            p = r["playing"] or {}
+            check(p.get("id") == aid and p.get("held_schedule") is False,
+                  f"{what}: {aid} plays, nothing held: {p}")
+            check("No hold was possible" in (p.get("note") or ""),
+                  f"{what}: one line says no hold was possible: {p}")
+            _no_dashes(p.get("note") or "", f"{what} note")
+            check((sv.machine.state if sv.machine else None) == before,
+                  f"{what}: the schedule is not changed by it")
+            ann.stop("Andy", "rack screen")
     print("  ok")
 
 
@@ -14772,16 +14805,17 @@ def test_announce_resume_wins_over_second_hold_request():
         resume_done.set()
         t.join(timeout=5)
 
-    check("error" in result,
-          f"the announcement must be refused, not silently re-pause the "
-          f"resumed show: {result}")
-    if "error" in result:
-        check("resumed while the announcement was loading" in
-              result["error"], f"the refusal must say why: {result}")
+    p = (result.get("status") or {}).get("playing") or {}
+    check(p.get("id") == A.CANNOT_CONTINUE and
+          p.get("held_schedule") is False and
+          "resumed while it loaded" in (p.get("note") or ""),
+          f"the announcement still plays (it is independent of the "
+          f"schedule), with nothing held, and says the schedule was "
+          f"resumed: {result}")
     check(svc.machine.state != S.HOLD,
           f"the operator's Resume must still hold, never silently undone "
           f"by the announcement's own second check: {svc.machine.state}")
-    check(ann.playing is None, "the refused announcement must not play")
+    ann.stop("Jeff", "Announce Panel")
     print("  ok")
 
 
@@ -14858,13 +14892,13 @@ def test_announce_resume_then_rehold_still_refuses():
         resume_done.set()
         t.join(timeout=5)
 
-    check("error" in result,
-          f"a stale claim must still refuse even though the state looks "
-          f"unchanged: {result}")
-    if "error" in result:
-        check("resumed while the announcement was loading" in
-              result["error"], f"the refusal must say why: {result}")
-    check(ann.playing is None, "the refused announcement must not play")
+    p = (result.get("status") or {}).get("playing") or {}
+    check(p.get("id") == A.CANNOT_CONTINUE and
+          p.get("held_schedule") is False,
+          f"a stale claim is not this announcement's Hold even though the "
+          f"state looks unchanged: it plays, and does not say it held the "
+          f"schedule: {result}")
+    ann.stop("Jeff", "Announce Panel")
     print("  ok")
 
 
@@ -15129,21 +15163,23 @@ def test_announce_hold_for_announcement_no_noise_when_already_held():
     print("  ok")
 
 
-def test_announce_no_scheduler_stays_inert():
-    section("announcements: with no scheduler configured (the GPL path), "
-            "an announcement behaves exactly as before: inert, and it "
-            "never tries to Hold anything")
+def test_announce_no_scheduler_plays_and_holds_nothing():
+    section("announcements: with no scheduler configured at all, an "
+            "announcement still plays (it is independent of the schedule, "
+            "Jeff's field report, 2026-10-28) and never tries to Hold "
+            "anything")
     A = _ann()
     work, cfg, _lengths = _ann_workdir()
     ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
     check(ann.state_provider is None and ann.hold_requester is None,
           "setup: neither the state nor the hold path is wired")
-    try:
-        ann.play(A.DELAYED, "Andy", "rack screen")
-        check(False, "with no scheduler, Play must still refuse")
-    except ValueError as e:
-        check("inert" in str(e), f"the refusal must say why: {e}")
-    check(ann.playing is None, "nothing must have started playing")
+    for aid in A.IDS:
+        r = ann.play(aid, "Andy", "rack screen")
+        p = r["playing"] or {}
+        check(p.get("id") == aid and p.get("held_schedule") is False and
+              "nothing was held" in (p.get("note") or ""),
+              f"{aid} plays with nothing held, and says so: {p}")
+        ann.stop("Andy", "rack screen")
     print("  ok")
 
 
@@ -15448,13 +15484,21 @@ def test_announce_routes():
         code, st = call(base, "/api/announce/status")
         check(code == 200 and len(st["announcements"]) == 3,
               f"GET /api/announce/status: {code} {st}")
-        check(st["blocked"] and "inert" in st["blocked"],
-              f"with no scheduler wired, announcements report inert: {st}")
-        code, bad = call(base, "/api/announce/play",
+        check("blocked" not in st and st["route"]["ok"] and
+              st["route"]["kind"] == "device",
+              f"with no scheduler wired, nothing reports announcements "
+              f"blocked; no show audio runs, so its own output is the "
+              f"route: {st}")
+        code, got = call(base, "/api/announce/play",
                          {"id": A.DELAYED, "who": "Andy",
                           "screen": "rack screen"})
-        check(code == 400 and "inert" in bad.get("error", ""),
-              f"a play attempt with no scheduler is a 400: {code} {bad}")
+        check(code == 200 and (got.get("playing") or {}).get("id") ==
+              A.DELAYED,
+              f"a play with no scheduler plays: {code} {got}")
+        call(base, "/api/announce/stop", {"who": "Andy",
+                                           "screen": "rack screen"})
+        check(callable(ann.show_route),
+              "web.serve wires the show audio route provider")
         check(A.AnnounceService.POST_ROUTES ==
               ("/api/announce/play", "/api/announce/stop"),
               "only play and stop can be posted")
@@ -15542,7 +15586,7 @@ def test_announce_device_not_set_and_device_missing_refuse_before_hold():
     def hold(who, screen, detail=None):
         asked.append(who)
         return None, 1
-    for device, words in (("", "No output device is set"),
+    for device, words in (("", "No announcement output is picked"),
                           ("Nothing Called This", "is not attached")):
         work, cfg, _l = _ann_workdir(device=device)
         svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
@@ -15570,7 +15614,9 @@ def test_announce_surface_press_and_show_ending_while_loading():
     section("announcements: a surface press (the rack screen or the "
             "Stream Deck, through remote.py) is not looked up on the "
             "operator list; a press over a running show whose show ends "
-            "while the file loads is refused, never played unheld")
+            "while the file loads still plays, with nothing held, and says "
+            "so (announcements are independent of the schedule, Jeff's "
+            "field report, 2026-10-28)")
     A = _ann()
     work, cfg, _l = _ann_workdir()
     svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
@@ -15606,14 +15652,14 @@ def test_announce_surface_press_and_show_ending_while_loading():
         state[0] = "STANDBY"
         return real(aid)
     svc2._decode = decode_then_show_ends
-    try:
-        svc2.play(A.CANNOT_CONTINUE, "Andy", "Rack screen")
-        check(False, "the show ended while loading: refused")
-    except ValueError as e:
-        check("show ended while the announcement was loading" in str(e),
-              f"{e}")
-    check(svc2.playing is None and asked == [],
-          f"nothing plays and nothing was held: {asked}")
+    r = svc2.play(A.CANNOT_CONTINUE, "Andy", "Rack screen")
+    p = r["playing"] or {}
+    check(p.get("id") == A.CANNOT_CONTINUE and
+          p.get("held_schedule") is False and
+          "show ended while it loaded" in (p.get("note") or ""),
+          f"the show ended while loading: it plays, nothing held, said: {p}")
+    check(asked == [], f"no Hold was asked for: {asked}")
+    svc2.stop("Andy", "Rack screen")
     print("  ok")
 
 
@@ -15757,7 +15803,8 @@ let L = announceLook(null, null);
 t(L.show === false, "no announcements: no block");
 L = announceLook({configured:false}, {});
 t(L.show === false, "not configured: no block");
-const base = {configured:true, ok:true, device:"MOTU M4", device_set:true, device_available:true, items:items, playing:null, over_show:false};
+const base = {configured:true, ok:true, device:"MOTU M4", device_set:true, device_available:true, items:items, playing:null, over_show:false,
+  route:{kind:"device", ok:true, text:"MOTU M4, its own output while the show audio is not running", why:null}};
 L = announceLook(base, {configured:true, device:"Booth 16R"});
 t(L.show && L.buttons.length === 3, "three buttons");
 t(!L.buttons[0].off && L.buttons[0].sub === "12 s", "a ready one is on, with its length: " + JSON.stringify(L.buttons[0]));
@@ -15768,8 +15815,33 @@ t(/Booth speaker: Booth 16R/.test(L.device), "the booth speaker is named: " + L.
 L = announceLook(Object.assign({}, base, {over_show:true}), {});
 t(/plays over it and pauses nothing/.test(L.note), "during a show: " + L.note);
 t(/Booth speaker: not set/.test(L.device), "no booth: said");
-L = announceLook(Object.assign({}, base, {device_set:false, device:null, device_available:false, device_reason:"No output device is set for announcements yet."}), {});
-t(L.buttons.every(b => b.off) && L.devBad && /not set/.test(L.device) && /No output device/.test(L.note), "no device: every button off, said");
+L = announceLook(Object.assign({}, base, {device_set:false, device:null, device_available:false, device_reason:"No announcement output is picked.", route:{kind:"device", ok:false, text:"", why:"No announcement output is picked."}}), {});
+t(L.buttons.every(b => b.off) && L.devBad && /no output of its own is picked/.test(L.device) && /No announcement output/.test(L.note), "no device and no show audio: every button off, said: " + L.device + " / " + L.note);
+// Through the show audio (Jeff's field report, 2026-10-28, item 9): on,
+// with no output of its own picked, and the line says where it plays.
+L = announceLook(Object.assign({}, base, {device_set:false, device:null, device_available:false, route:{kind:"show", ok:true, text:"the show audio, outputs 1 and 2 on StudioLive 16R", why:null}}), {});
+t(!L.buttons[0].off && /^Plays on: the show audio, outputs 1 and 2 on StudioLive 16R/.test(L.device) && !L.devBad, "through the show audio: on, said: " + L.device);
+L = announceLook(Object.assign({}, base, {route:{kind:"show", ok:false, text:"the show audio, outputs 1 and 2 on StudioLive 16R", why:"The show audio is running, but StudioLive 16R is not open right now (see the Show audio lamp)."}}), {});
+t(L.buttons.every(b => b.off) && /not open/.test(L.device) && /Show audio lamp/.test(L.note), "the show audio not open: off, said apart from the lamp: " + L.note);
+// Ambiguous name: said plainly, with what to pick.
+L = announceLook(Object.assign({}, base, {route:{kind:"device", ok:false, text:"StudioLive WDM 1/2, its own output", why:"StudioLive WDM 1/2 matches 2 outputs on this PC: pick one: StudioLive WDM 1/2 (MME, 2 outputs); StudioLive WDM 1/2 (Windows WASAPI, 2 outputs)."}}), {});
+t(L.buttons.every(b => b.off) && /matches 2 outputs on this PC: pick one/.test(L.note), "ambiguous: said: " + L.note);
+// The schedule's state never turns a button off (a.blocked is gone).
+L = announceLook(Object.assign({}, base, {blocked:"anything", show_state:"OFF"}), {});
+t(!L.buttons[0].off, "the night being over never turns them off");
+// A press that held nothing says why, from the engine's note.
+L = announceLook(Object.assign({}, base, {playing:{id:"delayed", name:"Delayed", held_schedule:false, note:"No hold was possible (The night is over, so there is nothing to hold), so it plays with nothing held."}}), {});
+t(L.word === "ANNOUNCEMENT PLAYING" && /No hold was possible/.test(L.banner), "no hold: said: " + L.banner);
+// The picker's options.
+let O = annOutputOptions([{name:"StudioLive WDM 1/2", hostapi:"MME", channels:2, label:"StudioLive WDM 1/2 (MME, 2 outputs)", same_name:true, picked:false},
+  {name:"StudioLive WDM 1/2", hostapi:"Windows WASAPI", channels:2, label:"StudioLive WDM 1/2 (Windows WASAPI, 2 outputs)", same_name:true, picked:false},
+  {name:"Speakers", hostapi:"MME", channels:2, label:"Speakers (MME, 2 outputs)", same_name:false, picked:false}], "StudioLive WDM 1/2");
+t(O[0].picked && O[0].value === "" && /choose which output/.test(O[0].label), "ambiguous: the top says choose: " + JSON.stringify(O[0]));
+t(JSON.parse(O[3].value).hostapi === "Windows WASAPI" && JSON.parse(O[4].value).hostapi === null, "same name: told apart by audio system; a unique one is not: " + JSON.stringify(O));
+O = annOutputOptions([{name:"Speakers", hostapi:"MME", channels:2, label:"Speakers (MME, 2 outputs)", same_name:false, picked:true}], "Speakers");
+t(O[1].picked && /picked now/.test(O[1].label) && !O[0].picked, "the picked one is selected: " + JSON.stringify(O));
+O = annOutputOptions([], "");
+t(O.length === 1 && O[0].picked && /only through the show audio/.test(O[0].label), "nothing picked: None: " + JSON.stringify(O));
 L = announceLook(Object.assign({}, base, {playing:{id:"delayed", name:"Delayed", held_schedule:true, elapsed_s:3.2, length_s:12.4}}), {});
 t(L.word === "HELD FOR ANNOUNCEMENT" && /Delayed \(3 s of 12 s\)/.test(L.banner) && /until Resume/.test(L.banner), "held: " + L.word + " " + L.banner);
 t(!L.stopOff && L.buttons.every(b => b.off) && L.buttons[0].on, "while one plays: Stop on, the rest off, it lit");
@@ -15804,6 +15876,9 @@ console.log(JSON.stringify(out));
     st["announce"] = {
         "configured": True, "ok": True, "error": None, "device": "MOTU M4",
         "device_set": True, "device_available": True, "device_reason": None,
+        "route": {"kind": "device", "ok": True, "why": None,
+                  "text": "MOTU M4, its own output while the show audio "
+                          "is not running"},
         "blocked": None, "over_show": False,
         "items": [{"id": "delayed", "name": "Delayed", "available": True,
                    "missing": False, "reason": None, "length_s": 12.0},
@@ -15830,6 +15905,545 @@ console.log(JSON.stringify(out));
                 check(m["flames_visible_at_load"],
                       f"{w}x{h}: the flame groups are still on the screen "
                       f"without scrolling")
+    print("  ok")
+
+
+def _ann_write_level(path, seconds=1.0, rate=8000, levels=(0.5,)):
+    """A 16-bit WAV holding a constant level on each channel (full scale
+    1.0), so what reaches each show output can be checked by value."""
+    import struct
+    import wave as _wave
+    n = int(seconds * rate)
+    frame = struct.pack(f"<{len(levels)}h",
+                        *[int(round(v * 32767)) for v in levels])
+    with _wave.open(path, "wb") as w:
+        w.setnchannels(len(levels))
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(frame * n)
+
+
+class _AnnBusEngine:
+    """showaudio's real audio process loop (AudioProcess, its Mixer and its
+    announcement bus) in this process, on a FakeSoundDevice the test pumps
+    block by block: the same face as AudioEngine for what announce.py's
+    show route uses (send, announce_read, device_open)."""
+
+    def __init__(self, channels=8, block=480):
+        from ltcplay import showaudio as sa
+        self.sa = sa
+        self.arr = [0.0] * sa.SLOTS
+        self.sd = sa.FakeSoundDevice(threaded=False, block=block, devices=[
+            {"name": "Show DSP", "hostapi": 0,
+             "max_output_channels": channels}])
+        self.msgs = []
+        self.proc = sa.AudioProcess(
+            {"device": "Show DSP", "channels": channels, "rate": sa.RATE,
+             "cues": {}}, self.sd, sa.Publisher(self.arr), self.msgs.append,
+            sync_load=True)
+        self.proc.step(0.0)
+        self.sent = []
+
+    def show(self, level=0.25, seconds=10.0):
+        import numpy as np
+        n = int(seconds * self.sa.RATE)
+        ch = self.proc.mixer.out_channels
+        self.proc.mixer.add_cue("show", [(np.full((n, 1), level,
+                                                  dtype=np.float32), 1.0,
+                                          list(range(ch)))])
+        self.proc.command(("play", "show", 0, 0, 1))
+
+    def send(self, msg):
+        self.sent.append(msg[0])
+        self.proc.command(msg)
+        return True
+
+    def announce_read(self):
+        return self.sa.read_announce(self.arr)
+
+    def device_open(self):
+        return self.proc.devstate == self.sa.DEV_OPEN
+
+    def pump(self, n=1):
+        import numpy as np
+        return np.concatenate([self.proc.stream.pump(0.0)
+                               for _ in range(n)])
+
+
+def test_announce_bus_mixes_into_the_show_outputs():
+    section("show audio: the announcement bus adds an announcement onto the "
+            "show's own front left and right on the stream the show already "
+            "has open; the show's own audio is not ducked or changed; its "
+            "Hold, Stop and Abort never touch the announcement; a soft clip "
+            "guard only while one plays (Jeff's field report, 2026-10-28, "
+            "item 9)")
+    import numpy as np
+    from ltcplay import showaudio as sa
+    bus = sa.AnnounceBus(8)
+    out = np.full((100, 8), 0.95, dtype=np.float32)
+    bus.mix(out)
+    check(np.all(out == np.float32(0.95)),
+          "with nothing playing the bus never touches a sample, not even "
+          "one above the soft clip knee")
+    check(not bus.play(1, np.zeros((10, 1), np.float32), [8], 1.0) and
+          not bus.play(1, np.zeros((10, 3), np.float32), [0, 1], 1.0),
+          "an output past the last, or channels that do not fit the "
+          "outputs, are refused")
+    pcm = np.full((150, 1), 0.5, dtype=np.float32)
+    check(bus.play(7, pcm, [0, 1], 1.0) and bus.state == sa.PLAYING,
+          "a mono announcement on outputs 1 and 2")
+    out = np.full((100, 8), 0.25, dtype=np.float32)
+    bus.mix(out)
+    check(np.allclose(out[:, 0], 0.75) and np.allclose(out[:, 1], 0.75) and
+          np.allclose(out[:, 2:], 0.25),
+          f"added to the show on 1 and 2 only, nothing ducked: "
+          f"{out[0].tolist()}")
+    out = np.full((100, 8), 0.8, dtype=np.float32)
+    bus.mix(out)
+    check(bus.state == sa.ENDED and bus.frame == 150,
+          "it ends at its last sample")
+    check(float(np.max(np.abs(out[:50, :2]))) < 1.0 and
+          float(np.min(out[:50, :2])) > sa.SOFT_KNEE and
+          np.allclose(out[50:, :2], 0.8) and np.allclose(out[:, 2:], 0.8),
+          f"the sum over full scale is rounded off below 1.0, only where "
+          f"the announcement played: {out[0, :3].tolist()} "
+          f"{out[60, :3].tolist()}")
+    check(bus.softened > 0, "the guard counts what it bent")
+    # A stop with the wrong token never cuts a newer announcement; the
+    # right one fades it out, then it is ended.
+    bus.play(8, np.full((10000, 2), [0.5, -0.25], dtype=np.float32),
+             [2, 3], 0.5)
+    check(not bus.stop(7, 100), "an older token's stop is ignored")
+    out = np.zeros((10, 8), dtype=np.float32)
+    bus.mix(out)
+    check(np.allclose(out[:, 2], 0.25) and np.allclose(out[:, 3], -0.125)
+          and np.allclose(out[:, :2], 0),
+          f"stereo: left to the first output, right to the second, at its "
+          f"gain: {out[0].tolist()}")
+    check(bus.stop(8, 100), "its own token's stop is taken")
+    out = np.zeros((300, 8), dtype=np.float32)
+    bus.mix(out)
+    col = out[:, 2]
+    check(bus.state == sa.ENDED and abs(col[0] - 0.25) < 0.01 and
+          np.all(np.diff(col[:100]) <= 1e-7) and np.allclose(col[100:], 0),
+          "the stop fades down over its frames, never a click, then ends")
+    print("  ok")
+
+
+def test_announce_plays_through_the_show_audio():
+    section("announcements play through the show audio process's bus when "
+            "it runs: no second device is opened, they play during a show, "
+            "a show's Hold or Abort never stops them, Stop fades only the "
+            "announcement, a show starting fades it, a natural end and a "
+            "stall are noticed, and with no show audio running the "
+            "announcement's own output is used (Jeff's field report, "
+            "2026-10-28, item 9)")
+    import numpy as np
+    A = _ann()
+    from ltcplay import showaudio as sa
+    work, cfg, _l = _ann_workdir(device="")
+    _ann_write_level(os.path.join(work, "delayed.wav"), seconds=0.5,
+                     rate=8000, levels=(0.5,))
+    _ann_write_level(os.path.join(work, "cancellation.wav"), seconds=0.5,
+                     rate=48000, levels=(0.5, -0.25))
+    eng = _AnnBusEngine()
+    check(eng.device_open(), "setup: the show audio is open")
+    eng.show(level=0.25)
+    route = sa.ShowRoute(eng, "Show DSP", 8)
+    have = [route]
+    state = ["SHOW"]
+    t = [100.0]
+    fsd = FakeSD()
+    asked = []
+    svc = A.AnnounceService(cfg, sd=fsd, operators_folder=work,
+                            state_provider=lambda: state[0],
+                            show_route=lambda: have[0],
+                            clock=lambda: t[0])
+    svc.hold_requester = lambda who, screen, detail=None: (
+        asked.append(who) or (None, 1))
+    svc.hold_still_claimed = lambda epoch: True
+    st = svc.status()
+    check(st["route"]["kind"] == "show" and st["route"]["ok"] and
+          "the show audio, outputs 1 and 2 on Show DSP" in
+          st["route"]["text"],
+          f"the announcement check names the show audio route, with no "
+          f"output of its own picked: {st['route']}")
+    r = svc.play(A.DELAYED, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.DELAYED and asked == [] and
+          not fsd.output_opened,
+          f"during a show it plays through the show audio: nothing held, "
+          f"no second device opened: {r['playing']} {fsd.output_opened}")
+    started = [j for j in svc.journal if j["outcome"] == "started"][-1]
+    check("on the show audio (outputs 1 and 2 on Show DSP)" in
+          started["text"], f"the journal says where: {started['text']}")
+    blk = eng.pump(2)
+    check(np.allclose(blk[:, 0], 0.75, atol=2e-4) and
+          np.allclose(blk[:, 1], 0.75, atol=2e-4) and
+          np.allclose(blk[:, 2:], 0.25),
+          f"8 kHz mono, resampled to 48 kHz, on outputs 1 and 2 on top of "
+          f"the show; every other output is the show alone: "
+          f"{blk[0].tolist()}")
+    # The show's own Hold (a pause) and Abort (its level) act on the show
+    # only.
+    eng.proc.command(("pause", 0, 1))
+    blk = eng.pump(1)
+    check(np.allclose(blk[:, 0], 0.5, atol=2e-4) and
+          np.allclose(blk[:, 2:], 0),
+          f"the show held: its audio stops, the announcement goes on: "
+          f"{blk[0].tolist()}")
+    eng.proc.command(("level", 0.0, 0))
+    blk = eng.pump(1)
+    check(np.allclose(blk[:, 0], 0.5, atol=2e-4),
+          "an Abort's level fade never touches the announcement")
+    eng.proc.command(("level", 1.0, 0))
+    eng.proc.command(("resume", 0, 1))
+    t[0] += 0.05
+    st = svc.status()
+    check(st["playing"] and st["playing"]["elapsed_s"] > 0.0,
+          f"its progress is read back from the audio process: "
+          f"{st['playing']}")
+    # Stop: the announcement fades out (no click); the show plays on.
+    svc.stop("Andy", "rack screen")
+    blk = eng.pump(8)
+    check(eng.proc.bus.state == sa.ENDED and
+          np.allclose(blk[-480:, 0], 0.25) and
+          np.all(np.diff(blk[:2400, 0]) <= 1e-6),
+          "Stop fades only the announcement down; the show is untouched")
+    # Natural end: noticed, journaled as finished.
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    eng.pump(60)
+    t[0] += 0.1
+    st = svc.status()
+    check(st["playing"] is None and
+          [j for j in svc.journal if j["outcome"] == "finished"],
+          f"a natural end is noticed: {st['playing']}")
+    # Stereo at 48 kHz: left to output 1, right to output 2.
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    blk = eng.pump(1)
+    check(np.allclose(blk[:, 0], 0.75, atol=2e-4) and
+          np.allclose(blk[:, 1], 0.0, atol=2e-4),
+          f"stereo: left and right to the front left and right: "
+          f"{blk[0, :3].tolist()}")
+    # A show starting fades it out (SHOW_START_STOPS_ANNOUNCEMENT).
+    svc.on_show_started(reason="new")
+    eng.pump(20)
+    t[0] += 0.1
+    st = svc.status()
+    rows = [j for j in svc.journal if j["outcome"] == "stopped"]
+    check(st["playing"] is None and rows and
+          "a show started" in rows[-1]["text"],
+          f"a show starting fades it and says why: {rows[-1:]}")
+    # A stall: the audio process stops calling back.
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    eng.pump(1)
+    svc.status()
+    t[0] += A.STALL_S + 1.0
+    st = svc.status()
+    check(st["playing"] is None and
+          [j for j in svc.journal if j["outcome"] == "failed"],
+          "an announcement the show audio stopped playing is marked failed")
+    # The show audio's interface not open: refused BEFORE any Hold, with
+    # a sentence that names the Show audio lamp, and the deck's word.
+    state[0] = "STANDBY"
+    eng.proc.devstate = sa.DEV_CLOSED
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "the show audio not open: refused")
+    except ValueError as e:
+        from ltcplay import streamdeck as SDK
+        check("Show audio lamp" in str(e) and asked == [] and
+              SDK.announce_refusal_word(str(e)) == "NO OUTPUT",
+              f"refused before any Hold, plainly: {e} {asked}")
+        _no_dashes(str(e), "show audio not open")
+    check(not fsd.output_opened, "and no second device is ever tried")
+    eng.proc.devstate = sa.DEV_OPEN
+    # The show audio stopping while the file is read: failed, said, and
+    # the Hold the press took says HELD, ANNOUNCEMENT FAILED.
+    real = svc._decode
+
+    def decode_and_stop(aid):
+        have[0] = None
+        return real(aid)
+    svc._decode = decode_and_stop
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "the show audio stopped while loading: failed")
+    except ValueError as e:
+        check("show audio stopped while the announcement was loading" in
+              str(e) and svc.held_failed and not fsd.output_opened,
+              f"said, and the Hold it took says it failed: {e}")
+    svc._decode = real
+    svc.held_failed = None
+    # No show audio at all: the announcement's own output. None picked:
+    # refused plainly, before any Hold.
+    asked.clear()
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "no show audio and no output picked: refused")
+    except ValueError as e:
+        check("No announcement output is picked" in str(e) and asked == [],
+              f"{e}")
+    # Run pressed while the file is read: it plays through the show
+    # audio, never opening a second device.
+    svc.device_name = "MOTU M4"
+    plays_before = eng.sent.count("ann_play")
+
+    def decode_and_run(aid):
+        have[0] = route
+        return real(aid)
+    svc._decode = decode_and_run
+    r = svc.play(A.DELAYED, "Andy", "rack screen")
+    svc._decode = real
+    check(r["playing"] and not fsd.output_opened and
+          eng.sent.count("ann_play") == plays_before + 1,
+          f"the show audio started while loading: it plays there: "
+          f"{fsd.output_opened}")
+    svc.stop("Andy", "rack screen")
+    eng.pump(8)
+    have[0] = None
+    r = svc.play(A.DELAYED, "Andy", "rack screen")
+    check(r["playing"] and len(fsd.output_opened) == 1 and
+          r["route"]["kind"] == "device",
+          f"with no show audio running, its own output plays it: "
+          f"{fsd.output_opened} {r['route']}")
+    svc.stop("Andy", "rack screen")
+    # The level and the outputs come from ltcplay_announce.json.
+    with open(cfg, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    doc.update(show_outputs=[3, 4], gain_db=-6)
+    with open(cfg, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    svc2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                             state_provider=lambda: "SHOW",
+                             show_route=lambda: route)
+    svc2.play(A.DELAYED, "Andy", "rack screen")
+    blk = eng.pump(1)
+    g = 10 ** (-6 / 20.0)
+    check(np.allclose(blk[:, 2], 0.25 + 0.5 * g, atol=3e-4) and
+          np.allclose(blk[:, 3], 0.25 + 0.5 * g, atol=3e-4) and
+          np.allclose(blk[:, 0], 0.25),
+          f"show_outputs [3, 4] at gain_db -6: {blk[0, :4].tolist()}")
+    svc2.stop("Andy", "rack screen")
+    for bad in ({"show_outputs": [0, 1]}, {"show_outputs": [1, 1]},
+                {"gain_db": 12}, {"gain_db": True}, {"hostapi": ""},
+                {"volume": 3}):
+        d = dict(doc, **bad)
+        try:
+            A.parse_config(d, "ltcplay_announce.json")
+            check(False, f"{bad} must be refused")
+        except ValueError as e:
+            _no_dashes(str(e), f"config {bad}")
+    doc["show_outputs"] = [9, 10]
+    with open(cfg, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    svc3 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                             state_provider=lambda: "SHOW",
+                             show_route=lambda: route)
+    chk = svc3.status()["route"]
+    check(not chk["ok"] and "has only 8" in chk["why"],
+          f"outputs past the show audio's: said: {chk}")
+    # ShowRoute.of_clock: only a clock that plays show audio of its own.
+    check(sa.ShowRoute.of_clock(None) is None and
+          sa.ShowRoute.of_clock(type("C", (), {"source": "ltc"})()) is None,
+          "no show audio clock: no route")
+    clk = type("C", (), {"source": "audio_master", "engine": eng,
+                         "audio": type("Au", (), {"device": "Show DSP",
+                                                  "channels": 8})()})()
+    rt = sa.ShowRoute.of_clock(clk)
+    check(rt is not None and rt.ready() and rt.channels == 8,
+          "an audio_master clock is a route")
+    print("  ok")
+
+
+class _AnnPickSD(FakeSD):
+    """Outputs as Windows lists them on the show PC: the StudioLive's WDM
+    pair under two audio systems with the same name (Jeff's field report,
+    2026-10-28, item 10)."""
+
+    APIS = ("MME", "Windows WASAPI")
+
+    def __init__(self):
+        super().__init__()
+        self.devices = [
+            {"name": "StudioLive WDM 1/2 (StudioLive 16R)",
+             "max_input_channels": 0, "max_output_channels": 2,
+             "default_samplerate": 48000, "hostapi": 0},
+            {"name": "StudioLive WDM 1/2 (StudioLive 16R)",
+             "max_input_channels": 0, "max_output_channels": 2,
+             "default_samplerate": 48000, "hostapi": 1},
+            {"name": "Speakers (Realtek)", "max_input_channels": 0,
+             "max_output_channels": 2, "default_samplerate": 48000,
+             "hostapi": 0},
+            {"name": "Mic (Realtek)", "max_input_channels": 2,
+             "max_output_channels": 0, "default_samplerate": 48000,
+             "hostapi": 0}]
+
+    def query_hostapis(self, i=None):
+        if i is None:
+            return tuple({"name": n} for n in self.APIS)
+        return {"name": self.APIS[i]}
+
+
+def test_announce_output_picker():
+    section("the announcement output picker (Jeff's field report, "
+            "2026-10-28, item 10): every output with its audio system and "
+            "channel count; a name on two outputs is said plainly, with "
+            "what to pick; the pick is saved to ltcplay_announce.json and "
+            "used at once; the show machine only, Settings permission, "
+            "signed out is view only")
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    name = "StudioLive WDM 1/2 (StudioLive 16R)"
+    work, cfg, _l = _ann_workdir(device=name)
+    with open(cfg, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    doc["gain_db"] = -3
+    with open(cfg, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    sd = _AnnPickSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    st = svc.status()
+    why = st["device_reason"] or ""
+    check(not st["route"]["ok"] and
+          f"{name} matches 2 outputs on this PC: pick one: " in why and
+          "(MME, 2 outputs)" in why and "(Windows WASAPI, 2 outputs)" in why
+          and "Programming, Announcement output" in why,
+          f"the name on two outputs is said plainly, with what to pick and "
+          f"where: {why}")
+    _no_dashes(why, "ambiguous output")
+    outs = svc.outputs()
+    check([o["label"] for o in outs] == [
+              f"{name} (MME, 2 outputs)",
+              f"{name} (Windows WASAPI, 2 outputs)",
+              "Speakers (Realtek) (MME, 2 outputs)"] and
+          [o["same_name"] for o in outs] == [True, True, False] and
+          not any(o["picked"] for o in outs),
+          f"every output, inputs left out, nothing picked yet: {outs}")
+    try:
+        svc.save_device(name)
+        check(False, "a name on two outputs needs its audio system")
+    except ValueError as e:
+        check("pick one" in str(e) and "Nothing was changed" in str(e),
+              f"{e}")
+    text = svc.save_device(name, "Windows WASAPI", who="Jeff",
+                           screen="Rack screen")
+    with open(cfg, encoding="utf-8") as fh:
+        saved = json.load(fh)
+    check(saved["device"] == name and saved["hostapi"] == "Windows WASAPI"
+          and saved["gain_db"] == -3 and
+          set(saved["files"]) == set(A.IDS),
+          f"saved, every other key kept: {saved}")
+    st = svc.status()
+    check(st["route"]["ok"] and st["device_available"] and
+          [o["picked"] for o in svc.outputs()] == [False, True, False],
+          f"used at once, no restart: {st['route']}")
+    check("saved" in text and [j for j in svc.journal
+                               if j["action"] == "output" and
+                               j["who"] == "Jeff"],
+          f"said and journaled: {text}")
+    r = svc.play(A.DELAYED, "Andy", "rack screen")
+    check(sd.output_opened and sd.output_opened[-1][0] == 1,
+          f"it plays on the WASAPI one: {sd.output_opened}")
+    svc.stop("Andy", "rack screen")
+    svc.save_device("Speakers (Realtek)", "MME")
+    with open(cfg, encoding="utf-8") as fh:
+        saved = json.load(fh)
+    check(saved["device"] == "Speakers (Realtek)" and
+          "hostapi" not in saved,
+          f"a name on one output needs no audio system: {saved}")
+    try:
+        svc.save_device("Nothing Like It")
+        check(False, "a name not on this PC is refused")
+    except ValueError as e:
+        check("Nothing was changed" in str(e), f"{e}")
+    svc.save_device("")
+    check(svc.device_name == "" and not svc.device_set,
+          "empty clears it: only through the show audio")
+
+    # Through the rack screen routes.
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        R.remote.announce = svc
+        st, _h, out = R.ask("GET", "/api/remote/announce-outputs")
+        check(st == 403, f"the list is the show machine's only: {st}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/announce-outputs",
+                           client=loop)
+        check(st == 200 and len(out["outputs"]) == 3,
+              f"the list on the show machine: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/announce-output",
+                            {"device": "Speakers (Realtek)"})
+        check(st == 403 and "show machine itself" in out.get("error", "")
+              and svc.device_name == "",
+              f"never from the network: {st} {out}")
+        check(U.classify("/api/remote/announce-output", {}) == "settings"
+              and "announce-output" in RM.LOCAL_ONLY,
+              "Settings permission, the show machine only")
+        udir = tempfile.mkdtemp()
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        R.remote.users = us
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-output",
+                           {"device": "Speakers (Realtek)"}, client=loop)
+        check(st == 403 and out.get("role_refused") and
+              svc.device_name == "",
+              f"signed out is view only: {st} {out}")
+        ok, why, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        check(ok, f"setup: Ollie signs in on the rack screen: {why}")
+        ck = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-output",
+                           {"device": "Speakers (Realtek)"}, client=loop,
+                           headers=ck)
+        check(st == 403 and out.get("role_refused") and
+              "Ollie (operator)" in out.get("error", "") and
+              svc.device_name == "",
+              f"an operator may not change settings: {st} {out}")
+        us.sign_out(tok, "rack", local=True)
+        ok, why, tok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        check(ok, f"setup: Jeff signs in on the rack screen: {why}")
+        ck = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-output",
+                           {"device": name, "hostapi": "MME"}, client=loop,
+                           headers=ck)
+        check(st == 200 and svc.device_name == name and
+              svc.options["hostapi"] == "MME" and
+              out["announce"]["route_ok"],
+              f"an admin picks it on the show machine: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/announce-output",
+                           {"device": name}, client=loop, headers=ck)
+        check(st == 409 and "pick one" in out.get("error", ""),
+              f"the same name with no audio system: said: {st} {out}")
+        rows = [j for j in svc.journal if j["action"] == "output"]
+        check(rows and rows[-1]["who"] == "Jeff",
+              f"journaled as the admin signed in: {rows[-1:]}")
+        us.sign_out(tok, "rack", local=True)
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                           client=loop)
+        chips = {c["name"]: c for c in out.get("subsystems") or []}
+        check("Show audio" in chips and "Audio" not in chips and
+              chips.get("Announcements", {}).get("word") == "own output",
+              f"the Show audio lamp and the announcement check are two "
+              f"lamps, labelled apart: {out.get('subsystems')}")
+    finally:
+        R.close()
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for el in ('id="annout-card"', 'id="annout-pick"', 'id="annout-save"',
+               '"/api/remote/announce-outputs"',
+               '"/api/remote/announce-output"'):
+        check(el in page, f"the page has {el}")
+    check("Lift your finger to stop" not in page and
+          page.count("Hold a group's button to arm it.") >= 2,
+          "the arm hint no longer says to lift your finger (Jeff, "
+          "2026-10-28)")
     print("  ok")
 
 
@@ -42726,10 +43340,11 @@ def test_audio_interface_watch():
         R.remote.audio_watch = W()
         st, _h, out = R.ask("GET", "/api/remote/status",
                             client=("127.0.0.1", 5000))
-        chip = [x for x in out["subsystems"] if x["name"] == "Audio"]
+        chip = [x for x in out["subsystems"] if x["name"] == "Show audio"]
         check(st == 200 and out["audio_interface"]["missing"] ==
               ["PreSonus Studio 1824c"] and chip ==
-              [{"name": "Audio", "state": "bad", "word": "not attached"}],
+              [{"name": "Show audio", "state": "bad",
+                "word": "not attached"}],
               f"with the interface missing the status carries it and the "
               f"Audio chip reads not attached: {chip} "
               f"{out['audio_interface']}")
@@ -44140,8 +44755,8 @@ def test_remote_countdown_left_in_this_show():
               out["countdown"]["s"] == 400.0,
               f"held: frozen: {out['countdown']}")
         names = [x["name"] for x in out.get("subsystems", [])]
-        check(names == ["Deck", "Flamesafe", "Audio", "Video", "Lasers",
-                        "Pixels"] and all(x["state"] in
+        check(names == ["Deck", "Flamesafe", "Show audio", "Video",
+                        "Lasers", "Pixels"] and all(x["state"] in
                                           ("ok", "warn", "bad", "off")
                                           for x in out["subsystems"]),
               f"the compact status strip names each subsystem: "
@@ -62193,6 +62808,9 @@ def test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser():
     st["announce"] = {
         "configured": True, "ok": True, "error": None, "device": "MOTU M4",
         "device_set": True, "device_available": True, "device_reason": None,
+        "route": {"kind": "device", "ok": True, "why": None,
+                  "text": "MOTU M4, its own output while the show audio "
+                          "is not running"},
         "blocked": None, "over_show": False,
         "items": [{"id": "delayed", "name": "Delayed", "available": True,
                    "missing": False, "reason": None, "length_s": 12.0},
@@ -76145,7 +76763,6 @@ if __name__ == "__main__":
         test_announce_wav_data_chunk_sanity,
         test_announce_device_exact_match_only,
         test_announce_toctou_recheck_before_start,
-        test_announce_interlock_recheck_catches_a_state_provider_with_no_hold,
         test_announce_show_start_stops_announcement,
         test_announce_stall_watchdog,
         test_announce_callback_status_errors,
@@ -76157,14 +76774,15 @@ if __name__ == "__main__":
         test_announce_interlock_matrix,
         test_announce_hold_between_shows,
         test_announce_hold_during_show,
-        test_announce_hold_refused_refuses_the_announcement,
+        test_announce_hold_refused_still_plays,
+        test_announce_plays_whatever_the_schedule_state,
         test_announce_stays_held_after_it_ends,
         test_announce_resume_wins_over_second_hold_request,
         test_announce_resume_then_rehold_still_refuses,
         test_announce_on_show_started_reason_new_vs_resume,
         test_announce_hold_for_announcement_no_noise_when_already_held,
         test_announce_claim_wording_is_the_hold_text,
-        test_announce_no_scheduler_stays_inert,
+        test_announce_no_scheduler_plays_and_holds_nothing,
         test_announce_single_flight,
         test_announce_operator_validation,
         test_announce_missing_files_at_startup,
@@ -76176,6 +76794,9 @@ if __name__ == "__main__":
         test_announce_surface_press_and_show_ending_while_loading,
         test_announce_remote_routes_rack_screen,
         test_announce_rack_screen_page_logic,
+        test_announce_bus_mixes_into_the_show_outputs,
+        test_announce_plays_through_the_show_audio,
+        test_announce_output_picker,
         test_streamdeck_announcements_page_two,
         test_announce_at_showtime_never_pauses_the_show_that_just_started,
         test_announce_held_then_failed_says_so,

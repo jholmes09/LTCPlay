@@ -796,6 +796,132 @@ class Mixer:
         return out
 
 
+# ------------------------------------------------------- announcements --
+# Jeff's field report (2026-10-28, item 9): announcements play through the
+# show audio, mixed into the show's own front left and right outputs (the
+# Main L/R on the StudioLive 16R), on the stream the show already has open.
+# No second device, so a show never has to let go of its interface for one,
+# and one can play during a show.
+#
+# The bus is added AFTER the mixer: the show's own audio is rendered exactly
+# as before (its fades, Hold, Stop and Abort's level act on the show only,
+# never on an announcement), then the announcement is added on top at its
+# own gain. Nothing ducks the show. While an announcement plays, and only on
+# the outputs it plays on, a summed sample louder than SOFT_KNEE (-1 dBFS)
+# is rounded off toward full scale instead of hard clipped: show audio on
+# its own, with no announcement playing, is never touched.
+SOFT_KNEE = 0.89
+ANNOUNCE_COMMANDS = ("ann_play", "ann_stop")
+ANN_STATE_NAMES = {IDLE: "idle", PLAYING: "playing", ENDED: "ended"}
+
+
+def soft_clip(x, knee=SOFT_KNEE):
+    """In place: every sample of `x` above `knee` in size is bent smoothly
+    toward 1.0 (never reaching it); everything at or under `knee` is left
+    exactly as it is. Returns how many samples were bent."""
+    import numpy as np
+    over = np.abs(x) > knee
+    n = int(np.count_nonzero(over))
+    if n:
+        v = x[over]
+        room = 1.0 - knee
+        x[over] = np.sign(v) * (knee + room * np.tanh((np.abs(v) - knee)
+                                                      / room))
+    return n
+
+
+class AnnounceBus:
+    """One announcement at a time, added onto some of the show's outputs.
+
+    Owned by the audio callback, like the Mixer. `pcm` is float32 at the
+    show's own rate, (frames, 1) or (frames, len(outs)): a mono recording
+    plays on every one of `outs`, a stereo one left to the first and right
+    to the second. `token` is the main program's, so it can tell its own
+    announcement's progress from an earlier one's."""
+
+    def __init__(self, out_channels):
+        self.out_channels = int(out_channels)
+        self.pcm = None
+        self.outs = ()
+        self.gain = 1.0
+        self.token = 0
+        self.state = IDLE
+        self.frame = 0
+        self._fade_total = 0
+        self._fade_done = 0
+        self.softened = 0
+
+    def play(self, token, pcm, outs, gain):
+        outs = [int(o) for o in outs]
+        if not outs or min(outs) < 0 or max(outs) >= self.out_channels:
+            return False
+        if pcm.ndim != 2 or pcm.shape[1] not in (1, len(outs)):
+            return False
+        self.pcm = pcm
+        self.outs = outs
+        self.gain = float(gain)
+        self.token = int(token)
+        self.frame = 0
+        self._fade_total = self._fade_done = 0
+        self.state = PLAYING if pcm.shape[0] > 0 else ENDED
+        return True
+
+    def stop(self, token, fade=0):
+        """Fade this announcement out over `fade` frames (0: at once). Only
+        the token's own announcement: an older stop never cuts a newer
+        one."""
+        if int(token) != self.token or self.state != PLAYING:
+            return False
+        if int(fade) <= 0:
+            self.state = ENDED
+            self.pcm = None
+        elif not self._fade_total:
+            self._fade_total, self._fade_done = int(fade), 0
+        return True
+
+    def hard_stop(self):
+        self.state = IDLE
+        self.pcm = None
+        self._fade_total = self._fade_done = 0
+
+    def mix(self, out):
+        """Add the announcement into `out` (frames, outputs), in place."""
+        import numpy as np
+        if self.state != PLAYING or self.pcm is None:
+            return
+        n = out.shape[0]
+        a = self.frame
+        b = min(a + n, self.pcm.shape[0])
+        k = b - a
+        seg = self.pcm[a:b] * np.float32(self.gain)
+        end = False
+        if self._fade_total:
+            left = self._fade_total - self._fade_done
+            k = min(k, left)
+            ramp = 1.0 - (np.arange(self._fade_done, self._fade_done + k,
+                                    dtype=np.float64) / self._fade_total)
+            seg = seg[:k] * ramp[:, None].astype(np.float32)
+            self._fade_done += k
+            end = self._fade_done >= self._fade_total
+        for i, o in enumerate(self.outs):
+            out[:k, o] += seg[:, 0] if seg.shape[1] == 1 else seg[:, i]
+        if k:
+            for o in self.outs:
+                self.softened += soft_clip(out[:k, o])
+        self.frame = a + k
+        if end or self.frame >= self.pcm.shape[0]:
+            self.state = ENDED
+            self.pcm = None
+
+
+def apply_announce(bus, msg):
+    if msg[0] == "ann_play":
+        return bus.play(msg[1], msg[2], msg[3], msg[4])
+    if msg[0] == "ann_stop":
+        return bus.stop(msg[1], msg[2])
+    return False
+
+
 MIXER_COMMANDS = ("play", "pause", "resume", "stop", "level")
 
 
@@ -818,6 +944,9 @@ def apply_command(m, msg):
 SEQ, TOKEN, STATE, PLAYING_AT, FRAME, STOP, CUE_FRAMES, PERF, LATENCY, \
     LEVEL, CALLBACKS, UNDERFLOWS, CLIPPED, ERRORS = range(14)
 HEARTBEAT, DEVSTATE, OPENS = 16, 17, 18
+# The announcement bus's own report, written by the callback inside the
+# same sequence as the position (read_announce reads it the same way).
+ANN_TOKEN, ANN_STATE, ANN_FRAME = 14, 15, 19
 SLOTS = 20
 
 Position = namedtuple("Position", "seq token state playing frame stop_frame "
@@ -833,10 +962,12 @@ class Publisher:
 
     def publish(self, token, state, playing, frame, stop_frame, cue_frames,
                 perf, latency, level, callbacks, underflows, clipped,
-                errors=0):
+                errors=0, ann=None):
         a = self.arr
         s = a[SEQ]
         a[SEQ] = s + 1.0                 # odd: a write is in progress
+        if ann is not None:
+            a[ANN_TOKEN], a[ANN_STATE], a[ANN_FRAME] = ann
         a[TOKEN] = token
         a[STATE] = state
         a[PLAYING_AT] = 1.0 if playing else 0.0
@@ -875,6 +1006,22 @@ def read_position(arr, offset=0.0, tries=100):
                         int(v[3]), int(v[4]), int(v[5]), v[6] - offset,
                         v[7], v[8], int(v[9]), int(v[10]), int(v[11]),
                         int(v[12]))
+    return None
+
+
+def read_announce(arr, tries=100):
+    """The announcement bus as the last callback left it: (token, state,
+    frame), or None if nothing has been played since the process started."""
+    for _ in range(tries):
+        s1 = arr[SEQ]
+        if s1 <= 0:
+            return None
+        if int(s1) & 1:
+            continue
+        v = (arr[ANN_TOKEN], arr[ANN_STATE], arr[ANN_FRAME])
+        if arr[SEQ] != s1:
+            continue
+        return int(v[0]), int(v[1]), int(v[2])
     return None
 
 
@@ -1068,6 +1215,7 @@ class AudioProcess:
         self.sync_load = sync_load
         self.name = spec["device"]
         self.mixer = Mixer(spec["channels"], spec.get("rate", RATE))
+        self.bus = AnnounceBus(spec["channels"])
         self.cmdq = deque()
         self.stream = None
         self.opened_at = None
@@ -1107,6 +1255,11 @@ class AudioProcess:
                 self.cmdq.append(msg)
             else:
                 apply_command(self.mixer, msg)
+        elif kind in ANNOUNCE_COMMANDS:
+            # Only onto a running stream: with no stream nothing would ever
+            # play it, and the main program, seeing no progress, says so.
+            if self.stream is not None:
+                self.cmdq.append(msg)
 
     def _load(self, role, stems, same_length=True):
         """Decode a cue's stems, all or nothing. One cue at a time, one stem
@@ -1186,9 +1339,14 @@ class AudioProcess:
         self.last_cb = now
         m = self.mixer
         q = self.cmdq
+        bus = self.bus
         while q:
             try:
-                apply_command(m, q.popleft())
+                msg = q.popleft()
+                if msg[0] in ANNOUNCE_COMMANDS:
+                    apply_announce(bus, msg)
+                else:
+                    apply_command(m, msg)
             except Exception:
                 self.render_errors += 1
         playing = m.state == PLAYING
@@ -1198,6 +1356,11 @@ class AudioProcess:
         except Exception:
             self.render_errors += 1
             outdata.fill(0)
+        try:
+            bus.mix(outdata)
+        except Exception:
+            self.render_errors += 1
+            bus.hard_stop()
         if status and getattr(status, "output_underflow", False):
             self.underflows += 1
         self.callbacks += 1
@@ -1212,7 +1375,8 @@ class AudioProcess:
         self.pub.publish(m.token, m.state, playing, start, m.stop_frame,
                          m.cue_frames, now, lat, m.level * m.env,
                          self.callbacks, self.underflows, m.clipped,
-                         self.render_errors)
+                         self.render_errors,
+                         ann=(bus.token, bus.state, bus.frame))
 
     # -- the device, on the main thread
     def _say(self, kind, text):
@@ -1238,6 +1402,7 @@ class AudioProcess:
             pass
         self.cmdq.clear()
         self.mixer.hard_stop()
+        self.bus.hard_stop()
         self.devstate = DEV_CLOSED
         self._reinit = True
 
@@ -1279,6 +1444,7 @@ class AudioProcess:
             self._reinit = False
         self.cmdq.clear()
         self.mixer.hard_stop()
+        self.bus.hard_stop()
         spec = self.spec
         try:
             stream, desc, shared = open_output_stream(
@@ -1693,6 +1859,23 @@ class AudioEngine:
             return None
         return read_position(self._arr, self.offset)
 
+    def announce_read(self):
+        """The announcement bus's (token, state, frame), or None."""
+        if self._arr is None:
+            return None
+        return read_announce(self._arr)
+
+    def device_open(self):
+        """True while the audio process is alive, answering, and has the
+        interface open: what an announcement needs to play through it."""
+        arr = self._arr
+        if arr is None or not self.alive:
+            return False
+        hb = arr[HEARTBEAT]
+        if hb <= 0 or self._clock() - (hb - self.offset) > self.HANG_S:
+            return False
+        return int(arr[DEVSTATE]) == DEV_OPEN
+
     def events(self):
         out = []
         q = self._events
@@ -1715,6 +1898,60 @@ class AudioEngine:
             self._proc = self._conn = None
         self._reap(p, c, self.CLOSE_S)
         self._watch = None
+
+
+class ShowRoute:
+    """The show audio as announce.py plays through it: the running show
+    audio process's announcement bus, on the stream it already has open.
+    Built fresh for each look (web.py's show route provider), so it never
+    outlives the session it came from."""
+
+    def __init__(self, engine, device, channels, rate=RATE):
+        self.engine = engine
+        self.device = device
+        self.channels = int(channels)
+        self.rate = rate
+
+    @classmethod
+    def of_clock(cls, clk):
+        """The route for a show clock, or None when it plays no show audio
+        of its own (timecode in, Art-Net only, GPL)."""
+        if clk is None or getattr(clk, "source", None) != "audio_master":
+            return None
+        eng = getattr(clk, "engine", None)
+        audio = getattr(clk, "audio", None)
+        if eng is None or audio is None:
+            return None
+        return cls(eng, audio.device, audio.channels)
+
+    def ready(self):
+        try:
+            return bool(self.engine.device_open())
+        except Exception:
+            return False
+
+    def play(self, token, pcm, outs, gain):
+        return bool(self.engine.send(("ann_play", int(token), pcm,
+                                      list(outs), float(gain))))
+
+    def stop(self, token, fade=0):
+        try:
+            return bool(self.engine.send(("ann_stop", int(token),
+                                          int(fade))))
+        except Exception:
+            return False
+
+    def read(self):
+        """{"token", "state" ("idle", "playing", "ended"), "frame"} or
+        None."""
+        try:
+            r = self.engine.announce_read()
+        except Exception:
+            return None
+        if r is None:
+            return None
+        return {"token": r[0], "state": ANN_STATE_NAMES.get(r[1], "idle"),
+                "frame": r[2]}
 
 
 _MAIN_LOCK = threading.Lock()

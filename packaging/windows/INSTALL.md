@@ -101,10 +101,11 @@ started the engine alone and the Stream Deck "never connected"):
 - `ltcplay_announce.json` (2026-10-26): the operator announcements, with
   NO output device yet and the three recordings expected in the
   `Announcements` folder beside it (delayed.wav, cancellation.wav,
-  cannot_continue.wav). The engine runs announcements from it by itself;
-  until the device's exact name is set and the files are copied there,
-  the rack screen says "Output device: not set" and "Recording missing"
-  and nothing plays. The system default output is never used.
+  cannot_continue.wav). The engine runs announcements from it by itself.
+  While the show audio runs they play through it, on its front left and
+  right; otherwise on the output picked on the rack screen (Programming,
+  Announcement output). Until the files are copied there the rack screen
+  says "Recording missing". The system default output is never used.
 - `ltcplay_remote.json`, only when there is none: the booth speaker block
   (`booth_alert`) with no device, so the booth alert notes stay off until
   it is set.
@@ -218,7 +219,7 @@ exactly as xLights made them. A fresh install has none. To make one:
 ## If the PC has no audio interface attached
 
 The show audio plays on the interface named in the show file (the
-PreSonus or the Scarlett). With it unplugged, the rack screen's Audio
-chip reads "not attached" and a banner names the device and the outputs
+PreSonus or the Scarlett). With it unplugged, the rack screen's Show
+audio chip reads "not attached" and a banner names the device and the outputs
 Windows can see. Plug it into the same USB port as always; the engine
 finds it within half a minute. Nothing reaches the rig until it is there.

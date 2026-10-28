@@ -114,8 +114,8 @@ PERMS = (
                    "reload, the machine layout"),
     ("settings", "Settings: the show network, arming from a screen, live "
                  "flame programming, fire flames while scrubbing, the "
-                 "timecode input, the audit upload, idle sign out, sign out "
-                 "after the last show"),
+                 "timecode input, the announcement output, the audit "
+                 "upload, idle sign out, sign out after the last show"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -178,6 +178,8 @@ REMOTE_ROUTES = {
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
     "network": "settings", "screen-arming": "settings",
+    # The announcement output picker (remote.announce_output).
+    "announce-output": "settings",
     "live-flame": "settings", "scrub-flames": "settings",
     "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",

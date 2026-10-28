@@ -197,6 +197,14 @@ push those off a small screen), with Stop announcement beside them; on the Strea
 
 - One press plays. There is no double tap and no hold. Only one plays at
   a time; a second press while one plays is refused.
+- **An announcement always plays, whatever the schedule is doing**
+  (Jeff, 2026-10-28: the schedule and the announcements are
+  independent). Before the night starts, after the night is over, with
+  no schedule loaded, on Hold, paused or during a show: one press plays
+  it. The schedule only decides whether a Hold is taken first. When none
+  can be taken (the night is over, the scheduler is still starting up,
+  there is no schedule) it plays with nothing held, and the message under
+  the buttons says so in one line. An announcement never starts a show.
 - **Between shows** a press puts the schedule on Hold first, so the next
   show does not start while you are away. That Hold does what your own
   Hold does: live flame programming and fire while scrubbing end, and
@@ -222,12 +230,46 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   into the Announcements folder beside ltcplay_announce.json, named
   delayed.wav, cancellation.wav and cannot_continue.wav, then restart LTC
   Player.
-- The sound goes to ONE output, named exactly in ltcplay_announce.json
-  (`"device"`), never the system default (that is where the show audio
-  is). The first run of LTC Player writes the file with no device, so the
-  rack screen says "Output device: not set" and every button stays off
-  until you type the output's exact name (as Windows lists it) and restart
-  LTC Player. A named output that is unplugged reads "not attached".
+- **Where the sound goes** (Jeff, 2026-10-28). While the show audio is
+  running (after Run, with a show file that plays its own audio), an
+  announcement plays THROUGH THE SHOW AUDIO: mixed into the show's own
+  front left and right, outputs 1 and 2, which are the Main L/R (USB
+  return 1/2 on the StudioLive 16R). There is no second device: it plays
+  during a show, and neither the show, Hold, Stop nor Abort ever has to
+  let go of the interface for it. A Hold or an Abort fades the show's own
+  audio as always; an announcement already playing goes on until it ends
+  or you press Stop announcement.
+- **The level.** The show's own audio is never turned down or changed by
+  an announcement: the recording is simply added on top. While one plays,
+  a peak of the two together that would go over full scale on outputs 1
+  and 2 is rounded off just under it instead of clipping hard; the show
+  on its own is never touched. Two optional settings in
+  ltcplay_announce.json: `"gain_db"` (the announcement's level in the
+  mix, -40 to +6, 0 plays the recording as it is) and `"show_outputs"`
+  (which show outputs it plays on, [1, 2] unless set).
+- **When the show audio is not running** (the PC idle, nothing Run, or a
+  show file with no audio of its own), an announcement plays on its own
+  output instead, never the system default. Pick it on the rack screen:
+  Programming, **Announcement output, on this machine**: a list of every
+  output on this PC, each with its audio system and how many outputs it
+  has. Choose one and press Save; it is used at once, no restart. It
+  needs someone signed in who may change Settings (an admin); signed out
+  is view only. "None" means announcements play only through the show
+  audio.
+- **A name on two outputs.** Windows lists one output once for each of its
+  audio systems, under the same name. When the name in the file is on
+  more than one output, the rack screen says so plainly, for example
+  "StudioLive WDM 1/2 (StudioLive 16R) matches 2 outputs on this PC: pick
+  one: ... (MME, 2 outputs); ... (Windows WASAPI, 2 outputs)", and the
+  picker's top line reads "choose which output". Choose one; the file
+  then also says which audio system (`"hostapi"`).
+- **Two lamps, two questions.** The header's **Show audio** lamp is the
+  show's own interface. The **Announcements** lamp beside it, and the
+  "Plays on:" line in the Announcements block, say where a press plays
+  now: "on show audio", "own output", or what is wrong ("show audio not
+  open", "pick an output", "pick one output", "output not attached").
+  While the show audio is running but its interface is not open, the
+  buttons are off and the line says to look at the Show audio lamp.
 - The deck's page 2 hides the four flame keys while it is up, because the
   deck has only six keys. It goes back to the flame keys by itself: BACK,
   ten seconds with no key pressed, an Abort, an alert, the Startup page
@@ -241,7 +283,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   a press meant for an announcement never arms a group. A tap that
   DISARMS an armed group always works at once (a disarm is never held
   back). A press the engine refused shows on its key for a few seconds
-  in a word (NO FILE, ONE PLAYING, SHOW ENDED, PAGE STALE, NO OUTPUT).
+  in a word (NO FILE, ONE PLAYING, PAGE STALE, NO OUTPUT).
 - If the engine's announcement status has not been read for a few
   seconds, the rack screen says "Announcement status unavailable" and the
   deck says NO STATUS, rather than show an old PLAYING; Stop stays

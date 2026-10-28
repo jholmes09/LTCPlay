@@ -176,14 +176,15 @@ FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
 FIREBALL_POST_ROUTES = ("fireball-beat", "fireball-off")
-GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
+GET_ROUTES = ("whoami", "status", "network", "deck-input",
+              "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
-    "scrub-flames") + MORNING_POST_ROUTES + FUEL_POST_ROUTES + \
-    FIREBALL_POST_ROUTES
+    "scrub-flames", "announce-output") + MORNING_POST_ROUTES + \
+    FUEL_POST_ROUTES + FIREBALL_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -215,8 +216,10 @@ SCRUB_FLAMES_ENABLES = (
     "it off does not disarm: disarm on the Stream Deck when you are "
     "done.")
 # screen-arming (2026-10-22): the switch for arming from a screen, set on
-# the show machine itself, never from the network.
-LOCAL_ONLY = frozenset(("network", "screen-arming"))
+# the show machine itself, never from the network. announce-output (Jeff's
+# field report, 2026-10-28, item 10): the announcement output picker,
+# Programming, Announcement output; Settings permission (users.py).
+LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output"))
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -1518,6 +1521,10 @@ class Remote:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
             return 200, self.network_view()
+        if name == "announce-outputs":
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return self.announce_outputs()
         if name in MORNING_GET_ROUTES:
             return self.morning_get(name, query, ctx)
         if name in FUEL_GET_ROUTES:
@@ -1545,13 +1552,18 @@ class Remote:
             return (*self.setup_post(name, body),) + ({},)
         if name in LOCAL_ONLY and not ctx.local:
             what = ("Arming from a screen is switched on and off"
-                    if name == "screen-arming" else "The show network is set")
+                    if name == "screen-arming" else
+                    "The announcement output is picked"
+                    if name == "announce-output" else
+                    "The show network is set")
             return 403, {"error": f"{what} on the show machine itself, not "
                                   f"from here. Nothing was changed."}, {}
         if name == "network":
             return (*self.set_network(body),) + ({},)
         if name == "screen-arming":
             return (*self.set_screen_arming(body, ctx),) + ({},)
+        if name == "announce-output":
+            return (*self.announce_output(body, ctx),) + ({},)
         if name == "live-flame":
             return (*self.live_flame_post(body, ctx),) + ({},)
         if name == "scrub-flames":
@@ -2031,7 +2043,9 @@ class Remote:
                 "device_set": bool(st.get("device_set")),
                 "device_available": bool(st.get("device_available")),
                 "device_reason": st.get("device_reason"),
-                "blocked": st.get("blocked"),
+                "hostapi": st.get("hostapi"),
+                "route": st.get("route"),
+                "route_ok": bool((st.get("route") or {}).get("ok")),
                 "over_show": bool(st.get("over_show")),
                 "held_failed": st.get("held_failed"),
                 "items": [{k: i.get(k) for k in
@@ -2178,6 +2192,7 @@ class Remote:
                         + ("The schedule is held for it; press Resume when "
                            "you are ready to carry on."
                            if p.get("held_schedule") else
+                           p.get("note") or
                            "It plays over the show; nothing was paused or "
                            "stopped."))
             else:
@@ -2195,6 +2210,47 @@ class Remote:
         finally:
             self._ann_press_end(arm)
         self._ann_refresh(st if isinstance(st, dict) else None)
+        return 200, {"ok": True, "text": text,
+                     "announce": self.announce_view()}
+
+    def announce_outputs(self):
+        """GET announce-outputs: the picker's list, every output on this PC
+        with its audio system and channel count, and which one is picked
+        (Jeff's field report, 2026-10-28, item 10). The show machine only.
+        Display only: picking is announce-output."""
+        ann = self.announce
+        if ann is None:
+            return 409, {"error": self.ANNOUNCE_OFF}
+        try:
+            outs = ann.outputs()
+        except ValueError as e:
+            return 409, {"error": str(e)}
+        except Exception as e:                   # noqa: BLE001
+            return 500, {"error": f"The outputs could not be listed "
+                                  f"({type(e).__name__}: {e})."}
+        return 200, {"outputs": outs, "device": ann.device_name or "",
+                     "hostapi": ann.options.get("hostapi")}
+
+    def announce_output(self, body, ctx):
+        """POST announce-output {"device": name, "hostapi": name or null}:
+        the announcement's own output, used while the show audio is not
+        running, saved to ltcplay_announce.json and used at once. The show
+        machine only (LOCAL_ONLY), Settings permission (users.py), the
+        same as the other settings here. "" clears it."""
+        ann = self.announce
+        if ann is None:
+            return 409, {"error": self.ANNOUNCE_OFF + " Nothing was "
+                                                      "changed."}
+        who = ctx.user or "unsigned"
+        try:
+            text = ann.save_device(body.get("device"), body.get("hostapi"),
+                                   who=who, screen=ctx.screen)
+        except ValueError as e:
+            return 409, {"error": str(e)}
+        except OSError as e:
+            return 500, {"error": f"ltcplay_announce.json could not be "
+                                  f"written ({e}). Nothing was changed."}
+        self._ann_refresh()
         return 200, {"ok": True, "text": text,
                      "announce": self.announce_view()}
 
@@ -2862,7 +2918,9 @@ class Remote:
             "configured": bool(av.get("configured")),
             "stale": bool(av.get("stale")),
             "ok": av.get("ok") is not False,
-            "device_ok": bool(av.get("device_available")),
+            # Whether a press can play now: through the show audio, or
+            # on the announcement's own output (announce.route_check).
+            "device_ok": bool(av.get("route_ok")),
             "ready": {i["id"]: bool(i.get("available"))
                       for i in av.get("items") or []},
             "missing": {i["id"]: bool(i.get("missing"))
@@ -5167,16 +5225,37 @@ class Remote:
             add("Flamesafe", "ok", "linked")
         audio = ((cs or {}).get("clock") or {}).get("audio")
         watch = self.audio_interface_view()
+        # "Show audio" is the show's own interface; the announcements have
+        # their own lamp beside it, so the two are never read as one check
+        # (Jeff's field report, 2026-10-28, item 10).
         if watch and watch.get("missing"):
             # Before Run: the interface the show file names is not on this
             # PC at all (audiowatch.py). The banner says which.
-            add("Audio", "bad", "not attached")
+            add("Show audio", "bad", "not attached")
         elif not isinstance(audio, dict):
-            add("Audio", "off", "none")
+            add("Show audio", "off", "none")
         elif audio.get("fault") or not audio.get("connected"):
-            add("Audio", "bad", "fault" if audio.get("fault") else "lost")
+            add("Show audio", "bad",
+                "fault" if audio.get("fault") else "lost")
         else:
-            add("Audio", "ok", "ok")
+            add("Show audio", "ok", "ok")
+        av = self.announce_view() if self._announce is not None else None
+        if av is not None:
+            rt = av.get("route") or {}
+            if av.get("stale") or av.get("ok") is False:
+                add("Announcements", "bad", "not known" if av.get("stale")
+                    else "file problem")
+            elif rt.get("ok"):
+                add("Announcements", "ok", "on show audio"
+                    if rt.get("kind") == "show" else "own output")
+            elif rt.get("kind") == "show":
+                add("Announcements", "bad", "show audio not open")
+            elif not av.get("device_set"):
+                add("Announcements", "warn", "pick an output")
+            elif "matches" in str(av.get("device_reason") or ""):
+                add("Announcements", "warn", "pick one output")
+            else:
+                add("Announcements", "warn", "output not attached")
         disk = self.disk_view()
         if disk:
             add("Disk", "bad" if disk["state"] == "critical" else "warn",
