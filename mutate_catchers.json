@@ -1453,7 +1453,7 @@
 "morning page: the open beat never tells the engine the screen is arranging": "test_morning_arrange_mode_arms_nothing",
 "morning page: the page going hidden no longer ends a drag": "test_morning_arrange_mode_arms_nothing",
 "morning page: the window losing focus leaves the machine on the pointer": "test_morning_arrange_mode_arms_nothing",
-"morning: Abort leaves a purge selection and the laser tests as they are (T7)": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"morning: Abort leaves a purge selection and the laser tests as they are (T7)": "test_purge_rules_at_the_engine",
 "morning: Arrange mode holds back a lockout": "test_morning_arrange_disables_firing",
 "morning: Jeff's front row and cat-walk are never purged": "test_morning_default_wave_flamer_is_never_purged",
 "morning: a Waver fires before its head is up (T12)": "test_morning_default_wave_flamer_is_never_purged",
