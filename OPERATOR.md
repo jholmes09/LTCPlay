@@ -1433,6 +1433,11 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   per flame group and one for the lasers, with Hold: arm all and Disarm
   all; the announcements; the wind on one line; Abort in the corner, 96
   px, tap twice. Run show is the 1.0 Run in Show mode, on the show PC only.
+- The rig check before a show: the big button says Checking rig while it
+  runs. When it fails, the alert slot says so and its button is 1.0's
+  "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
+  alert's details have Check again. A wave flamer cleaning that is running
+  shows in the same slot with Stop cleaning.
 - Help (header): the tour again, and a quick card to print. Each "?" says
   what the buttons near it do, in one sentence each.
 
