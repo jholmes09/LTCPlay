@@ -407,6 +407,37 @@ the profile, never the G-Flame or Showven ones:
 - The config is read at start, as before: a changed value takes effect on
   the next restart of flamesafe.
 
+### Aim slots: a head's angle is not a flame (added 2026-10-28)
+
+The wave flamer's channel 1 points the nozzle (0 is -105 degrees, 128 is
+straight up, 255 is +105 degrees). It lights nothing, and xLights rests it
+at 128. Two rules written for flame channels held it at zero: this
+program's rising-edge check (every fire slot below 15) and ltcplay's
+zero-first hold (a slot waits to be seen at zero after a landing). The
+nozzle sat at its end stop for the whole show while the preview swept it
+(Jeff, 2026-10-28). A group may list such slots as `aim`:
+
+```json
+{"name": "wave flamer", "safety": [6, 12, 18],
+ "safety_profile": {"arm_value": 178},
+ "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
+ "aim": [1, 7, 13]}
+```
+
+- Optional. Each aim slot must be one of the group's own fire slots, listed
+  once, and at least one fire slot must stay out of `aim`; anything else is
+  refused at start.
+- An aim slot is still a fire slot everywhere else: it goes out only while
+  the group is armed, it is zero when the group is disarmed, locked out,
+  aborted or stale, and the lockout file zeros it like any fire slot.
+- It is left out of the rising-edge check (a nozzle at 128 does not hold
+  the group disarmed) and is not held at zero through the edge-quiet
+  window (zero would swing the head to its end stop for those ticks).
+  Every other fire slot of the group keeps both rules exactly as before.
+- ltcplay reads the same lists from this file and leaves aim slots out of
+  its zero-first hold, in show playback, rehearse and live flame
+  programming. No field on any wire changed.
+
 What ltcplay does with it: display, journal, the amber row flag. There is no
 path from a status frame to flame output, because ltcplay never writes the
 flame universe.
@@ -1102,3 +1133,7 @@ carry a `safety_profile` with its own arm value (see "A group's own arm
 value" under the status frame). The status frame gains a per group
 `arm_value`. The top-level `arm_value` keeps its name and meaning, the
 file's arm value; no existing field's name, type or meaning changed.
+
+Version 2, 2026-10-28 (aim slots): a group may carry `aim`, the fire slots
+that only point a head (see "Aim slots" under the status frame). No field
+on any wire changed.
