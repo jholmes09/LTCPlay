@@ -94,6 +94,16 @@ def _write_json(path, doc):
     os.replace(tmp, path)
 
 
+def checked_against(path):
+    """What a Startup page settings error adds when the machines were
+    checked against flamesafe's config (2026-10-28): that file's full
+    path, so a show PC reading another flamesafe.json than the one just
+    edited is seen at once. "" when no flamesafe config was read."""
+    if not path:
+        return ""
+    return f" (checked against flamesafe's config {os.path.abspath(path)})"
+
+
 def load_flamesafe_groups(path):
     """[{"name", "safety", "safeties": [...], "fire": [...]}] from
     flamesafe's config, read as plain JSON (ltcplay never imports
@@ -1421,7 +1431,8 @@ class Morning:
             # A broken file: the page says so and runs on the defaults,
             # with the purge and laser tests refused (nothing fires on a
             # config that could not be read).
-            self.config_error = str(e)
+            self.config_error = str(e) + checked_against(
+                flamesafe_config if groups is not None else None)
             self.cfg = MorningConfig.parse({}, CONFIG_FILE, groups,
                                            laser_host, laser_port)
         for line in self.cfg.journal_lines():

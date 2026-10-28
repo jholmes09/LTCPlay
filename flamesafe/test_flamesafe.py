@@ -5772,6 +5772,36 @@ def test_aim_slots_point_the_head_and_never_hold_the_arm():
           f"{r.out.universe[6]}")
 
 
+def test_aim_slots_are_reported_at_start_and_in_status():
+    section("aim slots are said (2026-10-28): the start line and every "
+            "status frame name each group's aim slots, so a look shows "
+            "whether the wave flamer's angles are loaded")
+    r = armed_wave()
+    gs = r.out.status["groups"]
+    check(gs[WAVE]["aim_slots"] == WAVE_AIM,
+          f"the wave flamer's status carries its aim slots: "
+          f"{gs[WAVE].get('aim_slots')}")
+    check(all(g["aim_slots"] == [] for i, g in enumerate(gs) if i != WAVE),
+          "a group without aim reports an empty list")
+    check(json.loads(link.encode_status(r.out.status, KEY).decode())
+          ["groups"][WAVE]["aim_slots"] == WAVE_AIM,
+          "the aim slots survive the wire")
+    line = fsmain.aim_line(r.cfg.groups, "some/flamesafe.json")
+    check(line.startswith(f"aim slots: {r.cfg.groups[WAVE].name} 1, 7, 13 ")
+          and os.path.abspath("some/flamesafe.json") in line,
+          f"the start line names the group, its slots and the file: {line}")
+    d = example_dict()
+    del d["groups"][WAVE]["aim"]
+    line = fsmain.aim_line(config.from_dict(d).groups, "x.json")
+    check(line.startswith("aim slots: none in ")
+          and os.path.abspath("x.json") in line,
+          f"no aim is said too, with the file: {line}")
+    check("\u2013" not in line and "\u2014" not in line, "no dashes")
+    src = open(os.path.join(HERE, "__main__.py"), encoding="utf-8").read()
+    check('journal.event("config", aim_line(cfg.groups, argv[0]))' in src,
+          "python -m flamesafe journals the aim line at start")
+
+
 if __name__ == "__main__":
     t0 = time.perf_counter()
     test_rule1_arm_value_is_derived()
@@ -5783,6 +5813,7 @@ if __name__ == "__main__":
     test_rule2_dirty_edge_holds_the_arm()
     test_rule3_edge_quiet_frames()
     test_aim_slots_point_the_head_and_never_hold_the_arm()
+    test_aim_slots_are_reported_at_start_and_in_status()
     test_rule4_dwell()
     test_rule5_chatter()
     test_rule7_interruptions_clear_the_latches()

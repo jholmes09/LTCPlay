@@ -658,6 +658,27 @@ The wave flamer, with a safety per fixture, keeps its own count of safeties
 up. If the Startup page's machine list cannot be read the line is left
 off.
 
+A group with aim slots (the wave flamer's angle, `aim` in flamesafe.json)
+has one more small line on its card, read only, for example "Aim 1, 7, 13:
+loaded; ARMED; asked 54, 128, 201, sent 54, 128, 201". Loaded means
+flamesafe and LTC Player have the same aim list. Asked is what the show
+asked for on those slots, sent is what flamesafe really sent: 0 while the
+group is not armed, by design (the head then sits at its end stop). Hover
+the line to read all of it. If it says NOT loaded, a flames alert says the
+same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+Player read when it started, and what to do (put the aim list in the
+flamesafe.json flamesafe uses, check LTC Player reads that same file, then
+quit LTC Player and start it again). Stop, Hold, Abort and Disarm all work
+as usual while it is up, and it clears itself once the lists agree. Both
+programs also write their aim list and the file they read to the journal
+when they start.
+
+If the Startup page says a machine does not fit flamesafe's layout (for
+example "slot 1 is on the fixture whose safety slot is None, not 6"), the
+sentence ends with the full path of the flamesafe config it was checked
+against. If that is not the flamesafe.json you edited, LTC Player is
+reading another one.
+
 The button under the groups is two-way. While every group is off it reads
 Hold to arm all flame groups, in green with a green outline: press and HOLD
 it for the full hold, and every group this screen can arm is held to arm at

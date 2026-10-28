@@ -2169,6 +2169,12 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # older than the layout is an alert from show load on (soak
         # 2026-10-21): it used to be a journal line only.
         httpd.remote.flame_cues = getattr(wiring.flame_link, "cues", None)
+        # Aim slots (2026-10-28): this engine's, and the file they came
+        # from, for the rack screen's aim line and the mismatch alert.
+        if wiring.flame_link is not None:
+            httpd.remote.flame_aim = (
+                frozenset(getattr(wiring.flame_link.cfg, "aim_slots", ())),
+                getattr(wiring.flame_link, "flamesafe_path", ""))
         if hasattr(httpd.remote.flame_cues, "on_render_fault"):
             httpd.remote.flame_cues.on_render_fault = \
                 httpd.remote.render_fault_alert

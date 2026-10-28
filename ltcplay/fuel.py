@@ -472,6 +472,31 @@ def read_record(doc):
 
 # ------------------------------------------------------------ the tracker --
 
+def burn_slots(m):
+    """The slots whose value says machine `m` is burning (2026-10-28). A
+    Showven (kind waver) burns only on its ignition, channel 3 of its 6
+    (254 to 255 on, Jeff's channel table in flamesafe/CONTRACT.md): 3 below
+    its fixture's safety slot (channel 6). Channel 1 (the angle, an aim
+    slot) and channel 2 (speed, 255 while the head moves) light nothing,
+    so a head sweeping with no flame is not counted as burning. A waver
+    whose ignition cannot be told from its slots (no safety slot and not
+    one 5 slot run) keeps every fire slot, as before. Every other kind:
+    its fire slots, as before."""
+    fire = list(m.fire)
+    if m.kind != "waver" or not fire:
+        return fire
+    saf = list(getattr(m, "safeties", ()) or ())
+    if not saf and getattr(m, "safety", None) is not None:
+        saf = [m.safety]
+    ign = [s - 3 for s in saf if (s - 3) in fire]
+    if ign:
+        return ign
+    run = sorted(fire)
+    if len(run) == 5 and run[-1] - run[0] == 4:
+        return [run[2]]
+    return fire
+
+
 class FuelTracker:
     """The fuel record and its thread. See the module docstring.
 
@@ -733,7 +758,8 @@ class FuelTracker:
             if source == "purge" and not kc["count_purge"]:
                 continue
             at = kc["fire_at"]
-            if not any(0 < s <= n and values[s - 1] >= at for s in m.fire):
+            if not any(0 < s <= n and values[s - 1] >= at
+                       for s in burn_slots(m)):
                 continue
             if self._locked(m.id):
                 continue

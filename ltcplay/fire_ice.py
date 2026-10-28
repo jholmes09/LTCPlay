@@ -1711,6 +1711,16 @@ def flame_link_config(cfg):
         raise FireIceConfigError(str(e))
 
 
+def aim_sentence(slots, path):
+    """The flame link's start line for the aim slots (2026-10-28)."""
+    if slots:
+        return (f"Flame link: aim slots "
+                f"{', '.join(str(x) for x in sorted(slots))} (a wave "
+                f"flamer's angle, never held at zero) read from {path}.")
+    return (f"Flame link: no aim slots in {path}: every flame channel, a "
+            f"wave flamer's angle too, waits to be seen at zero.")
+
+
 def build_flame_link(cfg, control, show, journal=None):
     """The FlameLink for this config, started, or None when the config
     names no flamesafe config. Raises FireIceConfigError for a config file
@@ -1735,6 +1745,13 @@ def build_flame_link(cfg, control, show, journal=None):
         show_state=flamelink.audio_master_state(show.clock_nolock),
         journal=journal)
     link.journal_line = journal
+    # Aim slots (2026-10-28): which slots this engine leaves out of the
+    # zero-first hold, and the file it read them from, said once at start
+    # so the journal shows whether the wave flamer's angles are loaded.
+    link.flamesafe_path = os.path.abspath(str(cfg.flamesafe_config))
+    if journal is not None:
+        journal(aim_sentence(lcfg.aim_slots, link.flamesafe_path),
+                action="flame_link", outcome="aim")
     link.status_mirrored = _has_status_mirror(cfg.flamesafe_config)
     if journal is not None and not link.status_mirrored:
         journal("Flame link: flamesafe's status frames go to the Stream Deck "

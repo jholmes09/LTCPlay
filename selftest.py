@@ -45438,6 +45438,11 @@ def _rack_status_pico(many=True):
         "artnet_note": "",
     }
     if many:
+        # The wave flamer's aim line (2026-10-28) on its card too, at its
+        # longest: not loaded, both lists and the values said.
+        st["flames"]["groups"][2]["aim"] = {
+            "slots": [1, 7, 13], "flamesafe": [1, 7, 13], "ltcplay": [],
+            "loaded": False, "asked": [54, 128, 201], "sent": [0, 0, 0]}
         st["morning"] = {"locked_machines": ["wave flamer 3"],
                          "locked_lasers": [], "flamesafe_confirmed": True,
                          # Every card's "armed n of m machines" line drawn
@@ -45566,6 +45571,9 @@ function measure(tag){
     if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
       out.problems.push("overlap: the getting-started card and the flame groups");
   }
+  // The wave flamer's aim line (2026-10-28): one line, seen whole.
+  out.aim = [...document.querySelectorAll("#fl-lamps .aim")].filter(shown).map(e =>
+    ({text:e.textContent, h:Math.round(e.getBoundingClientRect().height * 10) / 10, seen:Math.round(clipH(e) * 10) / 10}));
   out.alerts_top = Math.round(rectOf(document.getElementById("alerts")).h);
   // The folded part alone (the live flame programming bar is never folded).
   out.fold_h = ["al-sum", "al-body"].map(id => document.getElementById(id))
@@ -45977,6 +45985,15 @@ console.log(JSON.stringify(out));
                 check(m.get("sum_disarm"),
                       f"{where}: the deck alert's Disarm all is on the "
                       f"folded line")
+            if "live flame" not in size:
+                aim = m.get("aim") or []
+                check(len(aim) == 1 and aim[0]["text"].startswith(
+                          "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, "
+                          "LTC Player none); NOT armed") and
+                      0 < aim[0]["h"] <= 20 and
+                      aim[0]["seen"] >= aim[0]["h"] - 0.5,
+                      f"{where}: the wave flamer's aim line is one line, "
+                      f"seen whole: {aim}")
             if m["tag"] == "collapsed" and len(m["alerts"]) > 1:
                 check(m.get("fold_h", 999) <= 56,
                       f"{where}: the banners are one line: "
@@ -54886,6 +54903,210 @@ console.log(JSON.stringify(out));
         check(not bad, f"the card's safety line: {bad}")
 
 
+def test_aim_slots_are_seen_on_the_rack_screen():
+    section("aim slots seen (2026-10-28): the rack screen's wave flamer "
+            "card says whether its aim slots are loaded, its armed state "
+            "and the angle asked for and sent; LTC Player and flamesafe's "
+            "lists are compared and a difference is an alert that says what "
+            "to do, cleared once they agree; the flame link says its list "
+            "and file at start")
+    import types
+    import json as _json
+    import shutil
+    import time as _time
+    import shutil as _sh
+    from ltcplay import remote as RM
+    from ltcplay import fire_ice as FI
+    clk = [100.0]
+    fs = RM.FlameStatus("127.0.0.1", 9, "k", clock=lambda: clk[0])
+    fire = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+    asked = [0] * 15
+    for slot, v in ((1, 54), (7, 128), (13, 201), (3, 254)):
+        asked[fire.index(slot)] = v
+
+    def frame(aim=(1, 7, 13), armed="armed", sent=None, older=False):
+        g = {"name": "wave flamer", "armed": armed, "wanted": True,
+             "fire_slots": fire, "commanded_fire": list(asked),
+             "sent_fire": list(sent if sent is not None else asked)}
+        if not older:
+            g["aim_slots"] = list(aim)
+        front = {"name": "front row", "armed": "disarmed",
+                 "fire_slots": [411], "commanded_fire": [0],
+                 "sent_fire": [0]}
+        if not older:
+            front["aim_slots"] = []
+        fs.last, fs.last_at = {"groups": [front, g]}, clk[0]
+        return fs.view()
+    v = frame()
+    g = v["groups"][1]
+    check(g["aim_slots"] == [1, 7, 13] and g["fire_slots"] == fire and
+          g["commanded_fire"] == asked and g["sent_fire"] == asked,
+          f"the status view carries flamesafe's aim and fire values: {g}")
+    check(frame(older=True)["groups"][1]["aim_slots"] is None,
+          "an older flamesafe that does not send aim_slots: None")
+    lines = []
+    rm = RM.Remote(None, None, folder=tempfile.mkdtemp(),
+                   flame_disarm=lambda reason: type(
+                       "_R", (), {"ok": True, "sentence": "sent"})(),
+                   log=lambda t: None)
+    rm._journal = lambda *a, **k: lines.append(a)
+    path = os.path.abspath(os.path.join("show", "flamesafe.json"))
+    # No flame link: nothing compared, nothing raised.
+    out = rm.aim_view(frame())
+    check(out["agree"] is None and not rm.alerts.open(),
+          f"without a flame link nothing is compared: {out}")
+    rm.flame_aim = (frozenset({1, 7, 13}), path)
+    v = frame()
+    out = rm.aim_view(v)
+    a = v["groups"][1].get("aim") or {}
+    check(out == {"ltcplay": [1, 7, 13], "flamesafe": [1, 7, 13],
+                  "path": path, "agree": True} and not rm.alerts.open(),
+          f"the same lists agree, no alert: {out}")
+    check(a == {"slots": [1, 7, 13], "flamesafe": [1, 7, 13],
+                "ltcplay": [1, 7, 13], "loaded": True,
+                "asked": [54, 128, 201], "sent": [54, 128, 201]} and
+          "aim" not in v["groups"][0],
+          f"the wave flamer's aim: loaded, asked and sent: {a}")
+    v = frame(armed="disarmed", sent=[0] * 15)
+    rm.aim_view(v)
+    check(v["groups"][1]["aim"]["sent"] == [0, 0, 0] and
+          v["groups"][1]["aim"]["asked"] == [54, 128, 201],
+          "disarmed: asked still said, sent zero")
+    # ltcplay started before the edit: it has none, flamesafe has three.
+    rm.flame_aim = (frozenset(), path)
+    v = frame()
+    out = rm.aim_view(v)
+    al = rm.alerts.open()
+    check(out["agree"] is False and len(al) == 1 and
+          al[0].kind == "flames" and
+          "flamesafe has 1, 7, 13 and LTC Player has none" in al[0].text
+          and path in al[0].text and "quit LTC Player and start it again"
+          in al[0].text and "Stop, Hold, Abort and Disarm all work as "
+          "usual" in al[0].text,
+          f"a difference is a flames alert saying what to do: "
+          f"{[x.text for x in al]}")
+    check(v["groups"][1]["aim"]["loaded"] is False and
+          v["groups"][1]["aim"]["ltcplay"] == [],
+          f"the card says not loaded: {v['groups'][1]['aim']}")
+    check(all(ch not in al[0].text for ch in ("\u2013", "\u2014")),
+          "no dashes in the alert")
+    raised = []
+    _raise = rm.alerts.raise_
+    rm.alerts.raise_ = lambda *a_, **k_: (raised.append(a_),
+                                          _raise(*a_, **k_))[1]
+    rm.aim_view(frame())
+    rm.aim_view(frame())
+    check(len(rm.alerts.open()) == 1 and raised == [],
+          f"raised once, not on every poll: {raised}")
+    code, done = rm._disarm_all_forced("Andy", "Rack screen", "a test")
+    check(code == 200 and done.get("ok"),
+          f"with the alert open a disarm still goes: {code} {done}")
+    # A stale frame or an older flamesafe changes nothing.
+    clk[0] += 60
+    rm.aim_view(fs.view())
+    check(len(rm.alerts.open()) == 1, "stale: the alert stands")
+    rm.aim_view(frame(older=True))
+    check(len(rm.alerts.open()) == 1, "older flamesafe: the alert stands")
+    # They agree again: the alert clears itself.
+    rm.flame_aim = (frozenset({1, 7, 13}), path)
+    rm.aim_view(frame())
+    check(not rm.alerts.open() and
+          any("match again" in str(x) for x in lines),
+          f"agreeing clears it and is journaled: {rm.alerts.view()}")
+    # Acknowledged while they still differ: not raised again for the same
+    # sentence; a new difference is.
+    rm.flame_aim = (frozenset({1}), path)
+    rm.aim_view(frame())
+    rm.alerts.clear(kind="flames")
+    rm.aim_view(frame())
+    check(not rm.alerts.open(), "acknowledged: not raised again at once")
+    rm.aim_view(frame(aim=(1, 7)))
+    check(len(rm.alerts.open()) == 1 and "flamesafe has 1, 7 and LTC "
+          "Player has 1" in rm.alerts.open()[0].text,
+          "a different difference is raised")
+    # Another flames alert is never cleared by the aim slots agreeing.
+    rm.alerts.clear(kind="flames")
+    rm.aim_view(frame(aim=(1, 13)))
+    rm.alerts.raise_("flames", "Something else about the flames.")
+    rm.flame_aim = (frozenset({1, 13}), path)
+    rm.aim_view(frame(aim=(1, 13)))
+    check([x.text for x in rm.alerts.open()] ==
+          ["Something else about the flames."],
+          "another flames alert raised since stays open")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "remote.py"), encoding="utf-8").read()
+    check('out["flames"]["aim"] = self.aim_view(out["flames"])' in src,
+          "the engine's status carries the aim view")
+    # The flame link says its aim slots and the file at start.
+    check(FI.aim_sentence(frozenset({13, 1, 7}), path) ==
+          f"Flame link: aim slots 1, 7, 13 (a wave flamer's angle, never "
+          f"held at zero) read from {path}." and
+          FI.aim_sentence(frozenset(), path).startswith(
+              f"Flame link: no aim slots in {path}:"),
+          "the start sentence names the slots and the file")
+    work = tempfile.mkdtemp()
+    try:
+        ex = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "flamesafe", "flamesafe.example.json")
+        fsj = os.path.join(work, "flamesafe.json")
+        shutil.copy(ex, fsj)
+        said = []
+        link = FI.build_flame_link(
+            types.SimpleNamespace(flamesafe_config=fsj,
+                                  flame_controller=None),
+            None, types.SimpleNamespace(clock_nolock=lambda: None),
+            journal=lambda t_, **kw: said.append((t_, kw)))
+        until = _time.monotonic() + 5
+        while _time.monotonic() < until and not any(
+                kw.get("outcome") == "aim" for _t, kw in said):
+            _time.sleep(0.02)
+        aim = [t_ for t_, kw in said if kw.get("outcome") == "aim"]
+        check(aim == [FI.aim_sentence(frozenset({1, 7, 13}),
+                                      os.path.abspath(fsj))] and
+              link.flamesafe_path == os.path.abspath(fsj),
+              f"building the flame link journals its aim slots and file: "
+              f"{aim}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    web = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "web.py"), encoding="utf-8").read()
+    check("httpd.remote.flame_aim = (" in web,
+          "web.serve hands the engine's aim slots to the rack screen")
+    # The card's line, from page logic.
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function aimLine" in logic and
+          'const al = aimLine(g, c), ae = el.querySelector(".aim");' in page,
+          "the card draws the aim line from page logic")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const A = {slots:[1,7,13], flamesafe:[1,7,13], ltcplay:[1,7,13], loaded:true, asked:[54,128,201], sent:[54,128,201]};
+t(aimLine({aim:A}, "armed") === "Aim 1, 7, 13: loaded; ARMED; asked 54, 128, 201, sent 54, 128, 201", "loaded, armed: " + aimLine({aim:A}, "armed"));
+t(aimLine({aim:Object.assign({}, A, {sent:[0,0,0]})}, "disarmed") === "Aim 1, 7, 13: loaded; NOT armed; asked 54, 128, 201, sent 0, 0, 0", "off: sent zero");
+t(aimLine({aim:Object.assign({}, A, {ltcplay:[], loaded:false})}, "held") === "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, LTC Player none); NOT armed; asked 54, 128, 201, sent 54, 128, 201", "not loaded: both lists");
+t(aimLine({aim:Object.assign({}, A, {ltcplay:null, loaded:false})}, "armed").indexOf("LTC Player not known") > 0, "no flame link: not known");
+t(aimLine({aim:Object.assign({}, A, {flamesafe:null, loaded:false})}, "armed").indexOf("flamesafe does not say") > 0, "older flamesafe");
+t(aimLine({aim:A}, "unknown") === "Aim 1, 7, 13: loaded; armed not known", "not known: no values");
+t(aimLine({aim:Object.assign({}, A, {asked:null, sent:null})}, "armed") === "Aim 1, 7, 13: loaded; ARMED", "no fresh values: none said");
+t(aimLine({name:"front row"}, "armed") === "" && aimLine({aim:{slots:[]}}, "armed") === "" && aimLine(null, "armed") === "", "no aim: no line");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=30)
+        try:
+            bad = _json.loads(r.stdout.strip().splitlines()[-1])
+        except Exception:
+            bad = [f"node did not run: {r.stderr[-300:]}"]
+        check(not bad, f"the card's aim line: {bad}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    print("  ok")
+
+
 def test_morning_multi_safety_machines_pair_by_layout():
     """flamesafe multi-safety (2026-10-26), cold review of PR #107, P2-1: a
     wave flamer machine's safety slot is paired with its own fire slots by
@@ -55368,6 +55589,59 @@ def test_morning_unknown_multi_channel_group_is_never_purged():
             pass
     finally:
         import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_morning_layout_error_names_the_flamesafe_file():
+    section("the Startup page (2026-10-28): a machine that does not fit "
+            "flamesafe's layout is refused with the full path of the "
+            "flamesafe config it was checked against, so a show PC reading "
+            "another flamesafe.json than the one edited is seen at once")
+    from ltcplay import morning as MO
+    import json as _json
+    import shutil
+    work = tempfile.mkdtemp()
+    try:
+        fs = os.path.join(work, "flamesafe.json")
+        fire = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+        with open(fs, "w", encoding="utf-8") as fh:
+            _json.dump({"groups": [
+                {"name": "wave flamer", "safety": [6, 12, 18],
+                 "fire": fire}]}, fh)
+        with open(os.path.join(work, MO.CONFIG_FILE), "w",
+                  encoding="utf-8") as fh:
+            _json.dump({"machines": [
+                {"id": "w1", "name": "Wave 1", "kind": "gflame",
+                 "group": "wave flamer", "fire": [1, 2, 3, 4, 5],
+                 "safety": 12}]}, fh)
+        m = MO.Morning(work, flamesafe_config=fs, threaded=False)
+        err = m.config_error
+        check("machines[1]: slot 1 is on the fixture whose safety slot is "
+              "6, not 12" in err and
+              f"(checked against flamesafe's config {os.path.abspath(fs)})"
+              in err,
+              f"the sentence names the flamesafe file: {err}")
+        check(os.path.abspath(fs) in m._live_or_broken() and
+              os.path.abspath(fs) in m.full_view("Rack screen")[
+                  "config_error"],
+              "the Startup page shows it (its purge line and its view)")
+        check("\u2013" not in err and "\u2014" not in err, "no dashes")
+        try:
+            m.close()
+        except Exception:                        # noqa: BLE001
+            pass
+        m = MO.Morning(work, flamesafe_config=None, threaded=False)
+        check(m.config_error == "" or "checked against" not in
+              m.config_error,
+              f"without a flamesafe config nothing is added: "
+              f"{m.config_error}")
+        try:
+            m.close()
+        except Exception:                        # noqa: BLE001
+            pass
+        check(MO.checked_against(None) == "", "no file, no words")
+    finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -71529,7 +71803,7 @@ def test_fuel_flame_seconds_at_the_flame_link():
               "a Fireball is never tracked")
         R.frames(80, tc=True, on=((3, 254),))
         check(_near(R.tr.episode["burn"].get("w1"), 2.0),
-              "254 on any of a Showven's fire slots is flame")
+              "254 on a Showven's ignition (channel 3) is flame")
         R.armed = {"front row"}
         R.frames(80, tc=True, on=((424, 255), (411, 255)))
         ep = R.tr.episode["burn"]
@@ -71581,6 +71855,42 @@ def test_fuel_flame_seconds_at_the_flame_link():
               "a 20 s gap between frames counts one frame at most")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_fuel_showven_burns_only_on_ignition():
+    section("fuel (2026-10-28): a Showven burns only on its ignition, "
+            "channel 3; its angle (an aim slot at 54, 128 or 201) and its "
+            "speed (255 while the head moves) are never counted as flame")
+    from ltcplay import fuel as F
+    from ltcplay import morning as MO
+    R = _FuelRig()
+    try:
+        R.frames(400, tc=True, on=((1, 255), (2, 255), (4, 255), (5, 255)))
+        check("w1" not in R.tr.episode["burn"],
+              f"angle, speed, duration and preset at 255 with ignition off "
+              f"burn nothing: {R.tr.episode['burn']}")
+        R.frames(80, tc=True, on=((1, 128), (2, 255), (3, 254)))
+        check(_near(R.tr.episode["burn"].get("w1"), 2.0),
+              "ignition at 254 is flame, whatever the angle")
+    finally:
+        R.close()
+    W = "waver"
+    check(F.burn_slots(MO.Machine("w", "W", W, "g", [7, 8, 9, 10, 11],
+                                  safety=12)) == [9],
+          "a fixture's ignition is 3 below its own safety slot")
+    check(F.burn_slots(MO.Machine("w", "W", W, "g", [7, 8, 9, 10, 11])) ==
+          [9], "no safety slot named: the middle of its 5 slot run")
+    whole = MO.Machine("w", "W", W, "g",
+                       [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
+                       safeties=[6, 12, 18])
+    check(F.burn_slots(whole) == [3, 9, 15],
+          "one machine for a whole wave flamer group: each fixture's "
+          "ignition")
+    check(F.burn_slots(MO.Machine("w", "W", W, "g", [3, 9])) == [3, 9],
+          "an ignition that cannot be told: every fire slot, as before")
+    check(F.burn_slots(MO.Machine("g", "G", "gflame", "g", [411, 412])) ==
+          [411, 412], "a G-Flame: every fire slot, as before")
     print("  ok")
 
 
@@ -71663,7 +71973,7 @@ def test_fuel_purge_counts_for_gflame_not_showven():
         R.write_config({"kinds": {"waver": {"count_purge": True},
                                   "gflame": {"count_purge": False}}})
         R.tr.tick()
-        R.frames(200, purge=True, on=((411, 255), (1, 255)))
+        R.frames(200, purge=True, on=((411, 255), (3, 255)))
         check(_near(R.unit("w1")["since"]["purge"], 5.0) and
               _near(R.unit("g1")["since"]["purge"], 5.0),
               "count_purge set the other way round: the Showven counts, the "
@@ -72293,7 +72603,7 @@ def test_fuel_settings_are_checked_strictly():
         check(v["config_error"] == "" and
               v["kinds"]["gflame"]["label"] == "Big tank",
               "the edited file is read again on the next pass")
-        R.frames(40, on=((2, 200),))
+        R.frames(40, on=((3, 200),))
         check(_near(R.unit("w1")["since"]["other"], 1.0),
               "a Showven's own fire_at is used")
     finally:
@@ -74353,7 +74663,9 @@ if __name__ == "__main__":
         test_audio_interface_watch,
         test_morning_config_layout_and_lockout_file,
         test_flamesafe_multi_safety_ltcplay_side,
+        test_aim_slots_are_seen_on_the_rack_screen,
         test_morning_multi_safety_machines_pair_by_layout,
+        test_morning_layout_error_names_the_flamesafe_file,
         test_morning_default_wave_flamer_is_never_purged,
         test_morning_fireball_is_never_purged,
         test_morning_fireball_group_is_never_purged,
@@ -74439,6 +74751,7 @@ if __name__ == "__main__":
         test_scrub_flames_end_to_end_real_flamesafe,
         test_scrub_flames_review_of_117,
         test_fuel_flame_seconds_at_the_flame_link,
+        test_fuel_showven_burns_only_on_ignition,
         test_fuel_observer_never_waits_and_stays_bounded,
         test_fuel_purge_counts_for_gflame_not_showven,
         test_fuel_counts_shows_and_not_rehearsals,

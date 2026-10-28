@@ -15253,6 +15253,105 @@ def build():
   ":where(html.tight) .ctl button{min-height:44px}",
   "html.tight .ctl button{min-height:44px}"),
 
+
+ # aim slots seen (2026-10-28): the start lines, the status frame, the
+ # rack screen's aim line and alert, the Startup page's file; fuel burns
+ # a Showven only on its ignition
+ ("aim seen: flamesafe's status frame leaves out the aim slots",
+  "flamesafe/composer.py",
+  "                \"aim_slots\": sorted(g.aim),",
+  "                \"aim_slots\": [],"),
+
+ ("aim seen: flamesafe does not journal its aim slots at start",
+  "flamesafe/__main__.py",
+  "    journal.event(\"config\", aim_line(cfg.groups, argv[0]))\n",
+  ""),
+
+ ("aim seen: flamesafe's aim line leaves out the file",
+  "flamesafe/__main__.py",
+  "            f\"the group is armed), read from {where}\")",
+  "            f\"the group is armed)\")"),
+
+ ("aim seen: the flame link does not journal its aim slots at start",
+  "ltcplay/fire_ice.py",
+  "    if journal is not None:\n        journal(aim_sentence(",
+  "    if journal is None:\n        journal(aim_sentence("),
+
+ ("aim seen: the rack screen is not given the engine's aim slots",
+  "ltcplay/web.py",
+  "            httpd.remote.flame_aim = (",
+  "            httpd.remote.flame_aim_unused = ("),
+
+ ("aim seen: the status view drops flamesafe's aim slots",
+  "ltcplay/remote.py",
+  "                           \"aim_slots\": _ints(g.get(\"aim_slots\")),",
+  "                           \"aim_slots\": None,"),
+
+ ("aim seen: the lists are always taken to agree",
+  "ltcplay/remote.py",
+  "        agree = None if theirs is None or mine is None else theirs == mine",
+  "        agree = None if theirs is None or mine is None else True"),
+
+ ("aim seen: a difference raises no alert",
+  "ltcplay/remote.py",
+  "                a = self.alerts.raise_(\"flames\", text)",
+  "                a = None"),
+
+ ("aim seen: the alert is raised again on every poll",
+  "ltcplay/remote.py",
+  "            if text == self._aim_said:\n                return\n",
+  "            if text == self._aim_said:\n                pass\n"),
+
+ ("aim seen: agreeing again never clears the alert",
+  "ltcplay/remote.py",
+  "                    self.alerts.clear(id=aid, action=\"Confirm\",",
+  "                    self.alerts.clear(id=-1, action=\"Confirm\","),
+
+ ("aim seen: agreeing clears any flames alert",
+  "ltcplay/remote.py",
+  "                        a.id == aid and a.text == was",
+  "                        a.id == aid"),
+
+ ("aim seen: loaded only needs flamesafe's list",
+  "ltcplay/remote.py",
+  "                        \"loaded\": bool(fs) and fs == lt,",
+  "                        \"loaded\": bool(fs),"),
+
+ ("aim seen: sent shows what was asked",
+  "ltcplay/remote.py",
+  "                        \"sent\": at(g.get(\"sent_fire\"))}",
+  "                        \"sent\": at(g.get(\"commanded_fire\"))}"),
+
+ ("aim seen: the card always says loaded",
+  "ltcplay/web/remote.html",
+  "  let t = \"Aim \" + j(a.slots) + \": \" + (a.loaded ? \"loaded\" :",
+  "  let t = \"Aim \" + j(a.slots) + \": \" + (true ? \"loaded\" :"),
+
+ ("aim seen: the card never shows the aim line",
+  "ltcplay/web/remote.html",
+  "    ae.hidden = !al;",
+  "    ae.hidden = true;"),
+
+ ("aim seen: the Startup page error leaves out the flamesafe file",
+  "ltcplay/morning.py",
+  "    return f\" (checked against flamesafe's config {os.path.abspath(path)})\"",
+  "    return \"\""),
+
+ ("fuel: a Showven burns on any fire slot again (angle, speed)",
+  "ltcplay/fuel.py",
+  "                       for s in burn_slots(m)):",
+  "                       for s in m.fire):"),
+
+ ("fuel: a Showven's burn channel is its angle",
+  "ltcplay/fuel.py",
+  "    ign = [s - 3 for s in saf if (s - 3) in fire]",
+  "    ign = [s - 5 for s in saf if (s - 5) in fire]"),
+
+ ("fuel: a Showven with no safety slot burns on its angle",
+  "ltcplay/fuel.py",
+  "        return [run[2]]",
+  "        return [run[0]]"),
+
 ]
 
 
