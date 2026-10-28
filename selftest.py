@@ -36494,8 +36494,10 @@ def test_fire_ice_serves_the_rack_screen_not_the_old_page():
         st, _h, page = _ask(httpd, "GET", "/remote", client=local)
         check(st == 200 and "index.html" not in str(page),
               "the rack screen is served and never links the old page")
+        # Stop is the engine's complete halt, from any screen (Jeff,
+        # 2026-10-28): Remote.stop_press, the Stream Deck's Stop.
         check('id="b-run"' in str(page) and '"/api/start"' in str(page)
-              and '"/api/stop"' in str(page),
+              and '"/api/remote/stop"' in str(page),
               "the rack screen has Run and Stop of its own, through the "
               "engine's own guarded routes")
     finally:
@@ -38037,6 +38039,23 @@ def test_a_refused_start_sends_no_fade():
 # -- Jeff's field report, 2026-10-28: Stop, Reset from Hold, and every
 # refused start saying why ---------------------------------------------------
 
+def _fi_show_cue(n):
+    """The fake session given a show file with a show cue and an
+    intermission cue, each with its own show audio role on the clock, as
+    the real clock.audio.cues has them. Returns the clock."""
+    import types as _ty
+    n.sess.tl = _ty.SimpleNamespace(cues=[
+        _ty.SimpleNamespace(name="Show", path="/x/show.fseq",
+                            tc_text="00:00:00:00"),
+        _ty.SimpleNamespace(name="Intermission", path="/x/int.fseq",
+                            tc_text="01:00:00:00")])
+    clk = n.sess.clock
+    clk.cues = {"Show": ("show", 48000 * 60),
+                "Intermission": ("intermission", 48000 * 60)}
+    clk._loaded, clk._load_failed = set(), {}
+    return clk
+
+
 def test_refused_starts_say_why_and_what_to_press():
     section("Jeff's field report (2026-10-28), refusals: a show refused with "
             "Run off says so on its slot and in its alert, with what to "
@@ -38088,27 +38107,138 @@ def test_refused_starts_say_why_and_what_to_press():
     n.c.close()
     n.link.close()
 
-    # Run pressed, the show audio still loading (Start now 4 s after Run).
+    # Run pressed, the show audio still loading (Start now 4 s after Run):
+    # Start now waits for it, a bounded time, and Stop, Hold or Abort ends
+    # the wait (review of #144, F2). Only the show cue's own audio counts
+    # (F3): a slow or broken intermission file never holds a start back.
+    import threading as _th
+    import types as _ty
     n = _fi_night(armed=False)
     S, svc = n.S, n.svc
     R = svc.performer
     clk = n.sess.clock
-    clk.cues = {"Show": ("show", 48000 * 60)}
+    n.sess.tl = _ty.SimpleNamespace(cues=[
+        _ty.SimpleNamespace(name="Show", path="/x/show.fseq",
+                            tc_text="00:00:00:00"),
+        _ty.SimpleNamespace(name="Intermission", path="/x/int.fseq",
+                            tc_text="01:00:00:00")])
+    clk.cues = {"Show": ("show", 48000 * 60),
+                "Intermission": ("intermission", 48000 * 60)}
     clk._live, clk._device_ok = True, True
     clk._loaded, clk._load_failed = set(), {}
+    svc.START_WAIT_S = 0.6
     n.now[0] = _den(S, 17, 56)
     svc.tick()
     sb = svc.state_view().get("start_blocked")
     check(sb == {"text": R.AUDIO_LOADING, "loading": True},
-          f"loading: the status says so, for the button's Loading state: "
-          f"{sb}")
+          f"loading: the status says so, for the button's state: {sb}")
     slots0 = len(svc.machine.slots)
+    t0 = time.monotonic()
     r = svc.operator_press("start-now", "Andy", "Rack screen")
+    took = time.monotonic() - t0
     check(r["ok"] is False and r.get("loading") is True and
-          "still loading" in r["text"] and "wait" in r["text"] and
+          "still loading after 0.6 s" in r["text"] and took >= 0.5 and
           len(svc.machine.slots) == slots0,
-          f"Start now while the audio loads: refused, saying to wait, no "
-          f"FAULT slot: {r}")
+          f"Start now while the audio never loads: waits its bounded time, "
+          f"then refused saying so, no FAULT slot: {r} {took:.2f} s")
+    # It loads while Start now waits: the show starts.
+    svc.START_WAIT_S = 5.0
+    seen = []
+
+    def load_later():
+        time.sleep(0.3)
+        seen.append(svc.state_view().get("start_waiting"))
+        clk._loaded = {"show"}
+    th = _th.Thread(target=load_later)
+    th.start()
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    th.join()
+    check(seen == [True] and r["ok"] is True and
+          svc.machine.state == S.SHOW,
+          f"Start now waited for the audio and started the show once it "
+          f"loaded (the status said it was waiting): {seen} {r} "
+          f"{svc.machine.state}")
+    check(not svc.start_waiting(), "and nothing waits any more")
+    n.c.close()
+    n.link.close()
+
+    # Hold, and Stop, end the wait: nothing starts.
+    for how in ("hold", "stop"):
+        n = _fi_night(armed=False)
+        S, svc = n.S, n.svc
+        clk = _fi_show_cue(n)
+        clk._loaded = set()
+        svc.START_WAIT_S = 5.0
+        n.now[0] = _den(S, 17, 56)
+        svc.tick()
+
+        def press_later(how=how, svc=svc):
+            time.sleep(0.3)
+            if how == "hold":
+                svc.operator_press("hold", "Andy", "Rack screen")
+            else:
+                svc.cancel_start_wait("Stop was pressed on the Rack screen")
+        th = _th.Thread(target=press_later)
+        th.start()
+        t0 = time.monotonic()
+        r = svc.operator_press("start-now", "Andy", "Rack screen")
+        took = time.monotonic() - t0
+        th.join()
+        clk._loaded = {"show"}
+        svc.tick()
+        check(r["ok"] is False and r.get("cancelled") is True and
+              took < 2.0 and svc.machine.state != S.SHOW and
+              not svc.machine.running,
+              f"{how} while Start now waits: the wait ends at once and "
+              f"nothing starts: {r} {took:.2f} s {svc.machine.state}")
+        n.c.close()
+        n.link.close()
+
+    # The rack screen's (or an iPad's) Stop ends the wait too: Remote's
+    # Stop is the complete halt, and it cancels a waiting Start now first.
+    R2 = _RemoteRig(S)
+    try:
+        sv = R2.svc
+        perf = _ty.SimpleNamespace(
+            start_blocked=lambda: {"text": "the show audio is still loading",
+                                   "loading": True},
+            start_show=lambda n, who="": None)
+        sv.performer, sv.dry_run = perf, False
+        sv.START_WAIT_S = 5.0
+
+        def stop_later():
+            time.sleep(0.3)
+            R2.remote.stop_press("Rack screen", "Rack screen")
+        th = _th.Thread(target=stop_later)
+        th.start()
+        t0 = time.monotonic()
+        r = sv.operator_press("start-now", "Andy", "Rack screen")
+        took = time.monotonic() - t0
+        th.join()
+        check(r["ok"] is False and r.get("cancelled") is True and
+              "Stop was pressed" in r["text"] and took < 2.0 and
+              not sv.machine.running,
+              f"a screen's Stop while Start now waits: nothing starts: {r} "
+              f"{took:.2f} s")
+    finally:
+        R2.close()
+
+    # The other refusals before the show cue's audio, said at once.
+    n = _fi_night(armed=False)
+    S, svc = n.S, n.svc
+    R = svc.performer
+    clk = _fi_show_cue(n)
+    clk._live, clk._device_ok = True, True
+    clk._loaded, clk._load_failed = {"show"}, {
+        "intermission": "int.wav could not be read"}
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    check(svc.state_view().get("start_blocked") is None,
+          f"a broken intermission file never blocks the show (F3): "
+          f"{svc.state_view().get('start_blocked')}")
+    clk._load_failed = {}
+    check(svc.state_view().get("start_blocked") is None,
+          "nor does an intermission still loading")
     clk._load_failed = {"show": "show.wav could not be read"}
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and "did not load" in r["text"] and
@@ -38122,14 +38252,12 @@ def test_refused_starts_say_why_and_what_to_press():
           "unplugged" in r["text"],
           f"the audio interface missing: says so: {r}")
     clk._device_ok, clk._fault = True, None
-    clk._loaded = {"show"}
     check(svc.state_view().get("start_blocked") is None,
           "loaded: nothing in the way")
     r = svc.operator_press("start-now", "Andy", "Rack screen",
                            confirmed=True)
     check(r["ok"] is True and svc.machine.state == S.SHOW,
-          f"and Start now starts the show once the audio has loaded: {r} "
-          f"{svc.machine.state}")
+          f"and Start now starts the show: {r} {svc.machine.state}")
     n.c.close()
     n.link.close()
 
@@ -38139,8 +38267,7 @@ def test_refused_starts_say_why_and_what_to_press():
     R = svc.performer
     got = []
     svc.alert_sink = lambda kind, text: got.append((kind, text))
-    clk = n.sess.clock
-    clk.cues = {"Show": ("show", 48000 * 60)}
+    clk = _fi_show_cue(n)
     clk._loaded = set()
     _fi_walk(n, 18, 1)
     check(got and "still loading" in got[-1][1] and "wait" in got[-1][1] and
@@ -38159,6 +38286,21 @@ def test_refused_starts_say_why_and_what_to_press():
         check("press" in text and not text.rstrip().endswith("."),
               f"ShowRunner.{name} says what to press and ends without a "
               f"full stop (it is wrapped in FAULT (...)): {text!r}")
+    # F8: a failure reported too late to be a failed start (the show runs
+    # on) raises no "did not start" alert.
+    import tempfile as _tf
+    now = [_den(S, 17, 59)]
+    bare = _svc(S, _tf.mkdtemp(), now)
+    raised = []
+    bare.alert_sink = lambda kind, text: raised.append((kind, text))
+    bare.tick()
+    now[0] = _den(S, 18, 0)
+    bare.tick()
+    now[0] = _den(S, 18, 0, 40)
+    bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    check(bare.machine.state == S.SHOW and raised == [],
+          f"a late failure: the show runs on and no did-not-start alert: "
+          f"{bare.machine.state} {raised}")
     check("no reason was given" in svc.start_alert(3, "", "x") and
           svc.start_alert(3, "a. ", "Tail.") == "Show 3 did not start: a. "
                                                  "Tail.",
@@ -38226,6 +38368,75 @@ def test_reset_from_hold_ends_it_and_starts_nothing():
         st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
         check(st == 409 and "nothing is aborted" in str(out),
               f"with nothing standing, Reset says so: {st} {out}")
+    finally:
+        R.close()
+    # Review of #144, F7: Stop from an iPad is the same complete halt.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        check(st in (200, 500) and m.state == S.STANDBY and
+              not m.running and not m.abort_latched and
+              (out.get("show") or {}).get("ok") is True,
+              f"Stop from the iPad ends the show, nothing latched: {st} "
+              f"{out} {m.state}")
+        rows = [x for x in R.svc.journal if x.get("action") == "stop"]
+        check(rows and "complete halt" in rows[-1]["text"] and
+              rows[-1].get("screen") == "iPad",
+              f"journaled as a complete halt from the iPad: {rows[-1:]}")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {"seen": 1})
+        check(st in (200, 500) and "stale" not in out,
+              f"never refused for a stale page: {st} {out}")
+    finally:
+        R.close()
+    # Review of #144, F1: Reset never starts a show, even one still inside
+    # the late grace that the next tick would start; and Reset is not the
+    # operator's Resume for the alert hold.
+    from ltcplay import schedule_service as SV
+    import tempfile as _tf
+    work = _tf.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, rule=_sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": "22:00"}}, exceptions={},
+        late_grace_s=15))
+    svc.tick()
+    now[0] = _den(S, 17, 59, 55)
+    svc.operator_press("hold", "Andy", "Rack screen")
+    now[0] = _den(S, 18, 0, 5)
+    svc.tick()
+    check(svc.machine.state == S.HOLD and
+          svc.machine.slot(1).status == S.PENDING,
+          f"setup: show 1 inside its 15 s grace, on Hold: "
+          f"{svc.machine.state} {svc.machine.slot(1)}")
+    r = svc.reset_hold("Andy", "Rack screen")
+    for sec in (6, 7, 10, 20):
+        now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+    m = svc.machine
+    check(r and r["ok"] and m.state == S.STANDBY and not m.running and
+          m.slot(1).status == S.DELAYED and "Start now" in r["text"],
+          f"Reset inside the grace starts nothing: show 1 waits for Start "
+          f"now: {r} {m.state} {m.slot(1)}")
+    svc.stop()
+    R = _alert_hold_rig(S, grace=15, run=False)[0]
+    try:
+        sv = R.svc
+        R.now[0] = _den(S, 17, 59, 50)
+        sv.tick()
+        sv.operator_press("hold", "Andy", "Rack screen")
+        R.remote.alerts.raise_("video", "MadMapper is gone.")
+        R.now[0] = _den(S, 17, 59, 55)
+        r = sv.reset_hold("Andy", "Rack screen")
+        check(r and r["ok"] and sv.machine.state != S.HOLD,
+              f"setup: Reset ended the Hold before showtime: {r}")
+        R.now[0] = _den(S, 18, 0, 1)
+        sv.tick()
+        check(sv.machine.state == S.HOLD and not sv.machine.running,
+              f"with an alert open, the show is held at its time: Reset is "
+              f"not the operator's Resume for it: {sv.machine.state}")
     finally:
         R.close()
     # While an Abort stands: Reset clears the Abort only, as before; a
@@ -38298,18 +38509,22 @@ def test_rack_screen_stop_in_place_of_start_now():
     check("new Error(refusedWords(j, r.statusText))" in page,
           "every refused press shows the engine's own words")
     for f in ("function startLook", "function runLook", "function stopWords",
-              "function refusedWords",
-              "const STOP_CONFIRM", "const STOP_NOT_HERE"):
+              "function refusedWords", "function pressDecision",
+              "const STOP_CONFIRM"):
         check(f in logic, f"{f} is pure page logic")
     check('id="b-stoprun"' not in page and "b-stoprun" not in page,
           "the separate Stop beside Run is gone: Run becomes Stop")
-    for need in ('body:JSON.stringify({halt:true})',
-                 'fetch("/api/stop", ',
-                 'if($("b-start").dataset.mode === "stop" || lk.mode === '
-                 '"stop") return pressStop("ctl-msg");',
-                 'if($("b-run").dataset.mode === "stop") return '
-                 'pressStop("run-msg");',
+    for need in ('fetch("/api/remote/stop", ',
+                 'const d = decide("b-start", lk.mode);',
+                 'if(d.act === "stop") return pressStop("ctl-msg");',
+                 'const d = decide("b-run", runLook(ST).mode);',
+                 'if(d.act === "stop") return pressStop("run-msg");',
                  'drawStart(stale);',
+                 '"Yes, start now", "start", null, true)',
+                 'el.addEventListener("pointerdown", () => '
+                 '{ DOWN_MODE[id] = el.dataset.mode; });',
+                 '(el.disabled || lk.disabled || HALT_BUSY || '
+                 'flipLocked("b-start"))',
                  '"Stop was refused: " + refusedWords(j, '):
         check(need in page, f"the page has {need!r}")
     _no_dashes(page[page.find("const STOP_CONFIRM"):
@@ -38321,26 +38536,38 @@ const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 const live = (state) => ({schedule:{attached:true, state:state}, show:{running:true}});
 for(const s of ["SHOW", "PAUSED"]){
-  const a = startLook(live(s), false, true);
+  const a = startLook(live(s), false, false);
   t(a.mode === "stop" && a.label === "Stop" && a.disabled === false, s + ": Start now is Stop: " + JSON.stringify(a));
-  t(startLook(live(s), true, true).mode === "stop" && startLook(live(s), true, true).disabled === false, s + ": never held back by a stale page");
-  t(startLook(live(s), false, false).title === STOP_NOT_HERE, s + ": from an iPad it says where Stop works");
+  t(startLook(live(s), true, false).mode === "stop" && startLook(live(s), true, false).disabled === false, s + ": never held back by a stale page");
 }
 for(const s of ["IDLE", "STANDBY", "HOLD"]){
-  const a = startLook({schedule:{attached:true, state:s}, show:{running:true}}, false, true);
+  const a = startLook({schedule:{attached:true, state:s}, show:{running:true}}, false, false);
   t(a.mode === "start" && a.label === "Start now" && !a.disabled, s + ": Start now: " + JSON.stringify(a));
 }
-t(startLook({schedule:{attached:false}, show:{running:true}}, false, true).mode === "stop", "no scheduler, Run playing: Stop");
-const ld = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"the show audio is still loading", loading:true}}, show:{running:true}}, false, true);
-t(ld.label === "Loading" && ld.disabled === true && /wait/.test(ld.sub), "loading: Loading, off, wait: " + JSON.stringify(ld));
-const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, true);
+t(startLook({schedule:{attached:false}, show:{running:true}}, false, false).mode === "stop", "no scheduler, Run playing: Stop");
+t(startLook({schedule:{attached:false}, show:{running:false, starting:true}}, false, false).mode === "stop", "no scheduler, Run starting: Stop");
+const ld = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"the show audio is still loading", loading:true}}, show:{running:true}}, false, false);
+t(ld.label === "Start now" && ld.disabled === false && /starts when ready/.test(ld.sub) && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
+const wt = startLook({schedule:{attached:true, state:"STANDBY", start_waiting:true}, show:{running:true}}, false, false);
+t(wt.label === "Loading" && wt.disabled === true && /starting when ready/.test(wt.sub), "waiting: Loading, starting when ready: " + JSON.stringify(wt));
+t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading too");
+const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
 t(runLook({show:{running:true}}).mode === "stop" && runLook({show:{running:false}}).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while Run is in force");
+t(runLook({show:{running:false, starting:true}}).mode === "stop", "and while Run is starting (F4)");
 t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true})), "Stop's answer: the show ended, Run is off");
 t(/did NOT work: show/.test(stopWords({stopped:true, failed:["show"], flames:{disarmed:true}})), "a failed step is named");
-t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:[]})), "a failed playback stop is named");
+t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:["playback stop"]})), "a failed playback stop is named");
+t(/^Stopped\. /.test(stopWords({stopped:false, failed:[]})), "nothing was playing: still Stopped, no false failure");
 t(refusedWords({ok:false, text:"Start now was refused: Run has not been pressed"}, "Conflict") === "Start now was refused: Run has not been pressed", "a scheduler refusal's own words, never Conflict");
 t(refusedWords({error:"x"}, "Conflict") === "x" && refusedWords({}, "Conflict") === "Conflict" && refusedWords(null, "") !== "", "error first, then the status text");
+// F5: a press decided by what was seen at touch-down.
+t(pressDecision("stop", "start", 0, 10000, false).act === "none", "seen Stop, now Start: nothing is done");
+t(pressDecision("start", "stop", 0, 10000, false).act === "none", "seen Start, now Stop: nothing is done either");
+t(pressDecision("start", "start", 9000, 10000, false).act === "none", "Start within 2 s of Stop turning into Start: nothing");
+t(pressDecision("start", "start", 7000, 10000, false).act === "start", "after the lock: Start");
+t(pressDecision("stop", "stop", 9500, 10000, false).act === "stop", "Stop is never locked");
+t(pressDecision("start", "start", 0, 10000, true).act === "none", "a halt under way: nothing (F6)");
 console.log(JSON.stringify(out));
 """
         r = _node_js(node, js, capture_output=True, text=True, timeout=60)
@@ -38415,9 +38642,10 @@ console.log(JSON.stringify(out));
                                    measure_js=_STOP_BUTTON_JS)
     m = got[(1366, 544)]
     if check(isinstance(m, dict), f"loading: drawn: {m!r}"):
-        check(m["label"] == "Loading" and m["disabled"] and
-              "wait" in m["small"] and m["runLabel"] == "Stop",
-              f"loading: Start now reads Loading, wait, and is off: {m}")
+        check(m["label"] == "Start now" and
+              "starts when ready" in m["small"] and m["runLabel"] == "Stop",
+              f"loading: Start now works, and says it starts when the audio "
+              f"is ready: {m}")
     print("  ok")
 
 

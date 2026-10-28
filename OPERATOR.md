@@ -417,17 +417,21 @@ things was:
   group needs arming again. The line under the buttons says what happened
   ("Stopped. The show ended and the rig is fading to dark...") or, if any
   part did not work, which part, and what to press. If the engine refuses,
-  it says why in its own words. Stop works on the rack screen and the
-  Stream Deck; on an iPad the button says where Stop works, and Hold or
-  Abort is the press there.
+  it says why in its own words. Stop works the same from the rack
+  screen, an iPad and the Stream Deck, signed in or not. Right after Stop
+  turns back into Start now (or Run) the button waits 2 seconds before it
+  takes a press, and a press made just as the show ended or started does
+  nothing and says so: a Stop never turns into a start.
 - **Hold** pauses the show where it is (or, between shows, keeps the next
   show from starting). **Resume** carries on.
 - **Reset** works from Hold. With a show paused on Hold, Reset ends that
   show: it fades to dark, nothing is latched, and no flame group is
   disarmed. With the schedule on Hold between shows, Reset ends the Hold.
   Either way it also clears the fault flag, and it never starts or
-  continues a show by itself: the next show starts at its own time (only
-  while Run is pressed), and a delayed show still waits for Start now.
+  continues a show by itself: a show whose time has already come waits as
+  a delayed show for Start now (even one still inside the late grace), the
+  next show starts at its own time (only while Run is pressed), and if an
+  alert is open at that time the schedule still holds for it.
   After an Abort, Reset ends the Abort as it always has; if the schedule is
   also on Hold, a second Reset ends the Hold.
 - **ABORT** keeps its own meaning: tap twice, the show stops, everything is
@@ -439,7 +443,11 @@ example "Show 1 did not start: Run has not been pressed, so nothing may
 reach the rig; press Run on the Programming screen, then Start now". Start
 now that cannot work is refused at once with the same words, and adds no
 FAULT line. Right after Run the show audio takes a few seconds to load:
-Start now reads **Loading** and cannot be pressed until it is ready.
+Start now then says "audio loading, starts when ready". Pressed then, it
+waits for the audio (at most 20 seconds) and reads **Loading, starting when
+ready**; the show starts as soon as the audio is in. Hold, Stop or Abort
+cancels the wait and nothing starts. Only the show's own audio counts: a
+slow or broken intermission file never holds the show back.
 
 ## Stopping
 

@@ -1657,10 +1657,19 @@ def _resume(m, ev, now):
         # Still aborted and not Reset: back to waiting, dark (IDLE is the
         # preshow look, which never stays dark).
         back = STANDBY
+    reset = ev.detail == RESET_DETAIL
+    if reset:
+        # Reset never starts a show (Jeff's field report, 2026-10-28;
+        # review of #144, F1): a show whose time has come, even one still
+        # inside the late grace that the next tick would start, waits as a
+        # delayed show for Start now, exactly as if the Hold were still on.
+        for s in list(tx.m.pending()):
+            if lateness_s(s.start, now) < 0:
+                break
+            _hold_back(tx, s)
     tx.m = replace(tx.m, held_from="")
     _enter(tx, back, after_stop=ev.latched)
     nxt, d = tx.m.next_slot(), tx.m.delayed()
-    reset = ev.detail == RESET_DETAIL
     tx.note(RESUME, "done", "schedule resumed",
             f"{_operator_name(ev)} pressed "
             f"{'Reset' if reset else 'Resume'}{_screen(ev)}."

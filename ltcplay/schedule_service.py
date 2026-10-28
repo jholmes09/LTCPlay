@@ -786,6 +786,10 @@ class Service:
         # only ever asked for anything while dry_run is False.
         self.dry_run = DRY_RUN
         self.performer = None
+        # Start now waiting for the show audio (_start_now_refusal): how
+        # many wait now, and (number, why) bumped by cancel_start_wait.
+        self._start_waiters = 0
+        self._start_cancel = (0, "")
         # Whether the operator has pressed Run (a show file is running), set
         # by fire_ice.attach() with the conductor. While it says no, nothing
         # the scheduler decides by itself reaches the show conductor, so no
@@ -1224,7 +1228,12 @@ class Service:
     def _record(self, out, now, plan=(), held=(), ev=None):
         for le in out.log:
             self._record_logevent(self._reworded(le))
-            if le.action == sch.SHOW_FAILED and self.alert_sink is not None:
+            # A failure reported too late to be a failed start is a fault
+            # with the show still running (schedule._show_failed): it is no
+            # "did not start" alert (review of #144, F8).
+            if le.action == sch.SHOW_FAILED and \
+                    le.outcome != "recorded as a fault" and \
+                    self.alert_sink is not None:
                 tail = (self.REFUSED_START_ALERT
                         if ev is not None and ev.nothing_sent and
                         not out.effects else self.FAILED_START_ALERT)
@@ -1744,8 +1753,11 @@ class Service:
             self._marker_clear_pending = False
         self._record(out, now, plan, held, ev)
         if ev.kind == sch.RESUME and ev.actor == "operator" and \
+                ev.detail != sch.RESET_DETAIL and \
                 not out.refused and before is not None and \
                 before.state == sch.HOLD:
+            # Reset's end of a Hold is not the deliberate Resume: it starts
+            # nothing, so it speaks for no show (review of #144, F1).
             # Only a Resume of a schedule Hold (the operator's or the
             # engine's) speaks for the next show; a Resume of a paused,
             # running show says nothing about the one after it (review of
@@ -2900,6 +2912,7 @@ class Service:
         # What Start now would be refused with now (the rack screen's
         # Loading state and its reason), read off this service's lock.
         out["start_blocked"] = self.start_blocked()
+        out["start_waiting"] = self.start_waiting()
         return out
 
     def edit_tonight(self, body):
@@ -3201,13 +3214,27 @@ class Service:
                 screen.lower(), screen)
         else:
             screen = self._check_screen(screen, who, what, what)
+        if kind in (sch.HOLD_ON, sch.ABORT, sch.STOP_SHOW):
+            # A Start now waiting for the show audio never outlives these.
+            self.cancel_start_wait(f"{what} was pressed")
+        gen = None
         if kind == sch.START_NOW:
             # Outside this service's lock: the performer's check reads the
-            # show's clock (start_blocked).
-            refused = self._start_now_refusal(who, screen)
+            # show's clock (start_blocked), and it may wait for the audio.
+            refused, gen = self._start_now_refusal(who, screen)
             if refused is not None:
                 return refused
         with self._locked():
+            if gen is not None and self._start_cancel[0] != gen:
+                # A Stop, Hold or Abort landed after the wait ended and
+                # before this: the start is not made.
+                why = self._start_cancel[1] or "it was cancelled"
+                sentence = (f"Start now was refused: {why} just before it "
+                            f"started. Nothing was started.")
+                self.journal_press(who, screen, "start-now", "refused",
+                                   f"{who}'s Start now was refused. "
+                                   f"{sentence}")
+                return {"ok": False, "text": sentence, "cancelled": True}
             self.tick()
             if self.machine is None:
                 sentence = (self.error or "There is no schedule loaded, so "
@@ -3261,20 +3288,73 @@ class Service:
         return {"text": str(got["text"]), "loading": got.get("loading") is
                 True}
 
+    # Start now while the show audio loads waits for it, this long at most
+    # (review of #144, F2), checking every START_WAIT_POLL_S. A Stop, Hold
+    # or Abort pressed meanwhile ends the wait: nothing starts.
+    START_WAIT_S = 20.0
+    START_WAIT_POLL_S = 0.1
+
+    def cancel_start_wait(self, why):
+        """End any Start now waiting for the show audio (a Stop, Hold or
+        Abort was pressed): it is refused, saying `why`, and starts
+        nothing. Cheap, takes no lock, never raises."""
+        self._start_cancel = (self._start_cancel[0] + 1, str(why or ""))
+
+    def start_waiting(self):
+        """True while a Start now waits for the show audio to load."""
+        return self._start_waiters > 0
+
     def _start_now_refusal(self, who, screen):
-        """Start now refused up front, with the real reason and what to
-        press (Jeff's field report, 2026-10-28: Start now with Run off, or
-        4 s after Run while the show audio loaded, was "refused" only by a
-        FAULT slot and an alert that said "The show did not start"). Only
-        while the scheduler would take a Start now at all; its own refusals
-        (a show running, an Abort not Reset) keep their own sentences.
-        Journaled as a refused press. {"ok": False, ...} or None."""
+        """Start now that cannot work, said up front with the real reason
+        and what to press (Jeff's field report, 2026-10-28: Start now with
+        Run off was "refused" only by a FAULT slot and an alert that said
+        "The show did not start"). While the show audio is still loading it
+        waits for it instead (review of #144, F2), at most START_WAIT_S,
+        and a Stop, Hold or Abort pressed meanwhile (cancel_start_wait)
+        ends the wait with nothing started. Only while the scheduler would
+        take a Start now at all; its own refusals (a show running, an Abort
+        not Reset) keep their own sentences. A refusal is journaled.
+        Returns (refusal or None, the cancel number the start must still
+        match under the lock)."""
+        gen = self._start_cancel[0]
         m = self.machine
         if m is None or m.state not in sch.ALLOWED[sch.START_NOW]:
-            return None
+            return None, gen
         blocked = self.start_blocked()
+        if blocked is not None and blocked["loading"]:
+            with self._locked():
+                self._journal_line(
+                    "system", f"Start now by {who or 'someone'} is "
+                              f"waiting for the show audio to load (at most "
+                              f"{self.START_WAIT_S:g} s); Stop, Hold or "
+                              f"Abort cancels it.",
+                    action="start now", outcome="waiting",
+                    reason="show audio loading")
+            self._start_waiters += 1
+            try:
+                end = _time.monotonic() + self.START_WAIT_S
+                while True:
+                    if self._start_cancel[0] != gen:
+                        said = self._start_cancel[1] or "it was cancelled"
+                        blocked = {"text": f"{said} while it waited for the "
+                                           f"show audio", "loading": False,
+                                   "cancelled": True}
+                        break
+                    blocked = self.start_blocked()
+                    if blocked is None or not blocked["loading"]:
+                        break
+                    if _time.monotonic() >= end:
+                        blocked = {"text": f"the show audio was still loading "
+                                           f"after {self.START_WAIT_S:g} s; "
+                                           f"check the show audio files and "
+                                           f"the journal, then press Start "
+                                           f"now again", "loading": True}
+                        break
+                    _time.sleep(self.START_WAIT_POLL_S)
+            finally:
+                self._start_waiters -= 1
         if blocked is None:
-            return None
+            return None, gen
         why = blocked["text"].rstrip(".")
         sentence = (f"Start now was refused: {why}. Nothing was started and "
                     f"nothing was sent to the rig.")
@@ -3282,7 +3362,8 @@ class Service:
                            f"{who or 'Someone'}'s Start now was refused. "
                            f"{sentence}")
         return {"ok": False, "text": sentence,
-                "loading": blocked["loading"]}
+                "loading": blocked["loading"],
+                "cancelled": bool(blocked.get("cancelled"))}, gen
 
     def journal_press(self, who, screen, action, outcome, text,
                       fault=False):

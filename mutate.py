@@ -14952,10 +14952,71 @@ def build():
   'const live = false ||'),
 
  ("Rack screen: Stop is not the complete halt", "ltcplay/web/remote.html",
-  "body:JSON.stringify({halt:true})", "body:JSON.stringify({})"),
+  'r = await fetch("/api/remote/stop", ', 'r = await fetch("/api/stop", '),
+
+ ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
+  "        h = self.halt(who, screen)\n        out = {k: h[k]",
+  "        h = {}\n        out = {k: h[k]"),
+
+ ("Reset ends a Hold inside the late grace and the show starts",
+  "ltcplay/schedule.py",
+  "            if lateness_s(s.start, now) < 0:\n                break\n"
+  "            _hold_back(tx, s)",
+  "            if True:\n                break\n            _hold_back(tx, s)"),
+
+ ("Reset counts as the operator's Resume for the alert hold",
+  "ltcplay/schedule_service.py",
+  "                ev.detail != sch.RESET_DETAIL and \\\n",
+  ""),
+
+ ("a broken intermission file blocks every show start",
+  "ltcplay/fire_ice.py",
+  "        roles = [role] if role is not None else []",
+  "        roles = [v[0] for v in (getattr(clk, \"cues\", None) or {}).values()]"),
+
+ ("Start now while the show audio loads is refused at once again",
+  "ltcplay/schedule_service.py",
+  "        if blocked is not None and blocked[\"loading\"]:\n            with self._locked():",
+  "        if False:\n            with self._locked():"),
+
+ ("Hold does not end a Start now waiting for the show audio",
+  "ltcplay/schedule_service.py",
+  "            self.cancel_start_wait(f\"{what} was pressed\")",
+  "            pass"),
+
+ ("Stop does not end a Start now waiting for the show audio",
+  "ltcplay/remote.py",
+  "                cancel(f\"Stop was pressed on the {screen}\")",
+  "                pass"),
+
+ ("Rack screen: Run never becomes Stop while Run is starting",
+  "ltcplay/web/remote.html",
+  "  return (show.running || show.starting) ? {mode:\"stop\"",
+  "  return show.running ? {mode:\"stop\""),
+
+ ("Rack screen: a press is not decided by what was seen at touch-down",
+  "ltcplay/web/remote.html",
+  "  if(seen && seen !== now)\n    return {act:\"none\"",
+  "  if(false)\n    return {act:\"none\""),
+
+ ("Rack screen: Start is not locked after Stop turns back into Start",
+  "ltcplay/web/remote.html",
+  "  if(now !== \"stop\" && flippedAt && nowMs - flippedAt < FLIP_LOCK_MS)",
+  "  if(false)"),
+
+ ("Rack screen: Start now works during a halt",
+  "ltcplay/web/remote.html",
+  "  if(busy) return {act:\"none\", say:\"Stopping: wait until it has finished.\"};\n",
+  ""),
+
+ ("a late failure report raises a did-not-start alert",
+  "ltcplay/schedule_service.py",
+  "                    le.outcome != \"recorded as a fault\" and \\\n",
+  ""),
 
  ("Rack screen: Run never becomes Stop", "ltcplay/web/remote.html",
-  'return show.running ? {mode:"stop"', 'return false ? {mode:"stop"'),
+  'return (show.running || show.starting) ? {mode:"stop"',
+  'return false ? {mode:"stop"'),
 
  ("Rack screen: a scheduler refusal reads Conflict again",
   "ltcplay/web/remote.html",

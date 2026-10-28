@@ -573,6 +573,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #modal .row{margin-top:18px}
 #modal button.yes{background:var(--red-deep);border:3px solid var(--red);color:var(--champ);font-size:22px}
 #modal button.yes.start{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
+#modal .row.flip{display:flex;flex-direction:row-reverse;justify-content:flex-end;gap:10px}
 #modal .q.bad{color:#FF8A80}
 #modal ul{margin:6px 0 0 18px;padding:0} #modal li{margin:3px 0}
 #modal li.no{color:#FF8A80;font-weight:700}
@@ -1790,8 +1791,8 @@ function stopWords(j){
   const f = j && j.flames;
   if(f && f.disarmed === false) return STOP_DISARM_FAILED;
   const bad = ((j && j.failed) || []).filter(x => x !== "flames");
-  if(bad.length || (j && j.stopped === false))
-    return "Stopped, but these did NOT work: " + (bad.length ? bad.join(", ") : "playback stop") +
+  if(bad.length)
+    return "Stopped, but these did NOT work: " + bad.join(", ") +
       (j && j.error ? " (" + j.error + ")" : "") + ". Press Abort, or use the hardware e-stop.";
   const said = [];
   if(j && j.show && j.show.ok) said.push("The show ended and the rig is fading to dark.");
@@ -1809,36 +1810,55 @@ function refusedWords(j, statusText){
   return t ? String(t) : String(statusText || "The engine refused it and did not say why.");
 }
 const STOP_CONFIRM = "Stop playback and disarm every flame group. Every laser is disarmed too, and a live show ends and fades to dark first. Nothing is fired. No show starts until Run is pressed again, and each group has to be armed again.";
-const STOP_NOT_HERE = "Stop works on the rack screen and the Stream Deck, not from this device. Here press Hold to pause the show, or Abort to stop it now.";
 // The Show screen's Start now button, or Stop in its place while a show is
 // live (Jeff, 2026-10-28: the Play button becomes Stop, same position). A
 // live show is the scheduler in SHOW or PAUSED (on Hold), or, with no
-// scheduler in this engine, Run playing. Stop is never held back by a
-// stale page: it only takes risk away. Before a show, what Start now
-// would be refused with (the engine's start_blocked) is on the button:
-// "Loading" while the show audio loads, so it is not pressed only to fail.
-function startLook(st, stale, local){
+// scheduler in this engine, Run playing or starting. Stop is never held
+// back by a stale page: it only takes risk away, and it works from every
+// screen (review of #144, F7). Before a show, what Start now would be
+// refused with (the engine's start_blocked) is on the button; while the
+// show audio loads Start now still works and waits for it (F2), and while
+// it waits the button reads Loading, starting when ready.
+function startLook(st, stale, waiting){
   const sch = (st && st.schedule) || {}, show = (st && st.show) || {};
-  const live = sch.state === "SHOW" || sch.state === "PAUSED" || (!sch.attached && !!show.running);
+  const live = sch.state === "SHOW" || sch.state === "PAUSED" ||
+    (!sch.attached && !!(show.running || show.starting));
   if(live)
-    return {mode:"stop", label:"Stop", sub:local ? "end the show, rig dark" : "rack screen only",
-            disabled:false, title:local ? STOP_CONFIRM : STOP_NOT_HERE, why:""};
+    return {mode:"stop", label:"Stop", sub:"end the show, rig dark", disabled:false, title:STOP_CONFIRM, why:""};
   const b = sch.start_blocked;
   const fresh = !stale && !!st && !!sch.attached;
+  if(waiting || sch.start_waiting)
+    return {mode:"start", label:"Loading", sub:"starting when ready", disabled:true,
+            title:"Start now is waiting for the show audio to load. Hold or Stop cancels it.", why:""};
   if(b && b.text && b.loading)
-    return {mode:"start", label:"Loading", sub:"show audio, wait", disabled:true,
-            title:String(b.text), why:String(b.text)};
+    return {mode:"start", label:"Start now", sub:"audio loading, starts when ready",
+            disabled:!fresh, title:String(b.text), why:""};
   if(b && b.text)
     return {mode:"start", label:"Start now", sub:/^Run has not been pressed/.test(String(b.text)) ? "Run is off" : "not ready, tap for why",
             disabled:!fresh, title:String(b.text), why:String(b.text)};
   return {mode:"start", label:"Start now", sub:"", disabled:!fresh, title:"", why:""};
 }
 // The Programming screen's Run button, or Stop in its place while Run is
-// in force (Jeff, 2026-10-28): one Stop, where Run was.
+// in force or on its way in (Jeff, 2026-10-28; review of #144, F4): one
+// Stop, where Run was.
 function runLook(st){
   const show = (st && st.show) || {};
-  return show.running ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
-                      : {mode:"run", label:"Run", sub:""};
+  return (show.running || show.starting) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
+                                         : {mode:"run", label:"Run", sub:""};
+}
+// What a press on a button that changes between Start and Stop does
+// (review of #144, F5): the mode the operator SAW when the finger went
+// down; a press whose mode changed under the finger, or within
+// FLIP_LOCK_MS of Stop turning back into Start (or Run), does nothing and
+// says so. A Stop never turns into a start.
+const FLIP_LOCK_MS = 2000;
+function pressDecision(seen, now, flippedAt, nowMs, busy){
+  if(busy) return {act:"none", say:"Stopping: wait until it has finished."};
+  if(seen && seen !== now)
+    return {act:"none", say:"The show changed as you pressed (it ended or started), so nothing was done. Look at the screen, then press again."};
+  if(now !== "stop" && flippedAt && nowMs - flippedAt < FLIP_LOCK_MS)
+    return {act:"none", say:"The show has just stopped. Nothing was done; wait a moment before starting anything."};
+  return {act:now, say:""};
 }
 // The alert hold (alerthold.py): the state card's word and sentence while
 // the schedule is held at showtime because an alert is open, or null.
@@ -2671,8 +2691,9 @@ document.addEventListener("visibilitychange", () => { if(document.hidden) armSto
 window.addEventListener("pagehide", () => armStop("the page closed"));
 window.addEventListener("blur", () => armStop("the page lost focus"));
 
-function confirmBox(q, detail, yes, cls, items){
+function confirmBox(q, detail, yes, cls, items, flip){
   return new Promise(res => {
+    $("modal").querySelector(".row").classList.toggle("flip", !!flip);
     $("m-q").textContent = q; $("m-q").className = "q" + (items && items.some(i => !i.ok) ? " bad" : "");
     $("m-detail").textContent = detail || "";
     if(items && items.length){
@@ -3208,46 +3229,65 @@ $("se-save").addEventListener("click", async () => {
 // Start now, or Stop in its place (startLook). The button is redrawn only
 // when what it says changes, so a press is never lost to a redraw.
 function setLook(el, mode, label, sub, title){
-  if(el.dataset.mode !== mode) el.dataset.mode = mode;
+  if(el.dataset.mode !== mode){
+    // Stop just turned back into Start (or Run): locked for FLIP_LOCK_MS
+    // (review of #144, F5).
+    if(el.dataset.mode === "stop") FLIPPED[el.id] = Date.now();
+    el.dataset.mode = mode;
+  }
   const l = el.querySelector(".lbl"), sm = el.querySelector("small");
   if(l && l.textContent !== label) l.textContent = label;
   if(sm && sm.textContent !== sub) sm.textContent = sub;
   if(el.title !== title) el.title = title;
 }
+const FLIPPED = {}, DOWN_MODE = {};
+let HALT_BUSY = false, START_WAITING = false;
+function flipLocked(id){ return !!FLIPPED[id] && Date.now() - FLIPPED[id] < FLIP_LOCK_MS; }
 function drawStart(stale){
   const el = $("b-start");
-  const lk = startLook(ST, stale, !!(ME && ME.local));
-  setLook(el, lk.mode, HALT_BUSY ? "Stopping" : lk.label, lk.sub, lk.title);
+  const lk = startLook(ST, stale, START_WAITING);
+  setLook(el, lk.mode, HALT_BUSY ? "Stopping" : lk.label, HALT_BUSY ? "wait" : lk.sub, lk.title);
   el.classList.toggle("go", lk.mode === "start");
   el.classList.toggle("stopnow", lk.mode === "stop");
-  // Stop is never held back; Start now follows controlStates and the
-  // engine's own reason (Loading while the show audio loads).
-  el.disabled = lk.mode === "stop" ? HALT_BUSY : (el.disabled || lk.disabled);
+  // Stop is never held back (but one Stop at a time); Start now follows
+  // controlStates, the engine's own reason, a halt under way (F6) and the
+  // lock after Stop turned back into Start (F5).
+  el.disabled = lk.mode === "stop" ? HALT_BUSY :
+    (el.disabled || lk.disabled || HALT_BUSY || flipLocked("b-start"));
   const r = $("b-run");
   if(r){
     const rk = runLook(ST);
-    setLook(r, rk.mode, HALT_BUSY ? "Stopping" : rk.label, rk.sub, rk.mode === "stop" ? STOP_CONFIRM : "");
+    setLook(r, rk.mode, HALT_BUSY ? "Stopping" : rk.label, HALT_BUSY ? "wait" : rk.sub, rk.mode === "stop" ? STOP_CONFIRM : "");
     r.classList.toggle("go", rk.mode === "run");
     r.classList.toggle("stopnow", rk.mode === "stop");
-    r.disabled = HALT_BUSY;
+    r.disabled = HALT_BUSY || (rk.mode === "run" && flipLocked("b-run"));
   }
 }
-let HALT_BUSY = false;
-// Stop: the engine's complete halt (/api/stop with "halt", the Stream
-// Deck's Stop), from the rack screen itself only (/api/stop is the
-// machine's own route). What came back is said where it was pressed, and
-// a refusal says why, in the engine's words.
+["b-start", "b-run"].forEach(id => {
+  const el = $(id);
+  if(!el) return;
+  el.addEventListener("pointerdown", () => { DOWN_MODE[id] = el.dataset.mode; });
+});
+// What the press means: decided from the mode seen at touch-down.
+function decide(id, now){
+  const seen = DOWN_MODE[id] || $(id).dataset.mode;
+  DOWN_MODE[id] = null;
+  return pressDecision(seen, now, FLIPPED[id], Date.now(), HALT_BUSY);
+}
+// Stop: the engine's complete halt (Remote.stop_press, the Stream Deck's
+// Stop), from any screen (review of #144, F7). What came back is said
+// where it was pressed, and a refusal says why, in the engine's words.
 async function pressStop(msgId){
   const el = $(msgId);
-  if(!(ME && ME.local)){ el.textContent = STOP_NOT_HERE; el.title = el.textContent; return; }
   if(!(await confirmBox("Stop the show?", STOP_CONFIRM, "Yes, Stop", ""))) return;
+  if(HALT_BUSY) return;
   HALT_BUSY = true;
   el.textContent = "Stopping: disarming, then fading to dark...";
   try{ drawStart(false); }catch(e){}
   let r = null, j = {};
   try{
-    r = await fetch("/api/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
-      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify({halt:true})});
+    r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
     j = await r.json().catch(() => ({}));
     el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :
       ("Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Press Abort to stop the show anyway.");
@@ -3255,13 +3295,17 @@ async function pressStop(msgId){
     el.textContent = "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or Abort.";
   }finally{
     HALT_BUSY = false;
+    // Whatever the button turns into now, it is locked a moment (F5).
+    FLIPPED["b-start"] = FLIPPED["b-run"] = Date.now();
     el.title = el.textContent;
     try{ drawStart(false); }catch(e){}
   }
 }
 $("b-start").addEventListener("click", async () => {
-  const lk = startLook(ST, false, !!(ME && ME.local));
-  if($("b-start").dataset.mode === "stop" || lk.mode === "stop") return pressStop("ctl-msg");
+  const lk = startLook(ST, false, START_WAITING);
+  const d = decide("b-start", lk.mode);
+  if(d.act === "none"){ $("ctl-msg").textContent = d.say; $("ctl-msg").title = d.say; return; }
+  if(d.act === "stop") return pressStop("ctl-msg");
   if(lk.why){
     // The engine would refuse it: said now, in its words, with what to
     // press. Nothing is sent.
@@ -3269,8 +3313,17 @@ $("b-start").addEventListener("click", async () => {
     $("ctl-msg").title = $("ctl-msg").textContent;
     return;
   }
-  if(await confirmBox("Start a show now?", "The next show starts now, or an extra show if none is waiting.", "Yes, start now", "start"))
-    press("start-now", {confirmed:true});
+  // The Start confirm is green, its Yes on the other side from Stop's
+  // (review of #144, F5).
+  if(!(await confirmBox("Start a show now?", "The next show starts now, or an extra show if none is waiting.", "Yes, start now", "start", null, true))) return;
+  // The state may have changed while the question was up.
+  if(HALT_BUSY || startLook(ST, false, START_WAITING).mode !== "start"){ $("ctl-msg").textContent = "The show changed while you answered, so nothing was started."; return; }
+  const loading = !!(ST && ST.schedule && ST.schedule.start_blocked && ST.schedule.start_blocked.loading);
+  START_WAITING = loading;
+  if(loading) $("ctl-msg").textContent = "Waiting for the show audio to load; the show starts when it is ready. Hold or Stop cancels it.";
+  try{ drawStart(false); }catch(e){}
+  try{ await press("start-now", {confirmed:true}); }
+  finally{ START_WAITING = false; try{ drawStart(false); }catch(e){} }
 });
 // Run and Stop: the show machine only, through the engine's own Run and
 // Stop (every guard they have applies), on the Programming screen.
@@ -3344,7 +3397,9 @@ function renderRunMode(){
 }
 document.querySelectorAll("#run-mode [data-mode]").forEach(b => b.addEventListener("click", () => { RUN_MODE = b.dataset.mode; renderRunMode(); }));
 $("b-run").addEventListener("click", async () => {
-  if($("b-run").dataset.mode === "stop") return pressStop("run-msg");
+  const d = decide("b-run", runLook(ST).mode);
+  if(d.act === "none"){ $("run-msg").textContent = d.say; return; }
+  if(d.act === "stop") return pressStop("run-msg");
   const f = $("run-file").value;
   if(!f){ $("run-msg").textContent = "No show file in the show folder."; return; }
   const prog = RUN_MODE === "programming";

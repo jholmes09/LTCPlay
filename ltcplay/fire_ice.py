@@ -1840,8 +1840,8 @@ class ShowRunner:
     LATCHED = ("the show is aborted, and the show conductor stays latched "
                "until someone presses Reset; press Reset, then Start now")
     AUDIO_LOADING = ("the show audio is still loading (it takes a few "
-                     "seconds after Run); wait until Start now no longer "
-                     "says Loading, then press it")
+                     "seconds after Run); wait a moment, then press Start "
+                     "now, which waits for it to finish loading")
     AUDIO_FAILED = ("the show audio did not load: {why} Replace the file, "
                     "then on the Programming screen press Stop and Run "
                     "again")
@@ -1869,16 +1869,47 @@ class ShowRunner:
                 return self.AUDIO_DEVICE.format(why=_full_stop(why))
             failed = dict(getattr(clk, "_load_failed", None) or {})
             loaded = set(getattr(clk, "_loaded", None) or ())
-            roles = [v[0] for v in (getattr(clk, "cues", None) or {}).values()
-                     if isinstance(v, tuple) and v]
+            role = self._show_role(s, clk)
         except Exception:                        # noqa: BLE001
             return ""
+        # Only the show cue's own audio (review of #144, F3): a slow or
+        # broken intermission file never holds the show back, exactly as
+        # clock.play judges only the cue it is asked to play.
+        roles = [role] if role is not None else []
         for role in roles:
             if role in failed:
                 return self.AUDIO_FAILED.format(why=_full_stop(failed[role]))
         if any(role not in loaded for role in roles):
             return self.AUDIO_LOADING
         return ""
+
+    def _show_role(self, s, clk):
+        """The show audio role of the cue start_show plays (cfg.show_cue,
+        or the show file's first cue), picked the way Session.clock_play
+        picks it, or None when it cannot be told (then nothing is judged
+        here and clock.play says what is wrong)."""
+        cues = list(getattr(getattr(s, "tl", None), "cues", None) or ())
+        table = getattr(clk, "cues", None) or {}
+        want = self.cfg.show_cue
+        if want is None:
+            pick = cues[0] if cues else None
+        else:
+            w = str(want).strip().lower()
+            hits = [c for c in cues
+                    if w in (str(getattr(c, "name", "")).lower(),
+                             os.path.basename(str(getattr(c, "path", "")))
+                             .lower(),
+                             str(getattr(c, "tc_text", "")).lower())]
+            pick = hits[0] if len(hits) == 1 else None
+        if pick is None:
+            # No show file cues to read (or no match): the table's own
+            # entry under the cue's name, if it has one.
+            got = table.get(want) if want is not None else None
+        else:
+            got = table.get(getattr(pick, "name", None))
+        if isinstance(got, tuple) and got:
+            return got[0]
+        return None
 
     def start_blocked(self):
         """What an operator's Start now would be refused with right now, as
