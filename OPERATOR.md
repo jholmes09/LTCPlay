@@ -34,6 +34,51 @@ driven, and the Terminal window is where to look.
 **A terminal menu.** Double-click **Run ltcplay.command** instead. Same engine,
 same order of operations.
 
+## Signing in: signed out is view only
+
+Once the Users screen has any user (USERS.md), every screen needs someone
+signed in to do anything that is not a stop or a disarm. That includes the
+rack screen on the show machine itself: being at the machine is not a
+sign-in.
+
+- **Signed out, every screen is view only.** It still shows the show
+  state, the schedule, the flame and laser lamps and the alerts. The chip
+  at the top right reads "Sign in to use controls", and Start now, Resume,
+  Reset, Run, every Hold to arm, a laser's Arm, the announcements and the
+  settings switches are greyed out. Hold, Abort, Disarm all and every
+  Disarm stay live.
+- **Always, signed in or not:** Stop, Hold, Abort, Acknowledge an alert,
+  Disarm all flame groups, disarming one group, and disarming lasers.
+- **Needs a signed-in operator or admin:** Start now, Resume, Reset, Run,
+  arming a flame group (hold to arm and Arm all), a purge, arming a laser,
+  a laser test, unlocking, playing an announcement, the checklists,
+  choosing the operator and editing tonight's list. Settings, show files
+  and users need an admin as before.
+- **Sign out** on the Users screen ends the sign-in at the engine. On the
+  show machine it signs that machine out completely (the rack screen and
+  the Stream Deck together), lets go of that screen's hold to arm if one is
+  under way, and the screen is view only straight away. It does not disarm
+  anything or stop live flame programming: use Disarm all or Stop for that.
+- **If the users file is damaged or missing** after users were set up, an
+  alert says so on every screen and every control is locked except Stop,
+  Hold, Abort, Acknowledge and the disarms. Nobody can sign in. A good
+  `ltcplay_users.json` put back in the settings folder is used at once, with
+  no restart. To start over with no users: close LTC Player, remove
+  `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
+  (Start menu, LTC Player, "Settings and logs"), and start it again.
+- **The Stream Deck started before the engine** keeps its arm keys off
+  until it has heard the engine once.
+- **A name with no password yet** chooses it at the rack screen on the show
+  machine, never from an iPad.
+- **The Stream Deck** acts as whoever is signed in on the rack screen. With
+  nobody signed in there, its Start key reads SIGN IN and its arm keys do
+  not arm. Its Stop, Hold, Acknowledge and disarm keys always work. If the
+  deck cannot hear from the engine for 2 seconds, its arm keys wait until
+  it can.
+- **The journal and the audit log name the signed-in person**, never a
+  name picked from a list. A stop or a disarm pressed with nobody signed
+  in is written as "unsigned".
+
 ## Before the first run of the day
 
 Double-click **Run ltcplay.command**. Everything is on that menu, in the order
@@ -255,8 +300,8 @@ cannot read the show computer, or a group is armed for
 anything but the purge (a group the purge selection wants counts as the
 purge's, even if it was armed by hand first): then it is Stop. If FIRE is
 being held when a show or run starts, FIRE ends and the same held key
-becomes a Stop hold at once: keep holding to stop, let go to cancel. The Rack screen's own Stop button is still refused during a show
-(use Hold or Abort there). After an Abort the deck's border goes red and
+becomes a Stop hold at once: keep holding to stop, let go to cancel. The Rack screen's Stop is the same complete halt, during a show
+too (see Stop, Hold and Reset on the rack screen, below). After an Abort the deck's border goes red and
 the keys grey out, but STOP RUN still works while a run is going, as on
 the Rack screen. If Stop stopped playback but could not send the flame
 groups off, the Rack screen says "Stopped, but the flame disarm FAILED"
@@ -330,6 +375,65 @@ PURGE ARMED on an armed group's key; it goes back to normal when you
 leave the page. MORNING.md says how it all works and where every setting
 lives.
 
+**The Fireball page (Fire & Ice, when flamesafe's config has a group named
+fireball).** The header's Fireball button opens one big button per Fireball
+channel, numbered from flamesafe's config (on the Pico: 55 to 59), lowest
+channel first. The fireball group must list exactly five fire slots; if it
+does not, the page says "Fireball page unavailable: flamesafe.json fireball
+group must list five fire slots" and does nothing.
+
+- **Fuel Charge**, **Air Charge** and **Purge** are toggles: press once for
+  ON, press again for OFF.
+- **Valve Open** and **Igniter** are on only while your finger is on the
+  button. Lift it and they go off.
+
+ON is 255 on that channel. Nothing on this page arms. Arm the Fireball as
+always, with its hold to arm (the show screen's button or its Stream Deck
+key), signed in. Until it is armed every button is grey, says why, and
+nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve
+Open included, unless the Fireball is armed. The Fireball arms only with
+every channel at zero, so this page keeps them all off until it is armed,
+and turns them all off when it disarms (if one still shows ON, it says "turn
+Fuel, Air, Purge off before arming").
+
+**Everything goes off by itself** (within a quarter of a second) on: Stop,
+Hold, Abort, Disarm Fireball, Disarm all flame groups or the Fireball's
+deck key; flamesafe not reporting; leaving the page, closing it or hiding
+it; this page's status not being live; signing out; the connection
+dropping; and the All off button (any screen). Losing focus (another window
+clicked) lets go of Valve Open and Igniter. After any of these nothing
+comes back on by itself: press again.
+
+**When it will not work** it says why in plain words: a show live or on
+Hold, an Abort standing, Run pressed (the show file owns the channels),
+live flame programming or fire flames while scrubbing on, a purge selected
+on the Startup page (and that purge waits while a Fireball channel is on),
+any screen in Arrange mode, the Fireball locked out, or the purge switch
+off (`purge_arming`, and from an iPad `screen_arming`, in
+ltcplay_remote.json). One screen at a time. Signed out it is view only;
+turning a channel on needs the arm permission (an operator or admin), and
+All off always works. The values go out the way the Startup page's purge
+does, on the engine's own flame link to flamesafe, which stays the only
+program that writes to the flame node.
+
+**First test at the rack, fuel valve closed and the key switch on test or
+off, with Andy:**
+
+1. With the Fireball disarmed, every button is grey and says "Arm the
+   Fireball first". Press each one: nothing clicks at the head.
+2. Arm the Fireball with its hold to arm (every channel is off, so it
+   arms). The page reads ARMED.
+3. Each toggle on and off once (Fuel Charge, Air Charge, Purge): the head
+   follows, and goes off when pressed again.
+4. Hold Valve Open, then Igniter: on while held, off the moment you lift.
+5. With Fuel Charge on: press Disarm Fireball, then (armed again) Abort,
+   Stop, Hold, the Fireball's deck key, and close the page. Each time every
+   channel goes off at once and stays off.
+6. Pull the network cable of the iPad (or close the browser) while holding
+   Valve Open: it goes off within a second.
+7. Only then open the fuel valve, one channel at a time.
+
+
 **Stream Deck unplugged.** Unplugging or replugging the deck changes nothing
 on the flame groups: whatever was armed stays armed, whatever was off stays
 off, and the deck process keeps telling the flame safety program so. A
@@ -401,6 +505,56 @@ Read that first. The short version:
   Do not ignore it, and do not fix it by nudging the offset.
 - **The rig is lit but not moving.** Look at the PLAYING line. If it is
   counting, the program is fine and the problem is downstream.
+
+## Stop, Hold and Reset on the rack screen
+
+Jeff, 2026-10-28. Each screen has one Stop, where the button that started
+things was:
+
+- **Stop.** On the show screen, Start now turns into a red **Stop** while a
+  show is live (playing, or paused on Hold). On the Programming screen, Run
+  turns into **Stop** while Run is in force. Stop asks once, then does
+  exactly what the Stream Deck's Stop does, a complete halt: every flame
+  group and every laser is disarmed first, nothing is fired, a live show
+  ends and fades to dark, then playback stops, so Run is off. Nothing is
+  latched: no Reset is needed. Press Run to bring the rig back; each flame
+  group needs arming again. The line under the buttons says what happened
+  ("Stopped. The show ended and the rig is fading to dark...") or, if any
+  part did not work, which part, and what to press. If the engine refuses,
+  it says why in its own words. Stop works the same from the rack
+  screen, an iPad and the Stream Deck, signed in or not. Right after Stop
+  turns back into Start now (or Run) the button waits 2 seconds before it
+  takes a press, and a press made just as the show ended or started does
+  nothing and says so: a Stop never turns into a start.
+- **Hold** pauses the show where it is (or, between shows, keeps the next
+  show from starting). **Resume** carries on.
+- **Reset** works from Hold. With a show paused on Hold, Reset ends that
+  show: it fades to dark, nothing is latched, and no flame group is
+  disarmed. With the schedule on Hold between shows, Reset ends the Hold.
+  Either way it also clears the fault flag, and it never starts or
+  continues a show by itself: a show whose time has already come waits as
+  a delayed show for Start now (even one still inside the late grace), the
+  next show starts at its own time (only while Run is pressed), and if an
+  alert is open at that time the schedule still holds for it.
+  After an Abort, Reset ends the Abort as it always has; if the schedule is
+  also on Hold, a second Reset ends the Hold.
+- **ABORT** keeps its own meaning: tap twice, the show stops, everything is
+  disarmed, and the rig stays latched until Reset.
+
+**When a show does not start, it says why.** The alert, and the show's
+line on the Schedule screen, give the real reason and what to press, for
+example "Show 1 did not start: Run has not been pressed, so nothing may
+reach the rig; press Run on the Programming screen, then Start now". Start
+now that cannot work is refused at once with the same words, and adds no
+FAULT line. Right after Run the show audio takes a few seconds to load:
+Start now then says "audio loading, starts when ready". Pressed then, it
+waits for the audio (at most 20 seconds) and reads **Loading, starting when
+ready**; the show starts as soon as the audio is in. Hold, Stop or Abort
+cancels the wait and nothing starts, and so does any Hold the program
+makes itself (for an announcement, or at showtime for an open alert).
+While a Stop is still disarming and fading to dark, Start now and Run on
+any screen are refused until it has finished, and say so. Only the show's own audio counts: a
+slow or broken intermission file never holds the show back.
 
 ## Stopping
 
@@ -485,8 +639,10 @@ Turning it off puts every controller back on the live stream immediately.
 Once, on the show machine: open the page (http://127.0.0.1:7878/remote),
 press Programming, and pick this machine's show Wi-Fi address under "Show
 network". Then start it with the show network on (Run ltcplay, answer y to
-the iPad question). There is no PIN, and signing in is optional (USERS.md): anything on the show
-Wi-Fi that can reach that address can use the page, so keep the show Wi-Fi
+the iPad question). There is no PIN. Once users are set up (USERS.md), an
+iPad signed out is view only, like every screen ("Signing in" above); it
+can still Stop, Hold, Abort, Acknowledge and disarm. Anything on the show
+Wi-Fi that can reach that address can see the page, so keep the show Wi-Fi
 to the crew.
 
 After the last show of the night, everyone is signed out on their own:
@@ -572,7 +728,8 @@ Schedule (it was called Tonight) shows the night's shows on one screen; tap
 a show to see its notes (why it was moved, skipped or added, or "No notes";
 tap again to close). Programming has the scrubbing controls and, on the
 show machine only, the Show file card (the Show and Programming switch, the
-show file, Run and Stop), the Stream Deck operator and the show network.
+show file, and Run, which reads Stop in the same place while Run is in
+force), the Stream Deck operator and the show network.
 Show: the scheduler starts each show at its time and scrubbing is off.
 Programming: a rehearsal; play from, jump and loop work and the scheduler
 starts no show. To switch, press Stop, pick the other side of the switch,

@@ -9,9 +9,11 @@ is signed in on the rack screen, every button they press, every Stream
 Deck key and every setting they change is written down under their name,
 with the time, the screen it came from and whether it worked. If nobody
 is signed in it is still written down, as "unsigned". Once a night LTC
-Player can send that record to your server. Signing in never stands in
-the way of Abort, Hold, Stop or a disarm: those work for everyone, signed
-in or not, always.
+Player can send that record to your server. Signed out, every screen is
+view only, the rack screen on the show machine too: it shows everything
+but may only Stop, Hold, Abort, Acknowledge and disarm. Signing in never
+stands in the way of those: they work for everyone, signed in or not,
+always.
 
 ## Who is on it
 
@@ -27,9 +29,32 @@ password yet:
 | Jared  | operator |
 
 No password is shipped with the program. The first time each person signs
-in they pick their own (6 characters or more). Until someone has, anyone
-at the rack screen could pick it for them, so have each person sign in
-once soon after the update.
+in they pick their own (6 characters or more), at the rack screen on the
+show PC: a name with no password yet cannot be claimed from an iPad. Until
+someone has, anyone at the rack screen could pick it for them, so have
+each person sign in once soon after the update.
+
+If `ltcplay_users.json` is ever damaged, or deleted after users were set
+up, LTC Player does not fall back to "nobody set up". Every screen shows
+an alert, every control is locked except Stop, Hold, Abort, Acknowledge
+and the disarms, and nobody can sign in. A good `ltcplay_users.json` put
+back in the settings folder is used at once, with no restart. To start
+over with no users: close LTC Player, remove `ltcplay_users.json` and
+`ltcplay_users.made` from the settings folder (Start menu, LTC Player,
+"Settings and logs"), and start it again; each person then chooses a
+password at the rack screen.
+
+If the file is there but cannot be opened (an antivirus scan holding it),
+nothing is deleted and nobody is signed out. While LTC Player is running,
+the last good copy is used for up to 10 seconds; after that, and at once
+when LTC Player has just started and has never read it, every control is
+locked as above until the file opens again. It is tried again all the
+time and used the moment it opens. A change on the Users screen made
+meanwhile is refused with "try again in a moment" and nothing is changed;
+press it again once the file opens. If it lasts, check the antivirus.
+
+"deck" is kept for the Stream Deck's own journal lines and cannot be a
+user's name, like "unsigned", "system" and "nobody".
 
 ## Signing in
 
@@ -62,6 +87,11 @@ screen with no scrolling.
 - The Stream Deck has no sign-in of its own. It acts as whoever is signed
   in on the rack screen of that PC, and shows their name on the Start key
   for a few seconds when it changes (SIGNED IN / NAME, or SIGNED OUT).
+  With nobody signed in there its Start key reads SIGN IN and its arm keys
+  do not arm; Stop, Hold, Acknowledge and its disarms always work.
+- Sign out ends the sign-in at the engine, not just on the page. On the
+  show machine it signs the whole machine out (the rack screen and the
+  Stream Deck together) and lets go of any hold to arm under way.
 
 ## Adding people (admins)
 
@@ -85,19 +115,20 @@ the ticks there. These are the proposed defaults:
 | What | admin | operator | viewer | signed out |
 |---|---|---|---|---|
 | **Abort, Hold, Stop, every disarm (flames and lasers), letting go, locking a machine, Acknowledge** | always | always | always | always |
-| Start now, Resume, Reset, Run a show file, rehearsal scrubbing | yes | yes | no | yes |
-| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, arming a laser) | yes | yes | no | yes |
-| Unlock a machine, turn a laser test on | yes | yes | no | yes |
-| Tick the Morning and Shutdown checklists | yes | yes | no | yes |
-| Show files and setup (show folder, schedule, layout) | yes | yes | no | no |
-| Settings (show network, arming from a screen, fire flames while scrubbing, audit upload, idle sign out, sign out after the last show) | yes | no | no | no |
-| Users (add, remove, passwords, roles, lockouts) | yes | no | no | no |
+| Start now, Resume, Reset, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
+| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, the Fireball page's channels, arming a laser) | yes | yes | no | never |
+| Unlock a machine, turn a laser test on | yes | yes | no | never |
+| Tick the Morning and Shutdown checklists | yes | yes | no | never |
+| Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | yes | yes | no | never |
+| Settings (show network, arming from a screen, fire flames while scrubbing, audit upload, idle sign out, sign out after the last show) | yes | no | no | never |
+| Users (add, remove, passwords, roles, lockouts) | yes | no | no | never |
 
-"Signed out" keeps your 2026-10-07 rule: nobody needs to sign in to run
-or arm the show on a show night. If you want sign-in required for arming,
-untick "Arm flames" under "Signed out". Note that a viewer signed in can
-then do less than nobody signed in; if that matters, untick the same rows
-for "signed out".
+"Signed out" is view only (your field report, 2026-10-28). It replaces
+the 2026-10-07 rule that nobody needed to sign in to run or arm. The
+"signed out" column cannot be ticked by anyone, and the program refuses
+those rows for nobody signed in whatever the settings file says. Being at
+the show machine itself is not a sign-in: the rack screen is asked like
+an iPad.
 
 The first row can never be unticked by anyone. It is not in the settings
 at all: it is written into the program.
@@ -169,8 +200,9 @@ Your server needs a receiver: `tools/audit_receiver.py` is one, and
 ## What you decide
 
 1. The names and roles above, and whether the matrix defaults are right
-   (especially "signed out may arm").
+   ("signed out" is now view only and fixed).
 2. Your server's address, and the token (the upload stays off until then).
 3. How long to keep the log on the show PC (90 days unless you say more).
 4. Whether the Stream Deck should ever need its own sign-in (today: no,
-   it acts as the rack screen's user).
+   it acts as the rack screen's user, and with nobody signed in there it
+   cannot arm or start).

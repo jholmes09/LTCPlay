@@ -769,9 +769,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _ctx(self):
         """Where this request came from (ltcplay/remote.py Ctx): the
-        machine itself or a device on the show network. No sign-in (Jeff,
-        2026-10-07); network_may_reach() is what keeps a device on the
-        network to the remote page's own routes."""
+        machine itself or a device on the show network, and who is signed
+        in on that page. Being the machine itself is not a sign-in
+        (2026-10-28): with users on, _role_refused asks the role matrix for
+        the rack screen too. network_may_reach() is what keeps a device on
+        the network to the remote page's own routes."""
         ctx = getattr(self, "_ctx_cache", None)
         if ctx is None:
             from . import remote as remote_mod
@@ -806,12 +808,79 @@ class Handler(BaseHTTPRequestHandler):
         return self._local() and isinstance(body, dict) and \
             body.get("halt") is True
 
+    def _authed_who(self, body):
+        """With users on (users.py): the signed-in name this press is from
+        (the page's own session, or for the Stream Deck process whoever is
+        signed in on this machine), or "unsigned". None without users, and
+        then the old rules name the press. Never a name from the body
+        (Jeff's field report, 2026-10-28)."""
+        rm = getattr(self.server, "remote", None)
+        fn = getattr(rm, "users_active", None)
+        try:
+            if fn is None or not fn():
+                return None
+            return rm.signed_in_name(self._ctx(), body)
+        except Exception:                        # noqa: BLE001
+            from . import users as users_mod
+            return users_mod.UNSIGNED
+
+    # The Stream Deck process's own journal lines name the deck's own
+    # presses ("Stream Deck", and the purge it arms for the "Morning page")
+    # as whoever is signed in on this machine; a line it writes about a
+    # screen's hold or disarm carries the name the engine gave that hold.
+    DECK_OWN_SCREENS = ("Stream Deck", "Morning page")
+
+    def _authed_body(self, route, body):
+        """The body with "who" set to the signed-in user (_authed_who) when
+        users are on (2026-10-28): the Stream Deck's journal lines for its
+        own keys, an incident, an announcement. The operator route is never
+        passed here: its "who" is the name being chosen, not who chose it.
+        A deck line with no name (a system line) stays one."""
+        if route == "/api/schedule/deck-event":
+            said = str(body.get("who") or "").strip()
+            if not said:
+                return body
+            if str(body.get("screen") or "Stream Deck") in \
+                    self.DECK_OWN_SCREENS:
+                who = self._authed_who(dict(body, screen="Stream Deck"))
+            else:
+                # A line about a screen's hold or disarm: written as the
+                # deck, never a name from the body (review of PR #143, 6).
+                who = self._deck_screen_who(said)
+        else:
+            who = self._authed_who(body)
+        if who is None:
+            return body
+        body = dict(body, who=who)
+        self._body_cache = body
+        return body
+
+    # Who a Stream Deck journal line about a screen is written as, with
+    # users on: the deck process, never a person's name from its body
+    # (re-review of PR #143, 5). The screen's own line, from the engine,
+    # already names who held or pressed.
+    DECK_SCREEN_WHO = "deck"
+
+    def _deck_screen_who(self, said):
+        """DECK_SCREEN_WHO when users are on (or cannot be asked); None
+        without users, and the old rules name the line."""
+        rm = getattr(self.server, "remote", None)
+        fn = getattr(rm, "users_active", None)
+        try:
+            if fn is None or not fn():
+                return None
+        except Exception:                        # noqa: BLE001
+            pass
+        return self.DECK_SCREEN_WHO
+
     def _who_where(self, body):
         """(who, screen) for a Stop's journal and audit lines."""
         body = body if isinstance(body, dict) else {}
         try:
             ctx = self._ctx()
-            who = str(body.get("who") or getattr(ctx, "user", "") or "")
+            who = self._authed_who(body)
+            if who is None:
+                who = str(body.get("who") or getattr(ctx, "user", "") or "")
             screen = str(body.get("screen") or getattr(ctx, "screen", "")
                          or "Rack screen")
         except Exception:                        # noqa: BLE001
@@ -853,6 +922,31 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         return out
 
+    def _halt_stop(self, body, c):
+        """The Stream Deck's Stop (/api/stop with "halt"): Remote.halt,
+        then playback stops. Answers the request."""
+        out = self._halt(body)
+        try:
+            out["stopped"] = c.stop()
+        except Exception as e:       # noqa: BLE001
+            # The halt ran; only the playback stop failed. The
+            # answer still carries every step (third review of
+            # #130, 4), for the deck to say.
+            out["stopped"] = False
+            out["failed"] = list(out.get("failed") or []) + [
+                "playback stop"]
+            said = f"{type(e).__name__}: {e}"
+            out["playback_error"] = said
+            # The halt's own error, if it had one, is kept
+            # beside this one, never overwritten (review of
+            # #130, low items, 2).
+            out["error"] = (f"{out['error']}; and the playback "
+                            f"stop: {said}" if out.get("error")
+                            else said)
+            c.last_error = said
+            return self._send(500, out)
+        return self._send(200, out)
+
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
         cut, fire while scrubbing ended, then the flame link's disarm_all
@@ -864,10 +958,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         body = body if isinstance(body, dict) else {}
         try:
-            ctx = self._ctx()
-            who = str(body.get("who") or getattr(ctx, "user", "") or "")
-            screen = str(body.get("screen") or getattr(ctx, "screen", "")
-                         or "Rack screen")
+            who, screen = self._who_where(body)
         except Exception:                        # noqa: BLE001
             who, screen = "", "Rack screen"
         reason = f"{who or 'Someone'} pressed Stop on the {screen}"
@@ -911,8 +1002,12 @@ class Handler(BaseHTTPRequestHandler):
         """Send a 403 and return True when the role matrix does not let
         this press go ahead. NEVER for a safety press (users.classify:
         Abort, Hold, Stop, every disarm, a release, a lock, Acknowledge,
-        signing in or out), never before any user exists, and never on an
-        error in here: a fault in the sign-in code must not stop a show."""
+        signing in or out), and never before any user exists. Being on
+        this machine is not a sign-in: the rack screen is asked like any
+        other (Jeff's field report, 2026-10-28). A fault in here never
+        stops a safety press (those are known before anything can fail),
+        and refuses everything else: an arm is never let through because
+        the check could not be made."""
         try:
             users = getattr(getattr(self.server, "remote", None), "users",
                             None)
@@ -923,6 +1018,9 @@ class Handler(BaseHTTPRequestHandler):
             perm = users_mod.classify(route, body)
             if perm == "safety" or perm is None:
                 return False
+        except Exception:                        # noqa: BLE001
+            return False
+        try:
             who = self._acting_user(body)
             role = who.get("role") if who else None
             if users.may(role, perm):
@@ -930,12 +1028,15 @@ class Handler(BaseHTTPRequestHandler):
             name = (who or {}).get("name")
             why = (f"{name} ({role}) may not do this: "
                    if name else "Nobody is signed in on this screen, and "
-                   "signed out may not do this: ") + \
+                   "signed out is view only: ") + \
                 f"{users_mod.perm_label(perm)}. Sign in as someone who may " \
                 f"(the user chip at the top). Abort, Hold, Stop and every " \
                 f"disarm always work. Nothing was changed."
-        except Exception:                        # noqa: BLE001
-            return False
+        except Exception as e:                   # noqa: BLE001
+            why = (f"The sign-in check could not be made ({type(e).__name__})"
+                   f", so this was refused: {users_mod.perm_label(perm)}. "
+                   f"Abort, Hold, Stop and every disarm always work. Nothing "
+                   f"was changed.")
         self._send(403, {"error": why, "role_refused": True})
         return True
 
@@ -969,7 +1070,11 @@ class Handler(BaseHTTPRequestHandler):
                      body.get("hold_id") is not None) or
                     (short == "purge-fire" and
                      body.get("fire_id") is not None and
-                     body.get("on") is True))   # a release is logged
+                     body.get("on") is True) or   # a release is logged
+                    # The Fireball page: a beat that changes nothing.
+                    (short == "fireball-beat" and
+                     body.get("run") is not None and
+                     body.get("change") is not True))
             if beat and (ok or route in ("/api/remote/signin",
                                          "/api/remote/signout",
                                          "/api/remote/morning-open",
@@ -1365,6 +1470,9 @@ class Handler(BaseHTTPRequestHandler):
                      (body or {}).get("look") == "blackout") and \
                 self._abort_latched():
             return self._send(409, {"error": LATCHED_REFUSAL})
+        if isinstance(body, dict) and "who" in body and \
+                route != "/api/schedule/operator":
+            body = self._authed_body(route, body)
         if route == "/api/schedule" or route.startswith("/api/schedule/"):
             # Kept apart from the show's routes: a refused edit to tonight's
             # list is not the show's last error and must not appear as one.
@@ -1392,6 +1500,14 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/check":
                 return self._send(200, c.check(body.get("timeline", "")))
             if route == "/api/start":
+                # Never while a Stop's halt is under way (re-review of
+                # #144, N2): a Run from another screen would bring the rig
+                # back in the middle of the Stop.
+                _svc = getattr(self.server, "schedule", None)
+                if getattr(_svc, "halting", lambda: False)() is True:
+                    return self._send(409, {"error": (
+                        "Run was refused: " + _svc.HALTING + ". Nothing was "
+                        "started.")})
                 # Never over Programming playback (playhead.py): the same
                 # sentence as Start now's.
                 _rm = getattr(self.server, "remote", None)
@@ -1461,27 +1577,18 @@ class Handler(BaseHTTPRequestHandler):
                 # ends a live scheduled show (STOP_SHOW). Its fade runs to
                 # the end before playback stops.
                 if self._halt_asked():
-                    out = self._halt(body)
+                    # A Stop's halt under way: Start now and Run are
+                    # refused until it is over (re-review of #144, N2).
+                    svc = getattr(self.server, "schedule", None)
+                    begin = getattr(svc, "halt_begin", None)
+                    if begin is not None:
+                        begin()
                     try:
-                        out["stopped"] = c.stop()
-                    except Exception as e:       # noqa: BLE001
-                        # The halt ran; only the playback stop failed. The
-                        # answer still carries every step (third review of
-                        # #130, 4), for the deck to say.
-                        out["stopped"] = False
-                        out["failed"] = list(out.get("failed") or []) + [
-                            "playback stop"]
-                        said = f"{type(e).__name__}: {e}"
-                        out["playback_error"] = said
-                        # The halt's own error, if it had one, is kept
-                        # beside this one, never overwritten (review of
-                        # #130, low items, 2).
-                        out["error"] = (f"{out['error']}; and the playback "
-                                        f"stop: {said}" if out.get("error")
-                                        else said)
-                        c.last_error = said
-                        return self._send(500, out)
-                    return self._send(200, out)
+                        return self._halt_stop(body, c)
+                    finally:
+                        end = getattr(svc, "halt_end", None)
+                        if end is not None:
+                            end()
                 flames = self._stop_flames(body)
                 out = {"stopped": c.stop()}
                 if flames is not None:
@@ -1787,6 +1894,34 @@ def _attach_fuel(httpd):
         finally:
             remote.fuel.close()
     httpd.server_close = _close_fuel
+
+
+def _attach_fireball(httpd):
+    """The Fireball page (fireball.py, OPERATOR.md): the fireball group
+    from the Startup page's reading of flamesafe's config, its purge rules
+    and lockout, and the flame link's purge frame. Closed FIRST, so every
+    channel is off before anything else stops."""
+    from . import fireball as fireball_mod
+    remote = httpd.remote
+    try:
+        def _journal(text, outcome="done", who="", screen="", fault=False):
+            remote._journal(who or "system", screen or "engine", "fireball",
+                            outcome, text, fault=fault)
+        remote.fireball = fireball_mod.build(
+            remote, httpd.morning, httpd.fire_ice.flame_link,
+            journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"The Fireball page could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_fireball():
+        try:
+            remote.fireball.close()
+        finally:
+            _close_before()
+    httpd.server_close = _close_fireball
 
 
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
@@ -2182,6 +2317,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                   f"{type(e).__name__}: {e}")
     if httpd.morning is not None:
         _attach_fuel(httpd)
+        if fire_ice is not None and \
+                getattr(httpd.fire_ice, "flame_link", None) is not None:
+            _attach_fireball(httpd)
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):

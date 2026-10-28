@@ -224,6 +224,13 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 .big2:empty,.cdlabel:empty{display:none}
 .ctl{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .ctl button{min-height:clamp(52px,8vh,96px);font-size:clamp(18px,3vh,30px)}
+/* Start now becomes Stop while a show is live (Jeff, 2026-10-28): the same
+   place, a red fill, and its small line says what it does. */
+.ctl button small,#b-run small{display:block;font-size:clamp(11px,1.4vh,14px);font-weight:600;line-height:1.15;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctl button small:empty,#b-run small:empty{display:none}
+button.stopnow{background:var(--red-deep);border-color:var(--red);color:var(--champ)}
+#b-run{min-height:56px;font-size:20px}
 /* Operator announcements (announce.py, Jeff 2026-10-26): one press plays,
    no double tap. A recording not on this PC yet reads Recording missing
    and its button is off. */
@@ -387,6 +394,8 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #nav-user{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #nav-user.in{border-color:var(--amber);color:var(--champ)}
 #nav-user.fault{border-color:var(--red);color:var(--red)}
+#nav-user.viewonly{border-color:var(--red);color:var(--red);font-weight:700}
+.signin-off{opacity:.45}
 .utab{width:100%;border-collapse:collapse;font-size:14px}
 .utab th,.utab td{padding:4px 6px;border-bottom:1px solid var(--hair);text-align:left;vertical-align:middle}
 .utab td.c,.utab th.c{text-align:center}
@@ -566,6 +575,7 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 #modal .row{margin-top:18px}
 #modal button.yes{background:var(--red-deep);border:3px solid var(--red);color:var(--champ);font-size:22px}
 #modal button.yes.start{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
+#modal .row.flip{display:flex;flex-direction:row-reverse;justify-content:flex-end;gap:10px}
 #modal .q.bad{color:#FF8A80}
 #modal ul{margin:6px 0 0 18px;padding:0} #modal li{margin:3px 0}
 #modal li.no{color:#FF8A80;font-weight:700}
@@ -805,6 +815,25 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
 .fu-rec{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--hair-soft);font-size:14px}
 .fu-rec span{flex:1 1 16em}
 .fu-rec button{min-height:40px;font-size:15px;flex:0 0 auto}
+/* ---- Fireball (Jeff, 2026-10-28; design by Andy; fireball.py): one big
+   button per channel, one screen. Toggles stay on until pressed again;
+   Valve Open and Igniter are on only while held. ---- */
+#v-fireball{overflow:auto;display:flex;flex-direction:column;gap:10px}
+#v-fireball > *{flex:0 0 auto}
+.fb-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.fb-top h2{margin:0;flex:0 0 auto}
+.fb-armed{flex:1 1 12em;font:800 clamp(15px,2.2vh,20px)/1.2 var(--sans)}
+.fb-armed.on{color:var(--red)}
+.fb-top button{flex:0 0 auto;min-height:48px}
+#fb-note{font-size:14px;margin-top:6px}
+#fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:10px}
+button.fb-pad{min-height:clamp(96px,20vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:6px;padding:8px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+button.fb-pad b{font:800 clamp(18px,2.8vh,28px)/1.1 var(--sans)}
+button.fb-pad .fb-st{font:800 clamp(16px,2.4vh,24px)/1 var(--caps);letter-spacing:.12em}
+button.fb-pad small{font:400 13px/1.2 var(--sans);color:var(--cream)}
+button.fb-pad.on{background:var(--red-deep);border:3px solid var(--red);color:var(--champ)}
+button.fb-pad.na{opacity:.45}
 </style>
 </head>
 <body>
@@ -828,6 +857,7 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
     <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
     <button id="nav-morning" class="ghost" data-go="morning" hidden>Startup</button>
     <button id="nav-fuel" class="ghost" data-go="fuel" hidden>Fuel</button>
+    <button id="nav-fireball" class="ghost" data-go="fireball" hidden>Fireball</button>
     <button id="nav-back" class="go" data-go="show" hidden>Back to the show</button>
   </nav>
 </header>
@@ -859,7 +889,7 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
       </div>
     </div>
     <div class="ctl">
-      <button id="b-start" class="go">Start now</button>
+      <button id="b-start" class="go" data-mode="start"><span class="lbl">Start now</span><small></small></button>
       <button id="b-hold" class="hold">Hold</button>
       <button id="b-resume" class="go">Resume</button>
       <button id="b-reset">Reset</button>
@@ -997,6 +1027,22 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
     </section>
   </section>
 
+  <!-- Fireball (Jeff, 2026-10-28; design by Andy; fireball.py,
+       OPERATOR.md): manual control of each Fireball channel. Nothing here
+       arms: the Fireball is armed by its hold to arm, as always, and every
+       channel is zero until it is. -->
+  <section id="v-fireball" class="view" hidden>
+    <section class="card" id="fb-head">
+      <div class="fb-top"><h2>Fireball</h2><span class="fb-armed" id="fb-armed">Not known yet</span>
+        <button class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
+        <button class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
+      <div class="warnbox open" id="fb-block" hidden></div>
+      <div class="dim" id="fb-note"></div>
+      <div class="toast" id="fb-msg"></div>
+    </section>
+    <div id="fb-pads"></div>
+  </section>
+
   <!-- Users and the audit log (USERS.md): sign in and out, the users, who
        may do what, and the audit log's state. Nobody has to sign in for
        Abort, Hold, Stop or any disarm. -->
@@ -1124,8 +1170,7 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
       <div class="modeline locked" id="run-rate" hidden></div>
       <div class="row">
         <select id="run-file" style="flex:2 1 0" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
-        <button id="b-run" class="go" style="flex:1 1 0">Run</button>
-        <button id="b-stoprun" style="flex:1 1 0">Stop</button>
+        <button id="b-run" class="go" style="flex:1 1 0" data-mode="run"><span class="lbl">Run</span><small></small></button>
       </div>
       <div class="toast" id="run-msg"></div>
     </section>
@@ -1276,10 +1321,20 @@ const ARMING_OFF = "Arming from a screen is switched off on this show PC. To tur
 // arming switched on, a status heard within the arming
 // freshness (1 s), flamesafe's real state reported within 1 s, and the
 // group not already armed or asked for.
+// Signed out is view only (2026-10-28): what the engine's whoami says
+// this screen may do (st.me.may), the same answer it gives a press. A row
+// the engine does not mention (no users) may. Stop, Hold, Abort,
+// Acknowledge and every disarm are never asked.
+const SIGN_IN_WORDS = "Sign in to use controls. Stop, Hold, Abort, Acknowledge and every disarm still work.";
+function mayRow(st, perm){
+  const m = st && st.me && st.me.may;
+  return !(m && m[perm] === false);
+}
 function armState(st, nowMs, lastOkMs, i){
   const a = (st && st.arming) || {};
   const fl = (st && st.flames) || {};
   const g = (fl.groups || [])[i];
+  if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};
   if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};
   if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last second."};
   if(!fl.connected || fl.stale || fl.age_ms === null || fl.age_ms === undefined || fl.age_ms > 1000)
@@ -1776,10 +1831,82 @@ function lastShowMinutes(text){
 // group (review of #126, P2-1), and a disarm that failed is said plainly,
 // never a bare "Stopped." (third review of #126, P2-2).
 const STOP_DISARM_FAILED = "Stopped, but the flame disarm FAILED: use Disarm all flame groups or the hardware e-stop.";
+// Stop is the Stream Deck's Stop, a complete halt (Jeff, 2026-10-28: "no
+// way to simply stop the show"): every flame group and laser disarmed, a
+// live show ended and faded to dark, then playback stops, so Run is off.
+// Nothing is fired and nothing is latched: no Reset is needed.
 function stopWords(j){
   const f = j && j.flames;
   if(f && f.disarmed === false) return STOP_DISARM_FAILED;
-  return "Stopped.";
+  const bad = ((j && j.failed) || []).filter(x => x !== "flames");
+  if(bad.length)
+    return "Stopped, but these did NOT work: " + bad.join(", ") +
+      (j && j.error ? " (" + j.error + ")" : "") + ". Press Abort, or use the hardware e-stop.";
+  const said = [];
+  if(j && j.show && j.show.ok) said.push("The show ended and the rig is fading to dark.");
+  else said.push("The rig is dark.");
+  if(f && f.disarmed === true) said.push("Every flame group was disarmed.");
+  if(j && j.lasers && j.lasers.disarmed === true) said.push("Every laser was disarmed.");
+  said.push("Run is off. Press Run to bring the rig back.");
+  return "Stopped. " + said.join(" ");
+}
+// A refused press's words: the engine's own sentence, whichever key it
+// came in ("error", or "text" for a scheduler press it refused, such as
+// Start now with Run off), never a bare "Conflict" (Jeff, 2026-10-28).
+function refusedWords(j, statusText){
+  const t = j && (j.error || j.text);
+  return t ? String(t) : String(statusText || "The engine refused it and did not say why.");
+}
+const STOP_CONFIRM = "Stop playback and disarm every flame group. Every laser is disarmed too, and a live show ends and fades to dark first. Nothing is fired. No show starts until Run is pressed again, and each group has to be armed again.";
+// The Show screen's Start now button, or Stop in its place while a show is
+// live (Jeff, 2026-10-28: the Play button becomes Stop, same position). A
+// live show is the scheduler in SHOW or PAUSED (on Hold), or, with no
+// scheduler in this engine, Run playing or starting. Stop is never held
+// back by a stale page: it only takes risk away, and it works from every
+// screen (review of #144, F7). Before a show, what Start now would be
+// refused with (the engine's start_blocked) is on the button; while the
+// show audio loads Start now still works and waits for it (F2), and while
+// it waits the button reads Loading, starting when ready.
+function startLook(st, stale, waiting){
+  const sch = (st && st.schedule) || {}, show = (st && st.show) || {};
+  const live = sch.state === "SHOW" || sch.state === "PAUSED" ||
+    (!sch.attached && !!(show.running || show.starting));
+  if(live)
+    return {mode:"stop", label:"Stop", sub:"end the show, rig dark", disabled:false, title:STOP_CONFIRM, why:""};
+  const b = sch.start_blocked;
+  const fresh = !stale && !!st && !!sch.attached;
+  if(waiting || sch.start_waiting)
+    return {mode:"start", label:"Loading", sub:"starting when ready", disabled:true,
+            title:"Start now is waiting for the show audio to load. Hold or Stop cancels it.", why:""};
+  if(b && b.text && b.loading)
+    return {mode:"start", label:"Start now", sub:"audio loading, starts when ready",
+            disabled:!fresh, title:String(b.text), why:""};
+  if(b && b.text)
+    return {mode:"start", label:"Start now", sub:/^Run has not been pressed/.test(String(b.text)) ? "Run is off" : "not ready, tap for why",
+            disabled:!fresh, title:String(b.text), why:String(b.text)};
+  return {mode:"start", label:"Start now", sub:"", disabled:!fresh, title:"", why:""};
+}
+// The Programming screen's Run button, or Stop in its place while Run is
+// in force or on its way in (Jeff, 2026-10-28; review of #144, F4): one
+// Stop, where Run was.
+function runLook(st){
+  const show = (st && st.show) || {};
+  return (show.running || show.starting) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
+                                         : {mode:"run", label:"Run", sub:""};
+}
+// What a press on a button that changes between Start and Stop does
+// (review of #144, F5): the mode the operator SAW when the finger went
+// down; a press whose mode changed under the finger, or within
+// FLIP_LOCK_MS of Stop turning back into Start (or Run), does nothing and
+// says so. A Stop never turns into a start.
+const FLIP_LOCK_MS = 2000;
+function pressDecision(seen, now, flippedAt, nowMs, busy){
+  if(busy) return {act:"none", say:"Stopping: wait until it has finished."};
+  if(seen && seen !== now)
+    return {act:"none", say:"The show changed as you pressed (it ended or started), so nothing was done. Look at the screen, then press again."};
+  if(now !== "stop" && flippedAt && nowMs - flippedAt < FLIP_LOCK_MS)
+    return {act:"none", say:"The show has just stopped. Nothing was done; wait a moment before starting anything."};
+  return {act:now, say:""};
 }
 // The alert hold (alerthold.py): the state card's word and sentence while
 // the schedule is held at showtime because an alert is open, or null.
@@ -1836,6 +1963,40 @@ function announceLook(an, booth){
   return {show:true, buttons:buttons, banner:banner, word:word, stopOff:!playing && !a.stale, device:device,
           devBad:!devOk, note:note};
 }
+// The Fireball page (fireball.py). The body of one heartbeat: every
+// control's state, only true for one that is on.
+function fireballBody(on, run, seq, change){
+  const c = {};
+  for(const k of ["fuel", "air", "valve", "igniter", "purge"]) c[k] = on[k] === true;
+  return {controls:c, run:run === undefined ? null : run, seq:seq, change:!!change};
+}
+// What the page may do now, and what it says: v is GET fireball, on the
+// page's own channel state, stale and viewOnly the page's.
+// {ok: a press may start, cut: everything on must go off now, armed,
+// text: the line under the heading, block: why nothing may be pressed}.
+function fireballState(v, on, stale, viewOnly){
+  const any = Object.keys(on || {}).some(k => on[k]);
+  const toggles = ["fuel", "air", "purge"].filter(k => (on || {})[k]);
+  const out = {ok:false, cut:"", armed:false, text:"", block:""};
+  if(!v){ out.block = "Not known yet."; return out; }
+  if(!v.available){ out.block = v.problem || "There is no fireball group."; out.cut = any ? out.block : ""; return out; }
+  out.armed = v.armed === "armed";
+  if(stale) out.block = "This page's status is not live, so nothing can be pressed.";
+  else if(viewOnly) out.block = "Signed out: this screen is view only. Sign in to use the Fireball controls.";
+  else if(v.blocked) out.block = "Not available now: " + v.blocked;
+  else if(v.owner && !v.mine) out.block = v.owner + " is using the Fireball controls. One screen at a time.";
+  if(out.block){ out.cut = any ? out.block : ""; }
+  if(!out.armed){
+    out.text = toggles.length ? "Turn " + toggles.map(k => ({fuel:"Fuel", air:"Air", purge:"Purge"})[k]).join(", ") + " off before arming." :
+      (v.armed_why || "The Fireball is not armed.") + " Every channel stays at zero until it is: nothing on this page arms.";
+    if(any && !out.cut) out.cut = "the Fireball is not armed";
+    if(!out.block) out.block = "Arm the Fireball first.";
+  } else {
+    out.text = "Armed. Fuel Charge, Air Charge and Purge stay on until pressed again; Valve Open and Igniter are on only while held. Abort, Hold, Stop and any disarm turn everything off.";
+  }
+  out.ok = !out.block;
+  return out;
+}
 // LOGIC END
 </script>
 <script>
@@ -1868,7 +2029,7 @@ async function post(p, body){
   const r = await fetch(p, {method:"POST", credentials:"same-origin", cache:"no-store",
     headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {})});
   const j = await r.json().catch(() => ({}));
-  if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; e.code = j.code || ""; throw e; }
+  if(!r.ok){ const e = new Error(refusedWords(j, r.statusText)); e.status = r.status; e.code = j.code || ""; throw e; }
   return j;
 }
 // No sign-in (Jeff, 2026-10-07): the engine names the surface a press
@@ -1898,7 +2059,7 @@ window.addEventListener("resize", applyBottomPad);
 setInterval(applyBottomPad, 1000);
 // Three screens, one page: the show (the default), Tonight and
 // Programming. The Abort bar is on every one of them.
-const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning", users:"v-users", fuel:"v-fuel"};
+const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning", users:"v-users", fuel:"v-fuel", fireball:"v-fireball"};
 function showView(){
   let v = (location.hash || "").replace("#", "");
   if(!VIEWS[v]) v = "show";
@@ -1911,6 +2072,7 @@ function showView(){
   if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); }
   morningView(v === "morning");
   fuelView(v === "fuel");
+  fireballView(v === "fireball");
   if(v === "users") loadUsers();
 }
 document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
@@ -1955,6 +2117,9 @@ function startPolling(){
       try{
         CD = countdownAnchor(CD, ST && ST.countdown, monoNow());
         render();
+        // Who is signed in, and so whether this screen is view only, is
+        // said the moment the engine says it, not on the chip's own beat.
+        renderUserChip();
         DRAW_ERR = "";
       }catch(e){
         LAST_OK = before;
@@ -1991,12 +2156,14 @@ function renderStale(){
   if(stale) b.textContent = staleText(Date.now(), LAST_OK, DRAW_ERR);
   const cs = controlStates(ST, stale);
   $("b-start").disabled = !cs.startNow;
+  drawStart(stale);
   $("b-resume").disabled = !cs.resume;
   $("b-reset").disabled = !cs.reset;
   $("b-hold").disabled = !cs.hold;
   $("b-abort").disabled = !cs.abort;
   $("b-disarm").disabled = !cs.disarm;
   document.querySelectorAll("[data-tr]").forEach(el => { el.disabled = !cs.transport; });
+  lockForSignIn();
   if(stale){
     // Never show an old lamp or timecode as if it were now.
     document.querySelectorAll(".lamp").forEach(el => {
@@ -2133,6 +2300,8 @@ function render(){
   // Fuel (fuel.py): amber while any unit needs a refill soon.
   $("nav-fuel").hidden = !s.fuel || (location.hash || "").replace("#", "") === "fuel";
   $("nav-fuel").classList.toggle("soon", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));
+  // Fireball (fireball.py): only when flamesafe's config has a fireball group.
+  $("nav-fireball").hidden = !(s.fireball && s.fireball.available) || (location.hash || "").replace("#", "") === "fireball";
   let lockText = "";
   if(mo && ((mo.locked_machines || []).length || (mo.locked_lasers || []).length)){
     const parts = [];
@@ -2613,8 +2782,9 @@ document.addEventListener("visibilitychange", () => { if(document.hidden) armSto
 window.addEventListener("pagehide", () => armStop("the page closed"));
 window.addEventListener("blur", () => armStop("the page lost focus"));
 
-function confirmBox(q, detail, yes, cls, items){
+function confirmBox(q, detail, yes, cls, items, flip){
   return new Promise(res => {
+    $("modal").querySelector(".row").classList.toggle("flip", !!flip);
     $("m-q").textContent = q; $("m-q").className = "q" + (items && items.some(i => !i.ok) ? " bad" : "");
     $("m-detail").textContent = detail || "";
     if(items && items.length){
@@ -2672,6 +2842,7 @@ function renderAnnounce(){
       `${b.off || ANN_BUSY ? " disabled" : ""} title="${esc(b.title)}">${esc(b.label)}<small>${esc(b.sub)}</small></button>`).join("");
   }
   $("ann-stop").disabled = L.stopOff || ANN_BUSY;
+  lockForSignIn();
 }
 async function annPress(route, extra){
   if(ANN_BUSY) return;            // one press, one announcement
@@ -2692,6 +2863,70 @@ $("ann-btns").addEventListener("click", e => {
 });
 $("ann-stop").addEventListener("click", () => annPress("announce-stop"));
 $("ann-banner-stop").addEventListener("click", () => annPress("announce-stop"));
+
+// Signed out with users on, every control that is not a stop or a disarm
+// is off, with the reason in its tooltip (2026-10-28). A pure overlay on
+// what each control's own redraw decides: run after each redraw, it locks
+// what this screen may not do and unlocks the rest, putting back the
+// control's own tooltip. When what this screen may do changes (a sign-in
+// or a sign-out), every redraw that keeps its last drawing runs again, so
+// a control unlocked by a sign-in shows its own real state at once
+// (re-review of PR #143, 1). Never touches Stop, Hold, Abort, Acknowledge,
+// a disarm or Disarm all.
+let SIGNIN_SIG = null;
+function signinLocked(){
+  const offs = [];
+  if(!mayRow(ST, "show")){
+    offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),
+      ...document.querySelectorAll("[data-tr], #ann-btns button[data-ann]"));
+  }
+  if(!mayRow(ST, "arm")){
+    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));
+  }
+  if(!mayRow(ST, "settings")) offs.push($("sa-on"), $("lf-on"), $("sf-on"));
+  // A control that is a Stop just now (Start now or Run while a show is
+  // live or starting) is never locked: Stop always works (third review of
+  // PR #143, 1).
+  return offs.filter(el => el && el.dataset.mode !== "stop");
+}
+function lockForSignIn(){
+  const offs = signinLocked();
+  for(const el of offs){
+    if(!el.classList.contains("signin-off")){
+      // What the control was before the lock, put back when it lifts;
+      // a control's own redraw then decides again.
+      el.dataset.title0 = el.title === SIGN_IN_WORDS ? "" : (el.title || "");
+      el.dataset.dis0 = el.disabled ? "1" : "";
+      el.classList.add("signin-off");
+    }
+    el.disabled = true;
+    el.title = SIGN_IN_WORDS;
+  }
+  document.querySelectorAll(".signin-off").forEach(el => {
+    if(offs.includes(el)) return;
+    el.classList.remove("signin-off");
+    if(el.dataset.mode !== "stop"){
+      el.title = el.dataset.title0 || "";
+      el.disabled = el.dataset.dis0 === "1";
+    }
+    delete el.dataset.title0;
+    delete el.dataset.dis0;
+  });
+  const sig = ["show", "arm", "settings"].map(p => mayRow(ST, p) ? "1" : "0").join("");
+  if(SIGNIN_SIG !== null && sig !== SIGNIN_SIG){
+    SIGNIN_SIG = sig;
+    redrawForSignIn();
+  }
+  SIGNIN_SIG = sig;
+}
+function redrawForSignIn(){
+  const box = $("lz-chips");
+  if(box) box.dataset.html = "";
+  ANN_SIG = "";
+  for(const f of [renderStale, renderAnnounce, renderArmingCard, renderLiveFlame, renderScrubFlames]){
+    try{ f(); }catch(e){ }
+  }
+}
 
 // The stop sign's tooltip (2026-10-26); the line under it says the rest.
 const ABORT_TITLE = "Abort: tap twice to stop the show.";
@@ -3147,9 +3382,104 @@ $("se-save").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); $("se-msg").textContent = j.text; if(j.doc) drawSchedule(j.doc); }
   catch(e){ $("se-msg").textContent = e.message; }
 });
+// Start now, or Stop in its place (startLook). The button is redrawn only
+// when what it says changes, so a press is never lost to a redraw.
+function setLook(el, mode, label, sub, title){
+  if(el.dataset.mode !== mode){
+    // Stop just turned back into Start (or Run): locked for FLIP_LOCK_MS
+    // (review of #144, F5).
+    if(el.dataset.mode === "stop") FLIPPED[el.id] = Date.now();
+    el.dataset.mode = mode;
+  }
+  const l = el.querySelector(".lbl"), sm = el.querySelector("small");
+  if(l && l.textContent !== label) l.textContent = label;
+  if(sm && sm.textContent !== sub) sm.textContent = sub;
+  if(el.title !== title) el.title = title;
+}
+const FLIPPED = {}, DOWN_MODE = {};
+let HALT_BUSY = false, START_WAITING = false;
+function flipLocked(id){ return !!FLIPPED[id] && Date.now() - FLIPPED[id] < FLIP_LOCK_MS; }
+function drawStart(stale){
+  const el = $("b-start");
+  const lk = startLook(ST, stale, START_WAITING);
+  setLook(el, lk.mode, HALT_BUSY ? "Stopping" : lk.label, HALT_BUSY ? "wait" : lk.sub, lk.title);
+  el.classList.toggle("go", lk.mode === "start");
+  el.classList.toggle("stopnow", lk.mode === "stop");
+  // Stop is never held back (but one Stop at a time); Start now follows
+  // controlStates, the engine's own reason, a halt under way (F6) and the
+  // lock after Stop turned back into Start (F5).
+  el.disabled = lk.mode === "stop" ? HALT_BUSY :
+    (el.disabled || lk.disabled || HALT_BUSY || flipLocked("b-start"));
+  const r = $("b-run");
+  if(r){
+    const rk = runLook(ST);
+    setLook(r, rk.mode, HALT_BUSY ? "Stopping" : rk.label, HALT_BUSY ? "wait" : rk.sub, rk.mode === "stop" ? STOP_CONFIRM : "");
+    r.classList.toggle("go", rk.mode === "run");
+    r.classList.toggle("stopnow", rk.mode === "stop");
+    r.disabled = HALT_BUSY || (rk.mode === "run" && flipLocked("b-run"));
+  }
+}
+["b-start", "b-run"].forEach(id => {
+  const el = $(id);
+  if(!el) return;
+  el.addEventListener("pointerdown", () => { DOWN_MODE[id] = el.dataset.mode; });
+});
+// What the press means: decided from the mode seen at touch-down.
+function decide(id, now){
+  const seen = DOWN_MODE[id] || $(id).dataset.mode;
+  DOWN_MODE[id] = null;
+  return pressDecision(seen, now, FLIPPED[id], Date.now(), HALT_BUSY);
+}
+// Stop: the engine's complete halt (Remote.stop_press, the Stream Deck's
+// Stop), from any screen (review of #144, F7). What came back is said
+// where it was pressed, and a refusal says why, in the engine's words.
+async function pressStop(msgId){
+  const el = $(msgId);
+  if(!(await confirmBox("Stop the show?", STOP_CONFIRM, "Yes, Stop", ""))) return;
+  if(HALT_BUSY) return;
+  HALT_BUSY = true;
+  el.textContent = "Stopping: disarming, then fading to dark...";
+  try{ drawStart(false); }catch(e){}
+  let r = null, j = {};
+  try{
+    r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
+    j = await r.json().catch(() => ({}));
+    el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :
+      ("Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Press Abort to stop the show anyway.");
+  }catch(e){
+    el.textContent = "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or Abort.";
+  }finally{
+    HALT_BUSY = false;
+    // Whatever the button turns into now, it is locked a moment (F5).
+    FLIPPED["b-start"] = FLIPPED["b-run"] = Date.now();
+    el.title = el.textContent;
+    try{ drawStart(false); }catch(e){}
+  }
+}
 $("b-start").addEventListener("click", async () => {
-  if(await confirmBox("Start a show now?", "The next show starts now, or an extra show if none is waiting.", "Yes, start now", "start"))
-    press("start-now", {confirmed:true});
+  const lk = startLook(ST, false, START_WAITING);
+  const d = decide("b-start", lk.mode);
+  if(d.act === "none"){ $("ctl-msg").textContent = d.say; $("ctl-msg").title = d.say; return; }
+  if(d.act === "stop") return pressStop("ctl-msg");
+  if(lk.why){
+    // The engine would refuse it: said now, in its words, with what to
+    // press. Nothing is sent.
+    $("ctl-msg").textContent = "Start now would be refused: " + lk.why.replace(/\.$/, "") + ".";
+    $("ctl-msg").title = $("ctl-msg").textContent;
+    return;
+  }
+  // The Start confirm is green, its Yes on the other side from Stop's
+  // (review of #144, F5).
+  if(!(await confirmBox("Start a show now?", "The next show starts now, or an extra show if none is waiting.", "Yes, start now", "start", null, true))) return;
+  // The state may have changed while the question was up.
+  if(HALT_BUSY || startLook(ST, false, START_WAITING).mode !== "start"){ $("ctl-msg").textContent = "The show changed while you answered, so nothing was started."; return; }
+  const loading = !!(ST && ST.schedule && ST.schedule.start_blocked && ST.schedule.start_blocked.loading);
+  START_WAITING = loading;
+  if(loading) $("ctl-msg").textContent = "Waiting for the show audio to load; the show starts when it is ready. Hold or Stop cancels it.";
+  try{ drawStart(false); }catch(e){}
+  try{ await press("start-now", {confirmed:true}); }
+  finally{ START_WAITING = false; try{ drawStart(false); }catch(e){} }
 });
 // Run and Stop: the show machine only, through the engine's own Run and
 // Stop (every guard they have applies), on the Programming screen.
@@ -3223,6 +3553,9 @@ function renderRunMode(){
 }
 document.querySelectorAll("#run-mode [data-mode]").forEach(b => b.addEventListener("click", () => { RUN_MODE = b.dataset.mode; renderRunMode(); }));
 $("b-run").addEventListener("click", async () => {
+  const d = decide("b-run", runLook(ST).mode);
+  if(d.act === "none"){ $("run-msg").textContent = d.say; return; }
+  if(d.act === "stop") return pressStop("run-msg");
   const f = $("run-file").value;
   if(!f){ $("run-msg").textContent = "No show file in the show folder."; return; }
   const prog = RUN_MODE === "programming";
@@ -3230,11 +3563,6 @@ $("b-run").addEventListener("click", async () => {
   if(v.locked){ $("run-msg").textContent = "Programming is locked while a scheduled show is live. Press Hold to pause it now; Programming opens once the show has ended."; return; }
   if(!(await confirmBox(prog ? "Run in Programming?" : "Press Run?", prog ? "Run " + f + " as a rehearsal. Play from, jump and loop work, and the scheduler starts no show." : "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "start"))) return;
   try{ const j = await post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f}); $("run-msg").textContent = j.banner || "Running."; }
-  catch(e){ $("run-msg").textContent = e.message; }
-});
-$("b-stoprun").addEventListener("click", async () => {
-  if(!(await confirmBox("Stop?", "Stop playback and disarm every flame group. No show starts until Run is pressed again, and each group has to be armed again.", "Yes, Stop", ""))) return;
-  try{ const j = await post("/api/stop", {}); $("run-msg").textContent = stopWords(j); }
   catch(e){ $("run-msg").textContent = e.message; }
 });
 $("b-hold").addEventListener("click", () => press("hold"));
@@ -3349,6 +3677,8 @@ function renderLaserStrip(la, stale){
   const html = look.chips.map(c => `<button class="${c.cls}" data-lz="${esc(c.ids.join("\n"))}" title="${esc(c.title)}"${c.off ? " disabled" : ""}><b>${esc(c.label)}</b><i>${esc(c.word)}</i></button>`).join("");
   const box = $("lz-chips");
   if(box.dataset.html !== html){ box.dataset.html = html; box.innerHTML = html; }
+  // Signed out: a laser's Arm is off (lockForSignIn, outside this block).
+  if(typeof lockForSignIn === "function") lockForSignIn();
 }
 $("lz-chips").addEventListener("click", e => {
   const b = e.target.closest("[data-lz]");
@@ -3400,7 +3730,7 @@ $("sa-what").textContent = SCREEN_ARMING_ENABLES;
 function renderArmingCard(){
   const on = !!(ST && ST.arming && ST.arming.enabled);
   $("sa-now").textContent = ST ? (on ? "ON" : "OFF") : "";
-  $("sa-on").disabled = on; $("sa-off").disabled = !on;
+  $("sa-on").disabled = on || !mayRow(ST, "settings"); $("sa-off").disabled = !on;
 }
 setInterval(renderArmingCard, 500);
 $("sa-on").addEventListener("click", async () => {
@@ -3434,7 +3764,7 @@ function renderLiveFlame(){
   $("lf-now").textContent = !ST ? "" : on ? "ON" : (lf.available === false ? "Not available in this engine" : "OFF");
   if(!on && le && le.reason && !$("lf-msg").dataset.mine) $("lf-msg").textContent = "Last ended: " + le.reason;
   $("lf-on").hidden = !(ME && ME.local);
-  $("lf-on").disabled = on || lf.available === false;
+  $("lf-on").disabled = on || lf.available === false || !mayRow(ST, "settings");
   $("lf-off").disabled = !on;
 }
 setInterval(renderLiveFlame, 250);
@@ -3470,7 +3800,7 @@ function renderScrubFlames(){
   $("sf-now").textContent = !ST ? "" : on ? "Fire flames while scrubbing: ON" : (sf.available === false ? "Fire flames while scrubbing: not available in this engine" : "Fire flames while scrubbing: OFF");
   if(!on && le && le.reason && !$("sf-msg").dataset.mine) $("sf-msg").textContent = "Last ended: " + le.reason;
   $("sf-on").hidden = !(ME && ME.local);
-  $("sf-on").disabled = on || sf.available === false;
+  $("sf-on").disabled = on || sf.available === false || !mayRow(ST, "settings");
   $("sf-on").title = (!on && sf.blocked) ? sf.blocked : "";
   $("sf-off").disabled = !on;
 }
@@ -3555,7 +3885,7 @@ function renderMorning(){
     const ids = (mo.groups || {})[b.dataset.grp] || [];
     const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
     b.classList.toggle("on", !!all);
-    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;
+    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));
     b.title = ids.length ? ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
   });
   // The field: every machine where the layout puts it.
@@ -3664,7 +3994,7 @@ function renderMorning(){
     const all = ids.length && ids.every(id => armedIds.includes(id));
     b.classList.toggle("on", !!all);
     b.textContent = (all ? "Disarm " : "Arm ") + b.dataset.lgrp;
-    b.disabled = !all && ARRANGE;
+    b.disabled = !all && (ARRANGE || !mayRow(ST, "arm"));
   });
   const lst = $("mo-larm-st");
   lst.className = "st" + (armedIds.length ? " armed" : "");
@@ -4093,9 +4423,16 @@ function renderUserChip(){
   if(me.users_active === undefined && !("user" in me)){ b.hidden = true; return; }
   b.hidden = false;
   const fault = me.audit_fault || "";
-  b.textContent = me.user ? me.user : "Signed out";
-  b.className = "ghost" + (me.user ? " in" : "") + (fault ? " fault" : "");
-  b.title = (me.user ? ("Signed in as " + me.user + " (" + (me.role || "") + ")") : "Nobody is signed in on this screen") +
+  // Signed out with users on is view only, on the rack screen too
+  // (2026-10-28): the chip says so, and a hold to arm under way stops.
+  const viewOnly = !!me.view_only;
+  document.body.classList.toggle("view-only", viewOnly);
+  if(viewOnly && HOLD) armStop("Signed out: this screen is view only");
+  b.textContent = me.user ? me.user : (viewOnly ? "Sign in to use controls" : "Signed out");
+  b.className = "ghost" + (me.user ? " in" : "") + (viewOnly ? " viewonly" : "") + (fault ? " fault" : "");
+  b.title = (me.user ? ("Signed in as " + me.user + " (" + (me.role || "") + ")") :
+    (viewOnly ? "Nobody is signed in on this screen, so it is view only. Stop, Hold, Abort, Acknowledge and every disarm still work. Press here to sign in" :
+      "Nobody is signed in on this screen")) +
     (fault ? ". AUDIT LOG FAULT: " + fault : "") + ". Users, who may do what, and the audit log.";
 }
 setInterval(renderUserChip, 1000);
@@ -4197,7 +4534,19 @@ $("u-go").addEventListener("click", async () => {
   loadUsers();
 });
 $("u-out").addEventListener("click", async () => {
+  // Signing out ends the session at the engine and leaves nothing behind
+  // here: a hold to arm is let go first, typed passwords are cleared, and
+  // the chip reads View only at once (2026-10-28).
+  if(HOLD) armStop("Signed out");
   try{ const r = await post("/api/remote/signout", {}); uMsg("u-msg", r.text); }catch(e){ uMsg("u-msg", e.message, true); }
+  UNEED = false; $("u-newbox").hidden = true;
+  $("u-pw").value = ""; $("u-new").value = ""; $("u-old").value = ""; $("u-new1").value = "";
+  if(ST && ST.me && ST.me.users_active){
+    const no = {}; Object.keys(ST.me.may || {}).forEach(k => { no[k] = false; });
+    ST.me = Object.assign({}, ST.me, {user:null, role:null, view_only:true, may:no});
+  }
+  renderUserChip();
+  lockForSignIn();
   loadUsers();
 });
 $("u-chg").addEventListener("click", async () => {
@@ -4324,6 +4673,142 @@ $("fu-recent").addEventListener("click", async (ev) => {
   const b = ev.target.closest("[data-undo]"); if(!b) return;
   if(await confirmBox("Undo this refill?", "It stays in the record, marked undone, and the tank counts from the refill before it.", "Yes, undo it"))
     fuPress("fuel-undo", {id:Number(b.dataset.undo)});
+});
+
+// ---- Fireball (Jeff, 2026-10-28; design by Andy; fireball.py) --------
+// One button per channel. Toggles (Fuel Charge, Air Charge, Purge) stay on
+// until pressed again; Valve Open and Igniter are on only while a finger
+// holds them. While anything is on the page beats every 100 ms; the engine
+// and the flame link turn everything off 0.25 s after the last beat by
+// themselves. Leaving the page, hiding it, closing it, a stale status,
+// signing out and every refusal turn everything off here at once; losing
+// focus lets go of Valve Open and Igniter. Nothing ever comes back on by
+// itself: after a cut every channel has to be pressed again.
+let FB = null, FB_OPEN = false, FB_TIMER = null, FB_BEAT = null, FB_RUN = null, FB_SEQ = 0, FB_RUNS = 0;
+const FB_ON = {fuel:false, air:false, valve:false, igniter:false, purge:false};
+const FB_KEY = {};
+function fireballView(on){
+  if(on && !FB_OPEN){ FB_OPEN = true; fbPoll(); }
+  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); fbCut("the page was left"); }
+}
+async function fbPoll(){
+  if(!FB_OPEN) return;
+  try{
+    if(!document.hidden){ FB = await getJSON("/api/remote/fireball", 1500); }
+  }catch(e){ $("fb-msg").textContent = e.message; }
+  renderFireball();
+  FB_TIMER = setTimeout(fbPoll, 500);
+}
+function fbAny(){ return Object.keys(FB_ON).some(k => FB_ON[k]); }
+function fbNow(){
+  return fireballState(FB, FB_ON, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+}
+// Everything off here, now, and the engine told: this page's run ends and
+// can never start again (an all off is never refused).
+function fbCut(why){
+  const had = fbAny(), run = FB_RUN;
+  for(const k in FB_ON) FB_ON[k] = false;
+  FB_RUN = null; clearTimeout(FB_BEAT); FB_BEAT = null;
+  if(run !== null) post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, ++FB_SEQ, true))).catch(() => {});
+  if(had) $("fb-msg").textContent = "Everything off: " + why;
+  renderFireball();
+}
+// Let go of Valve Open and Igniter only (the window lost focus).
+function fbRelease(why){
+  if(!FB_ON.valve && !FB_ON.igniter) return;
+  FB_ON.valve = false; FB_ON.igniter = false;
+  $("fb-msg").textContent = "Valve Open and Igniter let go: " + why;
+  fbSend(true);
+}
+// A change: sent at once. Nothing on: the run ends. Something on from
+// everything off: a new run, named here.
+function fbSend(change){
+  clearTimeout(FB_BEAT); FB_BEAT = null;
+  if(!fbAny()){ fbCut("everything was turned off"); return; }
+  const st = fbNow();
+  if(st.cut){ fbCut(st.cut); return; }
+  if(FB_RUN === null) FB_RUN = WINDOW_ID + "-" + (++FB_RUNS) + "-" + Date.now().toString(36);
+  renderFireball();
+  fbBeat(change);
+}
+async function fbBeat(change){
+  clearTimeout(FB_BEAT); FB_BEAT = null;
+  if(!fbAny() || FB_RUN === null) return;
+  const st = fbNow();
+  if(st.cut){ fbCut(st.cut); return; }
+  const run = FB_RUN, seq = ++FB_SEQ;
+  FB_BEAT = setTimeout(() => fbBeat(false), 100);
+  try{ await post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, seq, change))); }
+  catch(e){ if(run === FB_RUN) fbCut(e.message); }
+}
+function fbPress(k, on){
+  if(FB_ON[k] === on) return;
+  if(on){
+    const st = fbNow();
+    if(!st.ok){ $("fb-msg").textContent = st.block; return; }
+  }
+  FB_ON[k] = on;
+  fbSend(true);
+}
+function renderFireball(){
+  const v = FB, st = fbNow();
+  if(st.cut && fbAny()){ fbCut(st.cut); return; }
+  $("fb-armed").textContent = !v ? "Not known yet" : !v.available ? "Not available" :
+    v.armed === "armed" ? "ARMED" + (v.group ? " (safety channel " + v.group.safety + ")" : "") :
+    v.armed === "off" ? "Not armed" : "Armed: not known";
+  $("fb-armed").className = "fb-armed" + (v && v.armed === "armed" ? " on" : "");
+  const blk = st.block && st.block !== "Arm the Fireball first." ? st.block : "";
+  $("fb-block").hidden = !blk; $("fb-block").textContent = blk;
+  $("fb-note").textContent = st.text;
+  $("fb-disarm").hidden = !(v && v.available);
+  const ctl = (v && v.controls) || [];
+  const key = ctl.map(c => c.key + c.slot).join(",");
+  const box = $("fb-pads");
+  if(box.dataset.key !== key){
+    box.dataset.key = key;
+    box.innerHTML = ctl.map(c => `<button class="fb-pad" data-k="${esc(c.key)}" data-kind="${esc(c.kind)}"><b>${esc(c.label)}</b><span class="fb-st">OFF</span><small>${c.kind === "toggle" ? "Press: on, press again: off" : "Hold: on only while held"}, channel ${esc(c.slot)}</small></button>`).join("");
+  }
+  box.querySelectorAll(".fb-pad").forEach(b => {
+    const on = !!FB_ON[b.dataset.k];
+    b.classList.toggle("on", on);
+    b.classList.toggle("na", !st.ok && !on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.setAttribute("aria-disabled", st.ok || on ? "false" : "true");
+    b.querySelector(".fb-st").textContent = on ? "ON" : "OFF";
+  });
+}
+// Never the disabled attribute on a pad: a held button that turned
+// disabled could lose its lift. A pad that may not be pressed only says so.
+$("fb-pads").addEventListener("click", e => {
+  const b = e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "toggle") return;
+  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);
+});
+$("fb-pads").addEventListener("pointerdown", e => {
+  const b = e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "momentary") return;
+  e.preventDefault();
+  try{ b.setPointerCapture(e.pointerId); }catch(err){}
+  fbPress(b.dataset.k, true);
+});
+for(const ev of ["pointerup", "pointercancel", "lostpointercapture"]){
+  $("fb-pads").addEventListener(ev, e => {
+    const b = e.target.closest && e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "momentary") return;
+    fbPress(b.dataset.k, false);
+  });
+}
+$("fb-pads").addEventListener("contextmenu", e => { if(e.target.closest(".fb-pad")) e.preventDefault(); });
+window.addEventListener("blur", () => fbRelease("the page lost focus"));
+document.addEventListener("visibilitychange", () => { if(document.hidden) fbCut("the page was hidden"); });
+window.addEventListener("pagehide", () => fbCut("the page closed"));
+// All off: this page's channels, and any other screen's too.
+$("fb-alloff").addEventListener("click", () => {
+  fbCut("All off pressed");
+  post("/api/remote/fireball-off", actor({})).then(j => { $("fb-msg").textContent = j.text || "All off."; }).catch(e => { $("fb-msg").textContent = e.message; });
+});
+$("fb-disarm").addEventListener("click", async () => {
+  fbCut("Disarm Fireball pressed");
+  if(!FB || !FB.group) return;
+  try{ const j = await post("/api/remote/group-disarm", actor({group:FB.group.name})); $("fb-msg").textContent = j.text || "Disarm sent."; }
+  catch(e){ $("fb-msg").textContent = e.message; }
 });
 
 // WEATHER (weather.py, WEATHER.md): its own slow poll, display only. A

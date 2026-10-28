@@ -2676,7 +2676,12 @@ def test_property_a_disarmed_group_never_fires():
                     if prev_safety[i] == 0:
                         quiet_left[i] = rules.EDGE_QUIET_FRAMES + 1
                     if quiet_left[i] > 0:
-                        ok &= check(fire == [0] * len(fire),
+                        # An aim slot (2026-10-28) points a head and is
+                        # not held through the window; every other fire
+                        # slot is.
+                        ok &= check(all(v == 0 if f not in g.aim else
+                                        v in (0, commanded[f - 1])
+                                        for f, v in zip(g.fire, fire)),
                                     f"case {case} step {step}: {g.name} "
                                     f"fired inside the edge-quiet window")
                         quiet_left[i] -= 1
@@ -5360,6 +5365,7 @@ def _plain(**over):
     """The example with no safety_profile anywhere (as before 2026-10-26)."""
     d = example_dict()
     d["groups"][WAVE].pop("safety_profile")
+    d["groups"][WAVE].pop("aim")   # aim needs a profile (review of #147)
     d["groups"][WAVE].update(over)
     return d
 
@@ -5594,16 +5600,237 @@ def test_safety_profile_composes():
           and r.group(WAVE)["reason"] == composer.ABORT_DISARMED,
           f"the Abort lowers the profile group to 0: {r.group(WAVE)}")
     # The edge gate is the same for a profile group: a fire slot high on
-    # the rising edge holds the arm.
+    # the rising edge holds the arm. Slot 2 (speed): slot 1 is the angle,
+    # an aim slot the gate leaves out (2026-10-28).
     r = Rig()
     r.prove_alive()
-    r.run(2, {1: 200})
+    r.run(2, {2: 200})
     r.inp.set(WAVE)
-    r.run(3, {1: 200})
+    r.run(3, {2: 200})
     check(safeties_on_wire(r) == [0, 0, 0]
           and r.group(WAVE)["armed"] == "held",
           f"a fire slot high on the edge still holds the profile group: "
           f"{r.group(WAVE)}")
+
+
+# The example's wave flamer angle channels (2026-10-28).
+WAVE_AIM = [1, 7, 13]
+WAVE_FLAME = [f for f in WAVE_FIRE if f not in WAVE_AIM]
+
+
+def test_aim_slots_point_the_head_and_never_hold_the_arm():
+    section("aim slots (2026-10-28): the wave flamer's angle at 128 neither "
+            "holds the arm nor is zeroed through the edge-quiet window; "
+            "every flame slot keeps both rules")
+    cfg = make_config()
+    w = cfg.groups[WAVE]
+    check(w.aim == frozenset(WAVE_AIM),
+          f"the example lists the three angle channels as aim: {w.aim}")
+    check(all(not g.aim for i, g in enumerate(cfg.groups) if i != WAVE),
+          "no other example group has aim slots")
+
+    def refused(aim, want):
+        d = example_dict()
+        d["groups"][WAVE]["aim"] = aim
+        try:
+            config.from_dict(d)
+        except config.ConfigError as e:
+            return check(want in str(e), f"aim {aim!r} refused for the "
+                                         f"right reason: {e}")
+        return check(False, f"aim {aim!r} was accepted")
+
+    refused(6, "must be a list")
+    refused([401], "not one of this group's fire slots")
+    refused([6], "not one of this group's fire slots")
+    refused([True], "not one of this group's fire slots")
+    refused([1, 1], "listed twice")
+    refused(list(WAVE_FIRE), "every fire slot is an aim slot")
+    # A typo must not free a fuel slot (review, 2026-10-28): one aim slot
+    # per fixture, the same channel of each, and with a safety_profile only
+    # each fixture's first channel (the angle).
+    refused([2, 3, 4, 5], "are in one fixture")
+    refused([1, 2], "are in one fixture")
+    refused([1, 7, 14], "not the same channel of each fixture")
+    refused([2, 7, 13], "not the same channel of each fixture")
+    refused([2, 8, 14], "not channel 1 of its fixture (slot 1)")
+    refused([5], "not channel 1 of its fixture (slot 1)")
+    # Channel 1 is pinned by the safety slot, not by the fire list: with
+    # slot 1 left out of fire, the speed channels are still refused.
+    d = example_dict()
+    d["groups"][WAVE].update(aim=[2, 8, 14],
+                             fire=[f for f in WAVE_FIRE if f not in WAVE_AIM])
+    try:
+        config.from_dict(d)
+        check(False, "aim on the speed channels was accepted")
+    except config.ConfigError as e:
+        check("not channel 1 of its fixture" in str(e),
+              f"aim on the speed channels is refused: {e}")
+    d = example_dict()
+    d["groups"][WAVE].update(safety=[6, 12], aim=[1, 13],
+                             fire=[1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13])
+    try:
+        config.from_dict(d)
+        check(False, "an aim slot after the last safety slot was accepted")
+    except config.ConfigError as e:
+        check("in no fixture" in str(e), f"an aim slot after the last "
+                                         f"safety slot is refused: {e}")
+    # aim exists only for a safety_profile group (review of #147): a
+    # G-Flame's fuel slot, or the wave flamer with its profile deleted,
+    # is refused.
+    for gname, aim, upd in (("front row", [413], {}),
+                            ("cat-walk", [423], {}),
+                            ("wave flamer", [3, 9, 15],
+                             {"safety_profile": None})):
+        d = example_dict()
+        g = next(x for x in d["groups"] if x["name"] == gname)
+        g["aim"] = aim
+        for k, v in upd.items():
+            g.pop(k)
+        try:
+            config.from_dict(d)
+            check(False, f"{gname} aim {aim} was accepted")
+        except config.ConfigError as e:
+            check("only for a group with a safety_profile" in str(e),
+                  f"{gname} aim {aim} is refused: {e}")
+    # Each aimed fixture is one 6 channel block: a safety slot typo with
+    # the aim moved to match is refused.
+    d = example_dict()
+    d["groups"][WAVE].update(safety=[8, 14, 20], aim=[3, 9, 15],
+                             fire=[1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13,
+                                   15, 16, 17, 18, 19])
+    try:
+        config.from_dict(d)
+        check(False, "a fixture that is not one 6 channel block was taken")
+    except config.ConfigError as e:
+        check("is not one 6 channel block" in str(e),
+              f"a fixture that is not one 6 channel block is refused: {e}")
+    for ok in ([1, 7, 13], [1, 7], [13]):
+        d = example_dict()
+        d["groups"][WAVE]["aim"] = ok
+        check(config.from_dict(d).groups[WAVE].aim == frozenset(ok),
+              f"aim {ok} (angle channels only) is accepted")
+    d = example_dict()
+    del d["groups"][WAVE]["aim"]
+    check(config.from_dict(d).groups[WAVE].aim == frozenset(),
+          "a group without aim has none, and behaves as before")
+
+    # Arming with every angle at straight up (128) and every flame slot at
+    # zero: the rise happens.
+    straight_up = {a: 128 for a in WAVE_AIM}
+    r = Rig()
+    r.prove_alive()
+    r.run(2, straight_up)
+    r.inp.set(WAVE)
+    r.run(1, straight_up)
+    check(safeties_on_wire(r) == [WAVE_ARM] * 3
+          and r.group(WAVE)["armed"] == "armed",
+          f"the angles at 128 do not hold the arm: {safeties_on_wire(r)} "
+          f"{r.group(WAVE)['reason']}")
+    # Inside the edge-quiet window: the angles go out, a flame slot does
+    # not.
+    cue = dict(straight_up)
+    cue[3] = 255
+    r.run(1, cue)
+    u = r.out.universe
+    check([u[a - 1] for a in WAVE_AIM] == [128] * 3 and u[3 - 1] == 0,
+          f"in the edge-quiet window the angles are sent and the fire "
+          f"channel is held: {[u[a - 1] for a in WAVE_AIM]} {u[2]}")
+    r.run(rules.EDGE_QUIET_FRAMES + 1, cue)
+    u = r.out.universe
+    check(u[3 - 1] == 255 and u[1 - 1] == 128,
+          f"after the window the fire channel goes out too: {u[2]} {u[0]}")
+    # The head follows the angle while armed.
+    for v in (54, 201, 0, 255):
+        cue[1] = v
+        r.run(1, cue)
+        check(r.out.universe[0] == v,
+              f"the angle follows the show: {v} -> {r.out.universe[0]}")
+    # Disarmed, the angle is zero like every fire slot.
+    r.inp.set(WAVE, on=False)
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15,
+          f"a disarm zeroes the angles too: {r.fire(WAVE)}")
+    # Every real flame slot still holds the arm when high on the edge.
+    for f in WAVE_FLAME:
+        r = Rig()
+        r.prove_alive()
+        hot = dict(straight_up)
+        hot[f] = rules.GFLAME_EDGE_BELOW
+        r.run(2, hot)
+        r.inp.set(WAVE)
+        r.run(3, hot)
+        check(safeties_on_wire(r) == [0, 0, 0]
+              and r.group(WAVE)["reason"] == "dirty edge",
+              f"flame slot {f} high on the edge still holds the arm: "
+              f"{r.group(WAVE)['reason']}")
+    # A locked out angle is zero, like any locked fire slot.
+    r = armed_wave()
+    r.c.note_locked_slots({1})
+    r.run(rules.EDGE_QUIET_FRAMES + 2, straight_up)
+    check(r.out.universe[0] == 0 and r.out.universe[6] == 128,
+          f"a locked out aim slot stays zero: {r.out.universe[0]} "
+          f"{r.out.universe[6]}")
+
+
+# =========================================================================
+# The Fireball page (Jeff, 2026-10-28): Jeff's fireball group as the Pico's
+# flamesafe.json has it. Its Valve Open (slot 57) is not a G-Flame channel,
+# so nothing on the head itself holds it: flamesafe must.
+# =========================================================================
+
+FB_SAFETY, FB_FIRE = 77, [55, 56, 57, 58, 59]
+
+
+def fireball_rig():
+    d = example_dict()
+    groups = d["groups"]
+    i = next(k for k, g in enumerate(groups) if g["name"] == "fireball")
+    groups[i] = {"name": "fireball", "safety": FB_SAFETY, "fire": FB_FIRE}
+    r = Rig(gflame_range="60-80%", arm_value=157, accept_unsourced_risk=True,
+            groups=groups)
+    return r, i
+
+
+def test_fireball_fire_slots_are_zero_unless_armed():
+    section("the fireball group (safety 77 at 157, fire 55 to 59): every "
+            "fire slot, the Valve Open (57) included, is zero on the wire "
+            "unless the group is armed; it never arms while a fire slot is "
+            "15 or more; a disarm zeroes them at once")
+    r, i = fireball_rig()
+    r.prove_alive()
+    hot = {s: 255 for s in FB_FIRE}
+    r.run(5, hot)
+    check([r.out.universe[s - 1] for s in FB_FIRE] == [0] * 5 and
+          r.safety(i) == 0,
+          f"disarmed: 255 on every fireball slot from ltcplay is zero on "
+          f"the wire: {[r.out.universe[s - 1] for s in FB_FIRE]}")
+    check(r.out.universe[57 - 1] == 0, "the Valve Open is zero disarmed")
+    for slot in FB_FIRE:
+        r2, i2 = fireball_rig()
+        r2.prove_alive()
+        r2.run(2, {slot: rules.GFLAME_EDGE_BELOW})
+        r2.inp.set(i2)
+        r2.run(4, {slot: rules.GFLAME_EDGE_BELOW})
+        g = r2.group(i2)
+        check(r2.safety(i2) == 0 and g["armed"] == "held" and
+              g["reason"] == "dirty edge",
+              f"slot {slot} at 15 on the arm tick: the fireball does not arm "
+              f"({g['armed']}, {g['reason']})")
+        check(all(r2.out.universe[s - 1] == 0 for s in FB_FIRE),
+              f"and slot {slot} stays zero on the wire")
+    # Clean edge: everything zero, then arm, then the valve.
+    r.run(3, {})
+    r.inp.set(i)
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {})
+    check(r.safety(i) == 157 and r.group(i)["armed"] == "armed",
+          f"everything zero: the fireball arms at 157: {r.group(i)['armed']}")
+    r.run(2, {57: 255})
+    check(r.out.universe[57 - 1] == 255,
+          "armed: the Valve Open passes through")
+    r.inp.set(i, on=False)
+    r.step()
+    check(r.out.universe[57 - 1] == 0 and r.safety(i) == 0,
+          "a disarm: the Valve Open is zero on the very next tick")
 
 
 if __name__ == "__main__":
@@ -5616,6 +5843,7 @@ if __name__ == "__main__":
     test_rule6_consent()
     test_rule2_dirty_edge_holds_the_arm()
     test_rule3_edge_quiet_frames()
+    test_aim_slots_point_the_head_and_never_hold_the_arm()
     test_rule4_dwell()
     test_rule5_chatter()
     test_rule7_interruptions_clear_the_latches()
@@ -5695,6 +5923,7 @@ if __name__ == "__main__":
     test_multi_safety_a_dropped_safety_disarms_the_group()
     test_safety_profile_config()
     test_safety_profile_composes()
+    test_fireball_fire_slots_are_zero_unless_armed()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

@@ -205,6 +205,15 @@ class ShowAudioPlayhead:
             return self._play_from(show_s, who, screen)
 
     def _play_from(self, show_s, who, screen):
+        # A Start now waiting for the show audio is cancelled: it must not
+        # start a show over this playback (#144's wait; Start now asks
+        # again under the scheduler's lock too, start_veto).
+        cancel = getattr(self.schedule, "cancel_start_wait", None)
+        if cancel is not None:
+            try:
+                cancel("Play from was pressed on the Programming screen")
+            except Exception:                       # noqa: BLE001
+                pass
         s = self._session()
         cond = self._conductor()
         if cond is not None and getattr(cond, "latched", False):

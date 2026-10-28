@@ -1,7 +1,7 @@
 {
   "flamesafe_config": 1,
   "confirmed": false,
-  "note": "UNCONFIRMED. This is the rev 6 fixture table from the flame panel spec (2026-09-18). Andy Win has not confirmed the flame universe number, the group map, the safety and fire slots, or the arm value (open since rev 9). The destination is loopback on purpose: set it to the PixLite Aux port only when Andy has confirmed every number above. Replace link.key with a value of your own and put the same value in ltcplay's config. The wave flamer group is three 6-channel fixtures armed as one group (channels 1 to 5 of each are fire slots, channel 6 is that fixture's own safety slot): slots 1 to 18 of universe 1, as Jeff gave them on 2026-10-26. The wave flamer is not a G-Flame: its safety_profile arms it at 178, Jeff's number, which he retunes here (a restart picks up a change). A profile may also carry enable_lo and enable_hi (both or neither) and fire_at; each is an optional guard on that number, explained in CONTRACT.md. Every other group arms at the file's arm_value. A safety slot in the lockout file stays at zero and that fixture is left out of the group's arm.",
+  "note": "UNCONFIRMED. This is the rev 6 fixture table from the flame panel spec (2026-09-18). Andy Win has not confirmed the flame universe number, the group map, the safety and fire slots, or the arm value (open since rev 9). The destination is loopback on purpose: set it to the PixLite Aux port only when Andy has confirmed every number above. Replace link.key with a value of your own and put the same value in ltcplay's config. The wave flamer group is three 6-channel fixtures armed as one group (channels 1 to 5 of each are fire slots, channel 6 is that fixture's own safety slot): slots 1 to 18 of universe 1, as Jeff gave them on 2026-10-26. The wave flamer is not a G-Flame: its safety_profile arms it at 178, Jeff's number, which he retunes here (a restart picks up a change). A profile may also carry enable_lo and enable_hi (both or neither) and fire_at; each is an optional guard on that number, explained in CONTRACT.md. Every other group arms at the file's arm_value. Slots 1, 7 and 13 are the wave flamers' angle channels, listed as aim: they point the nozzle and never light it, so they are left out of the rising-edge check and ltcplay's zero-first hold (2026-10-28). A safety slot in the lockout file stays at zero and that fixture is left out of the group's arm.",
   "universe": 1,
   "destination": {"ip": "127.0.0.1", "port": 5568},
   "link": {"listen_ip": "127.0.0.1", "listen_port": 5571,
@@ -25,7 +25,8 @@
      "safety_profile": {"arm_value": 178},
      "fire": [1, 2, 3, 4, 5,
               7, 8, 9, 10, 11,
-              13, 14, 15, 16, 17]},
+              13, 14, 15, 16, 17],
+     "aim": [1, 7, 13]},
     {"name": "pump",        "safety": 404, "fire": [441]},
     {"name": "fireball",    "safety": 405, "fire": [451]},
     {"name": "spare",       "safety": 406, "fire": [461]}

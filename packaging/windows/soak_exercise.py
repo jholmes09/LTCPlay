@@ -4,9 +4,14 @@ everything).
 
 The exerciser presses only the real paths, with the real consent rules:
 
-  - it chooses the Stream Deck's operator on the rack screen (the deck's
-    operator gate), exactly as a person on the show machine would; the
-    page itself has no sign-in (Jeff, 2026-10-07);
+  - it signs in on the rack screen at the real sign-in route
+    (soak_signin.py: signed out is view only since PR #143) and chooses
+    the Stream Deck's operator there (the deck's operator gate), exactly
+    as a person on the show machine would; every press but the safety
+    ones goes with that sign-in, and the deck acts as that user;
+  - Hold, Abort, a group's Disarm and letting go of a hold are each
+    pressed signed out (no cookie) the first time, as a check that a
+    signed-out screen can still do them;
   - it arms each flame group by HOLDING its Arm button on the screen
     (/api/remote/arm-hold, a heartbeat every 100 ms, then arm-release):
     a remote press of the group's key on the real Stream Deck program,
@@ -69,7 +74,7 @@ class Http:
         self.base = base
         self.timeout = timeout
 
-    def __call__(self, method, path, body=None):
+    def __call__(self, method, path, body=None, signed_out=False):
         data = None if method == "GET" else json.dumps(body or {}).encode()
         h = {"Content-Type": "application/json"}
         req = urllib.request.Request(self.base + path, data=data, headers=h,
@@ -95,6 +100,9 @@ class Exerciser:
     def __init__(self, http, groups, show_time, show_number, armed, note,
                  clock=time.monotonic, sleep=time.sleep, show_s=100.0):
         self.http = http
+        # The safety presses already made once signed out (route -> the
+        # status it answered): Hold, Abort, Disarm, letting go.
+        self.signed_out_done = {}
         self.hold_at, self.abort_at = plan_for(show_s)
         self.groups = list(groups)
         self.show_time = show_time
@@ -127,21 +135,45 @@ class Exerciser:
         self.note(f"exerciser: {what} failed: {why}")
 
     def sign_in(self):
-        """Ready the rack screen: no sign-in any more (Jeff, 2026-10-07),
-        only the Stream Deck's operator, which its own gate needs before
-        it arms anything, chosen on this machine as a person would."""
+        """Ready the rack screen: sign in at the real route on this
+        machine (signed out is view only, PR #143; soak_signin.SignedIn),
+        then choose the Stream Deck's operator, which its own gate needs
+        before it arms anything, as the person signed in."""
+        who = getattr(self.http, "name", OPERATOR)
+        fn = getattr(self.http, "sign_in", None)
+        if fn is not None and not getattr(self.http, "token", "") and \
+                not fn():
+            self._fail(f"signing in as {who} on the rack screen",
+                       {"error": getattr(self.http, "last_error", "")})
+            return False
         st, doc = self.http("POST", "/api/schedule/operator",
-                            {"who": OPERATOR, "screen": "Rack screen"})
+                            {"who": who, "screen": "Rack screen"})
         if st != 200:
             self._fail("choosing the Stream Deck's operator", doc)
             return False
-        self.note(f"exerciser: chose {OPERATOR} as the Stream Deck's "
-                  f"operator on the rack screen")
+        self.note(f"exerciser: signed in and chose {who} as the Stream "
+                  f"Deck's operator on the rack screen")
         self.ready = True
         return True
 
+    def safety(self, method, path, body):
+        """A safety press (Hold, Abort, a Disarm, letting go): the first
+        of each is sent signed out, and must not be refused for it."""
+        if path in self.signed_out_done:
+            return self.http(method, path, body)
+        st, doc = self.http(method, path, body, signed_out=True)
+        self.signed_out_done[path] = st
+        if st == 403 and isinstance(doc, dict) and doc.get("role_refused"):
+            self._fail(f"{path} pressed signed out (it must always work)",
+                       doc)
+        else:
+            self.note(f"exerciser: {path} pressed signed out: {st}")
+        return st, doc
+
     def press(self, route, **extra):
         body = dict(extra, seen=self._seen())
+        if route in ("hold", "abort"):
+            return self.safety("POST", "/api/remote/" + route, body)
         return self.http("POST", "/api/remote/" + route, body)
 
     def arm(self, i):
@@ -155,8 +187,8 @@ class Exerciser:
         ok = self._hold(i, name)
         if ok == "cycle":
             self.counts["cycles"] += 1
-            self.http("POST", "/api/remote/group-disarm",
-                      {"group": i, "seen": self._seen()})
+            self.safety("POST", "/api/remote/group-disarm",
+                        {"group": i, "seen": self._seen()})
             self.sleep(REFRACTORY_S)
             ok = self._hold(i, name)
         ok = ok is True
@@ -197,7 +229,7 @@ class Exerciser:
                 ok = True
                 break
             self.sleep(BEAT_S)
-        self.http("POST", "/api/remote/arm-release", {"group": i})
+        self.safety("POST", "/api/remote/arm-release", {"group": i})
         if ok is False and self.armed().get(name):
             ok = True
         return ok
@@ -501,7 +533,7 @@ def self_test():
     v4[99] = 1
     j.packet(v4, 6.0, {"front row": True, "cat-walk": False}, True, None)
     assert "belong to no group" in j.violations[-1][1]
-    ex0 = Exerciser(lambda *a: (200, {}), ["front row"], lambda: None,
+    ex0 = Exerciser(lambda *a, **k: (200, {}), ["front row"], lambda: None,
                     lambda: 0, lambda: {}, lambda t: None)
     ex0.windows.append([100.0, None, "abort"])
     va = [0] * 512
@@ -534,8 +566,10 @@ def self_test():
     state = {"armed": {"front row": False, "cat-walk": False}, "t": 0.0,
              "beats": {}, "calls": []}
 
-    def http(method, path, body=None):
+    def http(method, path, body=None, signed_out=False):
         state["calls"].append((method, path, dict(body or {})))
+        if signed_out:
+            state.setdefault("signed_out", []).append(path)
         if path == "/api/remote/status":
             return 200, {"served_at": 1}
         if path == "/api/remote/arm-hold":
@@ -592,14 +626,14 @@ def self_test():
     state["beats"] = {0: 99, 1: 99}      # still asked for: held, not armed
     real_http = http
 
-    def http2(method, path, body=None):
+    def http2(method, path, body=None, signed_out=False):
         if path == "/api/remote/group-disarm":
             state["beats"][body["group"]] = 0
         if path == "/api/remote/arm-hold" and \
                 state["beats"].get(body["group"], 0) >= 99:
             state["calls"].append((method, path, dict(body or {})))
             return 409, {"error": "already armed or asked for."}
-        return real_http(method, path, body)
+        return real_http(method, path, body, signed_out)
     ex.http = http2
     ex.step()
     assert ex.counts["arms"] == 4 and ex.counts["cycles"] == 2, ex.counts
@@ -609,8 +643,19 @@ def self_test():
     ex.windows.append([time.time(), None, "abort"])
     assert "after the Abort" in ex.fire_quiet("front row", time.time() + 1)
     assert not ex.failures, ex.failures
-    yield ("the exerciser chooses the Stream Deck's operator (no "
-           "sign-in), holds "
+    assert sorted(state["signed_out"]) == sorted(
+        ["/api/remote/arm-release", "/api/remote/hold", "/api/remote/abort",
+         "/api/remote/group-disarm"]), state["signed_out"]
+    # A signed-out safety press refused for it is a failure.
+    ex3 = Exerciser(lambda m, p, b=None, signed_out=False: (
+        (403, {"error": "Nobody is signed in", "role_refused": True})
+        if signed_out else (200, {})), ["front row"], lambda: None,
+        lambda: 0, lambda: {}, lambda t: None)
+    ex3.press("hold")
+    assert ex3.failures and "signed out" in ex3.failures[0][1]
+    yield ("the exerciser signs in and chooses the Stream Deck's operator "
+           "as that user, presses Hold, Abort, a Disarm and a let go "
+           "signed out once each (refused for it: a failure), holds "
            "each Arm button with heartbeats until flamesafe reports it "
            "armed, Holds and Resumes, Aborts (confirmed), Resets once it "
            "is taken, and re-arms on the next show")

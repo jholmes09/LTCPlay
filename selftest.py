@@ -34460,7 +34460,9 @@ def test_schedule_failed_start_leaves_groups_and_raises_an_alert():
           f"as they were: {rows[-1:]} {sent[:1]}")
     open_ = alerts.open()
     check(len(open_) == 1 and open_[0].kind == "start"
-          and open_[0].text == svc.FAILED_START_ALERT
+          and open_[0].text.startswith(svc.start_alert(
+              1, "no timecode", svc.FAILED_START_ALERT))
+          and open_[0].text.startswith("Show 1 did not start: no timecode.")
           and "stays as it was" in open_[0].text
           and "Acknowledge" in open_[0].text,
           f"one 'start' alert is raised, saying the groups stay as they were "
@@ -34496,7 +34498,8 @@ def test_schedule_failed_start_leaves_groups_and_raises_an_alert():
     bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
     rows = [r for r in bare.journal if r.get("action") == S.SHOW_FAILED]
     check(rows and S.FAILED_START_NOT_DISARMED in rows[-1]["text"]
-          and raised == [("start", bare.FAILED_START_ALERT)],
+          and raised == [("start", bare.start_alert(
+              1, "no timecode", bare.FAILED_START_ALERT))],
           f"with no conductor the line says the same and the alert is "
           f"raised too: {rows[-1:]} {raised}")
     # An alert sink that raises never stops the scheduler.
@@ -36538,8 +36541,10 @@ def test_fire_ice_serves_the_rack_screen_not_the_old_page():
         st, _h, page = _ask(httpd, "GET", "/remote", client=local)
         check(st == 200 and "index.html" not in str(page),
               "the rack screen is served and never links the old page")
+        # Stop is the engine's complete halt, from any screen (Jeff,
+        # 2026-10-28): Remote.stop_press, the Stream Deck's Stop.
         check('id="b-run"' in str(page) and '"/api/start"' in str(page)
-              and '"/api/stop"' in str(page),
+              and '"/api/remote/stop"' in str(page),
               "the rack screen has Run and Stop of its own, through the "
               "engine's own guarded routes")
     finally:
@@ -38060,16 +38065,838 @@ def test_a_refused_start_sends_no_fade():
     check(s1 and s1[0].status == S.FAULT and svc.machine.state == S.STANDBY,
           f"show 1 is a fault and the night carries on: {s1} "
           f"{svc.machine.state}")
-    check(got and got[-1] == ("start", svc.REFUSED_START_ALERT) and
+    check(got and got[-1] == ("start", svc.start_alert(
+              1, n.svc.performer.AUTO_START_OFF, svc.REFUSED_START_ALERT)) and
           "Nothing was sent" in svc.REFUSED_START_ALERT and
           "dark" not in svc.REFUSED_START_ALERT,
           f"the alert says nothing was sent, not that the rig went dark: "
           f"{got}")
+    check(got and got[-1][1].startswith("Show 1 did not start: auto_start "
+                                        "is off") and
+          "press Start now" in got[-1][1],
+          f"and says why, with what to press (Jeff, 2026-10-28): {got}")
     _no_dashes(svc.REFUSED_START_ALERT, "the refused start alert")
     _no_dashes(svc.RUN_NOT_PRESSED, "the held back line")
     _no_dashes(S.NOTHING_SENT_TO_RIG, "the refused start journal line")
     c.close()
     n.link.close()
+    print("  ok")
+
+
+# -- Jeff's field report, 2026-10-28: Stop, Reset from Hold, and every
+# refused start saying why ---------------------------------------------------
+
+def _fi_show_cue(n):
+    """The fake session given a show file with a show cue and an
+    intermission cue, each with its own show audio role on the clock, as
+    the real clock.audio.cues has them. Returns the clock."""
+    import types as _ty
+    n.sess.tl = _ty.SimpleNamespace(cues=[
+        _ty.SimpleNamespace(name="Show", path="/x/show.fseq",
+                            tc_text="00:00:00:00"),
+        _ty.SimpleNamespace(name="Intermission", path="/x/int.fseq",
+                            tc_text="01:00:00:00")])
+    clk = n.sess.clock
+    clk.cues = {"Show": ("show", 48000 * 60),
+                "Intermission": ("intermission", 48000 * 60)}
+    clk._loaded, clk._load_failed = set(), {}
+    return clk
+
+
+def test_refused_starts_say_why_and_what_to_press():
+    section("Jeff's field report (2026-10-28), refusals: a show refused with "
+            "Run off says so on its slot and in its alert, with what to "
+            "press; Start now with Run off, or while the show audio loads, "
+            "is refused at once in plain words (Loading, wait) and never "
+            "becomes a FAULT slot; every reason says what to press")
+    n = _fi_night(session=False, armed=False)
+    if n.S is None:
+        return
+    S, svc, F = n.S, n.svc, n.F
+    R = svc.performer
+    got = []
+    svc.alert_sink = lambda kind, text: got.append((kind, text))
+    _fi_walk(n, 18, 1)
+    s1 = [s for s in svc.machine.slots if s.n == 1]
+    check(s1 and s1[0].status == S.FAULT and R.RUN_OFF in s1[0].reason and
+          "press Run on the Programming screen" in s1[0].reason,
+          f"the slot's status on the rack screen names the reason and what "
+          f"to press: {s1}")
+    check(got and got[-1][0] == "start" and
+          got[-1][1].startswith("Show 1 did not start: Run has not been "
+                                "pressed") and
+          "press Run on the Programming screen, then Start now" in got[-1][1]
+          and "Nothing was sent to the rig" in got[-1][1],
+          f"the alert says why and what to press, never only that the show "
+          f"did not start: {got[-1:]}")
+    check(all(t != "The show did not start." and
+              not t.startswith("The show did not start. ") for _k, t in got),
+          f"no generic alert is left: {got}")
+    # Start now with Run off: refused at once, with the reason.
+    slots0 = len(svc.machine.slots)
+    sv = svc.state_view()
+    check(sv.get("start_blocked") == {"text": R.RUN_OFF, "loading": False},
+          f"the status says what Start now would be refused with: "
+          f"{sv.get('start_blocked')}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and r["text"].startswith(
+              "Start now was refused: Run has not been pressed") and
+          "press Run on the Programming screen" in r["text"] and
+          "Nothing was started" in r["text"],
+          f"Start now with Run off says why at once: {r}")
+    check(len(svc.machine.slots) == slots0,
+          f"and adds no show and no FAULT: {len(svc.machine.slots)} "
+          f"{slots0}")
+    rows = [x for x in svc.journal if x.get("action") == "start-now" and
+            x.get("outcome") == "refused"]
+    check(rows and R.RUN_OFF.split(";")[0] in rows[-1]["text"],
+          f"journaled as a refused press, with the reason: {rows[-1:]}")
+    n.c.close()
+    n.link.close()
+
+    # Run pressed, the show audio still loading (Start now 4 s after Run):
+    # Start now waits for it, a bounded time, and Stop, Hold or Abort ends
+    # the wait (review of #144, F2). Only the show cue's own audio counts
+    # (F3): a slow or broken intermission file never holds a start back.
+    import threading as _th
+    import types as _ty
+    n = _fi_night(armed=False)
+    S, svc = n.S, n.svc
+    R = svc.performer
+    clk = n.sess.clock
+    n.sess.tl = _ty.SimpleNamespace(cues=[
+        _ty.SimpleNamespace(name="Show", path="/x/show.fseq",
+                            tc_text="00:00:00:00"),
+        _ty.SimpleNamespace(name="Intermission", path="/x/int.fseq",
+                            tc_text="01:00:00:00")])
+    clk.cues = {"Show": ("show", 48000 * 60),
+                "Intermission": ("intermission", 48000 * 60)}
+    clk._live, clk._device_ok = True, True
+    clk._loaded, clk._load_failed = set(), {}
+    svc.START_WAIT_S = 0.6
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    sb = svc.state_view().get("start_blocked")
+    check(sb == {"text": R.AUDIO_LOADING, "loading": True},
+          f"loading: the status says so, for the button's state: {sb}")
+    slots0 = len(svc.machine.slots)
+    t0 = time.monotonic()
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    took = time.monotonic() - t0
+    check(r["ok"] is False and r.get("loading") is True and
+          "still loading after 0.6 s" in r["text"] and took >= 0.5 and
+          len(svc.machine.slots) == slots0,
+          f"Start now while the audio never loads: waits its bounded time, "
+          f"then refused saying so, no FAULT slot: {r} {took:.2f} s")
+    # It loads while Start now waits: the show starts.
+    svc.START_WAIT_S = 5.0
+    seen = []
+
+    def load_later():
+        time.sleep(0.3)
+        seen.append(svc.state_view().get("start_waiting"))
+        clk._loaded = {"show"}
+    th = _th.Thread(target=load_later)
+    th.start()
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    th.join()
+    check(seen == [True] and r["ok"] is True and
+          svc.machine.state == S.SHOW,
+          f"Start now waited for the audio and started the show once it "
+          f"loaded (the status said it was waiting): {seen} {r} "
+          f"{svc.machine.state}")
+    check(not svc.start_waiting(), "and nothing waits any more")
+    n.c.close()
+    n.link.close()
+
+    # Hold, and Stop, end the wait: nothing starts.
+    for how in ("hold", "stop"):
+        n = _fi_night(armed=False)
+        S, svc = n.S, n.svc
+        clk = _fi_show_cue(n)
+        clk._loaded = set()
+        svc.START_WAIT_S = 5.0
+        n.now[0] = _den(S, 17, 56)
+        svc.tick()
+
+        def press_later(how=how, svc=svc):
+            time.sleep(0.3)
+            if how == "hold":
+                svc.operator_press("hold", "Andy", "Rack screen")
+            else:
+                svc.cancel_start_wait("Stop was pressed on the Rack screen")
+        th = _th.Thread(target=press_later)
+        th.start()
+        t0 = time.monotonic()
+        r = svc.operator_press("start-now", "Andy", "Rack screen")
+        took = time.monotonic() - t0
+        th.join()
+        clk._loaded = {"show"}
+        svc.tick()
+        check(r["ok"] is False and r.get("cancelled") is True and
+              took < 2.0 and svc.machine.state != S.SHOW and
+              not svc.machine.running,
+              f"{how} while Start now waits: the wait ends at once and "
+              f"nothing starts: {r} {took:.2f} s {svc.machine.state}")
+        n.c.close()
+        n.link.close()
+
+    # The rack screen's (or an iPad's) Stop ends the wait too: Remote's
+    # Stop is the complete halt, and it cancels a waiting Start now first.
+    R2 = _RemoteRig(S)
+    try:
+        sv = R2.svc
+        perf = _ty.SimpleNamespace(
+            start_blocked=lambda: {"text": "the show audio is still loading",
+                                   "loading": True},
+            start_show=lambda n, who="": None)
+        sv.performer, sv.dry_run = perf, False
+        sv.START_WAIT_S = 5.0
+
+        def stop_later():
+            time.sleep(0.3)
+            R2.remote.stop_press("Rack screen", "Rack screen")
+        th = _th.Thread(target=stop_later)
+        th.start()
+        t0 = time.monotonic()
+        r = sv.operator_press("start-now", "Andy", "Rack screen")
+        took = time.monotonic() - t0
+        th.join()
+        check(r["ok"] is False and r.get("cancelled") is True and
+              "Stop was pressed" in r["text"] and took < 2.0 and
+              not sv.machine.running,
+              f"a screen's Stop while Start now waits: nothing starts: {r} "
+              f"{took:.2f} s")
+    finally:
+        R2.close()
+
+    # Re-review of #144, N1: ANY Hold that is taken ends the wait, the
+    # announcement's and the engine's own at showtime included, not only an
+    # operator's Hold press. N2: while a Stop's halt is under way, Start now
+    # and Run are refused.
+    for how in ("announcement", "engine"):
+        n = _fi_night(armed=False)
+        S, svc = n.S, n.svc
+        clk = _fi_show_cue(n)
+        svc.START_WAIT_S = 5.0
+        n.now[0] = _den(S, 17, 56)
+        svc.tick()
+
+        def hold_later(how=how, svc=svc):
+            time.sleep(0.3)
+            if how == "announcement":
+                svc.hold_for_announcement("Andy", "Rack screen")
+            else:
+                with svc._locked():
+                    svc._apply(S.Event(S.HOLD_ON, "system",
+                                       who="LTC Player", screen="engine",
+                                       detail="held the schedule at "
+                                              "showtime because an alert "
+                                              "is open (test)"))
+            time.sleep(0.3)
+            clk._loaded = {"show"}
+        th = _th.Thread(target=hold_later)
+        th.start()
+        r = svc.operator_press("start-now", "Andy", "Rack screen")
+        th.join()
+        check(r["ok"] is False and r.get("cancelled") is True and
+              svc.machine.state == S.HOLD and not svc.machine.running,
+              f"N1: the {how}'s Hold ends a waiting Start now; no show "
+              f"starts over the Hold: {r} {svc.machine.state}")
+        n.c.close()
+        n.link.close()
+    n = _fi_night(armed=False)
+    S, svc = n.S, n.svc
+    clk = _fi_show_cue(n)
+    clk._loaded = {"show"}
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    svc.halt_begin()
+    try:
+        r = svc.operator_press("start-now", "Andy", "Rack screen")
+        check(r["ok"] is False and r.get("halting") is True and
+              "a Stop is under way" in r["text"] and
+              not svc.machine.running,
+              f"N2: Start now during a Stop's halt is refused: {r}")
+    finally:
+        svc.halt_end()
+    check(not svc.halting(), "and the halt is over after halt_end")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is True, f"after it, Start now works: {r}")
+    n.c.close()
+    n.link.close()
+    # A Hold landing just as the wait ends (after the last look, before
+    # the start is made) is caught again under the lock.
+    R4 = _RemoteRig(S)
+    try:
+        sv = R4.svc
+        calls = [0]
+
+        def blocked_then_held():
+            calls[0] += 1
+            if calls[0] == 1:
+                return {"text": "the show audio is still loading",
+                        "loading": True}
+            sv.cancel_start_wait("the schedule was put on Hold")
+            return None
+        sv.performer = _ty.SimpleNamespace(start_blocked=blocked_then_held,
+                                           start_show=lambda n, who="": None)
+        sv.dry_run = False
+        slots0 = len(sv.machine.slots)
+        r = sv.operator_press("start-now", "Andy", "Rack screen")
+        check(r["ok"] is False and r.get("cancelled") is True and
+              "just before it started" in r["text"] and
+              len(sv.machine.slots) == slots0,
+              f"a Hold just as the wait ended: refused under the lock, "
+              f"nothing started: {r}")
+    finally:
+        R4.close()
+    # C1: the engine's alert Hold taken by the tick the start itself makes
+    # (showtime arrives as the wait ends) cancels it too.
+    import tempfile as _tf1
+    work = _tf1.mkdtemp()
+    now1 = [_den(S, 17, 59, 50)]
+    sv = _svc(S, work, now1, rule=_sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": "22:00"}}, exceptions={},
+        late_grace_s=15))
+    sv.tick()
+    gate = [False]
+    sv.showtime_gate = (lambda: ("an alert is open", frozenset({1}))
+                        if gate[0] else None)
+    calls = [0]
+
+    def loads_at_showtime():
+        calls[0] += 1
+        if calls[0] == 1:
+            return {"text": "the show audio is still loading",
+                    "loading": True}
+        now1[0] = _den(S, 18, 0)
+        gate[0] = True
+        return None
+    sv.performer = _ty.SimpleNamespace(start_blocked=loads_at_showtime,
+                                       start_show=lambda n, who="": None)
+    sv.dry_run = False
+    r = sv.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and r.get("cancelled") is True and
+          sv.machine.state == S.HOLD and not sv.machine.running,
+          f"C1: the alert Hold the start's own tick takes cancels it; no "
+          f"extra show over the Hold: {r} {sv.machine.state}")
+    sv.stop()
+    # N2 on the web side: Run is refused while a halt is under way.
+    from ltcplay import web as _web
+    _src = open(_web.__file__, encoding="utf-8").read()
+    check('if getattr(_svc, "halting", lambda: False)() is True:' in _src
+          and "return self._halt_stop(body, c)" in _src,
+          "Run (/api/start) is refused during a halt, and the deck's halt "
+          "counts as one")
+    R3 = _RemoteRig(S)
+    try:
+        R3.svc.halt_begin()
+        try:
+            st, _h, out = R3.ask("POST", "/api/start", {"timeline": "x"},
+                                 client=("127.0.0.1", 50000))
+        finally:
+            R3.svc.halt_end()
+        check(st == 409 and "a Stop is under way" in str(out),
+              f"Run during a Stop's halt: refused, saying why: {st} {out}")
+    finally:
+        R3.close()
+
+    # The other refusals before the show cue's audio, said at once.
+    n = _fi_night(armed=False)
+    S, svc = n.S, n.svc
+    R = svc.performer
+    clk = _fi_show_cue(n)
+    clk._live, clk._device_ok = True, True
+    clk._loaded, clk._load_failed = {"show"}, {
+        "intermission": "int.wav could not be read"}
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    check(svc.state_view().get("start_blocked") is None,
+          f"a broken intermission file never blocks the show (F3): "
+          f"{svc.state_view().get('start_blocked')}")
+    clk._load_failed = {}
+    check(svc.state_view().get("start_blocked") is None,
+          "nor does an intermission still loading")
+    clk._load_failed = {"show": "show.wav could not be read"}
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and "did not load" in r["text"] and
+          "show.wav could not be read" in r["text"] and
+          "press Stop and Run again" in r["text"],
+          f"audio that failed to load: says which and what to press: {r}")
+    clk._load_failed = {}
+    clk._device_ok, clk._fault = False, "The interface was unplugged."
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and "interface is not available" in r["text"] and
+          "unplugged" in r["text"],
+          f"the audio interface missing: says so: {r}")
+    clk._device_ok, clk._fault = True, None
+    check(svc.state_view().get("start_blocked") is None,
+          "loaded: nothing in the way")
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           confirmed=True)
+    check(r["ok"] is True and svc.machine.state == S.SHOW,
+          f"and Start now starts the show: {r} {svc.machine.state}")
+    n.c.close()
+    n.link.close()
+
+    # A scheduled start while the audio loads: the alert says to wait.
+    n = _fi_night(armed=False)
+    S, svc = n.S, n.svc
+    R = svc.performer
+    got = []
+    svc.alert_sink = lambda kind, text: got.append((kind, text))
+    clk = _fi_show_cue(n)
+    clk._loaded = set()
+    _fi_walk(n, 18, 1)
+    check(got and "still loading" in got[-1][1] and "wait" in got[-1][1] and
+          got[-1][1].startswith("Show 1 did not start: "),
+          f"a scheduled start refused while the audio loads: the alert says "
+          f"to wait: {got[-1:]}")
+    n.c.close()
+    n.link.close()
+
+    # Every reason the runner gives: plain words, what to press, no dash.
+    for name in ("AUTO_START_OFF", "RUN_OFF", "NOT_AUDIO_MASTER", "LATCHED",
+                 "AUDIO_LOADING", "AUDIO_FAILED", "AUDIO_DEVICE",
+                 "NEVER_CONFIRMED", "SHOW_START_ERROR"):
+        text = getattr(R, name)
+        _no_dashes(text, f"ShowRunner.{name}")
+        check("press" in text and not text.rstrip().endswith("."),
+              f"ShowRunner.{name} says what to press and ends without a "
+              f"full stop (it is wrapped in FAULT (...)): {text!r}")
+    # F8: a failure reported too late to be a failed start (the show runs
+    # on) raises no "did not start" alert.
+    import tempfile as _tf
+    now = [_den(S, 17, 59)]
+    bare = _svc(S, _tf.mkdtemp(), now)
+    raised = []
+    bare.alert_sink = lambda kind, text: raised.append((kind, text))
+    bare.tick()
+    now[0] = _den(S, 18, 0)
+    bare.tick()
+    now[0] = _den(S, 18, 0, 40)
+    bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    check(bare.machine.state == S.SHOW and raised == [],
+          f"a late failure: the show runs on and no did-not-start alert: "
+          f"{bare.machine.state} {raised}")
+    check("no reason was given" in svc.start_alert(3, "", "x") and
+          svc.start_alert(3, "a. ", "Tail.") == "Show 3 did not start: a. "
+                                                 "Tail.",
+          "an alert with no reason still never reads as only did not start")
+    for t in (svc.FAILED_START_ALERT, svc.REFUSED_START_ALERT):
+        _no_dashes(t, "the start alert's tail")
+    print("  ok")
+
+
+def test_reset_from_hold_ends_it_and_starts_nothing():
+    section("Jeff's field report (2026-10-28), Reset: from a show paused on "
+            "Hold, Reset ends the show (dark, nothing latched, no group "
+            "disarmed); from a Hold between shows it ends the Hold; it clears "
+            "the fault flag; it never starts a show; while an Abort stands "
+            "Reset is the Abort's as before")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/hold", {})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.PAUSED,
+              f"setup: the show is paused on Hold: {st} {out}")
+        before = R.rig.count("flames_disarm_all")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        m = R.svc.machine
+        s1 = m.slot(1)
+        check(st == 200 and out.get("ok") and m.state == S.STANDBY and
+              not m.running and s1.status == S.ABORTED and
+              "Reset" in s1.reason,
+              f"Reset from a paused show ends it: {st} {out} {m.state} {s1}")
+        check(not m.abort_latched and not R.c.latched and
+              R.rig.count("flames_disarm_all") == before,
+              f"nothing latched and no flame group disarmed by Reset: "
+              f"{m.abort_latched} {R.c.latched}")
+        check("Reset starts nothing" in out.get("text", ""),
+              f"the answer says Reset starts nothing: {out}")
+        _no_dashes(out.get("text", ""), "Reset from a paused show")
+        # A Hold between shows.
+        st, _h, out = R.ask("POST", "/api/remote/hold", {})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD,
+              f"setup: on Hold between shows: {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        m = R.svc.machine
+        check(st == 200 and out.get("ok") and m.state in (S.IDLE, S.STANDBY)
+              and not m.running,
+              f"Reset ends a Hold between shows and starts nothing: {st} "
+              f"{out} {m.state} {m.running}")
+        rows = [x for x in R.svc.journal if x.get("action") == S.RESUME]
+        check(rows and "pressed Reset" in rows[-1]["text"] and
+              "Reset starts nothing" in rows[-1]["text"],
+              f"journaled as Reset: {rows[-1:]}")
+        # The fault flag.
+        R.svc._apply(S.Event(S.FAULT_RAISED, "system", detail="test fault"))
+        check(R.svc.machine.faults, "setup: a fault flag is up")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        check(st == 200 and out.get("ok") and not R.svc.machine.faults,
+              f"Reset clears the fault flag: {st} {out}")
+        # Nothing to Reset: the conductor's own answer, as before.
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        check(st == 409 and "nothing is aborted" in str(out),
+              f"with nothing standing, Reset says so: {st} {out}")
+    finally:
+        R.close()
+    # Review of #144, F7: Stop from an iPad is the same complete halt.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        check(st in (200, 500) and m.state == S.STANDBY and
+              not m.running and not m.abort_latched and
+              (out.get("show") or {}).get("ok") is True,
+              f"Stop from the iPad ends the show, nothing latched: {st} "
+              f"{out} {m.state}")
+        rows = [x for x in R.svc.journal if x.get("action") == "stop"]
+        check(rows and "complete halt" in rows[-1]["text"] and
+              rows[-1].get("screen") == "iPad",
+              f"journaled as a complete halt from the iPad: {rows[-1:]}")
+        from ltcplay import users as _U
+        check(_U.classify("/api/remote/stop", {}) == "safety",
+              "Stop is a safety press: signed out may (PR #143)")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {"seen": 1})
+        check(st in (200, 500) and "stale" not in out,
+              f"never refused for a stale page: {st} {out}")
+    finally:
+        R.close()
+    # Review of #144, F1: Reset never starts a show, even one still inside
+    # the late grace that the next tick would start; and Reset is not the
+    # operator's Resume for the alert hold.
+    from ltcplay import schedule_service as SV
+    import tempfile as _tf
+    work = _tf.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, rule=_sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": "22:00"}}, exceptions={},
+        late_grace_s=15))
+    svc.tick()
+    now[0] = _den(S, 17, 59, 55)
+    svc.operator_press("hold", "Andy", "Rack screen")
+    now[0] = _den(S, 18, 0, 5)
+    svc.tick()
+    check(svc.machine.state == S.HOLD and
+          svc.machine.slot(1).status == S.PENDING,
+          f"setup: show 1 inside its 15 s grace, on Hold: "
+          f"{svc.machine.state} {svc.machine.slot(1)}")
+    r = svc.reset_hold("Andy", "Rack screen")
+    for sec in (6, 7, 10, 20):
+        now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+    m = svc.machine
+    check(r and r["ok"] and m.state == S.STANDBY and not m.running and
+          m.slot(1).status == S.DELAYED and "Start now" in r["text"],
+          f"Reset inside the grace starts nothing: show 1 waits for Start "
+          f"now: {r} {m.state} {m.slot(1)}")
+    svc.stop()
+    R = _alert_hold_rig(S, grace=15, run=False)[0]
+    try:
+        sv = R.svc
+        R.now[0] = _den(S, 17, 59, 50)
+        sv.tick()
+        sv.operator_press("hold", "Andy", "Rack screen")
+        R.remote.alerts.raise_("video", "MadMapper is gone.")
+        R.now[0] = _den(S, 17, 59, 55)
+        r = sv.reset_hold("Andy", "Rack screen")
+        check(r and r["ok"] and sv.machine.state != S.HOLD,
+              f"setup: Reset ended the Hold before showtime: {r}")
+        R.now[0] = _den(S, 18, 0, 1)
+        sv.tick()
+        check(sv.machine.state == S.HOLD and not sv.machine.running,
+              f"with an alert open, the show is held at its time: Reset is "
+              f"not the operator's Resume for it: {sv.machine.state}")
+    finally:
+        R.close()
+    # While an Abort stands: Reset clears the Abort only, as before; a
+    # second Reset then ends the Hold.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        st, _h, out = R.ask("POST", "/api/remote/hold", {})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.abort_latched,
+              f"setup: aborted, then on Hold: {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and not R.svc.machine.abort_latched and
+              R.svc.machine.state == S.HOLD,
+              f"the first Reset ends the Abort and leaves the Hold: {st} "
+              f"{out} {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc.machine.state != S.HOLD and
+              not R.svc.machine.running,
+              f"the second ends the Hold, starting nothing: {st} {out} "
+              f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+_STOP_BUTTON_JS = r"""<script>
+(function(){
+ let n = 0;
+ function r(e){ if(!e || !e.getClientRects().length) return null; const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, left:b.left, right:b.right, h:b.height, w:b.width}; }
+ function go(){
+  const b = document.getElementById("b-start");
+  const lbl = b && b.querySelector(".lbl");
+  if(!lbl || (lbl.textContent === "Start now" && n++ < 40)) return setTimeout(go, 50);
+  setTimeout(() => {
+   scrollTo(0, 0);
+   const run = document.getElementById("b-run");
+   const out = {vw:innerWidth, vh:innerHeight, sw:document.documentElement.scrollWidth,
+     start:r(b), label:lbl.textContent, small:b.querySelector("small").textContent,
+     mode:b.dataset.mode, cls:b.className, disabled:b.disabled,
+     abort:r(document.getElementById("b-abort")),
+     run:r(run), runLabel:run.querySelector(".lbl").textContent, runMode:run.dataset.mode,
+     stoprun:!!document.getElementById("b-stoprun"),
+     stops:[...document.querySelectorAll("button")].filter(x => x.getClientRects().length && /^Stop\b/.test((x.querySelector(".lbl") || x).textContent.trim())).length};
+   const pre = document.createElement("pre"); pre.id = "rack-measure";
+   pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
+  }, 600);
+ }
+ go();
+})();
+</script>"""
+
+
+_FETCH_LOG_JS = r"""<script>
+window.__posts = [];
+(function(){ const f = window.fetch; window.fetch = function(u, o){
+  if(o && o.method === "POST") window.__posts.push(String(u));
+  return f.apply(this, arguments); }; })();
+</script>"""
+
+_STOP_CLICK_JS = r"""<script>
+(function(){
+ let n = 0;
+ function go(){
+  const b = document.getElementById("@BID@");
+  if(!ST || !b || (b.dataset.mode !== "stop" && n++ < 40)) return setTimeout(go, 50);
+  setTimeout(() => {
+   const out = {mode:b.dataset.mode, label:b.querySelector(".lbl").textContent,
+     disabled:b.disabled, off:b.classList.contains("signin-off")};
+   b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
+   b.click();
+   setTimeout(() => {
+    const y = document.getElementById("m-yes");
+    if(!document.getElementById("modal").hidden) y.click();
+    setTimeout(() => {
+     out.posts = window.__posts.slice();
+     out.said = document.getElementById("@MSG@").textContent;
+     const pre = document.createElement("pre"); pre.id = "rack-measure";
+     pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
+    }, 700);
+   }, 300);
+  }, 600);
+ }
+ go();
+})();
+</script>"""
+
+
+def test_rack_screen_stop_in_place_of_start_now():
+    section("Jeff's field report (2026-10-28), Stop: while a show is live "
+            "Start now becomes Stop in the same place (the Run button on the "
+            "Programming screen too), one Stop per screen, wholly on screen "
+            "and at least 44 px tall at the CI runner's page heights; it "
+            "posts the Stream Deck's complete halt; Loading while the show "
+            "audio loads")
+    import shutil as _sh
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("new Error(refusedWords(j, r.statusText))" in page,
+          "every refused press shows the engine's own words")
+    for f in ("function startLook", "function runLook", "function stopWords",
+              "function refusedWords", "function pressDecision",
+              "const STOP_CONFIRM"):
+        check(f in logic, f"{f} is pure page logic")
+    check('id="b-stoprun"' not in page and "b-stoprun" not in page,
+          "the separate Stop beside Run is gone: Run becomes Stop")
+    for need in ('fetch("/api/remote/stop", ',
+                 'const d = decide("b-start", lk.mode);',
+                 'if(d.act === "stop") return pressStop("ctl-msg");',
+                 'const d = decide("b-run", runLook(ST).mode);',
+                 'if(d.act === "stop") return pressStop("run-msg");',
+                 'drawStart(stale);',
+                 '"Yes, start now", "start", null, true)',
+                 'el.addEventListener("pointerdown", () => '
+                 '{ DOWN_MODE[id] = el.dataset.mode; });',
+                 '(el.disabled || lk.disabled || HALT_BUSY || '
+                 'flipLocked("b-start"))',
+                 '"Stop was refused: " + refusedWords(j, '):
+        check(need in page, f"the page has {need!r}")
+    _no_dashes(page[page.find("const STOP_CONFIRM"):
+                    page.find("function runLook")], "Stop's words")
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const live = (state) => ({schedule:{attached:true, state:state}, show:{running:true}});
+for(const s of ["SHOW", "PAUSED"]){
+  const a = startLook(live(s), false, false);
+  t(a.mode === "stop" && a.label === "Stop" && a.disabled === false, s + ": Start now is Stop: " + JSON.stringify(a));
+  t(startLook(live(s), true, false).mode === "stop" && startLook(live(s), true, false).disabled === false, s + ": never held back by a stale page");
+}
+for(const s of ["IDLE", "STANDBY", "HOLD"]){
+  const a = startLook({schedule:{attached:true, state:s}, show:{running:true}}, false, false);
+  t(a.mode === "start" && a.label === "Start now" && !a.disabled, s + ": Start now: " + JSON.stringify(a));
+}
+t(startLook({schedule:{attached:false}, show:{running:true}}, false, false).mode === "stop", "no scheduler, Run playing: Stop");
+t(startLook({schedule:{attached:false}, show:{running:false, starting:true}}, false, false).mode === "stop", "no scheduler, Run starting: Stop");
+const ld = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"the show audio is still loading", loading:true}}, show:{running:true}}, false, false);
+t(ld.label === "Start now" && ld.disabled === false && /starts when ready/.test(ld.sub) && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
+const wt = startLook({schedule:{attached:true, state:"STANDBY", start_waiting:true}, show:{running:true}}, false, false);
+t(wt.label === "Loading" && wt.disabled === true && /starting when ready/.test(wt.sub), "waiting: Loading, starting when ready: " + JSON.stringify(wt));
+t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading too");
+const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
+t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
+t(runLook({show:{running:true}}).mode === "stop" && runLook({show:{running:false}}).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while Run is in force");
+t(runLook({show:{running:false, starting:true}}).mode === "stop", "and while Run is starting (F4)");
+t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true})), "Stop's answer: the show ended, Run is off");
+t(/did NOT work: show/.test(stopWords({stopped:true, failed:["show"], flames:{disarmed:true}})), "a failed step is named");
+t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:["playback stop"]})), "a failed playback stop is named");
+t(/^Stopped\. /.test(stopWords({stopped:false, failed:[]})), "nothing was playing: still Stopped, no false failure");
+t(refusedWords({ok:false, text:"Start now was refused: Run has not been pressed"}, "Conflict") === "Start now was refused: Run has not been pressed", "a scheduler refusal's own words, never Conflict");
+t(refusedWords({error:"x"}, "Conflict") === "x" && refusedWords({}, "Conflict") === "Conflict" && refusedWords(null, "") !== "", "error first, then the status text");
+// F5: a press decided by what was seen at touch-down.
+t(pressDecision("stop", "start", 0, 10000, false).act === "none", "seen Stop, now Start: nothing is done");
+t(pressDecision("start", "stop", 0, 10000, false).act === "none", "seen Start, now Stop: nothing is done either");
+t(pressDecision("start", "start", 9000, 10000, false).act === "none", "Start within 2 s of Stop turning into Start: nothing");
+t(pressDecision("start", "start", 7000, 10000, false).act === "start", "after the lock: Start");
+t(pressDecision("stop", "stop", 9500, 10000, false).act === "stop", "Stop is never locked");
+t(pressDecision("start", "start", 0, 10000, true).act === "none", "a halt under way: nothing (F6)");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"Start now and Stop, in node: {r.stdout[-1200:]!r} "
+              f"{r.stderr[-400:]!r}")
+    else:
+        check(not IN_CI, "node is missing on this CI runner")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico()
+    st["schedule"] = dict(st["schedule"], state="PAUSED", running=1,
+                          held=True)
+    st["show"] = {"running": True, "timecode": "00:01:00:00"}
+    # The CI runner's Chrome leaves about 143 px less page than its window
+    # (see test_rack_screen_small_screens_with_announcements_and_setup):
+    # 1366x544 and 1024x625 are what it shows of 1366x687 and 1024x768.
+    sizes = [(1366, 544), (1366, 558), (1024, 625),
+             (1280, 577), (1920, 937), (820, 1037)]
+    for frag, label in (("", "show screen"), ("#programming",
+                                               "Programming screen")):
+        got = _rack_screen_in_chromium(chrome, page, st, sizes, frag=frag,
+                                       measure_js=_STOP_BUTTON_JS)
+        for (w, h), m in got.items():
+            if not check(isinstance(m, dict), f"{w}x{h} {label}: drawn: "
+                                              f"{m!r}"):
+                continue
+            check(m["sw"] <= m["vw"] + 1,
+                  f"{w}x{h} {label}: no sideways scroll: {m['sw']} "
+                  f"{m['vw']}")
+            check(m["stops"] == 1,
+                  f"{w}x{h} {label}: exactly one Stop on screen: "
+                  f"{m['stops']}")
+            check(not m["stoprun"], f"{w}x{h}: no second Stop beside Run")
+            if frag:
+                b, word, mode = m["run"], m["runLabel"], m["runMode"]
+            else:
+                b, word, mode = m["start"], m["label"], m["mode"]
+                check("stopnow" in m["cls"] and not m["disabled"],
+                      f"{w}x{h} {label}: Stop is red and pressable: {m}")
+            ab = m["abort"]
+            if not check(b is not None and ab is not None,
+                         f"{w}x{h} {label}: Stop and Abort drawn: {m}"):
+                continue
+            check(word == "Stop" and mode == "stop",
+                  f"{w}x{h} {label}: the button reads Stop: {word} {mode}")
+            check(b["h"] >= (52 if frag else 44) and b["w"] >= 88,
+                  f"{w}x{h} {label}: Stop is large enough to hit: "
+                  f"{b['w']:.0f}x{b['h']:.0f}")
+            check(b["top"] >= 0 and b["bottom"] <= ab["top"] + 1 and
+                  b["bottom"] <= m["vh"],
+                  f"{w}x{h} {label}: Stop is wholly on screen, above the "
+                  f"Abort bar: {b} abort {ab} vh {m['vh']}")
+            check(ab["bottom"] <= m["vh"] + 1,
+                  f"{w}x{h} {label}: Abort still on screen: {ab}")
+    # Signed out (PR #143: view only) with a show live, and with Run on its
+    # way in on the Programming screen: Stop is still enabled, and a press
+    # really posts the complete halt (#143's lock skips a control whose
+    # mode is "stop"). One size each, to keep the run short.
+    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
+             "users")
+    out_st = json.loads(json.dumps(st))
+    out_st["me"] = {"user": None, "role": None, "view_only": True,
+                    "may": {p: False for p in perms}}
+    prog_st = json.loads(json.dumps(out_st))
+    prog_st["schedule"] = dict(prog_st["schedule"], state="STANDBY",
+                               running=None, held=False)
+    prog_st["show"] = {"running": False, "starting": True,
+                       "timecode": None}
+    for frag, status, bid, msg in (("", out_st, "b-start", "ctl-msg"),
+                                   ("#programming", prog_st, "b-run",
+                                    "run-msg")):
+        js = _STOP_CLICK_JS.replace("@BID@", bid).replace("@MSG@", msg)
+        got = _rack_screen_in_chromium(chrome, page, status, ((1366, 544),),
+                                       frag=frag, measure_js=js,
+                                       head_js=_FETCH_LOG_JS)
+        m = got[(1366, 544)]
+        if check(isinstance(m, dict), f"signed out {frag or 'show'}: "
+                                      f"drawn: {m!r}"):
+            check(m["mode"] == "stop" and m["label"] == "Stop" and
+                  not m["disabled"] and not m["off"],
+                  f"signed out {frag or 'show screen'}: Stop is enabled, "
+                  f"never locked for signing in: {m}")
+            check("/api/remote/stop" in m["posts"] and
+                  m["said"].startswith("Stopped."),
+                  f"signed out {frag or 'show screen'}: pressing it posts "
+                  f"the complete halt and says Stopped: {m['posts']} "
+                  f"{m['said']!r}")
+    # Loading: the Start now button says so before the show.
+    st2 = _rack_status_pico()
+    st2["schedule"] = dict(st2["schedule"], start_blocked={
+        "text": "the show audio is still loading (it takes a few seconds "
+                "after Run); wait until Start now no longer says Loading, "
+                "then press it", "loading": True})
+    st2["show"] = {"running": True, "timecode": None}
+    got = _rack_screen_in_chromium(chrome, page, st2, ((1366, 544),),
+                                   measure_js=_STOP_BUTTON_JS)
+    m = got[(1366, 544)]
+    if check(isinstance(m, dict), f"loading: drawn: {m!r}"):
+        check(m["label"] == "Start now" and
+              "starts when ready" in m["small"] and m["runLabel"] == "Stop",
+              f"loading: Start now works, and says it starts when the audio "
+              f"is ready: {m}")
     print("  ok")
 
 
@@ -50271,6 +51098,47 @@ def test_remote_transport_on_the_show_audio():
         check(st == 409 and "Stop the Programming playback first" in
               out.get("error", "") and clk.playing,
               f"Start now went over Programming playback: {st} {out}")
+        # #144's Start now: it asks again under the scheduler's lock, after
+        # its tick and any wait for the show audio (a Play from may have
+        # landed meanwhile).
+        check(R.svc.start_veto == R.remote.programming_playback_refusal,
+              "the scheduler does not ask the Programming playhead")
+        r = R.svc.operator_press("start-now", "Andy", "iPad",
+                                 confirmed=True, surface=True)
+        check(r.get("ok") is False and
+              "Stop the Programming playback first" in r.get("text", "") and
+              clk.playing, f"Start now under the lock went over Programming "
+                           f"playback: {r}")
+        # A Play from, and a Programming Hold whatever the schedule's
+        # state, end a Start now waiting for the show audio.
+        g0 = R.svc._start_cancel[0]
+        st, _h, out = R.ask("POST", "/api/remote/play-from",
+                            {"at": "00:01:00:00", "seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc._start_cancel[0] > g0 and
+              "Play from" in R.svc._start_cancel[1],
+              f"Play from did not cancel a waiting Start now: {st} {out} "
+              f"{R.svc._start_cancel}")
+        g0 = R.svc._start_cancel[0]
+        st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc._start_cancel[0] > g0,
+              f"a Programming Hold did not cancel a waiting Start now: "
+              f"{st} {out} {R.svc._start_cancel}")
+        st, _h, out = R.ask("POST", "/api/remote/continue",
+                            {"seen": R.seen()})
+        R.settle()
+        # The Fireball page with a channel on: no Programming playback
+        # starts over it (one source of fire values at a time).
+        real_fb = R.remote.fireball
+        R.remote.fireball = types.SimpleNamespace(active=lambda: True)
+        n = len(calls)
+        st, _h, out = R.ask("POST", "/api/remote/play-from",
+                            {"at": "00:01:00:00", "seen": R.seen()})
+        R.remote.fireball = real_fb
+        check(st == 409 and "Fireball" in out.get("error", "") and
+              len(calls) == n,
+              f"Play from went over a Fireball channel: {st} {out}")
         n = len(calls)
         st, _h, out = R.ask("POST", "/api/remote/abort",
                             {"confirmed": True, "seen": R.seen()})
@@ -51685,8 +52553,8 @@ def test_stop_says_when_its_flame_disarm_failed():
         check('getattr(self.conductor, "fault_face", None)' in src,
               "key 0 draws the conductor's fault face")
     # The Rack screen.
-    check('$("run-msg").textContent = stopWords(j);' in page,
-          "the Rack screen's Stop says what came back")
+    check("el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :"
+          in page, "the Rack screen's Stop says what came back")
     check("Stop playback and disarm every flame group." in page,
           "its confirm says Stop disarms every flame group")
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
@@ -51698,8 +52566,8 @@ const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 t(stopWords({stopped:true, flames:{disarmed:false, text:"x"}}) === STOP_DISARM_FAILED, "a failed disarm is said");
 t(/FAILED/.test(STOP_DISARM_FAILED) && /Disarm all flame groups/.test(STOP_DISARM_FAILED) && /e-stop/.test(STOP_DISARM_FAILED), "with what to do");
-t(stopWords({stopped:true, flames:{disarmed:true}}) === "Stopped.", "a disarm that went out: Stopped.");
-t(stopWords({stopped:true}) === "Stopped." && stopWords(null) === "Stopped.", "no flame link: Stopped.");
+t(/^Stopped\. /.test(stopWords({stopped:true, flames:{disarmed:true}})) && /Every flame group was disarmed/.test(stopWords({stopped:true, flames:{disarmed:true}})), "a disarm that went out: Stopped, and says so");
+t(/^Stopped\. /.test(stopWords({stopped:true})) && !/disarmed/.test(stopWords({stopped:true})) && /^Stopped\. /.test(stopWords(null)), "no flame link: Stopped, claiming no disarm");
 console.log(JSON.stringify(out));
 """
         r = _node_js(node, js, capture_output=True, text=True, timeout=60)
@@ -54003,7 +54871,7 @@ def test_screen_arming_switch_and_refusals():
     def hdr(R, who):
         return {"Cookie": f"{U.COOKIE}={R.toks[who]}"} if who else {}
 
-    def hold(R, group="front row", who=None, client=loop, **kw):
+    def hold(R, group="front row", who="Ollie", client=loop, **kw):
         R.remote._deck_seen = R.mono[0] if R.keep_deck else \
             R.remote._deck_seen
         body = {"group": group, "seen": R.seen()}
@@ -54042,6 +54910,13 @@ def test_screen_arming_switch_and_refusals():
                               "Vic (viewer) may not" in err,
                               f"{label}: refused by the role matrix, by "
                               f"name: {st} {out}")
+                    elif who is None:
+                        # Signed out is view only on the rack screen itself
+                        # (Jeff's field report, 2026-10-28).
+                        check(st == 403 and out.get("role_refused") and
+                              "view only" in err and
+                              R.remote.deck_input()["holds"] == [],
+                              f"{label}: refused, view only: {st} {out}")
                     elif arming is None:
                         check(st == 403 and err == RM.ARMING_OFF and
                               "Programming, Arming from a screen, Turn on"
@@ -54135,7 +55010,7 @@ def test_screen_arming_switch_and_refusals():
         R.m.open_beat("iPad at 10.20.0.44")
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g1", "seen": R.seen()},
-                            client=ipad)
+                            client=ipad, headers=hdr(R, "Ollie"))
         check(st == 200 and R.m.purge.selected == ["g1"],
               f"setup: the iPad selects Ground 1: {st} {out}")
         R.ask("POST", "/api/remote/screen-arming", {"on": False},
@@ -54145,7 +55020,7 @@ def test_screen_arming_switch_and_refusals():
         R.m.open_beat("Rack screen")
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g1", "seen": R.seen()},
-                            client=loop)
+                            client=loop, headers=hdr(R, "Ollie"))
         R.ask("POST", "/api/remote/screen-arming", {"on": False},
               client=loop)
         check(st == 200 and R.m.purge.selected == ["g1"],
@@ -54252,7 +55127,7 @@ def test_screen_arming_switch_and_refusals():
         st, _h, out = R.ask("POST", "/api/remote/lock",
                             {"kind": "machine", "id": "g1", "on": False,
                              "confirmed": True, "seen": R.seen()},
-                            client=loop)
+                            client=loop, headers=hdr(R, "Ollie"))
         check(st == 200, f"setup: Ground 1 unlocked: {st} {out}")
         st, _h, out = hold(R, "wave flamer")
         check(st == 409 and "Every machine in wave flamer is locked out" in
@@ -54261,7 +55136,7 @@ def test_screen_arming_switch_and_refusals():
         st, _h, out = R.ask("POST", "/api/remote/lock",
                             {"kind": "machine", "id": "w1", "on": False,
                              "confirmed": True, "seen": R.seen()},
-                            client=loop)
+                            client=loop, headers=hdr(R, "Ollie"))
         check(st == 200, f"setup: Waver 1 unlocked: {st} {out}")
         st, _h, out = hold(R, "wave flamer")
         check(st == 200, f"unlocked: the hold starts: {st} {out}")
@@ -54553,6 +55428,194 @@ def test_screen_arming_switch_and_refusals():
           f"latched: reported: {scr.said}")
     # _do_arm_fire's answers, for every caller.
     del c._latched_now
+    print("  ok")
+
+
+def test_flame_link_aim_slots_skip_the_seek_guard():
+    section("flame link aim slots (2026-10-28): the wave flamer's angle "
+            "channels are read from flamesafe's config and are never held "
+            "by the zero-first rule; every flame channel still is")
+    import json as _j
+    import os as _os
+    import tempfile as _tf
+    from ltcplay import flamelink as fl
+    ex_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                            "flamesafe", "flamesafe.example.json")
+    with open(ex_path, encoding="utf-8") as fh:
+        ex = _j.load(fh)
+    check(fl.FlameLinkConfig.from_flamesafe_config(ex_path).aim_slots
+          == frozenset({1, 7, 13}),
+          "the example's wave flamer angles are the aim slots")
+    d = _tf.mkdtemp()
+    try:
+        def load(groups):
+            doc = dict(ex)
+            doc["groups"] = groups
+            p = _os.path.join(d, "fs.json")
+            with open(p, "w", encoding="utf-8") as fh:
+                _j.dump(doc, fh)
+            return fl.FlameLinkConfig.from_flamesafe_config(p)
+        check(load([{"name": "a", "safety": 6, "fire": [1, 2]}]).aim_slots
+              == frozenset(), "no aim list, no aim slots")
+        check(load([{"name": "a", "safety": 6, "fire": [1, 2, 3, 4, 5],
+                     "safety_profile": {"arm_value": 178},
+                     "aim": [1, 7]}]).aim_slots == frozenset({1}),
+              "a slot that is not the group's fire slot is never freed")
+        for bad in (5, ["1"], [0], [513], [True], None):
+            try:
+                load([{"name": "a", "safety": 6, "fire": [1, 2],
+                       "aim": bad}])
+                check(False, f"aim {bad!r} was taken")
+            except fl.FlameLinkConfigError as e:
+                check("'aim'" in str(e), f"aim {bad!r} refused: {e}")
+        # The per fixture rules, as flamesafe's (review, 2026-10-28): a
+        # typo in the wave flamer's aim stops ltc serve, never frees fuel.
+        wave = next(g for g in ex["groups"] if g["name"] == "wave flamer")
+        for bad, why in (([2, 3, 4, 5], "in one fixture"),
+                         ([1, 7, 14], "not the same channel"),
+                         ([2, 7, 13], "not the same channel"),
+                         ([2, 8, 14], "not channel 1 of its fixture"),
+                         ([1, 13], "after the last safety slot"),
+                         ([1], "safety slots cannot be read"),
+                         ([3, 9, 15], "only for a group with a safety_"),
+                         ([3, 9, 15], "is not one 6 channel block")):
+            g = dict(wave, aim=bad)
+            if why.startswith("after"):
+                g.update(safety=[6, 12], fire=[1, 2, 3, 7, 8, 13])
+            if why.startswith("safety"):
+                g.update(safety=["6"])
+            if why.startswith("only"):
+                del g["safety_profile"]
+            if why.startswith("is not"):
+                g.update(safety=[8, 14, 20], fire=[1, 2, 3, 4, 5, 6, 7, 9,
+                         10, 11, 12, 13, 15, 16, 17, 18, 19])
+            try:
+                load([g])
+                check(False, f"wave flamer aim {bad} was taken")
+            except fl.FlameLinkConfigError as e:
+                check(why in str(e), f"wave flamer aim {bad} refused: {e}")
+        front = next(g for g in ex["groups"] if g["name"] == "front row")
+        try:
+            load([dict(front, aim=[413])])
+            check(False, "a G-Flame fuel slot was taken as aim")
+        except fl.FlameLinkConfigError as e:
+            check("only for a group with a safety_profile" in str(e),
+                  f"a G-Flame fuel slot as aim is refused: {e}")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+    # The seek guard with the angle on slot 1 at 128 (straight up) the
+    # whole time and the fire channel on slot 3 lit from 10 s.
+    good = {"ip": "127.0.0.1", "port": 5571, "universe": 1,
+            "key": "selftest-key-0123456789", "frame_stale_ms": 500}
+    clk = [100.0]
+    show = {"tc": None}
+
+    def state():
+        t = show["tc"]
+        if t is None:
+            return None, False
+        h, rem = divmod(int(t * 30), 30 * 3600)
+        m, rem = divmod(rem, 30 * 60)
+        s, f = divmod(rem, 30)
+        return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}", True
+
+    def cues(tc):
+        h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
+        t = h * 3600 + m * 60 + s + f / 30
+        v = [0] * 512
+        v[0] = 54 if t >= 10.0 else 128
+        if t >= 10.0:
+            v[2] = 255
+        return v
+
+    def run(link, frm, to, step=0.025):
+        out = []
+        t = frm
+        while t < to - 1e-9:
+            show["tc"] = t
+            out.append((t, link.values_now()[1]))
+            t += step
+            clk[0] += step
+        return out
+    cfg = fl.FlameLinkConfig.parse(good)
+    cfg.aim_slots = frozenset({1})
+    link = fl.FlameLink(cfg, cues=cues, show_state=state,
+                        clock=lambda: clk[0])
+    link.zeroed = False
+    got = run(link, 9.0, 11.0)
+    settled = [(t, v) for t, v in got if t >= 9.55]
+    check(settled and all(v[0] in (128, 54) for t, v in settled),
+          f"the angle goes out once settled though never seen at zero: "
+          f"{settled[0][1][0] if settled else None}")
+    check(any(v[0] == 54 for t, v in settled),
+          "and it follows the show to -60 degrees")
+    check(any(v[2] == 255 for t, v in got if t >= 10.0),
+          "the fire channel, seen at zero first, fires at 10 s")
+    check(not any(v[0] for t, v in got if t < 9.5),
+          "the 0.5 s settle still holds the angle like everything else")
+    # A seek into the burn: the fire channel stays held, the angle does not.
+    got = run(link, 20.0, 21.0)
+    late = [(t, v) for t, v in got if t >= 20.55]
+    check(late and all(v[2] == 0 for t, v in late),
+          "after a seek into a burn the fire channel stays held")
+    check(late and all(v[0] == 54 for t, v in late),
+          "but the angle points where the show says")
+    # Without aim slots the old behaviour stands: the angle is held at 0.
+    clk[0] += 10
+    plain = fl.FlameLink(fl.FlameLinkConfig.parse(good), cues=cues,
+                         show_state=state, clock=lambda: clk[0])
+    plain.zeroed = False
+    got = run(plain, 9.0, 9.9)
+    check(all(v[0] == 0 for t, v in got),
+          "a config with no aim list holds the angle, as before")
+    print("  ok")
+
+
+def test_live_flame_aim_slots_are_not_held():
+    section("live flame programming aim slots (2026-10-28): the angle xLights "
+            "rests at 128 goes out from the first packet; a flame channel "
+            "still waits to be seen at zero, also after its stream ends")
+    R = _LfRig()
+    try:
+        R.link.cfg.aim_slots = frozenset({11})
+        R.on()
+        vals = bytearray(300)
+        vals[10] = 128                      # slot 11: the angle
+        vals[12] = 255                      # slot 13: a flame channel
+        R.feed(R.pk(values=bytes(vals)))
+        v = R.out()
+        check(v[10] == 128 and v[12] == 0,
+              f"the angle goes out at once, the flame waits: {v[10]} {v[12]}")
+        vals[12] = 0
+        R.feed(R.pk(values=bytes(vals)))
+        vals[12] = 255
+        vals[10] = 201
+        R.feed(R.pk(values=bytes(vals)))
+        v = R.out()
+        check(v[10] == 201 and v[12] == 255,
+              f"seen at zero, the flame goes out; the angle follows: "
+              f"{v[10]} {v[12]}")
+        R.feed(R.pk(values=bytes(300), options=0x40))  # stream terminated
+        vals[10], vals[12] = 54, 255
+        R.feed(R.pk(values=bytes(vals)))
+        v = R.out()
+        check(v[10] == 54 and v[12] == 0,
+              f"after the stream ends the flame waits again, the angle "
+              f"does not: {v[10]} {v[12]}")
+    finally:
+        R.close()
+    R = _LfRig()
+    try:
+        R.on()
+        vals = bytearray(300)
+        vals[10] = 128
+        R.feed(R.pk(values=bytes(vals)))
+        check(R.out()[10] == 0,
+              "without aim slots the angle is held at zero, as before")
+    finally:
+        R.close()
     print("  ok")
 
 
@@ -58839,7 +59902,7 @@ def test_morning_arrange_mode_arms_nothing():
                  'if(arrangeBlocked("lock", {})) return;',
                  'await post("/api/remote/morning-open", openBeatBody());',
                  'arrangeExit("left");',
-                 'b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;',
+                 'b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));',
                  'wireMachine(el, m);',
                  'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
                  'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
@@ -59751,8 +60814,13 @@ def test_purge_release_can_never_start_a_fire():
         R.remote.users = us
         toks = {}
         for name in ("Ollie", "Vic"):
-            ok, why, tok, _n = us.sign_in(name, "", False, "ipad",
+            # A name with no password yet is claimed on the show machine
+            # (review of PR #143, 2); then the iPad signs in with it.
+            ok, why, tok, _n = us.sign_in(name, "", True, "rack",
                                           new_password=f"{name}-pw-1234")
+            us.sign_out(tok, "rack")
+            ok, why, tok, _n = us.sign_in(name, f"{name}-pw-1234", False,
+                                          "ipad")
             check(ok and tok, f"setup: {name} signs in: {why}")
             toks[name] = tok
 
@@ -60609,10 +61677,9 @@ def test_users_role_matrix_never_restricts_a_safety_press():
         role = None if col == U.SIGNED_OUT else col
         check(U.allowed(m, role, "safety") and U.allowed(m, role, None),
               f"{col}: safety and harmless presses always may")
-    check(U.allowed(m, None, "arm") and U.allowed(m, None, "show") and
-          not U.allowed(m, None, "settings") and
-          not U.allowed(m, None, "users"),
-          "signed out keeps the no-PIN rule: run and arm, not settings")
+    check(not any(U.allowed(m, None, p) for p in U.PERM_KEYS),
+          "signed out is view only (2026-10-28): no run, no arm, no "
+          "settings")
     check(U.allowed(m, "operator", "arm") and
           not U.allowed(m, "operator", "users") and
           not U.allowed(m, "viewer", "show") and
@@ -60743,8 +61810,10 @@ def test_safety_presses_pass_signed_out_and_are_logged_unsigned():
             check(not out.get("role_refused"),
                   f"a broken sign-in check never stops an Abort: {out}")
             st, out, _h = http("/api/remote/start-now", {}, cookie=vic)
-            check(not out.get("role_refused"),
-                  "and a fault there never stops the show either")
+            check(out.get("role_refused") and
+                  "could not be made" in out.get("error", ""),
+                  "and a fault there refuses a show press, never lets it "
+                  "through (2026-10-28)")
         finally:
             rem.users.may = real_may
         rem.audit.flush(5.0)
@@ -61028,6 +62097,1037 @@ def test_deck_role_gate_restricts_arming_only():
           f"the deck names who is signed in: {ctl.user_toast(t[0])}")
     check(ctl.user_toast(t[0] + sd.USER_TOAST_S + 0.1) is None,
           "for a few seconds only")
+
+
+def test_signed_out_is_view_only_on_every_surface():
+    section("users: signed out is view only on the rack screen itself "
+            "(Jeff's field report, 2026-10-28): every press that is not "
+            "Stop, Hold, Abort, Acknowledge or a disarm needs a signed-in "
+            "role, loopback included; the signed-out column cannot be "
+            "ticked; a fault in the check refuses an arm")
+    from ltcplay import users as U
+    m = U.normalise_matrix({U.SIGNED_OUT: {p: True for p in U.PERM_KEYS}})
+    check(not any(m[U.SIGNED_OUT].values()),
+          f"a stored matrix cannot tick the signed-out column: "
+          f"{m[U.SIGNED_OUT]}")
+    raw = {c: {p: True for p in U.PERM_KEYS} for c in U.COLUMNS}
+    check(not any(U.allowed(raw, None, p) for p in U.PERM_KEYS) and
+          all(U.allowed(raw, "operator", p) for p in U.PERM_KEYS),
+          "nobody signed in may do nothing restricted, whatever the "
+          "matrix handed to allowed() says")
+    check(U.allowed(raw, None, "safety") and U.allowed(raw, None, None),
+          "and still every safety and harmless press")
+    for route, body, want in (
+            ("/api/remote/show-select", {"file": "a.json"}, "show_files"),
+            ("/api/remote/open-folder", {"which": "settings"}, "show_files"),
+            ("/api/schedule/tonight", {"op": "cancel"}, "show_files"),
+            ("/api/schedule/operator", {"who": "Jeff"}, "show"),
+            ("/api/schedule/operator", {"who": ""}, "safety"),
+            ("/api/schedule/incident", {"who": "Jeff"}, "show"),
+            ("/api/remote/announce-play", {"id": "a"}, "show"),
+            ("/api/remote/laser-arm", {"on": True}, "arm"),
+            ("/api/remote/purge-fire", {"on": True}, "arm")):
+        check(U.classify(route, body) == want,
+              f"{route} {body} is {want}: {U.classify(route, body)}")
+    d = tempfile.mkdtemp()
+    us = U.Users(d, hash_params=_U_FAST)
+    us.add("Jeff", "admin", "jeff-temp-1")
+    try:
+        us.set_matrix({U.SIGNED_OUT: {"arm": True}})
+        check(False, "an admin ticked arming for signed out")
+    except ValueError as e:
+        check("view only" in str(e), f"refused, saying why: {e}")
+    httpd, http, cookie_of, work = _accounts_engine()
+    rem = httpd.remote
+    try:
+        now_ms = int(time.time() * 1000)
+        refused = [
+            ("/api/remote/start-now", {"confirmed": True, "seen": now_ms}),
+            ("/api/remote/resume", {"seen": now_ms}),
+            ("/api/remote/reset", {"seen": now_ms}),
+            ("/api/remote/arm-hold", {"group": 0, "seen": now_ms}),
+            ("/api/remote/purge-select", {"machine": "a", "on": True}),
+            ("/api/remote/purge-fire", {"on": True}),
+            ("/api/remote/laser-arm", {"laser": "a", "on": True}),
+            ("/api/remote/laser-test", {"laser": "a", "on": True}),
+            ("/api/remote/lock", {"kind": "machine", "id": "a",
+                                  "on": False}),
+            ("/api/remote/announce-play", {"id": "a", "seen": now_ms}),
+            ("/api/remote/checklist-tick", {"checklist": "c", "step": "s",
+                                            "who": "Jeff"}),
+            ("/api/remote/show-select", {"file": "a.json"}),
+            ("/api/remote/open-folder", {"which": "settings"}),
+            ("/api/remote/show-file-new", {"name": "x"}),
+            ("/api/remote/live-flame", {"on": True}),
+            ("/api/start", {"timeline": "x"}),
+            ("/api/schedule/tonight", {"op": "cancel"}),
+            ("/api/schedule/operator", {"who": "Jeff",
+                                        "screen": "Rack screen"}),
+            # The Stream Deck process, on this machine, with nobody signed
+            # in on the rack screen: nobody.
+            ("/api/remote/start-now", {"confirmed": True, "seen": now_ms,
+                                       "who": "Jeff",
+                                       "screen": "Stream Deck"})]
+        for path, body in refused:
+            st, out, _h = http(path, body)
+            check(st == 403 and out.get("role_refused") and
+                  "view only" in out.get("error", ""),
+                  f"{path} {body} signed out on the rack screen itself: "
+                  f"refused as view only ({st} {out})")
+        for path, body in (("/api/remote/hold", {}),
+                           ("/api/remote/disarm-all", {}),
+                           ("/api/remote/group-disarm", {"group": 0}),
+                           ("/api/remote/alert", {"action": "acknowledge"}),
+                           ("/api/remote/laser-arm", {"laser": "a",
+                                                      "on": False}),
+                           ("/api/schedule/operator", {"who": ""}),
+                           ("/api/stop", {})):
+            st, out, _h = http(path, body)
+            check(not out.get("role_refused") and st != 403,
+                  f"{path} signed out: still goes ({st} {out})")
+        st, me, _h = http("/api/remote/whoami")
+        check(me.get("view_only") is True and me.get("user") is None and
+              me.get("local") is True and not any(me["may"].values()) and
+              me.get("machine_user") is None,
+              f"whoami says the rack screen is view only: {me}")
+        st, out, h = http("/api/remote/signin",
+                          {"name": "Jeff", "password": "",
+                           "new_password": "jeff-own-pw-1"})
+        jeff = cookie_of(h)
+        st, me, _h = http("/api/remote/whoami", cookie=jeff)
+        check(me.get("view_only") is False and me.get("user") == "Jeff" and
+              me["may"]["arm"] is True and me.get("machine_user") == "Jeff",
+              f"signed in, it says who and what they may: {me}")
+        st, out, _h = http("/api/schedule/operator",
+                           {"who": "Jeff", "screen": "Rack screen"},
+                           cookie=jeff)
+        check(not out.get("role_refused"),
+              f"signed in, the operator can be chosen: {st} {out}")
+        # A fault in the check itself: an arm or a show press is refused,
+        # an Abort still goes.
+        real_may = rem.users.may
+
+        def boom(*_a, **_k):
+            raise RuntimeError("broken")
+        rem.users.may = boom
+        try:
+            st, out, _h = http("/api/remote/arm-hold",
+                               {"group": 0, "seen": now_ms}, cookie=jeff)
+            check(st == 403 and out.get("role_refused") and
+                  "could not be made" in out["error"],
+                  f"a broken sign-in check refuses an arm: {st} {out}")
+            st, out, _h = http("/api/remote/abort", {"confirmed": True})
+            check(not out.get("role_refused"),
+                  f"and never an Abort: {out}")
+        finally:
+            rem.users.may = real_may
+        real_classify = U.classify
+        U.classify = boom
+        try:
+            st, out, _h = http("/api/remote/hold", {})
+            check(not out.get("role_refused") and st != 403,
+                  f"a fault before the press is known never stops a Hold: "
+                  f"{st} {out}")
+        finally:
+            U.classify = real_classify
+    finally:
+        httpd.server_close()
+
+
+def test_journal_names_the_signed_in_user_never_the_body():
+    section("users: every journal and audit name is the signed-in user, "
+            "or unsigned; never a name a page or the Stream Deck puts in "
+            "its body (\"By Jeff\" with nobody signed in, 2026-10-28)")
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "operator"), ("Vic", "viewer")))
+    rem = httpd.remote
+    try:
+        rack = RM.Ctx(True, "127.0.0.1")
+        who, screen, surface = rem._actor(rack, {"who": "Jeff"})
+        check(who == U.UNSIGNED and screen == "Rack screen" and surface,
+              f"signed out on the rack screen with Jeff in the body: "
+              f"{who!r} on the {screen}")
+        who, screen, _s = rem._actor(
+            RM.Ctx(True, "127.0.0.1", session={"name": "Andy",
+                                              "role": "operator"}),
+            {"who": "Jeff"})
+        check(who == "Andy", f"signed in as Andy: Andy, not Jeff: {who!r}")
+        ipad = RM.Ctx(False, "10.0.0.9")
+        who, screen, _s = rem._actor(ipad, {"who": "Jeff",
+                                            "screen": "Stream Deck"})
+        check(who == U.UNSIGNED and screen == "iPad",
+              f"an iPad cannot claim a name or the deck: {who!r} {screen}")
+        deck = {"who": "Jeff", "screen": "Stream Deck"}
+        check(rem._actor(rack, deck)[0] == U.UNSIGNED,
+              "the deck with nobody signed in here: unsigned")
+        st, out, h = http("/api/remote/signin",
+                          {"name": "Andy", "password": "",
+                           "new_password": "andy-own-pw-1"})
+        andy = cookie_of(h)
+        who, screen, _s = rem._actor(rack, deck)
+        check(who == "Andy" and screen == "Stream Deck",
+              f"the deck acts as whoever is signed in here: {who!r} "
+              f"{screen}")
+        # A name in a body never reaches a route: the checklist's tick.
+        seen = []
+        rem.morning_post = lambda name, body, ctx: (
+            seen.append(body.get("who")) or (200, {"ok": True}))
+        rem.post("/api/remote/checklist-tick", {"who": "Jeff"},
+                 RM.Ctx(True, "127.0.0.1",
+                        session={"name": "Andy", "role": "operator"}))
+        rem.post("/api/remote/checklist-tick", {"who": "Jeff"}, ipad)
+        check(seen == ["Andy", U.UNSIGNED],
+              f"the checklist names the signed-in user: {seen}")
+        # The old page's Stop and the scheduler's routes, over the wire.
+        halts = []
+        rem.halt = lambda who, screen: halts.append(who) or {}
+        # The deck's Stop names no one in its body here: the engine still
+        # names whoever is signed in on this machine.
+        http("/api/stop", {"screen": "Stream Deck", "halt": True})
+        http("/api/remote/signout", {}, cookie=andy)
+        http("/api/stop", {"who": "Jeff", "halt": True})
+        check(halts == ["Andy", U.UNSIGNED],
+              f"Stop names the signed-in user, then unsigned: {halts}")
+        posted = []
+
+        class _Sched:
+            machine = None
+            conductor = None
+
+            def post(self, route, body):
+                posted.append((route, body.get("who")))
+                return 200, {"ok": True}
+        httpd.schedule = _Sched()
+        http("/api/schedule/deck-event",
+             {"text": "Stream Deck: L disarm pressed by Jeff.",
+              "who": "Jeff", "screen": "Stream Deck"})
+        http("/api/schedule/deck-event",
+             {"text": "Stream Deck: L arm pressed by Andy.",
+              "who": "Andy", "screen": "iPad at 10.0.0.9"})
+        http("/api/schedule/deck-event", {"text": "a system line"})
+        check(posted == [("/api/schedule/deck-event", U.UNSIGNED),
+                         ("/api/schedule/deck-event", "deck"),
+                         ("/api/schedule/deck-event", None)],
+              f"the deck's own lines name the signed-in user (unsigned "
+              f"here); a line about a screen is written as the deck, never "
+              f"a name from its body; a system line stays one: {posted}")
+    finally:
+        httpd.server_close()
+
+
+def test_sign_out_locks_the_screen_and_lets_go_of_a_hold():
+    section("users: Sign out ends the session at the engine; on the rack "
+            "screen it signs the whole machine out (the Stream Deck too) "
+            "and lets go of a hold to arm under way (2026-10-28)")
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    d = tempfile.mkdtemp()
+    # One frozen clock: every sign-in here lands in the same tick, as two
+    # quick sign-ins do on Windows (a 16 ms clock); the latest must still
+    # be the latest.
+    us = U.Users(d, hash_params=_U_FAST, clock=lambda: 50.0)
+    us.seed((("Jeff", "admin"), ("Andy", "operator")))
+    ok, _t, jeff, _n = us.sign_in("Jeff", "", True, "Rack screen",
+                                  new_password="jeff-own-pw-1")
+    ok, _t, andy, _n = us.sign_in("Andy", "", True, "Rack screen",
+                                  new_password="andy-own-pw-1")
+    ok, _t, ipad, _n = us.sign_in("Andy", "andy-own-pw-1", False, "iPad")
+    check(us.machine_user()["name"] == "Andy" and us.session(ipad),
+          "the latest sign-in on the rack screen is who the deck acts as")
+    check(us.sign_out("", "Rack screen", local=True) and
+          us.machine_user() is None and us.session(andy) is None and
+          us.session(jeff) is None and us.session(ipad) is not None,
+          "a sign-out on the rack screen with no cookie still signs the "
+          "machine out, and only the machine")
+    ok, _t, jeff, _n = us.sign_in("Jeff", "jeff-own-pw-1", True,
+                                  "Rack screen")
+    us._sessions["spare"] = dict(us._sessions[jeff], at=0.0)
+    us.sign_out(jeff, "Rack screen")
+    check(us.machine_user() is None and "spare" not in us._sessions,
+          "every session made on this machine ends with it")
+    httpd, http, cookie_of, work = _accounts_engine()
+    rem = httpd.remote
+    try:
+        st, out, h = http("/api/remote/signin",
+                          {"name": "Jeff", "password": "",
+                           "new_password": "jeff-own-pw-1"})
+        jeff = cookie_of(h)
+        # A hold to arm under way, as the engine keeps it.
+        rem.arming_enabled = lambda: True
+        rem._group_index = lambda body: (0, "Left")
+        rem.arm_refusal = lambda g, dev: None
+
+        class _Fl:
+            def view(self):
+                return {"stale": False, "age_ms": 10,
+                        "groups": [{"armed": "disarmed", "wanted": False}]}
+        rem.flame_status = _Fl()
+        ctx = RM.Ctx(True, "127.0.0.1",
+                     session=rem.users.session(jeff), token=jeff)
+        code, out = rem.arm_hold({"group": 0,
+                                  "seen": rem.wall() * 1000}, ctx)
+        check(code == 200 and rem._holds.get(0, {}).get("who") == "Jeff",
+              f"a screen hold carries the signed-in name to the deck: "
+              f"{code} {out} {rem._holds}")
+        st, out, h = http("/api/remote/signout", {}, cookie=jeff)
+        check(st == 200 and "view only" in out.get("text", "") and
+              "Max-Age=0" in (h.get("Set-Cookie") or ""),
+              f"signed out, the page is told and the cookie cleared: {out}")
+        check(not rem._holds, f"the hold was let go: {rem._holds}")
+        st, out, _h = http("/api/remote/start-now",
+                           {"confirmed": True,
+                            "seen": int(time.time() * 1000)}, cookie=jeff)
+        check(st == 403 and out.get("role_refused"),
+              f"the old cookie does nothing after sign-out: {st} {out}")
+        st, me, _h = http("/api/remote/whoami", cookie=jeff)
+        check(me.get("view_only") is True and me.get("user") is None,
+              f"and the chip reads view only: {me}")
+        di = http("/api/remote/deck-input")[1].get("user") or {}
+        check(di.get("active") is True and di.get("name") is None and
+              di["may"]["arm"] is False,
+              f"the Stream Deck is told nobody is signed in: {di}")
+        st, out, h = http("/api/remote/signin",
+                          {"name": "Jeff", "password": "jeff-own-pw-1"})
+        check(st == 200 and rem.users.machine_user(),
+              f"signed in again: {out}")
+        st, out, _h = http("/api/remote/signout", {})
+        check(st == 200 and rem.users.machine_user() is None,
+              "a Sign out on the rack screen that lost its cookie still "
+              "signs the machine out")
+    finally:
+        httpd.server_close()
+
+
+def test_deck_needs_a_sign_in_on_the_rack_screen_to_arm():
+    section("Stream Deck: with users on, its arm and start keys act as "
+            "whoever is signed in on the rack screen and nobody else; "
+            "unsigned or not known never arms; Stop, Hold and disarm "
+            "never ask (2026-10-28)")
+    from ltcplay import streamdeck as sd
+    check(sd.operator_gate(sd.UNSIGNED, "arm") and
+          sd.operator_gate(sd.UNSIGNED, "start") and
+          sd.operator_gate(sd.UNSIGNED, "disarm") is None and
+          sd.operator_gate(sd.UNSIGNED, "abort") is None,
+          "unsigned is never a chosen operator for an arm or a start")
+    check(sd.role_gate(dict(sd.USER_UNKNOWN), "arm") and
+          sd.role_gate(dict(sd.USER_UNKNOWN), "disarm") is None,
+          "who is signed in not known: no arm, a disarm still goes")
+    t = [100.0]
+    sk = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda *a: None,
+                       clock=lambda: t[0])
+    check(sk.user() == sd.USER_UNKNOWN,
+          f"no answer from the engine yet: not known, never None "
+          f"({sk.user()})")
+    sk._last = ({"user": {"name": "Jeff", "active": True,
+                          "may": {"arm": True}}}, t[0])
+    t[0] += sd.USER_STALE_S / 2
+    check(sk.user()["name"] == "Jeff", "a fresh answer is trusted")
+    t[0] += sd.USER_STALE_S
+    check(sk.user().get("stale") is True,
+          "an answer older than USER_STALE_S is not")
+    sk._last = ({"user": None}, t[0])
+    check(sk.user() is None, "an engine with no users at all: the deck's "
+          "own rules, as before")
+
+    class _Arm:
+        def __init__(self):
+            self.wanted = [False, False, False]
+
+        def set_group(self, i, on):
+            self.wanted[i] = on
+
+        def set_all(self, on):
+            self.wanted = [on] * 3
+
+        def send(self, names):
+            pass
+
+    class _Status:
+        last = None
+
+        def stale(self, clock=None):
+            return True
+
+        def poll(self, clock=None):
+            pass
+    nobody = {"name": None, "role": None, "active": True,
+              "may": {"arm": False, "show": False}}
+    user = [nobody]
+    arm = _Arm()
+    lines = []
+    ctl = sd.Controller(arm, _Status(), ["L", "C", "R"],
+                        operator_provider=lambda: "Jeff",
+                        clock=lambda: t[0], user_provider=lambda: user[0],
+                        journal=lambda text, **k: lines.append((text, k)))
+    check(ctl._who() == sd.UNSIGNED,
+          "users on, nobody signed in: the deck's presses are unsigned, "
+          "not the chosen operator")
+    down = [False] * 6
+    down[sd.GROUP_KEYS[0]] = True
+    ctl.run_once(list(down))
+    t[0] += 2.0
+    ctl.tick()
+    check(arm.wanted == [False, False, False] and
+          any("nobody is signed in" in x for x, _k in lines),
+          f"held signed out: nothing armed, and said: {lines[-1:]}")
+    down[sd.GROUP_KEYS[0]] = False
+    ctl.run_once(list(down))
+    arm.wanted[1] = True
+    ctl._do_disarm(1)
+    check(arm.wanted[1] is False and
+          lines[-1][1].get("who") == sd.UNSIGNED and
+          "Jeff" not in lines[-1][0],
+          f"a disarm still goes signed out, and names nobody: {lines[-1]}")
+    user[0] = {"name": "Andy", "role": "operator", "active": True,
+               "may": {"arm": True, "show": True}}
+    down[sd.GROUP_KEYS[0]] = True
+    ctl.run_once(list(down))
+    t[0] += 2.0
+    ctl.tick()
+    check(arm.wanted[0] is True and
+          any(k.get("who") == "Andy" and k.get("action") == "arm"
+              for _x, k in lines),
+          f"signed in as Andy: armed, and the journal names Andy: "
+          f"{lines[-1:]}")
+    user[0] = {"name": None, "role": None, "may": {"arm": True}}
+    check(ctl._who() == "Jeff", "users off at the engine: the chosen "
+          "operator, as before")
+
+
+def test_users_file_broken_or_lost_locks_and_says_so():
+    section("users: a users file that cannot be read, or is lost after "
+            "users were set up, locks every control but the stops and "
+            "disarms, says so loudly, and never hands out an unclaimed "
+            "name (review of PR #143, 2)")
+    from ltcplay import users as U
+    d = tempfile.mkdtemp()
+    us = U.Users(d, hash_params=_U_FAST)
+    check(not us.active() and us.broken() == "" and
+          us.may(None, "arm"),
+          "never set up (no file, no mark): nothing changes, as before")
+    check(us.seed((("Jeff", "admin"), ("Andy", "operator"))) and
+          os.path.exists(os.path.join(d, U.USERS_MARK)),
+          "the first seed leaves the mark that users exist here")
+    ok, why, tok, _n = us.sign_in("Andy", "", False, "iPad at 10.0.0.9",
+                                  new_password="andy-own-pw-1")
+    check(not ok and tok is None and "show machine" in why and
+          us.listing()[0]["password_set"] is False,
+          f"a name with no password yet is never claimed from the "
+          f"network: {why}")
+    ok, why, tok, _n = us.sign_in("Andy", "", True, "Rack screen",
+                                  new_password="andy-own-pw-1")
+    check(ok and tok, f"on the rack screen it is: {why}")
+    with open(us.path, "w", encoding="utf-8") as fh:
+        fh.write("{ not json")
+    check(us.active() and "could not be read" in us.broken() and
+          not any(us.may(r, p) for r in (None,) for p in U.PERM_KEYS) and
+          us.may(None, "safety"),
+          f"a broken file: on, locked, safety still goes: {us.broken()}")
+    ok, why, _t, _n = us.sign_in("Andy", "andy-own-pw-1", True, "Rack screen")
+    check(not ok, "and nobody can sign in")
+    # Not text at all (a name saved by an editor in another encoding): read
+    # whole and invalid, locked and said, never "no users" (fourth review).
+    with open(us.path, "wb") as fh:
+        fh.write(b'{"users": {"J\xe9ff": {"role": "admin"}}}')
+    try:
+        bad = (us.active(), us.broken(), us.names(), us.may(None, "arm"))
+    except ValueError as e:
+        bad = ("raised", str(e))
+    check(bad[0] is True and "could not be read" in str(bad[1]) and
+          bad[2] == [] and bad[3] is False,
+          f"a users file that is not UTF-8: locked and said: {bad}")
+    os.remove(us.path)
+    check(us.active() and "missing" in us.broken() and
+          not us.may(None, "arm"),
+          f"deleted after setup: still locked, never open: {us.broken()}")
+    us2 = U.Users(d, hash_params=_U_FAST)
+    check(not us2.seed(U.SEED_USERS) and not os.path.exists(us2.path) and
+          us2.active(),
+          "and a restart never seeds names with no password again")
+    try:
+        us2.add("Eve", "admin", "eve-pw-1234")
+        check(False, "a user was added to a lost users file")
+    except ValueError as e:
+        check(U.USERS_MARK in str(e), f"refused, saying what to do: {e}")
+    # A change saved, then the file held: the copy used meanwhile is the
+    # one just written, never the one before it; and nothing is changed
+    # from it (third review of PR #143, 2).
+    d5 = tempfile.mkdtemp()
+    t5 = [100.0]
+    us5 = U.Users(d5, hash_params=_U_FAST, clock=lambda: t5[0])
+    us5.seed((("Jeff", "admin"), ("Ann", "operator"), ("Bob", "operator")))
+    ok, _w, ann, _n = us5.sign_in("Ann", "", True, "Rack screen",
+                                  new_password="ann-own-pw-1")
+    us5.remove("Bob")
+    us5.set_role("Ann", "viewer")
+    st5 = os.stat(us5.path)
+    os.utime(us5.path, (st5.st_atime, st5.st_mtime + 5))
+    import builtins as _b
+
+    def held5(path, *a, **k):
+        if os.path.abspath(str(path)) == os.path.abspath(us5.path):
+            raise PermissionError(13, "held by another program", path)
+        return _b.open(path, *a, **k)
+    U.open = held5
+    try:
+        s5 = us5.session(ann)
+        check(s5 and s5["role"] == "viewer" and "Bob" not in us5.names(),
+              f"held right after a change: the copy just written, the new "
+              f"role and no Bob: {s5} {us5.names()}")
+        try:
+            us5.set_role("Jeff", "admin")
+            check(False, "a change was made while the file was held")
+        except ValueError as e:
+            check("Nothing was changed" in str(e) and
+                  "Bob" not in us5.names(),
+                  f"a change waits for a fresh read: {e}")
+    finally:
+        del U.open
+    check("Bob" not in us5.names() and us5.role_of("Ann") == "viewer",
+          "and nothing that was removed or changed came back")
+    try:
+        us5.add("Deck", "operator", "deck-pw-1234")
+        check(False, "deck was taken as a user's name")
+    except ValueError:
+        pass
+    # A users file from before the mark existed gets it on first read.
+    d3 = tempfile.mkdtemp()
+    with open(os.path.join(d3, U.USERS_FILE), "w", encoding="utf-8") as fh:
+        json.dump({"users": {"Jeff": {"role": "admin", "pw": None}}}, fh)
+    check(U.Users(d3).active() and
+          os.path.exists(os.path.join(d3, U.USERS_MARK)),
+          "an older install's users file is marked the first time it is "
+          "read")
+    # Over the wire: locked, the alert raised once, Stop and Hold go.
+    httpd, http, cookie_of, work = _accounts_engine()
+    rem = httpd.remote
+    try:
+        with open(rem.users.path, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        st, out, _h = http("/api/remote/start-now",
+                           {"confirmed": True,
+                            "seen": int(time.time() * 1000)})
+        check(st == 403 and out.get("role_refused"),
+              f"a broken file: Start now refused: {st} {out}")
+        st, out, _h = http("/api/remote/hold", {})
+        check(not out.get("role_refused") and st != 403,
+              f"Hold still goes: {st} {out}")
+        st, s1, _h = http("/api/remote/status")
+        st, s2, _h = http("/api/remote/status")
+        ua = [a for a in s2.get("alerts") or [] if a.get("kind") == "users"]
+        check(len(ua) == 1 and "locked" in ua[0]["text"] and
+              "used at once, with no restart" in ua[0]["text"] and
+              U.USERS_MARK in ua[0]["text"] and
+              rem.users.folder in ua[0]["text"] and
+              "backup" not in ua[0]["text"] and
+              s2["me"]["view_only"] is True,
+              f"the alert says why and what to do, on every screen: "
+              f"{ua} {s2.get('me')}")
+        rows = [r for r in rem.alerts._journal_lines
+                if "users file" in r] if hasattr(
+                    rem.alerts, "_journal_lines") else None
+        check(rows is None or len(rows) == 1, "raised once, not per poll")
+        di = http("/api/remote/deck-input")[1].get("user") or {}
+        check(di.get("active") is True and di["may"]["arm"] is False,
+              f"the deck is told it may not arm: {di}")
+        # A good file put back: used at once, the alert goes.
+        rem.users._save({"users": {"Jeff": {"role": "admin", "pw": None}}})
+        st, s3, _h = http("/api/remote/status")
+        check(not [a for a in s3.get("alerts") or []
+                   if a.get("kind") == "users"] and
+              rem.users.broken() == "",
+              f"a good file back: no restart, the alert is gone: "
+              f"{s3.get('alerts')}")
+        # Held by another program past the grace: locked, and the alert
+        # says wait and check, never delete anything.
+        tt = [time.monotonic()]
+        rem.users._clock = lambda: tt[0]
+        st6 = os.stat(rem.users.path)
+        os.utime(rem.users.path, (st6.st_atime, st6.st_mtime + 5))
+        import builtins as _b6
+
+        def held6(path, *a, **k):
+            if os.path.abspath(str(path)) == \
+                    os.path.abspath(rem.users.path):
+                raise PermissionError(13, "held by another program", path)
+            return _b6.open(path, *a, **k)
+        U.open = held6
+        try:
+            http("/api/remote/status")
+            tt[0] += U.READ_GRACE_S + 1
+            st, s4, _h = http("/api/remote/status")
+        finally:
+            del U.open
+        ua = [a for a in s4.get("alerts") or [] if a.get("kind") == "users"]
+        check(len(ua) == 1 and "cannot be opened just now" in ua[0]["text"]
+              and "antivirus" in ua[0]["text"] and
+              U.USERS_MARK not in ua[0]["text"] and
+              "remove" not in ua[0]["text"],
+              f"held: wait and check, never delete: {ua}")
+    finally:
+        httpd.server_close()
+    # A moment when the file cannot be opened (an antivirus scan holding
+    # it): tried again, and nobody is signed out by it (re-review 2).
+    d4 = tempfile.mkdtemp()
+    t4 = [100.0]
+    us4 = U.Users(d4, hash_params=_U_FAST, clock=lambda: t4[0])
+    us4.seed((("Jeff", "admin"),))
+    ok, _w, tok, _n = us4.sign_in("Jeff", "", True, "Rack screen",
+                                  new_password="jeff-own-pw-1")
+    # The file rewritten (a new time on it) while something holds it.
+    st4 = os.stat(us4.path)
+    os.utime(us4.path, (st4.st_atime, st4.st_mtime + 5))
+    import builtins
+
+    def held(path, *a, **k):
+        if os.path.abspath(str(path)) == os.path.abspath(us4.path):
+            raise PermissionError(13, "held by another program", path)
+        return builtins.open(path, *a, **k)
+    U.open = held
+    try:
+        first = us4.session(tok)
+        t4[0] += U.READ_GRACE_S / 2
+        check(first is not None and us4.session(tok) is not None and
+              us4.broken() == "",
+              "failed opens for a moment: the last good read stands")
+        t4[0] += U.READ_GRACE_S
+        us4.session(tok)
+        check(us4.active() and us4.broken() and
+              not us4.may(None, "arm") and tok in us4._sessions,
+              f"failing on and on: locked, but nobody signed out: "
+              f"{us4.broken()}")
+    finally:
+        del U.open
+    check(us4.session(tok) is not None and us4.broken() == "",
+          "the file readable again: used at once, the sign-in back")
+
+
+def test_review_143_sign_out_holds_and_deck_fallbacks():
+    section("users: a sign-out lets go of that device's own hold only, and "
+            "only when it ended a sign-in; the deck decides alone only "
+            "with no users at all; a fault working out who is signed in "
+            "never arms; a deck line's name is a real user's or unsigned "
+            "(review of PR #143, 1, 4, 5, 6)")
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as sd
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "operator")))
+    rem = httpd.remote
+    try:
+        ok, _w, jeff, _n = rem.users.sign_in("Jeff", "", True, "Rack screen",
+                                             new_password="jeff-own-pw-1")
+        ok, _w, andy, _n = rem.users.sign_in("Andy", "", True, "Rack screen",
+                                             new_password="andy-own-pw-1")
+        ok, _w, andy_ipad, _n = rem.users.sign_in("Andy", "andy-own-pw-1",
+                                                  False, "iPad")
+        rack = RM.Ctx(True, "127.0.0.1")
+        ipad = RM.Ctx(False, "10.0.0.9")
+
+        def holds():
+            rem._holds = {0: {"token": rack.device, "who": "Jeff",
+                              "device": rack.screen, "group": "L",
+                              "start": 0.0, "beat": 0.0, "id": 1},
+                          1: {"token": ipad.device, "who": "Andy",
+                              "device": ipad.screen, "group": "R",
+                              "start": 0.0, "beat": 0.0, "id": 2}}
+        holds()
+        # The iPad holding group 1, with no sign-in to end (a page that
+        # lost its cookie): nothing ended, nothing let go.
+        rem.users_post("signout", {}, RM.Ctx(False, "10.0.0.9"))
+        check(set(rem._holds) == {0, 1},
+              "a sign-out that ended nothing lets go of nothing")
+        ipad.session, ipad.token = rem.users.session(andy_ipad), andy_ipad
+        rem.users_post("signout", {}, ipad)
+        check(set(rem._holds) == {0},
+              f"the iPad's sign-out lets go of its own hold only: "
+              f"{rem._holds}")
+        holds()
+        rack.session, rack.token = rem.users.session(jeff), jeff
+        rem.users_post("signout", {}, rack)
+        check(set(rem._holds) == {1} and rem.users.machine_user() is None,
+              f"the rack screen's: its own, and the machine signed out: "
+              f"{rem._holds}")
+        # A fault working out who is signed in: the deck may not arm.
+        real = rem.users.machine_user
+
+        def boom():
+            raise RuntimeError("broken")
+        rem.users.machine_user = boom
+        try:
+            v = rem.user_view_for_deck()
+            check(v and v["may"]["arm"] is False and v["active"] is True,
+                  f"a fault: the deck is told it may not arm: {v}")
+        finally:
+            rem.users.machine_user = real
+        # A deck line about a screen's hold keeps a real user's name only.
+        posted = []
+
+        class _Sched:
+            machine = None
+            conductor = None
+
+            def post(self, route, body):
+                posted.append(body.get("who"))
+                return 200, {"ok": True}
+        httpd.schedule = _Sched()
+        for who in ("Andy", "Mallory"):
+            http("/api/schedule/deck-event",
+                 {"text": f"Stream Deck: L arm hold by {who}.", "who": who,
+                  "screen": "Somewhere new"})
+        check(posted == ["deck", "deck"],
+              f"a line about a screen is written as the deck, never a "
+              f"name from its body: {posted}")
+    finally:
+        httpd.server_close()
+    t = [100.0]
+    sk = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda *a: None,
+                       clock=lambda: t[0])
+    sk._last, sk._users_on = ({"user": None}, t[0]), False
+    t[0] += sd.USER_STALE_S * 2
+    check(sk.user() is None,
+          "no users at all and the engine quiet: the deck decides alone, "
+          "as before")
+    sk._last, sk._users_on = ({"user": {"active": False, "name": None,
+                                        "may": {"arm": True}}}, t[0]), False
+    t[0] += sd.USER_STALE_S * 2
+    check(sk.user() is None, "users not set up yet: the same")
+    sk._users_on = True
+    check(sk.user() == sd.USER_UNKNOWN,
+          "users on and the engine quiet: not known, no arm")
+
+    class _Arm:
+        wanted = [False]
+
+        def set_group(self, i, on):
+            self.wanted[i] = on
+
+        def set_all(self, on):
+            self.wanted = [on]
+
+        def send(self, names):
+            pass
+
+    class _Status:
+        last = None
+
+        def stale(self, clock=None):
+            return True
+
+        def poll(self, clock=None):
+            pass
+    ctl = sd.Controller(_Arm(), _Status(), ["L"],
+                        operator_provider=lambda: "Jeff",
+                        clock=lambda: t[0],
+                        user_provider=lambda: dict(sd.USER_UNKNOWN))
+    check(ctl._who() == sd.UNSIGNED,
+          "who is signed in not known: the journal says unsigned, never "
+          "the chosen operator")
+
+
+_SIGNIN_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0; }
+function state(){
+  const out = {chip:($("nav-user") || {}).textContent || "", buttons:{}, arm:[], lz:[]};
+  for(const id of ["b-start", "b-resume", "b-reset", "b-run", "b-hold", "b-abort", "b-disarm", "lz-disarm", "sa-on", "lf-on"]){
+    const el = document.getElementById(id);
+    if(el) out.buttons[id] = {disabled:el.disabled, off:el.classList.contains("signin-off")};
+  }
+  document.querySelectorAll("#fl-lamps [data-arm]").forEach(b => out.arm.push({mode:b.dataset.mode, disabled:b.disabled}));
+  document.querySelectorAll("#lz-chips button[data-lz]").forEach(b => out.lz.push({armed:b.classList.contains("armed"), disabled:b.disabled}));
+  return out;
+}
+function go(){
+  if(!document.querySelector("#fl-lamps .lamp [data-arm]") || !ST) return setTimeout(go, 100);
+  setTimeout(async () => {
+    const res = {before:state()};
+    // A finger on the first group's button and on Start now.
+    const b = document.querySelector("#fl-lamps [data-arm]");
+    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true}));
+    $("b-start").click();
+    await new Promise(r => setTimeout(r, 400));
+    res.posts_after_press = window.__posts.slice();
+    res.hold_after_press = HOLD !== null;
+    // Then Sign out, with any hold under way.
+    $("u-out").click();
+    await new Promise(r => setTimeout(r, 400));
+    res.hold_after_out = HOLD !== null;
+    res.after_out = state();
+    res.posts = window.__posts.slice();
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify(res);
+    document.body.appendChild(pre);
+  }, 900);
+}
+go();
+})();
+</script>
+"""
+
+_SIGNIN_HEAD_JS = r"""<script>
+window.__posts = [];
+(function(){
+  // The engine's word after a Sign out: this screen signed out. The stub
+  // engine cannot know, so its status is answered as the real one would.
+  const f = window.fetch;
+  window.fetch = async function(u, o){
+    if(o && o.method === "POST") window.__posts.push(String(u));
+    const r = await f.apply(this, arguments);
+    if(String(u).indexOf("/api/remote/status") >= 0 &&
+       window.__posts.some(p => p.endsWith("/signout"))){
+      const j = await r.clone().json();
+      const no = {}; Object.keys((j.me || {}).may || {}).forEach(k => { no[k] = false; });
+      j.me = Object.assign({}, j.me, {user:null, role:null, view_only:true, may:no});
+      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+    }
+    return r;
+  };
+})();
+</script>"""
+
+
+def test_rack_screen_locks_controls_signed_out_in_a_browser():
+    section("rack screen, drawn in a real browser at the rack sizes: signed "
+            "out with users on, Start now, Resume, Reset, Run, hold to arm, "
+            "laser arm and the settings switches are off and say Sign in "
+            "to use controls; Hold, Abort, Disarm all and Disarm all lasers "
+            "stay live; a press does not reach the engine; Sign out lets go "
+            "of a hold and locks at once (review of PR #143, 3)")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the page was not drawn")
+        print("  ok")
+        return
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
+             "users")
+    base = _rack_status_pico(many=False)
+    base["laser_arm"]["lasers"][1]["armed"] = True
+    out_st = dict(base, me={"local": True, "users_active": True,
+                            "user": None, "role": None, "view_only": True,
+                            "may": {p: False for p in perms}})
+    in_st = dict(base, me={"local": True, "users_active": True,
+                           "user": "Jeff", "role": "admin",
+                           "view_only": False,
+                           "may": {p: True for p in perms}})
+    # One draw each, the short window signed out and the show PC's screen
+    # signed in: the Windows runner's 20 minutes are nearly all used, and
+    # the sign-in and sign-out flip test draws both sizes again.
+    for label, st, sizes in (("signed out", out_st, ((1366, 600),)),
+                             ("signed in", in_st, ((1920, 1080),))):
+        got = _rack_screen_in_chromium(chrome, page, st, sizes,
+                                       measure_js=_SIGNIN_MEASURE_JS,
+                                       head_js=_SIGNIN_HEAD_JS,
+                                       budget_ms=8000)
+        for (w, h), res in got.items():
+            if not check(isinstance(res, dict), f"{label} {w}x{h}: drawn: "
+                                                 f"{res!r}"[:600]):
+                continue
+            bt = res["before"]["buttons"]
+            live = all(not bt[k]["off"] for k in ("b-hold", "b-abort",
+                                                  "b-disarm", "lz-disarm"))
+            check(live and not bt["b-abort"]["disabled"] and
+                  not bt["b-disarm"]["disabled"] and
+                  not bt["lz-disarm"]["disabled"],
+                  f"{label} {w}x{h}: Abort, Disarm all and Disarm all "
+                  f"lasers live: {bt}")
+            if label == "signed out":
+                check(all(bt[k]["disabled"] and bt[k]["off"] for k in
+                          ("b-start", "b-resume", "b-reset", "b-run")),
+                      f"{w}x{h}: Start now, Resume, Reset and Run off: {bt}")
+                check(res["before"]["arm"] and
+                      all(a["disabled"] for a in res["before"]["arm"]
+                          if a["mode"] != "disarm"),
+                      f"{w}x{h}: every hold to arm off: "
+                      f"{res['before']['arm']}")
+                check([z for z in res["before"]["lz"] if z["armed"]] and
+                      all(z["disabled"] for z in res["before"]["lz"]
+                          if not z["armed"]) and
+                      not any(z["disabled"] for z in res["before"]["lz"]
+                              if z["armed"]),
+                      f"{w}x{h}: a laser's Arm off, its Disarm live: "
+                      f"{res['before']['lz']}")
+                check(res["before"]["chip"] == "Sign in to use controls",
+                      f"{w}x{h}: the chip says it: {res['before']['chip']}")
+                check(not [p for p in res["posts_after_press"]
+                           if p.endswith("arm-hold") or
+                           p.endswith("start-now")] and
+                      not res["hold_after_press"],
+                      f"{w}x{h}: a press on hold to arm or Start now "
+                      f"reaches nothing: {res['posts_after_press']}")
+            else:
+                check(not bt["b-start"]["off"] and
+                      any(not a["disabled"] for a in res["before"]["arm"]),
+                      f"{w}x{h}: signed in, the controls are on: {bt} "
+                      f"{res['before']['arm']}")
+                check(res["hold_after_press"] and
+                      any(p.endswith("arm-hold")
+                          for p in res["posts_after_press"]),
+                      f"{w}x{h}: signed in, a hold to arm starts: "
+                      f"{res['posts_after_press']}")
+                check(not res["hold_after_out"] and
+                      res["after_out"]["buttons"]["b-start"]["off"] and
+                      all(a["disabled"] for a in res["after_out"]["arm"]
+                          if a["mode"] != "disarm") and
+                      res["after_out"]["chip"] == "Sign in to use "
+                                                  "controls" and
+                      any(p.endswith("signout") for p in res["posts"]),
+                      f"{w}x{h}: Sign out lets go of the hold and locks "
+                      f"at once: {res['after_out']} {res['posts']}")
+
+
+_SIGNIN_FLIP_HEAD_JS = r"""<script>
+window.__mode = "out";
+(function(){
+  // The engine's word on this screen, flipped by the test as a sign-in
+  // and a sign-out would.
+  const f = window.fetch;
+  window.fetch = async function(u, o){
+    const r = await f.apply(this, arguments);
+    if(String(u).indexOf("/api/remote/status") < 0) return r;
+    const j = await r.clone().json();
+    const inn = window.__mode === "in", may = {};
+    Object.keys((j.me || {}).may || {}).forEach(k => { may[k] = inn; });
+    j.me = Object.assign({}, j.me, {user: inn ? "Jeff" : null, role: inn ? "admin" : null, view_only: !inn, may: may});
+    return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+  };
+})();
+</script>"""
+
+_SIGNIN_FLIP_MEASURE_JS = r"""
+<script>
+(function(){
+function state(){
+  const o = {chip:($("nav-user") || {}).textContent || "", b:{}};
+  for(const id of ["b-run", "b-start", "b-hold", "b-disarm", "lz-disarm", "sa-on"]){
+    const e = document.getElementById(id);
+    if(e) o.b[id] = {d:e.disabled, off:e.classList.contains("signin-off"), t:e.title};
+  }
+  o.lz = [...document.querySelectorAll("#lz-chips button[data-lz]")].map(b => ({a:b.classList.contains("armed"), d:b.disabled, t:b.title}));
+  o.ann = [...document.querySelectorAll("#ann-btns button[data-ann]")].map(b => ({d:b.disabled, t:b.title}));
+  o.arm = [...document.querySelectorAll("#fl-lamps [data-arm]")].map(b => ({m:b.dataset.mode, d:b.disabled}));
+  o.locked = document.querySelectorAll(".signin-off").length;
+  return o;
+}
+const wait = ms => new Promise(r => setTimeout(r, ms));
+function go(){
+  if(!ST || !document.querySelector("#fl-lamps [data-arm]")) return setTimeout(go, 100);
+  setTimeout(async () => {
+    const res = {out1:state()};
+    // Start now and Run as a Stop (a show live or starting; PR #144):
+    // never locked, signed out or not (third review of PR #143, 1).
+    const sm = {};
+    for(const id of ["b-start", "b-run"]){
+      const e = $(id), was = [e.dataset.mode, e.disabled, e.title,
+        e.classList.contains("signin-off"), e.dataset.title0, e.dataset.dis0];
+      e.dataset.mode = "stop"; e.disabled = false; e.title = "Stop";
+      lockForSignIn();
+      sm[id] = {d:e.disabled, off:e.classList.contains("signin-off"), t:e.title};
+      // Put the drawing back exactly as it was, the lock's notes too.
+      if(was[0] === undefined) delete e.dataset.mode; else e.dataset.mode = was[0];
+      e.disabled = was[1]; e.title = was[2];
+      e.classList.toggle("signin-off", was[3]);
+      if(was[4] !== undefined) e.dataset.title0 = was[4];
+      if(was[5] !== undefined) e.dataset.dis0 = was[5];
+    }
+    lockForSignIn();
+    res.stop_mode = sm;
+    window.__mode = "in"; await wait(1500); res.in1 = state();
+    window.__mode = "out"; await wait(1500); res.out2 = state();
+    window.__mode = "in"; await wait(1500); res.in2 = state();
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify(res);
+    document.body.appendChild(pre);
+  }, 900);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser():
+    section("rack screen, drawn in a real browser at the rack sizes: the "
+            "screen boots signed out, Jeff signs in, signs out and in "
+            "again; every control locked for signing in comes back to its "
+            "own real state and tooltip at once, and locks again on the "
+            "sign-out (re-review of PR #143, 1)")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the page was not drawn")
+        print("  ok")
+        return
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
+             "users")
+    st = _rack_status_pico(many=False)
+    st["laser_arm"]["lasers"][1]["armed"] = True
+    st["booth"] = {"configured": False, "device": ""}
+    st["announce"] = {
+        "configured": True, "ok": True, "error": None, "device": "MOTU M4",
+        "device_set": True, "device_available": True, "device_reason": None,
+        "blocked": None, "over_show": False,
+        "items": [{"id": "delayed", "name": "Delayed", "available": True,
+                   "missing": False, "reason": None, "length_s": 12.0},
+                  {"id": "cancellation", "name": "Cancellation",
+                   "available": True, "missing": False, "reason": None,
+                   "length_s": 9.0}],
+        "playing": None}
+    st["me"] = {"local": True, "users_active": True, "user": None,
+                "role": None, "view_only": True,
+                "may": {p: False for p in perms}}
+    words = "Sign in to use controls"
+    got = _rack_screen_in_chromium(chrome, page, st,
+                                   ((1920, 1080), (1366, 600)),
+                                   measure_js=_SIGNIN_FLIP_MEASURE_JS,
+                                   head_js=_SIGNIN_FLIP_HEAD_JS,
+                                   budget_ms=12000)
+    for (w, h), res in got.items():
+        if not check(isinstance(res, dict),
+                     f"{w}x{h}: drawn: {res!r}"[:600]):
+            continue
+        sm = res.get("stop_mode") or {}
+        check(sm and all(not v["d"] and not v["off"] and v["t"] == "Stop"
+                         for v in sm.values()),
+              f"{w}x{h}: Start now and Run as a Stop stay live signed out, "
+              f"their own tooltip kept: {sm}")
+        for tag in ("out1", "out2"):
+            o = res[tag]
+            check(o["chip"] == words and o["b"]["b-run"]["d"] and
+                  o["b"]["b-run"]["off"] and o["b"]["b-start"]["off"] and
+                  all(z["d"] for z in o["lz"] if not z["a"]) and
+                  o["ann"] and all(a["d"] for a in o["ann"]) and
+                  all(a["d"] for a in o["arm"] if a["m"] != "disarm") and
+                  not o["b"]["b-hold"]["off"] and
+                  not o["b"]["b-disarm"]["off"] and
+                  not o["b"]["lz-disarm"]["d"],
+                  f"{w}x{h} {tag}: signed out, locked; Hold and the "
+                  f"disarms live: {o}")
+        for tag in ("in1", "in2"):
+            o = res[tag]
+            check(o["chip"] == "Jeff" and o["locked"] == 0 and
+                  not o["b"]["b-run"]["d"] and
+                  words not in o["b"]["b-run"]["t"] and
+                  words not in o["b"]["b-start"]["t"] and
+                  o["lz"] and not any(z["d"] for z in o["lz"]) and
+                  not any(words in z["t"] for z in o["lz"]) and
+                  o["ann"] and not any(a["d"] for a in o["ann"]) and
+                  not any(words in a["t"] for a in o["ann"]) and
+                  any(not a["d"] for a in o["arm"]),
+                  f"{w}x{h} {tag}: signed in, every control back to its "
+                  f"own state and tooltip at once: {o}")
 
 
 def test_audit_chain_verify_finds_every_kind_of_tamper():
@@ -68215,7 +70315,9 @@ def test_live_flame_engine_routes_roles_and_presses():
         for name, body in (("abort", {"confirmed": True}), ("hold", {}),
                            ("start-now", {"seen": int(time.time() * 1000)})):
             lf.on = True
-            http(f"/api/remote/{name}", body)
+            # Start now needs a sign-in (2026-10-28); Abort and Hold never.
+            http(f"/api/remote/{name}", body,
+                 cookie=jeff if name == "start-now" else None)
             cut = [c for c in lf.calls if c[0] == "cut"]
             check(cut and name in cut[-1][1],
                   f"{name} shuts the program slot at the press: {cut[-1:]}")
@@ -70380,7 +72482,9 @@ def test_scrub_flames_engine_routes_roles_and_page():
         for name, body in (("abort", {"confirmed": True}), ("hold", {}),
                            ("start-now", {"seen": int(time.time() * 1000)})):
             sf.on = True
-            http(f"/api/remote/{name}", body)
+            # Start now needs a sign-in (2026-10-28); Abort and Hold never.
+            http(f"/api/remote/{name}", body,
+                 cookie=jeff if name == "start-now" else None)
             cut = [c for c in sf.calls if c[0] == "cut"]
             check(cut and name in cut[-1][1],
                   f"{name} shuts the link's slot at the press: {cut[-1:]}")
@@ -72276,6 +74380,1348 @@ def test_fuel_doc_in_plain_words():
     print("  ok")
 
 
+# --------------------------------------------------- the Fireball page --
+# Jeff, 2026-10-28 (design by Andy): manual control of each Fireball
+# channel on its own rack screen page (fireball.py, OPERATOR.md).
+
+_FB_GROUP = {"name": "fireball", "safety": 77, "safeties": [77],
+             "fire": [55, 56, 57, 58, 59]}
+
+
+class _FakeFireballLink:
+    """What fireball.py asks of the flame link: the purge frame, its zero
+    count and whether it is sending. `cur` is the frame held now."""
+
+    def __init__(self):
+        self._zero_gen = 0
+        self.cur = None
+        self.sets = 0
+        self.cleared = 0
+        self.locked = set()
+        self.state = "running"
+        self.lock_alarm = ""
+        self.on_set = None
+
+    def purge_set(self, values):
+        self.cur = bytes(values)
+        self.sets += 1
+        if self.on_set is not None:
+            self.on_set()
+        return True
+
+    def purge_clear(self):
+        self.cur = None
+        self.cleared += 1
+
+    def set_locked_channels(self, slots):
+        self.locked = set(slots)
+
+    def sender_state(self):
+        return self.state
+
+    def zero(self):
+        """As FlameLink.zero(): the purge frame dropped, the count bumped."""
+        self._zero_gen += 1
+        self.cur = None
+
+
+def _fb_panel(**kw):
+    """A FireballPanel on a fake link and clock, flamesafe saying armed."""
+    import types
+    from ltcplay import fireball as FB
+    P = types.SimpleNamespace(t=[100.0], link=_FakeFireballLink(),
+                              armed=["armed"], age=[20], why=[""],
+                              locked=[set()], lines=[])
+    group, problem = FB.find_group(
+        [{"name": "front row", "safeties": [401], "fire": [411]},
+         dict(_FB_GROUP)])
+
+    def flames():
+        return {"connected": True, "stale": P.age[0] is None,
+                "age_ms": P.age[0],
+                "groups": [{"name": "front row", "armed": "disarmed"},
+                           {"name": "fireball", "armed": P.armed[0]}]}
+    P.fb = FB.FireballPanel(
+        group, problem, link_get=lambda: P.link, flames_get=flames,
+        blockers=lambda: P.why[0], locked_slots=lambda: P.locked[0],
+        journal=lambda text, **k: P.lines.append((text, k)),
+        clock=lambda: P.t[0], threaded=False, **kw)
+    return P
+
+
+def test_fireball_panel_rules():
+    section("the Fireball page's engine (fireball.py): the slots come from "
+            "flamesafe's fireball group, by channel number; 255 on a channel only "
+            "while flamesafe reports the group ARMED, never on the safety "
+            "slot; one run at a time, the page's beats in order; no beat "
+            "for 0.25 s, a disarm, a stale flamesafe, the flame link zeroed "
+            "(Stop, Hold, Abort), a blocker, a lock or a refusal cut "
+            "everything, and a cut run never comes back")
+    import re as _re
+    import types
+    from ltcplay import fireball as FB
+    from ltcplay import flamelink as FL
+    from ltcplay import users as U
+    here = os.path.dirname(os.path.abspath(__file__))
+    rules_src = open(os.path.join(here, "flamesafe", "rules.py"),
+                     encoding="utf-8").read()
+    fire_at = int(_re.search(r"^GFLAME_FIRE_AT = (\d+)", rules_src,
+                             _re.M).group(1))
+    check(FB.ON_VALUE == 255 and FB.ON_VALUE >= fire_at,
+          f"ON is 255, at or over the G-Flame fire value {fire_at}")
+    check(FB.BEAT_STALE_S == FL.PURGE_HOLD_S == 0.25 and
+          FB.WATCH_S <= 0.05 and FB.STATUS_FRESH_S == 0.5,
+          "a run with no beat for 0.25 s is cut, the watcher looks every "
+          "50 ms, and flamesafe's word has to be under half a second old")
+    check([c[0] for c in FB.CONTROLS] ==
+          ["fuel", "air", "valve", "igniter", "purge"] and
+          FB.TOGGLES == ("fuel", "air", "purge") and
+          FB.MOMENTARY == ("valve", "igniter"),
+          "Fuel, Air and Purge toggle; Valve Open and Igniter are held")
+    # The group, by name, in the config's order; anything else says why.
+    g, why = FB.find_group([{"name": "front row", "safeties": [401],
+                             "fire": [411]},
+                            {"name": " FireBall ", "safeties": [77],
+                             "fire": [59, 58, 57, 56, 55]}])
+    check(g == {"name": " FireBall ", "index": 1, "safety": 77,
+                "fire": [55, 56, 57, 58, 59]} and why == "",
+          f"found by name in any case; the buttons go by channel number, "
+          f"lowest first, whatever order the file lists: {g}")
+    for groups, need in (
+            ([], "could not be read"),
+            ([{"name": "front row", "safeties": [401], "fire": [411]}],
+             "no group named fireball"),
+            ([{"name": "fireball", "safeties": [405], "fire": [451]}],
+             "Fireball page unavailable: flamesafe.json fireball group must "
+             "list five fire slots"),
+            ([{"name": "fireball", "safeties": [405],
+               "fire": [1, 2, 3, 4, 5, 6]}], "must list five fire slots"),
+            ([{"name": "fireball", "safeties": [7, 8],
+               "fire": [1, 2, 3, 4, 5]}], "2 safety slots"),
+            ([{"name": "fireball", "safeties": [7],
+               "fire": [1, 1, 3, 4, 5]}], "five different slots"),
+            ([{"name": "fireball", "safeties": [7],
+               "fire": [1, 2, 3, 4, 513]}], "five different slots")):
+        g, why = FB.find_group(groups)
+        check(g is None and need in why, f"{need}: {why}")
+    P = _fb_panel()
+    fb, link = P.fb, P.link
+    me = ("Rack screen", "w-a")
+    ipad = ("iPad at 10.20.0.44", "w-b")
+    vals = fb.frame({"fuel", "valve"})
+    check(len(vals) == 512 and vals[54] == 255 and vals[56] == 255 and
+          vals[55] == 0 and vals[76] == 0 and sum(1 for v in vals if v) == 2,
+          "the frame: 255 on Fuel Charge (55) and Valve Open (57), zero on "
+          "everything else, the safety slot (77) included")
+    check(all(fb.frame(set(FB.KEYS))[s - 1] == 255 for s in _FB_GROUP["fire"])
+          and fb.frame(set(FB.KEYS))[76] == 0, "every channel, never 77")
+    # Only the JSON word true is ON, and the role check agrees.
+    for c, want in (({"fuel": True}, {"fuel"}), ({"fuel": 1}, set()),
+                    ({"fuel": "true"}, set()), ({"bogus": True}, set()),
+                    ({}, set()), (None, set())):
+        check(FB.controls_on({"controls": c}) == want,
+              f"controls {c!r}: {want}")
+    check(U.classify("/api/remote/fireball-beat",
+                     {"controls": {"valve": True}}) == "arm" and
+          U.classify("/api/remote/fireball-beat",
+                     {"controls": {"valve": False}}) == "safety" and
+          U.classify("/api/remote/fireball-beat", {}) == "safety" and
+          U.classify("/api/remote/fireball-beat",
+                     {"controls": {"bogus": True}}) == "arm" and
+          U.classify("/api/remote/fireball-off", {}) == "safety",
+          "a channel ON is an arm press (signed out is view only); all off "
+          "and every other body only turn things off: safety")
+
+    bases = {}
+
+    def beat(on, run="r1", seq=None, owner=me, **kw):
+        # A page numbers its beats across runs (FB_SEQ): each run's seqs
+        # here start past every earlier run's.
+        body = {"controls": {k: True for k in on}, "run": run}
+        if seq is not None:
+            body["seq"] = bases.setdefault(run, 1000 * (len(bases) + 1)) + \
+                seq
+        return fb.beat(body, owner, **kw)
+    # Not armed: nothing, said.
+    P.armed[0] = "disarmed"
+    code, out = beat({"fuel"}, seq=1)
+    check(code == 409 and "not armed" in out["error"] and out["cut"] and
+          link.cur is None and link.sets == 0,
+          f"the Fireball not armed: refused, nothing set: {code} {out}")
+    P.armed[0] = "armed"
+    P.age[0] = 600
+    code, out = beat({"fuel"}, run="r0", seq=1)
+    check(code == 409 and "half second" in out["error"] and link.sets == 0,
+          f"flamesafe's status 0.6 s old: refused: {out}")
+    P.age[0] = 20
+    code, out = beat({"fuel"}, run=None)
+    check(code == 400 and link.sets == 0, "a beat with no run: refused")
+    # Armed: a run starts; Fuel Charge goes out.
+    code, out = beat({"fuel"}, seq=1)
+    check(code == 200 and out["run"] == "r1" and out["on"] == ["fuel"] and
+          link.cur[54] == 255 and link.cur[56] == 0,
+          f"armed: Fuel Charge 255 on slot 55: {code} {out}")
+    check(any("Fuel Charge ON (a new run)" in t for t, _k in P.lines),
+          "the journal says what went on")
+    P.t[0] += 0.1
+    code, out = beat({"fuel", "valve"}, seq=2)
+    check(code == 200 and link.cur[56] == 255, "Valve Open held: 57 at 255")
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, seq=3)
+    check(code == 200 and link.cur[56] == 0 and link.cur[54] == 255,
+          "Valve Open let go: 57 back to 0 on the next beat")
+    code, out = beat({"fuel", "valve"}, seq=2)
+    check(code == 200 and out.get("overtaken") and link.cur[56] == 0,
+          f"an older beat that arrives late never puts the valve back on: "
+          f"{out}")
+    # Another screen, while this one runs: refused, this run unharmed.
+    code, out = beat({"air"}, run="x1", seq=1, owner=ipad)
+    check(code == 409 and "One screen at a time" in out["error"] and
+          link.cur[54] == 255 and fb.active(),
+          f"another screen is refused and changes nothing: {out}")
+    v = fb.view(ipad)
+    check(v["owner"] == "Rack screen" and not v["mine"] and
+          v["on"] == ["fuel"] and fb.view(me)["mine"],
+          "the view says who has it")
+    # No beat for 0.25 s: cut by the watcher; the run never comes back.
+    P.t[0] += 0.2
+    check(fb.tick() == "" and fb.active(), "0.2 s: still on")
+    P.t[0] += 0.06
+    why = fb.tick()
+    check("no heartbeat" in why and not fb.active() and link.cur is None,
+          f"0.26 s with no beat: everything off at once: {why}")
+    code, out = beat({"fuel"}, seq=4)
+    check(code == 409 and "Press again" in out["error"] and link.cur is None,
+          f"a beat of the cut run is refused: {out}")
+    # A new press (a new run) is fine; all off ends it, and its late
+    # beats are refused.
+    code, out = beat({"air"}, run="r2", seq=5)
+    check(code == 200 and link.cur[55] == 255, "a new press: Air Charge on")
+    code, out = beat(set(), run="r2", seq=6)
+    check(code == 200 and not fb.active() and link.cur is None,
+          "all off ends the run and clears the frame")
+    code, out = beat({"air"}, run="r2", seq=5)
+    check(code == 409 and link.cur is None,
+          "a late beat of that run never turns it back on")
+    code, out = beat(set(), run="r3", seq=1)
+    code, out = beat({"air"}, run="r3", seq=0)
+    check(code == 409 and link.cur is None,
+          "an all off that overtook its run's first beat: the run never "
+          "starts")
+    # Each cut: a disarm, a stale flamesafe, the link zeroed, a blocker,
+    # a lock, the page's status stale, the switch off.
+
+    def start(run):
+        P.t[0] += 0.05
+        code, out = beat({"fuel", "purge"}, run=run, seq=1)
+        check(code == 200 and link.cur[58] == 255,
+              f"setup {run}: Fuel Charge and Purge on: {out}")
+    start("c1")
+    P.armed[0] = "held"
+    P.t[0] += 0.05
+    why = fb.tick()
+    check("not armed" in why and link.cur is None and not fb.active(),
+          f"the group disarmed (a deck key, a lockout): cut: {why}")
+    P.armed[0] = "armed"
+    start("c2")
+    P.age[0] = None
+    P.t[0] += 0.05
+    check("not known" in fb.tick() and link.cur is None,
+          "flamesafe's status stale: cut")
+    P.age[0] = 20
+    start("c3")
+    link.zero()
+    P.t[0] += 0.05
+    check("zeroed" in fb.tick() and not fb.active(),
+          "the flame link zeroed (Stop, Hold, Abort): cut")
+    start("c4")
+    P.why[0] = "a scheduled show is live (SHOW)"
+    P.t[0] += 0.05
+    check(fb.tick() == "a scheduled show is live (SHOW)" and
+          link.cur is None, "a show going live: cut, with the reason")
+    code, out = beat({"fuel"}, run="c5", seq=1)
+    check(code == 409 and out["error"] == "a scheduled show is live (SHOW)",
+          "and nothing turns on while it stands")
+    v = fb.view(me)
+    check(v["blocked"] == "a scheduled show is live (SHOW)" and
+          v["armed"] == "armed", f"the view says why: {v['blocked']}")
+    P.why[0] = ""
+    P.locked[0] = {57}
+    code, out = beat({"fuel"}, run="c6", seq=1)
+    check(code == 409 and "locked out" in out["error"] and link.cur is None,
+          f"a locked fireball slot: nothing turns on: {out}")
+    P.locked[0] = set()
+    start("c7")
+    code, out = beat({"fuel"}, run="c7", seq=2, seen_ok=False)
+    check(code == 409 and "1 s old" in out["error"] and not fb.active() and
+          link.cur is None, "a stale page: refused, and its run is cut")
+    start("c8")
+    code, out = beat({"fuel"}, run="c8", seq=2,
+                     may=(False, "switched off here"))
+    check(code == 409 and out["error"] == "switched off here" and
+          not fb.active(), "the purge switch off: refused and cut")
+    start("c9")
+    code, out = fb.off("All off pressed", who="Ola")
+    check(code == 200 and not fb.active() and link.cur is None,
+          "All off from any screen: everything off")
+    start("c10")
+    fb.on_abort("Jeff", "Rack screen")
+    check(not fb.active() and link.cur is None and "Abort" in fb.last_cut,
+          "an Abort cuts it")
+    # A zero or disarm that lands while a beat's frame goes in: the beat
+    # clears it again and the run is cut.
+    start("c11")
+    link.on_set = link.zero
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, run="c11", seq=2)
+    link.on_set = None
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"Stop, Hold or Abort in the middle of a beat wins: {out}")
+    # A disarm read right after the frame went in (the belt).
+    start("c12")
+    seq = [0]
+
+    def disarm_after_set():
+        seq[0] += 1
+        P.armed[0] = "held"
+    link.on_set = disarm_after_set
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, run="c12", seq=2)
+    link.on_set = None
+    P.armed[0] = "armed"
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"a disarm seen just after the frame went in: cut: {out}")
+    # A beat from the same screen with a new run while its old one is
+    # still live (its all off on the way): the old one can never return.
+    start("c13")
+    P.t[0] += 0.05
+    code, out = beat({"air"}, run="c14", seq=1)
+    code2, out2 = beat({"fuel", "purge"}, run="c13", seq=2)
+    check(code == 200 and code2 == 409 and link.cur[55] == 255 and
+          link.cur[54] == 0, "a new run replaces the old; the old is dead")
+    fb.cut("test")
+    # Review of #149, P3-1: a beat whose frame is still being worked out
+    # when a later beat of the same run lands (separate connections) is
+    # not written over the later one: a released valve stays off.
+    start("o1")
+    real_frame = fb.frame
+    late = []
+
+    def frame_then_newer(on):
+        vals = real_frame(on)
+        if "valve" in on and not late:
+            late.append(beat({"fuel"}, run="o1", seq=3))
+        return vals
+    fb.frame = frame_then_newer
+    P.t[0] += 0.05
+    code, out = beat({"fuel", "valve"}, run="o1", seq=2)
+    fb.frame = real_frame
+    check(late and late[0][0] == 200 and code == 200 and
+          out.get("overtaken") and link.cur[56] == 0 and
+          link.cur[54] == 255,
+          f"the older beat (valve held) finishing after the newer one (valve "
+          f"let go) does not put the valve back: {out} {late}")
+    fb.cut("test")
+    # Review of #149, P3-2: no other screen's beats can push a real ended
+    # run out of what is remembered, and this screen's own all offs cannot
+    # either: a late 'on' of it never starts again.
+    start("e1")
+    old = {"controls": {"fuel": True}, "run": "e1",
+           "seq": bases["e1"] + 2}
+    fb.cut("test")
+    for i in range(300):
+        fb.beat({"controls": {}, "run": f"x{i}", "seq": i},
+                (f"iPad at 10.20.0.{i % 250}", f"w-{i}"))
+    code, out = fb.beat(dict(old), me)
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"300 all offs from other screens: the ended run stays ended: "
+          f"{out}")
+    for i in range(200):
+        beat(set(), run=f"own{i}", seq=1)
+    code, out = fb.beat(dict(old), me)
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"200 of this screen's own all offs: a late beat of the ended "
+          f"run still never starts (its beat number is behind): {out}")
+    # No group: nothing at all, said.
+    from ltcplay import fireball as FB2
+    nog = FB2.FireballPanel(None, "flamesafe's config has no group named "
+                                  "fireball, so this page has nothing to "
+                                  "control.", link_get=lambda: link,
+                            threaded=False)
+    code, out = nog.beat({"controls": {"fuel": True}, "run": "n1"}, me)
+    check(code == 409 and "no group named fireball" in out["error"] and
+          nog.view()["available"] is False and nog.summary() ==
+          {"available": False, "on": [], "owner": None},
+          f"no fireball group: unavailable, says why: {out}")
+    # The watcher thread runs by itself, and close() cuts.
+    P2 = _fb_panel()
+    P2.fb.close()
+    from ltcplay import fireball as FB3
+    g, _w = FB3.find_group([dict(_FB_GROUP)])
+    lk = _FakeFireballLink()
+    th = FB3.FireballPanel(g, "", link_get=lambda: lk, flames_get=lambda: {
+        "connected": True, "stale": False, "age_ms": 5,
+        "groups": [{"name": "fireball", "armed": "armed"}]})
+    try:
+        code, out = th.beat({"controls": {"igniter": True}, "run": "t1",
+                             "seq": 1}, me)
+        check(code == 200 and lk.cur[57] == 255, "threaded: Igniter on")
+        end = time.monotonic() + 2.0
+        while th.active() and time.monotonic() < end:
+            time.sleep(0.02)
+        check(not th.active() and lk.cur is None,
+              "the watcher thread cuts a run whose beats stopped, by itself")
+    finally:
+        th.close()
+    print("  ok")
+
+
+def _fireball_rig(S):
+    """_morning_rig with flamesafe's fireball group (Jeff's: safety 77, fire
+    55 to 59) and the Fireball panel built as web.serve builds it, on the
+    test's clock with no watcher thread."""
+    from ltcplay import fireball as FB
+    R = _morning_rig(S, _MO_CONFIG, link=_FakeFireballLink())
+    R.m.groups = list(R.m.groups) + [dict(_FB_GROUP)]
+    R.groups.append({"name": "fireball", "armed": "disarmed",
+                     "wanted": False, "reason": ""})
+    R.feed()
+    R.fb = FB.build(R.remote, R.m, R.link,
+                    journal=R.remote._morning_journal, threaded=False,
+                    clock=lambda: R.mono[0])
+    R.remote.fireball = R.fb
+    return R
+
+
+def _fb_armed(R, armed=True):
+    for g in R.groups:
+        if g["name"] == "fireball":
+            g["armed"] = "armed" if armed else "disarmed"
+            g["wanted"] = armed
+    R.feed()
+
+
+def test_fireball_at_the_engine():
+    section("the Fireball page on the real engine: GET for anyone; a "
+            "channel goes on only with the Fireball armed and none of the "
+            "Startup page's purge rules against it; one screen and window "
+            "at a time; it waits for a purge selection and the purge waits "
+            "for it; Arrange mode, live flame programming, Run pressed and "
+            "a show live hold it off and say why; an Abort cuts it and "
+            "nothing goes on until the Fireball is armed again; web.serve "
+            "closes it first")
+    S = _sched()
+    if S is None:
+        return
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import fireball as FB
+    from ltcplay import web as W
+    check("fireball" in RM.GET_ROUTES and "fireball-beat" in RM.POST_ROUTES
+          and "fireball-off" in RM.POST_ROUTES, "the routes exist")
+    R = _fireball_rig(S)
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    win_a = {"X-LTC-Window": "w-aaaaaa"}
+    win_b = {"X-LTC-Window": "w-bbbbbb"}
+    link = R.link
+
+    count = [0]
+
+    def beat(on, run, seq, client=loop, headers=win_a, seen=None):
+        count[0] += 1          # a page's beats are numbered across runs
+        body = {"controls": {k: True for k in on}, "run": run,
+                "seq": count[0],
+                "seen": R.seen() if seen is None else seen}
+        st, _h, out = R.ask("POST", "/api/remote/fireball-beat", body,
+                            client=client, headers=headers)
+        return st, out
+    try:
+        st, _h, v = R.ask("GET", "/api/remote/fireball", client=ipad)
+        check(st == 200 and v["available"] and
+              [(c["key"], c["slot"], c["kind"]) for c in v["controls"]] ==
+              [("fuel", 55, "toggle"), ("air", 56, "toggle"),
+               ("valve", 57, "momentary"), ("igniter", 58, "momentary"),
+               ("purge", 59, "toggle")] and v["group"]["safety"] == 77 and
+              v["armed"] == "off" and "hold to arm" in v["armed_why"],
+              f"anyone reads it: the channels from flamesafe's config, the "
+              f"Fireball not armed: {st} {v}")
+        st, _h, s = R.ask("GET", "/api/remote/status", client=ipad)
+        check(s.get("fireball") == {"available": True, "on": [],
+                                    "owner": None},
+              f"every screen's status carries it: {s.get('fireball')}")
+        st, out = beat({"fuel"}, "a1", 1)
+        check(st == 409 and "not armed" in out["error"] and link.sets == 0,
+              f"not armed: nothing: {st} {out}")
+        _fb_armed(R)
+        st, out = beat({"fuel"}, "a1", 1, seen=R.seen() - 1500)
+        check(st == 409 and "1 s old" in out["error"] and link.sets == 0,
+              f"a page status 1.5 s old: refused: {out}")
+        st, out = beat({"fuel"}, "a2", 1)
+        check(st == 200 and link.cur[54] == 255 and link.cur[76] == 0,
+              f"armed: Fuel Charge on slot 55 at 255: {st} {out}")
+        st, out = beat({"air"}, "b1", 1, headers=win_b)
+        check(st == 409 and "One screen at a time" in out["error"],
+              f"another window of the same screen: refused: {out}")
+        st, _h, v = R.ask("GET", "/api/remote/fireball", client=loop,
+                          headers=win_a)
+        check(v["mine"] and v["on"] == ["fuel"] and v["owner"] ==
+              "Rack screen", f"the view: {v['on']} {v['owner']}")
+        # The Startup page's purge waits while a channel is on.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "Fireball page" in out["error"] and
+              not R.m.purge.selected,
+              f"a purge selection waits for the Fireball page: {st} {out}")
+        st, out = beat(set(), "a2", 2)
+        check(st == 200 and not R.fb.active() and link.cur is None,
+              "all off: done")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200, f"then the purge selection goes: {out}")
+        st, out = beat({"fuel"}, "a3", 1)
+        check(st == 409 and "purge selection" in out["error"] and
+              link.cur is None,
+              f"and the Fireball page waits for the purge: {out}")
+        R.ask("POST", "/api/remote/purge-clear", {}, client=loop)
+        # The purge's switches.
+        RM.save_settings(R.work, purge_arming=False)
+        st, out = beat({"fuel"}, "a4", 1)
+        check(st == 409 and "purge_arming" in out["error"],
+              f"purge_arming off: refused: {out}")
+        RM.save_settings(R.work, purge_arming=True, screen_arming=False)
+        st, out = beat({"fuel"}, "a5", 1, client=ipad)
+        check(st == 409 and "screen_arming" in out["error"],
+              f"from the show network without screen_arming: {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        st, out = beat({"igniter"}, "a6", 1, client=ipad)
+        check(st == 200 and link.cur[57] == 255,
+              f"with it, an iPad may: Igniter on: {out}")
+        st, out = beat(set(), "a6", 2, client=ipad)
+        # Arrange mode anywhere holds it off.
+        R.m.open_beat("iPad at 10.20.0.44", arranging=True, inst="i1")
+        st, out = beat({"fuel"}, "a7", 1)
+        check(st == 409 and "Arrange mode" in out["error"],
+              f"a screen in Arrange mode: refused: {out}")
+        R.m.open_beat("iPad at 10.20.0.44", arranging=False, inst="i1")
+        # Live flame programming on; Run pressed.
+        R.remote.live_flame = types.SimpleNamespace(on=True)
+        st, out = beat({"fuel"}, "a8", 1)
+        check(st == 409 and "live flame programming" in out["error"],
+              f"live flame programming on: refused: {out}")
+        R.remote.live_flame = None
+        real_state = R.remote.control.state
+        R.remote.control.state = lambda: {"running": True}
+        try:
+            st, out = beat({"fuel"}, "a9", 1)
+            st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
+        finally:
+            R.remote.control.state = real_state
+        check(st == 409 and "Run is pressed" in out["error"] and
+              "Run is pressed" in v["blocked"],
+              f"Run pressed: refused, and the page says why: {out}")
+        # A lock on the fireball's slot (the Startup page's lockout).
+        R.fb._locked = lambda: {57}
+        st, out = beat({"fuel"}, "a10", 1)
+        check(st == 409 and "locked out" in out["error"],
+              f"a locked Fireball: refused: {out}")
+        R.fb._locked = lambda: R.m.lockout.channels(R.m.cfg)
+        # A run going; then a watcher pass with the group disarmed.
+        st, out = beat({"fuel", "purge"}, "a11", 1)
+        check(st == 200 and link.cur[58] == 255, "Purge on: 59 at 255")
+        _fb_armed(R, False)
+        R.mono[0] += 0.05
+        R.wall[0] += 0.05
+        R.fb.tick()
+        check(not R.fb.active() and link.cur is None,
+              "a disarm seen by the watcher: everything off")
+        _fb_armed(R)
+        # An Abort from the rack screen cuts it at the press.
+        st, out = beat({"fuel"}, "a12", 1)
+        check(st == 200 and R.fb.active(), "Fuel on again (a new press)")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
+                            client=loop)
+        check(not R.fb.active() and link.cur is None and
+              "Abort" in R.fb.last_cut,
+              f"an Abort cuts it at the press: {R.fb.last_cut}")
+        check(out.get("disarmed") is True,
+              f"and every group was sent a disarm: {out}")
+        _fb_armed(R, False)      # flamesafe took the disarm
+        st, out = beat({"fuel"}, "a13", 1)
+        check(st == 409 and "not armed" in out["error"] and
+              link.cur is None,
+              f"nothing goes on after it until the Fireball is armed again "
+              f"by its hold to arm: {out}")
+        fb_lines = [r for r in R.svc.journal if r.get("action") == "morning"
+                    and "Fireball page" in str(r.get("text", ""))]
+        check(fb_lines, "the journal has the Fireball page's lines")
+    finally:
+        R.close()
+    # A show live: the page says why.
+    R = _fireball_rig(S)
+    try:
+        _fb_armed(R)
+        _live_show(R)
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/fireball-beat",
+                            {"controls": {"fuel": True}, "run": "s1",
+                             "seq": 1, "seen": R.seen()}, client=loop)
+        st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
+        check(st == 409 and "scheduled show is live" in out["error"] and
+              "scheduled show is live" in v["blocked"] and
+              R.link.cur is None,
+              f"a show live: nothing, and the page says why: {out} "
+              f"{v['blocked']}")
+    finally:
+        R.close()
+    # web.serve's wiring: built on the Morning page's groups and the flame
+    # link; closed FIRST.
+    order = []
+    link = _FakeFireballLink()
+    morning = types.SimpleNamespace(
+        groups=[dict(_FB_GROUP)], purge_blocker=None, abort_hooks=[],
+        lockout=types.SimpleNamespace(channels=lambda cfg: set(),
+                                      file_channels=()), cfg=None)
+    remote = types.SimpleNamespace(flame_status=None, fireball=None,
+                                   _journal=lambda *a, **k: None)
+    httpd = types.SimpleNamespace(
+        remote=remote, morning=morning,
+        fire_ice=types.SimpleNamespace(flame_link=link),
+        server_close=lambda: order.append(
+            ("flame link", remote.fireball.active() if remote.fireball
+             else None)))
+    W._attach_fireball(httpd)
+    fb = remote.fireball
+    check(fb is not None and fb.group["fire"] == [55, 56, 57, 58, 59] and
+          fb._link() is link and morning.abort_hooks == [fb.on_abort] and
+          morning.purge_blocker() == "",
+          "built from the Morning page's groups, on the flame link, hooked "
+          "into the Abort and the purge")
+    fb._run = {"id": "z", "owner": ("x", ""), "on": {"fuel"}, "beat": 0.0,
+               "gen": 0, "start": 0.0, "seq": None}
+    check("Fireball page" in morning.purge_blocker(),
+          "the purge is told while a channel is on")
+    httpd.server_close()
+    check(order == [("flame link", False)] and fb._stop.is_set(),
+          f"closing the engine cuts the Fireball first, then the rest: "
+          f"{order}")
+    print("  ok")
+
+
+def test_fireball_signed_out_is_view_only():
+    section("the Fireball page and sign-in: signed out and a viewer read it "
+            "but turn nothing on (403, nothing reaches the engine); all off "
+            "and every beat with nothing on go through for anyone; an "
+            "operator may; every change is audit logged, the beats between "
+            "are not")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer"), ("Ola", "operator")))
+    rem = httpd.remote
+    P = _fb_panel()
+    try:
+        rem.fireball = P.fb
+
+        def body(on, run, seq, change=False):
+            return {"controls": {k: True for k in on}, "run": run,
+                    "seq": seq, "seen": time.time() * 1000, "change": change}
+        st, v, _h = http("/api/remote/fireball")
+        check(st == 200 and v["available"] and len(v["controls"]) == 5,
+              f"signed out reads the page: {st}")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body({"valve"}, "s1", 1, True), window="w-aaaaaa")
+        check(st == 403 and out.get("role_refused") and P.link.sets == 0
+              and not P.fb.active(),
+              f"signed out: Valve Open refused, nothing reached the engine: "
+              f"{st} {out}")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body(set(), "s1", 2, True), window="w-aaaaaa")
+        check(st == 200, f"signed out: a beat with nothing on goes: {out}")
+        st, out, _h = http("/api/remote/fireball-off", {})
+        check(st == 200, f"signed out: All off goes: {out}")
+        ck = {}
+        for name in ("Vic", "Ola"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body({"fuel"}, "v1", 1, True), cookie=ck["Vic"],
+                           window="w-aaaaaa")
+        check(st == 403 and "viewer" in out["error"] and P.link.sets == 0,
+              f"a viewer may not: {out}")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body({"fuel"}, "o1", 1, True), cookie=ck["Ola"],
+                           window="w-aaaaaa")
+        check(st == 200 and P.link.cur[54] == 255,
+              f"an operator may: Fuel Charge on: {st} {out}")
+        for seq in (2, 3, 4):
+            http("/api/remote/fireball-beat", body({"fuel"}, "o1", seq),
+                 cookie=ck["Ola"], window="w-aaaaaa")
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body(set(), "o1", 5, True), cookie=ck["Ola"],
+                           window="w-aaaaaa")
+        check(st == 200 and not P.fb.active() and P.link.cur is None,
+              "and off")
+        rem.audit.flush(5.0)
+        beats = [l for l in _audit_lines(rem.audit.folder)
+                 if l["action"] == "fireball-beat"]
+        check(len(beats) == 5,
+              f"every refused press and every change is in the audit log, "
+              f"not the beats between: {len(beats)}")
+        check(any(l["action"] == "fireball-off"
+                  for l in _audit_lines(rem.audit.folder)),
+              "All off is in the audit log")
+    finally:
+        rem.fireball = None
+        httpd.server_close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fireball_end_to_end_real_flamesafe():
+    section("the Fireball page end to end: the real flamesafe with Jeff's "
+            "fireball group (safety 77 at 157, fire 55 to 59), the real "
+            "flame link and arm link; disarmed, a value held on the Valve "
+            "Open is zero at the node and the page refuses; a value held "
+            "on the arm tick keeps it from arming; armed, Fuel Charge and "
+            "the held Valve Open reach the node at 255; the beats stopping "
+            "zero the node; an Abort zeroes and disarms")
+    import json as _j
+    import socket as _so
+    import subprocess
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    from ltcplay import streamdeck as sd
+    from ltcplay import fireball as FB
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.01)
+    listen, statusp, armp = _lf_free_udps(3)
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    groups = [{"name": "front row", "safety": 401, "fire": [411]},
+              {"name": "fireball", "safety": 77,
+               "fire": [55, 56, 57, 58, 59]}]
+    names = [g["name"] for g in groups]
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "arm_port": armp, "key": key},
+        "gflame_range": "60-80%", "arm_value": 157,
+        "accept_unsourced_risk": True, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": groups}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    link = fl.FlameLink(fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+                        ).start()
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 2)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    stop = threading.Event()
+
+    def flames():
+        st, at = status.last, status.last_at
+        if st is None or at is None:
+            return None
+        return {"connected": True, "stale": False,
+                "age_ms": int((time.monotonic() - at) * 1000),
+                "groups": [{"name": g.get("name"), "armed": g.get("armed")}
+                           for g in st.get("groups") or []]}
+    g, _w = FB.find_group([{"name": x["name"], "safeties": [x["safety"]],
+                            "fire": x["fire"]} for x in groups])
+    fb = FB.FireballPanel(g, "", link_get=lambda: link, flames_get=flames)
+    me = ("Rack screen", "w-e2e")
+
+    def deck():
+        while not stop.is_set():
+            arm.send(names)
+            status.poll()
+            time.sleep(0.02)
+
+    def node_until(pred, slots, seconds=10.0, k=5):
+        out = []
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            v = fp.parse_e131(data).values
+            out.append(tuple(v[s - 1] for s in slots))
+            if len(out) >= k and all(pred(x) for x in out[-k:]):
+                break
+        return out
+
+    def wait_for(cond, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return cond()
+
+    def fb_state():
+        st = status.last
+        return st["groups"][1] if st else {}
+
+    def arm_fireball():
+        ok = False
+        for _cycle in range(5):
+            arm.set_group(1, False)
+            time.sleep(1.2)
+            arm.set_group(1, True)
+            ok = wait_for(lambda: fb_state().get("armed") == "armed", 4)
+            if ok:
+                break
+        return ok
+
+    count = [0]
+
+    def beats(on, run, seconds):
+        """The page's heartbeat every 100 ms for `seconds`."""
+        last = None
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            count[0] += 1
+            last = fb.beat({"controls": {k: True for k in on}, "run": run,
+                            "seq": count[0]}, me)
+            if last[0] != 200:
+                return last
+            time.sleep(0.1)
+        return last
+    dt = threading.Thread(target=deck, daemon=True)
+    dt.start()
+    try:
+        if not check(wait_for(lambda: status.last is not None, 15),
+                     "flamesafe is up: " + "".join(said)[-500:]):
+            return
+        # Disarmed: the page refuses, and a Valve Open value put on the
+        # link by hand (as if anything else did) is zero at the node.
+        code, out = fb.beat({"controls": {"valve": True}, "run": "d1",
+                             "seq": 1}, me)
+        check(code == 409 and "not armed" in out["error"],
+              f"disarmed: the page refuses: {out}")
+        vals = bytearray(512)
+        vals[56] = 255
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            link.purge_set(bytes(vals))
+            time.sleep(0.1)
+        got = node_until(lambda x: x == (0, 0), (57, 77), seconds=1.5, k=20)
+        check(got and not any(any(x) for x in got),
+              f"disarmed: 255 on the Valve Open from the link is 0 at the "
+              f"node, and so is the safety: {got[-3:]}")
+        # A value held on a fire slot on the arm tick: no arm.
+        arm.set_group(1, False)
+        time.sleep(1.2)
+        vals = bytearray(512)
+        vals[54] = 255                       # Fuel Charge held
+        holding = threading.Event()
+
+        def hold_fuel():
+            while not holding.is_set():
+                link.purge_set(bytes(vals))
+                time.sleep(0.05)
+        threading.Thread(target=hold_fuel, daemon=True).start()
+        time.sleep(0.3)
+        arm.set_group(1, True)
+        time.sleep(1.0)
+        st = fb_state()
+        check(st.get("armed") != "armed" and st.get("reason") == "dirty edge",
+              f"a channel at 255 on the arm tick: the Fireball does not arm "
+              f"(dirty edge): {st.get('armed')} {st.get('reason')}")
+        holding.set()
+        link.purge_clear()
+        # Armed by the hold, everything zero: Fuel Charge and the held
+        # Valve Open reach the node.
+        check(arm_fireball(), f"the Fireball armed: {fb_state()}")
+        res = [None]
+
+        def run_beats():
+            res[0] = beats({"fuel", "valve"}, "e1", 2.0)
+        t = threading.Thread(target=run_beats, daemon=True)
+        t.start()
+        got = node_until(lambda x: x == (255, 0, 255, 157), (55, 56, 57, 77),
+                         seconds=3.0)
+        t.join(5)
+        check(got[-1:] == [(255, 0, 255, 157)] and res[0][0] == 200,
+              f"armed: Fuel Charge and Valve Open at 255, Air Charge 0, the "
+              f"safety at 157: {got[-3:]} {res[0]}")
+        # The beats stop (the page died): zero at the node by itself.
+        got = node_until(lambda x: x == (0, 0), (55, 57), seconds=2.0)
+        check(got[-5:] == [(0, 0)] * 5,
+              f"no beats: zero at the node within the hold: {got[-5:]}")
+        fb.tick()
+        check(not fb.active(), "and the run is over")
+        # Abort: zero and disarm.
+        t = threading.Thread(target=lambda: beats({"fuel"}, "e2", 1.5),
+                             daemon=True)
+        t.start()
+        got = node_until(lambda x: x == (255,), (55,), seconds=3.0)
+        check(got[-1:] == [(255,)], f"Fuel Charge on again: {got[-3:]}")
+        link.disarm_all("Abort from the rack screen (selftest)")
+        got = node_until(lambda x: x == (0, 0), (55, 77), seconds=3.0)
+        t.join(5)
+        check(got[-5:] == [(0, 0)] * 5,
+              f"Abort: zero at the node, the safety down: {got[-5:]}")
+        fb.tick()
+        check(not fb.active() and wait_for(
+            lambda: fb_state().get("armed") != "armed", 3),
+              f"Abort: the run cut, the Fireball disarmed: {fb_state()}")
+    finally:
+        stop.set()
+        dt.join(2)
+        fb.close()
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        arm.close()
+        status.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+_FIREBALL_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function go(){
+  const pads = [...document.querySelectorAll("#fb-pads .fb-pad")];
+  if(!pads.length) return setTimeout(go, 100);
+  setTimeout(() => {
+    const mainR = document.getElementById("main").getBoundingClientRect();
+    const ab = document.getElementById("abortbar");
+    const abR = ab ? ab.getBoundingClientRect() : null;
+    const out = {vw:innerWidth, vh:innerHeight, sw:document.scrollingElement.scrollWidth, problems:[],
+      view_shown:shown(document.getElementById("v-fireball")),
+      armed:document.getElementById("fb-armed").textContent,
+      note:document.getElementById("fb-note").textContent,
+      block:shown(document.getElementById("fb-block")) ? document.getElementById("fb-block").textContent : "",
+      pads:[], buttons:[]};
+    const rects = [];
+    pads.forEach(b => {
+      const r = b.getBoundingClientRect();
+      out.pads.push({k:b.dataset.k, kind:b.dataset.kind, label:b.querySelector("b").textContent,
+        st:b.querySelector(".fb-st").textContent, small:b.querySelector("small").textContent,
+        h:Math.round(r.height), w:Math.round(r.width), na:b.classList.contains("na"),
+        aria:b.getAttribute("aria-disabled"), disabled:b.disabled,
+        minfont:Math.min(...[...b.querySelectorAll("*")].map(e => parseFloat(getComputedStyle(e).fontSize)))});
+      if(r.right > innerWidth + 0.5 || r.left < -0.5) out.problems.push(b.dataset.k + " is not inside the window");
+      if(r.bottom > mainR.bottom + 0.5) out.problems.push(b.dataset.k + " is below the window (" + Math.round(r.bottom) + " > " + Math.round(mainR.bottom) + ")");
+      if(abR && r.left < abR.right && abR.left < r.right && r.top < abR.bottom && abR.top < r.bottom) out.problems.push(b.dataset.k + " is under the Abort sign");
+      rects.push([b.dataset.k, r]);
+    });
+    ["fb-alloff", "fb-disarm"].forEach(id => {
+      const b = document.getElementById(id), r = b.getBoundingClientRect();
+      out.buttons.push({id:id, shown:shown(b), h:Math.round(r.height)});
+      if(r.bottom > mainR.bottom + 0.5 || r.right > innerWidth + 0.5) out.problems.push(id + " is not on the screen");
+      rects.push([id, r]);
+    });
+    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
+      const a = rects[i][1], b = rects[j][1];
+      if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+        out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
+    }
+    history.replaceState(null, "", location.pathname);
+    showView();
+    setTimeout(() => {
+      const nf = document.getElementById("nav-fireball");
+      out.nav = {shown:shown(nf), text:nf.textContent,
+        inside:[...document.querySelectorAll("nav button")].filter(shown).every(b => b.getBoundingClientRect().right <= innerWidth + 0.5)};
+      const pre = document.createElement("pre"); pre.id = "rack-measure";
+      pre.textContent = JSON.stringify([out]);
+      document.body.appendChild(pre);
+    }, 1200);
+  }, 600);
+}
+go();
+})();
+</script>
+"""
+
+
+def _fb_view(armed="armed", **over):
+    v = {"available": True, "problem": "", "on": [], "owner": None,
+         "mine": False, "last_cut": "", "on_value": 255,
+         "beat_stale_ms": 250,
+         "group": {"name": "fireball", "index": 3, "safety": 77},
+         "controls": [{"key": k, "label": lb, "kind": kind, "slot": s}
+                      for (k, lb, kind), s in zip(
+                          (("fuel", "Fuel Charge", "toggle"),
+                           ("air", "Air Charge", "toggle"),
+                           ("valve", "Valve Open", "momentary"),
+                           ("igniter", "Igniter", "momentary"),
+                           ("purge", "Purge", "toggle")),
+                          (55, 56, 57, 58, 59))],
+         "armed": armed,
+         "armed_why": "" if armed == "armed" else
+         ("The Fireball is not armed. Arm it with its hold to arm (the show "
+          "screen's Fireball button or its Stream Deck key)."),
+         "blocked": "", "served_at": 0}
+    v.update(over)
+    return v
+
+
+def test_fireball_page_in_a_browser():
+    section("the Fireball page drawn in a real browser at the rack screen's "
+            "and an iPad's sizes (the runner's page is about 143 px shorter "
+            "than its window): five big buttons, labelled, on one screen, "
+            "none under the Abort sign, nothing off the side; armed, the "
+            "buttons work; not armed or not available, they say why; the "
+            "Fireball button in the header only with a fireball group")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    for need in ('<button id="nav-fireball" class="ghost" data-go="fireball" '
+                 'hidden>Fireball</button>', 'fireball:"v-fireball"',
+                 'fireballView(v === "fireball");',
+                 '<section id="v-fireball" class="view" hidden>'):
+        check(need in page, f"the page has {need!r}")
+    a, b = page.index("<!-- Fireball (Jeff"), page.index(
+        "<!-- Users and the audit log")
+    js_a = page.index("// ---- Fireball (Jeff")
+    js_b = page.index("// WEATHER (weather.py, WEATHER.md): its own slow")
+    lg_a = page.index("// The Fireball page (fireball.py). The body")
+    lg_b = page.index("// LOGIC END")
+    for part in (page[a:b], page[js_a:js_b], page[lg_a:lg_b]):
+        check("—" not in part and "–" not in part,
+              "the Fireball page's words have no em or en dashes")
+    check(".fb-pad" in page[js_a:js_b] and
+          "disabled = " not in page[js_a:js_b],
+          "a pad is never given the disabled attribute (a held button that "
+          "turned disabled could lose its lift)")
+    # The page's own rules, in node.
+    bad = _page_logic_in_node(page, r"""
+const V = (o) => Object.assign({available:true, armed:"armed", blocked:"", owner:null, mine:false, armed_why:"not armed why"}, o || {});
+const off = {fuel:false, air:false, valve:false, igniter:false, purge:false};
+let b = fireballBody({fuel:true, valve:true, air:1, purge:"true"}, "r1", 7, true);
+t(JSON.stringify(b) === JSON.stringify({controls:{fuel:true, air:false, valve:true, igniter:false, purge:false}, run:"r1", seq:7, change:true}), "the body: only true is on: " + JSON.stringify(b));
+t(fireballBody(off, undefined, 1).run === null, "no run: null");
+let s = fireballState(V(), off, false, false);
+t(s.ok && !s.cut && s.armed && /Valve Open and Igniter are on only while held/.test(s.text), "armed, fresh: a press may start: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), off, false, false);
+t(!s.ok && !s.cut && /nothing on this page arms/.test(s.text) && s.block === "Arm the Fireball first.", "not armed: nothing may start, says why: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), Object.assign({}, off, {fuel:true, purge:true}), false, false);
+t(s.text === "Turn Fuel, Purge off before arming." && s.cut, "not armed with a toggle on: says turn it off before arming, and cuts: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {valve:true}), true, false);
+t(!s.ok && s.cut && /not live/.test(s.cut), "a stale page: cut: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {air:true}), false, true);
+t(!s.ok && /view only/.test(s.cut), "signed out: cut: " + JSON.stringify(s));
+s = fireballState(V({blocked:"a scheduled show is live (SHOW)"}), off, false, false);
+t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && !s.cut, "a show live: says why: " + JSON.stringify(s));
+s = fireballState(V({owner:"iPad at 10.20.0.44", mine:false}), off, false, false);
+t(!s.ok && /One screen at a time/.test(s.block), "another screen has it: " + JSON.stringify(s));
+s = fireballState(V({owner:"Rack screen", mine:true}), Object.assign({}, off, {fuel:true}), false, false);
+t(s.ok && !s.cut, "this screen has it: fine");
+s = fireballState(V({available:false, problem:"no group named fireball"}), off, false, false);
+t(!s.ok && s.block === "no group named fireball", "no group: says why");
+s = fireballState(null, off, false, false);
+t(!s.ok, "nothing read yet: nothing may start");
+""")
+    check(bad == [] or bad is None, f"the page's Fireball rules, in node: "
+                                    f"{bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["fireball"] = {"available": True, "on": [], "owner": None}
+    sizes = ((1920, 1080), (1366, 600), (1280, 720), (1024, 768),
+             (768, 1024))
+    for which, fv, szs in (("armed", _fb_view(), sizes),
+                           ("not armed", _fb_view("off"),
+                            ((1366, 768),)),
+                           ("a show live", _fb_view(
+                               blocked="a scheduled show is live (SHOW); "
+                                       "nothing fires from this page until "
+                                       "it has ended"), ((1366, 768),))):
+        got = _rack_screen_in_chromium(
+            chrome, page, st, szs, measure_js=_FIREBALL_MEASURE_JS,
+            frag="#fireball", routes={"/api/remote/fireball": fv})
+        for size, res in got.items():
+            if not check(isinstance(res, list) and res,
+                         f"{which} {size}: drawn: {res!r}"):
+                continue
+            m = res[0]
+            check(m["view_shown"] and
+                  [(p["k"], p["kind"], p["label"]) for p in m["pads"]] ==
+                  [("fuel", "toggle", "Fuel Charge"),
+                   ("air", "toggle", "Air Charge"),
+                   ("valve", "momentary", "Valve Open"),
+                   ("igniter", "momentary", "Igniter"),
+                   ("purge", "toggle", "Purge")],
+                  f"{which} {size}: five buttons in the config's order: "
+                  f"{[p['k'] for p in m['pads']]}")
+            check(all(p["h"] >= 88 and p["w"] >= 120 for p in m["pads"]) and
+                  all(p["minfont"] >= 12 for p in m["pads"]) and
+                  all(x["shown"] and x["h"] >= 44 for x in m["buttons"]),
+                  f"{which} {size}: big touch targets, readable: "
+                  f"{[(p['h'], p['w'], p['minfont']) for p in m['pads']]} "
+                  f"{m['buttons']}")
+            check(not m["problems"] and m["sw"] <= m["vw"] + 1,
+                  f"{which} {size}: one screen, nothing overlaps, nothing "
+                  f"under the Abort sign or off the side: {m['problems']} "
+                  f"{m['sw']} {m['vw']}x{m['vh']}")
+            check("channel 57" in m["pads"][2]["small"] and
+                  "Hold" in m["pads"][2]["small"] and
+                  "press again: off" in m["pads"][0]["small"] and
+                  all(p["st"] == "OFF" and not p["disabled"]
+                      for p in m["pads"]),
+                  f"{which} {size}: each says how it works and its channel: "
+                  f"{[p['small'] for p in m['pads']]}")
+            check(m["nav"]["shown"] and m["nav"]["inside"],
+                  f"{which} {size}: the Fireball button in the header: "
+                  f"{m['nav']}")
+            if which == "armed":
+                check(m["armed"].startswith("ARMED") and
+                      not any(p["na"] for p in m["pads"]) and
+                      all(p["aria"] == "false" for p in m["pads"]),
+                      f"{which} {size}: armed, every button may be pressed: "
+                      f"{m['armed']}")
+            elif which == "not armed":
+                check(m["armed"] == "Not armed" and
+                      all(p["na"] and p["aria"] == "true"
+                          for p in m["pads"]) and
+                      "nothing on this page arms" in m["note"],
+                      f"not armed: every button says it may not, and why: "
+                      f"{m['note']!r}")
+            else:
+                check(all(p["na"] for p in m["pads"]) and
+                      "Not available now: a scheduled show is live" in
+                      m["block"], f"a show live: said in plain words: "
+                                  f"{m['block']!r}")
+    # Without a fireball group the header has no Fireball button.
+    st2 = dict(st)
+    st2.pop("fireball")
+    got = _rack_screen_in_chromium(chrome, page, st2, ((1366, 768),),
+                                   measure_js=_FIREBALL_MEASURE_JS,
+                                   frag="#fireball",
+                                   routes={"/api/remote/fireball": _fb_view(
+                                       available=False, controls=[{
+                                           "key": "fuel", "label": "x",
+                                           "kind": "toggle", "slot": 1}])})
+    res = got[(1366, 768)]
+    check(isinstance(res, list) and not res[0]["nav"]["shown"],
+          f"no fireball group: no Fireball button: {res!r}"[:600])
+    print("  ok")
+
+
+def test_fireball_page_buttons_driven():
+    section("the Fireball page pressed in a real browser: Valve Open beats "
+            "every 100 ms while held and lets go on the lift; Fuel Charge "
+            "stays on until pressed again; losing focus lets go of the held "
+            "ones only; a refusal, the Fireball disarming, signing out and "
+            "leaving the page turn everything off and nothing comes back; "
+            "nothing is sent while it is not armed; All off and Disarm")
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["fireball"] = {"available": True, "on": [], "owner": None}
+    steps = r"""
+window.__fb = JSON.parse(document.getElementById("fb-seed").textContent);
+const realF = window.fetch;
+window.fetch = async (url, opt) => {
+  if(String(url).indexOf("/api/remote/fireball") >= 0 && !(opt && opt.method === "POST"))
+    return new Response(JSON.stringify(window.__fb), {status:200, headers:{"Content-Type":"application/json"}});
+  return realF(url, opt);
+};
+const pad = k => document.querySelector('.fb-pad[data-k="' + k + '"]');
+const beats = () => h.posts("fireball-beat").map(p => p.body);
+const on = b => Object.keys(b.controls).filter(k => b.controls[k]).join("+");
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+await h.sleep(900);
+// Valve Open: held.
+let n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(460);
+const held = since(n).filter(p => p.route === "fireball-beat").map(p => p.body);
+out.held = {n:held.length, on:held.map(on), runs:[...new Set(held.map(b => b.run))].length,
+  seqs:held.map(b => b.seq), cls:pad("valve").className, st:pad("valve").querySelector(".fb-st").textContent};
+n = mark();
+h.ev(pad("valve"), "pointerup");
+await h.sleep(350);
+out.lift = since(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
+out.lift_cls = pad("valve").className;
+// Fuel Charge: a toggle.
+n = mark();
+h.ev(pad("fuel"), "click");
+await h.sleep(350);
+out.fuel = since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body));
+// Igniter held with Fuel on, then the window loses focus.
+h.ev(pad("igniter"), "pointerdown");
+await h.sleep(150);
+n = mark();
+window.dispatchEvent(new Event("blur"));
+await h.sleep(250);
+out.blur = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)),
+  fuel:pad("fuel").classList.contains("on"), ign:pad("igniter").classList.contains("on")};
+// Fuel pressed again: off, the run ends.
+n = mark();
+h.ev(pad("fuel"), "click");
+await h.sleep(300);
+out.fuel_off = since(n).map(p => p.route + ":" + on(p.body));
+// A refusal from the engine: everything off, nothing comes back.
+window.__answer["fireball-beat"] = b => on(b) ? [409, {error:"The Fireball is not armed. Arm it first.", cut:true}] : [200, {ok:true}];
+h.ev(pad("air"), "click");
+await h.sleep(500);
+out.refused = {air:pad("air").classList.contains("on"), msg:document.getElementById("fb-msg").textContent,
+  after:since(mark()).length};
+n = mark();
+await h.sleep(400);
+out.refused.quiet = since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length;
+delete window.__answer["fireball-beat"];
+// The Fireball disarms while Purge is on: cut on the next look.
+h.ev(pad("purge"), "click");
+await h.sleep(250);
+window.__fb = Object.assign({}, window.__fb, {armed:"off", armed_why:"The Fireball is not armed."});
+await h.sleep(800);
+n = mark();
+await h.sleep(300);
+out.disarmed = {purge:pad("purge").classList.contains("on"), more:since(n).filter(p => on(p.body || {controls:{}})).length,
+  note:document.getElementById("fb-note").textContent};
+// Not armed: a press sends nothing.
+n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(300);
+h.ev(pad("valve"), "pointerup");
+out.not_armed = {posts:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length,
+  msg:document.getElementById("fb-msg").textContent};
+window.__fb = Object.assign({}, window.__fb, {armed:"armed", armed_why:""});
+await h.sleep(700);
+// Signed out while Fuel is on.
+h.ev(pad("fuel"), "click");
+await h.sleep(250);
+window.__patch = s => Object.assign(s, {me:{users_active:true, view_only:true}});
+await h.sleep(900);
+n = mark();
+await h.sleep(300);
+out.signout = {fuel:pad("fuel").classList.contains("on"), more:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length};
+window.__patch = null;
+await h.sleep(700);
+// Leaving the page while Air is on.
+h.ev(pad("air"), "click");
+await h.sleep(250);
+n = mark();
+history.replaceState(null, "", location.pathname);
+showView();
+await h.sleep(400);
+out.left = {posts:since(n).map(p => p.route + ":" + on(p.body || {controls:{}})), air:FB_ON.air};
+location.hash = "fireball";
+showView();
+await h.sleep(700);
+// All off and Disarm.
+n = mark();
+document.getElementById("fb-alloff").click();
+document.getElementById("fb-disarm").click();
+await h.sleep(300);
+out.buttons = since(n).map(p => p.route + (p.body.group ? ":" + p.body.group : ""));
+"""
+    seed = ('<script type="application/json" id="fb-seed">' +
+            json.dumps(_fb_view()) + '</script>')
+    m = _rack_drive(chrome, page.replace("</body>", seed + "</body>", 1), st,
+                    steps, size=(1366, 768), frag="#fireball",
+                    routes={"/api/remote/fireball": _fb_view()},
+                    budget_ms=20000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"the Fireball page, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    hd = m["held"]
+    check(hd["n"] >= 4 and all(x == "valve" for x in hd["on"]) and
+          hd["runs"] == 1 and hd["seqs"] == sorted(hd["seqs"]) and
+          "on" in hd["cls"] and hd["st"] == "ON",
+          f"Valve Open held: a beat every 100 ms, one run, in order: {hd}")
+    check(m["lift"] and m["lift"][0] == "fireball-beat::true" and
+          len(m["lift"]) == 1 and "on" not in m["lift_cls"].split(),
+          f"the lift: one beat with everything off, then nothing: "
+          f"{m['lift']}")
+    check(len(m["fuel"]) >= 3 and all(x == "fuel" for x in m["fuel"]),
+          f"Fuel Charge stays on, beating: {m['fuel']}")
+    check(m["blur"]["fuel"] and not m["blur"]["ign"] and
+          m["blur"]["posts"] and m["blur"]["posts"][0] == "fuel",
+          f"losing focus lets go of the Igniter at once, Fuel stays: "
+          f"{m['blur']}")
+    check(m["fuel_off"][:1] == ["fireball-beat:"],
+          f"Fuel pressed again: everything off: {m['fuel_off']}")
+    check(not m["refused"]["air"] and "not armed" in m["refused"]["msg"] and
+          m["refused"]["quiet"] == 0,
+          f"a refusal: everything off, said, nothing comes back: "
+          f"{m['refused']}")
+    check(not m["disarmed"]["purge"] and m["disarmed"]["more"] == 0 and
+          "not armed" in m["disarmed"]["note"],
+          f"the Fireball disarmed: Purge off, nothing sent: {m['disarmed']}")
+    check(m["not_armed"]["posts"] == 0 and
+          "Arm the Fireball first" in m["not_armed"]["msg"],
+          f"not armed: a press sends nothing, and says why: "
+          f"{m['not_armed']}")
+    check(not m["signout"]["fuel"] and m["signout"]["more"] == 0,
+          f"signed out: Fuel off, nothing more sent: {m['signout']}")
+    check(m["left"]["posts"][:1] == ["fireball-beat:"] and
+          m["left"]["air"] is False,
+          f"leaving the page: everything off: {m['left']}")
+    check(m["buttons"] == ["fireball-off", "group-disarm:fireball"],
+          f"All off and Disarm Fireball: {m['buttons']}")
+    print("  ok")
+
+
+def test_fireball_doc_in_plain_words():
+    section("the Fireball page: OPERATOR.md says what each button does, that "
+            "nothing on it arms, what turns everything off, when it will not "
+            "work and the first test with the fuel valve closed, in plain "
+            "words; the engine's sentences have no em or en dashes")
+    import ast as _ast
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    a = doc.index("**The Fireball page")
+    part = doc[a:doc.index("**Stream Deck unplugged.**", a)]
+    for need in ("Fuel Charge", "Air Charge", "Valve Open", "Igniter",
+                 "Purge", "toggles", "only while your finger",
+                 "Nothing on this page arms", "hold to arm", "255",
+                 "Stop", "Hold", "Abort", "signing out", "All off",
+                 "Run pressed", "fuel valve closed", "One screen at a time",
+                 "turn\nFuel, Air, Purge off before arming"):
+        check(need in part, f"OPERATOR.md's Fireball section says {need!r}")
+    check("—" not in part and "–" not in part,
+          "OPERATOR.md's Fireball section has no em or en dashes")
+    src = open(os.path.join(here, "ltcplay", "fireball.py"),
+               encoding="utf-8").read()
+    words = [n.value for n in _ast.walk(_ast.parse(src))
+             if isinstance(n, _ast.Constant) and isinstance(n.value, str)]
+    check(not [w for w in words if "—" in w or "–" in w],
+          "fireball.py's sentences have no em or en dashes")
+    print("  ok")
+
+
 def test_scrub_flames_seqlock():
     section("fire flames while scrubbing, third review of #117: the move "
             "count is a seqlock; a player tick that lands inside a move "
@@ -73837,6 +77283,9 @@ if __name__ == "__main__":
         test_fire_ice_runner_reports_the_show,
         test_schedule_never_touches_the_rig_before_run,
         test_a_refused_start_sends_no_fade,
+        test_refused_starts_say_why_and_what_to_press,
+        test_reset_from_hold_ends_it_and_starts_nothing,
+        test_rack_screen_stop_in_place_of_start_now,
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,
         test_fire_ice_flame_link_from_flamesafe_config,
@@ -73934,6 +77383,7 @@ if __name__ == "__main__":
         test_session_playhead_loop_stays_in_its_cue,
         test_player_free_run_pause_and_loop,
         test_flame_link_seek_guard,
+        test_flame_link_aim_slots_skip_the_seek_guard,
         test_screen_arming_is_off_unless_switched_on,
         test_screen_arm_engine_rules,
         test_screen_arm_deck_rules,
@@ -74002,6 +77452,14 @@ if __name__ == "__main__":
         test_safety_presses_pass_signed_out_and_are_logged_unsigned,
         test_audit_logs_one_line_per_press_on_every_surface,
         test_deck_role_gate_restricts_arming_only,
+        test_signed_out_is_view_only_on_every_surface,
+        test_journal_names_the_signed_in_user_never_the_body,
+        test_sign_out_locks_the_screen_and_lets_go_of_a_hold,
+        test_deck_needs_a_sign_in_on_the_rack_screen_to_arm,
+        test_users_file_broken_or_lost_locks_and_says_so,
+        test_review_143_sign_out_holds_and_deck_fallbacks,
+        test_rack_screen_locks_controls_signed_out_in_a_browser,
+        test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser,
         test_audit_chain_verify_finds_every_kind_of_tamper,
         test_audit_upload_retries_resumes_and_waits_for_the_ack,
         test_audit_never_blocks_or_fails_a_press,
@@ -74025,6 +77483,7 @@ if __name__ == "__main__":
         test_live_flame_listener_binds_loopback_only,
         test_live_flame_entry_refusals,
         test_live_flame_values_and_zero_on_silence,
+        test_live_flame_aim_slots_are_not_held,
         test_live_flame_ends_disarm_and_name_the_reason,
         test_live_flame_engine_routes_roles_and_presses,
         test_live_flame_page_banner_and_card,
@@ -74051,6 +77510,13 @@ if __name__ == "__main__":
         test_fuel_routes_and_who_may_refill,
         test_fuel_page_in_a_browser,
         test_fuel_doc_in_plain_words,
+        test_fireball_panel_rules,
+        test_fireball_at_the_engine,
+        test_fireball_signed_out_is_view_only,
+        test_fireball_end_to_end_real_flamesafe,
+        test_fireball_page_in_a_browser,
+        test_fireball_page_buttons_driven,
+        test_fireball_doc_in_plain_words,
         test_scrub_flames_seqlock,
         test_weather_parsers_read_each_source,
         test_weather_rules_age_stale_no_data_disagree_alerts,
