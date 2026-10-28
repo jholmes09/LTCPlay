@@ -10428,8 +10428,8 @@ def build():
 
  ("rack screen: a group's arm value is dropped from the card",
   "ltcplay/remote.py",
-  '                           "arm_value": _arm(g.get("arm_value"))})',
-  '                           "arm_value": None})'),
+  '                           "arm_value": _arm(g.get("arm_value")),',
+  '                           "arm_value": None,'),
 
  ("flamesafe: a profile group arms at the file's arm value",
   "flamesafe/config.py",
@@ -13937,9 +13937,8 @@ def build():
 
  ("fuel: one under the fire value counts as flame",
   "ltcplay/fuel.py",
-  "            if not any(0 < s <= n and values[s - 1] >= at for s in m.fire):",
-  "            if not any(0 < s <= n and values[s - 1] >= at - 1\n"
-  "                       for s in m.fire):"),
+  "            if not any(0 < s <= n and values[s - 1] >= at\n",
+  "            if not any(0 < s <= n and values[s - 1] >= at - 1\n"),
 
  ("fuel: a Showven's purge counts",
   "ltcplay/fuel.py",
@@ -15596,6 +15595,124 @@ def build():
   ":where(html.tight) .ctl button{min-height:44px}",
   "html.tight .ctl button{min-height:44px}"),
 
+
+ # aim slots seen (2026-10-28): the start lines, the status frame, the
+ # rack screen's aim line and alert, the Startup page's file; fuel burns
+ # a Showven only on its ignition
+ ("aim seen: flamesafe's status frame leaves out the aim slots",
+  "flamesafe/composer.py",
+  "                \"aim_slots\": sorted(g.aim),",
+  "                \"aim_slots\": [],"),
+
+ ("aim seen: flamesafe does not journal its aim slots at start",
+  "flamesafe/__main__.py",
+  "    journal.event(\"config\", aim_line(cfg.groups, argv[0]))\n",
+  ""),
+
+ ("aim seen: flamesafe's aim line leaves out the file",
+  "flamesafe/__main__.py",
+  "            f\"the group is armed), read from {where}\")",
+  "            f\"the group is armed)\")"),
+
+ ("aim seen: the flame link does not journal its aim slots at start",
+  "ltcplay/fire_ice.py",
+  "    if journal is not None:\n        journal(aim_sentence(",
+  "    if journal is None:\n        journal(aim_sentence("),
+
+ ("aim seen: the rack screen is not given the engine's aim slots",
+  "ltcplay/web.py",
+  "            httpd.remote.flame_aim = (",
+  "            httpd.remote.flame_aim_unused = ("),
+
+ ("aim seen: the status view drops flamesafe's aim slots",
+  "ltcplay/remote.py",
+  "                           \"aim_slots\": _ints(g.get(\"aim_slots\")),",
+  "                           \"aim_slots\": None,"),
+
+ ("aim seen: the lists are always taken to agree",
+  "ltcplay/remote.py",
+  "        agree = None if theirs is None or mine is None else theirs == mine",
+  "        agree = None if theirs is None or mine is None else True"),
+
+ ("aim seen: a difference raises no alert",
+  "ltcplay/remote.py",
+  "                a = self.alerts.raise_(\"aim\", text)",
+  "                a = None"),
+
+ ("aim seen: the alert is raised again on every poll",
+  "ltcplay/remote.py",
+  "            if text == self._aim_said:\n                return\n",
+  "            if text == self._aim_said:\n                pass\n"),
+
+ ("aim seen: agreeing again never clears the alert",
+  "ltcplay/remote.py",
+  "                    self.alerts.clear(id=aid, action=\"Confirm\",",
+  "                    self.alerts.clear(id=-1, action=\"Confirm\","),
+
+ ("aim seen: loaded only needs flamesafe's list",
+  "ltcplay/remote.py",
+  "                        \"loaded\": bool(fs) and fs == lt,",
+  "                        \"loaded\": bool(fs),"),
+
+ ("aim seen: sent shows what was asked",
+  "ltcplay/remote.py",
+  "                        \"sent\": at(g.get(\"sent_fire\"))}",
+  "                        \"sent\": at(g.get(\"commanded_fire\"))}"),
+
+ ("aim seen: the card always says loaded",
+  "ltcplay/web/remote.html",
+  "  let t = \"Aim \" + j(a.slots) + \": \" + (a.loaded ? \"loaded\" :",
+  "  let t = \"Aim \" + j(a.slots) + \": \" + (true ? \"loaded\" :"),
+
+ ("aim seen: the card never shows the aim line",
+  "ltcplay/web/remote.html",
+  "    ae.hidden = !al;",
+  "    ae.hidden = true;"),
+
+ ("aim seen: the Startup page error leaves out the flamesafe file",
+  "ltcplay/morning.py",
+  "    return f\" (checked against flamesafe's config {os.path.abspath(path)})\"",
+  "    return \"\""),
+
+ ("fuel: a Showven burns on any fire slot again (angle, speed)",
+  "ltcplay/fuel.py",
+  "                       for s in burn_slots(m)):",
+  "                       for s in m.fire):"),
+
+ ("fuel: a Showven's angle counts as flame again",
+  "ltcplay/fuel.py",
+  "    skip = {c for x in saf for c in (x - 5, x - 4)}",
+  "    skip = {c for x in saf for c in (x - 4,)}"),
+
+ ("fuel: a Showven's preset and duration stop counting",
+  "ltcplay/fuel.py",
+  "    out = [f for f in fire if f not in skip]",
+  "    out = [f for f in fire if f not in skip and f + 3 not in saf]"),
+
+ ("fuel: a Showven with no safety slot counts its angle",
+  "ltcplay/fuel.py",
+  "            skip = {run[0], run[1]}",
+  "            skip = {run[1]}"),
+
+ ("aim seen: the aim alert holds a show at showtime",
+  "ltcplay/alerthold.py",
+  "        return [a for a in self.alerts.open() if a.kind not in DISPLAY_ONLY]",
+  "        return list(self.alerts.open())"),
+
+ ("aim seen: the aim alert sounds the booth",
+  "ltcplay/alerts.py",
+  "        if a.kind in DISPLAY_ONLY:\n            a.booth_ok, a.booth = None, \"display only: no booth note\"\n            return\n",
+  ""),
+
+ ("aim seen: the aim alert shares the flames kind",
+  "ltcplay/remote.py",
+  "                a = self.alerts.raise_(\"aim\", text)",
+  "                a = self.alerts.raise_(\"flames\", text)"),
+
+ ("aim seen: the card says held as disarmed",
+  "ltcplay/web/remote.html",
+  "c === \"held\" ? \"; held\" : ",
+  ""),
  # The Programming playhead on the show audio (playhead.py, Jeff
  # 2026-10-28, field report items 7 and 8).
  ("Play from starts the show audio at the top, not at the point asked", "ltcplay/clock.py",
@@ -16193,7 +16310,11 @@ def build():
 
  ("old page: the engine's Show is not believed", "ltcplay/web/index.html",
   '  if(s && s.mode === "show") return "show";\n',
-  ""),
+  ""), ("aim seen: the aim alert turns the deck's Start key to ACK",
+  "ltcplay/streamdeck.py",
+  "                     if isinstance(a, dict)\n                     and a.get(\"kind\") not in DISPLAY_ONLY)",
+  "                     if isinstance(a, dict))"),
+
 ]
 
 

@@ -43,11 +43,18 @@ asking before an unattended start.
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-         "timecode", "lasers", "users")
+         "timecode", "lasers", "users", "aim")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
-            "users": "fault"}
+            "users": "fault", "aim": "warning"}
+# Display only (2026-10-28): an alert of these kinds is shown on every
+# screen and journaled, and cleared like any other, but it never sounds the
+# booth, never runs the pulse, never holds a show at showtime
+# (alerthold.py leaves it out) and never reaches the Stream Deck
+# (streamdeck.ScreenKeys.alerts leaves it out: no ACK key). "aim": the wave flamer's aim slots differ
+# between flamesafe and LTC Player (remote.Remote.aim_view).
+DISPLAY_ONLY = frozenset(("aim",))
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any
@@ -179,6 +186,9 @@ class Alerts:
     def _sound(self, a):
         """The booth note, never twice within resound_s() for one kind.
         The pulse flag follows whether it could play."""
+        if a.kind in DISPLAY_ONLY:
+            a.booth_ok, a.booth = None, "display only: no booth note"
+            return
         now = self._clock()
         last = self._sounded.get(a.kind)
         if last is not None and now - last < self.resound_s():
