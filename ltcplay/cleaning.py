@@ -96,10 +96,15 @@ DEFAULTS = {"cycles": 3, "armed_s": 3.0, "disarmed_s": 3.0,
             "max_run_min": 10.0, "authorization": "dead_man"}
 LIMITS = {"cycles": (1, 10), "armed_s": (1.0, 30.0),
           "disarmed_s": (2.5, 30.0), "arm_wait_s": (3.0, 20.0),
-          "disarm_wait_s": (1.0, 5.0), "aim": (0, 255),
-          "aim_settle_s": (0.0, 5.0), "burst_on_s": (0.2, 5.0),
+          "disarm_wait_s": (1.0, 5.0), "aim": (118, 138),
+          "aim_settle_s": (1.0, 5.0), "burst_on_s": (0.2, 5.0),
           "burst_off_s": (0.5, 10.0), "max_run_min": (1.0, 30.0)}
 WHOLE = ("cycles", "aim")
+# The angle stays within a few counts of straight up (128): a typo must
+# never fire the bursts sideways (safety review of #159, 2). The heads get
+# at least 1 s to come up, counted from the first frame actually written
+# with the angle up (review of #159, 3): disarmed they sit at angle 0, the
+# end stop, so 0 would be heads up and ignition in one frame.
 # What authorizes the routine's arms (Jeff, 2026-10-28: one switch).
 #   dead_man       the default and the only one that runs: the button is
 #                  held the whole time, and each arm is a hold to arm
@@ -123,6 +128,7 @@ STATUS_FRESH_S = 0.5         # flamesafe's status, as arm_stale_ms
 PAGE_FRESH_S = 1.0           # the page's own status (seen)
 WATCH_S = 0.05
 DISARM_CONFIRM_S = 1.0       # remote.PLAIN_CONFIRM_S
+SETTINGS_EVERY_S = 0.5       # the screen arming switch, read this often
 # Open alerts of these kinds stop it and keep it from starting: the flame
 # path, the flame link and the Stream Deck (which arms and disarms).
 BLOCKING_ALERTS = ("flames", "link", "deck")
@@ -328,6 +334,7 @@ class CleaningPanel:
         self._run = None
         self._ended = collections.OrderedDict()
         self._confirm = None     # a stop's disarm waiting for flamesafe
+        self._aborted = ""       # an Abort landed while the lock was busy
         self.runs = 0
         self.last_cut = ""
         self._stop = threading.Event()
@@ -490,6 +497,10 @@ class CleaningPanel:
                                   "its run. Nothing was done.", "cut": True}
         with self._lock:
             r = self._run
+            if self._aborted and r is not None:
+                self.cut(self._aborted, zeroed=True)
+                return 409, {"error": f"The cleaning stopped "
+                                      f"({self.last_cut}).", "cut": True}
             if r is not None and r["owner"] != owner:
                 return 409, {"error": f"{r['owner'][0]} is running the wave "
                                       f"flamer cleaning. One screen at a "
@@ -548,7 +559,7 @@ class CleaningPanel:
                     "start": now, "gen": gen, "disarms": count, "cfg": cfg,
                     "phase": 1, "cycle": 1, "step": "arm", "step_at": now,
                     "hold_id": None, "asked": False, "at": now,
-                    "bursts": 0, "fire_on": False, "framed": False,
+                    "bursts": 0, "fire_on": False,
                     "ctx": ctx, "who": who, "screen": screen,
                     "token": ctx.device, "said": ""}
                 self._remember(owner, None, seq, make=True)
@@ -657,6 +668,8 @@ class CleaningPanel:
         """Move the sequence on. `press` is True only inside a beat (a
         person holding): the only time an arm hold is pressed. Returns ""
         or the reason it stopped. Under self._lock."""
+        if self._aborted:
+            return self._stop_run(self._aborted, zeroed=True)
         link = self._link()
         if link is None or self._gen(link) != r["gen"]:
             return self._stop_run("the flame link was zeroed (Stop, Hold, "
@@ -677,8 +690,9 @@ class CleaningPanel:
                 if r["phase"] == 1:
                     self._to(r, "armed", now)
                 else:
-                    self._to(r, "burst", now, burst_at=now)
-                    r["framed"] = True
+                    # The settle counts from the first frame written with
+                    # the angle up (aimed_at), never from this moment.
+                    self._to(r, "burst", now, burst_at=now, aimed_at=None)
             elif now - r["step_at"] > cfg["arm_wait_s"]:
                 said = r["said"] or (f"flamesafe says: {fs_why}" if fs_why
                                      else "flamesafe never reported it "
@@ -729,6 +743,10 @@ class CleaningPanel:
             if state != "armed":
                 return self._stop_run("the wave flamer is not armed any more "
                                       f"({fs_why or state})")
+            if r.get("aimed_at") is None and not press:
+                return ""            # only a beat writes the first frame
+            if r.get("aimed_at") is None:
+                r["aimed_at"] = now  # this beat writes it: angle up, no fire
             on = self._burst_on(r, now)
             if press or (r["fire_on"] and not on):
                 # A beat writes the frame; the watcher only ever takes the
@@ -750,7 +768,9 @@ class CleaningPanel:
     def _burst_on(self, r, now):
         """Whether the ignition is on at `now`, and the bursts counted."""
         cfg = r["cfg"]
-        t = now - r["burst_at"] - cfg["aim_settle_s"]
+        if r.get("aimed_at") is None:
+            return False
+        t = now - r["aimed_at"] - cfg["aim_settle_s"]
         if t < 0:
             return False
         period = cfg["burst_on_s"] + cfg["burst_off_s"]
@@ -768,6 +788,7 @@ class CleaningPanel:
         a run was live."""
         with self._lock:
             r, self._run = self._run, None
+            self._aborted = ""
             if r is None:
                 return False
             self.last_cut = why
@@ -775,7 +796,7 @@ class CleaningPanel:
             link = self._link()
             if link is not None:
                 try:
-                    if r["framed"] and not zeroed:
+                    if r.get("aimed_at") is not None and not zeroed:
                         link.purge_set(frame(self.group, r["cfg"]["aim"], 0))
                     else:
                         link.purge_clear()
@@ -840,8 +861,29 @@ class CleaningPanel:
                                          "stopped."}
 
     def on_abort(self, who="", screen=""):
-        self.cut(f"Abort pressed by {who or screen or 'someone'}",
-                 zeroed=True)
+        """Abort (Morning.on_abort, before the Abort's own flame disarm):
+        never waits (review of #159, 4). The purge frame is dropped at once
+        and the run marked aborted, so a beat or the watcher holding the
+        panel's lock stops at its next look; the stop and its disarm run
+        on a thread of their own, after the lock is free."""
+        why = f"Abort pressed by {who or screen or 'someone'}"
+        if self._run is None:
+            return
+        self._aborted = why
+        link = self._link()
+        if link is not None:
+            try:
+                link.purge_clear()
+            except Exception:                            # noqa: BLE001
+                pass
+        threading.Thread(target=self._abort_cut, args=(why,), daemon=True,
+                         name="ltcplay-cleaning-abort").start()
+
+    def _abort_cut(self, why):
+        try:
+            self.cut(why, zeroed=True)
+        except Exception:                                # noqa: BLE001
+            pass
 
     # -- the watcher -------------------------------------------------------------
     def tick(self, now=None):
@@ -930,7 +972,9 @@ class CleaningPanel:
             text = "Arming for the bursts"
             nxt = "Point the heads straight up"
         else:
-            t = now - r.get("burst_at", now) - cfg["aim_settle_s"]
+            at = r.get("aimed_at")
+            t = -cfg["aim_settle_s"] if at is None else \
+                now - at - cfg["aim_settle_s"]
             if t < 0:
                 text = "Armed: pointing the heads straight up"
                 left = -t
@@ -984,7 +1028,7 @@ class CleaningPanel:
 
 # ------------------------------------------------------------ the engine --
 
-def engine_blockers(remote, link, name):
+def engine_blockers(remote, link, name, arming=None):
     """Why the engine forbids the cleaning right now, in a sentence, or "":
     the Fireball page's rules (a show live or paused, an Abort standing, a
     Hold, Run pressed, the show clock playing, live flame programming or
@@ -1002,7 +1046,7 @@ def engine_blockers(remote, link, name):
         if fb is not None and fb.active():
             return ("the Fireball page has a channel on; turn it off there "
                     "first.")
-        if not remote.arming_enabled():
+        if not (arming or remote.arming_enabled)():
             return ("arming from a screen is switched off on this show "
                     "machine (Programming, Arming from a screen), and the "
                     "cleaning arms the way a screen does.")
@@ -1069,9 +1113,21 @@ def build(remote, morning, link, journal=None, threaded=True,
         code, out = remote.disarm_all(who, screen)
         return code == 200, str(out.get("text") or out.get("error") or "")
 
+    # The settings file read at most every SETTINGS_EVERY_S, never on
+    # every tick (review of #159, 4).
+    cache = {"at": None, "on": False}
+
+    def arming():
+        now = remote.clock()
+        if cache["at"] is None or not 0 <= now - cache["at"] < \
+                SETTINGS_EVERY_S:
+            cache["on"] = bool(remote.arming_enabled())
+            cache["at"] = now
+        return cache["on"]
+
     def may_group():
         seen = remote._deck_seen
-        return remote.arming_enabled() and seen is not None and \
+        return arming() and seen is not None and \
             remote.clock() - seen <= 0.5
 
     def burn(on):
@@ -1080,7 +1136,7 @@ def build(remote, morning, link, journal=None, threaded=True,
 
     panel = CleaningPanel(
         group, problem, link_get=lambda: link, flames_get=flames,
-        blockers=lambda: engine_blockers(remote, link, name),
+        blockers=lambda: engine_blockers(remote, link, name, arming),
         locked_slots=locked,
         config_get=lambda: load_config(morning.config_path),
         press_arm=remote.arm_hold, release_arm=release,

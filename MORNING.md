@@ -428,7 +428,8 @@ The Shutdown part of the page has **Wave flamer cleaning**: one button,
 `cycles` times (3): arm the wave flamer group, armed `armed_s` (3 s),
 disarm, disarmed `disarmed_s` (3 s), each counted from flamesafe's own
 report; then arm again, the angle channels (the aim slots) to `aim` (128,
-straight up), `aim_settle_s` (1 s), and the ignition (channel 3 of each
+straight up), `aim_settle_s` (1 s, from the first frame actually
+written with the heads up), and the ignition (channel 3 of each
 Showven) 255 for `burst_on_s` (1 s) and 0 for `burst_off_s` (1 s) until
 it is stopped. Speed, duration and preset stay 0.
 
@@ -479,8 +480,9 @@ refusal, and `max_run_min`.
 **Settings** (`ltcplay_morning.json`, `cleaning`; leave a key out for the
 default): `cycles` 3 (1 to 10), `armed_s` 3 (1 to 30), `disarmed_s` 3
 (2.5 to 30: it must cover the deck's 2 s re-arm window and flamesafe's 1 s
-dwell), `arm_wait_s` 8 (3 to 20), `disarm_wait_s` 2 (1 to 5), `aim` 128 (0
-to 255), `aim_settle_s` 1 (0 to 5), `burst_on_s` 1 (0.2 to 5),
+dwell), `arm_wait_s` 8 (3 to 20), `disarm_wait_s` 2 (1 to 5), `aim` 128 (118
+to 138: never far off straight up), `aim_settle_s` 1 (1 to 5, counted
+from the first frame written with the heads up), `burst_on_s` 1 (0.2 to 5),
 `burst_off_s` 1 (0.5 to 10), `max_run_min` 10 (1 to 30), `authorization`
 `dead_man`. A value outside its limits: the page says which and nothing
 runs.

@@ -75341,7 +75341,10 @@ def test_cleaning_group_and_config():
                         ({"disarmed_s": 2.0}, "from 2.5 to 30"),
                         ({"armed_s": "3"}, "has to be a number"),
                         ({"burst_on_s": 6}, "from 0.2 to 5"),
-                        ({"aim": 256}, "from 0 to 255"),
+                        ({"aim": 256}, "from 118 to 138"),
+                        ({"aim": 140}, "from 118 to 138"),
+                        ({"aim": 64}, "from 118 to 138"),
+                        ({"aim_settle_s": 0}, "from 1 to 5"),
                         ({"gap_s": 5}, "does not know: gap_s"),
                         ({"max_run_min": 31}, "from 1 to 30"),
                         ({"authorization": "auto"},
@@ -75442,9 +75445,11 @@ def test_cleaning_whole_sequence():
     check(all(a == "armed" for _t, a, ig, _am, _x in trace if any(ig)),
           "the ignition is never up unless flamesafe says armed")
     up = [t for t, _a, ig, _am, _x in trace if ig == [255] * 3]
-    check(up and up[0] >= armed_at[3] + 1.0 - 1e-6,
-          f"the first burst after the heads had 1 s to come up: "
-          f"{up[:1]} {armed_at[3]}")
+    check(up and up[0] >= first_set + 1.0 - 1e-6 and
+          next(am for t, _a, _ig, am, _x in trace if t == first_set) ==
+          [128] * 3,
+          f"the first burst a full 1 s after the first frame written with "
+          f"the heads up (not after the ARMED report): {up[:1]} {first_set}")
     check(all(am == [128] * 3 for t, _a, _ig, am, _x in trace
               if t >= armed_at[3] + 0.1),
           "the angles straight up, 128, all through the bursts")
@@ -75500,7 +75505,7 @@ def test_cleaning_whole_sequence():
 def _wc_to_bursts(**cfg):
     """A world one cycle in and firing bursts (cycles 1, short gaps)."""
     W = _WcWorld(**dict(dict(cycles=1, armed_s=1.0, disarmed_s=2.5,
-                             aim_settle_s=0.0), **cfg))
+                             aim_settle_s=1.0), **cfg))
     W.beat(run="b1")
     W.run_for(9.0, run="b1")
     check(W.p.active() and W.p.view()["progress"]["phase"] == 2 and
@@ -75650,6 +75655,40 @@ def test_cleaning_every_stop_cuts_and_disarms():
     W.may_group = False
     W.beat(hold=False, run="b1")
     check(len(W.disarm_all_calls) == 1, "no per-group disarm: Disarm all")
+    # Abort never waits on the panel's lock (review of #159, 4): a beat or
+    # the watcher busy inside it (an arm hold, a journal line) does not
+    # hold the Abort up; the frame is dropped at once and the run stops as
+    # soon as the lock is free.
+    W = _wc_to_bursts()
+    for _i in range(25):
+        if W.ign() == [255] * 3:
+            break
+        W.run_for(0.1, run="b1")
+    busy, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        with W.p._lock:
+            busy.set()
+            release.wait(5)
+    th = threading.Thread(target=hold_lock, daemon=True)
+    th.start()
+    busy.wait(5)
+    t0 = time.monotonic()
+    W.p.on_abort("Ola", "Rack screen")
+    took = time.monotonic() - t0
+    check(took < 0.05 and W.link.cur is None,
+          f"Abort with the panel's lock busy: back at once ({took:.3f} s), "
+          f"the frame dropped")
+    release.set()
+    th.join(5)
+    end = time.monotonic() + 5
+    while W.p.active() and time.monotonic() < end:
+        time.sleep(0.01)
+    check(not W.p.active() and "Abort" in W.p.last_cut and W.disarm_calls,
+          f"and once the lock is free the run is stopped and disarmed: "
+          f"{W.p.last_cut}")
+    code, out = W.beat(run="b1")
+    check(code == 409, "a beat after it is refused")
     print("  ok")
 
 
@@ -75900,11 +75939,17 @@ def test_cleaning_at_the_engine():
               f"an Abort stops it: {cl.last_cut}")
         # Arming from a screen off: refused, said.
         RM.save_settings(R.work, screen_arming=False)
-        step()
+        step(0.6)            # the switch is read at most every 0.5 s
         code, out = beat(run="e2")
-        check(code == 409 and "switched off" in out["error"],
-              f"arming from a screen off: refused: {out}")
+        check(code == 409 and out["error"].startswith(
+                  "arming from a screen is switched off on this show "
+                  "machine") and not R.remote.deck_input()["holds"] and
+              "arming from a screen is switched off" in
+              CL.route_get(cl, ctx)[1]["blocked"],
+              f"arming from a screen off: refused by the cleaning itself "
+              f"before any hold, said on the page: {out}")
         RM.save_settings(R.work, screen_arming=True)
+        step(0.6)
         # Arrange mode on the Startup page: refused.
         R.m.open_beat("Rack screen", arranging=True)
         step()
@@ -75917,8 +75962,14 @@ def test_cleaning_at_the_engine():
         R.wall[0] += 3.0
         R.feed()
         code, out = beat(run="e4")
-        check(code == 409 and "Stream Deck" in out["error"],
-              f"the deck not reading: refused: {out}")
+        check(code == 409 and out["error"].startswith(
+                  "the Stream Deck program has not read this engine in the "
+                  "last 2 s, and it is what arms and disarms the wave "
+                  "flamer") and "it is what arms and disarms" in
+              CL.route_get(cl, ctx)[1]["blocked"] and
+              not R.remote.deck_input()["holds"],
+              f"the deck not reading: refused by the cleaning itself, said "
+              f"on the page: {out}")
         # An open Stream Deck alert: refused, said.
         step()
         R.remote.alerts.raise_("deck", text="The Stream Deck is unplugged.")

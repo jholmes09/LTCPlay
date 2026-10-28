@@ -15796,7 +15796,7 @@ def build():
 
  ("cleaning: arming from a screen switched off is not checked",
   "ltcplay/cleaning.py",
-  "        if not remote.arming_enabled():\n"
+  "        if not (arming or remote.arming_enabled)():\n"
   "            return (\"arming from a screen is switched off",
   "        if False:\n"
   "            return (\"arming from a screen is switched off"),
@@ -15848,6 +15848,40 @@ def build():
   "ltcplay/fuel.py",
   "        if rehearse or program or (purge and burn):",
   "        if rehearse or program:"),
+
+ ("cleaning: the angle may be far off straight up",
+  "ltcplay/cleaning.py",
+  "\"aim\": (118, 138),",
+  "\"aim\": (0, 255),"),
+
+ ("cleaning: the heads may get no time to come up",
+  "ltcplay/cleaning.py",
+  "          \"aim_settle_s\": (1.0, 5.0),",
+  "          \"aim_settle_s\": (0.0, 5.0),"),
+
+ ("cleaning: the settle counts from ARMED, not the first frame written",
+  "ltcplay/cleaning.py",
+  "                    self._to(r, \"burst\", now, burst_at=now, aimed_at=None)",
+  "                    self._to(r, \"burst\", now, burst_at=now, aimed_at=now)"),
+
+ ("cleaning: an Abort waits on the panel's lock",
+  "ltcplay/cleaning.py",
+  "        threading.Thread(target=self._abort_cut, args=(why,), daemon=True,\n"
+  "                         name=\"ltcplay-cleaning-abort\").start()",
+  "        self._abort_cut(why)"),
+
+ ("cleaning: an Abort does not drop the frame at once",
+  "ltcplay/cleaning.py",
+  "        self._aborted = why\n"
+  "        link = self._link()\n"
+  "        if link is not None:\n"
+  "            try:\n"
+  "                link.purge_clear()",
+  "        self._aborted = why\n"
+  "        link = self._link()\n"
+  "        if False:\n"
+  "            try:\n"
+  "                link.purge_clear()"),
 
  ("cleaning page: letting go of the button does not stop it",
   "ltcplay/web/remote.html",
