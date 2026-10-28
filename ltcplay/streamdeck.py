@@ -1861,6 +1861,11 @@ class ScreenKeys:
         self.report_nokey = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
+        # Whether the engine last said users are on (deck-input "user"):
+        # None never heard, False no users at all, True on. Kept through an
+        # unreachable engine, so a deck on a machine with no users decides
+        # alone as before while the engine is quiet (review of PR #143, 4).
+        self._users_on = None
         # Screen holds this deck would not take: hold id -> (code, clock),
         # carried on the next deck-input reads (remote.DECK_REFUSALS).
         self._refused = {}
@@ -2012,6 +2017,9 @@ class ScreenKeys:
                 self._last = None          # unreachable: every hold let go
                 return
             self._last = (ans, self._clock())
+            u = ans.get("user")
+            self._users_on = isinstance(u, dict) and \
+                u.get("active") is not False
             evs = [e for e in (ans.get("disarms") or [])
                    if isinstance(e, dict) and isinstance(e.get("id"), int)]
             if self._seen_disarm is None:
@@ -2113,9 +2121,12 @@ class ScreenKeys:
         taken as permission (Jeff's field report, 2026-10-28): USER_UNKNOWN,
         which may not arm. Abort, Stop, Hold and every disarm never ask."""
         with self._lock:
-            last = self._last
+            last, users_on = self._last, self._users_on
         if last is None or self._clock() - last[1] > USER_STALE_S:
-            return dict(USER_UNKNOWN)
+            # Not heard lately. With no users at all (the engine's last
+            # word), the deck's own rules decide alone, as before users
+            # existed; otherwise, never heard or users on, not known.
+            return None if users_on is False else dict(USER_UNKNOWN)
         u = last[0].get("user")
         return u if isinstance(u, dict) else None
 
@@ -3061,7 +3072,9 @@ class Controller:
         or a start for nobody. Without users: the chosen operator, as
         before."""
         u = self._user()
-        if u is not None and u.get("active") is True:
+        if u is not None and (u.get("active") is True or u.get("stale")):
+            # Signed in, or users on and who is signed in not known: never
+            # the chosen operator's name, which nobody signed in to.
             return str(u.get("name") or "") or UNSIGNED
         try:
             return self.operator_provider() or ""

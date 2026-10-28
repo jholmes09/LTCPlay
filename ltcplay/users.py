@@ -73,6 +73,10 @@ import threading
 import time
 
 USERS_FILE = "ltcplay_users.json"
+# Written beside it once users exist on this machine: a users file that is
+# then missing was deleted or lost, never "not set up yet", and locks the
+# controls instead of opening them (review of PR #143, 2).
+USERS_MARK = "ltcplay_users.made"
 COOKIE = "ltcplay_user"
 ROLES = ("admin", "operator", "viewer")
 SIGNED_OUT = "signed_out"
@@ -390,6 +394,7 @@ class Users:
                  hash_params=None, audit=None):
         self.folder = folder
         self.path = os.path.join(folder, USERS_FILE)
+        self.mark = os.path.join(folder, USERS_MARK)
         self._clock = clock
         self._wall = wall
         self._hash_params = hash_params
@@ -418,6 +423,13 @@ class Users:
         try:
             m = os.path.getmtime(self.path)
         except OSError:
+            if os.path.exists(self.mark):
+                # Users were set up here and the file is gone: locked, the
+                # same as a broken file, never back to "nobody set up".
+                self._doc, self._mtime = {"users": {}, "broken": True}, None
+                self.error = (f"{USERS_FILE} is missing, but users were set "
+                              f"up on this machine")
+                return self._doc
             self._doc, self._mtime, self.error = {"users": {}}, None, ""
             return self._doc
         if self._doc is not None and m == self._mtime:
@@ -430,6 +442,8 @@ class Users:
                 raise ValueError("not a users object")
             doc.setdefault("users", {})
             self.error = ""
+            if doc["users"] and not os.path.exists(self.mark):
+                self._write_mark()
         except (OSError, ValueError) as e:
             # A broken file: nobody can sign in, and the matrix is the
             # defaults. Nothing about the show is held back by it.
@@ -442,7 +456,19 @@ class Users:
         os.makedirs(self.folder, exist_ok=True)
         clean = {k: v for k, v in doc.items() if k != "broken"}
         _write_private(self.path, clean)
+        if clean.get("users"):
+            self._write_mark()
         self._doc = None
+
+    def _write_mark(self):
+        """USERS_MARK, once: users exist on this machine. Never raises."""
+        try:
+            with open(self.mark, "w", encoding="utf-8") as fh:
+                fh.write("Users were set up on this machine. While this file "
+                         "is here a missing users file locks every control "
+                         "but the stops and disarms.\n")
+        except OSError:
+            pass
 
     def _note(self, action, user, result="accepted", reason="", target="",
               source=""):
@@ -456,9 +482,20 @@ class Users:
 
     # -- reading ----------------------------------------------------------
     def active(self):
-        """True once at least one user exists: only then do roles apply."""
+        """True once at least one user exists: only then do roles apply.
+        Also True while the users file is broken, or missing after users
+        were set up here: then nobody can sign in, so every restricted
+        press is refused (fail closed; review of PR #143, 2). Only a
+        machine never set up (no file, no USERS_MARK) is not active."""
         with self._lock:
-            return bool(self._load().get("users"))
+            doc = self._load()
+            return bool(doc.get("users")) or bool(doc.get("broken"))
+
+    def broken(self):
+        """The sentence saying why the users file cannot be used, or ""."""
+        with self._lock:
+            doc = self._load()
+            return self.error if doc.get("broken") else ""
 
     def matrix(self):
         with self._lock:
@@ -698,6 +735,13 @@ class Users:
             self._note("sign-in", name or "unsigned", "refused", why,
                        source=source)
             return False, why, None, False
+        if first and not local:
+            # A name with no password yet is claimed on the show machine
+            # itself, never from the network (review of PR #143, 2).
+            why = (f"{real} has no password yet. Choose it on the show "
+                   f"machine's rack screen first.")
+            self._note("sign-in", real, "refused", why, source=source)
+            return False, why, None, False
         if first or must:
             if not new_password:
                 why = (f"Choose your own password, {real}, to finish "
@@ -755,8 +799,9 @@ class Users:
         with self._lock:
             doc = json.loads(json.dumps(self._load()))
             if doc.get("broken"):
-                raise ValueError(f"{self.error} Fix or remove the file "
-                                 f"first.")
+                raise ValueError(f"{self.error}. Restore it from a backup "
+                                 f"first, or remove both it and "
+                                 f"{USERS_MARK} to set users up again.")
             doc.setdefault("users", {})
             said = fn(doc)
             self._save(doc)
@@ -877,7 +922,9 @@ class Users:
         """First run only (no users file yet): the named people, each with
         no password; each chooses their own at their first sign-in. No
         password is ever shipped. [(name, role)]. True if it wrote."""
-        if os.path.exists(self.path):
+        if os.path.exists(self.path) or os.path.exists(self.mark):
+            # Set up before: a lost file is never seeded again with names
+            # that have no password, which anyone could then claim.
             return False
 
         def fn(doc):

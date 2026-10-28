@@ -9588,8 +9588,8 @@ def build():
 
  ("morning page: the group buttons stay live while arranging",
   "ltcplay/web/remote.html",
-  '''    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;''',
-  '''    b.disabled = !ids.length || !mo.purge_enabled;'''),
+  '''    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));''',
+  '''    b.disabled = !ids.length || !mo.purge_enabled || (!all && !mayRow(ST, "arm"));'''),
 
  ("morning page: a bare mouse (no button down) still drags the machine",
   "ltcplay/web/remote.html",
@@ -10484,6 +10484,30 @@ def build():
   '    "show-select": "show_files", "show-file-new": "show_files",',
   '    "show-select": None, "show-file-new": "show_files",'),
 
+ ('users: a broken users file opens every control', 'ltcplay/users.py',
+  '            return bool(doc.get("users")) or bool(doc.get("broken"))',
+  '            return bool(doc.get("users"))'),
+
+ ('users: a lost users file is "not set up"', 'ltcplay/users.py',
+  '            if os.path.exists(self.mark):\n                # Users were set up here',
+  '            if False:\n                # Users were set up here'),
+
+ ('users: a lost users file is seeded again', 'ltcplay/users.py',
+  '        if os.path.exists(self.path) or os.path.exists(self.mark):',
+  '        if os.path.exists(self.path):'),
+
+ ('users: a name with no password is claimed from the network', 'ltcplay/users.py',
+  '        if first and not local:',
+  '        if False:'),
+
+ ('users: setting users up leaves no mark', 'ltcplay/users.py',
+  '        if clean.get("users"):\n            self._write_mark()',
+  '        pass'),
+
+ ("users: an older install's file never gets the mark", 'ltcplay/users.py',
+  '            if doc["users"] and not os.path.exists(self.mark):\n                self._write_mark()',
+  '            if False:\n                self._write_mark()'),
+
  ('users: a sign-out on the rack screen leaves the machine signed in', 'ltcplay/users.py',
   '            if local or (s is not None and s["local"]):',
   '            if False:'),
@@ -10497,12 +10521,28 @@ def build():
   '        if False:'),
 
  ('remote: sign out leaves a hold to arm going', 'ltcplay/remote.py',
-  '                self.cancel_holds("the screen was signed out")',
-  '                pass'),
+  '                    self.cancel_holds("the screen was signed out",\n                                      device=ctx.device)',
+  '                    pass'),
+
+ ("remote: a sign-out lets go of every screen's hold", 'ltcplay/remote.py',
+  '                    self.cancel_holds("the screen was signed out",\n                                      device=ctx.device)',
+  '                    self.cancel_holds("the screen was signed out")'),
+
+ ('remote: a sign-out that ended nothing lets go of holds', 'ltcplay/remote.py',
+  '            if ended:\n                # Only this device',
+  '            if True:\n                # Only this device'),
+
+ ('remote: a fault working out the sign-in lets the deck arm', 'ltcplay/remote.py',
+  '            return {"name": None, "role": None, "active": True,\n                    "fault": True, "may": {"arm": False, "show": False}}',
+  '            return None'),
+
+ ('remote: a broken users file raises no alert', 'ltcplay/remote.py',
+  '            self.alerts.raise_("users", text)',
+  '            pass'),
 
  ('remote: sign out on the rack screen ends only the page', 'ltcplay/remote.py',
-  '            u.sign_out(getattr(ctx, "token", ""), ctx.source,\n                       local=ctx.local)',
-  '            u.sign_out(getattr(ctx, "token", ""), ctx.source)'),
+  '            ended = u.sign_out(getattr(ctx, "token", ""), ctx.source,\n                               local=ctx.local)',
+  '            ended = u.sign_out(getattr(ctx, "token", ""), ctx.source)'),
 
  ('remote: a screen hold names the device, not the person', 'ltcplay/remote.py',
   '        if self.users_active():\n            who = self.signed_in_name(ctx, body)\n        token = ctx.device',
@@ -10520,13 +10560,25 @@ def build():
   '            who = self._authed_who(body)\n            if who is None:\n                who = str(body.get("who")',
   '            who = None\n            if who is None:\n                who = str(body.get("who")'),
 
+ ('web: a deck line about a screen keeps any name', 'ltcplay/web.py',
+  '                who = self._deck_screen_who(said)',
+  '                who = said'),
+
  ("web: a deck journal line names the deck's chosen operator", 'ltcplay/web.py',
   '            body = self._authed_body(route, body)',
   '            pass'),
 
  ('deck: an engine not heard from lets the arm keys arm', 'ltcplay/streamdeck.py',
-  '        if last is None or self._clock() - last[1] > USER_STALE_S:\n            return dict(USER_UNKNOWN)',
-  '        if last is None or self._clock() - last[1] > USER_STALE_S:\n            return None'),
+  '            return None if users_on is False else dict(USER_UNKNOWN)',
+  '            return None'),
+
+ ('deck: no users and a quiet engine refuse the arm keys', 'ltcplay/streamdeck.py',
+  '            return None if users_on is False else dict(USER_UNKNOWN)',
+  '            return dict(USER_UNKNOWN)'),
+
+ ('deck: who is signed in not known names the chosen operator', 'ltcplay/streamdeck.py',
+  '        if u is not None and (u.get("active") is True or u.get("stale")):',
+  '        if u is not None and u.get("active") is True:'),
 
  ('deck: who is signed in not known may arm', 'ltcplay/streamdeck.py',
   'USER_UNKNOWN = {"name": None, "role": None, "active": None, "stale": True,\n                "may": {"arm": False, "show": False}}',
@@ -10537,15 +10589,27 @@ def build():
   '    if False:'),
 
  ('deck: the journal names the chosen operator with users on', 'ltcplay/streamdeck.py',
-  '        if u is not None and u.get("active") is True:\n            return str(u.get("name") or "") or UNSIGNED',
-  '        if False:\n            return str(u.get("name") or "") or UNSIGNED'),
+  '        if u is not None and (u.get("active") is True or u.get("stale")):',
+  '        if False:'),
 
- ('page: Sign out leaves a hold to arm going', 'ltcplay/web/remote.html',
-  '  if(HOLD) armStop("Signed out");\n',
+ ('page: signed out leaves Start now on', 'ltcplay/web/remote.html',
+  '    offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),',
+  '    offs.push($("b-resume"), $("b-reset"), $("b-run"),'),
+
+ ('page: signed out may hold to arm', 'ltcplay/web/remote.html',
+  '  if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};\n',
   ''),
 
+ ("page: signed out may arm a laser", 'ltcplay/web/remote.html',
+  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));',
+  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => false));'),
+
+ ('page: a laser Disarm is locked signed out', 'ltcplay/web/remote.html',
+  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));',
+  '    offs.push(...document.querySelectorAll("#lz-chips button[data-lz]"));'),
+
  ('page: the chip never says view only', 'ltcplay/web/remote.html',
-  '  b.textContent = me.user ? me.user : (viewOnly ? "View only: sign in" : "Signed out");',
+  '  b.textContent = me.user ? me.user : (viewOnly ? "Sign in to use controls" : "Signed out");',
   '  b.textContent = me.user ? me.user : "Signed out";'),
 
  ("web: the page's open-beats are written to the audit log", 'ltcplay/web.py',

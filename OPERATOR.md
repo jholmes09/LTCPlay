@@ -43,7 +43,10 @@ sign-in.
 
 - **Signed out, every screen is view only.** It still shows the show
   state, the schedule, the flame and laser lamps and the alerts. The chip
-  at the top right reads "View only: sign in".
+  at the top right reads "Sign in to use controls", and Start now, Resume,
+  Reset, Run, every Hold to arm, a laser's Arm, the announcements and the
+  settings switches are greyed out. Hold, Abort, Disarm all and every
+  Disarm stay live.
 - **Always, signed in or not:** Stop, Hold, Abort, Acknowledge an alert,
   Disarm all flame groups, disarming one group, and disarming lasers.
 - **Needs a signed-in operator or admin:** Start now, Resume, Reset, Run,
@@ -53,8 +56,16 @@ sign-in.
   and users need an admin as before.
 - **Sign out** on the Users screen ends the sign-in at the engine. On the
   show machine it signs that machine out completely (the rack screen and
-  the Stream Deck together), lets go of any hold to arm under way, and the
-  screen is view only straight away.
+  the Stream Deck together), lets go of that screen's hold to arm if one is
+  under way, and the screen is view only straight away. It does not disarm
+  anything or stop live flame programming: use Disarm all or Stop for that.
+- **If the users file is damaged or missing** after users were set up, an
+  alert says so on every screen and every control is locked except Stop,
+  Hold, Abort, Acknowledge and the disarms. Nobody can sign in until
+  `ltcplay_users.json` in the settings folder is restored from a backup and
+  LTC Player is restarted.
+- **A name with no password yet** chooses it at the rack screen on the show
+  machine, never from an iPad.
 - **The Stream Deck** acts as whoever is signed in on the rack screen. With
   nobody signed in there, its Start key reads SIGN IN and its arm keys do
   not arm. Its Stop, Hold, Acknowledge and disarm keys always work. If the

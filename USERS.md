@@ -29,9 +29,17 @@ password yet:
 | Jared  | operator |
 
 No password is shipped with the program. The first time each person signs
-in they pick their own (6 characters or more). Until someone has, anyone
-at the rack screen could pick it for them, so have each person sign in
-once soon after the update.
+in they pick their own (6 characters or more), at the rack screen on the
+show PC: a name with no password yet cannot be claimed from an iPad. Until
+someone has, anyone at the rack screen could pick it for them, so have
+each person sign in once soon after the update.
+
+If `ltcplay_users.json` is ever damaged, or deleted after users were set
+up, LTC Player does not fall back to "nobody set up". Every screen shows
+an alert, every control is locked except Stop, Hold, Abort, Acknowledge
+and the disarms, and nobody can sign in. Restore the file from a backup
+and restart LTC Player. (Starting over with no users means removing both
+`ltcplay_users.json` and `ltcplay_users.made` from the settings folder.)
 
 ## Signing in
 

@@ -58002,7 +58002,7 @@ def test_morning_arrange_mode_arms_nothing():
                  'if(arrangeBlocked("lock", {})) return;',
                  'await post("/api/remote/morning-open", openBeatBody());',
                  'arrangeExit("left");',
-                 'b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;',
+                 'b.disabled = !ids.length || !mo.purge_enabled || ARRANGE || (!all && !mayRow(ST, "arm"));',
                  'wireMachine(el, m);',
                  'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
                  'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
@@ -58914,8 +58914,13 @@ def test_purge_release_can_never_start_a_fire():
         R.remote.users = us
         toks = {}
         for name in ("Ollie", "Vic"):
-            ok, why, tok, _n = us.sign_in(name, "", False, "ipad",
+            # A name with no password yet is claimed on the show machine
+            # (review of PR #143, 2); then the iPad signs in with it.
+            ok, why, tok, _n = us.sign_in(name, "", True, "rack",
                                           new_password=f"{name}-pw-1234")
+            us.sign_out(tok, "rack")
+            ok, why, tok, _n = us.sign_in(name, f"{name}-pw-1234", False,
+                                          "ipad")
             check(ok and tok, f"setup: {name} signs in: {why}")
             toks[name] = tok
 
@@ -60378,8 +60383,9 @@ def test_journal_names_the_signed_in_user_never_the_body():
         # The old page's Stop and the scheduler's routes, over the wire.
         halts = []
         rem.halt = lambda who, screen: halts.append(who) or {}
-        http("/api/stop", {"who": "Jeff", "screen": "Stream Deck",
-                           "halt": True})
+        # The deck's Stop names no one in its body here: the engine still
+        # names whoever is signed in on this machine.
+        http("/api/stop", {"screen": "Stream Deck", "halt": True})
         http("/api/remote/signout", {}, cookie=andy)
         http("/api/stop", {"who": "Jeff", "halt": True})
         check(halts == ["Andy", U.UNSIGNED],
@@ -60422,10 +60428,9 @@ def test_sign_out_locks_the_screen_and_lets_go_of_a_hold():
     us.seed((("Jeff", "admin"), ("Andy", "operator")))
     ok, _t, jeff, _n = us.sign_in("Jeff", "", True, "Rack screen",
                                   new_password="jeff-own-pw-1")
-    ok, _t, ipad, _n = us.sign_in("Andy", "", False, "iPad",
+    ok, _t, andy, _n = us.sign_in("Andy", "", True, "Rack screen",
                                   new_password="andy-own-pw-1")
-    ok, _t, andy, _n = us.sign_in("Andy", "andy-own-pw-1", True,
-                                  "Rack screen")
+    ok, _t, ipad, _n = us.sign_in("Andy", "andy-own-pw-1", False, "iPad")
     check(us.machine_user()["name"] == "Andy" and us.session(ipad),
           "the latest sign-in on the rack screen is who the deck acts as")
     check(us.sign_out("", "Rack screen", local=True) and
@@ -60490,21 +60495,6 @@ def test_sign_out_locks_the_screen_and_lets_go_of_a_hold():
               "signs the machine out")
     finally:
         httpd.server_close()
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
-    out_handler = page[page.index('$("u-out").addEventListener'):]
-    out_handler = out_handler[:out_handler.index("\n});\n") + 4]
-    check('if(HOLD) armStop("Signed out");' in out_handler and
-          "view_only" in out_handler and 'u-pw").value = ""' in out_handler,
-          "the page's Sign out lets go of a hold, clears what was typed and "
-          "reads view only at once")
-    chip = page[page.index("function renderUserChip(){"):]
-    chip = chip[:chip.index("\n}\n")]
-    check("me.view_only" in chip and "View only: sign in" in chip and
-          'armStop("Signed out: this screen is view only")' in chip,
-          "the chip says View only and stops a hold when the engine says "
-          "the screen is signed out")
 
 
 def test_deck_needs_a_sign_in_on_the_rack_screen_to_arm():
@@ -60601,6 +60591,367 @@ def test_deck_needs_a_sign_in_on_the_rack_screen_to_arm():
     user[0] = {"name": None, "role": None, "may": {"arm": True}}
     check(ctl._who() == "Jeff", "users off at the engine: the chosen "
           "operator, as before")
+
+
+def test_users_file_broken_or_lost_locks_and_says_so():
+    section("users: a users file that cannot be read, or is lost after "
+            "users were set up, locks every control but the stops and "
+            "disarms, says so loudly, and never hands out an unclaimed "
+            "name (review of PR #143, 2)")
+    from ltcplay import users as U
+    d = tempfile.mkdtemp()
+    us = U.Users(d, hash_params=_U_FAST)
+    check(not us.active() and us.broken() == "" and
+          us.may(None, "arm"),
+          "never set up (no file, no mark): nothing changes, as before")
+    check(us.seed((("Jeff", "admin"), ("Andy", "operator"))) and
+          os.path.exists(os.path.join(d, U.USERS_MARK)),
+          "the first seed leaves the mark that users exist here")
+    ok, why, tok, _n = us.sign_in("Andy", "", False, "iPad at 10.0.0.9",
+                                  new_password="andy-own-pw-1")
+    check(not ok and tok is None and "show machine" in why and
+          us.listing()[0]["password_set"] is False,
+          f"a name with no password yet is never claimed from the "
+          f"network: {why}")
+    ok, why, tok, _n = us.sign_in("Andy", "", True, "Rack screen",
+                                  new_password="andy-own-pw-1")
+    check(ok and tok, f"on the rack screen it is: {why}")
+    with open(us.path, "w", encoding="utf-8") as fh:
+        fh.write("{ not json")
+    check(us.active() and "could not be read" in us.broken() and
+          not any(us.may(r, p) for r in (None,) for p in U.PERM_KEYS) and
+          us.may(None, "safety"),
+          f"a broken file: on, locked, safety still goes: {us.broken()}")
+    ok, why, _t, _n = us.sign_in("Andy", "andy-own-pw-1", True, "Rack screen")
+    check(not ok, "and nobody can sign in")
+    os.remove(us.path)
+    check(us.active() and "missing" in us.broken() and
+          not us.may(None, "arm"),
+          f"deleted after setup: still locked, never open: {us.broken()}")
+    us2 = U.Users(d, hash_params=_U_FAST)
+    check(not us2.seed(U.SEED_USERS) and not os.path.exists(us2.path) and
+          us2.active(),
+          "and a restart never seeds names with no password again")
+    try:
+        us2.add("Eve", "admin", "eve-pw-1234")
+        check(False, "a user was added to a lost users file")
+    except ValueError as e:
+        check(U.USERS_MARK in str(e), f"refused, saying what to do: {e}")
+    # A users file from before the mark existed gets it on first read.
+    d3 = tempfile.mkdtemp()
+    with open(os.path.join(d3, U.USERS_FILE), "w", encoding="utf-8") as fh:
+        json.dump({"users": {"Jeff": {"role": "admin", "pw": None}}}, fh)
+    check(U.Users(d3).active() and
+          os.path.exists(os.path.join(d3, U.USERS_MARK)),
+          "an older install's users file is marked the first time it is "
+          "read")
+    # Over the wire: locked, the alert raised once, Stop and Hold go.
+    httpd, http, cookie_of, work = _accounts_engine()
+    rem = httpd.remote
+    try:
+        with open(rem.users.path, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        st, out, _h = http("/api/remote/start-now",
+                           {"confirmed": True,
+                            "seen": int(time.time() * 1000)})
+        check(st == 403 and out.get("role_refused"),
+              f"a broken file: Start now refused: {st} {out}")
+        st, out, _h = http("/api/remote/hold", {})
+        check(not out.get("role_refused") and st != 403,
+              f"Hold still goes: {st} {out}")
+        st, s1, _h = http("/api/remote/status")
+        st, s2, _h = http("/api/remote/status")
+        ua = [a for a in s2.get("alerts") or [] if a.get("kind") == "users"]
+        check(len(ua) == 1 and "locked" in ua[0]["text"] and
+              "Restore" in ua[0]["text"] and s2["me"]["view_only"] is True,
+              f"the alert says why and what to do, on every screen: "
+              f"{ua} {s2.get('me')}")
+        rows = [r for r in rem.alerts._journal_lines
+                if "users file" in r] if hasattr(
+                    rem.alerts, "_journal_lines") else None
+        check(rows is None or len(rows) == 1, "raised once, not per poll")
+        di = http("/api/remote/deck-input")[1].get("user") or {}
+        check(di.get("active") is True and di["may"]["arm"] is False,
+              f"the deck is told it may not arm: {di}")
+    finally:
+        httpd.server_close()
+
+
+def test_review_143_sign_out_holds_and_deck_fallbacks():
+    section("users: a sign-out lets go of that device's own hold only, and "
+            "only when it ended a sign-in; the deck decides alone only "
+            "with no users at all; a fault working out who is signed in "
+            "never arms; a deck line's name is a real user's or unsigned "
+            "(review of PR #143, 1, 4, 5, 6)")
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as sd
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "operator")))
+    rem = httpd.remote
+    try:
+        ok, _w, jeff, _n = rem.users.sign_in("Jeff", "", True, "Rack screen",
+                                             new_password="jeff-own-pw-1")
+        ok, _w, andy, _n = rem.users.sign_in("Andy", "", True, "Rack screen",
+                                             new_password="andy-own-pw-1")
+        ok, _w, andy_ipad, _n = rem.users.sign_in("Andy", "andy-own-pw-1",
+                                                  False, "iPad")
+        rack = RM.Ctx(True, "127.0.0.1")
+        ipad = RM.Ctx(False, "10.0.0.9")
+
+        def holds():
+            rem._holds = {0: {"token": rack.device, "who": "Jeff",
+                              "device": rack.screen, "group": "L",
+                              "start": 0.0, "beat": 0.0, "id": 1},
+                          1: {"token": ipad.device, "who": "Andy",
+                              "device": ipad.screen, "group": "R",
+                              "start": 0.0, "beat": 0.0, "id": 2}}
+        holds()
+        # The iPad holding group 1, with no sign-in to end (a page that
+        # lost its cookie): nothing ended, nothing let go.
+        rem.users_post("signout", {}, RM.Ctx(False, "10.0.0.9"))
+        check(set(rem._holds) == {0, 1},
+              "a sign-out that ended nothing lets go of nothing")
+        ipad.session, ipad.token = rem.users.session(andy_ipad), andy_ipad
+        rem.users_post("signout", {}, ipad)
+        check(set(rem._holds) == {0},
+              f"the iPad's sign-out lets go of its own hold only: "
+              f"{rem._holds}")
+        holds()
+        rack.session, rack.token = rem.users.session(jeff), jeff
+        rem.users_post("signout", {}, rack)
+        check(set(rem._holds) == {1} and rem.users.machine_user() is None,
+              f"the rack screen's: its own, and the machine signed out: "
+              f"{rem._holds}")
+        # A fault working out who is signed in: the deck may not arm.
+        real = rem.users.machine_user
+
+        def boom():
+            raise RuntimeError("broken")
+        rem.users.machine_user = boom
+        try:
+            v = rem.user_view_for_deck()
+            check(v and v["may"]["arm"] is False and v["active"] is True,
+                  f"a fault: the deck is told it may not arm: {v}")
+        finally:
+            rem.users.machine_user = real
+        # A deck line about a screen's hold keeps a real user's name only.
+        posted = []
+
+        class _Sched:
+            machine = None
+            conductor = None
+
+            def post(self, route, body):
+                posted.append(body.get("who"))
+                return 200, {"ok": True}
+        httpd.schedule = _Sched()
+        for who in ("Andy", "Mallory"):
+            http("/api/schedule/deck-event",
+                 {"text": f"Stream Deck: L arm hold by {who}.", "who": who,
+                  "screen": "Somewhere new"})
+        check(posted == ["Andy", U.UNSIGNED],
+              f"a real user's name is kept, anything else is unsigned: "
+              f"{posted}")
+    finally:
+        httpd.server_close()
+    t = [100.0]
+    sk = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda *a: None,
+                       clock=lambda: t[0])
+    sk._last, sk._users_on = ({"user": None}, t[0]), False
+    t[0] += sd.USER_STALE_S * 2
+    check(sk.user() is None,
+          "no users at all and the engine quiet: the deck decides alone, "
+          "as before")
+    sk._last, sk._users_on = ({"user": {"active": False, "name": None,
+                                        "may": {"arm": True}}}, t[0]), False
+    t[0] += sd.USER_STALE_S * 2
+    check(sk.user() is None, "users not set up yet: the same")
+    sk._users_on = True
+    check(sk.user() == sd.USER_UNKNOWN,
+          "users on and the engine quiet: not known, no arm")
+
+    class _Arm:
+        wanted = [False]
+
+        def set_group(self, i, on):
+            self.wanted[i] = on
+
+        def set_all(self, on):
+            self.wanted = [on]
+
+        def send(self, names):
+            pass
+
+    class _Status:
+        last = None
+
+        def stale(self, clock=None):
+            return True
+
+        def poll(self, clock=None):
+            pass
+    ctl = sd.Controller(_Arm(), _Status(), ["L"],
+                        operator_provider=lambda: "Jeff",
+                        clock=lambda: t[0],
+                        user_provider=lambda: dict(sd.USER_UNKNOWN))
+    check(ctl._who() == sd.UNSIGNED,
+          "who is signed in not known: the journal says unsigned, never "
+          "the chosen operator")
+
+
+_SIGNIN_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0; }
+function state(){
+  const out = {chip:($("nav-user") || {}).textContent || "", buttons:{}, arm:[], lz:[]};
+  for(const id of ["b-start", "b-resume", "b-reset", "b-run", "b-hold", "b-abort", "b-disarm", "lz-disarm", "sa-on", "lf-on"]){
+    const el = document.getElementById(id);
+    if(el) out.buttons[id] = {disabled:el.disabled, off:el.classList.contains("signin-off")};
+  }
+  document.querySelectorAll("#fl-lamps [data-arm]").forEach(b => out.arm.push({mode:b.dataset.mode, disabled:b.disabled}));
+  document.querySelectorAll("#lz-chips button[data-lz]").forEach(b => out.lz.push({armed:b.classList.contains("armed"), disabled:b.disabled}));
+  return out;
+}
+function go(){
+  if(!document.querySelector("#fl-lamps .lamp [data-arm]") || !ST) return setTimeout(go, 100);
+  setTimeout(async () => {
+    const res = {before:state()};
+    // A finger on the first group's button and on Start now.
+    const b = document.querySelector("#fl-lamps [data-arm]");
+    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true}));
+    $("b-start").click();
+    await new Promise(r => setTimeout(r, 400));
+    res.posts_after_press = window.__posts.slice();
+    res.hold_after_press = HOLD !== null;
+    // Then Sign out, with any hold under way.
+    $("u-out").click();
+    await new Promise(r => setTimeout(r, 400));
+    res.hold_after_out = HOLD !== null;
+    res.after_out = state();
+    res.posts = window.__posts.slice();
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify(res);
+    document.body.appendChild(pre);
+  }, 900);
+}
+go();
+})();
+</script>
+"""
+
+_SIGNIN_HEAD_JS = r"""<script>
+window.__posts = [];
+(function(){
+  // The engine's word after a Sign out: this screen signed out. The stub
+  // engine cannot know, so its status is answered as the real one would.
+  const f = window.fetch;
+  window.fetch = async function(u, o){
+    if(o && o.method === "POST") window.__posts.push(String(u));
+    const r = await f.apply(this, arguments);
+    if(String(u).indexOf("/api/remote/status") >= 0 &&
+       window.__posts.some(p => p.endsWith("/signout"))){
+      const j = await r.clone().json();
+      const no = {}; Object.keys((j.me || {}).may || {}).forEach(k => { no[k] = false; });
+      j.me = Object.assign({}, j.me, {user:null, role:null, view_only:true, may:no});
+      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+    }
+    return r;
+  };
+})();
+</script>"""
+
+
+def test_rack_screen_locks_controls_signed_out_in_a_browser():
+    section("rack screen, drawn in a real browser at the rack sizes: signed "
+            "out with users on, Start now, Resume, Reset, Run, hold to arm, "
+            "laser arm and the settings switches are off and say Sign in "
+            "to use controls; Hold, Abort, Disarm all and Disarm all lasers "
+            "stay live; a press does not reach the engine; Sign out lets go "
+            "of a hold and locks at once (review of PR #143, 3)")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the page was not drawn")
+        print("  ok")
+        return
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
+             "users")
+    base = _rack_status_pico(many=False)
+    base["laser_arm"]["lasers"][1]["armed"] = True
+    out_st = dict(base, me={"local": True, "users_active": True,
+                            "user": None, "role": None, "view_only": True,
+                            "may": {p: False for p in perms}})
+    in_st = dict(base, me={"local": True, "users_active": True,
+                           "user": "Jeff", "role": "admin",
+                           "view_only": False,
+                           "may": {p: True for p in perms}})
+    sizes = ((1920, 1080), (1366, 600))
+    for label, st in (("signed out", out_st), ("signed in", in_st)):
+        got = _rack_screen_in_chromium(chrome, page, st, sizes,
+                                       measure_js=_SIGNIN_MEASURE_JS,
+                                       head_js=_SIGNIN_HEAD_JS,
+                                       budget_ms=8000)
+        for (w, h), res in got.items():
+            if not check(isinstance(res, dict), f"{label} {w}x{h}: drawn: "
+                                                 f"{res!r}"[:600]):
+                continue
+            bt = res["before"]["buttons"]
+            live = all(not bt[k]["off"] for k in ("b-hold", "b-abort",
+                                                  "b-disarm", "lz-disarm"))
+            check(live and not bt["b-abort"]["disabled"] and
+                  not bt["b-disarm"]["disabled"] and
+                  not bt["lz-disarm"]["disabled"],
+                  f"{label} {w}x{h}: Abort, Disarm all and Disarm all "
+                  f"lasers live: {bt}")
+            if label == "signed out":
+                check(all(bt[k]["disabled"] and bt[k]["off"] for k in
+                          ("b-start", "b-resume", "b-reset", "b-run")),
+                      f"{w}x{h}: Start now, Resume, Reset and Run off: {bt}")
+                check(res["before"]["arm"] and
+                      all(a["disabled"] for a in res["before"]["arm"]
+                          if a["mode"] != "disarm"),
+                      f"{w}x{h}: every hold to arm off: "
+                      f"{res['before']['arm']}")
+                check([z for z in res["before"]["lz"] if z["armed"]] and
+                      all(z["disabled"] for z in res["before"]["lz"]
+                          if not z["armed"]) and
+                      not any(z["disabled"] for z in res["before"]["lz"]
+                              if z["armed"]),
+                      f"{w}x{h}: a laser's Arm off, its Disarm live: "
+                      f"{res['before']['lz']}")
+                check(res["before"]["chip"] == "Sign in to use controls",
+                      f"{w}x{h}: the chip says it: {res['before']['chip']}")
+                check(not [p for p in res["posts_after_press"]
+                           if p.endswith("arm-hold") or
+                           p.endswith("start-now")] and
+                      not res["hold_after_press"],
+                      f"{w}x{h}: a press on hold to arm or Start now "
+                      f"reaches nothing: {res['posts_after_press']}")
+            else:
+                check(not bt["b-start"]["off"] and
+                      any(not a["disabled"] for a in res["before"]["arm"]),
+                      f"{w}x{h}: signed in, the controls are on: {bt} "
+                      f"{res['before']['arm']}")
+                check(res["hold_after_press"] and
+                      any(p.endswith("arm-hold")
+                          for p in res["posts_after_press"]),
+                      f"{w}x{h}: signed in, a hold to arm starts: "
+                      f"{res['posts_after_press']}")
+                check(not res["hold_after_out"] and
+                      res["after_out"]["buttons"]["b-start"]["off"] and
+                      all(a["disabled"] for a in res["after_out"]["arm"]
+                          if a["mode"] != "disarm") and
+                      res["after_out"]["chip"] == "Sign in to use "
+                                                  "controls" and
+                      any(p.endswith("signout") for p in res["posts"]),
+                      f"{w}x{h}: Sign out lets go of the hold and locks "
+                      f"at once: {res['after_out']} {res['posts']}")
 
 
 def test_audit_chain_verify_finds_every_kind_of_tamper():
@@ -73579,6 +73930,9 @@ if __name__ == "__main__":
         test_journal_names_the_signed_in_user_never_the_body,
         test_sign_out_locks_the_screen_and_lets_go_of_a_hold,
         test_deck_needs_a_sign_in_on_the_rack_screen_to_arm,
+        test_users_file_broken_or_lost_locks_and_says_so,
+        test_review_143_sign_out_holds_and_deck_fallbacks,
+        test_rack_screen_locks_controls_signed_out_in_a_browser,
         test_audit_chain_verify_finds_every_kind_of_tamper,
         test_audit_upload_retries_resumes_and_waits_for_the_ack,
         test_audit_never_blocks_or_fails_a_press,

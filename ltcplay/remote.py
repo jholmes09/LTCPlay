@@ -1678,7 +1678,11 @@ class Remote:
                     "active": bool(u.active()),
                     "may": {p: u.may(role, p) for p in ("arm", "show")}}
         except Exception:                        # noqa: BLE001
-            return None
+            # Who is signed in could not be worked out: the deck may not
+            # arm or start on it (fail closed; review of PR #143, 5). Its
+            # Stop, Hold and disarms never ask.
+            return {"name": None, "role": None, "active": True,
+                    "fault": True, "may": {"arm": False, "show": False}}
 
     def users_get(self, ctx):
         """GET users: what the sign-in card and the Users screen show. The
@@ -1756,12 +1760,18 @@ class Remote:
             # machine every session made here ends with it (users.sign_out),
             # and any hold to arm under way on a screen is let go now
             # (Jeff's field report, 2026-10-28).
-            u.sign_out(getattr(ctx, "token", ""), ctx.source,
-                       local=ctx.local)
-            try:
-                self.cancel_holds("the screen was signed out")
-            except Exception:                    # noqa: BLE001
-                pass
+            ended = u.sign_out(getattr(ctx, "token", ""), ctx.source,
+                               local=ctx.local)
+            if ended:
+                # Only this device's own hold (a hold belongs to the device
+                # it came from), and only when a sign-in really ended: a
+                # sign-out from somewhere else never lets go of another
+                # screen's hold (review of PR #143, 1).
+                try:
+                    self.cancel_holds("the screen was signed out",
+                                      device=ctx.device)
+                except Exception:                # noqa: BLE001
+                    pass
             return 200, {"ok": True, "text": "Signed out. This screen is "
                                              "view only now: Stop, Hold, "
                                              "Abort, Acknowledge and every "
@@ -2546,11 +2556,18 @@ class Remote:
                 return h
         return None
 
-    def cancel_holds(self, why):
+    def cancel_holds(self, why, device=None):
         """Every screen arm hold let go, at once (an Abort, a Hold, a
-        disarm). The deck sees them gone on its next read."""
+        disarm), or with `device` only that device's own (a sign-out). The
+        deck sees them gone on its next read."""
         with self._arm_lock:
-            gone, self._holds = self._holds, {}
+            if device is None:
+                gone, self._holds = self._holds, {}
+            else:
+                gone = {i: h for i, h in self._holds.items()
+                        if h["token"] == device}
+                for i in gone:
+                    del self._holds[i]
         for h in gone.values():
             self._journal(h["who"], h["device"], "arm hold", "cancelled",
                           f"{h['who']}'s hold to arm group {h['group']} on "
@@ -2773,6 +2790,7 @@ class Remote:
         rack screen; nothing here acts on it."""
         now = self.clock()
         self._deck_seen = now
+        self.users_file_check()
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)
         self._deck_layout_default = deck_layout_default(query)
@@ -5193,7 +5211,36 @@ class Remote:
             # P1): False only on the deck's fresh word that it has none.
             g["deck_key"] = not (fresh and i in nokey)
 
+    def users_file_check(self):
+        """A users file that is broken, or missing after users were set up
+        here, locks every control but the stops and disarms (users.py,
+        fail closed; review of PR #143, 2). Said loudly, once for each
+        reason: an alert on every screen and the deck, and the journal.
+        Asked on every status and deck read. Never raises."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return
+        try:
+            why = u.broken()
+        except Exception:                        # noqa: BLE001
+            return
+        if not why or why == getattr(self, "_users_alert_said", None):
+            self._users_alert_said = why or None
+            return
+        self._users_alert_said = why
+        text = (f"The users file cannot be used: {why}. Every control is "
+                f"locked except Stop, Hold, Abort, Acknowledge and every "
+                f"disarm, and nobody can sign in. Restore "
+                f"ltcplay_users.json in the settings folder from a backup, "
+                f"then restart LTC Player.")
+        try:
+            self.alerts.raise_("users", text)
+        except Exception:                        # noqa: BLE001
+            self._journal("system", "engine", "users", "fault", text,
+                          fault=True)
+
     def status(self, ctx):
+        self.users_file_check()
         out = {"served_at": int(self.wall() * 1000), "fresh_s": FRESH_S,
                "me": self.whoami(ctx), "version": self.version_line()}
         svc = self.schedule

@@ -837,11 +837,17 @@ class Handler(BaseHTTPRequestHandler):
         passed here: its "who" is the name being chosen, not who chose it.
         A deck line with no name (a system line) stays one."""
         if route == "/api/schedule/deck-event":
-            if not str(body.get("who") or "").strip() or \
-                    str(body.get("screen") or "Stream Deck") not in \
-                    self.DECK_OWN_SCREENS:
+            said = str(body.get("who") or "").strip()
+            if not said:
                 return body
-            who = self._authed_who(dict(body, screen="Stream Deck"))
+            if str(body.get("screen") or "Stream Deck") in \
+                    self.DECK_OWN_SCREENS:
+                who = self._authed_who(dict(body, screen="Stream Deck"))
+            else:
+                # A line about a screen's hold or disarm carries the name
+                # the engine gave it: kept only when it is a real user's
+                # name, else unsigned (review of PR #143, 6).
+                who = self._deck_screen_who(said)
         else:
             who = self._authed_who(body)
         if who is None:
@@ -849,6 +855,20 @@ class Handler(BaseHTTPRequestHandler):
         body = dict(body, who=who)
         self._body_cache = body
         return body
+
+    def _deck_screen_who(self, said):
+        """`said` when users are on and it names a user, users.UNSIGNED
+        when they are on and it does not; None without users."""
+        from . import users as users_mod
+        rm = getattr(self.server, "remote", None)
+        fn = getattr(rm, "users_active", None)
+        try:
+            if fn is None or not fn():
+                return None
+            names = {n.lower(): n for n in rm.users.names()}
+        except Exception:                        # noqa: BLE001
+            return users_mod.UNSIGNED
+        return names.get(said.lower(), users_mod.UNSIGNED)
 
     def _who_where(self, body):
         """(who, screen) for a Stop's journal and audit lines."""
