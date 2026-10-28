@@ -10508,6 +10508,18 @@ def build():
   '            if doc["users"] and not os.path.exists(self.mark):\n                self._write_mark()',
   '            if False:\n                self._write_mark()'),
 
+ ('users: a failed open is remembered as broken', 'ltcplay/users.py',
+  '            self.error = f"{USERS_FILE} could not be opened: {e}"\n            return {"users": {}, "broken": True}',
+  '            self.error = f"{USERS_FILE} could not be opened: {e}"\n            self._doc, self._mtime = {"users": {}, "broken": True}, m\n            return self._doc'),
+
+ ('users: a failed open locks at once', 'ltcplay/users.py',
+  '            if self._good is not None and \\\n                    now - self._fail_since < READ_GRACE_S:',
+  '            if False:'),
+
+ ('users: a users file that cannot be used signs everyone out', 'ltcplay/users.py',
+  '            if doc.get("broken"):\n                # Locked while the file cannot be used',
+  '            if False:\n                # Locked while the file cannot be used'),
+
  ('users: a sign-out on the rack screen leaves the machine signed in', 'ltcplay/users.py',
   '            if local or (s is not None and s["local"]):',
   '            if False:'),
@@ -10535,6 +10547,10 @@ def build():
  ('remote: a fault working out the sign-in lets the deck arm', 'ltcplay/remote.py',
   '            return {"name": None, "role": None, "active": True,\n                    "fault": True, "may": {"arm": False, "show": False}}',
   '            return None'),
+
+ ('remote: a good users file back leaves the alert up', 'ltcplay/remote.py',
+  '                    self.alerts.clear(kind="users", action="Confirm",\n                                      who="system", screen="engine")',
+  '                    pass'),
 
  ('remote: a broken users file raises no alert', 'ltcplay/remote.py',
   '            self.alerts.raise_("users", text)',
@@ -10591,6 +10607,18 @@ def build():
  ('deck: the journal names the chosen operator with users on', 'ltcplay/streamdeck.py',
   '        if u is not None and (u.get("active") is True or u.get("stale")):',
   '        if False:'),
+
+ ('page: a sign-in leaves Run locked', 'ltcplay/web/remote.html',
+  '    if(el.id === "b-run") el.disabled = false;\n',
+  ''),
+
+ ('page: a sign-in leaves the laser and announcement buttons locked', 'ltcplay/web/remote.html',
+  '    SIGNIN_SIG = sig;\n    redrawForSignIn();\n',
+  '    SIGNIN_SIG = sig;\n'),
+
+ ("page: a sign-in leaves the sign-in tooltip", 'ltcplay/web/remote.html',
+  '    el.title = el.dataset.title0 || "";\n',
+  ''),
 
  ('page: signed out leaves Start now on', 'ltcplay/web/remote.html',
   '    offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),',

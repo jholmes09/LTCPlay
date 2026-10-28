@@ -5224,15 +5224,30 @@ class Remote:
             why = u.broken()
         except Exception:                        # noqa: BLE001
             return
-        if not why or why == getattr(self, "_users_alert_said", None):
-            self._users_alert_said = why or None
+        said = getattr(self, "_users_alert_said", None)
+        if not why:
+            if said:
+                # A good file is back: used at once, and the alert goes.
+                self._users_alert_said = None
+                try:
+                    self.alerts.clear(kind="users", action="Confirm",
+                                      who="system", screen="engine")
+                except Exception:                # noqa: BLE001
+                    pass
+            return
+        if why == said:
             return
         self._users_alert_said = why
+        from . import users as users_mod
         text = (f"The users file cannot be used: {why}. Every control is "
                 f"locked except Stop, Hold, Abort, Acknowledge and every "
-                f"disarm, and nobody can sign in. Restore "
-                f"ltcplay_users.json in the settings folder from a backup, "
-                f"then restart LTC Player.")
+                f"disarm, and nobody can sign in. If a good "
+                f"{users_mod.USERS_FILE} is put back in {u.folder}, it is "
+                f"used at once, with no restart. To start over with no "
+                f"users instead: close LTC Player, remove "
+                f"{users_mod.USERS_FILE} and {users_mod.USERS_MARK} from "
+                f"that folder, and start LTC Player again; then each person "
+                f"chooses a password at the rack screen.")
         try:
             self.alerts.raise_("users", text)
         except Exception:                        # noqa: BLE001

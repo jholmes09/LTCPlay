@@ -844,9 +844,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.DECK_OWN_SCREENS:
                 who = self._authed_who(dict(body, screen="Stream Deck"))
             else:
-                # A line about a screen's hold or disarm carries the name
-                # the engine gave it: kept only when it is a real user's
-                # name, else unsigned (review of PR #143, 6).
+                # A line about a screen's hold or disarm: written as the
+                # deck, never a name from the body (review of PR #143, 6).
                 who = self._deck_screen_who(said)
         else:
             who = self._authed_who(body)
@@ -856,19 +855,23 @@ class Handler(BaseHTTPRequestHandler):
         self._body_cache = body
         return body
 
+    # Who a Stream Deck journal line about a screen is written as, with
+    # users on: the deck process, never a person's name from its body
+    # (re-review of PR #143, 5). The screen's own line, from the engine,
+    # already names who held or pressed.
+    DECK_SCREEN_WHO = "deck"
+
     def _deck_screen_who(self, said):
-        """`said` when users are on and it names a user, users.UNSIGNED
-        when they are on and it does not; None without users."""
-        from . import users as users_mod
+        """DECK_SCREEN_WHO when users are on (or cannot be asked); None
+        without users, and the old rules name the line."""
         rm = getattr(self.server, "remote", None)
         fn = getattr(rm, "users_active", None)
         try:
             if fn is None or not fn():
                 return None
-            names = {n.lower(): n for n in rm.users.names()}
         except Exception:                        # noqa: BLE001
-            return users_mod.UNSIGNED
-        return names.get(said.lower(), users_mod.UNSIGNED)
+            pass
+        return self.DECK_SCREEN_WHO
 
     def _who_where(self, body):
         """(who, screen) for a Stop's journal and audit lines."""

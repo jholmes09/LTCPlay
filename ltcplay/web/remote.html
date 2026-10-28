@@ -2706,10 +2706,16 @@ $("ann-stop").addEventListener("click", () => annPress("announce-stop"));
 $("ann-banner-stop").addEventListener("click", () => annPress("announce-stop"));
 
 // Signed out with users on, every control that is not a stop or a disarm
-// is off, with the reason in its tooltip (2026-10-28). Called after each
-// redraw that sets them; never touches Stop, Hold, Abort, Acknowledge, a
-// disarm or Disarm all.
-function lockForSignIn(){
+// is off, with the reason in its tooltip (2026-10-28). A pure overlay on
+// what each control's own redraw decides: run after each redraw, it locks
+// what this screen may not do and unlocks the rest, putting back the
+// control's own tooltip. When what this screen may do changes (a sign-in
+// or a sign-out), every redraw that keeps its last drawing runs again, so
+// a control unlocked by a sign-in shows its own real state at once
+// (re-review of PR #143, 1). Never touches Stop, Hold, Abort, Acknowledge,
+// a disarm or Disarm all.
+let SIGNIN_SIG = null;
+function signinLocked(){
   const offs = [];
   if(!mayRow(ST, "show")){
     offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),
@@ -2719,15 +2725,40 @@ function lockForSignIn(){
     offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));
   }
   if(!mayRow(ST, "settings")) offs.push($("sa-on"), $("lf-on"), $("sf-on"));
+  return offs.filter(Boolean);
+}
+function lockForSignIn(){
+  const offs = signinLocked();
   for(const el of offs){
-    if(!el) continue;
+    if(!el.classList.contains("signin-off")){
+      el.dataset.title0 = el.title || "";
+      el.classList.add("signin-off");
+    }
     el.disabled = true;
-    el.classList.add("signin-off");
     el.title = SIGN_IN_WORDS;
   }
   document.querySelectorAll(".signin-off").forEach(el => {
-    if(!offs.includes(el)) el.classList.remove("signin-off");
+    if(offs.includes(el)) return;
+    el.classList.remove("signin-off");
+    el.title = el.dataset.title0 || "";
+    delete el.dataset.title0;
+    // Run has no redraw of its own: it is always pressable.
+    if(el.id === "b-run") el.disabled = false;
   });
+  const sig = ["show", "arm", "settings"].map(p => mayRow(ST, p) ? "1" : "0").join("");
+  if(SIGNIN_SIG !== null && sig !== SIGNIN_SIG){
+    SIGNIN_SIG = sig;
+    redrawForSignIn();
+  }
+  SIGNIN_SIG = sig;
+}
+function redrawForSignIn(){
+  const box = $("lz-chips");
+  if(box) box.dataset.html = "";
+  ANN_SIG = "";
+  for(const f of [renderStale, renderAnnounce, renderArmingCard, renderLiveFlame, renderScrubFlames]){
+    try{ f(); }catch(e){ }
+  }
 }
 
 // The stop sign's tooltip (2026-10-26); the line under it says the rest.

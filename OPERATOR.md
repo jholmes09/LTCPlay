@@ -61,9 +61,13 @@ sign-in.
   anything or stop live flame programming: use Disarm all or Stop for that.
 - **If the users file is damaged or missing** after users were set up, an
   alert says so on every screen and every control is locked except Stop,
-  Hold, Abort, Acknowledge and the disarms. Nobody can sign in until
-  `ltcplay_users.json` in the settings folder is restored from a backup and
-  LTC Player is restarted.
+  Hold, Abort, Acknowledge and the disarms. Nobody can sign in. A good
+  `ltcplay_users.json` put back in the settings folder is used at once, with
+  no restart. To start over with no users: close LTC Player, remove
+  `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
+  (Start menu, LTC Player, "Settings and logs"), and start it again.
+- **The Stream Deck started before the engine** keeps its arm keys off
+  until it has heard the engine once.
 - **A name with no password yet** chooses it at the rack screen on the show
   machine, never from an iPad.
 - **The Stream Deck** acts as whoever is signed in on the rack screen. With

@@ -2126,6 +2126,10 @@ class ScreenKeys:
             # Not heard lately. With no users at all (the engine's last
             # word), the deck's own rules decide alone, as before users
             # existed; otherwise, never heard or users on, not known.
+            # Never heard includes a deck started before the engine on a
+            # machine with no users: its arm keys wait until it has heard
+            # the engine once (fail safe, re-review of PR #143, 4; its
+            # operator gate needs the engine then anyway).
             return None if users_on is False else dict(USER_UNKNOWN)
         u = last[0].get("user")
         return u if isinstance(u, dict) else None

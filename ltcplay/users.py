@@ -152,6 +152,10 @@ FIXED.update({(SIGNED_OUT, p): False for p in PERM_KEYS})
 # (Jeff, 2026-10-26): on by default; 0 is off.
 LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10
 LAST_SHOW_BEAT_S = 5.0     # the sign-out's own beat (Users.start)
+# A users file that is there but cannot be opened is tried again on every
+# read; while it keeps failing for less than this the last good read
+# stands, then it counts as broken (locked) until a read works.
+READ_GRACE_S = 10.0
 
 
 # ---------------------------------------------------- which press is which --
@@ -407,6 +411,8 @@ class Users:
         self._fails = {}          # key -> [count, locked_until]
         self._doc = None
         self._mtime = None
+        self._good = None         # the last users file read whole and good
+        self._fail_since = None   # when the opens started failing
         self.error = ""
         # () -> None, or {"night": the schedule's night, "ended": wall
         # clock seconds the last show of it ended}, only while that last
@@ -433,20 +439,42 @@ class Users:
             self._doc, self._mtime, self.error = {"users": {}}, None, ""
             return self._doc
         if self._doc is not None and m == self._mtime:
+            self._fail_since = None
+            if not self._doc.get("broken"):
+                self.error = ""
             return self._doc
         try:
             with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
+                raw = fh.read()
+        except OSError as e:
+            # The file is there but could not be opened just now (an
+            # antivirus or indexer holding it): never remembered, so the
+            # next read tries again (re-review of PR #143, 2). Meanwhile
+            # the last good read stands; with none yet, or once it has
+            # failed for READ_GRACE_S, nobody may do anything restricted,
+            # and nobody signed in is signed out by it.
+            now = self._clock()
+            if self._fail_since is None:
+                self._fail_since = now
+            if self._good is not None and \
+                    now - self._fail_since < READ_GRACE_S:
+                return self._good
+            self.error = f"{USERS_FILE} could not be opened: {e}"
+            return {"users": {}, "broken": True}
+        self._fail_since = None
+        try:
+            doc = json.loads(raw)
             if not isinstance(doc, dict) or not isinstance(
                     doc.get("users", {}), dict):
                 raise ValueError("not a users object")
             doc.setdefault("users", {})
             self.error = ""
+            self._good = doc
             if doc["users"] and not os.path.exists(self.mark):
                 self._write_mark()
-        except (OSError, ValueError) as e:
-            # A broken file: nobody can sign in, and the matrix is the
-            # defaults. Nothing about the show is held back by it.
+        except ValueError as e:
+            # Read whole and not a users file: broken until it changes.
+            # Nobody can sign in, and every restricted press is refused.
             doc = {"users": {}, "broken": True}
             self.error = f"{USERS_FILE} could not be read: {e}"
         self._doc, self._mtime = doc, m
@@ -641,7 +669,12 @@ class Users:
             s = self._sessions.get(token)
             if s is None:
                 return None
-            u = self._load().get("users", {}).get(s["name"])
+            doc = self._load()
+            if doc.get("broken"):
+                # Locked while the file cannot be used, but nobody is
+                # signed out by it: a good read brings them back.
+                return None
+            u = doc.get("users", {}).get(s["name"])
             if not isinstance(u, dict):
                 del self._sessions[token]
                 return None
@@ -799,9 +832,10 @@ class Users:
         with self._lock:
             doc = json.loads(json.dumps(self._load()))
             if doc.get("broken"):
-                raise ValueError(f"{self.error}. Restore it from a backup "
-                                 f"first, or remove both it and "
-                                 f"{USERS_MARK} to set users up again.")
+                raise ValueError(f"{self.error}. Nothing was changed. To "
+                                 f"start over, close LTC Player, remove "
+                                 f"{USERS_FILE} and {USERS_MARK} from "
+                                 f"{self.folder} and start it again.")
             doc.setdefault("users", {})
             said = fn(doc)
             self._save(doc)

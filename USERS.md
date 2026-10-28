@@ -37,9 +37,14 @@ each person sign in once soon after the update.
 If `ltcplay_users.json` is ever damaged, or deleted after users were set
 up, LTC Player does not fall back to "nobody set up". Every screen shows
 an alert, every control is locked except Stop, Hold, Abort, Acknowledge
-and the disarms, and nobody can sign in. Restore the file from a backup
-and restart LTC Player. (Starting over with no users means removing both
-`ltcplay_users.json` and `ltcplay_users.made` from the settings folder.)
+and the disarms, and nobody can sign in. A good `ltcplay_users.json` put
+back in the settings folder is used at once, with no restart. To start
+over with no users: close LTC Player, remove `ltcplay_users.json` and
+`ltcplay_users.made` from the settings folder (Start menu, LTC Player,
+"Settings and logs"), and start it again; each person then chooses a
+password at the rack screen. A moment when the file cannot be opened (an
+antivirus scan holding it) changes nothing: it is tried again, and nobody
+is signed out by it.
 
 ## Signing in
 
