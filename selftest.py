@@ -65610,6 +65610,17 @@ def test_timed_purge_flame_link_hard_end():
     link.purge_clear()
     check(link.purge_set(frame) is True and link.values_now()[1] == frame,
           "purge_clear lifts it: the next purge (momentary) goes as before")
+    # The hard end on the frames themselves: a frame set just before it
+    # (still within its 0.25 s) is zeros from the hard end on.
+    link.purge_clear()
+    link.purge_limit(0.1)
+    link.purge_set(frame)
+    check(link.values_now()[1] == frame, "set just before its hard end")
+    t[0] += 0.12
+    check(link.values_now()[1] == bytes(512),
+          "0.12 s later, past the hard end but within the frame's 0.25 s: "
+          "zeros")
+    link.purge_clear()
     link.purge_limit(5.0)
     link.purge_set(frame)
     t[0] += fl.PURGE_HOLD_S + 0.01
@@ -65744,10 +65755,13 @@ def test_timed_purge_at_the_engine():
         # A selected group not armed yet: refused, named.
         R.groups[0]["armed"] = "disarmed"
         R.feed()
-        st, out, _r = _tp_hold(R, 5)
+        n_hold = len(_tp_lines(R, "timed_refused"))
+        st, _h, out = _tp_beat(R, "notarmed-1", 5)
         check(st == 409 and "front row" in out["error"] and
-              "armed" in out["error"] and not link.frames,
-              f"front row not armed: no timed purge, and why: {out}")
+              "armed" in out["error"] and not link.frames and
+              len(_tp_lines(R, "timed_refused")) == n_hold + 1,
+              f"front row not armed: refused on the first beat, no hold "
+              f"begun, and why: {out}")
         R.groups[0]["armed"] = "armed"
         R.feed()
         # Another screen does not own the selection.
@@ -65816,6 +65830,11 @@ def test_timed_purge_at_the_engine():
             _tp_step(R, 0.1, beat_page=False)
         check(R.m.purge.timed_running() and link.frames[-1][410] == 240,
               f"still firing just before 3 s ({R.mono[0] - t0:.2f} s)")
+        d = R.remote.deck_input()
+        check(not R.m.page_open() and d["morning"]["open"] is True and
+              d["morning"]["purge"]["wanted_groups"] == [0],
+              f"the page closed 2.9 s ago: the deck is still told the group "
+              f"is wanted until it ends: {d['morning']}")
         cleared = link.cleared
         _tp_step(R, t0 + 3.0 - R.mono[0], beat_page=False)
         check(not R.m.purge.timed_running() and link.cleared > cleared,
