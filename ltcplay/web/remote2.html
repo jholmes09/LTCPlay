@@ -1608,6 +1608,9 @@ function layoutGroups(){
     hz.style.gridRow = inset ? String(rows) : "auto";
   }
   box.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0,1fr))";
+  // The hazers' own row is only as tall as its buttons: as one more 1fr
+  // row it was drawn as tall as a flame tile, and the SHOW tab scrolled.
+  box.style.gridTemplateRows = hz && !hz.hidden && !inset ? "repeat(" + rows + ", minmax(min-content,1fr)) auto" : "";
 }
 window.addEventListener("resize", layoutGroups);
 // The hazers (hazers.py): a row of one button per hazer (ARMED or
