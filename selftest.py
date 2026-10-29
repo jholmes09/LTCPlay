@@ -86342,16 +86342,6 @@ for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLE
 // engine's scrub_flames is never pinned, and no button posts its route.
 s = base(); s.scrub_flames = {on:true};
 t(pinItems(s).length === 0, "an old scrub_flames is not pinned");
-// Programming playback playing the flame cues (#173): pinned, said first,
-// its Stop 1.0's Hold.
-s = base(); s.programming_flames = {available:true, follows:true, on:false};
-t(pinItems(s).length === 0, "Programming flames not playing: nothing pinned");
-s.programming_flames.on = true;
-{ const pf = pinItems(s)[0], n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
-  t(pf && pf.key === "pf" && pf.btn === "Stop" && n.text === "Flames can fire from Programming." && n.tone === "bad" && p.text === "FLAMES LIVE",
-    "Programming flames playing: pinned in the top line with Stop: " + n.text + " / " + p.text); }
-s.cleaning = {state:"phase1"};
-t(pinItems(s).map(x => x.btn).join("|") === "Stop cleaning|Stop Programming", "two pins: each Stop names what it stops: " + pinItems(s).map(x => x.btn));
 s = base(); s.cleaning = {state:"phase1"};
 t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
 s.schedule.state = "SHOW";

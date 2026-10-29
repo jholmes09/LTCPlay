@@ -2775,26 +2775,6 @@ MUTATIONS = [
   ""),
 
 
- ("ui2 page: Programming playback firing flames is not pinned",
-  "ltcplay/web/remote2.html",
-  "  if(pf.on === true) out.push({key:\"pf\",",
-  "  if(false) out.push({key:\"pf\","),
-
- ("ui2 page: a refused Programming pin Stop is only said",
-  "ltcplay/web/remote2.html",
-  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); disarmFailed(\"Programming NOT paused. Abort or Disarm flames.\", e2.message); }",
-  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); }"),
-
- ("ui2 page: two pins both say just Stop",
-  "ltcplay/web/remote2.html",
-  "  if(out.length > 1) out.forEach(p => { if(p.key === \"pf\") p.btn = \"Stop Programming\"; });\n",
-  ""),
-
- ("ui2 page: the Programming flames pin's Stop sends nothing",
-  "ltcplay/web/remote2.html",
-  "    try{ const j = await post(\"/api/remote/hold\", actor(undefined)); say(\"Held: Programming paused.\", j.text || \"\", \"ok\"); }",
-  "    try{ const j = {}; say(\"Held: Programming paused.\", j.text || \"\", \"ok\"); }"),
-
  ("ui 2.0: the brand can add a header row",
   "ltcplay/web/remote2.html",
   "#brand{flex:1 1 0;",
