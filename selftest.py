@@ -84955,7 +84955,7 @@ def test_ui2_page_makes_only_1_0_presses():
     for n in ("isStale", "armState", "armButtonMode", "clickAction",
               "allButtonMode", "armAllPlan", "armAllRefusal",
               "pressDecision", "stopWords",
-              "refusedWords", "announceLook", "laserPill", "wxBlock",
+              "refusedWords", "announceLook", "wxBlock",
               "countdownAnchor", "rearmLeftMs", "holdRefusalWords",
               "bottomPad", "mayRow", "lampClass"):
         check(n in rules and re.search(r"\b" + n + r"\(", two),
@@ -85103,6 +85103,12 @@ def test_ui2_page_makes_only_1_0_presses():
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
         fns += "\n" + (m.group(0) if m else "")
     fns += ("\nlet ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null;")
+    # The systems badge's words.
+    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        fns += "\n" + (m.group(0) if m else "")
+    fns += "\n" + "\n".join(_js_function(two, n) or "" for n in (
+        "short8", "sysItem", "sysLook"))
     js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
@@ -85159,6 +85165,23 @@ for(const x of states) for(const st of [false, true]) for(const local of [true, 
 }
 t(/Abort, Hold, Stop/.test(nextStep(base(), true, true, []).text), "no contact says Abort, Hold and Stop still work");
 t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
+// The systems badge names what to check (Jeff, 2026-10-29).
+const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
+let L = sysLook(okSubs.concat([{name:"Deck", state:"warn", word:"USB slow 0.9 s"}]).slice(1), false);
+t(L.text === "Stream Deck: check" && /^First: Stream Deck\. /.test(L.first), "one to check is named: " + L.text + " / " + L.first);
+L = sysLook([{name:"Lasers", state:"bad", word:"LINK LOST"}], false);
+t(L.text === "Laser output: fault" && /BEYOND not answering/.test(L.first) && L.cls === "bad", "one fault is named, with what to do: " + L.first);
+L = sysLook([{name:"Deck", state:"warn", word:"late 1.2 s"}, {name:"Pixels", state:"bad", word:"not sending"}], false);
+t(L.text === "2 to check" && /^First: Pixels\./.test(L.first), "several: the count, and the worst first: " + L.first);
+L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:"Laser arm", state:"warn", word:"ARMED"}, {name:"Deck", state:"off", word:"not heard"}], false);
+t(L.text === "All OK" && L.items.map(i => i.state).join(",") === "off,on,off", "not set up here reads Off, all armed reads On: " + L.items.map(i => i.state));
+t(sysLook([{name:"Disk", state:"bad", word:"critical"}], true).text === "No contact", "no contact: said");
+for(const w of ["not heard", "missing", "late 1.2 s", "USB slow 2.0 s", "default keys: ltcplay_deck.json not used", "USB 3 write(s) failed", "not known", "no status", "fault",
+                "not attached", "lost", "show audio not open", "output not attached", "pick one output", "file problem", "low", "critical", "not writing", "2 of 4 armed",
+                "LINK LOST", "blanking not set up", "BEYOND restarted: dark until lit again", "lit? link unknown", "not sending", "a long engine sentence with many words in it here"])
+  for(const n of ["Deck", "Flamesafe", "Show audio", "Announcements", "Disk", "Audit", "Laser arm", "Lasers", "Pixels", "Video", "Timecode", "Somethingnew"])
+    for(const stt of ["warn", "bad"]){ const it = sysItem({name:n, state:stt, word:w});
+      t(it.say.split(/\s+/).length <= 8, "a system's words are 8 or fewer: " + n + " " + w + ": " + it.say); }
 // A live mode is pinned, said first and never READY (safety review B2).
 for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLEANING"], [x => x.cleaning = {state:"unknown"}, "CLEANING"],
                         [x => x.live_flame = {on:true}, "LIVE FLAME"], [x => x.scrub_flames = {on:true}, "FLAMES LIVE"]]){

@@ -17672,6 +17672,14 @@ def build():
   "    p.timer = setTimeout(() => armBeat(h, p), 100);",
   "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
 
+ ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
+  "  const text = probs.length === 1 ?",
+  "  const text = false ?"),
+
+ ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
+  "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
+  ""),
+
  ("ui2 day: Space fires the purge on any DAY step", "ltcplay/web/remote2.html",
   "  if(TAB !== \"day\" || DAY_STEP !== \"purge\") return;",
   "  if(TAB !== \"day\") return;"),

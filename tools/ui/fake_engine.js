@@ -120,6 +120,10 @@ const SCENARIOS = {
   flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
+  // The systems badge: one to check, several, and only things not set up.
+  sys_one: s => { s.subsystems[0] = {name: "Deck", state: "warn", word: "USB slow 1.4 s"}; },
+  sys_many: s => { s.subsystems[0] = {name: "Deck", state: "warn", word: "late 1.2 s"}; s.subsystems.push({name: "Lasers", state: "bad", word: "LINK LOST"}, {name: "Disk", state: "warn", word: "low"}); },
+  sys_offonly: s => { s.subsystems[3] = {name: "Laser arm", state: "warn", word: "ARMED"}; s.subsystems.push({name: "Announcements", state: "warn", word: "pick an output"}); },
   // DAY: the end of the night (no more shows, the startup list done).
   day_shut: s => { s.schedule.next = null; s.countdown = null; },
   day_shut_jeff: s => { s.schedule.next = null; s.countdown = null; s.me = me("Jeff", "admin"); },

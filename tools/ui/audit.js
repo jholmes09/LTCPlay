@@ -31,6 +31,7 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["running", "show", "stop_confirm"], ["running", "show", "abort_first_tap"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
   ["rig_checking", "show"], ["rig_failed", "show"], ["rig_continued", "show"], ["cleaning", "show"],
   ["all_live", "show"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
+  ["sys_one", "show"], ["sys_many", "show"], ["sys_offonly", "show"], ["sys_one", "show", "sys"], ["sys_many", "show", "sys"],
   ["idle_operator", "day"], ["signed_out", "day"], ["day_jeff", "day"], ["idle_operator", "day", "step_checks"],
   ["day_jeff", "day", "step_startlist"], ["idle_operator", "day", "step_startlist"], ["idle_operator", "day", "step_fuel"],
   ["idle_operator", "day", "step_purge"], ["day_firing", "day", "step_purge"], ["idle_operator", "day", "step_lasers"],
@@ -268,6 +269,7 @@ async function act(page, extra){
   if(extra === "stop_confirm"){ await page.click("#b-stop"); }
   if(extra === "abort_first_tap"){ await page.click("#b-abort"); }
   if(extra && extra.startsWith("step_")){ await page.waitForTimeout(700); const b = await page.$(`[data-step="${extra.slice(5)}"]`); if(b) await b.click(); }
+  if(extra === "sys"){ await page.click("#sys"); }
   if(extra === "shut"){ await page.click('#d-seg [data-part="shut"]'); }
   await page.waitForTimeout(500);
 }

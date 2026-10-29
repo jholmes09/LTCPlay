@@ -89,6 +89,13 @@ a.b{text-decoration:none}
 #sys.warn{border-color:var(--amber)} #sys.warn svg{color:var(--amber)}
 #sys.bad{border-color:var(--red);background:#2a0a08} #sys.bad svg{color:var(--red-hi)}
 #user.in{border-color:var(--green)} #user.out{border-color:var(--amber)}
+#sys .chev{width:18px;height:18px;margin-left:-4px;opacity:.85}
+#sh-body ul.sys{list-style:none;padding:0}
+#sh-body ul.sys li{display:flex;gap:8px;align-items:flex-start}
+#sh-body ul.sys li svg{flex:0 0 auto;margin-top:2px}
+#sh-body ul.sys li.sys-bad svg{color:var(--red-hi)} #sh-body ul.sys li.sys-warn svg{color:var(--amber)}
+#sh-body ul.sys li.sys-ok svg,#sh-body ul.sys li.sys-on svg{color:var(--green)} #sh-body ul.sys li.sys-off svg{color:var(--grey)}
+#sh-body .first{font-weight:800;color:#FFD08A}
 main{min-height:0;position:relative;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .pane{flex:1 0 auto;padding:var(--gap) var(--pad);min-height:0}
 footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(var(--abort) + 32px) var(--gap) var(--pad);
@@ -127,8 +134,9 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 #pins:empty{display:none}
 /* Two or three live modes on a narrow screen: their Stops are the words. */
 @media (max-width:1300px) and (min-width:601px){ #next.many .t{display:none} #next.many #pins{flex:1 1 auto} #next.many #pins .b{flex:1 1 0;min-width:0;padding:0 8px} }
-#mini{display:flex;flex-wrap:wrap;gap:var(--gap);padding:var(--gap) var(--pad) 0}
-#mini .b{flex:1 1 9em;min-height:56px}
+#mini{display:flex;flex-wrap:wrap;gap:var(--gap);min-width:0}
+#mini .b{flex:1 1 0;min-width:0;min-height:56px;white-space:normal;line-height:1.05;padding:0 8px;gap:6px}
+main > #mini{padding:var(--gap) var(--pad) 0}
 #next.ok{border-color:var(--green)} #next.ok > svg{color:var(--green)}
 #next.warn{border-color:var(--amber);background:#241703} #next.warn > svg{color:var(--amber)}
 #next.bad{border-color:var(--red);background:#2a0a08} #next.bad > svg{color:var(--red-hi)}
@@ -264,7 +272,12 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 /* Off the SHOW tab the footer is only the wind and Abort's corner; Stop
    sound is in the strip above the tab. */
 body:not([data-tab="show"]) #foot-l > .ann{display:none}
-@media (max-width:900px){ #d-next{margin-left:0;flex:1 1 100%} }
+@media (max-width:900px){
+  #d-prog{display:none}
+  .dgrid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  .dgrid .b{min-height:56px}
+  #d-next{padding:0 16px}
+}
 
 /* ---- the other tabs (1.0 for now) ---- */
 .cards{display:flex;flex-direction:column;gap:var(--gap);max-width:900px}
@@ -399,7 +412,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <button class="tab" data-tab="settings" role="tab" hidden><svg class="i"><use href="#i-gear"/></svg>Settings</button>
   </nav>
   <div class="hright">
-    <button class="hb" id="sys"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span></button>
+    <button class="hb" id="sys" aria-label="Systems: tap for what to check"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span><svg class="i chev" aria-hidden="true"><use href="#i-right"/></svg></button>
     <button class="hb" id="user"><svg class="i"><use href="#i-user"/></svg><span>Sign in</span></button>
     <button class="hb" id="help"><svg class="i"><use href="#i-help"/></svg><span>Help</span></button>
     <a class="hb" id="to1" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg><span>Back to 1.0</span></a>
@@ -460,11 +473,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <div class="seg" id="d-seg" role="tablist"><button class="b" data-part="start"><svg class="i"><use href="#i-sun"/></svg>Startup</button><button class="b" data-part="shut"><svg class="i"><use href="#i-power"/></svg>Shutdown</button></div>
         <span id="d-prog"></span>
         <a class="b" id="d-more" href="/remote1#morning"><svg class="i"><use href="#i-open"/></svg>Map in 1.0</a>
+        <button class="q" id="d-q" aria-label="Help: this step">?</button>
         <button class="b green" id="d-next"><span id="d-next-l">Next step</span><svg class="i"><use href="#i-right"/></svg></button>
       </div>
       <div id="d-steps" role="tablist" aria-label="Steps"></div>
       <div class="dpanel" id="d-panel">
-        <div class="dtitle"><svg class="i" id="d-ti"><use href="#i-info"/></svg><b id="d-t"></b><span id="d-s"></span><button class="q" id="d-q" aria-label="Help: this step">?</button></div>
+        <div class="dtitle"><svg class="i" id="d-ti"><use href="#i-info"/></svg><b id="d-t"></b><span id="d-s"></span></div>
         <div id="d-ctl"></div>
         <!-- The message lines 1.0's presses write to, one shown per step. -->
         <div id="d-msg"><span id="mo-msg"></span><span id="mo-lmsg" hidden></span><span id="mo-cmsg" hidden></span><span id="wc-msg" hidden></span><span id="fu-msg" hidden></span>
@@ -1750,25 +1764,80 @@ function abortAnswered(j, err){
 }
 
 // ---- the header: systems, who is signed in, help, back to 1.0 ----
-const SYS_NAMES = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Laser arm":"Lasers", "Lasers":"Lasers"};
+// The systems badge (Jeff, 2026-10-29: "1 to check" said nothing of what):
+// each subsystem the engine lists, with its name, its state and what is
+// wrong and what to do in 8 words or fewer. Something not set up here
+// (the engine says "none", "not set up", "pick an output") reads Off, and
+// lasers fully armed are a state, not a problem. Pure.
+const SYS_LABEL = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Show audio":"Show audio", "Announcements":"Announcements",
+  "Disk":"Disk", "Audit":"Audit log", "Laser arm":"Laser arm", "Lasers":"Laser output", "Video":"Video", "Pixels":"Pixels", "Timecode":"Timecode"};
+const SYS_OFF = /^(none|none set up|not set up|pick an output|stopped|not connected|disarmed)$/i;
+const SYS_SAY = [
+  [/^deck$/, /not heard|missing/, "Not heard. Check its USB cable."],
+  [/^deck$/, /late|usb slow/, "Slow. Check its USB cable."],
+  [/^deck$/, /default keys/, "Key layout file not used. Tell Jeff."],
+  [/^deck$/, /failed/, "Keys may be stale. Replug its USB."],
+  [/^deck$/, /not known/, "Not known yet. Wait a moment."],
+  [/^flamesafe$/, /no status/, "Silent. Disarm with the Deck or e-stop."],
+  [/^flamesafe$/, /fault/, "Fault. Disarm, then tell Jeff."],
+  [/^show audio$/, /not attached/, "Interface missing. Check its USB."],
+  [/^show audio$/, /lost|fault/, "Lost. Check the audio interface."],
+  [/^announcements$/, /show audio not open/, "Cannot play: show audio not open."],
+  [/^announcements$/, /output/, "No output. Pick one in Settings."],
+  [/^announcements$/, /./, "Cannot play. Tell Jeff."],
+  [/^disk$/, /critical/, "Nearly full. Tell Jeff now."],
+  [/^disk$/, /./, "Filling up. Tell Jeff."],
+  [/^audit$/, /./, "Audit log not writing. Tell Jeff."],
+  [/^laser arm$/, /not known/, "Not known. Check the laser PC."],
+  [/^laser arm$/, / of /, "Some armed, output dark. Arm all or disarm."],
+  [/^lasers$/, /link lost/, "BEYOND not answering. Check laser PC."],
+  [/^lasers$/, /blanking/, "Cannot blank. Set BEYOND's OSC address."],
+  [/^lasers$/, /restarted/, "BEYOND restarted. Dark until the next show."],
+  [/^lasers$/, /link unknown|not known/, "Link unknown. Check the laser PC."],
+  [/^pixels$/, /not sending/, "Not sending. Check the pixel network."],
+  [/^pixels$/, /not known/, "Not known yet. Wait a moment."],
+  [/^video$/, /./, "Check the video PC."],
+  [/^timecode$/, /./, "Timecode problem. Call Jeff."]];
+function sysItem(x){
+  const name = String((x && x.name) || ""), w = String((x && x.word) || ""), lc = name.toLowerCase();
+  const label = SYS_LABEL[name] || name;
+  let state = (x && x.state) || "warn";
+  if(state !== "bad" && SYS_OFF.test(w.trim())) state = "off";
+  if(name === "Laser arm" && /^armed$/i.test(w.trim())) state = "on";
+  let say = state === "ok" ? "OK." : state === "off" ? "Off: not in use here." : state === "on" ? "All armed." : "";
+  if(!say){
+    const hit = SYS_SAY.find(([n, r]) => n.test(lc) && r.test(w.toLowerCase()));
+    say = hit ? hit[2] : short8(w ? w.charAt(0).toUpperCase() + w.slice(1) + "." : "", "Tap a row for its words.");
+  }
+  return {name:name, label:label, state:state, say:say, word:w};
+}
+function sysLook(subs, isStaleNow){
+  if(isStaleNow) return {cls:"bad", icon:"x", text:"No contact", items:[], first:"No contact with the show PC."};
+  const items = (subs || []).map(sysItem);
+  const rank = {bad:0, warn:1};
+  const probs = items.filter(i => i.state === "bad" || i.state === "warn").sort((a, b) => rank[a.state] - rank[b.state]);
+  if(!probs.length) return {cls:"ok", icon:"check", text:"All OK", items:items, first:""};
+  const worst = probs[0];
+  const text = probs.length === 1 ? worst.label + (worst.state === "bad" ? ": fault" : ": check") : probs.length + " to check";
+  return {cls: probs.some(i => i.state === "bad") ? "bad" : "warn", icon:"warn", text:text, items:items,
+    first:"First: " + worst.label + ". " + worst.say};
+}
 function renderSys(){
-  const isSt = stale();
-  const subs = laserPill((ST && ST.subsystems) || [], ST && ST.laser_arm, ST && ST.beyond_link);
-  const bad = subs.filter(x => x.state === "bad").length, warn = subs.filter(x => x.state === "warn").length;
+  const L = sysLook((ST && ST.subsystems) || [], stale());
   const b = $("sys");
-  let cls, ic, t;
-  if(isSt){ cls = "warn"; ic = "x"; t = "No contact"; }
-  else if(bad){ cls = "bad"; ic = "warn"; t = bad + (bad === 1 ? " fault" : " faults"); }
-  else if(warn){ cls = "warn"; ic = "warn"; t = warn + " to check"; }
-  else { cls = "ok"; ic = "check"; t = "All OK"; }
-  b.className = "hb " + cls; setIcon(b.querySelector("svg"), ic); setText(b.querySelector("span"), t);
+  b.className = "hb " + L.cls; setIcon(b.querySelector("svg"), L.icon); setText(b.querySelector("span"), L.text);
 }
 setInterval(renderSys, 1000);
+// One tap opens the sheet: what to do first, then every system with what
+// is wrong and what to do.
 $("sys").addEventListener("click", () => {
-  const subs = laserPill((ST && ST.subsystems) || [], ST && ST.laser_arm, ST && ST.beyond_link);
-  const word = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off"};
-  const rows = subs.map(x => `<li><b>${esc(SYS_NAMES[x.name] || x.name)}</b>: ${esc(word[x.state] || "Not known")}. <span class="dim">${esc(x.word || "")}</span></li>`).join("");
-  sheet("Systems", stale() ? "<div>No contact with the show PC: not known.</div>" : `<ul>${rows || "<li>Not known yet.</li>"}</ul><div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
+  const L = sysLook((ST && ST.subsystems) || [], stale());
+  const word = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"On"};
+  const ic = {ok:"check", warn:"warn", bad:"warn", off:"power", on:"check"};
+  const rows = L.items.map(x => `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<b>${esc(x.label)}: ${esc(word[x.state] || "Check")}.</b> ${esc(x.say)}</li>`).join("");
+  sheet("Systems", (L.first ? `<div class="first">${esc(L.first)}</div>` : "") +
+    (L.items.length ? `<ul class="sys">${rows}</ul>` : `<div>${esc(L.first || "Not known yet.")}</div>`) +
+    `<div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
 });
 function renderUser(){
   const me = (ST && ST.me) || ME || {};
@@ -2350,6 +2419,8 @@ function renderMorning(){
   $("d-s").className = cur.state === "blocked" || cur.state === "live" ? "bad" : cur.state === "done" ? "ok" : "";
   const msgId = DAY_MSG[cur.key] || "mo-msg";
   ["mo-msg", "mo-lmsg", "mo-cmsg", "wc-msg", "fu-msg"].forEach(id => { $(id).hidden = id !== msgId; });
+  // The message line takes room only when it has something to say.
+  $("d-msg").hidden = !($(msgId).textContent.trim() || !$("mo-lkundo").hidden);
   if(DAY_CTL !== cur.key){ DAY_CTL = cur.key; dayBuild(cur.key); }
   dayUpdate(cur.key);
 }
@@ -2543,7 +2614,7 @@ function dayUpdate(k){
     const sig = JSON.stringify(items);
     if(box.dataset.sig !== sig){
       box.dataset.sig = sig;
-      box.innerHTML = items.map(x => `<button class="b ${x.on ? "locked" : ""}" data-lock="${esc(x.id)}" data-kind="${x.kind}" data-name="${esc(x.name)}">${icon(x.on ? "lock" : x.kind === "laser" ? "laser" : "flame")}<span class="tt">${esc(x.name)}<small>${x.on ? "LOCKED OUT: tap to unlock" : "In use: tap to lock"}</small></span></button>`).join("");
+      box.innerHTML = items.map(x => `<button class="b ${x.on ? "locked" : ""}" data-lock="${esc(x.id)}" data-kind="${x.kind}" data-name="${esc(x.name)}">${icon(x.on ? "lock" : x.kind === "laser" ? "laser" : "flame")}<span class="tt">${esc(x.name)}<small>${x.on ? "LOCKED: tap to unlock" : "Tap to lock"}</small></span></button>`).join("");
     }
   }
   if(k === "clean") renderCleaning();
@@ -2625,6 +2696,10 @@ async function loadUiDefault(){
 function placeAnn(){
   const want = innerWidth <= 600 ? $("t-show") : $("foot-l");
   if($("ann").parentElement !== want) want.insertBefore($("ann"), want === $("foot-l") ? want.firstChild : null);
+  // Off the SHOW tab the safety strip takes the announcements' place in
+  // the footer, beside Abort (on a phone, the top of the scrolling pane).
+  const m = $("mini"), mw = innerWidth <= 600 ? document.querySelector("main") : $("foot-l");
+  if(m.parentElement !== mw) mw.insertBefore(m, mw.firstChild);
 }
 placeAnn();
 window.addEventListener("resize", placeAnn);
