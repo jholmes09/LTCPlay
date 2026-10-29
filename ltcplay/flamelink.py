@@ -1135,6 +1135,16 @@ class FlameLink:
                 return False
             now = self._clock()
             until = self._purge_until
+            p = self._purge
+            if until is not None and p is not None and \
+                    (now - p[1] > PURGE_HOLD_S or now < p[1]):
+                # The timed frame this one would replace has gone stale
+                # (its timer stalled) whether or not a frame was sent
+                # meanwhile: never relit, as _purge_values (round 3 of
+                # #172).
+                self._purge_until = min(until, now)
+                self._purge = None
+                return False
             if until is not None and now >= until:
                 # Past a timed purge's hard end: refused until purge_clear().
                 self._purge = None
@@ -1152,6 +1162,9 @@ class FlameLink:
             if not s > 0 or not math.isfinite(s):
                 return False
             with self._lock:
+                # A timed purge starts from no frame: nothing older is
+                # carried into it (or judged stale against it).
+                self._purge = None
                 self._purge_until = self._clock() + s
             return True
         except Exception:

@@ -18084,6 +18084,16 @@ def build():
   "            if not s > 0 or not math.isfinite(s):",
   "            if not s > 0 or s != s:"),
 
+ ("timed purge: the link replaces a stale timed frame it has not yet sent",
+  "ltcplay/flamelink.py",
+  "            if until is not None and p is not None and \\\n                    (now - p[1] > PURGE_HOLD_S or now < p[1]):",
+  "            if False:"),
+
+ ("timed purge: a press that raced its start overwrites it with no end line",
+  "ltcplay/morning.py",
+  "        if started_meanwhile:",
+  "        if False:"),
+
  ("timed purge: a fire press let past the switches to end it fires when it ended meanwhile",
   "ltcplay/morning.py",
   "        if end_only:\n            # Let past the switches only",

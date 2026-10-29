@@ -1478,6 +1478,24 @@ class Purge:
         fid = body.get("fire_id")
         with self._lock:
             f = self.fire
+            started_meanwhile = f is not None and f.get("timed") is not None
+        if started_meanwhile:
+            # A timed purge started between this press's first look and
+            # here: the press is a second purge press, which ends it with
+            # its own journal line, never overwrites it (round 3 of #172).
+            self.stop(f"a second purge press ({who_pressed})",
+                      device="Stream Deck" if deck else device)
+            return 409, {"error": "A second purge press ended the timed "
+                                  "purge: everything it fired is back to "
+                                  "zero. Nothing else was fired.",
+                         "let_go": True, "ended": True}
+        with self._lock:
+            f = self.fire
+            if f is not None and f.get("timed") is not None:
+                # Started in the instant since the look above: refused,
+                # never overwritten; the next press ends it.
+                return 409, {"error": "A timed purge has just started. "
+                                      "Nothing was fired.", "let_go": True}
             if fid is not None:
                 if f is not None and f["device"] != device:
                     # Another device's heartbeat never carries this press

@@ -67230,6 +67230,43 @@ def test_timed_purge_stall_inside_a_send_and_a_signed_out_deck():
                   f"the link dropped it at 0.25 s; the send that came late "
                   f"ends it rather than relight it: {trace} -> {after} "
                   f"({why!r})")
+        # A pause after the send's last look and before the link's lock
+        # (round 3 of #172): the link sees the frame it would replace has
+        # gone stale and refuses it; the engine ends the purge.
+        R.link = link = real_link()
+        if fresh_start():
+            _tp_step(R, 0.1)
+            real_set = link.purge_set
+
+            def paused(vals, gen=None):
+                step(2.0)
+                return real_set(vals, gen=gen)
+            link.purge_set = paused
+            step(0.1)
+            why = R.m.purge.timed_send()
+            link.purge_set = real_set
+            check(slot(link) == 0 and not link.purge_active() and
+                  not R.m.purge.timed_running(),
+                  f"a 2 s pause just before the link's lock: nothing "
+                  f"relit, ended: {why!r}")
+        # A Space press that looked before a timed purge started on its
+        # own screen and lands after: it ends it with its line, never
+        # overwrites it.
+        R.link = fake = _FakeTimedLink()
+        if fresh_start():
+            n_end = len(_tp_lines(R, "timed_end"))
+            R.m.purge.timed_running = lambda: False
+            try:
+                st, out = R.m.purge.fire_beat({"on": True}, "Rack screen",
+                                              True)
+            finally:
+                del R.m.purge.timed_running
+            ln = _tp_lines(R, "timed_end")
+            check(st == 409 and R.m.purge.fire is None and
+                  len(ln) == n_end + 1 and
+                  "second purge press" in ln[-1]["text"],
+                  f"a press that raced a timed purge's start ends it with a "
+                  f"journal line: {st} {out} {ln[-1:]}")
         # The link's own belt: a timed purge's frame that went stale is
         # refused from then on, until purge_clear().
         lk = real_link()
