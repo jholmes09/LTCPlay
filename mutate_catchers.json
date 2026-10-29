@@ -2439,7 +2439,7 @@
 "the show length derivation for the scheduler check always finds nothing": "test_scheduler_show_len_s_checked_against_the_show_media",
 "the show-start hook tears the stream down synchronously": "test_announce_show_start_hook_never_touches_the_stream",
 "the slave mixes up the audio clock and the pacing clock": "test_forwarded_timecode_steps_by_one",
-"the soak's Fire & Ice settings are not marked soak_only": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"the soak's Fire & Ice settings are not marked soak_only": "test_soak_schedule_is_refused_outside_the_soak",
 "the soak's schedule is not marked soak_only": "test_soak_schedule_is_refused_outside_the_soak",
 "the socket's own send() no longer enforces the allow-list at all": "test_beyond_lowest_level_socket_also_enforces_allow_list",
 "the stale-server banner goes back inside the hiding panel": "test_web_ui",
