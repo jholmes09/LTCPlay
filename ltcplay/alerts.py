@@ -48,7 +48,7 @@ import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
          "timecode", "lasers", "users", "aim", "follow", "preroll",
-         "hazers")
+         "hazers", "output")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
@@ -56,7 +56,11 @@ SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "hazers": "warning",
             # The rig check before a show failed (preroll.py): it holds the
             # show at its time like any fault (alerthold.py).
-            "preroll": "fault"}
+            "preroll": "fault",
+            # MadMapper's video output is off (showwindows.OutputWatch, the
+            # supervisor's; Jeff's field report 2026-10-29). Only that
+            # watch raises it, and it clears it when the output comes on.
+            "output": "fault"}
 # Display only (2026-10-28): an alert of these kinds is shown on every
 # screen and journaled, and cleared like any other, but it never sounds the
 # booth, never runs the pulse, never holds a show at showtime

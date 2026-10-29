@@ -2031,6 +2031,27 @@ def _attach_mm_output(httpd, fire_ice, mm_cfg, windows=None):
         return None
 
 
+def _output_seen_on(alerts, r):
+    """A passed rig check whose MadMapper output item passed (seen on, not
+    just not used) clears the "output" alert (showwindows.OutputWatch's)
+    raised before the check began (review B of #176: a stale one held a
+    healthy show). Never one raised after. Returns whether it cleared."""
+    seen = [i for i in r.get("items") or ()
+            if i.get("name") == "MadMapper output" and i.get("ok")
+            and not i.get("note")]
+    began = r.get("wall_at")
+    if not seen or began is None:
+        return False
+    for a in alerts.open():
+        if a.kind == "output" and a.since < began:
+            ok, _t = alerts.clear(id=a.id, action="Confirm",
+                                  who="LTC Player (the rig check saw "
+                                      "MadMapper's output on)",
+                                  screen="engine")
+            return ok
+    return False
+
+
 def _attach_preroll(httpd, fire_ice, fstatus):
     """The pre-roll (preroll.py, Jeff 2026-10-28): the rig checked before
     every show the scheduler starts and before Start now, on the schedule
@@ -2123,6 +2144,7 @@ def _attach_preroll(httpd, fire_ice, fstatus):
                                    for a in remote.alerts.open()),
             alert_id=lambda: next((a.id for a in remote.alerts.open()
                                    if a.kind == P.KIND), None),
+            on_pass=lambda r: _output_seen_on(remote.alerts, r),
             skip=skip)
         svc.preroll = pr
         remote.preroll = pr

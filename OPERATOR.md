@@ -943,6 +943,7 @@ Continue anyway then leaves video, lasers and flames off.
 | Booth speaker | its output attached (only when one is set up) | yes, when set up |
 | Timecode | Art-Net timecode (30 frames a second) going out with no receiver refusing it; BEYOND's black zone stream flowing | yes |
 | Video | MadMapper running; the screens taken to black first; the show bank selected; a test timecode from 00:00:00:00 sent to MadMapper ALONE; its heartbeat (/float-1) answering AND moving at about real time; MadMapper then parked on frame 0 | yes |
+| MadMapper output | MadMapper's video output on: a full-screen MadMapper window with no title bar filling the projector's display, read from Windows' window list (nothing is sent to MadMapper). With `madmapper_output_monitor` 0 (the default) any display but the rack screen's counts; n: only display n. One display only (the projector not detected), a setting past the displays this PC has, or a list that cannot be read: fails. Not checked when MadMapper is on another PC or `madmapper_output_check` is false | yes |
 | Flame link | a new flamesafe status frame during the check, no fault, the flame link sending and not locked, the Stream Deck program arming live | yes |
 | Lasers | blanking set up, the laser arm readable, a blank sent now that got out, BEYOND's black zone flowing (timecode blanking), BEYOND running | yes |
 | Network | every device the show uses answers a ping: MadMapper and BEYOND when on another PC, the timecode receivers, the flame node, and every pixel controller that answered a ping since Run (some never answer one at all) | yes |
@@ -967,8 +968,31 @@ any alert: Held at once, 60 s, then one Delayed on the PA. Acknowledging
 it before the time does not let the show start by itself; it is raised
 again at the time. Resume alone never lets the scheduler start a show
 whose check failed (unlike other alerts): use Start now, which checks
-again, or Continue anyway. A later check that passes clears it. Start now that
-fails its check is refused with the reason.
+again, or Continue anyway. A later check that passes on a fresh run
+(Check again, Check the rig, Start now's own check) clears the failure
+and the rig check alert, and the journal says "Rig check passed, failure
+cleared (who)". It starts nothing: a held show stays held, and the
+screens say "Rig check passed. Press Resume." Resume then checks the show
+once more and starts it if that passes; a show whose time has gone by
+waits for Start now. A failure raised after that check began is never
+cleared by it, and a check that fails again keeps the failure with the
+new reasons. Start now that fails its check is refused with the reason.
+
+**MadMapper's output after a reboot** (Jeff, 2026-10-29). LTC Player
+cannot turn MadMapper's video output on; it sees it. The rack screen's
+lamp **MadMapper output** says on, OFF or not known. The supervisor gives
+MadMapper 3 minutes after it starts; still off, it raises an **output**
+alert with what to do (MadMapper: Output menu, Fullscreen; and, so it comes
+back by itself, Preferences, Misc, Start fullscreen when opening a project
+at startup), and clears it itself when the output comes on (a rig check
+that sees it on clears it too). The settings, both in
+ltcplay_fire_ice.json and read by the engine and the supervisor alike:
+`madmapper_output_check` (true; false turns the check, the lamp and the
+alert off, for an output that is not a full-screen window) and
+`madmapper_output_monitor` (0: any display but the rack screen's; 1 the
+main display, 2 the next, as showpc.json's page_monitor counts). The
+supervisor also keeps the rack screen in front of BEYOND and MadMapper
+windows after a reboot (showpc.json `rack_screen_keep_in_front`, true).
 
 The show screen (and the iPad) then shows the failed checks and two
 choices:

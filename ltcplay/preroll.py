@@ -195,7 +195,7 @@ class PreRoll:
 
     def __init__(self, checks, window_s=DEFAULT_S, journal=None, alert=None,
                  clear_alert=None, skip=None, clock=time.monotonic,
-                 open_alert=None, alert_id=None):
+                 open_alert=None, alert_id=None, on_pass=None):
         self.checks = list(checks)
         self.window_s = float(window_s)
         self._journal = journal or (lambda text, **kw: None)
@@ -205,6 +205,10 @@ class PreRoll:
         # alert_id() -> the open "preroll" alert's id, or None. With it, a
         # pass clears only the alert that was open when it began, by id.
         self._alert_id = alert_id
+        # on_pass(run) after every passed run: web.py clears the "output"
+        # alert (MadMapper's output, showwindows.py) raised before it began
+        # when its MadMapper output check passed.
+        self._on_pass = on_pass
         self.skip = skip or (lambda: "")
         self._clock = clock
         self._lock = threading.Lock()
@@ -372,6 +376,7 @@ class PreRoll:
                 # one, and only when no failure came after this number).
                 self._seq += 1
                 r["seq"] = self._seq
+                r["wall_at"] = time.time()
                 r["alert_at_start"] = self._open_alert_id()
                 self._last = r
                 if not manual:
@@ -454,6 +459,11 @@ class PreRoll:
             self._note(f"Pre-roll for {label} passed: {text}.",
                        outcome="passed")
             self._clear_failure(r)
+            if self._on_pass is not None:
+                try:
+                    self._on_pass(r)
+                except Exception:                # noqa: BLE001
+                    pass
             return r
         r["failed"] = frozenset(i["name"] for i in bad)
         r["alert"] = (

@@ -17959,8 +17959,8 @@ def build():
  # window and the rack screen kept in front (Jeff's field reports,
  # 2026-10-29) --
  ('rig check cleared: a pass clears nothing', 'ltcplay/preroll.py',
-  '            self._clear_failure(r)\n            return r',
-  '            return r'),
+  '            self._clear_failure(r)\n            if self._on_pass is not None:',
+  '            if self._on_pass is not None:'),
 
  ('rig check cleared: a pass clears a failure raised after it began', 'ltcplay/preroll.py',
   '                    if self._fail_seq > r.get("seq", 0):',
@@ -18031,7 +18031,7 @@ def build():
   '                 and (True or now - self.seen[w["hwnd"]] <='),
 
  ('rack keeper: restores a rack screen a person minimized', 'ltcplay/showwindows.py',
-  '            if not boot:\n                return "none"       # a person minimized it',
+  '            if not boot or self.restored:\n                return "none"       # a person minimized it',
   '            if False:\n                return "none"       # a person minimized it'),
 
  ('rack keeper: never gives up on a window that stays on top', 'ltcplay/showwindows.py',
@@ -18043,8 +18043,44 @@ def build():
   '        due = (True and'),
 
  ('mm output watch: an alert the engine did not take is not sent again', 'ltcplay/showwindows.py',
-  '                self.alerted = bool(self.alert(f"{why}. {ENABLE_STEPS}"))',
-  '                self.alerted = bool(self.alert(f"{why}. {ENABLE_STEPS}") or True)'),
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}")',
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}") or True'),
+
+ ('mm output watch: the alert stays after the output comes on', 'ltcplay/showwindows.py',
+  '            if self.raised and now >= self.next_try:',
+  '            if False:'),
+
+ ("mm output: the rack screen's own display counts as the projector's", 'ltcplay/showwindows.py',
+  '        outs = [(w, n) for w, n in outs if n != r]\n',
+  ''),
+
+ ('mm output: one display only reads as on', 'ltcplay/showwindows.py',
+  '    if not monitor and len(mons) == 1:',
+  '    if False:'),
+
+ ("mm output: a display past the PC's reads as off, not not known", 'ltcplay/showwindows.py',
+  '    if monitor and monitor > len(mons):',
+  '    if False:'),
+
+ ('mm output: a rig check that saw the output on leaves its alert open', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if False:'),
+
+ ('mm output: a rig check clears an output alert newer than it', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if a.kind == "output":'),
+
+ ('rack keeper: buries a dialog under the rack screen', 'ltcplay/showwindows.py',
+  '                 and not w.get("owner")\n',
+  ''),
+
+ ('rack keeper: restores a minimized rack screen over and over', 'ltcplay/showwindows.py',
+  '            self.restored = True\n',
+  ''),
+
+ ('supervisor: the output watch reads showpc.json, not the engine file', 'packaging/windows/supervisor.py',
+  '    chk, mon = output_settings(settings)',
+  '    chk, mon = True, 0'),
 
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,

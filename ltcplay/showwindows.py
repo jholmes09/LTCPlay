@@ -151,26 +151,57 @@ def output_windows(wins, mons):
     return out
 
 
-def output_state(wins, mons, monitor=0):
+def rack_display(wins, mons, fallback=1):
+    """The display the rack screen is on: where its window is (not
+    minimized), else `fallback` (showpc.json page_monitor; 1 the main
+    display)."""
+    for w in wins or ():
+        if is_rack(w) and not w.get("minimized"):
+            n = monitor_of(w["rect"], mons)
+            if n:
+                return n
+    return fallback if isinstance(fallback, int) and \
+        1 <= fallback <= len(mons or ()) else 1
+
+
+def output_state(wins, mons, monitor=0, rack=None):
     """("on" | "off" | "unknown", sentence) for MadMapper's video output,
-    from a snapshot() and the displays. `monitor` 0: any display; n: only
-    display n counts."""
+    from a snapshot() and the displays. `monitor` n: only display n counts
+    (a number past the displays this PC has is not known, and says so).
+    `monitor` 0: any display EXCEPT the rack screen's (`rack`, or where
+    its window is, else the main display): a full-screen MadMapper window
+    over the operator's own screen while the projector shows the desktop
+    is not "on" (review B of #176, S1). With one display only, the
+    projector is not connected or not detected: OFF, said plainly."""
     if wins is None or not mons:
         return "unknown", ("not known: the show PC's window list could not "
                            "be read")
+    if monitor and monitor > len(mons):
+        return "unknown", (f"not known: madmapper_output_monitor is "
+                           f"{monitor}, but this PC has {len(mons)} "
+                           f"display{'s' if len(mons) != 1 else ''}; set it "
+                           f"to the projector's display, or 0")
     mm = [w for w in wins if image_is(w.get("image"), MADMAPPER)]
     if not mm:
         return "off", ("MadMapper is not running (no MadMapper window), so "
                        "nothing of it is on the projectors")
+    if not monitor and len(mons) == 1:
+        return "off", ("MadMapper's video output is OFF: this PC has only "
+                       "one display, so the projector is not connected or "
+                       "not detected by Windows")
     outs = output_windows(wins, mons)
     if monitor:
         outs = [(w, n) for w, n in outs if n == monitor]
+        where = f"display {monitor}"
+    else:
+        r = rack if rack else rack_display(wins, mons)
+        outs = [(w, n) for w, n in outs if n != r]
+        where = f"a display other than the rack screen's (display {r})"
     if outs:
         w, n = outs[0]
         m = mons[n - 1]
         return "on", (f"MadMapper's output fills display {n} "
                       f"({m[2] - m[0]}x{m[3] - m[1]})")
-    where = f"display {monitor}" if monitor else "any display"
     return "off", (f"MadMapper's video output is OFF: it has no full-screen "
                    f"output window on {where}, so the projectors show the "
                    f"Windows desktop")
@@ -349,8 +380,10 @@ class Win32:
         try:
             fg = int(u.GetForegroundWindow() or 0)
             me = int(self.k.GetCurrentThreadId())
+            # Never attached to a hung window's input (review B of #176):
+            # the supervisor's own loop must not wait on it.
             other = int(u.GetWindowThreadProcessId(fg, None) or 0) \
-                if fg else 0
+                if fg and not u.IsHungAppWindow(fg) else 0
             if other and other != me and u.AttachThreadInput(me, other, True):
                 attached = (me, other)
             u.SetForegroundWindow(hwnd)
@@ -381,13 +414,13 @@ def snapshot(api):
     return out
 
 
-def look(api, monitor=0):
+def look(api, monitor=0, rack=None):
     """(state, sentence) of MadMapper's output, read now. Never raises."""
     try:
         mons = api.monitors()
     except Exception:                            # noqa: BLE001
         mons = []
-    return output_state(snapshot(api), mons, monitor)
+    return output_state(snapshot(api), mons, monitor, rack)
 
 
 class OutputLook:
@@ -500,6 +533,7 @@ class RackKeeper:
         self.fg_since = {}       # hwnd -> when it became the foreground
         self.chosen = set()      # app windows a person brought forward
         self.raises = {}         # covering hwnd -> raises for it
+        self.restored = False    # a minimized rack screen restored once
         self._said = {}
 
     def _say(self, key, text):
@@ -566,7 +600,11 @@ class RackKeeper:
         rack = next((w for w in wins if is_rack(w, self.title_re,
                                                 self.rack_pid)), None)
         if rack is None:
+            self._say("rack", "rack screen keeper: the rack screen's window "
+                              "is not found (not open yet, or closed)")
             return "none"
+        self._say("rack", "rack screen keeper: the rack screen's window is "
+                          f"found (\"{rack.get('title', '')}\")")
         boot = now - self.started < self.boot_settle_s
         mon = mons[self.monitor - 1] if isinstance(self.monitor, int) and \
             1 <= self.monitor <= len(mons) else (mons[0] if mons else None)
@@ -579,14 +617,20 @@ class RackKeeper:
                                     "the rack screen is not raised over it")
                 return "left"
         if rack["minimized"]:
-            if not boot:
+            if not boot or self.restored:
                 return "none"       # a person minimized it
+            # Once only (review B of #176): minimized again after this, a
+            # person did it, and it stays minimized.
+            self.restored = True
             self._say("restore", "rack screen keeper: the rack screen was "
-                                 "minimized during start up; restored")
+                                 "minimized during start up; restored once")
             return self._raise(rack, None, "restored")
         area = rack["rect"]
         idx = wins.index(rack)
+        # An owned window (a dialog: missing media, a licence, the
+        # preferences) is never buried (review B of #176, S4).
         cover = [w for w in wins[:idx] if is_app(w) and not w["minimized"]
+                 and not w.get("owner")
                  and overlap(w["rect"], area) > 0
                  and w["hwnd"] not in self.chosen
                  and (boot or now - self.seen[w["hwnd"]] <=
@@ -636,24 +680,31 @@ class OutputWatch:
     running, its output is given `settle_s` to come on (the project loads,
     and MadMapper's own "Start fullscreen" preference puts it up). Still
     off then, or off again later for `debounce_s`: logged and `alert(text)`
-    once per off spell (the engine's video alert). Logged when it comes on.
-    Only reads windows."""
+    once per off spell (the engine's "output" alert, a kind only this
+    watch raises). When the output comes on, the alert it raised is
+    cleared again (`clear()`; review B of #176: a stale alert held a
+    healthy show). `rack` is the rack screen's display (page_monitor),
+    which never counts as the projector's with `monitor` 0. Only reads
+    windows."""
 
-    def __init__(self, api, monitor=0, log=None, alert=None,
-                 clock=time.monotonic, settle_s=120.0, debounce_s=10.0,
-                 retry_s=30.0):
+    def __init__(self, api, monitor=0, log=None, alert=None, clear=None,
+                 clock=time.monotonic, settle_s=180.0, debounce_s=10.0,
+                 retry_s=30.0, rack=None):
         self.api = api
         self.monitor = monitor
+        self.rack = rack
         self.log = log or (lambda s: None)
         self.alert = alert or (lambda text: True)
+        self.clear = clear or (lambda: True)
         self._clock = clock
         self.settle_s = settle_s
         self.debounce_s = debounce_s
         self.first_seen = None     # MadMapper first seen running
         self.off_since = None
         self.alerted = False       # this off spell's alert is accepted
-        self.retry_s = retry_s     # an alert the engine did not take
-        self.next_alert = 0.0
+        self.raised = False        # an alert of ours may be open
+        self.retry_s = retry_s     # an alert or clear the engine did not take
+        self.next_try = 0.0
         self.state = None
 
     def tick(self):
@@ -663,6 +714,12 @@ class OutputWatch:
             self.log(f"MadMapper output watch: {type(e).__name__}: {e}")
             return None
 
+    def _call(self, fn, *a):
+        try:
+            return bool(fn(*a))
+        except Exception:                        # noqa: BLE001
+            return False
+
     def _tick(self):
         now = self._clock()
         wins = snapshot(self.api)
@@ -670,7 +727,7 @@ class OutputWatch:
             mons = self.api.monitors()
         except Exception:                        # noqa: BLE001
             mons = []
-        state, why = output_state(wins, mons, self.monitor)
+        state, why = output_state(wins, mons, self.monitor, self.rack)
         if state == "unknown":
             if self.state != "unknown":
                 self.log(f"MadMapper output: {why}")
@@ -696,7 +753,17 @@ class OutputWatch:
             self.state = "on"
             self.off_since = None
             self.alerted = False
-            self.next_alert = 0.0
+            if self.raised and now >= self.next_try:
+                if self._call(self.clear):
+                    self.raised = False
+                    self.next_try = 0.0
+                    self.log("MadMapper output: on again, so its alert is "
+                             "cleared")
+                else:
+                    self.next_try = now + self.retry_s
+                    self.log("MadMapper output: on again, but its alert "
+                             "could not be cleared yet (the engine did not "
+                             "answer); trying again")
             return state
         if self.off_since is None:
             self.off_since = now
@@ -705,12 +772,16 @@ class OutputWatch:
         if self.state != "off" and due:
             self.log(f"MadMapper output: OFF. {why}. {ENABLE_STEPS}")
             self.state = "off"
-        if due and not self.alerted and now >= self.next_alert:
-            self.next_alert = now + self.retry_s
-            try:
-                self.alerted = bool(self.alert(f"{why}. {ENABLE_STEPS}"))
-            except Exception:                    # noqa: BLE001
-                self.alerted = False
+        if due and not self.alerted and now >= self.next_try:
+            self.next_try = now + self.retry_s
+            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}")
+            if self.alerted:
+                self.raised = True
+                self.next_try = 0.0
+            else:
+                self.log("MadMapper output: the alert could not be raised "
+                         "yet (the engine did not answer); trying again in "
+                         f"{self.retry_s:g} s")
         return "off" if due else "waiting"
 
 

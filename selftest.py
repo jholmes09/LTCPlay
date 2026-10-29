@@ -86932,6 +86932,25 @@ def test_madmapper_output_window_is_read_from_windows():
           "madmapper_output_monitor: only that display counts")
     check(st([])[0] == "off" and "not running" in st([])[1],
           "MadMapper not running: OFF, said so")
+    # Review B of #176, S1/S7: the output over the rack screen's own
+    # display while the projector shows the desktop is not on.
+    out1 = dict(_MM_OUT, rect=(0, 0, 1920, 1080))
+    got = st([out1, _MM_UI])
+    check(got[0] == "off" and "rack screen" in got[1],
+          f"full screen on the rack screen's display only: OFF: {got}")
+    got = st([out1, dict(_RACK, rect=(1912, -8, 3848, 1040)), _MM_UI])
+    check(got[0] == "on" and "display 1" in got[1],
+          f"the rack screen on display 2: display 1 is the projector's: "
+          f"{got}")
+    check(SW.output_state([out1, _MM_UI], mons, rack=2)[0] == "on",
+          "the rack display given (page_monitor) is the one left out")
+    got = SW.look(_FakeWins([out1, _MM_UI], [mons[0]]))
+    check(got[0] == "off" and "only one display" in got[1],
+          f"one display only: OFF, the projector not detected: {got}")
+    got = st([_MM_UI, _MM_OUT], monitor=3)
+    check(got[0] == "unknown" and "2 displays" in got[1],
+          f"a monitor past the displays: not known, said why: {got}")
+    _no_dashes(got[1], "the monitor setting sentence")
     bad = _FakeWins([_MM_UI], mons)
     bad.fail = True
     check(SW.look(bad)[0] == "unknown", "an unreadable list: not known")
@@ -87036,6 +87055,24 @@ def test_preroll_madmapper_output_check_and_lamp():
               "where the windows cannot be read: not known, the check fails")
     httpd.server_close()
     check(closed == [1] and look._stop.is_set(), "stopped with the server")
+    # A passing rig check that SAW the output on clears the output alert
+    # raised before it began (review B of #176), never a newer one.
+    from ltcplay import alerts as AL
+    al = AL.Alerts()
+    al.raise_("output", "MadMapper's video output is OFF")
+    al.raise_("video", "MadMapper is not running")
+    seen = {"items": [{"name": "MadMapper output", "ok": True,
+                       "note": False}], "wall_at": time.time() + 1}
+    check(W._output_seen_on(al, seen) and
+          [a.kind for a in al.open()] == ["video"],
+          "seen on: the output alert cleared, the video alert kept")
+    al.raise_("output", "MadMapper's video output is OFF")
+    check(not W._output_seen_on(al, dict(seen, wall_at=time.time() - 60))
+          and not W._output_seen_on(al, dict(seen, items=[
+              {"name": "MadMapper output", "ok": True, "note": True}])) and
+          [a.kind for a in al.open()] == ["video", "output"],
+          "an alert newer than the check, or a check that did not look: "
+          "kept")
     # The lamp.
     d = tempfile.mkdtemp()
     try:
@@ -87145,6 +87182,18 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
     k = keeper(api)
     check(k.tick() == "restored" and api.raised == [10],
           "minimized during start up: restored")
+    api.wins[0]["minimized"] = True
+    for _ in range(5):
+        k.tick()
+    check(api.raised == [10], "minimized again: a person did it; restored "
+                              "once only (review B of #176)")
+    # A dialog (an owned window: missing media, a licence) is never buried.
+    api = _FakeWins([dict(_BEYOND, hwnd=22, owner=20), _RACK, _BEYOND])
+    check(keeper(api).tick() == "none" and not api.raised,
+          "an owned dialog over the rack screen: left in front")
+    nl = []
+    SW.RackKeeper(_FakeWins([_BEYOND]), log=nl.append).tick()
+    check(any("not found" in x for x in nl), "no rack screen: said once")
     api = _FakeWins([_BEYOND, dict(_RACK, minimized=True)])
     k = keeper(api)
     t[0] += SW.BOOT_SETTLE_S + 1
@@ -87194,9 +87243,17 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     def alert(text):
         alerts.append(text)
         return took[0]
+    clears = []
+    cleared_ok = [False]
+
+    def clear():
+        clears.append(t[0])
+        return cleared_ok[0]
     api = _FakeWins([])
-    w = SW.OutputWatch(api, log=logs.append, alert=alert,
+    w = SW.OutputWatch(api, log=logs.append, alert=alert, clear=clear,
                        clock=lambda: t[0], settle_s=120, debounce_s=10)
+    check(SW.OutputWatch(api).settle_s >= 180,
+          "a slow project load gets at least 3 minutes by default")
     check(w.tick() == "not running", "MadMapper not running")
     api.wins = [dict(_MM_UI)]
     check(w.tick() == "waiting" and not alerts, "started: waiting")
@@ -87226,11 +87283,48 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     t[0] = 220
     check(w.tick() == "on" and any("MadMapper output: on" in x
                                    for x in logs), "on: logged")
+    check(clears == [220], f"on again: the alert it raised is cleared: "
+                           f"{clears}")
+    t[0] = 222
+    w.tick()
+    check(clears == [220], "the engine did not take the clear: not every "
+                           "tick")
+    cleared_ok[0] = True
+    t[0] = 251
+    w.tick()
+    t[0] = 260
+    w.tick()
+    check(clears == [220, 251] and any("alert is cleared" in x
+                                       for x in logs),
+          f"cleared once the engine takes it, then left alone: {clears}")
     api.wins = [dict(_MM_UI)]
     t[0] = 225
     check(w.tick() == "waiting", "off again: debounced")
     t[0] = 236
     check(w.tick() == "off" and len(alerts) == 4, "off again: one more alert")
+    # Review B of #176, S2: the project loads slowly, the output comes on
+    # by itself after the alert: the alert goes again, nothing stale holds
+    # the next show.
+    t2 = [0.0]
+    got = []
+    api2 = _FakeWins([dict(_MM_UI)])
+    w2 = SW.OutputWatch(api2, alert=lambda x: got.append("raise") or True,
+                        clear=lambda: got.append("clear") or True,
+                        clock=lambda: t2[0])
+    for sec in range(0, 260, 2):
+        t2[0] = sec
+        if sec == 200:
+            api2.wins.insert(0, dict(_MM_OUT))
+        w2.tick()
+    check(got == ["raise", "clear"],
+          f"raised after the settle, cleared when it came on: {got}")
+    never = []
+    api3 = _FakeWins([dict(_MM_UI), dict(_MM_OUT)])
+    w3 = SW.OutputWatch(api3, clear=lambda: never.append(1) or True,
+                        clock=lambda: 0.0)
+    w3.tick()
+    check(not never, "never raised: nothing cleared (another kind's alert "
+                     "is never touched)")
     bad = _FakeWins([])
     bad.fail = True
     check(SW.OutputWatch(bad, log=logs.append).tick() == "unknown",
@@ -87248,13 +87342,36 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                   ws[1].monitor == 2 and
                   isinstance(ws[2], sup.showwindows.OutputWatch),
                   f"on by default, on the page's display: {ws}")
+            dd = tempfile.mkdtemp()
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper_output_check": False}, fh)
             ws = sup.start_window_watch(
                 {"rack_screen_keep_in_front": False,
-                 "madmapper_output_check": False}, 7878, api=_FakeWins([]))
+                 "schedule": os.path.join(dd, "s.json")}, 7878,
+                api=_FakeWins([]))
             check(ws[1] is None and ws[2] is None and
                   any("keeper: OFF" in x for x in said) and
                   any("watch: OFF" in x for x in said),
                   f"the off switches: {said[-2:]}")
+            # One setting, one file: the supervisor reads the engine's.
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper_output_monitor": 3}, fh)
+            ws = sup.start_window_watch(
+                {"page_monitor": 1, "schedule": os.path.join(dd, "s.json")},
+                7878, api=_FakeWins([]))
+            check(ws[2].monitor == 3 and ws[2].rack == 1 and
+                  any("has 2 display" in x for x in said),
+                  f"ltcplay_fire_ice.json's monitor, checked against the "
+                  f"displays: {said[-2:]}")
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper_output_monitor": "two"}, fh)
+            check(sup.output_settings({"schedule": os.path.join(
+                dd, "s.json")}) == (True, 0), "a wrong value: the default")
+            check('"madmapper_output_check": True' not in open(
+                sup.__file__, encoding="utf-8").read(),
+                  "not a showpc.json setting any more")
+            import shutil as _sh2
+            _sh2.rmtree(dd, ignore_errors=True)
         finally:
             sup.log = was
         d = tempfile.mkdtemp()
@@ -87277,8 +87394,8 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                           "w") as fh:
                     json.dump({}, fh)
                 check(sup.output_alert({"schedule": sched}, 7878, "x") and
-                      posted == [(7878, "video", "x")],
-                      "a show's: the engine's video alert")
+                      posted == [(7878, "output", "x")],
+                      "a show's: the engine's output alert")
             finally:
                 sup.post_alert = was_post
                 sup.log = was

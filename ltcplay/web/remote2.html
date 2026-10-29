@@ -873,9 +873,10 @@ const ALERT_WHAT = {deck:"Stream Deck problem.", audio:"Show audio problem.", vi
   start:"Show did not start.", flames:"Flame problem.", link:"Flame link problem.", timecode:"Timecode problem.",
   lasers:"Laser problem.", users:"Sign-in file problem.", aim:"Wave aim does not match.", follow:"Video not following.",
   hazers:"Hazers do not match.",
-  gate:"Check before the show.", preroll:"Rig check failed."};
+  gate:"Check before the show.", preroll:"Rig check failed.", output:"Projector output off."};
 const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", video:"Check the video PC.",
-  timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm."};
+  timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm.",
+  output:"Turn on MadMapper output."};
 let ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null, ALERT_KEY = null, FAULTS_SEEN = null, KEYS_SEEN = null;
 function alertItems(st){
   const s = st || {}, items = [];

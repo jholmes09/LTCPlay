@@ -183,16 +183,12 @@ def load_settings():
         # page also measures it by itself, 2026-10-26).
         "page_bottom_pad": 0,
         # Jeff's field report, 2026-10-29 (showwindows.py): after a reboot
-        # BEYOND came up over the rack screen and MadMapper's video output
-        # was off. The rack screen is raised again when a BEYOND or
-        # MadMapper window covers it (false: never), and MadMapper's output
-        # window is watched after MadMapper starts, with a video alert when
-        # it stays off (false: not watched). madmapper_output_monitor: the
-        # display the output must fill (0 any, 1 the main one, as
-        # page_monitor counts).
+        # BEYOND came up over the rack screen. The rack screen is raised
+        # again when a BEYOND or MadMapper window covers it (false: never).
+        # MadMapper's output watch reads its switches from
+        # ltcplay_fire_ice.json (output_settings), the engine's own file,
+        # so the two never disagree.
         "rack_screen_keep_in_front": True,
-        "madmapper_output_check": True,
-        "madmapper_output_monitor": 0,
         "show_mode": "fire_ice",
         "schedule": os.path.join(appdata_dir(), "ltcplay_schedule.json"),
     }
@@ -1369,18 +1365,70 @@ def show_refusal_page(page):
 WINDOWS_EVERY_S = 2.0
 
 
-def post_alert(port, kind, text):
-    """The engine's alert of `kind` raised with `text` (its alert API, from
-    this machine). True once the engine took it."""
+def post_alert(port, kind, text=None):
+    """The engine's alert of `kind` raised with `text`, or cleared when
+    `text` is None (its alert API, from this machine). True once the engine
+    took it (a clear with nothing open counts as done); a failure is
+    logged."""
+    body = {"raise": kind, "text": text} if text is not None else \
+        {"clear": kind}
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/remote/alert",
-            data=json.dumps({"raise": kind, "text": text}).encode("utf-8"),
+            data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=3) as r:
             return 200 <= r.status < 300
-    except Exception:
+    except urllib.error.HTTPError as e:
+        if text is None and e.code == 409:
+            return True                # nothing open to clear
+        log(f"the engine refused the {kind} alert "
+            f"{'raise' if text is not None else 'clear'} (HTTP {e.code})")
         return False
+    except (TimeoutError, OSError) as e:
+        if "timed out" in str(e) or isinstance(e, TimeoutError):
+            # The engine may have taken it and been slow to answer (review
+            # B of #176): never sent again, so an Acknowledge is never
+            # undone by a retry. Said in the log.
+            log(f"the {kind} alert {'raise' if text is not None else 'clear'}"
+                f" got no answer within 3 s; it may have reached the engine "
+                f"and is not sent again")
+            return True
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"did not reach the engine ({type(e).__name__}: {e})")
+        return False
+    except Exception as e:
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"did not reach the engine ({type(e).__name__}: {e})")
+        return False
+
+
+def output_settings(settings):
+    """(check, monitor) for MadMapper's output watch, from
+    ltcplay_fire_ice.json beside the schedule (madmapper_output_check,
+    madmapper_output_monitor): the same file and keys the engine's rig
+    check reads. Missing or wrong: (True, 0), said in the log."""
+    try:
+        fi = os.path.join(os.path.dirname(settings["schedule"]),
+                          "ltcplay_fire_ice.json")
+        with open(fi, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return True, 0
+    if not isinstance(doc, dict):
+        return True, 0
+    chk = doc.get("madmapper_output_check", True)
+    mon = doc.get("madmapper_output_monitor", 0)
+    if chk is not True and chk is not False:
+        log(f"ltcplay_fire_ice.json madmapper_output_check is {chk!r}, not "
+            f"true or false: the output is watched")
+        chk = True
+    if isinstance(mon, bool) or not isinstance(mon, int) or \
+            not 0 <= mon <= 8:
+        log(f"ltcplay_fire_ice.json madmapper_output_monitor is {mon!r}, "
+            f"not 0 to 8: any display but the rack screen's counts")
+        mon = 0
+    return chk, mon
 
 
 def soak_kit(settings):
@@ -1403,7 +1451,7 @@ def output_alert(settings, port, text):
         log("MadMapper output: OFF, no alert raised (a soak kit's "
             "ltcplay_fire_ice.json is in use)")
         return True
-    return post_alert(port, "video", text)
+    return post_alert(port, "output", text)
 
 
 def start_window_watch(settings, port, api=None):
@@ -1435,16 +1483,29 @@ def start_window_watch(settings, port, api=None):
     else:
         log("rack screen keeper: OFF (showpc.json "
             "\"rack_screen_keep_in_front\": false)")
-    if settings.get("madmapper_output_check", True) is not False:
-        mon = settings.get("madmapper_output_monitor", 0)
+    chk, mon = output_settings(settings)
+    if chk:
+        page = settings.get("page_monitor", 1)
         out[2] = showwindows.OutputWatch(
-            api, monitor=mon if isinstance(mon, int) else 0, log=log,
-            alert=lambda text: output_alert(settings, port, text))
-        log("MadMapper output watch: ON (showpc.json "
+            api, monitor=mon, log=log, rack=page if isinstance(page, int)
+            else 1,
+            alert=lambda text: output_alert(settings, port, text),
+            clear=lambda: post_alert(port, "output"))
+        try:
+            n = len(api.monitors())
+        except Exception:
+            n = 0
+        if mon and n and mon > n:
+            log(f"MadMapper output watch: madmapper_output_monitor is {mon} "
+                f"but this PC has {n} display(s); the output reads as not "
+                f"known until it is set right (ltcplay_fire_ice.json)")
+        log(f"MadMapper output watch: ON, "
+            + (f"display {mon}" if mon else "any display but the rack "
+               "screen's") + " (ltcplay_fire_ice.json "
             "\"madmapper_output_check\": false turns it off). Read from "
             "the window list only; nothing is sent to MadMapper.")
     else:
-        log("MadMapper output watch: OFF (showpc.json "
+        log("MadMapper output watch: OFF (ltcplay_fire_ice.json "
             "\"madmapper_output_check\": false)")
     return out
 

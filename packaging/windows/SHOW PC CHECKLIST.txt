@@ -112,10 +112,13 @@ SHOW NETWORK, AUDIO, CLOCK AND MEMORY (from the 2026-10-21 soak)
     Fullscreen). LTC Player cannot turn it on (MadMapper takes no command
     for it that could be verified); it SEES it: the rack screen's lamp
     MadMapper output says on, OFF or not known, the rig check before
-    every show fails while it is off, and a video alert is raised when
-    it stays off after MadMapper starts. An output that is not a
-    full-screen window: "madmapper_output_check": false in
-    ltcplay_fire_ice.json and in showpc.json.
+    every show fails while it is off, and an output alert is raised when
+    it stays off 3 minutes after MadMapper starts (cleared by itself when
+    the output comes on). The projector must be its own display: with
+    one display only, the output reads OFF. ltcplay_fire_ice.json:
+    "madmapper_output_monitor": the projector's display number (0, the
+    default: any display but the rack screen's); an output that is not a
+    full-screen window: "madmapper_output_check": false.
 [ ] Restart the PC once and watch: the rack screen ends in front of BEYOND
     and MadMapper on its display (the supervisor raises it again for five
     minutes after start, and when either program opens a new window), and
