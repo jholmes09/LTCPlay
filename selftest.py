@@ -86350,6 +86350,8 @@ s.programming_flames.on = true;
 { const pf = pinItems(s)[0], n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
   t(pf && pf.key === "pf" && pf.btn === "Stop" && n.text === "Flames can fire from Programming." && n.tone === "bad" && p.text === "FLAMES LIVE",
     "Programming flames playing: pinned in the top line with Stop: " + n.text + " / " + p.text); }
+s.cleaning = {state:"phase1"};
+t(pinItems(s).map(x => x.btn).join("|") === "Stop cleaning|Stop Programming", "two pins: each Stop names what it stops: " + pinItems(s).map(x => x.btn));
 s = base(); s.cleaning = {state:"phase1"};
 t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
 s.schedule.state = "SHOW";
@@ -86689,6 +86691,12 @@ async function inact(){
     posts.length = 0;
     if(pb && !pb.disabled){ pb.click(); await wait(400); }
     out.pf_posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+    // Refused: kept in the alert slot until seen, as the other pins'.
+    window.__fail = /\/api\/remote\/hold/;
+    if(pb) pb.click();
+    await wait(500);
+    window.__fail = null;
+    out.pf_refused = document.getElementById("al-what").textContent;
   }
   if(/ipad=1/.test(location.search)){
     ME.local = false; await wait(700);
@@ -86972,6 +86980,8 @@ def test_ui2_calm_screens_and_brand():
                       and a["next"] == "Flames can fire from Programming."
                       and [u for u, _ in r["pf_posts"]] ==
                       ["/api/remote/hold"] and not a["inactive"] and
+                      r["pf_refused"] ==
+                      "Programming NOT paused. Abort or Disarm flames." and
                       not r["first_taps"]["posts"],
                       f"{where}: Programming playback firing flames is "
                       f"pinned in the top line, never calm; its Stop is "
