@@ -85623,9 +85623,11 @@ def test_ui2_show_tab_in_a_browser():
                       fd["same"] == 1,
                       f"{where}: the slot's button acts only on the alert "
                       f"shown at finger-down: {fd}")
+                # (DAY beats as 1.0's Startup page does while it shows.)
                 check(fd and all(fd["mini"]) and fd["next_shown"] and
-                      fd["mini_routes"] == ["/api/remote/hold",
-                                            "/api/remote/disarm-all"],
+                      [r for r in fd["mini_routes"]
+                       if r != "/api/remote/morning-open"] ==
+                      ["/api/remote/hold", "/api/remote/disarm-all"],
                       f"{where}: off the SHOW tab, Hold, Stop show and "
                       f"Disarm flames are one tap, with Abort: {fd}")
                 check(fd and fd["fail_slot"] == "Disarm NOT done." and
