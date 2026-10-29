@@ -1532,9 +1532,17 @@ class Purge:
                                       "key and press again.",
                              "let_go": True}
             if any(vals):
-                link.purge_set(vals)
+                took = link.purge_set(vals) is not False
             else:
+                took = True
                 link.purge_clear()
+        if not took:
+            # The link refused the frame (round 3 of #172): never answered
+            # as firing.
+            self.stop("the flame link did not take the frame")
+            return 409, {"error": "The flame link did not take the purge "
+                                  "frame, so nothing is firing. Release the "
+                                  "key and press again.", "let_go": True}
         if fid is None:
             self._note(f"{device} started a purge fire press: "
                        f"{', '.join(firing) or 'nothing firing yet'}"
@@ -1547,11 +1555,14 @@ class Purge:
     def stop(self, why="", device=None):
         """The key came up (or anything else ended the press): the flame
         link's purge frame is cleared now, not at its own expiry."""
-        with self._lock:
-            f, self.fire = self.fire, None
         link = self._link()
-        if link is not None:
-            link.purge_clear()
+        with self._lock:
+            # The link cleared under the same lock as the frame is set
+            # (round 3 of #172): no pause between them can leave the old
+            # frame up.
+            f, self.fire = self.fire, None
+            if link is not None:
+                link.purge_clear()
         if f is not None:
             held = self._clock() - f["start"]
             t = f.get("timed")
@@ -1913,10 +1924,12 @@ class Purge:
                           "firing": [], "waiting": []}}
             self.fires += 1
         t = f["timed"]
-        # The hard end counts from the deadline, not from this call: a
-        # pause before it never loosens it (re-review of #172).
-        if link.purge_limit(max(0.001, t["deadline"] - self._clock())) \
-                is not True:
+        # The hard end is the deadline itself, turned into the link's
+        # clock under the link's lock (the link reads its own clock first,
+        # this one second): a pause anywhere only tightens it (rounds 2
+        # and 3 of #172).
+        if link.purge_limit(t["seconds"], deadline=t["deadline"],
+                            clock=self._clock) is not True:
             self.stop("the flame link did not take its hard end",
                       device=device)
             return 409, {"error": "The flame link did not take the timed "

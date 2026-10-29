@@ -1102,8 +1102,11 @@ class FlameLink:
             # A timed purge whose frame went stale (its timer stalled)
             # never comes back by itself: its hard end is now, so
             # purge_set() is refused until purge_clear() (re-review of
-            # #172, B1).
-            self._purge_until = min(self._purge_until, now)
+            # #172, B1). Under _lock, and only for that same frame: a
+            # purge_clear() or purge_limit() since wins (round 3).
+            with self._lock:
+                if self._purge is p and self._purge_until is not None:
+                    self._purge_until = min(self._purge_until, now)
         if now - p[1] > PURGE_HOLD_S or now < p[1]:
             self._purge = None
             return bytes(UNIVERSE_SIZE)
@@ -1152,20 +1155,33 @@ class FlameLink:
             self._purge = (vals, now)
         return True
 
-    def purge_limit(self, seconds):
+    def purge_limit(self, seconds, deadline=None, clock=None):
         """A timed purge's hard end: `seconds` from now on this link's own
         clock, the purge frame stops on every frame sent after it and
         purge_set() is refused, until purge_clear() (which every end of a
-        timed purge calls). True when taken. Never raises."""
+        timed purge calls). With the caller's `deadline` and `clock` (its
+        own clock, which need not be this link's), the end is that
+        deadline, worked out under this lock from this link's clock read
+        FIRST and the caller's second: a pause between them only brings
+        it earlier, never later (round 3 of #172). True when taken. Never
+        raises."""
         try:
             s = float(seconds)
             if not s > 0 or not math.isfinite(s):
                 return False
             with self._lock:
+                mine = self._clock()
+                if deadline is not None and clock is not None:
+                    left = float(deadline) - float(clock())
+                    if not math.isfinite(left):
+                        return False
+                    s = min(s, left)
+                    if not s > 0:
+                        return False
                 # A timed purge starts from no frame: nothing older is
                 # carried into it (or judged stale against it).
                 self._purge = None
-                self._purge_until = self._clock() + s
+                self._purge_until = mine + s
             return True
         except Exception:
             return False

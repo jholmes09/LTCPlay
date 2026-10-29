@@ -2510,6 +2510,8 @@
 "timed purge: a frame the flame link refused is not heard": "test_timed_purge_stall_inside_a_send_and_a_signed_out_deck",
 "timed purge: a hold let past the switches to end it starts when it ended meanwhile": "test_timed_purge_every_end_cause",
 "timed purge: a machine taken off (or locked) does not end it": "test_timed_purge_every_end_cause",
+"timed purge: a momentary frame the link refused is answered as firing": "test_timed_purge_stall_inside_a_send_and_a_signed_out_deck",
+"timed purge: a pause before the link's lock loosens its hard end": "test_timed_purge_stall_inside_a_send_and_a_signed_out_deck",
 "timed purge: a pause inside one send relights the frame": "test_timed_purge_stall_inside_a_send_and_a_signed_out_deck",
 "timed purge: a press that raced its start overwrites it with no end line": "test_timed_purge_stall_inside_a_send_and_a_signed_out_deck",
 "timed purge: a refused beat from a made-up window makes a replay record": "test_timed_purge_at_the_engine",

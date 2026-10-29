@@ -17854,7 +17854,7 @@ def build():
 
  ("timed purge: the flame link is never given its hard end",
   "ltcplay/morning.py",
-  "        if link.purge_limit(max(0.001, t[\"deadline\"] - self._clock())) \\\n                is not True:",
+  "        if link.purge_limit(t[\"seconds\"], deadline=t[\"deadline\"],\n                            clock=self._clock) is not True:",
   "        if False:"),
 
  ("timed purge: the flame link ignores the hard end on the frames it sends",
@@ -18083,6 +18083,16 @@ def build():
   "ltcplay/flamelink.py",
   "            if not s > 0 or not math.isfinite(s):",
   "            if not s > 0 or s != s:"),
+
+ ("timed purge: a pause before the link's lock loosens its hard end",
+  "ltcplay/flamelink.py",
+  "                    s = min(s, left)",
+  "                    pass"),
+
+ ("timed purge: a momentary frame the link refused is answered as firing",
+  "ltcplay/morning.py",
+  "                took = link.purge_set(vals) is not False",
+  "                link.purge_set(vals)\n                took = True"),
 
  ("timed purge: a broken sign-in check reads as a role refusal",
   "ltcplay/web.py",

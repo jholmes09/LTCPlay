@@ -65452,8 +65452,9 @@ class _FakeTimedLink(_FakePurgeLink):
         self.sender = "running"
         self.lock_alarm = ""
 
-    def purge_limit(self, seconds):
-        self.limits.append(seconds)
+    def purge_limit(self, seconds, deadline=None, clock=None):
+        self.limits.append(seconds if deadline is None
+                           else min(seconds, deadline - clock()))
         return True
 
     def purge_set(self, values, gen=None):
@@ -67282,6 +67283,41 @@ def test_timed_purge_stall_inside_a_send_and_a_signed_out_deck():
                   not R.m.purge.timed_running(),
                   f"a 2 s pause just before the link's lock: nothing "
                   f"relit, ended: {why!r}")
+        # A pause between the engine reading its clock and the link
+        # taking its hard end (round 3 of #172): the end stays the
+        # engine's deadline, never later.
+        R.link = link = real_link()
+        real_limit = link.purge_limit
+
+        def slow_limit(s, **kw):
+            step(0.2)
+            return real_limit(s, **kw)
+        link.purge_limit = slow_limit
+        try:
+            ok = fresh_start(2)
+        finally:
+            link.purge_limit = real_limit
+        if ok:
+            dl = R.m.purge.fire["timed"]["deadline"]
+            check(link._purge_until is not None and
+                  link._purge_until <= dl + 1e-9,
+                  f"a 0.2 s pause before the link's lock: its hard end is "
+                  f"the deadline, not later (+"
+                  f"{(link._purge_until or 0) - dl:.3f} s)")
+            R.m.purge.clear("test reset")
+        # A momentary press whose frame the link refuses is never answered
+        # as firing.
+        R.link = fake = _FakeTimedLink()
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=R.loop)
+        fake.purge_set = lambda values, gen=None: False
+        st, out = R.m.purge.fire_beat({"on": True}, "Rack screen", True)
+        check(st == 409 and "did not take" in out.get("error", "") and
+              R.m.purge.fire is None,
+              f"a refused momentary frame: not firing, said so: {st} {out}")
+        R.m.purge.clear("test reset")
         # A Space press that looked before a timed purge started on its
         # own screen and lands after: it ends it with its line, never
         # overwrites it.

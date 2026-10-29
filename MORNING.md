@@ -304,6 +304,9 @@ fires a slot only for a group it reports ARMED.
   never loosens it. A purge press while one runs ends it even from a
   screen whose sign-in may not arm (it is refused for anything else), and
   a Stream Deck FIRE the engine refuses posts Stop purge on its way out.
+  A group seen disarmed at flamesafe ends the purge on the next send, up
+  to 0.1 s later; meanwhile flamesafe itself sends nothing for a disarmed
+  group, so the link's value for it reaches no flame.
 - **What ends it at once.** Stop purge (from any screen, signed in or
   not), Stop, Abort, Hold (and a Hold standing), Start now, Run (refused or
   not), a show going live or the show clock playing, an Abort standing,
