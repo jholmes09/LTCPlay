@@ -1093,13 +1093,13 @@ class Composer:
         # group, so a group's slot could never be left holding a hazer's
         # value even if a config somehow named it twice (the loader refuses
         # that).  The show program's value on an entry's slots only while
-        # it is switched on (_pt_on) and the link is fresh; a slot in the
-        # lockout file is zero whatever else holds.  Never armed, never a
-        # fire slot, never part of any group's edge or confirmation.
+        # it is switched on (_pt_on, which step 3 cleared on this very tick
+        # if the link is not fresh); a slot in the lockout file is zero
+        # whatever else holds.  Never armed, never a fire slot, never part
+        # of any group's edge or confirmation.
         pt_passing = []
         for i, p in enumerate(self.pt):
-            passing = (self._pt_on[i] and frame_fresh
-                       and self._frame is not None)
+            passing = self._pt_on[i] and self._frame is not None
             pt_passing.append(passing)
             if passing:
                 for sl in p.slots:

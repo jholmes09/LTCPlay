@@ -177,6 +177,16 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 .tile.lz{border-color:#6f63c9} .tile.lz.armed{border-color:#A898FF;background:#1a153a} .tile.lz.armed .ts{color:#D9D2FF}
 .allcol{display:grid;grid-template-rows:minmax(56px,1fr) minmax(56px,1fr);gap:var(--gap);min-width:0}
 .allcol .b{min-height:56px;height:100%;padding:0 6px;gap:6px}
+/* The hazers: one row under the flame tiles, a button per hazer reading
+   its name and ON or OFF, then Hazers off. */
+.hzrow{grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap);min-width:0}
+.hzrow[hidden]{display:none}
+.hzrow .b{min-height:56px;height:100%;padding:0 8px;gap:8px;justify-content:center}
+.hzrow .b .hn{font-weight:800;text-transform:uppercase;letter-spacing:.03em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.hzrow .b .hw{font-weight:800}
+.hzrow .b.on{background:#0b2414;border-color:var(--green);color:#9BF5B7}
+.hzrow .b.off{background:var(--panel);border-color:var(--line);color:var(--cream)}
+.hzrow .b.unk{border-style:dashed;color:var(--grey)}
 .ann{display:flex;align-items:center;gap:var(--gap);min-width:0}
 .ann .head{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;min-width:0;flex:0 1 auto;max-width:20%;
   height:100%;min-height:56px;padding:2px 8px;border:2px solid var(--line);border-radius:12px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
@@ -310,6 +320,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #ann-btns .b{flex:1 1 40%;min-height:56px}
   #ann-stop{flex:1 1 100%;min-height:56px}
   .tile{grid-template-rows:auto auto var(--tile-btn)}
+  .hzrow{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 </style>
 </head>
@@ -399,6 +410,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span>Hold: arm flames</span></button>
         <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
+      <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
+           per hazer, and Hazers off. Abort and Stop switch them off. -->
+      <div id="hazers" class="hzrow" hidden aria-label="Hazers"></div>
     </div>
   </section>
 
@@ -844,6 +858,7 @@ function pillLook(st, isStaleNow, items){
 const ALERT_WHAT = {deck:"Stream Deck problem.", audio:"Show audio problem.", video:"Video problem.",
   start:"Show did not start.", flames:"Flame problem.", link:"Flame link problem.", timecode:"Timecode problem.",
   lasers:"Laser problem.", users:"Sign-in file problem.", aim:"Wave aim does not match.", follow:"Video not following.",
+  hazers:"Hazers do not match.",
   gate:"Check before the show.", preroll:"Rig check failed."};
 const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", video:"Check the video PC.",
   timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm."};
@@ -1082,6 +1097,7 @@ function render(){
   ALERTS = alertItems(s);
   renderAlertSlot();
   renderGroups(s.flames || {});
+  renderHazers(s);
   renderAnnounce();
   renderSys();
   document.querySelector('.tab[data-tab="settings"]').hidden = !(ME && ME.local && mayRow(s, "settings"));
@@ -1476,6 +1492,46 @@ function layoutGroups(){
   box.style.gridTemplateColumns = "repeat(" + Math.ceil(n / rows) + ", minmax(0,1fr))";
 }
 window.addEventListener("resize", layoutGroups);
+// The hazers (hazers.py): one button per hazer, a plain tap; and Hazers
+// off. Built once per set of names, then updated.
+let HZ_KEY = "";
+function renderHazers(s){
+  const v = s && s.hazers, row = $("hazers");
+  if(!v || !v.available || !(v.hazers || []).length){ row.hidden = true; HZ_KEY = ""; return; }
+  row.hidden = false;
+  const key = v.hazers.map(h => h.name).join("\n");
+  if(key !== HZ_KEY){
+    HZ_KEY = key;
+    row.innerHTML = v.hazers.map((h, i) =>
+      `<button class="b off" data-hzb="${i}">${icon("ring")}<span class="hn"></span><span class="hw"></span></button>`).join("") +
+      `<button class="b safe" id="hz-off">${icon("shield")}<span>Hazers off</span></button>`;
+    row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
+    $("hz-off").addEventListener("click", hazersOff);
+  }
+  const fl = s.flames || {};
+  const st = stale() || !fl.connected || !!fl.stale;
+  v.hazers.forEach((h, i) => {
+    const b = row.querySelector(`[data-hzb="${i}"]`);
+    if(!b) return;
+    const look = hazerLook(h, st);
+    b.className = "b " + (look.cls === "unknown" ? "unk" : (look.on ? "on" : "off"));
+    setText(b.querySelector(".hn"), h.name);
+    setText(b.querySelector(".hw"), look.word);
+    b.title = look.label + ". Tap: " + look.act.toLowerCase() + "." +
+      (look.why ? " " + look.why + "." : (!look.on && v.down ? " Cannot switch on: " + v.down : ""));
+    b.setAttribute("aria-label", look.label + ". " + look.act);
+  });
+}
+async function hazerTap(i){
+  const h = ((ST && ST.hazers && ST.hazers.hazers) || [])[i];
+  if(!h) return;
+  try{ const j = await post("/api/remote/hazer", actor({hazer: h.name, on: !h.on})); say(j.text || "", "", "ok"); }
+  catch(e){ say(armShort(e.message), e.message, "bad"); }
+}
+async function hazersOff(){
+  try{ const j = await post("/api/remote/hazers-off", actor({})); say(j.text || "Every hazer is OFF.", "", "ok"); }
+  catch(e){ say(armShort(e.message), e.message, "bad"); }
+}
 function renderGroups(fl){
   const groups = fl.groups || [];
   const la = ST && ST.laser_arm;

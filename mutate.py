@@ -2556,13 +2556,8 @@ MUTATIONS = [
  # passthrough (2026-10-29): the hazers
  ("flamesafe: passthrough: a hazer passes without being switched on",
   "flamesafe/composer.py",
-  "            passing = (self._pt_on[i] and frame_fresh",
-  "            passing = (True and frame_fresh"),
-
- ("flamesafe: passthrough: a hazer passes on a stale link",
-  "flamesafe/composer.py",
-  "            passing = (self._pt_on[i] and frame_fresh",
-  "            passing = (self._pt_on[i]"),
+  "            passing = self._pt_on[i] and self._frame is not None",
+  "            passing = self._frame is not None"),
 
  ("flamesafe: passthrough: a stale link leaves the hazers switched on",
   "flamesafe/composer.py",

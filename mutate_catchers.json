@@ -1131,7 +1131,6 @@
 "flamesafe: passthrough: ON enables a hazer not seen OFF since it was taken away": "test_flamesafe_in_its_own_process",
 "flamesafe: passthrough: a change of sender leaves the hazers as they were": "test_flamesafe_in_its_own_process",
 "flamesafe: passthrough: a hazer may take a group's name": "test_flamesafe_in_its_own_process",
-"flamesafe: passthrough: a hazer passes on a stale link": "test_flamesafe_in_its_own_process",
 "flamesafe: passthrough: a hazer passes without being switched on": "test_flamesafe_in_its_own_process",
 "flamesafe: passthrough: a hazer slot in the lockout file passes": "test_flamesafe_in_its_own_process",
 "flamesafe: passthrough: a hazer slot may be a group's slot": "test_flamesafe_in_its_own_process",

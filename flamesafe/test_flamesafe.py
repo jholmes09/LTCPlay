@@ -6003,8 +6003,8 @@ def test_passthrough_passes_only_while_on_and_fresh():
           f"a stale link zeroes every hazer: {_pt(r)}")
     r.c._pt_on = [True] * 3
     r.out = r.c.tick()
-    check(_haze(r) == [0] * 6, "belt and braces: a stale link is zero even "
-                               "with a hazer somehow left enabled")
+    check(_haze(r) == [0] * 6 and not any(r.c._pt_on),
+          "every stale tick switches the hazers off again")
     r.link_alive = True
     r.run(3, cue)
     check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_LINK,

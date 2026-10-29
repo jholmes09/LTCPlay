@@ -59247,6 +59247,648 @@ def _mo_advance(R, dt, beat=True):
     R.m.tick()
 
 
+# ------------------------------------------------------------ the hazers ----
+# Jeff, 2026-10-29: three haze machines on the flame universe, data in the
+# show's FSEQ. flamesafe's "passthrough" (flamesafe/CONTRACT.md); the
+# engine's ON/OFF (ltcplay/hazers.py) carried as "hazers_on" on the flame
+# link (ltcplay/flamelink.py).
+
+_HZ = [("Hazer 1", [80, 81]), ("Hazer 2", [82, 83]), ("Hazer 3", [84, 85])]
+
+
+def _hz_values(fire=0):
+    v = [0] * 512
+    for i, s in enumerate(range(80, 86)):
+        v[s - 1] = 100 + i
+    v[410] = fire                       # front row's first fire slot (411)
+    return v
+
+
+def _hz_link(cues=None, live=True, **kw):
+    """A FlameLink on a recording socket, with the example's hazers, its
+    seek guard off, released, the show live on a moving timecode."""
+    from ltcplay import flamelink as fl
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(
+        os.path.join(here, "flamesafe", "flamesafe.example.json"))
+    t = [100.0]
+    state = {"live": live}
+
+    def show():
+        t[0] += 0.04
+        n = int(t[0] * 30)
+        return (f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}",
+                state["live"])
+    link = _flk_unguarded(cfg, cues=cues or (lambda tc: _hz_values()),
+                          show_state=show, clock=lambda: t[0], **kw)
+    link._sock = _FlSock()
+    link.release()
+    link.state = state
+    return link
+
+
+def _hz_last(link, kind="flame"):
+    import json as _j
+    for d, _a in reversed(link._sock.sent):
+        o = _j.loads(d)
+        if o["t"] == kind:
+            return o
+    return None
+
+
+def test_hazers_flame_link():
+    section("hazers at the flame link (Jeff, 2026-10-29): every frame says "
+            "hazers_on; a hazer's slots carry the show's values only while "
+            "it is ON, from every source (show, live xLights, the scrub, the "
+            "Programming transport), else zero; OFF at start and after a "
+            "restart; Abort and Stop switch them OFF before the first "
+            "disarm copy; Hold changes nothing; flame values are untouched")
+    import json as _j
+    from ltcplay import flamelink as fl
+    here = os.path.dirname(os.path.abspath(__file__))
+    ex = _j.load(open(os.path.join(here, "flamesafe",
+                                   "flamesafe.example.json"),
+                      encoding="utf-8"))
+    check([(n, list(sl)) for n, sl in fl.hazers_of(ex)] == _HZ,
+          f"the engine reads the example's three hazers: "
+          f"{fl.hazers_of(ex)}")
+    check(fl.hazers_of({"groups": []}) == (), "no passthrough: none")
+    for bad, why in (
+            ([{"name": "Hazer 1", "slots": [401]}], "a group's safety slot"),
+            ([{"name": "Hazer 1", "slots": [411]}], "a group's fire slot"),
+            ([{"name": "Hazer 1", "slots": [12]}], "a wave flamer safety"),
+            ([{"name": "Hazer 1", "slots": [80]},
+              {"name": "Hazer 2", "slots": [80]}], "two hazers on a slot"),
+            ([{"name": "Hazer 1", "slots": [80]},
+              {"name": "Hazer 1", "slots": [81]}], "one name twice"),
+            ([{"name": "Hazer 1", "slots": []}], "no slots"),
+            ([{"name": "Hazer 1", "slots": [513]}], "a slot past 512"),
+            ([{"name": "", "slots": [80]}], "no name"),
+            ({"name": "Hazer 1"}, "not a list"),
+            ([{"name": f"H{i}", "slots": [100 + i]} for i in range(17)],
+             "more than 16")):
+        try:
+            fl.hazers_of(dict(ex, passthrough=bad))
+            check(False, f"the engine accepted {why}")
+        except fl.FlameLinkConfigError as e:
+            check("flamesafe refuses this file too" in str(e) and
+                  "—" not in str(e) and "–" not in str(e),
+                  f"the engine refuses {why}: {e}")
+
+    seen = []
+    link = _hz_link(cues=lambda tc: _hz_values(fire=200))
+    link.observer = lambda tc, v, ok: seen.append(bytes(v))
+    link.send_frame()
+    o = _hz_last(link)
+    check(o["hazers_on"] == [] and o["values"][79:85] == [0] * 6 and
+          o["values"][410] == 200,
+          f"OFF at start: hazers_on [], the hazer slots zero, the flame cue "
+          f"as before: {o['hazers_on']} {o['values'][79:85]}")
+    check(link.hazers_set(["Hazer 1", "no such hazer"]) == {"Hazer 1"},
+          "a name the link does not have is dropped")
+    link.send_frame()
+    o = _hz_last(link)
+    check(o["hazers_on"] == ["Hazer 1"] and
+          o["values"][79:85] == [100, 101, 0, 0, 0, 0] and
+          o["values"][410] == 200,
+          f"Hazer 1 ON: both its slots carry the show's values, the others "
+          f"zero: {o['hazers_on']} {o['values'][79:85]}")
+    check(seen and all(not any(b[79:85]) for b in seen),
+          "the fuel tracker is never told a hazer value")
+    link.cues = lambda tc: _hz_values(fire=0)
+    link.send_frame()
+    check(not link.last_values_nonzero and any(_hz_last(link)["values"]),
+          "a frame with haze and no flame is not 'firing'")
+    # Hold: the cues zero, the hazers stay as set.
+    link.zero()
+    o = _hz_last(link)
+    check(o["hazers_on"] == ["Hazer 1"] and not any(o["values"]),
+          f"a Hold's zero frame: values zero, Hazer 1 still ON: {o}")
+    link.release()
+    # Abort (and Stop: the same disarm_all): every hazer OFF at the link,
+    # before the zero frame and the first copy.
+    n0 = len(link._sock.sent)
+    link.disarm_all("Abort from the rack screen")
+    after = [_j.loads(d) for d, _a in link._sock.sent[n0:]]
+    check(after and after[0]["t"] == "flame" and
+          after[0]["hazers_on"] == [] and link.hazers_on == frozenset(),
+          f"Abort: the zero frame already says every hazer OFF: "
+          f"{[(x['t'], x.get('hazers_on')) for x in after]}")
+    link.release()
+    check(link.abort_repeating() and link.hazers_set(["Hazer 1"]) ==
+          frozenset(), "ON is dropped while the Abort is being repeated")
+    link._abort_repeat = None
+    link.send_frame()
+    check(_hz_last(link)["hazers_on"] == [] and
+          not any(_hz_last(link)["values"][79:85]),
+          "and they stay OFF until switched on again")
+    # Live flame programming: xLights' frame carries the hazer channels.
+    link.state["live"] = False
+    s = link.program_begin()
+    link.hazers_set(["Hazer 2"])
+    link.program_set(bytes(_hz_values(fire=230)), s)
+    link.send_frame()
+    o = _hz_last(link)
+    check(o["values"][79:85] == [0, 0, 102, 103, 0, 0] and
+          o["values"][410] == 230,
+          f"live xLights: Hazer 2's values pass while ON: "
+          f"{o['values'][79:85]}")
+    link.program_end()
+    # Between shows, the Programming transport (whether or not fire flames
+    # while scrubbing is on): asked only while a hazer is ON.
+    asked = []
+
+    def scrub():
+        asked.append(1)
+        return _hz_values(fire=250)
+    link.hazer_scrub = scrub
+    link.hazers_set([])
+    link.send_frame()
+    check(not asked, "no hazer ON: the transport is not read")
+    link.hazers_set(["Hazer 3"])
+    link.send_frame()
+    o = _hz_last(link)
+    check(asked and o["values"][79:85] == [0, 0, 0, 0, 104, 105] and
+          o["values"][410] == 0,
+          f"the transport's position: Hazer 3 ON passes, no flame value "
+          f"goes from it: {o['values'][79:85]} {o['values'][410]}")
+    link.hazer_scrub = lambda: [1, 2, 3]
+    link.send_frame()
+    check(not any(_hz_last(link)["values"]),
+          "a transport frame that is not 512 values is zero")
+    link.hazer_scrub = None
+    # Fire flames while scrubbing: the hazers pass at once, the flames wait
+    # for the seek guard's settle.
+    link.hazers_set(["Hazer 1"])
+    pos = {"n": 0}
+
+    def rstate():
+        pos["n"] += 1
+        return f"00:00:10:{pos['n'] % 30:02d}"
+    link.show_state = lambda: (None, False)     # the show clock idle
+    link.rehearse_begin(rstate, lambda tc: _hz_values(fire=240))
+    link.send_frame()
+    o = _hz_last(link)
+    check(o["values"][79:81] == [100, 101] and o["values"][410] == 0,
+          f"scrubbing: the hazer passes while the flames settle: "
+          f"{o['values'][79:81]} {o['values'][410]}")
+    link.rehearse_end()
+    # A restart: a new link has every hazer OFF.
+    link2 = _hz_link()
+    link2.send_frame()
+    check(link2.hazers_on == frozenset() and
+          _hz_last(link2)["hazers_on"] == [], "a new engine: every hazer OFF")
+    check(link.snapshot()["hazers_on"] == ["Hazer 1"],
+          "the snapshot says which are ON")
+    print("  ok")
+
+
+def _hz_rig(S):
+    """An _arm_rig with the hazers built as web.serve builds them, its
+    FlameLink on a recording socket, flamesafe's status carrying the same
+    passthrough list, on the test's clock, no watch thread."""
+    import json as _j
+    from ltcplay import hazers as HZ
+    R = _arm_rig(S)
+    R.link = _hz_link(live=False)
+    R.pt = [{"name": n, "slots": sl, "asked": False, "enabled": False,
+             "passing": False, "why": "switched off in the show program"}
+            for n, sl in _HZ]
+
+    def feed():
+        on = R.link.hazers_on
+        for p in R.pt:
+            p["asked"] = p["enabled"] = p["passing"] = p["name"] in on
+        R.remote.flame_status.note(_j.dumps({
+            "t": "status", "k": "k" * 20, "fault": "", "groups": R.groups,
+            "passthrough": R.pt}).encode())
+    R.feed = feed
+    feed()
+    R.aborted = [False]
+    R.remote.hazers = HZ.Hazers(
+        link_get=lambda: R.link,
+        flames_get=lambda: R.remote.flame_status.view(),
+        abort_standing=lambda: R.aborted[0] or R.remote._abort_standing(),
+        journal=lambda who, screen, outcome, text, fault=False:
+        R.remote._journal(who or "system", screen or "engine", "hazers",
+                          outcome, text, fault=fault),
+        clock=lambda: R.mono[0], threaded=False)
+    return R
+
+
+def test_hazers_at_the_engine():
+    section("hazers at the engine (hazers.py, Jeff 2026-10-29): OFF at start; "
+            "a plain tap ON from the rack screen, from the show network only "
+            "with screen_arming; refused with an Abort standing, flamesafe's "
+            "status stale or its hazers different (an alert, display only); "
+            "OFF and Hazers off never refused, signed out included; the role "
+            "matrix's arm row for ON; Abort and Stop switch every hazer OFF; "
+            "Hold does not; a stale status switches them OFF")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import alerts as AL
+    from ltcplay import hazers as HZ
+    check("hazer" in RM.POST_ROUTES and "hazers-off" in RM.POST_ROUTES,
+          "the routes exist")
+    check(U.REMOTE_ROUTES.get("hazer") == "arm" and
+          U.REMOTE_ROUTES.get("hazers-off") == "safety" and
+          U.classify("/api/remote/hazer", {"on": True}) == "arm" and
+          all(U.classify("/api/remote/hazer", b) == "safety"
+              for b in ({"on": False}, {"on": "true"}, {"on": 1}, {}, None)) and
+          U.classify("/api/remote/hazers-off", {"on": True}) == "safety",
+          "the role matrix: a hazer ON is an arm press, every OFF safety")
+    check("hazers" in AL.KINDS and "hazers" in AL.DISPLAY_ONLY and
+          AL.SEVERITY["hazers"] == "warning",
+          "the mismatch alert is display only")
+    loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
+    R = _hz_rig(S)
+    link = R.link
+
+    def tap(name, on, client=loop, **kw):
+        return R.ask("POST", "/api/remote/hazer",
+                     {"hazer": name, "on": on, "seen": R.seen()},
+                     client=client, **kw)
+    try:
+        st, _h, s = R.ask("GET", "/api/remote/status", client=ipad)
+        hv = s.get("hazers") or {}
+        check(hv.get("available") and
+              [(h["name"], h["slots"], h["on"], h["label"])
+               for h in hv["hazers"]] ==
+              [(n, sl, False, f"{n} OFF") for n, sl in _HZ] and
+              hv.get("agree") is True and hv.get("down") == "",
+              f"every screen's status: three hazers, all OFF: {hv}")
+        st, _h, out = tap("Hazer 1", True)
+        check(st == 200 and link.hazers_on == {"Hazer 1"} and
+              out["text"] == "Hazer 1 is ON.",
+              f"a tap on the rack screen: ON: {st} {out}")
+        R.feed()
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = tap("Hazer 2", True, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              link.hazers_on == {"Hazer 1"},
+              f"from the show network without screen_arming: refused: "
+              f"{st} {out}")
+        st, _h, out = tap("Hazer 1", False, client=ipad)
+        check(st == 200 and link.hazers_on == frozenset(),
+              f"but OFF from there is never refused: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        st, _h, out = tap(1, True, client=ipad)
+        check(st == 200 and link.hazers_on == {"Hazer 2"},
+              f"with screen_arming on, ON from the show network (by index "
+              f"too): {st} {out}")
+        st, _h, out = tap("Hazer 9", True)
+        check(st == 400 and link.hazers_on == {"Hazer 2"},
+              f"a hazer that is not in the config: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/hazers-off", {},
+                            client=ipad)
+        check(st == 200 and link.hazers_on == frozenset(),
+              f"Hazers off: every hazer OFF: {st} {out}")
+        # Refusals before ON.
+        R.aborted[0] = True
+        st, _h, out = tap("Hazer 1", True)
+        check(st == 409 and "Abort is standing" in out["error"] and
+              not link.hazers_on, f"an Abort standing: refused: {out}")
+        R.aborted[0] = False
+        R.mono[0] += 1.5
+        st, _h, out = tap("Hazer 1", True)
+        check(st == 409 and "has not reported" in out["error"] and
+              not link.hazers_on, f"flamesafe's status 1.5 s old: refused: "
+                                  f"{out}")
+        R.feed()
+        R.pt[2]["slots"] = [84, 86]
+        R.feed()
+        st, _h, out = tap("Hazer 1", True)
+        check(st == 409 and "differ" in out["error"] and not link.hazers_on,
+              f"flamesafe's hazers not the engine's: refused: {out}")
+        st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        al = [a for a in R.remote.alerts.open() if a.kind == "hazers"]
+        check(s["hazers"]["agree"] is False and len(al) == 1 and
+              "Hazer 3 84, 86" in al[0].text and "Hazer 3 84, 85" in al[0].text
+              and "—" not in al[0].text,
+              f"and the hazers alert says both lists: "
+              f"{[a.text for a in al]}")
+        R.pt[2]["slots"] = [84, 85]
+        R.feed()
+        R.ask("GET", "/api/remote/status", client=loop)
+        check(not [a for a in R.remote.alerts.open() if a.kind == "hazers"],
+              "the lists agree again: the alert clears itself")
+        # The watch: a stale status switches every hazer OFF.
+        tap("Hazer 1", True)
+        R.feed()
+        check(not R.remote.hazers.check() and link.hazers_on == {"Hazer 1"},
+              "fresh: the watch leaves it ON")
+        R.mono[0] += 1.5
+        check(R.remote.hazers.check() and link.hazers_on == frozenset(),
+              "flamesafe silent for 1.5 s: the watch switches it OFF")
+        R.feed()
+        # The role matrix: ON is an arm press; every OFF is safety.
+
+        class _NoArm:
+            def may(self, role, perm):
+                return perm != "arm"
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        tap("Hazer 3", True)
+        R.remote.users = _NoArm()
+        st, _h, out = tap("Hazer 1", True)
+        check(st == 403 and out.get("role_refused") and
+              link.hazers_on == {"Hazer 3"},
+              f"may not arm: a hazer ON is refused: {st} {out}")
+        st, _h, out = tap("Hazer 3", False)
+        check(st == 200 and link.hazers_on == frozenset(),
+              f"OFF always works, signed out: {st} {out}")
+        tap("Hazer 2", True)
+        R.remote.users = None
+        tap("Hazer 2", True)
+        # Hold changes nothing; Abort and Stop switch every hazer OFF.
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()}, client=loop)
+        check(link.hazers_on == {"Hazer 2"}, "a Hold: the hazers stay as set")
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen(),
+                                            "confirmed": True}, client=loop)
+        check(link.hazers_on == frozenset(), "Abort: every hazer OFF")
+        R.ask("POST", "/api/remote/reset", {"seen": R.seen()}, client=loop)
+        R.settle()
+        R.feed()
+        tap("Hazer 1", True)
+        R.remote.halt("Ollie", "Rack screen")
+        check(link.hazers_on == frozenset(), "Stop: every hazer OFF")
+        R.feed()
+        tap("Hazer 1", True)
+        _Rh = R.remote.hazers
+        check(_Rh.view()["hazers"][0]["label"] == "Hazer 1 ON" or
+              not link.hazers_on, "the view's state words")
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen()}, client=loop)
+        check(link.hazers_on == frozenset(),
+              "an unconfirmed Abort still switches them OFF (it only takes "
+              "something away)")
+        lines = [r.get("text", "") for r in R.lines_for("hazers")]
+        check(any("switched Hazer 1 ON" in t for t in lines) and
+              any("Hazers off" in t for t in lines) and
+              not any("—" in t or "–" in t for t in lines),
+              f"the journal says each ON, OFF and all off: {lines[-4:]}")
+        check(HZ.label("Hazer 1", True) == "Hazer 1 ON" and
+              HZ.label("Hazer 2", False) == "Hazer 2 OFF",
+              "the operator words")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_hazers_end_to_end_against_the_real_flamesafe():
+    section("hazers end to end: the real flamesafe in its own process, the "
+            "real FlameLink, over loopback UDP: haze on the node only while "
+            "the engine has that hazer ON; a foreign keyed sender cannot "
+            "switch one on; the show's Abort zeroes them until OFF then ON")
+    import json as _j
+    import socket as _so
+    import subprocess
+    import threading
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.2)
+    status_rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    status_rx.bind(("127.0.0.1", 0))
+    status_rx.settimeout(0.2)
+    listen = free_port()
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1",
+                 "status_port": status_rx.getsockname()[1], "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": "front row", "safety": 401, "fire": [411, 412]}],
+        "passthrough": [{"name": n, "slots": sl} for n, sl in _HZ]},
+        open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    stop = threading.Event()
+    last = {"st": None}
+
+    def read_status():
+        while not stop.is_set():
+            try:
+                d, _a = status_rx.recvfrom(65535)
+            except (_so.timeout, OSError):
+                continue
+            o = fl.decode_status(d, key)
+            if o is not None:
+                last["st"] = o
+    threading.Thread(target=read_status, daemon=True).start()
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    link = _flk_unguarded(fl.FlameLinkConfig.from_flamesafe_config(cfg_path),
+                          cues=lambda tc: _hz_values(fire=200),
+                          show_state=lambda: (show_tc(), True))
+    link.release()
+
+    def haze(seconds=0.4):
+        """The hazer slots on the node's last packet after `seconds`."""
+        end = time.monotonic() + seconds
+        got = None
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            got = fp.parse_e131(data).values
+        return None if got is None else (list(got[79:85]), got[410])
+    try:
+        link.start()
+        first = haze(3.0)
+        if not check(first is not None, "flamesafe sends to the node: " +
+                     "".join(said)[-400:]):
+            return
+        check(any("passthrough: Hazer 1 80, 81; Hazer 2 82, 83; Hazer 3 84, "
+                  "85" in l for l in said),
+              "flamesafe's start line names the hazers")
+        check(first[0] == [0] * 6 and first[1] == 0,
+              f"every hazer OFF: zero on the node; front row is not armed, so "
+              f"its fire is zero too: {first}")
+        link.hazers_set(["Hazer 1", "Hazer 3"])
+        got = haze()
+        check(got and got[0] == [100, 101, 0, 0, 104, 105] and got[1] == 0,
+              f"Hazers 1 and 3 ON: their values reach the node, nothing "
+              f"armed: {got}")
+        pt = (last["st"] or {}).get("passthrough") or []
+        check([(p["name"], p["passing"]) for p in pt] ==
+              [("Hazer 1", True), ("Hazer 2", False), ("Hazer 3", True)],
+              f"flamesafe's status says which pass: {pt}")
+        # A foreign keyed sender saying every hazer ON, with its own values.
+        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        vals = [255] * 512
+        for i in range(10):
+            rogue.sendto(_j.dumps({
+                "v": 2, "k": key, "t": "flame", "seq": 10 ** 12 + i,
+                "tc": None, "mono": 10.0 ** 6 + i, "universe": 1,
+                "values": vals,
+                "hazers_on": ["Hazer 1", "Hazer 2", "Hazer 3"]}).encode(),
+                ("127.0.0.1", listen))
+            time.sleep(0.02)
+        got = haze()
+        check(got and got[0] == [100, 101, 0, 0, 104, 105] and got[1] == 0,
+              f"a foreign keyed sender cannot switch Hazer 2 on or put its "
+              f"values on any hazer: {got}")
+        rogue.close()
+        time.sleep(0.6)                   # its foreign-sender window passes
+        link.disarm_all("Abort from the selftest")
+        got = haze(0.3)
+        check(got and got[0] == [0] * 6,
+              f"the show's Abort: every hazer zero on the node: {got}")
+        link.release()
+        check(link.abort_repeating() and
+              link.hazers_set(["Hazer 1"]) == frozenset(),
+              "while the Abort is still being repeated no hazer goes ON")
+        time.sleep(link.cfg.abort_repeat_s + 0.1)
+        link.hazers_set(["Hazer 1"])
+        got = haze(1.5)
+        check(got and got[0][:2] == [100, 101],
+              f"OFF (the Abort) then ON again at the engine: Hazer 1 passes "
+              f"again: {got}")
+    finally:
+        stop.set()
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        status_rx.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_hazers_on_the_rack_screens():
+    section("hazers on the rack screens (1.0 and 2.0): a row of three tiles "
+            "named from the config with ON or OFF in words and Hazers off; "
+            "a plain tap; drawn at every rack size beside the flame groups "
+            "with nothing squeezed, covered or under Abort")
+    import shutil
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    page2 = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+                 encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    check("function hazerLook" in logic, "hazerLook is pure logic")
+    for name, p in (("1.0", page), ("2.0", page2)):
+        check("renderHazers(s)" in p and "/api/remote/hazer" in p and
+              "/api/remote/hazers-off" in p and "Hazers off" in p,
+              f"{name}: the row, its taps and Hazers off")
+        check("pointerdown" not in p[p.find("function renderHazers"):
+                                     p.find("async function hazersOff")],
+              f"{name}: a plain tap, never a hold")
+        frag = p[p.find("function renderHazers"):
+                 p.find("async function hazersOff") + 400]
+        check(not re.search("[–—]", frag), f"{name}: no dashes")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+    else:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+let L = hazerLook({name:"Hazer 1", on:false, passing:false, why:"switched off in the show program"}, false);
+t(L.word === "OFF" && L.act === "Switch on" && L.label === "Hazer 1 OFF" && L.why === "" && L.cls === "disarmed", "off: " + JSON.stringify(L));
+L = hazerLook({name:"Hazer 2", on:true, passing:true}, false);
+t(L.word === "ON" && L.act === "Switch off" && L.cls === "armed" && /going out/.test(L.why), "on: " + JSON.stringify(L));
+L = hazerLook({name:"Hazer 2", on:true, passing:false, why:"zeroed by the show's Abort: switch it off and on again in the show program"}, false);
+t(L.word === "ON" && /holds it at zero: zeroed by the show's Abort/.test(L.why), "on but zeroed: " + JSON.stringify(L));
+L = hazerLook({name:"Hazer 3", on:true}, true);
+t(L.cls === "unknown" && /Not known/.test(L.why) && L.act === "Switch off", "stale: " + JSON.stringify(L));
+t(!/[–—]/.test(JSON.stringify([L, hazerLook({on:false}, false)])), "no dashes");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node failed: {r.stderr[-400:]}"]
+        for m in bad:
+            check(False, f"hazerLook: {m}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  note: no Chromium here, so the row was not drawn")
+        print("  ok")
+        return
+    st = _rack_status_pico()
+    st["flames"]["passthrough"] = []
+    st["hazers"] = {"available": True, "down": "", "agree": True,
+                    "last_off": None, "hazers": [
+                        {"name": n, "slots": sl, "on": i == 0,
+                         "label": f"{n} {'ON' if i == 0 else 'OFF'}",
+                         "passing": i == 0,
+                         "why": "" if i == 0 else
+                         "switched off in the show program"}
+                        for i, (n, sl) in enumerate(_HZ)]}
+    mjs = _RACK_MEASURE_JS.replace(
+        '  const ctl = {"Abort": "b-abort",',
+        '  out.hazers = 0;\n'
+        '  document.querySelectorAll("#hz-row button").forEach(el => {\n'
+        '    const nm = "hazer " + (el.dataset.hzb || "off");\n'
+        '    if(!shown(el)){ out.problems.push(nm + ": not shown"); return; }\n'
+        '    out.hazers += 1;\n'
+        '    const r = rectOf(el);\n'
+        '    if(r.h < 44 || r.w < 44) out.problems.push(nm + ": " + r.w.toFixed(0) + "x" + r.h.toFixed(0));\n'
+        '    for(const b of hits(el)) out.problems.push(nm + ": " + b);\n'
+        '    const wd = el.querySelector(".word");\n'
+        '    if(el.dataset.hzb && wd && !/^(ON|OFF)$/.test(wd.textContent)) out.problems.push(nm + ": its word is " + wd.textContent);\n'
+        '  });\n'
+        '  const ctl = {"Abort": "b-abort",', 1).replace(
+        '#fl-lamps button, #b-disarm,', '#fl-lamps button, #hz-row button, #b-disarm,', 1)
+    check(mjs != _RACK_MEASURE_JS and "#hz-row button, #b-disarm" in mjs,
+          "the measure looks at the hazer row too")
+    got = _rack_screen_in_chromium(chrome, page, st, RACK_SIZES,
+                                   measure_js=mjs)
+    for (w, h), res in got.items():
+        if not check(isinstance(res, list) and res, f"{w}x{h}: drawn: "
+                                                    f"{res!r}"):
+            continue
+        for m in res:
+            check(not m["problems"],
+                  f"{w}x{h} {m['tag']}: with the hazer row nothing is "
+                  f"squeezed or covered: {m['problems'][:6]}")
+            check(m.get("hazers") == 4,
+                  f"{w}x{h}: three hazers and Hazers off drawn: "
+                  f"{m.get('hazers')}")
+    print("  ok")
+
+
 def test_flamesafe_multi_safety_ltcplay_side():
     """flamesafe multi-safety (Jeff, 2026-10-26): the wave flamer is ONE
     arm group driving three 6-channel fixtures, each with its own safety
@@ -86306,6 +86948,10 @@ if __name__ == "__main__":
         test_audio_interface_watch,
         test_morning_config_layout_and_lockout_file,
         test_flamesafe_multi_safety_ltcplay_side,
+        test_hazers_flame_link,
+        test_hazers_at_the_engine,
+        test_hazers_end_to_end_against_the_real_flamesafe,
+        test_hazers_on_the_rack_screens,
         test_aim_slots_are_seen_on_the_rack_screen,
         test_morning_multi_safety_machines_pair_by_layout,
         test_morning_layout_error_names_the_flamesafe_file,

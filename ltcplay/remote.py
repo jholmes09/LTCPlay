@@ -191,6 +191,10 @@ FIREBALL_POST_ROUTES = ("fireball-beat", "fireball-off")
 # beat that runs it is an arm press (users.classify), Stop never.
 CLEANING_GET_ROUTES = ("cleaning",)
 CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
+# The hazers (hazers.py, Jeff 2026-10-29): read by anyone in the status; a
+# hazer ON is an arm press (users.classify) and from the show network needs
+# screen_arming; OFF and All off never.
+HAZER_POST_ROUTES = ("hazer", "hazers-off")
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
@@ -201,7 +205,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "scrub-flames", "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1166,6 +1170,18 @@ class FlameStatus:
                               if self.last is not None and not stale
                               else None),
                 "groups": groups,
+                # The hazers as flamesafe reports them (2026-10-29), None
+                # while stale or from an older flamesafe.
+                "passthrough": ([
+                    {"name": str(p.get("name", "")),
+                     "slots": _ints(p.get("slots")) or [],
+                     "asked": bool(p.get("asked")),
+                     "enabled": bool(p.get("enabled")),
+                     "passing": bool(p.get("passing")),
+                     "why": str(p.get("why", ""))}
+                    for p in last["passthrough"] if isinstance(p, dict)]
+                    if isinstance(last.get("passthrough"), list)
+                    and not stale else None),
                 # What flamesafe says it is holding at zero (the lockout
                 # file as it read it), for the page to compare with its own.
                 "lockout": ({"slots": [int(s) for s in lk.get("slots") or []
@@ -1503,6 +1519,12 @@ class Remote:
         self.fuel = None             # fuel.FuelTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
         self.cleaning = None         # cleaning.CleaningPanel, web.serve
+        # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
+        # and the "hazers" mismatch alert's sentence and id.
+        self.hazers = None
+        self._hz_said = None
+        self._hz_alert_id = None
+        self._hz_lock = threading.Lock()
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         # scrubflames.ScrubFlames, set by web.serve (Fire & Ice with a flame
         # link and a flame controller). Always off at start.
@@ -1891,6 +1913,8 @@ class Remote:
                                              ctx),) + ({},)
         if name in ANNOUNCE_ROUTES:
             return (*self.announce_post(name, body, ctx),) + ({},)
+        if name in HAZER_POST_ROUTES:
+            return (*self.hazer_post(name, body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -3069,6 +3093,13 @@ class Remote:
             # slot shut here, the rest of ending it off this thread.
             self.scrub_flames_cut(f"{who or 'someone'} pressed {name} on "
                                   f"the {screen}", who, screen)
+        if name == "abort":
+            # The hazers OFF at the press (Jeff, 2026-10-29: "Abort turns
+            # off the hazers"), before the confirm check: it only takes
+            # something away. The flame link's disarm_all above did it at
+            # the link already; this is the belt, and the journal line.
+            self.hazers_cut(f"{who or 'someone'} pressed Abort on the "
+                            f"{screen}", who, screen)
         if name in ("abort", "hold"):
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
@@ -4185,6 +4216,127 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return False
 
+    # -- the hazers (hazers.py) ----------------------------------------------
+    def hazers_cut(self, reason, who="", screen=""):
+        """Abort or Stop: every hazer OFF at the flame link now, the journal
+        and audit lines on a thread of their own. Never raises, never
+        waits."""
+        hz = self.hazers
+        if hz is None:
+            return False
+        try:
+            hz.cut()
+            threading.Thread(target=hz.all_off, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who},
+                             daemon=True, name="ltcplay-hazers-off").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def hazer_post(self, name, body, ctx):
+        """POST hazer {"hazer": name, "on": true|false} and hazers-off.
+        ON is an arm press (users.classify, checked by web.py first) and,
+        from the show network, needs screen_arming (may_act_from); OFF and
+        All off are never refused. (code, body)."""
+        hz = self.hazers
+        if hz is None:
+            return 404, {"error": "There are no hazers in this engine."}
+        who, device, _surface = self._actor(ctx, body)
+        if name == "hazers-off":
+            hz.all_off(f"{who or 'someone'} pressed Hazers off on the "
+                       f"{device}", who=who, screen=device, system=False)
+            return 200, {"ok": True, "text": "Every hazer is OFF."}
+        hname = body.get("hazer")
+        names = hz.names()
+        if isinstance(hname, int) and not isinstance(hname, bool) and \
+                0 <= hname < len(names):
+            hname = names[hname]
+        if not isinstance(hname, str) or hname not in names:
+            return 400, {"error": "That is not a hazer in flamesafe's "
+                                  "config. Nothing was changed."}
+        on = body.get("on") is True
+        if on and not self.may_act_from(ctx.local):
+            why = ("Switching a hazer on from a device on the show network "
+                   "needs screen_arming (on the show machine itself: "
+                   "Programming, Arming from a screen, Turn on). Nothing "
+                   "was changed.")
+            self._journal(who, device, "hazer on", "refused",
+                          f"{who or 'Someone'}'s {hname} on from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        ok, text = hz.set(hname, on, who=who, screen=device)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
+
+    def hazers_view(self, fl):
+        """The status's "hazers": hazers.Hazers.view, and the display only
+        "hazers" alert while flamesafe's list and this engine's differ.
+        None with no hazers in this engine. Never raises."""
+        hz = self.hazers
+        if hz is None:
+            return None
+        try:
+            v = hz.view(fl)
+        except Exception as e:                   # noqa: BLE001
+            return {"available": False, "hazers": [],
+                    "down": f"{type(e).__name__}: {e}"}
+        try:
+            mine = sorted((n, list(sl)) for n, sl in hz.slots().items())
+            theirs = hz.flamesafe_list(fl)
+            agree = None if theirs is None else sorted(theirs) == mine
+            v["agree"] = agree
+            self._hazers_alert(agree, mine, theirs)
+        except Exception:                        # noqa: BLE001
+            pass
+        return v
+
+    @staticmethod
+    def hazers_mismatch_text(mine, theirs, path):
+        def words(v):
+            return "; ".join(f"{n} {', '.join(str(x) for x in sl)}"
+                             for n, sl in v) if v else "none"
+        return (f"Hazers do not match: flamesafe has {words(theirs)} and "
+                f"LTC Player has {words(mine)} (LTC Player read "
+                f"{path or 'flamesafe config'} when it started). Until they "
+                f"match no hazer can be switched on here. Check that both "
+                f"read the same flamesafe.json, then restart flamesafe and "
+                f"LTC Player. Stop, Hold, Abort and Disarm all work as usual "
+                f"meanwhile.")
+
+    def _hazers_alert(self, agree, mine, theirs):
+        """Raise once per new mismatch sentence; clear the one raised here
+        once the lists agree. Not known: nothing changes. Display only."""
+        if agree is None:
+            return
+        with self._hz_lock:
+            if agree:
+                aid, self._hz_alert_id = self._hz_alert_id, None
+                was, self._hz_said = self._hz_said, None
+                if was is None:
+                    return
+                self._journal("system", "engine", "hazers", "match",
+                              "Hazers match again: flamesafe and LTC Player "
+                              "have the same list.")
+                if aid is not None and any(
+                        a.id == aid for a in self.alerts.open()):
+                    self.alerts.clear(action="Confirm", id=aid,
+                                      who="LTC Player", screen="engine")
+                return
+            src = self.flame_aim
+            path = "" if src is None else str(src[1] or "")
+            text = self.hazers_mismatch_text(mine, theirs, path)
+            if text == self._hz_said:
+                return
+            self._hz_said = text
+            try:
+                a = self.alerts.raise_("hazers", text)
+                self._hz_alert_id = getattr(a, "id", None)
+            except Exception:                    # noqa: BLE001
+                self._journal("system", "engine", "hazers", "differ", text,
+                              fault=True)
+
     def scrub_flames_end(self, reason, who="", screen=""):
         """End fire flames while scrubbing now, if it is on. Never
         raises."""
@@ -4731,6 +4883,10 @@ class Remote:
                         fn(why, who, screen)
                 except Exception:                # noqa: BLE001
                     pass
+            # The hazers OFF too (Jeff, 2026-10-29: Stop is a complete
+            # halt). The flame link's disarm_all in step 1 did it at the
+            # link already; this is the belt, and the journal line.
+            self.hazers_cut(why, who, screen)
             # 3. Every laser: disarmed on the arm, and blanked at once.
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
@@ -6658,6 +6814,9 @@ class Remote:
         out["laser_fault"] = self.laser_fault()
         out["live_flame"] = self.live_flame_view()
         out["scrub_flames"] = self.scrub_flames_view()
+        hzv = self.hazers_view(out["flames"])
+        if hzv is not None:
+            out["hazers"] = hzv
         out["beyond_link"] = self.beyond_link()
         try:
             _snap = self.schedule.conductor.snapshot() or {}
