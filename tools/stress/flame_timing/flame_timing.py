@@ -325,6 +325,8 @@ def main(argv=None):
     ap.add_argument("--minutes", type=float, default=8.0)
     ap.add_argument("--pollers", type=int, default=4)
     ap.add_argument("--universes", type=int, default=1)
+    ap.add_argument("--show-seconds", type=int, default=100)
+    ap.add_argument("--every-min", type=int, default=3)
     ap.add_argument("--no-announce", action="store_true")
     ap.add_argument("--no-config", action="store_true")
     ap.add_argument("--label", default="")
@@ -358,7 +360,8 @@ def main(argv=None):
     soak = [sys.executable, os.path.join(REPO, "packaging", "windows",
                                          "soak.py"),
             "--minutes", str(a.minutes), "--no-wait", "--fake-audio",
-            "--mode", "fallback", "--show-seconds", "60", "--every-min", "2"]
+            "--mode", "fallback", "--show-seconds", str(a.show_seconds),
+            "--every-min", str(a.every_min)]
     if a.universes > 1:
         soak += ["--universes", str(a.universes)]
     print(f"flame_timing: output in {out}", flush=True)

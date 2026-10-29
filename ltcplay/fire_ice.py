@@ -1874,12 +1874,14 @@ def keep_flame_frames_on_time(sys_mod=None, gc_mod=None):
     """`ltc serve` with a flame link, once everything is built and before
     it serves (cli._cmd_serve): the switch interval to
     FLAME_SWITCH_INTERVAL_S, then one full garbage collection and
-    gc.freeze(), so the objects made at start (modules, the show, the
-    engine) are never walked again by the collector. A full collection
-    holds the GIL from start to end: 24 to 97 ms each, every 20 s or so,
-    in the harness's engine, and no flame frame goes out meanwhile. After
-    this a pass walks only what was made since. Nothing about what is
-    sent changes. Returns one sentence for the log. Never raises."""
+    gc.freeze(), so the objects made before it serves (the modules, the
+    engine's own objects) are never walked again by the collector. A full
+    collection holds the GIL from start to end: 24 to 97 ms each, every
+    20 s or so, in the timing harness's engine, and no flame frame goes out
+    meanwhile; after this a pass no longer walks those. Only once, at
+    start: an object set aside is never collected, so nothing made later
+    (a show loaded by Run) is ever frozen. Nothing about what is sent
+    changes. Returns one sentence for the log. Never raises."""
     import gc as _gc
     import sys as _sys
     sys_mod = sys_mod or _sys
