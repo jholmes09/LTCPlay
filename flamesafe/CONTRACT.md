@@ -786,7 +786,15 @@ a finger on that group's key: the deck's own hold timer, re-arm
 refractory window, latched refusal and operator gate all apply, and when
 the hold completes the deck sets that group's `wanted` bit on its own arm
 socket, the same as for its own key. A per-group Disarm on the page is an
-instant tap of that key. So:
+instant tap of that key. The engine answers it only once it is known
+(2026-10-29, the same rule as Disarm all flame groups): "confirmed" when
+flamesafe's own status, received after the deck read the Disarm, reports
+the group disarmed and not wanted within 1 s; when the deck has not read
+the engine in the last 0.5 s, or that word does not come, the engine sends
+the flame link's `disarm_all` (below; there is no one-group disarm on the
+link, so every group needs a fresh cycle), raises a flames alert and says
+"forced". Nothing new reaches flamesafe: the plain disarm is still the
+deck's tap, and the forced one is the Abort's `disarm_all`. So:
 
 - There is still exactly **one sender on the arm link**, the deck process.
   The sender lock, the round-2 AND, the forced-edge rule, the round-4 veto

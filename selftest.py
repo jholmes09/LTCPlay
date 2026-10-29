@@ -72813,6 +72813,24 @@ def test_group_disarm_is_confirmed_or_forced():
               f"a status from before the deck's read confirms nothing: "
               f"{st} {out}")
         rem.alerts.clear(kind="flames", action="Acknowledge")
+        # 5b. Off, flamesafe reporting, but the deck never reads again
+        # after the press (it read 0.4 s before, then stopped): forced.
+        R.mono[0] += 0.4
+        R.feed()
+
+        def silent_deck(s):
+            paused.append(s)
+            R.mono[0] += s
+            R.feed()
+        rem._pause = silent_deck
+        n = R.rig.count("flames_disarm_all")
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"}, client=ipad)
+        check(out.get("forced") is True and
+              R.rig.count("flames_disarm_all") == n + 1,
+              f"a deck that never read the Disarm: forced, whatever "
+              f"flamesafe says: {st} {out}")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
         rem._pause = step
         R.deck_acts = True
         # 6. The forced disarm failing too: 409, COULD NOT, the alert.
