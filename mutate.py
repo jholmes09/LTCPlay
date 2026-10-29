@@ -2719,6 +2719,61 @@ MUTATIONS = [
   " !mayArm ? \"Sign in to arm\" :",
   " false ? \"Sign in to arm\" :"),
 
+ ("ui 2.0: announcements play from off the show PC",
+  "ltcplay/web/remote2.html",
+  "  if(!local) return \"Show PC only\";\n",
+  ""),
+
+ ("ui 2.0: announcements stay live with no contact",
+  "ltcplay/web/remote2.html",
+  "  if(!st || isStaleNow) return \"No contact\";\n",
+  ""),
+
+ ("ui 2.0: Stop sound is live off the show PC",
+  "ltcplay/web/remote2.html",
+  "function annStopWhy(st, local){ return local ? \"\" : \"Show PC only\"; }",
+  "function annStopWhy(st, local){ return \"\"; }"),
+
+ ("ui 2.0: a disabled control still takes a press",
+  "ltcplay/web/remote2.html",
+  "color:#B3A68E;pointer-events:none}",
+  "color:#B3A68E}"),
+
+ ("ui 2.0: the screen never goes calm",
+  "ltcplay/web/remote2.html",
+  "  document.body.classList.toggle(\"inactive\", inactiveNow(ST, isSt));",
+  "  document.body.classList.toggle(\"inactive\", false);"),
+
+ ("ui 2.0: the calm tone dims Hold and Disarm flames",
+  "ltcplay/web/remote2.html",
+  "body.inactive #lz-b[data-mode=\"arm\"]{filter:saturate(.3)}",
+  "body.inactive #lz-b[data-mode=\"arm\"], body.inactive #b-hold, body.inactive #b-disall{filter:saturate(.3)}"),
+
+ ("ui 2.0: a live hazard reads calm",
+  "ltcplay/web/remote2.html",
+  "  if(pinItems(st).length) return false;\n",
+  ""),
+
+ ("ui 2.0: Programming playback firing flames is not pinned",
+  "ltcplay/web/remote2.html",
+  "  if(pf.on === true){",
+  "  if(false){"),
+
+ ("ui 2.0: the Programming flames Stop is live for a role without Show",
+  "ltcplay/web/remote2.html",
+  "      btn: may ? \"Stop\" : \"Sign in to stop\", off: !may,",
+  "      btn: \"Stop\", off: false,"),
+
+ ("ui 2.0: the brand can add a header row",
+  "ltcplay/web/remote2.html",
+  "#brand{flex:1 1 0;",
+  "#brand{flex:1 1 auto;"),
+
+ ("ui 2.0: the page title is not the show's",
+  "ltcplay/web/remote2.html",
+  "    document.title = title + \" remote\";\n    $(\"brand\").title = title;",
+  "    $(\"brand\").title = title;"),
+
  ("ui 2.0: arming a hazer from an iPad is live while arming from screens is off",
   "ltcplay/web/remote2.html",
   "      !(ME && ME.local) && !(s.arming && s.arming.enabled) ? \"Arming off here\" : \"\";",

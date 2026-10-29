@@ -466,7 +466,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="flames">
       <div id="groups" aria-label="Flame groups and lasers"></div>
       <div class="allcol">
-        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span class="lbl">Hold: arm flames<small id="armall-why"></small></span></button>
+        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span class="lbl"><span id="armall-l">Hold: arm flames</span><small id="armall-why"></small></span></button>
         <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
       <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
@@ -823,6 +823,17 @@ function pinItems(st){
     full:"Live flame programming: xLights drives the flames. Only an armed group fires. Never use xLights' test tools while a group is armed. Turned on by " + (lf.who || "someone") + "."});
   if(sf.on === true) out.push({key:"sf", text:"Rehearsal flames on. Armed groups fire.", pill:"FLAMES LIVE", btn:"Flames off",
     full:"Fire flames while scrubbing is on. Only an armed group fires. Turned on by " + (sf.who || "someone") + "."});
+  // Programming playback with the show's flame cues following it (#173:
+  // no switch, so nothing else on 2.0 says flames can fire): its Stop is
+  // 1.0's Pause, a Show press, off with the reason for a role without it.
+  // Disarm flames, beside it, always works.
+  const pf = s.programming_flames || {};
+  if(pf.on === true){
+    const may = mayRow(s, "show");
+    out.push({key:"pf", text:"Flames live. Programming playback fires armed groups.", pill:"FLAMES LIVE",
+      btn: may ? "Stop" : "Sign in to stop", off: !may,
+      full:"Programming playback is playing the show's flame cues: an armed group fires. Stop pauses the playback. Disarm flames makes every group safe."});
+  }
   return out;
 }
 // The big button: the next step, one of Reset, Resume, Run show, Start
@@ -896,6 +907,9 @@ function nextStep(st, isStaleNow, local, items){
 // running: the page's quiet tone. From the engine's status only. Pure.
 function inactiveNow(st, isStaleNow){
   if(!st || isStaleNow) return true;
+  // A live hazard (cleaning, live flame, flames in Programming) never
+  // looks calm, whoever is signed in.
+  if(pinItems(st).length) return false;
   if(st.me && st.me.view_only) return true;
   const sch = st.schedule || {};
   return !!(sch.attached && !runIsOn(st) && !isLive(st));
@@ -1101,10 +1115,10 @@ $("m-snd").addEventListener("click", () => annPress("announce-stop"));
 let PIN_SIG = "";
 function renderPins(){
   const pins = pinItems(ST);
-  const sig = pins.map(p => p.key).join(",");
+  const sig = pins.map(p => p.key + (p.off ? "-" : "")).join(",");
   if(sig === PIN_SIG) return;
   PIN_SIG = sig;
-  $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
+  $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}"${p.off ? " disabled" : ""}>${icon("stop")}${esc(p.btn)}</button>`).join("");
 }
 $("pins").addEventListener("click", async e => {
   const b = e.target.closest("button[data-pin]"); if(!b) return;
@@ -1119,6 +1133,10 @@ $("pins").addEventListener("click", async e => {
   } else if(k === "sf"){
     try{ const j = await post("/api/remote/scrub-flames", {on: false}); say("Flames in rehearsal off.", j.text, "ok"); }
     catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Rehearsal flames NOT off.", e2.message); }
+  } else if(k === "pf"){
+    // 1.0's Pause (its press("pause", {})): the route and body exactly.
+    try{ const j = await post("/api/remote/pause", actor({})); say("Playback paused.", j.text || "Paused.", "ok"); }
+    catch(e2){ say("Not stopped.", e2.message, "bad"); disarmFailed("Flames NOT stopped. Disarm flames.", e2.message); }
   }
 });
 
@@ -1794,8 +1812,11 @@ function renderAllButtons(isSt){
   // Why it is off, in a word or two (the cell is narrow; the SHOW tab must
   // not scroll); the engine's own refusal in full on the button's title.
   const ar = armAllRefusal(ST);
+  // Off, it reads "Arm flames" over the reason: two lines, as tall as the
+  // live label, so the SHOW tab never grows.
   setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? "Sign in" :
     ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : "All armed");
+  setText($("armall-l"), b.disabled ? "Arm flames" : "Hold: arm flames");
   b.title = b.disabled && ar ? ar : "";
   $("b-disall").disabled = false;
 }

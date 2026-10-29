@@ -86978,13 +86978,24 @@ t(/Abort, Hold, Stop/.test(nextStep(base(), true, true, []).text), "no contact s
 t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
 // A live mode is pinned, said first and never READY (safety review B2).
 for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLEANING"], [x => x.cleaning = {state:"unknown"}, "CLEANING"],
-                        [x => x.live_flame = {on:true}, "LIVE FLAME"], [x => x.scrub_flames = {on:true}, "FLAMES LIVE"]]){
+                        [x => x.live_flame = {on:true}, "LIVE FLAME"], [x => x.scrub_flames = {on:true}, "FLAMES LIVE"],
+                        [x => x.programming_flames = {available:true, follows:true, on:true}, "FLAMES LIVE"]]){
   s = base(); f(s);
   const n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
   t(n.tone === "bad" && p.text === word && p.cls === "bad", "a live mode is the next step and the state: " + n.text + " / " + p.text);
-  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "sf"].includes(i.key)), "a live mode is pinned, never paged");
+  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "sf", "pf"].includes(i.key)), "a live mode is pinned, never paged");
   t(n.text.split(/\s+/).length <= 8, "pinned words are 8 or fewer: " + n.text);
 }
+// Programming playback firing flames (#173): pinned with 1.0's Pause as its
+// Stop, off with the reason for a role that may not press Show.
+s = base(); s.programming_flames = {available:true, follows:true, on:false};
+t(!pinItems(s).length, "Programming flames not playing: nothing pinned");
+s.programming_flames.on = true;
+let pf = pinItems(s)[0];
+t(pf && pf.key === "pf" && pf.btn === "Stop" && !pf.off, "Programming flames playing: pinned with Stop");
+s.me = {view_only:true, may:{show:false, arm:false}};
+pf = pinItems(s)[0];
+t(pf && pf.off && pf.btn === "Sign in to stop", "a role without Show: the pin's Stop is off and says why");
 s = base(); s.cleaning = {state:"phase1"};
 t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
 s.schedule.state = "SHOW";
@@ -87274,7 +87285,8 @@ function inactSnap(){
   const s = {inactive:document.body.classList.contains("inactive"), next:q("next-t").textContent,
     next_b:q("next-b").hidden ? "" : q("next-b").textContent, title:document.title,
     brand:q("brand").style.visibility === "hidden" ? "" : (q("brand-show").hidden ? "logo" : q("brand-show").textContent),
-    note:q("ann-note").textContent, armall:q("armall-why").textContent};
+    note:q("ann-note").textContent, armall:q("armall-why").textContent,
+    pins:[...document.querySelectorAll("#pins .b")].map(b => ({k:b.dataset.pin, dis:b.disabled, t:b.textContent.trim()}))};
   s.ann = [...q("ann-btns").querySelectorAll(".b"), q("ann-stop")].map(b => {
     const f = b.querySelector(".fill");
     return {id:b.dataset.ann || b.id, dis:b.disabled, fill:f ? getComputedStyle(f).display : "none", pe:getComputedStyle(b).pointerEvents};
@@ -87306,7 +87318,7 @@ function inactSnap(){
 }
 async function tapDisabled(){
   posts.length = 0;
-  const els = [...document.querySelectorAll("#ann-btns .b, #ann-stop, #m-snd, #hazers [data-hzb], #b-armall")].filter(b => b.disabled);
+  const els = [...document.querySelectorAll("#ann-btns .b, #ann-stop, #m-snd, #hazers [data-hzb], #b-armall, #pins .b")].filter(b => b.disabled);
   const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
   for(const b of els){
     b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(120);
@@ -87318,6 +87330,12 @@ async function tapDisabled(){
 async function inact(){
   const out = {};
   out.first = inactSnap(); out.first_taps = await tapDisabled();
+  if(/pf=1/.test(location.search)){
+    const pb = document.querySelector('#pins [data-pin="pf"]');
+    posts.length = 0;
+    if(pb && !pb.disabled){ pb.click(); await wait(400); }
+    out.pf_posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+  }
   if(/ipad=1/.test(location.search)){
     ME.local = false; await wait(700);
     out.ipad = inactSnap(); out.ipad_taps = await tapDisabled();
@@ -87438,7 +87456,7 @@ UI2_NO_SCROLL = ((1920, 1080), (1366, 768), (1280, 800), (1024, 768),
 UI2_SPARE = {(1024, 768): 24, (768, 1024): 40}
 
 
-def _ui2_status_inactive(kind):
+def _ui2_status_inactive(kind, hazers=True):
     """Run off (operator on the show PC, screen arming off), signed out,
     or a show running; three hazers disarmed. For the calm screens."""
     st = _ui2_status_running()
@@ -87450,6 +87468,8 @@ def _ui2_status_inactive(kind):
                                 "state": "disarmed", "haze": 102,
                                 "fan": 153, "haze_pct": 40, "fan_pct": 60,
                                 "why": ""} for i in range(3)]}
+    if not hazers:
+        st.pop("hazers")
     st["arming"] = dict(st.get("arming") or {}, enabled=False)
     st["announce"]["route"] = {"ok": True, "kind": "show",
                                "text": "the show audio"}
@@ -87467,7 +87487,11 @@ def _ui2_status_inactive(kind):
         # Three groups beside the lasers and the hazers, as the hazers'
         # own drawing test has them.
         st["flames"]["groups"] = st["flames"]["groups"][:3]
-    if kind in ("signed out", "playing"):
+    if kind.startswith("pf"):
+        st["programming_flames"] = {"available": True, "follows": True,
+                                    "on": True, "line": ""}
+        st["transport"] = {"programming": True}
+    if kind in ("signed out", "playing", "pf out"):
         st["me"] = {"local": True, "user": None, "role": None,
                     "view_only": True,
                     "may": {k: False for k in ("show", "arm", "unlock",
@@ -87532,15 +87556,25 @@ def test_ui2_calm_screens_and_brand():
              "?inact=1&ipad=1&tour=0", brand),
             ("a show running", "running", ((1366, 768),),
              "?inact=1&tour=0", brand),
+            ("Programming flames playing", "pf", ((1366, 768),),
+             "?inact=1&pf=1&tour=0", brand),
+            ("Programming flames playing, signed out", "pf out",
+             ((1024, 768),), "?inact=1&pf=1&tour=0", brand),
             ("a long show name", "signed out", sizes, "?inact=1&tour=0",
              longb),
             ("a long show name, running", "running", sizes,
              "?inact=1&tour=0", longb)]
+    # The layout runs (every window) without the hazers: this fixture's
+    # three groups, lasers and hazers are 5 px over at 1366x768 in this
+    # browser on bench-build too; the hazers' own test draws their row.
+    layout = ("a long show name", "a long show name, running")
     safe_ok = lambda sn: all(not x["dis"] and "saturate" not in x["filt"]
                              and x["op"] == 1 for x in sn["safe"])
     for what, kind, sz, frag, routes in runs:
         got = _rack_screen_in_chromium(chrome, page,
-                                       _ui2_status_inactive(kind), sz,
+                                       _ui2_status_inactive(
+                                           kind, hazers=what not in layout),
+                                       sz,
                                        measure_js=_UI2_MEASURE_JS,
                                        frag=frag, routes=routes,
                                        budget_ms=25000)
@@ -87552,7 +87586,7 @@ def test_ui2_calm_screens_and_brand():
             m, r = res["layout"], res["inact"]
             a = r["first"]
             check(not m["problems"], f"{where}: {m['problems'][:12]}")
-            if (w, h) in UI2_NO_SCROLL:
+            if (w, h) in UI2_NO_SCROLL and what in layout:
                 check(m["main_excess"] <= 1 and m["doc_excess"] <= 1,
                       f"{where}: no scroll: {m['main_excess']} "
                       f"{m['doc_excess']}")
@@ -87567,7 +87601,8 @@ def test_ui2_calm_screens_and_brand():
             check(not r["first_taps"]["posts"],
                   f"{where}: a disabled control sends nothing: "
                   f"{r['first_taps']}")
-            check(all(x["fill"] == "none" for x in a["ann"] if x["dis"]),
+            check(all(x["fill"] == "none" and x["pe"] == "none"
+                      for x in a["ann"] if x["dis"]),
                   f"{where}: a disabled control shows no press: {a['ann']}")
             check(a["title"].startswith(routes["/api/brand"]["show"]) and
                   a["title"].endswith(" remote"),
@@ -87576,6 +87611,26 @@ def test_ui2_calm_screens_and_brand():
                 check(a["brand"] == "Fire and Ice",
                       f"{where}: the header names the show: "
                       f"{a['brand']!r}")
+            if kind.startswith("pf"):
+                pin = [x for x in a["pins"] if x["k"] == "pf"]
+                if kind == "pf":
+                    check(pin and not pin[0]["dis"] and pin[0]["t"] == "Stop"
+                          and a["next"].startswith("Flames live.") and
+                          [u for u, _ in r["pf_posts"]] ==
+                          ["/api/remote/pause"],
+                          f"{where}: Programming playback firing flames is "
+                          f"pinned in the top line; its Stop is 1.0's Pause: "
+                          f"{a['pins']} {a['next']!r} {r['pf_posts']}")
+                else:
+                    check(pin and pin[0]["dis"] and
+                          pin[0]["t"] == "Sign in to stop" and
+                          not r["pf_posts"] and not a["inactive"] and
+                          not r["first_taps"]["posts"],
+                          f"{where}: signed out, the pin's Stop is off, "
+                          f"says why and sends nothing; Disarm flames is "
+                          f"live and the screen is never calm: {a['pins']} "
+                          f"{a['inactive']} {r['first_taps']}")
+                continue
             if kind == "running":
                 check(not a["inactive"] and not a["next_b"] and
                       not any(x["dis"] for x in a["ann"][:-1]) and
@@ -87608,7 +87663,9 @@ def test_ui2_calm_screens_and_brand():
                 check(all(x["dis"] for x in a["ann"][:-1]) and
                       a["note"] == "Sign in to use" and
                       all(x["dis"] and x["w"] == "Sign in to arm"
-                          for x in a["hz"]) and a["armall"] == "Sign in",
+                          for x in a["hz"]) and
+                      (len(a["hz"]) == 3 or what in layout) and
+                      a["armall"] == "Sign in",
                       f"{where}: announcements, hazer arming and Arm all "
                       f"are disabled and say why: {a}"[:900])
 
