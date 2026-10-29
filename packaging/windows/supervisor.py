@@ -1419,9 +1419,11 @@ def output_settings(settings):
         with open(fi, encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except Exception:
-        return True, 0, ""
+        # Not readable: whether the show's MadMapper is here is not known,
+        # so the watch reads and logs but raises nothing (review B round 3).
+        return True, 0, "ltcplay_fire_ice.json could not be read"
     if not isinstance(doc, dict):
-        return True, 0, ""
+        return True, 0, "ltcplay_fire_ice.json could not be read"
     mm = doc.get("madmapper")
     quiet = ""
     if not isinstance(mm, dict):
@@ -1521,7 +1523,9 @@ def start_window_watch(settings, port, api=None):
                 f"known until it is set right (ltcplay_fire_ice.json)")
         log(f"MadMapper output watch: ON, "
             + (f"display {mon}" if mon else "any display but the rack "
-               "screen's") + " (ltcplay_fire_ice.json "
+               "screen's") + f" (read now, at start: madmapper_output_check "
+            f"true, madmapper_output_monitor {mon}, page_monitor {page}; "
+            "ltcplay_fire_ice.json "
             "\"madmapper_output_check\": false turns it off). Read from "
             "the window list only; nothing is sent to MadMapper."
             + (f" It raises no alert: {quiet}." if quiet else ""))

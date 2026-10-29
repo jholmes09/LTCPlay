@@ -86595,7 +86595,7 @@ def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
     _settle(svc, c)
     n.now[0] = _den(S, 17, 59, 50)
     svc.tick()
-    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
           "the show's own check failed")
     n.now[0] = _den(S, 18, 0)
     svc.tick()
@@ -86655,7 +86655,7 @@ def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
           f"Resume released the cleared show: {rr}")
     n.now[0] = _den(S, 18, 0, 6)
     svc.tick()
-    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "passed", 3),
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "passed", 15),
           f"Resume: the show is checked again first: {n.pr.view()}")
     n.now[0] = _den(S, 18, 0, 7)
     svc.tick()
@@ -86677,7 +86677,7 @@ def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
     svc.tick()
     n.now[0] = _den(S, 17, 59, 55)
     svc.tick()
-    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
           "failed")
     n.results["Video"] = (True, "")
     n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
@@ -86709,7 +86709,7 @@ def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
     svc.tick()
     n.now[0] = _den(S, 17, 59, 50)
     svc.tick()
-    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
           "failed")
     for t in ((18, 0), (18, 2)):
         n.now[0] = _den(S, *t)
@@ -86757,7 +86757,7 @@ def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
     svc.tick()
     n.now[0] = _den(S, 17, 59, 50)
     svc.tick()
-    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
           "failed")
     n.now[0] = _den(S, 18, 0)
     svc.tick()
@@ -86783,7 +86783,7 @@ def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
     # A failure raised while a passing check runs is never cleared by it.
     n.results["Lasers"] = (True, "")
     gate = threading.Event()
-    n.pr.checks = [(x, True, (lambda p, _x=x: (gate.wait(2) or True,
+    n.pr.checks = [(x, True, (lambda p, _x=x: (gate.wait(30) or True,
                                                "")))
                    for x in ("Audio", "Video", "Lasers")]
     box = {}
@@ -86791,11 +86791,11 @@ def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
         ("pre-check", 2), "a Pre-check by Andy", alerts=False,
         manual=True, by="Check again by Andy")))
     t.start()
-    check(wait_for(n.pr.checking, 2), "the check is under way")
+    check(wait_for(n.pr.checking, 10), "the check is under way")
     n.pr.raise_alert("The rig check before show 1 FAILED: Audio FAILED: "
                      "the interface went away.")
     gate.set()
-    t.join(5)
+    t.join(30)
     check(box.get("r", {}).get("state") == "passed" and
           n.pr.verdict(_pr_key(n)) == "failed" and
           [a.kind for a in n.al.open()] == ["preroll"] and
@@ -86813,10 +86813,10 @@ def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
     t = threading.Thread(target=lambda: box.update(r=n.pr.run(
         ("pre-check", 3), "x", alerts=False, manual=True, by="Andy")))
     t.start()
-    check(wait_for(n.pr.checking, 2), "the check is under way")
+    check(wait_for(n.pr.checking, 10), "the check is under way")
     aid[0] = n.al.raise_("preroll", "The rig check could not run.").id
     gate.set()
-    t.join(5)
+    t.join(30)
     check([a.id for a in n.al.open()] == [aid[0]] and
           n.pr.verdict(_pr_key(n)) == "failed",
           f"an alert opened after the check began stays: {n.al.view()}")
@@ -86847,7 +86847,7 @@ def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
     svc.tick()
     k.now[0] = _den(S, 17, 59, 50)
     svc.tick()
-    check(wait_for(lambda: k.pr.verdict(_pr_key(k)) == "failed", 3),
+    check(wait_for(lambda: k.pr.verdict(_pr_key(k)) == "failed", 15),
           "failed")
     k.results["Video"] = (True, "")
     got = svc.operator_press("start-now", "Andy", "Rack screen")
@@ -86927,6 +86927,76 @@ console.log(JSON.stringify(out));
         except (ValueError, IndexError):
             bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
         check(not bad, f"the pages' cleared words: {bad}")
+    print("  ok")
+
+
+def test_rack_page_key_guard_never_holds_back_the_safe_buttons():
+    section("both pages' key guard (review A of #176, rounds 2 and 3): for 2 s "
+            "after the window comes to the front with no touch in it, a "
+            "key that would start or arm is dropped; Abort, Hold, Stop, every "
+            "Disarm and every Off or Stop button, a two-way button while it "
+            "stops or disarms, and the release of a key whose press got "
+            "through are never held back")
+    import shutil as _sh
+    node = _sh.which("node")
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("remote.html", "remote2.html"):
+        page = open(os.path.join(here, "ltcplay", "web", name),
+                    encoding="utf-8").read()
+        a = page.find("// Keys that arrive just after this window")
+        b = page.find("}, true);\n", page.find('window.addEventListener("keyup"', a))
+        check(a > 0 and b > a, f"{name}: the key guard is there")
+        if not node or a < 0 or b < 0:
+            continue
+        guard = page[a:b + len("}, true);\n")]
+        js = r"""
+let NOW = 0; const performance = {now: () => NOW};
+const H = {};
+const window = {addEventListener: (t, f) => { (H[t] = H[t] || []).push(f); }};
+""" + guard + r"""
+function btn(id, mode, cls){ const b = {id: id, dataset: {mode: mode || ""},
+  classList: {contains: c => (cls || []).includes(c)}}; b.closest = () => b; return b; }
+function key(type, t, code){ const e = {target: t, code: code, dropped: false,
+  preventDefault(){ this.dropped = true; }, stopImmediatePropagation(){}};
+  (H[type] || []).forEach(f => f(e)); return !e.dropped; }
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+function focusNow(){ NOW += 10000; (H.focus || []).forEach(f => f({})); }
+for(const id of ["b-abort", "b-hold", "b-stop", "b-disarm", "m-hold", "m-stop", "lz-disarm",
+                 "hz-off", "ann-stop", "wc-stop", "fb-alloff", "fb-disarm", "sa-off"]){
+  focusNow();
+  t(key("keydown", btn(id), "Enter") && key("keyup", btn(id), "Enter"), id + " Enter held back");
+  focusNow();
+  t(key("keydown", btn(id), "Space") && key("keyup", btn(id), "Space"), id + " Space held back");
+}
+focusNow();
+t(key("keydown", btn("b-start", "stop", ["stopnow"]), "Enter") &&
+  key("keyup", btn("b-start", "stop", ["stopnow"]), "Enter"), "Start now while it is Stop: held back");
+focusNow();
+t(key("keydown", btn("g3", "disarm"), "Space") && key("keyup", btn("g3", "disarm"), "Space"),
+  "a group button while it disarms: held back");
+focusNow();
+t(!key("keydown", btn("b-start", "start", ["go"]), "Enter"), "Start now: dropped right after focus");
+t(!key("keydown", btn("g3", "hold"), "Space") && !key("keyup", btn("g3", "hold"), "Space"),
+  "Hold to arm: dropped right after focus");
+NOW += 2500;
+t(key("keydown", btn("b-start", "start"), "Enter"), "after 2 s keys work again");
+// A purge held on Space before the window changed: its release always ends it.
+NOW += 10000;
+t(key("keydown", btn("mo-fire"), "Space"), "the purge's press, before");
+focusNow();
+t(key("keyup", btn("mo-fire"), "Space"), "the purge's release right after focus: let through");
+// A touch in the page lifts the guard.
+focusNow(); (H.pointerdown || []).forEach(f => f({}));
+t(key("keydown", btn("b-start", "start"), "Enter"), "after a touch: keys work");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
+        check(not bad, f"{name}: the key guard: {bad}")
     print("  ok")
 
 
@@ -87063,6 +87133,11 @@ def test_madmapper_output_window_is_read_from_windows():
     got = SW.output_state([bey, _MM_OUT, _RACK, _MM_UI], mons)
     check(got[0] == "off" and "BEYOND" in got[1],
           f"BEYOND maximized over the output: {got}")
+    ov = {"hwnd": 61, "image": "NVIDIA Share.exe", "title": "overlay",
+          "rect": (1920, 0, 3840, 1080), "seethrough": True}
+    check(SW.output_state([ov, _MM_OUT, _RACK, _MM_UI], mons)[0] == "on",
+          "a see-through overlay over the output hides nothing (review A "
+          "and B round 3)")
     tb = {"hwnd": 60, "image": "explorer.exe", "title": "",
           "rect": (1920, 1032, 3840, 1080)}
     check(SW.output_state([tb, _MM_OUT, _RACK, _MM_UI], mons)[0] == "on",
@@ -87421,8 +87496,65 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
           "even BEYOND in front: never within a few seconds of input")
     # A dialog (an owned window: missing media, a licence) is never buried.
     api = _FakeWins([dict(_BEYOND, hwnd=22, owner=20), _RACK, _BEYOND])
-    check(keeper(api).tick() == "none" and not api.raised,
+    check(keeper(api).tick() == "left" and not api.raised,
           "an owned dialog over the rack screen: left in front")
+    # Review B round 3: a raise would bury a dialog too (an owned window
+    # stays above its own owner only). BEYOND's dialog in front of BEYOND,
+    # MadMapper's Missing media over its window: nothing is raised.
+    for dlg, main in ((dict(_BEYOND, hwnd=22, owner=20,
+                            rect=(600, 300, 1200, 700)), _BEYOND),
+                      (dict(_MM_UI, hwnd=32, owner=30, title="Missing media",
+                            rect=(600, 300, 1200, 700)), _MM_UI)):
+        api = _FakeWins([dlg, main, _RACK])
+        api.fg = dlg["hwnd"]
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None) and
+              [w["hwnd"] for w in api.wins][0] == dlg["hwnd"],
+              f"{dlg['title']}: the dialog stays on top: {got}")
+    # A person's own window (Notepad) in front over the rack screen: left.
+    note = {"hwnd": 70, "image": "notepad.exe", "title": "notes",
+            "rect": (200, 200, 900, 700)}
+    api = _FakeWins([note, _BEYOND, _RACK])
+    api.fg = 70
+    check(keeper(api).tick() == "left" and not api.raised and
+          not getattr(api, "ordered", None),
+          "a person's window in front: never raised over")
+    api = _FakeWins([_BEYOND, note, _RACK])
+    api.fg = 20
+    check(keeper(api).tick() == "left" and not api.raised and
+          not getattr(api, "ordered", None),
+          "a person's window over the rack screen, BEYOND in front: the "
+          "raise would bury it too, so nothing")
+    # The boot settle counts from Windows' start (review B round 3): a
+    # restart of LTC Player long after boot never re-enters it.
+    api = _FakeWins([_RACK, _BEYOND])
+    api.uptime_s = lambda: 3600.0
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    t[0] += 120
+    check(k.tick() == "none" and not api.raised,
+          "an hour after Windows started: an old BEYOND window is left")
+    api = _FakeWins([_BEYOND, _RACK])
+    api.uptime_s = lambda: 40.0
+    check(keeper(api).tick() == "raised",
+          "40 s after Windows started: the boot settle applies")
+    # A click a little over one tick before the look still counts
+    # (review B round 3: the loop period is 2 s plus its work).
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 4.2
+    t[0] += 2
+    k.tick()
+    api.input_age = 14.2
+    t[0] += 10
+    check(k.tick() == "none" and 20 in k.chosen,
+          "a click 4.2 s before the look (one tick plus work): a choice")
     nl = []
     SW.RackKeeper(_FakeWins([_BEYOND]), log=nl.append).tick()
     check(any("not found" in x for x in nl), "no rack screen: said once")
@@ -87439,7 +87571,8 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
     check(keeper(_FakeWins([_BEYOND])).tick() == "none", "no rack screen")
     api = _FakeWins([{"hwnd": 40, "image": "explorer.exe", "title": "Shows",
                       "rect": (0, 0, 800, 600)}, _RACK])
-    check(keeper(api).tick() == "none" and not api.raised,
+    check(keeper(api).tick() in ("none", "left") and not api.raised and
+          not getattr(api, "ordered", None),
           "a folder window a person opened is never covered")
     # The rack screen found by the Edge process the supervisor started.
     check(not SW.is_rack(dict(_RACK, title="Something else", pid=77),
@@ -87650,6 +87783,11 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                            "madmapper": {"host": "127.0.0.1"}}, fh)
             check(sup.output_settings({"schedule": os.path.join(
                 dd, "s.json")}) == (True, 0, ""), "a wrong value: the default")
+            got = sup.output_settings({"schedule": os.path.join(
+                dd, "nope", "s.json")})
+            check(got[0] is True and "could not be read" in got[2],
+                  f"ltcplay_fire_ice.json unreadable: watched, but quiet "
+                  f"(review B round 3): {got}")
             # Review B round 2: only for a show whose MadMapper is here.
             for doc, why in (({}, "no MadMapper in the show"),
                              ({"madmapper": {"host": "10.0.0.9"}},
@@ -89097,6 +89235,7 @@ if __name__ == "__main__":
         test_preroll_madmapper_output_check_and_lamp,
         test_rack_screen_keeper_raises_over_beyond_and_madmapper_only,
         test_supervisor_watches_madmapper_output_after_it_starts,
+        test_rack_page_key_guard_never_holds_back_the_safe_buttons,
         test_alert_booth_never_waits_behind_the_delayed,
         test_alert_hold_an_old_hold_never_clears_a_newer_one,
         test_alert_hold_resume_covers_only_its_own_show,

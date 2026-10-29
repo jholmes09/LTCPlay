@@ -191,7 +191,8 @@ def covered_by(wins, out):
     for w in wins:
         if w is out:
             return None
-        if w.get("minimized"):
+        if w.get("minimized") or w.get("seethrough"):
+            # A see-through overlay hides nothing (review A and B round 3).
             continue
         if overlap(inset(w["rect"], 8), out["rect"]) >= COVERED_SHARE * area:
             return w
@@ -362,12 +363,40 @@ class Win32:
         buf = c.create_unicode_buffer(512)
         u.GetWindowTextW(hwnd, buf, 512)
         style = int(u.GetWindowLongW(hwnd, -16)) & 0xFFFFFFFF
-        return {"hwnd": int(hwnd), "pid": pid, "thread": thread,
+        ex = int(u.GetWindowLongW(hwnd, -20)) & 0xFFFFFFFF
+        return {"seethrough": self._seethrough(hwnd, ex),"hwnd": int(hwnd), "pid": pid, "thread": thread,
                 "image": images[pid], "title": buf.value,
                 "rect": (rc.left, rc.top, rc.right, rc.bottom),
                 "visible": True, "minimized": bool(u.IsIconic(hwnd)),
                 "caption": (style & WS_CAPTION) == WS_CAPTION,
                 "owner": int(u.GetWindow(hwnd, 4) or 0)}
+
+    def _seethrough(self, hwnd, ex):
+        """A window the eye sees through or clicks through (a game
+        overlay, a notification layer): WS_EX_TRANSPARENT, a layered window
+        at zero alpha, or a topmost tool window. It hides nothing."""
+        if ex & 0x20:                                # WS_EX_TRANSPARENT
+            return True
+        if ex & 0x80 and ex & 0x8:                   # TOOLWINDOW + TOPMOST
+            return True
+        if ex & 0x80000:                             # WS_EX_LAYERED
+            try:
+                a = self._c.c_ubyte(255)
+                f = self._w.DWORD(0)
+                if self.u.GetLayeredWindowAttributes(
+                        self._w.HWND(hwnd), None, self._c.byref(a),
+                        self._c.byref(f)) and f.value & 0x2 and \
+                        a.value == 0:
+                    return True
+            except (OSError, AttributeError):
+                pass
+        return False
+
+    def uptime_s(self):
+        """Seconds since Windows started (GetTickCount64)."""
+        f = self.k.GetTickCount64
+        f.restype = self._c.c_ulonglong
+        return f() / 1000.0
 
     def _cloaked(self, hwnd):
         try:
@@ -689,7 +718,7 @@ class RackKeeper:
             # The click or Alt+Tab that brought it forward came up to one
             # tick before this look saw it (review B round 2).
             if age is not None and now - age >= self.fg_since[fg] - \
-                    self.tick_s:
+                    (2 * self.tick_s + 1.0):
                 why = "a key, touch or click since it came to the front"
             elif pressed is not None and app_name_of(apps, fg) == \
                     "BEYOND" and pressed >= fwd - OPENED_S:
@@ -709,7 +738,15 @@ class RackKeeper:
             return "none"
         self._say("rack", "rack screen keeper: the rack screen's window is "
                           f"found (\"{rack.get('title', '')}\")")
-        boot = now - self.started < self.boot_settle_s
+        # The boot settle counts from Windows' start when it can be read,
+        # so a later restart of LTC Player never re-enters it (review B
+        # round 3); else from this keeper's start.
+        try:
+            up = self.api.uptime_s()
+        except Exception:                        # noqa: BLE001
+            up = None
+        boot = (up < self.boot_settle_s) if isinstance(up, (int, float)) \
+            else (now - self.started < self.boot_settle_s)
         if rack["minimized"]:
             # Left minimized (review A of #176): where it would come back
             # is not known, and it must never land on the projection.
@@ -739,6 +776,24 @@ class RackKeeper:
                                 "is never raised over it")
             return "left"
         idx = wins.index(rack)
+        above = [w for w in wins[:idx] if not w.get("minimized")
+                 and not w.get("seethrough")
+                 and overlap(w["rect"], area) > 0]
+        # A dialog (an owned window: missing media, a licence) over the
+        # rack screen, any other program's window over it (a person's
+        # Notepad), or a window a person has in front that is not a BEYOND
+        # or MadMapper main window: nothing is raised, since the raise
+        # would bury it too (review B round 3).
+        fg_now = self.api.foreground()
+        busy = [w for w in above if w.get("owner") or not is_app(w) or
+                (w["hwnd"] == fg_now and w["hwnd"] in outs)]
+        if busy:
+            b = busy[0]
+            self._say("dialog", f"rack screen keeper: \"{b.get('title', '')}"
+                                f"\" is in front and in use; the rack screen "
+                                f"is not raised over it")
+            return "left"
+        self._say("dialog", "")
         # An owned window (a dialog: missing media, a licence, the
         # preferences) is never buried (review B of #176, S4), and an
         # output window is never a cover (review A).
@@ -940,6 +995,9 @@ class OutputWatch:
                 # with its own id and time (review A round 2).
                 if not self._call(self.clear):
                     self._fail(now)
+                    self.log(f"MadMapper output: the last output alert could "
+                             f"not be cleared before a new one; trying again "
+                             f"in {self.next_try - now:g} s")
                     return "off"
                 self.raised = False
             self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}")

@@ -993,8 +993,13 @@ main display, 2 the next, as showpc.json's page_monitor counts). The
 supervisor also keeps the rack screen in front of BEYOND and MadMapper
 windows after a reboot (showpc.json `rack_screen_keep_in_front`, true).
 It never raises the rack screen over MadMapper's output, never takes the
-keyboard from someone typing in another program, never covers a dialog,
-and leaves a minimized rack screen minimized.
+keyboard from someone typing in another program, never covers a dialog or
+a window a person has in front, and leaves a minimized rack screen
+minimized. Its five minutes count from when Windows started, so stopping
+and starting LTC Player later does not bring them back. For 2 s after the
+rack screen comes to the front with no touch in it, a key that would
+start or arm something is ignored (it was typed for another program);
+Abort, Hold, Stop and every Disarm or Off key always work.
 
 How the output is judged: the rack screen's display is where its window
 is (unless MadMapper's output sits over it there: then that display is
@@ -1003,8 +1008,13 @@ the lamp, the rig check and the alert all use that one rule. The output
 counts as on only when no other window hides a quarter of it or more (the
 rack screen or BEYOND in front of it on the projector reads OFF, saying
 which window). Mirrored (duplicate) displays look like one display to
-Windows and read OFF: set `madmapper_output_monitor` to 1 there. The
-watch is only for a show whose MadMapper runs on this PC. These settings
+Windows and read OFF: set `madmapper_output_monitor` to 1 there. See-through
+overlays (a game overlay, notifications) hide nothing. With several
+projector displays and `madmapper_output_monitor` 0, ONE uncovered output
+on any of them reads on: the check is for one projector display, so set
+the number when there are more. The alert is raised only for a show whose
+MadMapper runs on this PC (and not when ltcplay_fire_ice.json cannot be
+read); the watch still reads and logs the windows. These settings
 are read when LTC Player starts: after changing them, stop and start LTC
 Player. The output alert holds a show at its time like any fault but does
 not play Delayed on the PA by itself, on purpose: a real output fault also

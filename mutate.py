@@ -17912,10 +17912,6 @@ def build():
   '        if a.kind == "output" and a.since < began:',
   '        if a.kind == "output":'),
 
- ('rack keeper: buries a dialog under the rack screen', 'ltcplay/showwindows.py',
-  '                 and not w.get("owner") and w["hwnd"] not in outs\n',
-  '                 and w["hwnd"] not in outs\n'),
-
  ('supervisor: the output watch reads showpc.json, not the engine file', 'packaging/windows/supervisor.py',
   '    chk, mon, quiet = output_settings(settings)',
   '    chk, mon, quiet = True, 0, ""'),
@@ -17993,8 +17989,44 @@ def build():
   '        # on (a clear with nothing open counts as done).\n        self.raised = False'),
 
  ('rack keeper: the click that brought a window forward is not a choice', 'ltcplay/showwindows.py',
-  '            if age is not None and now - age >= self.fg_since[fg] - \\\n                    self.tick_s:',
+  '            if age is not None and now - age >= self.fg_since[fg] - \\\n                    (2 * self.tick_s + 1.0):',
   '            if age is not None and now - age >= self.fg_since[fg]:'),
+
+ ("rack keeper: a raise buries a dialog or the person's window", 'ltcplay/showwindows.py',
+  '        if busy:\n            b = busy[0]',
+  '        if False:\n            b = busy[0]'),
+
+ ('mm output: a see-through overlay hides the output', 'ltcplay/showwindows.py',
+  '        if w.get("minimized") or w.get("seethrough"):',
+  '        if w.get("minimized"):'),
+
+ ('rack keeper: a restart of LTC Player re-enters the boot settle', 'ltcplay/showwindows.py',
+  '        boot = (up < self.boot_settle_s) if isinstance(up, (int, float)) \\',
+  '        boot = (now - self.started < self.boot_settle_s) if True \\'),
+
+ ('rack keeper: the brought-forward margin is one tick only', 'ltcplay/showwindows.py',
+  '                    (2 * self.tick_s + 1.0):',
+  '                    self.tick_s:'),
+
+ ('supervisor: an unreadable settings file can raise output alerts', 'packaging/windows/supervisor.py',
+  '        return True, 0, "ltcplay_fire_ice.json could not be read"\n    if not isinstance',
+  '        return True, 0, ""\n    if not isinstance'),
+
+ ('key guard: Hold is held back after focus (1.0)', 'ltcplay/web/remote.html',
+  'const KEY_SAFE = new Set(["b-abort", "b-hold", ',
+  'const KEY_SAFE = new Set(["b-abort", '),
+
+ ('key guard: Stop is held back after focus (2.0)', 'ltcplay/web/remote2.html',
+  '"b-abort", "b-hold", "b-stop", ',
+  '"b-abort", "b-hold", '),
+
+ ('key guard: a Stop or Disarm two-way button is held back', 'ltcplay/web/remote.html',
+  '  return m === "stop" || m === "disarm" ||',
+  '  return false ||'),
+
+ ("key guard: a purge's release is dropped after focus", 'ltcplay/web/remote.html',
+  '  if(KEY_GUARD.passed.has(k)){ KEY_GUARD.passed.delete(k); return; }',
+  '  if(false){ KEY_GUARD.passed.delete(k); return; }'),
 
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,

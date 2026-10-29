@@ -675,16 +675,40 @@ document.addEventListener("keydown", e => { if(e.key === "Escape" && SHEET_DONE)
 // Keys that arrive just after this window came to the front, before any
 // touch or click in it, were meant for another program (review A of #176:
 // the supervisor's rack screen keeper can bring this window forward).
-// They are dropped, so Space or Enter never presses a focused button here.
-// Abort is never held back.
-const KEY_GUARD = {at: 0, pointed: true};
+// They are dropped, so Space or Enter never STARTS or ARMS anything here.
+// Never held back (review A round 3): a button that acts in the safe
+// direction (Abort, Hold, Stop, every Disarm, every Off and Stop, a
+// two-way button while it disarms or stops), and the release of a key
+// whose press was let through (a purge held on Space always ends).
+const KEY_SAFE = new Set(["b-abort", "b-hold", "b-stop", "b-disarm", "m-hold", "m-stop",
+  "al-sum-dis", "lz-disarm", "mo-ldisarm", "ann-stop", "ann-banner-stop", "wc-banner-stop",
+  "wc-stop", "lf-banner-off", "lf-off", "sf-banner-off", "sa-off", "fb-alloff", "fb-disarm",
+  "hz-off", "mo-cal-off"]);
+function keySafe(t){
+  const b = t && t.closest ? (t.closest("button") || t) : t;
+  if(!b) return false;
+  if(KEY_SAFE.has(b.id)) return true;
+  const m = b.dataset ? b.dataset.mode : "";
+  return m === "stop" || m === "disarm" || (b.classList && (b.classList.contains("disarm") || b.classList.contains("stopnow")));
+}
+const KEY_GUARD = {at: 0, pointed: true, passed: new Set()};
 window.addEventListener("focus", () => { KEY_GUARD.at = performance.now(); KEY_GUARD.pointed = false; });
 window.addEventListener("pointerdown", () => { KEY_GUARD.pointed = true; }, true);
-["keydown", "keypress", "keyup"].forEach(t => window.addEventListener(t, e => {
-  if(KEY_GUARD.pointed || performance.now() - KEY_GUARD.at > 2000) return;
-  if(e.target && e.target.id === "b-abort") return;
-  e.preventDefault(); e.stopImmediatePropagation();
-}, true));
+function keyGuarded(e){
+  return !KEY_GUARD.pointed && performance.now() - KEY_GUARD.at <= 2000 && !keySafe(e.target);
+}
+window.addEventListener("keydown", e => {
+  if(keyGuarded(e)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+  KEY_GUARD.passed.add(e.code || e.key);
+}, true);
+window.addEventListener("keypress", e => {
+  if(keyGuarded(e) && !KEY_GUARD.passed.has(e.code || e.key)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
+window.addEventListener("keyup", e => {
+  const k = e.code || e.key;
+  if(KEY_GUARD.passed.has(k)){ KEY_GUARD.passed.delete(k); return; }
+  if(keyGuarded(e)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 // A confirm: Yes only on the button that says it. `flip` puts Yes on the
 // other side (Start's confirm, as in 1.0, so a Stop's Yes is never where
 // a Start's was).
