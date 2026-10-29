@@ -66435,6 +66435,433 @@ def test_timed_purge_end_to_end_real_flamesafe():
     print("  ok")
 
 
+
+def _morning_view_timed(selected=("m1", "m2"), running=False, left=7.3):
+    """_morning_view_pico with the timed purge's numbers, as the engine
+    sends them, and (`running`) one running."""
+    mo = _morning_view_pico(selected=selected)
+    mo["timed_settings"] = {"presets": [2, 5, 10, 20, 30], "default_s": 5,
+                            "max_s": 30, "min_s": 1, "limit_s": 120,
+                            "hold_s": 1.0, "error": ""}
+    names = [m["name"] for m in mo["machines"] if m["id"] in selected]
+    mo["timed"] = {"running": running, "left_s": left if running else None,
+                   "seconds": 10 if running else None,
+                   "elapsed_s": 10 - left if running else None,
+                   "machines": names if running else [], "firing": [],
+                   "waiting": [], "device": "this PC (rack screen)"
+                   if running else None, "who": "Andy" if running else "",
+                   "holding": False, "holder": None, "mine": False,
+                   "held_s": None, "hold_s": 1.0, "last": ""}
+    mo["purge_state"]["timed"] = running
+    mo["purge_state"]["firing"] = running
+    return mo
+
+
+_TIMED_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function hits(el){
+  el.scrollIntoView({block:"center", inline:"nearest"});
+  const r = el.getBoundingClientRect(), bad = [];
+  if(r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) bad.push("not wholly inside the window when scrolled to");
+  const ins = Math.min(4, r.width / 4, r.height / 4);
+  for(const [x, y] of [[r.left + r.width/2, r.top + r.height/2], [r.left + ins, r.top + ins], [r.right - ins, r.bottom - ins]]){
+    const at = document.elementFromPoint(x, y);
+    if(!at || !(el === at || el.contains(at))) bad.push("covered at " + Math.round(x) + "," + Math.round(y) + " by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
+  }
+  return bad;
+}
+function measure(){
+  scrollTo(0, 0);
+  const out = {vw:innerWidth, vh:innerHeight, problems:[], small:[], targets:[], sw:document.scrollingElement.scrollWidth,
+    tp_shown:shown(document.getElementById("tp")), hold:(document.getElementById("tp-hold") || {}).textContent || "",
+    st:(document.getElementById("tp-st") || {}).textContent || "",
+    banner:shown(document.getElementById("tp-banner")) ? document.getElementById("tp-banner-text").textContent : null,
+    presets:[...document.querySelectorAll("#tp-presets button")].map(b => b.textContent + (b.classList.contains("on") ? "*" : "")),
+    secs:(document.getElementById("tp-secs") || {}).value, key:(document.getElementById("mo-key") || {}).textContent || ""};
+  if(out.sw > innerWidth + 1) out.problems.push("the page scrolls sideways: " + out.sw + " > " + innerWidth);
+  const tp = document.getElementById("tp");
+  if(shown(tp)){
+    const tw = document.createTreeWalker(tp, NodeFilter.SHOW_TEXT);
+    for(let n = tw.nextNode(); n; n = tw.nextNode()){
+      const t = n.textContent.trim(); const el = n.parentElement;
+      if(!t || !shown(el)) continue;
+      const px = parseFloat(getComputedStyle(el).fontSize);
+      if(px < 14) out.small.push(Math.round(px * 10) / 10 + " px: " + (el.id || el.className || el.tagName) + ": " + t.slice(0, 30));
+    }
+    const ctl = [...tp.querySelectorAll("button, input")].filter(shown);
+    for(const el of ctl){
+      const r = el.getBoundingClientRect();
+      if(r.height < 44 - 0.5) out.targets.push((el.id || el.textContent) + " " + Math.round(r.height) + " px high");
+      for(const b of hits(el)) out.problems.push((el.id || el.textContent) + ": " + b);
+    }
+    // Nothing in the timed purge overlaps anything else in it, or the
+    // other panels of the page.
+    const rects = ctl.map(el => [el.id || el.textContent, el.getBoundingClientRect()]);
+    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
+      const a = rects[i][1], b = rects[j][1];
+      if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+        out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
+    }
+    scrollTo(0, 0);
+    const panels = ["mo-groups", "mo-field", "mo-firebar", "tp", "mo-shut"].map(id => document.getElementById(id)).filter(shown);
+    const abs = el => { const r = el.getBoundingClientRect(); return {l:r.left, r:r.right, t:r.top + scrollY, b:r.bottom + scrollY}; };
+    for(let i = 0; i < panels.length; i++) for(let j = i + 1; j < panels.length; j++){
+      const a = abs(panels[i]), b = abs(panels[j]);
+      if(a.l < b.r - 0.5 && b.l < a.r - 0.5 && a.t < b.b - 0.5 && b.t < a.b - 0.5)
+        out.problems.push("overlap: " + panels[i].id + " and " + panels[j].id);
+    }
+  }
+  const bn = document.getElementById("tp-banner");
+  if(shown(bn)){
+    for(const b of hits(document.getElementById("tp-banner-stop"))) if(shown(document.getElementById("tp-banner-stop"))) out.problems.push("banner Stop purge: " + b);
+    const r = bn.getBoundingClientRect();
+    if(r.right > innerWidth + 0.5) out.problems.push("the banner runs off the window");
+  }
+  // Abort: on the window, never covered, at the top and the bottom.
+  const ab = document.getElementById("b-abort");
+  for(const y of [0, 1e6]){
+    scrollTo(0, y);
+    const r = ab.getBoundingClientRect();
+    if(r.bottom > innerHeight + 0.5 || r.top < 0) out.problems.push("Abort is off the window at scroll " + y);
+  }
+  scrollTo(0, 0);
+  for(const b of hits(ab)) out.problems.push("Abort: " + b);
+  scrollTo(0, 0);
+  return out;
+}
+function go(){
+  const onMorning = (location.hash || "") === "#morning";
+  if(onMorning && (!document.querySelector("#mo-field .mach") || document.getElementById("tp").hidden)) return setTimeout(go, 100);
+  setTimeout(() => {
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify([measure()]);
+    document.body.appendChild(pre);
+  }, 700);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_timed_purge_on_the_pages():
+    section("timed purge on the pages (Jeff, 2026-10-29): 1.0's Startup page "
+            "has the seconds (2, 5, 10, 20, 30 and Other, kept within the "
+            "show machine's longest) and one button HELD like a Hold to arm "
+            "whose words name the machines and the seconds, with Stop "
+            "purge beside it; a banner on every screen counts down from "
+            "the engine's clock with Stop purge; 2.0 pins it with its own "
+            "Stop purge; drawn at the seven rack sizes with nothing "
+            "overflowing, overlapping or under Abort")
+    one, two = _ui2_pages()
+    # The pure rules, in node.
+    bad = _page_logic_in_node(one, r"""
+const mo = {machines:[{id:"a", name:"Ground 1"}, {id:"b", name:"Ground 2"}],
+  purge_state:{selected:["a", "b"]}, purge_enabled:true, live_refusal:"",
+  timed_settings:{presets:[2,5,10,20,30], default_s:5, max_s:30, min_s:1, error:""},
+  timed:{running:false}};
+let L = timedPurgeLook(mo, 10, false, false, false);
+t(L.ok && L.word === "Hold to purge Ground 1, Ground 2 for 10 s", "the button names the machines and the seconds: " + L.word);
+L = timedPurgeLook(mo, 10, true, false, false);
+t(L.word === "Keep holding: Ground 1, Ground 2 for 10 s" && !L.cut, "while held it says keep holding: " + L.word);
+t(!timedPurgeLook(mo, 31, false, false, false).ok, "31 s with 30 s the longest: not pressable");
+t(!timedPurgeLook(mo, 2.5, false, false, false).ok, "2.5 s: not a whole number");
+t(!timedPurgeLook(mo, 0, false, false, false).ok, "0 s: not pressable");
+t(timedPurgeLook(mo, 10, false, true, false).block.indexOf("not live") >= 0, "a stale page: refused");
+t(timedPurgeLook(mo, 10, true, true, false).cut, "a stale page cuts a hold under way");
+t(timedPurgeLook(mo, 10, false, false, true).block.indexOf("view only") >= 0, "signed out: view only");
+t(timedPurgeLook(Object.assign({}, mo, {purge_enabled:false}), 10, false, false, false).block.indexOf("switched off") >= 0, "purge arming off");
+t(timedPurgeLook(Object.assign({}, mo, {live_refusal:"a scheduled show is live (SHOW)"}), 10, false, false, false).block.indexOf("show is live") >= 0, "a show live: said in full");
+t(timedPurgeLook(Object.assign({}, mo, {purge_state:{selected:[]}}), 10, false, false, false).block.indexOf("Click a machine") >= 0, "nothing selected");
+t(timedPurgeLook(Object.assign({}, mo, {purge_state:{selected:["a"], firing:true}}), 10, false, false, false).block.indexOf("One purge at a time") >= 0, "a purge firing: one at a time");
+t(timedPurgeLook(Object.assign({}, mo, {timed:{holding:true, mine:false, holder:"iPad at 10.20.0.44"}}), 10, false, false, false).block.indexOf("iPad at 10.20.0.44") >= 0, "another screen holding");
+t(timedPurgeLook(Object.assign({}, mo, {timed_settings:{error:"ltcplay_remote.json could not be read"}}), 10, false, false, false).block.indexOf("could not be read") >= 0, "the settings file broken: no timed purge");
+const R = timedPurgeLook(Object.assign({}, mo, {timed:{running:true, left_s:6.2, machines:["Ground 1"]}}), 10, false, false, false);
+t(R.running && R.word === "PURGING Ground 1: 7 s left", "running: the engine's seconds left, rounded up: " + R.word);
+t(timedClamp("45", 1, 30) === 30 && timedClamp("0", 1, 30) === 1 && timedClamp("7.4", 1, 30) === 7 && timedClamp("", 1, 30) === null && timedClamp("x", 1, 30) === null, "Other: kept to 1 to 30 whole seconds");
+t(timedLeft(0.01) === "1 s" && timedLeft(0) === "0 s" && timedLeft(-3) === "0 s", "the seconds left round up, never below 0");
+t(timedBanner({machines:["Ground 1"], left_s:3.5, seconds:10, device:"iPad at 10.20.0.44", who:"Andy"}) === "Ground 1: 4 s left of 10 s. Started on the iPad at 10.20.0.44 by Andy.", "the banner's words");
+""")
+    if bad is not None:
+        check(not bad, f"the timed purge's rules in node: {bad}")
+    # The page's wiring, read.
+    _i = one.find("// ---- The timed purge")
+    blk = one[_i:one.find("// WEATHER (weather.py", _i)]
+    check('post("/api/remote/purge-timed", moActor({hold:true, run:run, '
+          'seq:seq, seconds:TP_SECS}))' in blk and
+          'moActor({hold:false, run:run, seq:++TP_SEQ, seconds:TP_SECS})'
+          in blk and 'hb.addEventListener("pointerdown"' in blk and
+          '"pointerup", "pointercancel", "lostpointercapture"' in blk and
+          ".disabled" not in blk and len(blk) > 2000,
+          "1.0: a hold of beats every 100 ms on pointer down, a release on "
+          "every let go, and never the disabled attribute")
+    for ev in ('window.addEventListener("blur", () => { if(TP_HOLD) tpLetGo',
+               'if(document.hidden && TP_HOLD) tpLetGo',
+               'window.addEventListener("pagehide", () => tpLetGo'):
+        check(ev in blk, f"1.0: the hold ends on {ev[:40]!r}")
+    check('post("/api/remote/purge-stop", moActor({}))' in blk and
+          '$("tp-banner-stop").addEventListener("click", tpStopPress)' in blk
+          and "if(st.running){ tpStopPress(); return; }" in blk,
+          "1.0: Stop purge here and on the banner; a press while it runs "
+          "ends it")
+    check("!MO.purge_state.timed" in one[one.find("function morningView"):
+                                         one.find("async function morningPoll")],
+          "1.0: leaving the page does not clear a timed purge's selection "
+          "(it ends on the engine's clock)")
+    pin = _js_function(two, "pinItems")
+    check(pin and 's.morning && s.morning.timed' in pin and
+          '"Stop purge"' in pin and "timedLeft(tp.left_s)" in pin,
+          "2.0: a running timed purge is pinned with its countdown and Stop "
+          "purge")
+    check('if(k === "tp"){' in two and
+          'post("/api/remote/purge-stop", actor({}))' in two,
+          "2.0: its pin's Stop purge is 1.0's press")
+    for name, p in (("1.0", one), ("2.0", two)):
+        for frag in ((blk + _js_function(p, "timedPurgeLook") +
+                      _js_function(p, "timedBanner")) if name == "1.0"
+                     else pin or "",):
+            check("—" not in frag and "–" not in frag,
+                  f"{name}: no em or en dash in the timed purge's words")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True, "timed": None}
+    # 1. Ready: two machines selected, nothing running. Every rack size.
+    got = _rack_screen_in_chromium(
+        chrome, one, st, RACK_SIZES, measure_js=_TIMED_MEASURE_JS,
+        frag="#morning", routes={"/api/remote/morning":
+                                 _morning_view_timed()})
+    for (w, h), res in got.items():
+        if not check(isinstance(res, list) and res,
+                     f"{w}x{h}: drawn and measured: {res!r}"):
+            continue
+        m = res[0]
+        check(m["tp_shown"] and m["hold"] == "Hold to purge front row 1, "
+              "front row 2 for 5 s" and m["presets"] ==
+              ["2 s", "5 s*", "10 s", "20 s", "30 s"] and m["secs"] == "5",
+              f"{w}x{h}: the control, 5 s chosen, the machines named: "
+              f"{m['hold']!r} {m['presets']} {m['secs']!r}")
+        check(not m["problems"] and not m["small"] and not m["targets"],
+              f"{w}x{h}: nothing over the window, overlapping or covered, "
+              f"Abort clear, text 14 px or more, targets 44 px or more: "
+              f"{m['problems'][:5]} {m['small'][:3]} {m['targets'][:3]}")
+    # 2. Running: the Startup page and the banner on the show view.
+    st_run = dict(st)
+    st_run["morning"] = dict(st["morning"], timed={
+        "left_s": 7.3, "seconds": 10, "elapsed_s": 2.7,
+        "machines": ["front row 1", "front row 2"],
+        "device": "this PC (rack screen)", "who": "Andy"})
+    for frag in ("#morning", ""):
+        got = _rack_screen_in_chromium(
+            chrome, one, st_run, RACK_SIZES, measure_js=_TIMED_MEASURE_JS,
+            frag=frag, routes={"/api/remote/morning":
+                               _morning_view_timed(running=True)})
+        for (w, h), res in got.items():
+            if not check(isinstance(res, list) and res,
+                         f"running {frag or '#show'} {w}x{h}: drawn: "
+                         f"{res!r}"):
+                continue
+            m = res[0]
+            check(m["banner"] == "front row 1, front row 2: 8 s left of 10 "
+                  "s. Started on the this PC (rack screen) by Andy.",
+                  f"running {frag or '#show'} {w}x{h}: the banner counts "
+                  f"down from the engine's seconds: {m['banner']!r}")
+            if frag:
+                check(m["hold"] == "PURGING front row 1, front row 2: 8 s "
+                      "left" and m["key"].startswith("TIMED PURGE: 8 s"),
+                      f"running {w}x{h}: the button and the fire key say "
+                      f"PURGING and the seconds left: {m['hold']!r} "
+                      f"{m['key']!r}")
+            check(not m["problems"] and not m["small"] and not m["targets"],
+                  f"running {frag or '#show'} {w}x{h}: {m['problems'][:5]} "
+                  f"{m['small'][:3]} {m['targets'][:3]}")
+    print("  ok")
+
+
+def test_timed_purge_button_driven():
+    section("timed purge, the button driven in a real browser (Jeff, "
+            "2026-10-29): pressing it beats every 100 ms with one hold id "
+            "and the seconds; letting go early sends the release and "
+            "nothing else; the engine's start ends the beats; a press "
+            "while it runs is Stop purge; Other is kept to the longest")
+    one, _two = _ui2_pages()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True, "timed": None}
+    steps = r"""
+  while(document.getElementById("tp").hidden) await h.sleep(50);
+  const hb = document.getElementById("tp-hold");
+  const tp = () => h.posts("purge-timed");
+  // A short press: beats, then the release when it lifts. Nothing else.
+  document.querySelector('#tp-presets [data-s="10"]').click();
+  await h.sleep(50);
+  h.ev(hb, "pointerdown");
+  await h.sleep(450);
+  h.ev(hb, "pointerup");
+  await h.sleep(250);
+  const a = tp();
+  out.short = {n:a.length, holds:a.filter(p => p.body.hold === true).length,
+    runs:[...new Set(a.map(p => p.body.run))].length, last:a.length ? a[a.length - 1].body : null,
+    secs:[...new Set(a.map(p => p.body.seconds))], seen:a.every(p => typeof p.body.seen === "number"),
+    stops:h.posts("purge-stop").length};
+  // A whole press: the engine answers started on the 11th beat; the
+  // beats stop there though the finger is still down.
+  let n = 0;
+  window.__answer["purge-timed"] = b => { if(b.hold !== true) return [200, {running:false}];
+    n++; return n >= 11 ? [200, {ok:true, started:true, running:true, text:"Timed purge started: front row 1, front row 2 for 10 s."}] : [200, {running:false, holding:true, mine:true}]; };
+  const before = tp().length;
+  h.ev(hb, "pointerdown");
+  await h.sleep(1800);
+  const b = tp().slice(before);
+  out.whole = {n:b.length, holds:b.filter(p => p.body.hold === true).length,
+    runs:[...new Set(b.map(p => p.body.run))].length, st:document.getElementById("tp-st").textContent};
+  h.ev(hb, "pointerup");
+  await h.sleep(200);
+  out.after_lift = tp().slice(before).filter(p => p.body.hold !== true).length;
+  // Running: a press is Stop purge.
+  window.__patchMorning = mo => { mo.timed = Object.assign({}, mo.timed, {running:true, left_s:4.2, seconds:10, machines:["front row 1"]}); mo.purge_state.timed = true; return mo; };
+  await h.sleep(900);
+  const s0 = h.posts("purge-stop").length, t0 = tp().length;
+  h.ev(hb, "pointerdown"); h.ev(hb, "pointerup");
+  await h.sleep(300);
+  out.running = {word:hb.textContent, stops:h.posts("purge-stop").length - s0, timed:tp().length - t0};
+  window.__patchMorning = null;
+  await h.sleep(900);
+  // Other: 45 is kept to 30.
+  const inp = document.getElementById("tp-secs");
+  inp.value = "45"; inp.dispatchEvent(new Event("change", {bubbles:true}));
+  await h.sleep(100);
+  out.other = {value:inp.value, word:hb.textContent};
+"""
+    js = "<script>window.__drive = async (out, h) => {\n" + steps + \
+        "\n};</script>" + _RACK_DRIVE_JS
+    js = js.replace('if(!document.querySelector("#fl-lamps .lamp")) '
+                    'return setTimeout(go, 50);',
+                    'if(!document.querySelector("#mo-field .mach")) '
+                    'return setTimeout(go, 50);')
+    got = _rack_screen_in_chromium(
+        chrome, one, st, ((1366, 768),), measure_js=js, frag="#morning",
+        routes={"/api/remote/morning": _morning_view_timed()},
+        budget_ms=12000)
+    res = got[(1366, 768)]
+    if not check(isinstance(res, list) and res, f"driven: {res!r}"):
+        print("  ok")
+        return
+    o = res[0]
+    check(not o.get("problems"), f"the steps ran: {o.get('problems')}")
+    s = o.get("short") or {}
+    check(s.get("holds", 0) >= 3 and s.get("runs") == 1 and
+          (s.get("last") or {}).get("hold") is False and
+          s.get("secs") == [10] and s.get("seen") and s.get("stops") == 0,
+          f"a short press: hold beats of one id with 10 s and the page's "
+          f"status time, then the release, nothing else: {s}")
+    w = o.get("whole") or {}
+    check(w.get("holds") == 11 and w.get("runs") == 1 and
+          "You can let go" in w.get("st", ""),
+          f"a whole press: the beats stop at the engine's start, and it "
+          f"says you can let go: {w}")
+    check(o.get("after_lift") == 0,
+          f"lifting after the start sends no release of a hold that is "
+          f"over: {o.get('after_lift')}")
+    r = o.get("running") or {}
+    check(r.get("word", "").startswith("PURGING front row 1: 5 s left") and
+          r.get("stops") == 1 and r.get("timed") == 0,
+          f"running: the button counts down; a press is Stop purge, "
+          f"never a new hold: {r}")
+    ot = o.get("other") or {}
+    check(ot.get("value") == "30" and ot.get("word", "").endswith("for 30 s"),
+          f"Other 45 is kept to the longest, 30: {ot}")
+    print("  ok")
+
+
+
+def test_timed_purge_deck_key():
+    section("timed purge on the Stream Deck (Jeff, 2026-10-29): while the "
+            "engine says one runs, key 0 reads PURGING and the engine's "
+            "seconds left (rounded up), the group stays wanted with the "
+            "page closed, and pressing FIRE is a second purge press sent "
+            "to the engine (which ends it); it goes back to normal after")
+    from ltcplay import streamdeck as sd
+    arm = _FakeArmSocket(3)
+    names = ["front row", "cat-walk", "wave flamer"]
+    t = [100.0]
+    scr = _FakeMorningScreen()
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      conductor=_FakeConductor(),
+                      journal=lambda t_, **kw: None,
+                      clock=lambda: t[0], screen=scr)
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+
+    def mo(left):
+        scr.mo = {"open": True, "purge_enabled": True,
+                  "purge": {"wanted_groups": [0], "selected": 1,
+                            "firing": left is not None,
+                            "timed_left_s": left},
+                  "locks": {"groups_fully_locked": []}}
+
+    def step(dt=0.05):
+        t[0] += dt
+        c.screen_pass()
+        c.tick()
+    mo(None)
+    step()
+    check(c.purge_timed_left() is None, "no timed purge: None")
+    for bad in (True, "7", float("nan"), None):
+        scr.mo["purge"]["timed_left_s"] = bad
+        check(c.purge_timed_left() is None,
+              f"timed_left_s {bad!r}: not a countdown")
+    mo(7.2)
+    step()
+    check(c.purge_timed_left() == 7.2 and arm.wanted[0] is True,
+          f"running: the seconds left, and the group stays armed: "
+          f"{arm.wanted}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    try:
+        if fonts is not None:
+            c.draw(fonts, blink_on=False, chase=0)
+            check(faces[0][0] == ["PURGING", "8 S"],
+                  f"key 0 reads PURGING 8 S: {faces[0]}")
+            mo(0.04)
+            step()
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["PURGING", "1 S"],
+                  f"0.04 s left reads 1 S, never 0 while it runs: "
+                  f"{faces[0]}")
+        down, up = [True] + [False] * 5, [False] * 6
+        c.run_once(down)
+        check(pf.calls and pf.calls[-1][0] == "start",
+              f"FIRE pressed while it runs: a purge press goes to the "
+              f"engine (a second press, which ends it): {pf.calls}")
+        c.run_once(up)
+        mo(None)
+        step()
+        if fonts is not None:
+            c.draw(fonts, blink_on=False, chase=0)
+            check(faces[0][0] == ["FIRE", "HOLD"],
+                  f"once it has ended: FIRE HOLD again: {faces[0]}")
+    finally:
+        restore()
+    print("  ok")
+
+
 def test_windows_rack_window_and_explorer_front():
     section("rack screen window (Jeff, 2026-10-19): the Windows app opens "
             "the page as an ordinary Edge app window, Minimize, Maximize "
@@ -89187,6 +89614,9 @@ if __name__ == "__main__":
         test_timed_purge_at_the_engine,
         test_timed_purge_every_end_cause,
         test_timed_purge_end_to_end_real_flamesafe,
+        test_timed_purge_on_the_pages,
+        test_timed_purge_button_driven,
+        test_timed_purge_deck_key,
         test_windows_rack_window_and_explorer_front,
         test_users_passwords_are_slow_salted_hashes_and_never_stored,
         test_users_lockout_is_short_and_never_permanent,
