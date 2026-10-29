@@ -18019,8 +18019,8 @@ def build():
   '            add("MadMapper output", {"on": "ok", "off": "ok"}.get('),
 
  ('rack keeper: raises the rack screen over the projection on its display', 'ltcplay/showwindows.py',
-  '            if on_mine:',
-  '            if False:'),
+  '        if any(overlap(w["rect"], area) > 0 for w in wins\n               if w["hwnd"] in outs):',
+  '        if False:'),
 
  ('rack keeper: raises over a window a person brought forward', 'ltcplay/showwindows.py',
   '                 and w["hwnd"] not in self.chosen\n',
@@ -18029,10 +18029,6 @@ def build():
  ('rack keeper: raises over old windows after the boot settle', 'ltcplay/showwindows.py',
   '                 and (boot or now - self.seen[w["hwnd"]] <=',
   '                 and (True or now - self.seen[w["hwnd"]] <='),
-
- ('rack keeper: restores a rack screen a person minimized', 'ltcplay/showwindows.py',
-  '            if not boot or self.restored:\n                return "none"       # a person minimized it',
-  '            if False:\n                return "none"       # a person minimized it'),
 
  ('rack keeper: never gives up on a window that stays on top', 'ltcplay/showwindows.py',
   '        if n >= MAX_RAISES:',
@@ -18071,16 +18067,32 @@ def build():
   '        if a.kind == "output":'),
 
  ('rack keeper: buries a dialog under the rack screen', 'ltcplay/showwindows.py',
-  '                 and not w.get("owner")\n',
-  ''),
-
- ('rack keeper: restores a minimized rack screen over and over', 'ltcplay/showwindows.py',
-  '            self.restored = True\n',
-  ''),
+  '                 and not w.get("owner") and w["hwnd"] not in outs\n',
+  '                 and w["hwnd"] not in outs\n'),
 
  ('supervisor: the output watch reads showpc.json, not the engine file', 'packaging/windows/supervisor.py',
   '    chk, mon = output_settings(settings)',
   '    chk, mon = True, 0'),
+
+ ('rack keeper: takes the keyboard from a person typing', 'ltcplay/showwindows.py',
+  '        if age is None or age < INPUT_QUIET_S:',
+  '        if False:'),
+
+ ('rack keeper: takes the foreground from any program', 'ltcplay/showwindows.py',
+  '        take = self.api.foreground() == c["hwnd"]',
+  '        take = True'),
+
+ ('rack keeper: picks another Edge window of the same process', 'ltcplay/showwindows.py',
+  '    if pid is not None and w.get("pid") != pid:\n        return False\n',
+  '    if pid is not None and w.get("pid") == pid:\n        return True\n'),
+
+ ('rack keeper: a minimized rack screen is restored over the projection', 'ltcplay/showwindows.py',
+  '        if rack["minimized"]:\n            # Left minimized',
+  '        if rack["minimized"] and False:\n            # Left minimized'),
+
+ ('rig check cleared: Resume journals a Start now key as a show', 'ltcplay/schedule_service.py',
+  '                        key[0] != night or not isinstance(key[1], int):',
+  '                        not isinstance(key[1], int):'),
 
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,

@@ -2672,9 +2672,13 @@ class Service:
             return
         try:
             keys = pr.release_cleared()
+            m = self.machine
+            night = str(m.date) if m is not None else None
             for key in keys:
+                # A scheduled show's key is (night, show); Start now's and
+                # a Pre-check's are not shows (review A of #176).
                 if not isinstance(key, tuple) or len(key) != 2 or \
-                        not isinstance(key[1], int):
+                        key[0] != night or not isinstance(key[1], int):
                     continue
                 self._preroll_late[key] = pr.late_ok_s()
                 self._journal_line(

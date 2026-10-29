@@ -993,6 +993,9 @@ alert off, for an output that is not a full-screen window) and
 main display, 2 the next, as showpc.json's page_monitor counts). The
 supervisor also keeps the rack screen in front of BEYOND and MadMapper
 windows after a reboot (showpc.json `rack_screen_keep_in_front`, true).
+It never raises the rack screen over MadMapper's output, never takes the
+keyboard from someone typing in another program, never covers a dialog,
+and leaves a minimized rack screen minimized.
 
 The show screen (and the iPad) then shows the failed checks and two
 choices:

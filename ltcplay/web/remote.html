@@ -3446,6 +3446,19 @@ $("nav-info").addEventListener("click", () => { $("info").hidden = false; $("inf
 $("info-close").addEventListener("click", () => { $("info").hidden = true; });
 $("info").addEventListener("click", e => { if(e.target === $("info")) $("info").hidden = true; });
 document.addEventListener("keydown", e => { if(e.key === "Escape"){ $("info").hidden = true; } });
+// Keys that arrive just after this window came to the front, before any
+// touch or click in it, were meant for another program (review A of #176:
+// the supervisor's rack screen keeper can bring this window forward).
+// They are dropped, so Space or Enter never presses a focused button here.
+// Abort is never held back.
+const KEY_GUARD = {at: 0, pointed: true};
+window.addEventListener("focus", () => { KEY_GUARD.at = performance.now(); KEY_GUARD.pointed = false; });
+window.addEventListener("pointerdown", () => { KEY_GUARD.pointed = true; }, true);
+["keydown", "keypress", "keyup"].forEach(t => window.addEventListener(t, e => {
+  if(KEY_GUARD.pointed || performance.now() - KEY_GUARD.at > 2000) return;
+  if(e.target && e.target.id === "b-abort") return;
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true));
 $("info-exit").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/screen", {action:"close"}); $("info-msg").textContent = j.text || "Asked."; }
   catch(e){ $("info-msg").textContent = e.message; }

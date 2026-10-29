@@ -2114,8 +2114,10 @@ def _attach_preroll(httpd, fire_ice, fstatus):
                 fire_ice.preroll_video_unconfirmed_ok)),
             ("MadMapper output", True, lambda p: P.check_madmapper_output(
                 p, getattr(getattr(remote, "mm_output", None), "now", None),
-                getattr(remote, "mm_output_why", "") or
-                "no MadMapper in this show")),
+                getattr(remote, "mm_output_why", "") or (
+                    "no MadMapper in this show"
+                    if getattr(fire_ice, "madmapper", None) is None else
+                    "not known: MadMapper's output check did not start"))),
             ("Flame link", True, lambda p: P.check_flame_link(
                 p, fstatus, wiring.flame_link, remote.deck_chip
                 if fstatus is not None else None)),
@@ -2899,7 +2901,6 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 httpd.remote.madmapper_heartbeat = httpd.madmapper[1]
             httpd.remote.madmapper_heartbeat_cfg = getattr(
                 _mm_cfg, "heartbeat", None)
-            _attach_mm_output(httpd, fire_ice, _mm_cfg)
             _close_before_mw = httpd.server_close
 
             def _close_mw():
@@ -2911,6 +2912,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         except Exception as e:                       # noqa: BLE001
             print(f"The MadMapper watch could not start: "
                   f"{type(e).__name__}: {e}")
+        # MadMapper's output (showwindows.py): wired whether or not the
+        # watch above started (review A of #176).
+        _attach_mm_output(httpd, fire_ice, _mm_cfg)
     if fire_ice is not None and fstatus is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         # flamesafe's status_mirror_port (PR #39): the remote page's copy of

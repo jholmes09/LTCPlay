@@ -1510,6 +1510,39 @@ def start_window_watch(settings, port, api=None):
     return out
 
 
+def start_window_thread(settings, port):
+    """start_window_watch, ticked every WINDOWS_EVERY_S on a daemon thread
+    of its own until Windows ends the session. Never raises."""
+    def loop():
+        try:
+            ws = start_window_watch(settings, port)
+        except Exception as e:
+            log(f"the window watches could not start ({type(e).__name__}: "
+                f"{e})")
+            return
+        while not ENDING.is_set():
+            for w in ws[1:]:
+                if w is None:
+                    continue
+                try:
+                    if isinstance(w, showwindows.RackKeeper) and \
+                            RACK_WINDOW[0] is not None:
+                        w.rack_pid = getattr(RACK_WINDOW[0], "pid", None)
+                    w.tick()
+                except Exception as e:
+                    log(f"window watch: {type(e).__name__}: {e}")
+            ENDING.wait(WINDOWS_EVERY_S)
+    try:
+        import threading
+        t = threading.Thread(target=loop, daemon=True,
+                             name="ltcplay-window-watch")
+        t.start()
+        return t
+    except Exception as e:
+        log(f"the window watches could not start ({type(e).__name__}: {e})")
+        return False
+
+
 def run_loop(open_page=False):
     if not take_mutex():
         log("another LTC Player supervisor is already running; leaving it")
@@ -1537,7 +1570,6 @@ def run_loop(open_page=False):
     mm_priority = start_madmapper_priority(settings)
     next_mm = 0.0
     windows = None
-    next_windows = 0.0
     mm_failed = ""
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
@@ -1707,15 +1739,10 @@ def run_loop(open_page=False):
         if not page_opened and engine_answers(port):
             page_opened = True
             open_page_now(port)
-        if now >= next_windows:
-            next_windows = now + WINDOWS_EVERY_S
-            windows = windows or start_window_watch(settings, port)
-            for w in windows[1:]:
-                if w is not None:
-                    if isinstance(w, showwindows.RackKeeper) and \
-                            RACK_WINDOW[0] is not None:
-                        w.rack_pid = getattr(RACK_WINDOW[0], "pid", None)
-                    w.tick()
+        if windows is None:
+            # On a thread of its own (review A of #176): a window call or
+            # an alert POST never holds up this loop.
+            windows = start_window_thread(settings, port)
         time.sleep(POLL_S)
 
 

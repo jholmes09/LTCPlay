@@ -33,12 +33,19 @@ rig.
    any such window during the boot settle (BOOT_SETTLE_S after the
    supervisor started), and afterwards only a window that appeared in the
    last APP_SETTLE_S (an app started or restarted). Never over a window a
-   person brought forward (Open BEYOND, a taskbar click: a key, touch or
-   click since it came to the front, or just before), never when a
+   person brought forward (a key, touch or click since it came to the
+   front, or Open BEYOND pressed just before it came up), never when a
    MadMapper output window is on the rack screen's own display (the
    projection always wins), and a rack screen a person minimized stays
    minimized after the boot settle. At most MAX_RAISES raises per covering
-   window; every raise and every refusal is logged. The Startup page's Open
+   window; every raise and every refusal is logged. Geometry, not display
+   numbers, keeps it off the projection (review A of #176): it never
+   raises while any MadMapper output window overlaps the rack screen's
+   own area, and an output window never counts as a cover. It takes the
+   foreground only from the covering BEYOND or MadMapper window itself,
+   and never within INPUT_QUIET_S of a key, touch or click; otherwise it
+   only changes the window order, or waits. A minimized rack screen is
+   left minimized (where it would come back is not known). The Startup page's Open
    BEYOND writes OPENED_FILE in the settings folder, and a BEYOND window
    that came forward after it counts as a person's choice.
 
@@ -68,6 +75,7 @@ BOOT_SETTLE_S = 300.0     # after the supervisor starts: any cover is undone
 APP_SETTLE_S = 60.0       # after a BEYOND/MadMapper window appears
 OPENED_S = 10.0           # an Open BEYOND press this long before it came up
 MAX_RAISES = 5            # per covering window, then said once and left
+INPUT_QUIET_S = 5.0       # no foreground taken this soon after any input
 OPENED_FILE = "beyond-opened"   # written by the engine's Open BEYOND
 
 # What a person does in MadMapper to turn the output on, for the alert,
@@ -367,6 +375,12 @@ class Win32:
     def hung(self, hwnd):
         return bool(self.u.IsHungAppWindow(hwnd))
 
+    def raise_only(self, hwnd):
+        """The rack screen to the top of the window order WITHOUT taking
+        the foreground or the keyboard (SWP_NOACTIVATE, async)."""
+        self.u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                            0x0001 | 0x0002 | 0x0010 | 0x4000)
+
     def bring_to_front(self, hwnd, thread):
         """The rack screen to the top of the Z order and the foreground,
         as windowfront.bring_to_front does for Open BEYOND: restored if
@@ -488,14 +502,32 @@ class OutputLook:
 
 
 def is_rack(w, title_re=RACK_TITLE, pid=None):
-    """True for the rack screen's Edge app window: an msedge.exe window
-    whose title is the rack page's, or any window of the Edge process the
-    supervisor started (`pid`)."""
+    """True for the rack screen's Edge app window: an msedge.exe top-level
+    window whose title is the rack page's, and, when `pid` is given (the
+    Edge process the supervisor started), of that process."""
     if not image_is(w.get("image"), EDGE) or w.get("owner"):
         return False
-    if pid is not None and w.get("pid") == pid:
-        return True
+    if pid is not None and w.get("pid") != pid:
+        return False
     return bool(re.search(title_re, str(w.get("title") or "")))
+
+
+def find_rack(wins, title_re=RACK_TITLE, pid=None):
+    """The rack screen's window: the one of the supervisor's Edge process
+    (`pid`) when there is one, else the first whose title is the rack
+    page's (Edge may hand the window to a process already running)."""
+    if pid is not None:
+        got = next((w for w in wins if is_rack(w, title_re, pid)), None)
+        if got is not None:
+            return got
+    return next((w for w in wins if is_rack(w, title_re)), None)
+
+
+def inset(rect, px=16):
+    """A maximized window reaches a few pixels past its display (its
+    hidden borders); its real area is this much inside."""
+    l, t, r, b = rect[:4]
+    return (l + px, t + px, r - px, b - px)
 
 
 def is_app(w):
@@ -533,13 +565,13 @@ class RackKeeper:
         self.fg_since = {}       # hwnd -> when it became the foreground
         self.chosen = set()      # app windows a person brought forward
         self.raises = {}         # covering hwnd -> raises for it
-        self.restored = False    # a minimized rack screen restored once
         self._said = {}
 
     def _say(self, key, text):
         if self._said.get(key) != text:
             self._said[key] = text
-            self.log(text)
+            if text:
+                self.log(text)
 
     def tick(self):
         """One look; returns what it did ("raised", "restored", "left",
@@ -597,8 +629,7 @@ class RackKeeper:
         for h in list(self.fg_since):
             if h != fg:
                 self.fg_since.pop(h, None)
-        rack = next((w for w in wins if is_rack(w, self.title_re,
-                                                self.rack_pid)), None)
+        rack = find_rack(wins, self.title_re, self.rack_pid)
         if rack is None:
             self._say("rack", "rack screen keeper: the rack screen's window "
                               "is not found (not open yet, or closed)")
@@ -606,31 +637,27 @@ class RackKeeper:
         self._say("rack", "rack screen keeper: the rack screen's window is "
                           f"found (\"{rack.get('title', '')}\")")
         boot = now - self.started < self.boot_settle_s
-        mon = mons[self.monitor - 1] if isinstance(self.monitor, int) and \
-            1 <= self.monitor <= len(mons) else (mons[0] if mons else None)
-        if mon is not None:
-            on_mine = [w for w, n in output_windows(wins, mons)
-                       if mons[n - 1] == mon]
-            if on_mine:
-                self._say("output", "rack screen keeper: MadMapper's output "
-                                    "is on the rack screen's own display, so "
-                                    "the rack screen is not raised over it")
-                return "left"
         if rack["minimized"]:
-            if not boot or self.restored:
-                return "none"       # a person minimized it
-            # Once only (review B of #176): minimized again after this, a
-            # person did it, and it stays minimized.
-            self.restored = True
-            self._say("restore", "rack screen keeper: the rack screen was "
-                                 "minimized during start up; restored once")
-            return self._raise(rack, None, "restored")
-        area = rack["rect"]
+            # Left minimized (review A of #176): where it would come back
+            # is not known, and it must never land on the projection.
+            self._say("minimized", "rack screen keeper: the rack screen is "
+                                   "minimized; left as it is (open it from "
+                                   "the taskbar)")
+            return "none"
+        area = inset(rack["rect"])
+        outs = {w["hwnd"] for w, _n in output_windows(wins, mons)}
+        if any(overlap(w["rect"], area) > 0 for w in wins
+               if w["hwnd"] in outs):
+            self._say("output", "rack screen keeper: MadMapper's output "
+                                "overlaps the rack screen, so the rack screen "
+                                "is never raised over it")
+            return "left"
         idx = wins.index(rack)
         # An owned window (a dialog: missing media, a licence, the
-        # preferences) is never buried (review B of #176, S4).
+        # preferences) is never buried (review B of #176, S4), and an
+        # output window is never a cover (review A).
         cover = [w for w in wins[:idx] if is_app(w) and not w["minimized"]
-                 and not w.get("owner")
+                 and not w.get("owner") and w["hwnd"] not in outs
                  and overlap(w["rect"], area) > 0
                  and w["hwnd"] not in self.chosen
                  and (boot or now - self.seen[w["hwnd"]] <=
@@ -645,26 +672,46 @@ class RackKeeper:
                       f"over the rack screen after {MAX_RAISES} tries; left "
                       f"as it is (is it set to stay on top?)")
             return "left"
+        try:
+            age = self.api.input_age_s()
+        except Exception:                        # noqa: BLE001
+            age = None
+        if age is None or age < INPUT_QUIET_S:
+            # Someone is typing or touching (review A of #176): their keys
+            # never land in the rack page. Tried again once it is quiet.
+            self._say("busy", "rack screen keeper: waiting, a key, touch or "
+                              "click was just made")
+            return "waiting"
+        self._say("busy", "")
         self.raises[c["hwnd"]] = n + 1
-        return self._raise(rack, c, "raised")
+        # The foreground only from the covering window itself; anything
+        # else a person has in front keeps the keyboard.
+        take = self.api.foreground() == c["hwnd"]
+        return self._raise(rack, c, "raised", take)
 
-    def _raise(self, rack, cover, what):
+    def _raise(self, rack, cover, what, take):
         try:
             if self.api.hung(rack["hwnd"]):
                 self._say("hung", "rack screen keeper: the rack screen is "
                                   "not responding; not moved")
                 return "left"
-            ok = self.api.bring_to_front(rack["hwnd"], rack.get("thread"))
+            if take:
+                ok = self.api.bring_to_front(rack["hwnd"],
+                                             rack.get("thread"))
+            else:
+                self.api.raise_only(rack["hwnd"])
+                ok = True
         except Exception as e:                   # noqa: BLE001
             ok = False
             self._say("raise error", f"rack screen keeper: could not raise "
                                      f"the rack screen ({type(e).__name__})")
-        why = (f"{app_name(cover)}'s window \"{cover.get('title', '')}\" "
-               f"covered it") if cover else "it was minimized"
+        why = f"{app_name(cover)}'s window \"{cover.get('title', '')}\" " \
+              f"covered it"
         self.log(f"rack screen keeper: {what} the rack screen ({why})"
+                 + ("" if take else ", in the window order only (the "
+                                    "keyboard stays where it is)")
                  + ("" if ok else "; Windows did not give it the "
-                                  "foreground, raised in the window order "
-                                  "only"))
+                                  "foreground"))
         return what
 
 

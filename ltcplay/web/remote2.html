@@ -672,6 +672,19 @@ function sheet(title, html, buttons, flip){
 }
 $("sheet").addEventListener("click", e => { if(e.target === $("sheet") && SHEET_DONE) SHEET_DONE(null); });
 document.addEventListener("keydown", e => { if(e.key === "Escape" && SHEET_DONE) SHEET_DONE(null); });
+// Keys that arrive just after this window came to the front, before any
+// touch or click in it, were meant for another program (review A of #176:
+// the supervisor's rack screen keeper can bring this window forward).
+// They are dropped, so Space or Enter never presses a focused button here.
+// Abort is never held back.
+const KEY_GUARD = {at: 0, pointed: true};
+window.addEventListener("focus", () => { KEY_GUARD.at = performance.now(); KEY_GUARD.pointed = false; });
+window.addEventListener("pointerdown", () => { KEY_GUARD.pointed = true; }, true);
+["keydown", "keypress", "keyup"].forEach(t => window.addEventListener(t, e => {
+  if(KEY_GUARD.pointed || performance.now() - KEY_GUARD.at > 2000) return;
+  if(e.target && e.target.id === "b-abort") return;
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true));
 // A confirm: Yes only on the button that says it. `flip` puts Yes on the
 // other side (Start's confirm, as in 1.0, so a Stop's Yes is never where
 // a Start's was).

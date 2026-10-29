@@ -86776,6 +86776,17 @@ def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
     k.link.close()
     check(U.classify("/api/remote/preroll-check") == "settings",
           "Check again needs the Settings row (an admin), as before")
+    # A cleared Start now check is not a show (review A of #176): Resume
+    # says nothing about "show 7".
+    j = _pr_night()
+    j.svc.tick()
+    j.pr._runs[("start now", 7)] = {"key": ("start now", 7),
+                                    "state": "cleared", "items": []}
+    j.svc._preroll_release("Andy", "Rack screen")
+    check(not [x for x in j.svc.journal if x.get("outcome") == "released"],
+          "Start now's key is not journaled as a show")
+    j.c.close()
+    j.link.close()
     print("  ok")
 
 
@@ -86874,6 +86885,12 @@ class _FakeWins:
 
     def hung(self, hwnd):
         return False
+
+    def raise_only(self, hwnd):
+        self.ordered = getattr(self, "ordered", []) + [hwnd]
+        w = next(x for x in self.wins if x["hwnd"] == hwnd)
+        self.wins.remove(w)
+        self.wins.insert(0, w)
 
     def bring_to_front(self, hwnd, thread):
         self.raised.append(hwnd)
@@ -87177,16 +87194,50 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
                      _RACK])
     check(keeper(api).tick() == "left" and not api.raised,
           "the projection on the rack display always wins")
-    # Minimized: restored during the boot settle, left after it.
+    # Minimized: left minimized, even during the boot settle (review A of
+    # #176: where it would come back is not known).
     api = _FakeWins([_BEYOND, dict(_RACK, minimized=True)])
     k = keeper(api)
-    check(k.tick() == "restored" and api.raised == [10],
-          "minimized during start up: restored")
-    api.wins[0]["minimized"] = True
     for _ in range(5):
         k.tick()
-    check(api.raised == [10], "minimized again: a person did it; restored "
-                              "once only (review B of #176)")
+    check(not api.raised and not getattr(api, "ordered", None),
+          "minimized: left minimized")
+    check(sum("minimized" in x for x in logs) >= 1, "said in the log")
+    # Review A of #176, A1: the rack screen on the PROJECTOR's display
+    # (dragged there, a remembered spot, displays renumbered, page_monitor
+    # wrong): never raised over the output there, whatever page_monitor.
+    for mon in (1, 2, 3):
+        api = _FakeWins([_BEYOND, _MM_OUT,
+                         dict(_RACK, rect=(1912, -8, 3848, 1040))])
+        k = SW.RackKeeper(api, monitor=mon, log=logs.append,
+                          clock=lambda: t[0])
+        check(k.tick() == "left" and not api.raised and
+              not getattr(api, "ordered", None),
+              f"page_monitor {mon}: never over the projection")
+    # The rack screen's maximized borders reaching 8 px onto the projector
+    # display are not an overlap.
+    api = _FakeWins([_BEYOND, _MM_OUT, _RACK])
+    check(keeper(api).tick() == "raised", "output next door: still raised")
+    # Review A of #176, A2: a person working in another program keeps the
+    # keyboard. Typing now: nothing; quiet: the window order only.
+    sd = {"hwnd": 50, "image": "StreamDeck.exe", "title": "Stream Deck",
+          "rect": (2000, 0, 2600, 600)}
+    api = _FakeWins([_BEYOND, _RACK, sd])
+    api.fg = 50
+    api.input_age = 0.0
+    k = keeper(api)
+    check(k.tick() == "waiting" and not api.raised and
+          not getattr(api, "ordered", None) and api.fg == 50,
+          "someone typing: the rack screen waits")
+    api.input_age = SW.INPUT_QUIET_S + 1
+    check(k.tick() == "raised" and not api.raised and
+          api.ordered == [10] and api.fg == 50,
+          "quiet, another program in front: raised in the window order "
+          "only, the keyboard left where it was")
+    api = _FakeWins([_BEYOND, _RACK])
+    api.input_age = 1.0
+    check(keeper(api).tick() == "waiting" and not api.raised,
+          "even BEYOND in front: never within a few seconds of input")
     # A dialog (an owned window: missing media, a licence) is never buried.
     api = _FakeWins([dict(_BEYOND, hwnd=22, owner=20), _RACK, _BEYOND])
     check(keeper(api).tick() == "none" and not api.raised,
@@ -87194,11 +87245,6 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
     nl = []
     SW.RackKeeper(_FakeWins([_BEYOND]), log=nl.append).tick()
     check(any("not found" in x for x in nl), "no rack screen: said once")
-    api = _FakeWins([_BEYOND, dict(_RACK, minimized=True)])
-    k = keeper(api)
-    t[0] += SW.BOOT_SETTLE_S + 1
-    check(k.tick() == "none" and not api.raised,
-          "minimized by a person later: left minimized")
     # A window that stays on top: a few tries, then said and left.
     api = _FakeWins([_BEYOND, _RACK])
     api.bring_to_front = lambda h, th: api.raised.append(h) or False
@@ -87215,8 +87261,14 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
     check(keeper(api).tick() == "none" and not api.raised,
           "a folder window a person opened is never covered")
     # The rack screen found by the Edge process the supervisor started.
-    check(SW.is_rack(dict(_RACK, title="Something else", pid=77), pid=77)
-          and not SW.is_rack(dict(_RACK, title="Something else")) and
+    check(not SW.is_rack(dict(_RACK, title="Something else", pid=77),
+                         pid=77) and
+          SW.is_rack(dict(_RACK, pid=77), pid=77) and
+          not SW.is_rack(dict(_RACK, pid=78), pid=77) and
+          SW.find_rack([dict(_RACK, pid=78, hwnd=11),
+                        dict(_RACK, pid=77)], pid=77)["hwnd"] == 10 and
+          SW.find_rack([dict(_RACK, pid=78)], pid=77)["hwnd"] == 10 and
+          not SW.is_rack(dict(_RACK, title="Something else")) and
           SW.is_rack(dict(_RACK, title="Show remote 2.0")) and
           SW.is_rack(dict(_RACK, title="Fire remote - Microsoft Edge")) and
           not SW.is_rack(dict(_RACK, title="remote control docs - Google")) and
