@@ -253,7 +253,7 @@ class FlameLinkConfig:
 
     def __init__(self, ip, port, universe, key, send_hz=SEND_HZ_DEFAULT,
                  frame_stale_ms=FRAME_STALE_MS_DEFAULT, aim_slots=(),
-                 hazers=()):
+                 hazers=(), fire_hold_ms=None):
         self.ip = ip
         self.port = port
         self.universe = universe
@@ -267,6 +267,9 @@ class FlameLinkConfig:
         # flamesafe's "passthrough" (hazers_of). Empty: none.
         self.hazers = tuple((str(n), tuple(int(x) for x in sl))
                             for n, sl in hazers)
+        # flamesafe's fire_hold_ms (2026-10-29), or None: only the frame
+        # timing's limit (FrameTiming); nothing sent depends on it.
+        self.fire_hold_ms = fire_hold_ms
 
     @property
     def abort_repeat_s(self):
@@ -351,6 +354,9 @@ class FlameLinkConfig:
                         where=str(path))
         cfg.aim_slots = aim_slots_of(doc, path)
         cfg.hazers = hazers_of(doc, path)
+        hold = doc.get("fire_hold_ms")
+        cfg.fire_hold_ms = (hold if _is_int(hold)
+                            and 1 <= hold < cfg.frame_stale_ms else None)
         return cfg
 
 
@@ -500,9 +506,11 @@ def _ipv4(text):
 # and summed up per show and per hour for the journal, the status and the
 # rack screen. Display and journal only: nothing here changes what is sent.
 TIMING_LIMITS_MS = (50, 75, 100, 150)
-# The limit the alert and the rack screen judge by: flamesafe's example
-# fire_hold_ms. Only a WORD here; flamesafe's own config is never read for
-# it and never changed by it.
+# The limit the alert, the rack screen and the soak judge by: flamesafe's
+# own fire_hold_ms, read from its config with the rest of the link
+# (FlameLinkConfig.fire_hold_ms), the gap after which flamesafe zeroes the
+# fire slots. This is only the fallback when that is not known (a config
+# built in code). Read here, never changed here.
 TIMING_ALERT_MS = 100
 TIMING_HOUR_S = 3600.0
 # next_deadline: no two frames closer together than this share of a period
@@ -516,10 +524,13 @@ class FrameTiming:
     since start). add() is the sender thread's; everything else only
     reads. Never raises."""
 
-    __slots__ = ("since", "frames", "worst_ms", "over", "bins", "total_ms")
+    __slots__ = ("since", "frames", "worst_ms", "over", "bins", "total_ms",
+                 "limit_ms", "over_lim")
 
-    def __init__(self, since=None):
+    def __init__(self, since=None, limit_ms=TIMING_ALERT_MS):
         self.since = since
+        self.limit_ms = limit_ms
+        self.over_lim = 0
         self.frames = 0
         self.worst_ms = 0.0
         self.over = [0] * len(TIMING_LIMITS_MS)
@@ -534,6 +545,8 @@ class FrameTiming:
             if ms > self.worst_ms:
                 self.worst_ms = ms
             self.bins[min(_TIMING_BINS - 1, max(0, int(ms)))] += 1
+            if ms > self.limit_ms:
+                self.over_lim += 1
             if ms > TIMING_LIMITS_MS[0]:
                 for i, lim in enumerate(TIMING_LIMITS_MS):
                     if ms > lim:
@@ -564,9 +577,8 @@ class FrameTiming:
                 if self.frames else 0.0,
                 "over_ms": {str(lim): self.over[i]
                             for i, lim in enumerate(TIMING_LIMITS_MS)},
-                "limit_ms": TIMING_ALERT_MS,
-                "over_limit": self.over[TIMING_LIMITS_MS.index(
-                    TIMING_ALERT_MS)]}
+                "limit_ms": self.limit_ms,
+                "over_limit": self.over_lim}
 
     def sentence(self, what):
         """One plain journal line: what (e.g. "this hour") and the counts."""
@@ -576,7 +588,8 @@ class FrameTiming:
                 f"worst {v['worst_ms']:.0f} ms, 99 in 100 within "
                 f"{v['p99_ms']} ms; over 50 ms: {o['50']}, over 75 ms: "
                 f"{o['75']}, over 100 ms: {o['100']}, over 150 ms: "
-                f"{o['150']}.")
+                f"{o['150']}; over flamesafe's fire_hold_ms "
+                f"({v['limit_ms']} ms): {v['over_limit']}.")
 
 
 def next_deadline(next_at, now, period):
@@ -863,8 +876,11 @@ class FlameLink:
         # interval over TIMING_ALERT_MS also goes on _timing_late (when,
         # how long), for "N in the last hour". deque append and popleft
         # are atomic, so neither side ever waits on the other.
-        self._timing_total = FrameTiming()
-        self._timing_shows = FrameTiming()   # every show so far, together
+        # The limit: flamesafe's own fire_hold_ms when its config said it.
+        self.timing_limit_ms = int(getattr(cfg, "fire_hold_ms", None)
+                                   or TIMING_ALERT_MS)
+        self._timing_total = FrameTiming(None, self.timing_limit_ms)
+        self._timing_shows = FrameTiming(None, self.timing_limit_ms)
         self._timing_hour = None
         self._timing_last_hour = None
         self._timing_show = None
@@ -1055,21 +1071,24 @@ class FlameLink:
             self._timing_total.add(gap)
             hour = self._timing_hour
             if hour is None:
-                hour = self._timing_hour = FrameTiming(now)
+                hour = self._timing_hour = FrameTiming(
+                    now, self.timing_limit_ms)
             elif now - hour.since >= TIMING_HOUR_S:
                 self._timing_done.append(("in the last hour", hour))
                 self._timing_last_hour = hour
-                hour = self._timing_hour = FrameTiming(now)
+                hour = self._timing_hour = FrameTiming(
+                    now, self.timing_limit_ms)
             hour.add(gap)
             show = self._timing_show
             if show is not None:
                 show.add(gap)
                 self._timing_shows.add(gap)
-            if gap * 1000.0 > TIMING_ALERT_MS:
+            if gap * 1000.0 > self.timing_limit_ms:
                 self._timing_late.append((now, gap * 1000.0))
             if self._haze_live:
                 if show is None:
-                    self._timing_show = FrameTiming(now)
+                    self._timing_show = FrameTiming(
+                        now, self.timing_limit_ms)
             elif show is not None and self._frame_tc is None:
                 self._timing_show = None
                 self._timing_done.append(("in the show that just ended",
@@ -1090,7 +1109,7 @@ class FlameLink:
                            outcome="frame_timing", timing=v)
                 if v["over_limit"]:
                     self._note(f"Flame frames late: {v['over_limit']} "
-                               f"{what} more than {TIMING_ALERT_MS} ms "
+                               f"{what} more than {v['limit_ms']} ms "
                                f"after the one before, worst "
                                f"{v['worst_ms']:.0f} ms. flamesafe holds a "
                                f"fire value for its fire_hold_ms after the "
@@ -1124,7 +1143,7 @@ class FlameLink:
         raises."""
         try:
             n, worst = self.late_last_hour()
-            out = {"limit_ms": TIMING_ALERT_MS,
+            out = {"limit_ms": self.timing_limit_ms,
                    "late_last_hour": n, "late_last_hour_worst_ms": worst}
             for k, w in (("since_start", self._timing_total),
                          ("in_shows", self._timing_shows),
@@ -1134,7 +1153,7 @@ class FlameLink:
                 out[k] = w.view() if w is not None else None
             return out
         except Exception:
-            return {"limit_ms": TIMING_ALERT_MS}
+            return {"limit_ms": self.timing_limit_ms}
 
     LATE_S = 0.045      # a frame this long after the last one is noted
     LATE_NOTE_EVERY_S = 10.0

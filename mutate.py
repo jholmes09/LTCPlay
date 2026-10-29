@@ -7161,10 +7161,61 @@ def build():
   "            if self._bg:\n                # Memory only on the sender",
   "            if False:\n                # Memory only on the sender"),
 
- ("flame cues: a table cut for another span is used",
+ ("flame cues: a cut for another span is used",
   "ltcplay/fire_ice.py",
-  "                if tab is None or tab[0] is not f or tab[1] != span:",
-  "                if tab is None:"),
+  "                if cut is not None and cut.f is f and cut.span == span:",
+  "                if cut is not None and cut.f is f:"),
+
+ ("flame cues: a cut of another FSEQ of the render is used",
+  "ltcplay/fire_ice.py",
+  "                if cut is not None and cut.f is f and cut.span == span:",
+  "                if cut is not None and cut.span == span:"),
+
+ ("flame cues: a cut of bytes with another frame count is made",
+  "ltcplay/fire_ice.py",
+  "        if g.frame_count != f.frame_count or \\\n"
+  "                g.channel_count != f.channel_count:\n            g.close()",
+  "        if False:\n            g.close()"),
+
+ ("flame cues: a render is cut from another render's bytes",
+  "ltcplay/fire_ice.py",
+  "                if mine is None or mine[0] is not got[0]:",
+  "                if mine is None:"),
+
+ ("flame cues: the renders are published before their cuts",
+  "ltcplay/fire_ice.py",
+  "        self._cuts = cuts\n        self._by_path = by",
+  "        self._by_path = by\n        self._cuts = cuts"),
+
+ ("flame cues: a block that could not be cut is tried again",
+  "ltcplay/fire_ice.py",
+  "            if b in self.blocks or b in self.errors:",
+  "            if b in self.blocks:"),
+
+ ("flame cues: a block that could not be cut is a silent zero",
+  "ltcplay/fire_ice.py",
+  "        if e is not None:\n            raise e",
+  "        if False:\n            raise e"),
+
+ ("flame cues: a block not cut yet is a silent zero",
+  "ltcplay/fire_ice.py",
+  "                    return self._zero(CUES_LOADING, fault=True)",
+  "                    return self._zero(CUES_LOADING, fault=False)"),
+
+ ("flame cues: nothing is cut ahead of the show timecode",
+  "ltcplay/fire_ice.py",
+  "            cut.ensure(idx, idx + cut.frames(CUT_AHEAD_S))",
+  "            pass"),
+
+ ("flame timing: flamesafe's fire_hold_ms is not read",
+  "ltcplay/flamelink.py",
+  "                            and 1 <= hold < cfg.frame_stale_ms else None)",
+  "                            and False else None)"),
+
+ ("flame timing: no interval is counted over fire_hold_ms",
+  "ltcplay/flamelink.py",
+  "            if ms > self.limit_ms:\n                self.over_lim += 1",
+  "            if ms > self.limit_ms:\n                self.over_lim += 0"),
 
  ("flame cues: the cut-ahead table is one channel off",
   "ltcplay/fire_ice.py",

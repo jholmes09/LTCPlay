@@ -509,19 +509,15 @@ def preroll_off_refused():
         error(f"a soak kit's preroll_s 0 was refused: {e}")
 
 
-# The flame frame interval a CI runner may never exceed in a show (see
-# soak_check: three times the worst its soak has shown, and flamesafe's
-# example fire_hold_ms).
-CI_FLAME_INTERVAL_MS = 100
-
-
-def flame_over(detail, limit):
+def flame_over(detail):
     """How many intervals in shows the soak's "Flame frame intervals"
-    detail counts over `limit` ms (its first "over N ms: K"), or None when
-    it does not say."""
+    detail counts over flamesafe's own fire_hold_ms, the gap after which
+    flamesafe zeroes the fire ("over flamesafe's fire_hold_ms (N ms): K"),
+    or None when it does not say (then it is an error too)."""
     import re
-    m = re.search(rf"over {int(limit)} ms: (\d+)", detail or "")
-    return int(m.group(1)) if m else None
+    m = re.search(r"over flamesafe's fire_hold_ms \((\d+) ms\): (\d+)",
+                  detail or "")
+    return int(m.group(2)) if m else None
 
 
 def soak_check():
@@ -561,16 +557,17 @@ def soak_check():
                            all("has not moved" in x for x in parts))
             # Flame frame intervals in shows (2026-10-29): the soak fails it
             # at any interval over 75 ms (the show PC's bar); on a shared
-            # runner that is a warning, and a hard error only past
-            # CI_FLAME_INTERVAL_MS. Why that number: in the 40 runs of
-            # this job before it (bench-build and its PRs, 2026-10-27 to
-            # 29) the soak's relay never heard a flame frame interval over
-            # 50 ms and the worst it named was 33 ms, so 100 ms (flamesafe's
-            # example fire_hold_ms, the gap that can cut a pulse short) is
-            # three times the worst the runner has shown and still the
-            # limit that matters on the rig.
+            # runner that is a warning, and a hard error only for an
+            # interval over flamesafe's own fire_hold_ms (the soak's copy
+            # of the installed flamesafe.json; the example's is 100 ms),
+            # the gap after which flamesafe zeroes the fire. Why that is
+            # robust here: in the 40 runs of this job before it (bench-build
+            # and its PRs, 2026-10-27 to 29) the soak's relay never heard a
+            # flame frame interval over 50 ms, the worst it named was 33 ms,
+            # and the first run of this item counted 2463 intervals in
+            # shows, worst 29.7 ms: 100 ms is three times that.
             flame_hard = ("Flame frame intervals" in ln and
-                          flame_over(detail, CI_FLAME_INTERVAL_MS) != 0)
+                          flame_over(detail) != 0)
             hard = flame_hard or not timing_only and (
                 "Crashes" in ln or "frames arrived" in detail or
                 "never answered" in detail or "Scheduled shows" in ln or

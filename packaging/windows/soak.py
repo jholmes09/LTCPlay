@@ -1379,7 +1379,9 @@ class Soak:
                 f"ms, 99 in 100 within {w.get('p99_ms', 0)} ms, mean "
                 f"{w.get('mean_ms', 0):.2f} ms; over 50 ms: {o.get('50', 0)}, "
                 f"over {FRAME_TIMING_LIMIT_MS} ms: {over} (limit 0), over 100 "
-                f"ms: {o.get('100', 0)}, over 150 ms: {o.get('150', 0)}; "
+                f"ms: {o.get('100', 0)}, over 150 ms: {o.get('150', 0)}, "
+                f"over flamesafe's fire_hold_ms ({w.get('limit_ms', 100)} "
+                f"ms): {w.get('over_limit', 0)}; "
                 f"since the engine started (its start up included): worst "
                 f"{tot.get('worst_ms', 0):.1f} ms, over 100 ms: "
                 f"{(tot.get('over_ms') or {}).get('100', 0)}")

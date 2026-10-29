@@ -1124,6 +1124,109 @@ def _tail_by_design(clk, label, f, rel):
         return False
 
 
+# Background mode's cut ahead (2026-10-29): each cue's first CUT_START_S
+# before its render is published, and the playing cue CUT_AHEAD_S ahead of
+# its show timecode.
+CUT_START_S = 0.5
+CUT_AHEAD_S = 3.0
+CUES_LOADING = ("the show's flame cues are still being cut from its render "
+                "(off the flame link's sender), so they are zero here; "
+                "they follow within a second")
+
+
+class _FlameCut:
+    """One render's flame channels for one span, cut block by block on
+    the reading thread (FlameCues background mode), through an FSEQ of its
+    own over the render's bytes in memory (never the published one, which
+    another thread may be reading). The sender only reads `row`: a dict
+    lookup and a slice. A block that cannot be cut keeps its error, which
+    `row` raises; it is never tried again for this FSEQ."""
+
+    def __init__(self, path, f, spans, span, data):
+        import io
+        from .fseq import FSEQ
+        self.f = f
+        self.span = tuple(span)
+        self.count = int(span[1])
+        self.spans = spans
+        g = FSEQ(path, fileobj=io.BytesIO(data))
+        if g.frame_count != f.frame_count or \
+                g.channel_count != f.channel_count:
+            g.close()
+            raise ValueError("the render changed while it was read")
+        self.g = g
+        self.firsts = [b[0] for b in g._blocks]
+        self.blocks = {}         # block index -> its frames' rows, joined
+        self.errors = {}         # block index -> the error cutting it
+
+    @classmethod
+    def failed(cls, f, span, error):
+        """A render that could not be cut at all: every row raises `error`
+        (a CUES FAULT), and it is never tried again for this FSEQ."""
+        c = cls.__new__(cls)
+        c.f, c.span, c.count, c.spans = f, tuple(span), int(span[1]), []
+        c.g = None
+        c.firsts = [0]
+        c.blocks, c.errors = {}, {0: error}
+        return c
+
+    def frames(self, seconds):
+        if self.g is None:
+            return 0
+        return int(seconds * 1000.0 // self.g.step_time_ms) + 1
+
+    def _block(self, idx):
+        import bisect
+        return max(0, bisect.bisect_right(self.firsts, idx) - 1)
+
+    def ensure(self, lo, hi):
+        """Cut every block holding frames lo to hi (inside the render),
+        yielding the interpreter between blocks. Never raises."""
+        if self.g is None:
+            return
+        n = self.g.frame_count
+        lo, hi = max(0, lo), min(n - 1, hi)
+        if lo > hi:
+            return
+        import time as _t
+        for b in range(self._block(lo), self._block(hi) + 1):
+            if b in self.blocks or b in self.errors:
+                continue
+            try:
+                self.blocks[b] = self._cut_block(b)
+            except Exception as e:
+                self.errors[b] = e
+            _t.sleep(0)
+
+    def _cut_block(self, b):
+        g, cc = self.g, self.g.channel_count
+        first = self.firsts[b]
+        last = self.firsts[b + 1] if b + 1 < len(self.firsts) \
+            else g.frame_count
+        raw = memoryview(g._load_block(b))
+        rows = []
+        for n in range(first, last):
+            at = (n - first) * cc
+            if at + cc > len(raw):
+                raise ValueError(f"frame {n} runs past the end of block {b}")
+            rows.append(FlameCues._cut(raw[at:at + cc], self.spans,
+                                       self.span))
+        return b"".join(rows)
+
+    def row(self, idx):
+        """Frame idx's flame channels (count bytes), None while its block
+        is not cut yet; raises the error its block could not be cut with."""
+        b = self._block(idx)
+        e = self.errors.get(b)
+        if e is not None:
+            raise e
+        blk = self.blocks.get(b)
+        if blk is None:
+            return None
+        at = (idx - self.firsts[b]) * self.count
+        return blk[at:at + self.count]
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
     show's OWN render at the show timecode (PR #43 review, finding 1).
@@ -1181,13 +1284,14 @@ class FlameCues:
         self._layout = None      # (session, span, total, layout mtime)
         self._by_path = {}       # fseq path -> _render's tuple, or an error
         # Background mode (2026-10-29, Jeff's Pico: flame frames 78 to 178
-        # ms late): the flame controller's channels of EVERY frame of each
-        # render, cut out ahead of time on the reading thread, so the
-        # sender only slices memory. It used to decompress the render's
-        # block (megabytes) on the sender thread itself each time the show
-        # crossed into the next one. fseq path -> (the FSEQ it was cut
-        # from, the span it was cut for, frame_count * count bytes).
-        self._tables = {}
+        # ms late): the flame controller's channels, cut out of each render
+        # block by block on the reading thread (_FlameCut), so the sender
+        # only slices memory. It used to decompress the render's block
+        # (megabytes) on the sender thread itself each time the show
+        # crossed into the next one. Cut ahead: every cue's first
+        # CUT_START_S before its render is published, and the playing cue
+        # CUT_AHEAD_S ahead of the show timecode. fseq path -> _FlameCut.
+        self._cuts = {}
         self._data = {}          # fseq path -> (its FSEQ, the render's bytes)
         self._stop = threading.Event()
         self._thread = None
@@ -1312,29 +1416,6 @@ class FlameCues:
                                                   src + hi - dst]
         return bytes(row)
 
-    def _flame_table(self, path, got, span):
-        """Background mode, on the reading thread: every frame's flame
-        channels of the render `got` (_render's tuple), cut for `span`,
-        one after the other. Read through an FSEQ of its own over the same
-        bytes in memory (never `got`'s, which another thread may be
-        reading). Raises if the render cannot be read."""
-        import io
-        from .fseq import FSEQ
-        f, spans = got[0], got[1]
-        mine = self._data.get(path)
-        if mine is None or mine[0] is not f:
-            raise ValueError("the render's bytes are not in memory")
-        data = mine[1]
-        g = FSEQ(path, fileobj=io.BytesIO(data))
-        try:
-            if g.frame_count != f.frame_count or \
-                    g.channel_count != f.channel_count:
-                raise ValueError("the render changed while it was read")
-            return b"".join(self._cut(g.frame(i), spans, span)
-                            for i in range(g.frame_count))
-        finally:
-            g.close()
-
     def _refresh_once(self):
         """Background mode: the channels and every cue's render of the
         running session, read and published for the sender to use."""
@@ -1352,24 +1433,56 @@ class FlameCues:
                         path, span[0] if span else None)
                 except Exception as e:
                     by[path] = e
-        # Each render's flame channels, cut ahead of time (see _tables),
-        # published BEFORE the renders themselves: whoever finds a render
-        # in _by_path finds its cues ready, as when only the file was read.
-        tables = {}
+        # Each render's cut (_FlameCut), its first CUT_START_S and the
+        # playing cue's next CUT_AHEAD_S cut, published BEFORE the renders
+        # themselves: whoever finds a render in _by_path finds the start of
+        # its cues ready, as when only the file was read. One _FlameCut per
+        # (FSEQ, span), kept from pass to pass and session to session; a
+        # block that cannot be cut is kept as its error, never tried again.
+        cuts = {}
         for path, got in by.items():
             if isinstance(got, Exception) or span is None:
                 continue
-            have = self._tables.get(path)
-            if have is not None and have[0] is got[0] and have[1] == span:
-                tables[path] = have
-                continue
-            try:
-                tables[path] = (got[0], span,
-                                self._flame_table(path, got, span))
-            except Exception:
-                continue    # zero; __call__ says the render's own fault
-        self._tables = tables
+            cut = self._cuts.get(path)
+            if cut is None or cut.f is not got[0] or cut.span != tuple(span):
+                mine = self._data.get(path)
+                if mine is None or mine[0] is not got[0]:
+                    continue    # its bytes are not this render's: not cut
+                try:
+                    cut = _FlameCut(path, got[0], got[1], span, mine[1])
+                except Exception as e:
+                    cut = _FlameCut.failed(got[0], span, e)
+            cuts[path] = cut
+        for cut in cuts.values():
+            cut.ensure(0, cut.frames(CUT_START_S))
+        self._cut_ahead(s, cuts)
+        self._cuts = cuts
         self._by_path = by
+
+    def _cut_ahead(self, s=None, cuts=None):
+        """The playing cue's blocks from its show timecode to CUT_AHEAD_S
+        on, cut now (the reading thread). Never raises."""
+        try:
+            s = s or getattr(self.control, "session", None)
+            cuts = self._cuts if cuts is None else cuts
+            clk = getattr(s, "clock", None)
+            cue = getattr(clk, "_cue", None)
+            last = getattr(clk, "last_sent", None)
+            label = cue.get("label") if isinstance(cue, dict) else None
+            if not label or not last:
+                return
+            hits = [c for c in (getattr(getattr(s, "tl", None), "cues",
+                                        None) or ())
+                    if getattr(c, "name", None) == label]
+            cut = cuts.get(getattr(hits[0], "path", None)) \
+                if len(hits) == 1 else None
+            if cut is None:
+                return
+            rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
+            idx = int(rel * 1000.0 // cut.g.step_time_ms)
+            cut.ensure(idx, idx + cut.frames(CUT_AHEAD_S))
+        except Exception:
+            pass
 
     def _refresher(self):
         while not self._stop.is_set():
@@ -1381,7 +1494,12 @@ class FlameCues:
                 self._refresh_once()
             except Exception:
                 pass
-            self._stop.wait(0.25)
+            # Between full passes, keep cutting ahead of the play position
+            # every 50 ms (cheap once the blocks are cut).
+            for _ in range(5):
+                if self._stop.wait(0.05):
+                    break
+                self._cut_ahead()
 
     def start(self):
         """Background mode: the reading thread, started now, so the
@@ -1458,7 +1576,7 @@ class FlameCues:
                 pass
         self._open.clear()
         self._data.clear()
-        self._tables = {}
+        self._cuts = {}
 
     def __call__(self, tc):
         s = getattr(self.control, "session", None)
@@ -1581,15 +1699,19 @@ class FlameCues:
             if self._bg:
                 # Memory only on the sender (2026-10-29): the frame's flame
                 # channels as the reading thread cut them from this very
-                # render, for this very span. Not there yet: zero.
-                tab = self._tables.get(hits[0].path)
-                if tab is None or tab[0] is not f or tab[1] != span:
-                    return self._zero("the show's flame cues are still being "
-                                      "read into memory (off the flame "
-                                      "link's sender)")
+                # render, for this very span. A block it could not cut
+                # raises its error here (the render could not be read, a
+                # fault). Not cut yet while the show plays: a CUES FAULT,
+                # never a silent zero.
+                cut = self._cuts.get(hits[0].path)
+                row = None
+                if cut is not None and cut.f is f and cut.span == span:
+                    row = cut.row(idx)
+                if row is None:
+                    return self._zero(CUES_LOADING, fault=True)
                 count = span[1]
                 out = [0] * 512
-                out[0:count] = tab[2][idx * count:(idx + 1) * count]
+                out[0:count] = row
                 self._why = ""
                 self.fault = ""
                 return out

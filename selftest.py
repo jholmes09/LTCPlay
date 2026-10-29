@@ -41950,98 +41950,258 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     print("  ok")
 
 
+def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
+    """A show folder for the cut-ahead tests: Pixels A 1-510, Flames
+    511-1022; `ncues` renders of `frames` frames (zlib, 37 frames a
+    block), each frame its own byte ((i * 7 + 3) & 255), sparse by default
+    (part of the pixels, then flame channels 601 to 800 only). Optionally
+    one block of the first render corrupted. Returns (control, clock,
+    [render paths])."""
+    import types
+    import test_show_fixtures as _fx
+    show = os.path.join(work, "show")
+    os.makedirs(show, exist_ok=True)
+    with open(os.path.join(show, "xlights_networks.xml"), "w") as fh:
+        fh.write(_FI2_NETWORKS.format(extra="", name="Flames",
+                                      state="Inactive", after=""))
+    paths, cues = [], []
+    for k in range(ncues):
+        p = os.path.join(show, f"c{k}.fseq")
+        _fx.write_fseq(p, frame_count=frames, step_ms=25,
+                       compression="zlib", block_frames=37,
+                       **({"sparse_ranges": [(0, 100), (600, 200)]}
+                          if sparse else {"channel_count": 1022}),
+                       fill=lambda i: (i * 7 + 3) & 0xFF)
+        paths.append(p)
+        cues.append(types.SimpleNamespace(name=f"c{k}", path=p))
+    if corrupt_block is not None:
+        from ltcplay import fseq as FS
+        f = FS.FSEQ(paths[0])
+        _first, off, length = f._blocks[corrupt_block]
+        f.close()
+        with open(paths[0], "r+b") as fh:
+            fh.seek(off + length // 2)
+            fh.write(b"\x00\xff" * 8)
+    clk = types.SimpleNamespace(source="audio_master", paused=False,
+                                _cue={"label": "c0", "position_s": 0.0},
+                                last_sent=(0, 0, 0, 0))
+    sess = types.SimpleNamespace(
+        running=True, clock=clk,
+        player=types.SimpleNamespace(override=None, freerun_epoch=None),
+        tl=types.SimpleNamespace(show_dir=show, cues=cues))
+    return types.SimpleNamespace(session=sess), clk, paths
+
+
+def _fi_at(clk, n, label=None):
+    """The show clock at frame n (30 a second) of cue `label`."""
+    s, f = divmod(n, 30)
+    m, s = divmod(s, 60)
+    clk.last_sent = (0, m, s, f)
+    if label is not None:
+        clk._cue = {"label": label, "position_s": 0.0}
+    return f"00:{m:02d}:{s:02d}:{f:02d}"
+
+
 def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
     section("fire & ice (2026-10-29): in serve's background mode the flame "
-            "universe of every frame is cut ahead of time on the reading "
-            "thread, equal to what the direct read gives frame by frame "
-            "(a sparse render too), and the sender never decompresses a "
-            "block; a table cut for another span is never used")
+            "channels are cut from the render block by block on the reading "
+            "thread, ahead of the show timecode, equal to the direct read "
+            "frame by frame (a sparse render too); the sender never "
+            "decompresses a block; a cut of another render or span is "
+            "never used; a block not cut yet is a CUES FAULT, never a "
+            "silent zero")
     import shutil
     import tempfile
     import threading
-    import types
-    import test_show_fixtures as _fx
     from ltcplay import fseq as FS
     F = _fi_mod()
     work = tempfile.mkdtemp()
     real_load = FS.FSEQ._load_block
-    me = threading.current_thread()
-    on_caller = []
+    asking = threading.Event()
+    on_ask = []
 
     def spy_load(self, idx):
-        # Only the background provider's own renders: the direct one,
-        # compared against it below, decompresses on the caller by design.
-        if threading.current_thread() is me and any(
-                self is g[0] for g in list(bg._open.values())):
-            on_caller.append(idx)
+        if asking.is_set():
+            on_ask.append(idx)
         return real_load(self, idx)
     try:
-        show = os.path.join(work, "show")
-        os.makedirs(show)
-        with open(os.path.join(show, "xlights_networks.xml"), "w") as fh:
-            fh.write(_FI2_NETWORKS.format(extra="", name="Flames",
-                                          state="Inactive", after=""))
-        render = os.path.join(show, "Show.fseq")
-        # Pixels A is channels 1 to 510 and Flames 511 to 1022. The render
-        # is sparse: part of the pixels, then flame channels 601 to 800
-        # only, so the cut has holes at both ends (zeros there). Each frame
-        # carries its own index, so a frame or channel off by one shows.
-        _fx.write_fseq(render, frame_count=300, step_ms=25,
-                       compression="zlib", block_frames=37,
-                       sparse_ranges=[(0, 100), (600, 200)],
-                       fill=lambda i: (i * 7 + 3) & 0xFF)
-        clk = types.SimpleNamespace(source="audio_master", paused=False,
-                                    _cue={"label": "Show", "position_s": 0.0},
-                                    last_sent=(0, 0, 0, 0))
-        sess = types.SimpleNamespace(
-            running=True, clock=clk,
-            player=types.SimpleNamespace(override=None, freerun_epoch=None),
-            tl=types.SimpleNamespace(show_dir=show, cues=[
-                types.SimpleNamespace(name="Show", path=render)]))
-        ctl = types.SimpleNamespace(session=sess)
+        ctl, clk, paths = _fi_cut_show(work)
         direct = F.FlameCues(ctl, "Flames")
         bg = F.FlameCues(ctl, "Flames", background=True)
-        bg.start()
-
-        def at(tc_frames):
-            s, f = divmod(tc_frames, 30)
-            clk.last_sent = (0, 0, s, f)
-            return f"00:00:{s:02d}:{f:02d}"
-        tc = at(0)
-        got = None
-        for _ in range(250):
-            got = bg(tc)
-            if got:
-                break
-            time.sleep(0.02)
-        check(got is not None, "the cut-ahead cues arrive")
+        bg._stop.set()                    # no thread: driven by hand
+        bg._check_renders_once()
+        bg._refresh_once()
         FS.FSEQ._load_block = spy_load
         bad = []
-        for n in range(0, 7 * 30 + 15):          # 7.5 s: every 25 ms frame
-            tc = at(n)
-            a, b = bg(tc), direct(tc)
+        for n in range(0, 7 * 30 + 15):          # 7.5 s: every frame
+            tc = _fi_at(clk, n)
+            bg._cut_ahead()                       # the reading thread
+            asking.set()
+            a = bg(tc)
+            asking.clear()
+            b = direct(tc)
             if a != b:
                 bad.append((tc, a and a[100:102], b and b[100:102]))
         FS.FSEQ._load_block = real_load
-        check(not bad, f"background equals the direct read every frame: "
+        check(not bad, f"cut ahead equals the direct read every frame: "
                        f"{bad[:3]}")
+        check(not on_ask, f"asking (the sender) decompressed no block: "
+                          f"{on_ask[:5]}")
         want = [0] * 512
-        idx = int(((0 * 3600 + 0 * 60 + 3) + 10 / 30.0) * 1000.0 // 25)
-        v = (idx * 7 + 3) & 0xFF
-        want[90:290] = [v] * 200
-        check(bg(at(100)) == want,
+        idx = int((3 + 10 / 30.0) * 1000.0 // 25)
+        want[90:290] = [(idx * 7 + 3) & 0xFF] * 200
+        check(bg(_fi_at(clk, 100)) == want,
               "flame channels 601 to 800 carry the frame, the rest zero")
-        check(not on_caller, f"the caller (the sender) decompressed no "
-                             f"block: {on_caller[:5]}")
-        # A table cut for another span is never used.
-        path, tab = next(iter(bg._tables.items()))
-        bg._tables = {path: (tab[0], (tab[1][0] + 1, tab[1][1]), tab[2])}
-        check(bg(at(100)) is None,
-              "a table cut for another span: zeros, never used")
+        cut = bg._cuts[paths[0]]
+        # A cut for another span, or of another FSEQ: never used, a fault.
+        other = F._FlameCut.__new__(F._FlameCut)
+        other.__dict__.update(cut.__dict__)
+        other.span = (cut.span[0] + 1, cut.span[1])
+        bg._cuts = {paths[0]: other}
+        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+              f"a cut for another span: zero and a CUES FAULT: {bg.fault!r}")
+        other.span = cut.span
+        other.f = FS.FSEQ(paths[0])
+        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+              "a cut of another FSEQ of the same render: never used")
+        other.f.close()
+        bg._cuts = {paths[0]: cut}
+        check(bg(_fi_at(clk, 100)) == want and bg.fault == "",
+              "its own cut again: the cues")
+        # Not cut yet while the show plays: a CUES FAULT at once, then the
+        # cues once the reading thread has cut it.
+        far = 290 * 30 // 40
+        cut.blocks.pop(cut._block(289))       # as if not cut yet
+        got = bg(_fi_at(clk, far))
+        check(got is None and bg.fault == F.CUES_LOADING,
+              f"a block not cut yet: a CUES FAULT, not a silent zero: "
+              f"{bg.fault!r}")
+        bg._cut_ahead()
+        check(bg(_fi_at(clk, far)) == direct(_fi_at(clk, far)) and
+              bg.fault == "", "cut by the next pass: the cues")
         bg.close()
         direct.close()
     finally:
         FS.FSEQ._load_block = real_load
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_guards():
+    section("fire & ice (2026-10-29): the cut-ahead guards: a render whose "
+            "bytes are another's is never cut; a cut of bytes with another "
+            "frame or channel count is refused; the renders are published "
+            "only after their cut starts; a block that cannot be cut is a "
+            "CUES FAULT with its error, tried once; a many-cue show has "
+            "every cue's start ready at once")
+    import shutil
+    import tempfile
+    import test_show_fixtures as _fx
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        # A render whose bytes in memory belong to another render: never
+        # cut from them.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "a"))
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        bg._check_renders_once()
+        bg._refresh_once()
+        f = bg._cuts[paths[0]].f
+        alt = os.path.join(work, "alt.fseq")
+        _fx.write_fseq(alt, frame_count=300, step_ms=25, compression="zlib",
+                       block_frames=37, sparse_ranges=[(0, 100), (600, 200)],
+                       fill=lambda i: 0xAA)
+        with open(alt, "rb") as fh:
+            alt_data = fh.read()
+        bg._data[paths[0]] = (FS.FSEQ(alt), alt_data)
+        bg._cuts = {}
+        bg._refresh_once()
+        got = bg(_fi_at(clk, 10))
+        check(paths[0] not in bg._cuts and got is None and
+              bg.fault == F.CUES_LOADING,
+              f"bytes that are another render's: not cut, a CUES FAULT, "
+              f"never their values: {got and got[90:92]}")
+        bg.close()
+        # Bytes with another frame or channel count: refused.
+        short = os.path.join(work, "short.fseq")
+        _fx.write_fseq(short, frame_count=200, step_ms=25,
+                       compression="zlib", block_frames=37,
+                       sparse_ranges=[(0, 100), (600, 200)])
+        with open(short, "rb") as fh:
+            sdata = fh.read()
+        try:
+            F._FlameCut(paths[0], f, [(0, 0, 100),
+                                       (600, 100, 200)],
+                        (511, 512), sdata)
+            check(False, "a cut of bytes with another frame count was made")
+        except ValueError as e:
+            check("changed" in str(e), f"refused: {e}")
+        # Published in order: a render in _by_path always has its cut,
+        # with its start already cut.
+        seen = []
+
+        class Spy(F.FlameCues):
+            def __setattr__(self, k, v):
+                if k == "_by_path" and v:
+                    seen.append(all(
+                        p in self._cuts and 0 in self._cuts[p].blocks
+                        for p in v))
+                super().__setattr__(k, v)
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "m"), ncues=12,
+                                       frames=2000, sparse=False)
+        sp = Spy(ctl, "Flames", background=True)
+        sp._stop.set()
+        sp._check_renders_once()
+        t0 = time.perf_counter()
+        sp._refresh_once()
+        took = time.perf_counter() - t0
+        check(seen == [True], f"the cuts are published before the renders, "
+                              f"their start cut: {seen}")
+        ok = []
+        for k in range(12):
+            got = sp(_fi_at(clk, 5, label=f"c{k}"))
+            ok.append(bool(got) and sp.fault == "")
+        check(all(ok), f"12 cues of 2000 frames: every cue's start ready "
+                       f"after one pass ({took:.2f} s): {ok}")
+        check(all(len(c.blocks) <= 4 for c in sp._cuts.values()),
+              f"and only their start is cut, not whole renders: "
+              f"{[len(c.blocks) for c in sp._cuts.values()]}")
+        sp.close()
+        # A block that cannot be cut: the frames before it as they are, then
+        # a CUES FAULT with the render's own error, the block tried once.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "c"),
+                                       corrupt_block=4)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        bg._check_renders_once()
+        tried = []
+        real_cut = F._FlameCut._cut_block
+
+        def spy_cut(self, b):
+            tried.append(b)
+            return real_cut(self, b)
+        F._FlameCut._cut_block = spy_cut
+        try:
+            bg._refresh_once()
+            before = bg(_fi_at(clk, int(36 * 25 / 33.34)))
+            n4 = 37 * 4 * 30 // 40 + 1
+            for _ in range(6):
+                _fi_at(clk, n4)
+                bg._cut_ahead()
+                bg._refresh_once()
+            got = bg(_fi_at(clk, n4))
+        finally:
+            F._FlameCut._cut_block = real_cut
+        check(before is not None and got is None and
+              bg.fault.startswith("the show's render could not be read"),
+              f"before the bad block the cues, at it a CUES FAULT with its "
+              f"error: {bg.fault!r}")
+        check(tried.count(4) == 1, f"the bad block was tried once: "
+                                   f"{tried.count(4)}")
+        bg.close()
+    finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -44578,6 +44738,44 @@ def test_flame_link_frame_timing_counts_and_journals():
     check(snap["frame_timing"]["limit_ms"] == 100 and
           "since_start" in snap["frame_timing"],
           "the status carries frame_timing")
+    # The limit is flamesafe's own fire_hold_ms, read from its config with
+    # the rest of the link: at 250 a 178 ms gap is not late, 260 ms is.
+    import json
+    import tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "flamesafe", "flamesafe.example.json"),
+              encoding="utf-8") as fh:
+        doc = json.load(fh)
+    d = tempfile.mkdtemp()
+    try:
+        for hold, gaps, late in ((100, (0.178,), 1), (250, (0.178, 0.26), 1),
+                                 (None, (0.120,), 1)):
+            dd = dict(doc)
+            if hold is None:
+                dd.pop("fire_hold_ms", None)
+            else:
+                dd["fire_hold_ms"] = hold
+            path = os.path.join(d, f"fs{hold}.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(dd, fh)
+            c2 = fl.FlameLinkConfig.from_flamesafe_config(path)
+            k2 = [10.0]
+            l2 = fl.FlameLink(c2, clock=lambda: k2[0])
+            for g in gaps:
+                k2[0] += g
+                l2._timing_add(g, k2[0])
+            tv = l2.timing_view()
+            check(c2.fire_hold_ms == hold and
+                  tv["limit_ms"] == (hold or fl.TIMING_ALERT_MS) and
+                  tv["late_last_hour"] == late and
+                  tv["since_start"]["over_limit"] == late,
+                  f"fire_hold_ms {hold}: limit and late frames {tv}")
+            check(f"over flamesafe's fire_hold_ms ({hold or 100} ms): {late}"
+                  in l2._timing_total.sentence("since start"),
+                  "the journal line names flamesafe's fire_hold_ms")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
     print("  ok")
 
 
@@ -88575,6 +88773,7 @@ if __name__ == "__main__":
         test_soak_schedule_is_refused_outside_the_soak,
         test_fire_ice_flame_link_from_flamesafe_config,
         test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress,
+        test_fire_ice_flame_cut_guards,
         test_onlyone_named_lock_sees_a_copy_in_another_folder,
         test_onlyone_named_lock_is_machine_wide_or_says_so,
         test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,

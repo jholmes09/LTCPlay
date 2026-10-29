@@ -2713,16 +2713,16 @@ class Remote:
             return None
 
     TIMING_TEXT = ("Flame frames late: {n} in the last hour, worst {w} ms "
-                   "between two frames to flamesafe (the limit is {lim} ms). "
-                   "flamesafe holds a fire value only briefly after the last "
-                   "frame (its fire_hold_ms), so a flame pulse may have been "
-                   "cut short. The show carries on; nothing was changed.")
+                   "between two frames to flamesafe. flamesafe holds a fire "
+                   "value for {lim} ms after the last frame (its "
+                   "fire_hold_ms), so a flame pulse may have been cut "
+                   "short. The show carries on; nothing was changed.")
 
     def _frame_timing_work(self):
         """Flame frames late (flamelink.FrameTiming, 2026-10-29): on the
         alert worker, a display only "timing" alert (alerts.DISPLAY_ONLY:
         shown and journaled, no booth note, never holds a show) each time
-        the last hour has more frames over flamelink.TIMING_ALERT_MS than
+        the last hour has more frames over flamesafe's fire_hold_ms than
         when it was last raised. It stays until a person acknowledges it,
         like every alert. Sends nothing anywhere. Never raises."""
         try:
