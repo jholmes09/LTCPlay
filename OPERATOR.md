@@ -997,6 +997,20 @@ It never raises the rack screen over MadMapper's output, never takes the
 keyboard from someone typing in another program, never covers a dialog,
 and leaves a minimized rack screen minimized.
 
+How the output is judged: the rack screen's display is where its window
+is (unless MadMapper's output sits over it there: then that display is
+the projector's), else showpc.json's page_monitor, else the main display;
+the lamp, the rig check and the alert all use that one rule. The output
+counts as on only when no other window hides a quarter of it or more (the
+rack screen or BEYOND in front of it on the projector reads OFF, saying
+which window). Mirrored (duplicate) displays look like one display to
+Windows and read OFF: set `madmapper_output_monitor` to 1 there. The
+watch is only for a show whose MadMapper runs on this PC. These settings
+are read when LTC Player starts: after changing them, stop and start LTC
+Player. The output alert holds a show at its time like any fault but does
+not play Delayed on the PA by itself, on purpose: a real output fault also
+fails the rig check, whose alert announces.
+
 The show screen (and the iPad) then shows the failed checks and two
 choices:
 

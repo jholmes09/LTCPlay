@@ -18094,6 +18094,62 @@ def build():
   '                        key[0] != night or not isinstance(key[1], int):',
   '                        not isinstance(key[1], int):'),
 
+ ('rack keeper: moves the rack screen when the displays cannot be read', 'ltcplay/showwindows.py',
+  '        if not mons:\n            # The displays cannot be read',
+  '        if False:\n            # The displays cannot be read'),
+
+ ('rack keeper: a titleless MadMapper window not filling a display is a cover', 'ltcplay/showwindows.py',
+  '            if image_is(w.get("image"), MADMAPPER) and not w.get("caption")}',
+  '            if False}'),
+
+ ('mm output: page_monitor wins over where the rack screen is', 'ltcplay/showwindows.py',
+  '        r = rack_display(wins, mons, fallback=rack or 1)',
+  '        r = rack or rack_display(wins, mons)'),
+
+ ('mm output watch: a new off spell reuses a stale alert', 'ltcplay/showwindows.py',
+  "            if self.raised:\n                # The last spell's",
+  "            if False:\n                # The last spell's"),
+
+ ('mm output: the engine ignores page_monitor', 'ltcplay/web.py',
+  '            rack=_page_monitor()).start()',
+  '            rack=1).start()'),
+
+ ("mm output: the rack window under the output makes its display the rack's", 'ltcplay/showwindows.py',
+  '            if n and n not in outd:',
+  '            if n:'),
+
+ ('mm output: an output hidden by another window reads on', 'ltcplay/showwindows.py',
+  '        c = covered_by(wins, w)\n        if c is None:',
+  '        c = covered_by(wins, w)\n        if True:'),
+
+ ("supervisor: watches a MadMapper that is not the show's", 'packaging/windows/supervisor.py',
+  '    if not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):',
+  '    if False:'),
+
+ ('supervisor: watches with no MadMapper in the show', 'packaging/windows/supervisor.py',
+  '    if not isinstance(mm, dict):\n        log("MadMapper output watch: the show has no',
+  '    if False:\n        log("MadMapper output watch: the show has no'),
+
+ ('supervisor: an alert that never reached the engine counts as sent', 'packaging/windows/supervisor.py',
+  '            f"did not reach the engine ({e.reason})")\n        return False',
+  '            f"did not reach the engine ({e.reason})")\n        return True'),
+
+ ('mm output watch: a new engine never gets the alert again', 'ltcplay/showwindows.py',
+  '        if ep != self._epoch:',
+  '        if False:'),
+
+ ('mm output watch: a refused alert is retried at the same pace forever', 'ltcplay/showwindows.py',
+  '        self.backoff = min(self.backoff * 2, 600.0)',
+  '        self.backoff = self.retry_s'),
+
+ ("mm output watch: an earlier supervisor's alert is never cleared", 'ltcplay/showwindows.py',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = True',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = False'),
+
+ ('rack keeper: the click that brought a window forward is not a choice', 'ltcplay/showwindows.py',
+  '            if age is not None and now - age >= self.fg_since[fg] - \\\n                    self.tick_s:',
+  '            if age is not None and now - age >= self.fg_since[fg]:'),
+
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,
  # and the SHOW tab's presses kept 1.0's --

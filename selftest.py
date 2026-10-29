@@ -86960,7 +86960,55 @@ def test_madmapper_output_window_is_read_from_windows():
           f"the rack screen on display 2: display 1 is the projector's: "
           f"{got}")
     check(SW.output_state([out1, _MM_UI], mons, rack=2)[0] == "on",
-          "the rack display given (page_monitor) is the one left out")
+          "the rack window not seen: page_monitor's display is left out")
+    rk2 = dict(_RACK, rect=(1912, -8, 3848, 1040))
+    check(SW.output_state([out1, rk2, _MM_UI], mons, rack=1)[0] == "on",
+          "where the rack window IS wins over page_monitor (displays "
+          "renumbered, Edge's remembered spot): review A round 2")
+    # Review B round 2: ONE rule. The rack window under the output on the
+    # projector's display does not make that display the rack's.
+    rk2 = dict(_RACK, rect=(1912, -8, 3848, 1040))
+    for page in (1, 3):
+        got = SW.output_state([_MM_OUT, rk2, _MM_UI], mons, rack=page)
+        check(got[0] == "on", f"rack window under the output on display 2, "
+                              f"page_monitor {page}: on: {got}")
+    # The rack screen (or BEYOND) in FRONT of the output on the projector:
+    # the audience sees it, so not on.
+    got = SW.output_state([rk2, _MM_OUT, _MM_UI], mons, rack=1)
+    check(got[0] == "off" and "hidden by another window" in got[1] and
+          "msedge.exe" in got[1], f"the rack screen over the output: {got}")
+    bey = dict(_BEYOND, rect=(1912, -8, 3848, 1088))
+    got = SW.output_state([bey, _MM_OUT, _RACK, _MM_UI], mons)
+    check(got[0] == "off" and "BEYOND" in got[1],
+          f"BEYOND maximized over the output: {got}")
+    tb = {"hwnd": 60, "image": "explorer.exe", "title": "",
+          "rect": (1920, 1032, 3840, 1080)}
+    check(SW.output_state([tb, _MM_OUT, _RACK, _MM_UI], mons)[0] == "on",
+          "a taskbar strip over the output: still on")
+    _no_dashes(got[1], "the hidden output sentence")
+    # The engine's look and the supervisor's watch agree, snapshot for
+    # snapshot (review B round 2).
+    from ltcplay import showwindows as _S
+    snaps = [[_MM_OUT, rk2, _MM_UI], [out1, _RACK, _MM_UI],
+             [out1, rk2, _MM_UI], [_MM_OUT, _RACK, _MM_UI],
+             [out1, dict(_RACK, rect=(-32000, -32000, -31840, -31972),
+                         minimized=True), _MM_UI], [rk2, _MM_OUT, _MM_UI]]
+    for i, sn in enumerate(snaps):
+        for page in (1, 2):
+            api = _FakeWins(sn, mons)
+            eng = _S.OutputLook(api_factory=lambda api=api: api, rack=page)
+            e = eng.now()[0]
+            ow = _S.OutputWatch(_FakeWins(sn, mons), rack=page,
+                                clock=lambda: 0.0)
+            ow.raised = False
+            ow.tick()
+            sup_state = "on" if ow.state == "on" else "off"
+            check((e == "on") == (sup_state == "on"),
+                  f"snapshot {i}, page_monitor {page}: engine {e}, "
+                  f"supervisor {ow.state}")
+    rkm = dict(_RACK, rect=(-32000, -32000, -31840, -31972), minimized=True)
+    check(SW.output_state([out1, rkm, _MM_UI], mons, rack=2)[0] == "on",
+          "the rack screen minimized: page_monitor's display is its")
     got = SW.look(_FakeWins([out1, _MM_UI], [mons[0]]))
     check(got[0] == "off" and "only one display" in got[1],
           f"one display only: OFF, the projector not detected: {got}")
@@ -87061,8 +87109,28 @@ def test_preroll_madmapper_output_check_and_lamp():
                         mm, windows=True)
     check(rem.mm_output is None and "false" in rem.mm_output_why,
           "switched off: not checked, said so")
-    look = W._attach_mm_output(httpd, F.FireIceConfig(
-        madmapper_output_monitor=2), mm, windows=True)
+    dpm = tempfile.mkdtemp()
+    with open(os.path.join(dpm, "showpc.json"), "w") as fh:
+        json.dump({"page_monitor": 2}, fh)
+    check(W._page_monitor(dpm) == 2 and W._page_monitor(
+        os.path.join(dpm, "nope")) == 1, "showpc.json's page_monitor, or 1")
+    was_lad = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = dpm
+    import shutil as _shp
+    try:
+        from ltcplay import appdata as _ad
+        with open(os.path.join(_ad.folder(), "showpc.json"), "w") as fh:
+            json.dump({"page_monitor": 2}, fh)
+        look = W._attach_mm_output(httpd, F.FireIceConfig(
+            madmapper_output_monitor=2), mm, windows=True)
+    finally:
+        if was_lad is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = was_lad
+        _shp.rmtree(dpm, ignore_errors=True)
+    check(look is not None and look.rack == 2,
+          "the engine's rack display fallback is showpc.json's page_monitor")
     check(isinstance(look, SW.OutputLook) and rem.mm_output is look and
           look.monitor == 2 and rem.mm_output_why == "",
           "on the show PC: a look, its display")
@@ -87171,6 +87239,20 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
     check(k.tick() == "none" and not api.raised and 20 in k.chosen,
           "a person's choice (touched since it came forward): left")
     check(any("person's choice" in x for x in logs), "said in the log")
+    # The click that brought BEYOND forward came just before this look saw
+    # it (up to one tick): still a person's choice (review B round 2).
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 1.5
+    t[0] += 2
+    k.tick()
+    api.input_age = 11.5
+    t[0] += 10
+    check(k.tick() == "none" and not api.raised and 20 in k.chosen,
+          "a click a moment before the look: a person's choice")
     # Open BEYOND pressed just before BEYOND came forward.
     api = _FakeWins([_RACK, _BEYOND])
     k = keeper(api, opened=lambda: wall[0] - 1.0)
@@ -87214,6 +87296,23 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
         check(k.tick() == "left" and not api.raised and
               not getattr(api, "ordered", None),
               f"page_monitor {mon}: never over the projection")
+    # Review A round 2: the displays unreadable, or an output window that
+    # does not fill its display exactly (a resolution change): nothing is
+    # raised, never onto the projection.
+    api = _FakeWins([_BEYOND, _MM_OUT,
+                     dict(_RACK, rect=(1912, -8, 3848, 1040))], mons=[])
+    check(keeper(api).tick() == "left" and not api.raised and
+          not getattr(api, "ordered", None),
+          "the displays cannot be read: nothing moved")
+    api = _FakeWins([_BEYOND, _RACK], mons=[])
+    check(keeper(api).tick() == "left" and not api.raised and
+          not getattr(api, "ordered", None),
+          "the displays cannot be read: not even over BEYOND")
+    api = _FakeWins([dict(_MM_OUT, rect=(1930, 10, 3830, 1070)),
+                     dict(_RACK, rect=(1912, -8, 3848, 1040))])
+    check(keeper(api).tick() == "left" and not api.raised,
+          "a MadMapper window with no title bar not filling the display: "
+          "never a cover, never raised over")
     # The rack screen's maximized borders reaching 8 px onto the projector
     # display are not an overlap.
     api = _FakeWins([_BEYOND, _MM_OUT, _RACK])
@@ -87236,7 +87335,7 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
           "only, the keyboard left where it was")
     api = _FakeWins([_BEYOND, _RACK])
     api.input_age = 1.0
-    check(keeper(api).tick() == "waiting" and not api.raised,
+    check(keeper(api).tick() in ("waiting", "none") and not api.raised,
           "even BEYOND in front: never within a few seconds of input")
     # A dialog (an owned window: missing media, a licence) is never buried.
     api = _FakeWins([dict(_BEYOND, hwnd=22, owner=20), _RACK, _BEYOND])
@@ -87304,6 +87403,9 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     api = _FakeWins([])
     w = SW.OutputWatch(api, log=logs.append, alert=alert, clear=clear,
                        clock=lambda: t[0], settle_s=120, debounce_s=10)
+    check(w.raised is True, "at start an earlier supervisor's alert may be "
+                            "open: it is cleared once the output is on")
+    w.raised = False                 # nothing open, for the steps below
     check(SW.OutputWatch(api).settle_s >= 180,
           "a slow project load gets at least 3 minutes by default")
     check(w.tick() == "not running", "MadMapper not running")
@@ -87323,8 +87425,12 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     t[0] = 152
     w.tick()
     check(len(alerts) == 2, "the engine did not take it: sent again later")
-    took[0] = True
     t[0] = 183
+    w.tick()
+    check(len(alerts) == 2, "refused again: it backs off (60 s, then "
+                            "longer, at most 10 minutes)")
+    took[0] = True
+    t[0] = 213
     w.tick()
     t[0] = 215
     w.tick()
@@ -87350,10 +87456,22 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                                        for x in logs),
           f"cleared once the engine takes it, then left alone: {clears}")
     api.wins = [dict(_MM_UI)]
-    t[0] = 225
+    t[0] = 265
     check(w.tick() == "waiting", "off again: debounced")
-    t[0] = 236
+    t[0] = 276
     check(w.tick() == "off" and len(alerts) == 4, "off again: one more alert")
+    # The engine started again (its alerts are empty): raised again.
+    ep = [1]
+    w.epoch = lambda: ep[0]
+    w._epoch = 1
+    t[0] = 280
+    w.tick()
+    ep[0] = 2
+    t[0] = 282
+    w.tick()
+    check(len(alerts) == 5 and any("engine started again" in x
+                                   for x in logs),
+          "a new engine: the output alert raised again (review B round 2)")
     # Review B of #176, S2: the project loads slowly, the output comes on
     # by itself after the alert: the alert goes again, nothing stale holds
     # the next show.
@@ -87368,15 +87486,44 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
         if sec == 200:
             api2.wins.insert(0, dict(_MM_OUT))
         w2.tick()
-    check(got == ["raise", "clear"],
-          f"raised after the settle, cleared when it came on: {got}")
+    check(got == ["clear", "raise", "clear"],
+          f"raised after the settle (any old one cleared first), cleared "
+          f"when it came on: {got}")
+    # Review A round 2: an alert whose clear never landed is cleared before
+    # the next off spell raises, so that spell's alert is new.
+    t4 = [0.0]
+    seq = []
+    ok_clear = [False]
+    api4 = _FakeWins([dict(_MM_UI)])
+    w4 = SW.OutputWatch(api4, alert=lambda x: seq.append("raise") or True,
+                        clear=lambda: seq.append("clear") or ok_clear[0],
+                        clock=lambda: t4[0], settle_s=10, debounce_s=0,
+                        retry_s=30)
+    w4.raised = False
+    w4.tick()
+    t4[0] = 11
+    w4.tick()
+    api4.wins.insert(0, dict(_MM_OUT))
+    t4[0] = 12
+    w4.tick()
+    api4.wins.pop(0)
+    t4[0] = 50
+    w4.tick()
+    check(seq == ["raise", "clear", "clear"] and w4.raised,
+          f"a stale alert that cannot be cleared: no new raise on it: {seq}")
+    ok_clear[0] = True
+    t4[0] = 111
+    w4.tick()
+    check(seq[-2:] == ["clear", "raise"],
+          f"cleared first, then the new spell's alert: {seq}")
     never = []
     api3 = _FakeWins([dict(_MM_UI), dict(_MM_OUT)])
     w3 = SW.OutputWatch(api3, clear=lambda: never.append(1) or True,
                         clock=lambda: 0.0)
     w3.tick()
-    check(not never, "never raised: nothing cleared (another kind's alert "
-                     "is never touched)")
+    w3.tick()
+    check(never == [1], "at start, on: one clear of the output kind only "
+                        "(an earlier supervisor's alert), then none")
     bad = _FakeWins([])
     bad.fail = True
     check(SW.OutputWatch(bad, log=logs.append).tick() == "unknown",
@@ -87407,7 +87554,8 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                   f"the off switches: {said[-2:]}")
             # One setting, one file: the supervisor reads the engine's.
             with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
-                json.dump({"madmapper_output_monitor": 3}, fh)
+                json.dump({"madmapper_output_monitor": 3,
+                           "madmapper": {"host": "127.0.0.1"}}, fh)
             ws = sup.start_window_watch(
                 {"page_monitor": 1, "schedule": os.path.join(dd, "s.json")},
                 7878, api=_FakeWins([]))
@@ -87416,9 +87564,34 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                   f"ltcplay_fire_ice.json's monitor, checked against the "
                   f"displays: {said[-2:]}")
             with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
-                json.dump({"madmapper_output_monitor": "two"}, fh)
+                json.dump({"madmapper_output_monitor": "two",
+                           "madmapper": {"host": "127.0.0.1"}}, fh)
             check(sup.output_settings({"schedule": os.path.join(
                 dd, "s.json")}) == (True, 0), "a wrong value: the default")
+            # Review B round 2: only for a show whose MadMapper is here.
+            for doc, why in (({}, "no MadMapper in the show"),
+                             ({"madmapper": {"host": "10.0.0.9"}},
+                              "MadMapper on another PC")):
+                with open(os.path.join(dd, "ltcplay_fire_ice.json"),
+                          "w") as fh:
+                    json.dump(doc, fh)
+                check(sup.output_settings({"schedule": os.path.join(
+                    dd, "s.json")}) == (False, 0),
+                      f"{why}: a stray MadMapper here is not watched")
+            import socket as _so
+            _sk = _so.socket()
+            _sk.bind(("127.0.0.1", 0))
+            _free = _sk.getsockname()[1]
+            _sk.close()
+            check(sup.post_alert(_free, "output", "x") is False and
+                  any("did not reach the engine" in x for x in said),
+                  "an alert that never reached the engine is sent again "
+                  "later, and said")
+            from ltcplay import madmapperwatch as _MW
+            for h in ("127.0.0.1", "localhost", "127.0.0.2", "10.0.0.9", "",
+                      None, "x"):
+                check(sup.showwindows.on_this_pc(h) == _MW.on_this_pc(h),
+                      f"the same 'on this PC' as the engine: {h!r}")
             check('"madmapper_output_check": True' not in open(
                 sup.__file__, encoding="utf-8").read(),
                   "not a showpc.json setting any more")

@@ -1985,6 +1985,21 @@ def _preroll_hosts(httpd, fire_ice):
     return out
 
 
+def _page_monitor(folder=None):
+    """showpc.json's page_monitor (the supervisor's settings, in this PC's
+    settings folder): the rack screen's display when its window cannot be
+    seen. 1 when it cannot be read."""
+    try:
+        from . import appdata
+        with open(os.path.join(folder or appdata.folder(), "showpc.json"),
+                  encoding="utf-8-sig") as fh:
+            v = json.load(fh).get("page_monitor", 1)
+        return v if isinstance(v, int) and not isinstance(v, bool) and \
+            v >= 1 else 1
+    except Exception:                                # noqa: BLE001
+        return 1
+
+
 def _attach_mm_output(httpd, fire_ice, mm_cfg, windows=None):
     """MadMapper's video output, on or OFF (showwindows.py; Jeff's field
     report, 2026-10-29): read from this PC's window list on a thread of its
@@ -2013,7 +2028,8 @@ def _attach_mm_output(httpd, fire_ice, mm_cfg, windows=None):
             remote.mm_output = None
             return None
         look = showwindows.OutputLook(
-            monitor=getattr(fire_ice, "madmapper_output_monitor", 0)).start()
+            monitor=getattr(fire_ice, "madmapper_output_monitor", 0),
+            rack=_page_monitor()).start()
         remote.mm_output = look
         before = httpd.server_close
 

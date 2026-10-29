@@ -160,27 +160,57 @@ def output_windows(wins, mons):
 
 
 def rack_display(wins, mons, fallback=1):
-    """The display the rack screen is on: where its window is (not
-    minimized), else `fallback` (showpc.json page_monitor; 1 the main
-    display)."""
+    """THE rule for the rack screen's display, used alike by the lamp, the
+    rig check, the supervisor's output alert (review B round 2 of #176):
+    where the rack window is (not minimized), unless a MadMapper output
+    window is on that same display (then that display is the projector's
+    and the rack window only sits on it); else `fallback` (showpc.json
+    page_monitor); else the main display."""
+    outd = {n for _w, n in output_windows(wins, mons)}
     for w in wins or ():
         if is_rack(w) and not w.get("minimized"):
-            n = monitor_of(w["rect"], mons)
-            if n:
+            n = monitor_of(inset(w["rect"]), mons)
+            if n and n not in outd:
                 return n
+            break
     return fallback if isinstance(fallback, int) and \
+        not isinstance(fallback, bool) and \
         1 <= fallback <= len(mons or ()) else 1
+
+
+COVERED_SHARE = 0.25      # of the output's area hidden by windows above it
+
+
+def covered_by(wins, out):
+    """The first window above the output window `out` (Z order) that hides
+    at least COVERED_SHARE of it, or None: the audience sees that window,
+    not the show (review B round 2 of #176). The taskbar and small windows
+    are below the share."""
+    area = max(1, (out["rect"][2] - out["rect"][0]) *
+               (out["rect"][3] - out["rect"][1]))
+    for w in wins:
+        if w is out:
+            return None
+        if w.get("minimized"):
+            continue
+        if overlap(inset(w["rect"], 8), out["rect"]) >= COVERED_SHARE * area:
+            return w
+    return None
 
 
 def output_state(wins, mons, monitor=0, rack=None):
     """("on" | "off" | "unknown", sentence) for MadMapper's video output,
-    from a snapshot() and the displays. `monitor` n: only display n counts
-    (a number past the displays this PC has is not known, and says so).
-    `monitor` 0: any display EXCEPT the rack screen's (`rack`, or where
-    its window is, else the main display): a full-screen MadMapper window
-    over the operator's own screen while the projector shows the desktop
-    is not "on" (review B of #176, S1). With one display only, the
-    projector is not connected or not detected: OFF, said plainly."""
+    from a snapshot() (top window first) and the displays. `monitor` n:
+    only display n counts (a number past the displays this PC has is not
+    known, and says so). `monitor` 0: any display EXCEPT the rack screen's
+    (rack_display, with `rack`, showpc.json's page_monitor, as its
+    fallback): a full-screen MadMapper window over the operator's own
+    screen while the projector shows the desktop is not "on" (review B of
+    #176, S1). The output counts only when no other window hides it (the
+    rack screen or BEYOND above it on the projector). With one display
+    only (or mirrored displays, which Windows reports as one), the
+    projector is not detected: OFF, said plainly
+    (madmapper_output_monitor 1 for a mirrored projector)."""
     if wins is None or not mons:
         return "unknown", ("not known: the show PC's window list could not "
                            "be read")
@@ -202,17 +232,39 @@ def output_state(wins, mons, monitor=0, rack=None):
         outs = [(w, n) for w, n in outs if n == monitor]
         where = f"display {monitor}"
     else:
-        r = rack if rack else rack_display(wins, mons)
+        r = rack_display(wins, mons, fallback=rack or 1)
         outs = [(w, n) for w, n in outs if n != r]
         where = f"a display other than the rack screen's (display {r})"
-    if outs:
-        w, n = outs[0]
-        m = mons[n - 1]
-        return "on", (f"MadMapper's output fills display {n} "
-                      f"({m[2] - m[0]}x{m[3] - m[1]})")
+    hidden = None
+    for w, n in outs:
+        c = covered_by(wins, w)
+        if c is None:
+            m = mons[n - 1]
+            return "on", (f"MadMapper's output fills display {n} "
+                          f"({m[2] - m[0]}x{m[3] - m[1]})")
+        hidden = hidden or (n, c)
+    if hidden is not None:
+        n, c = hidden
+        name = ntpath.basename(str(c.get("image") or "")) or "a window"
+        return "off", (f"MadMapper's output on display {n} is hidden by "
+                       f"another window in front of it (\"{c.get('title') or ''}"
+                       f"\", {name}), so the audience sees that window")
     return "off", (f"MadMapper's video output is OFF: it has no full-screen "
                    f"output window on {where}, so the projectors show the "
                    f"Windows desktop")
+
+
+def on_this_pc(host):
+    """madmapperwatch.on_this_pc, here for the supervisor (which carries no
+    ltcplay package): MadMapper's OSC host is this PC's loopback."""
+    import ipaddress
+    h = str(host or "").strip().lower()
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.IPv4Address(h).is_loopback
+    except (ipaddress.AddressValueError, ValueError):
+        return False
 
 
 class Win32:
@@ -292,6 +344,10 @@ class Win32:
         u, c = self.u, self._c
         if not u.IsWindowVisible(hwnd):
             return None
+        if self._cloaked(hwnd):
+            # "Visible" to Windows but not drawn (a suspended app's
+            # window): it hides nothing.
+            return None
         pid = self._w.DWORD(0)
         thread = int(u.GetWindowThreadProcessId(hwnd, c.byref(pid)) or 0)
         pid = int(pid.value)
@@ -312,6 +368,18 @@ class Win32:
                 "visible": True, "minimized": bool(u.IsIconic(hwnd)),
                 "caption": (style & WS_CAPTION) == WS_CAPTION,
                 "owner": int(u.GetWindow(hwnd, 4) or 0)}
+
+    def _cloaked(self, hwnd):
+        try:
+            if not hasattr(self, "_dwm"):
+                self._dwm = self._c.WinDLL("dwmapi")
+            v = self._c.c_int(0)
+            if self._dwm.DwmGetWindowAttribute(
+                    self._w.HWND(hwnd), 14, self._c.byref(v), 4) == 0:
+                return bool(v.value)
+        except (OSError, AttributeError):
+            pass
+        return False
 
     def image(self, pid):
         h = self.k.OpenProcess(0x1000, False, pid)
@@ -428,7 +496,7 @@ def snapshot(api):
     return out
 
 
-def look(api, monitor=0, rack=None):
+def look(api, monitor=0, rack=None):  # rack: page_monitor, the fallback
     """(state, sentence) of MadMapper's output, read now. Never raises."""
     try:
         mons = api.monitors()
@@ -444,8 +512,9 @@ class OutputLook:
     machine where it cannot, every answer is not known. Display only."""
 
     def __init__(self, api_factory=Win32, monitor=0, every_s=2.0,
-                 stale_s=10.0, clock=time.monotonic):
+                 stale_s=10.0, clock=time.monotonic, rack=1):
         self.monitor = int(monitor or 0)
+        self.rack = rack            # page_monitor: the rack display's fallback
         self.every_s = every_s
         self.stale_s = stale_s
         self._clock = clock
@@ -469,7 +538,7 @@ class OutputLook:
     def now(self):
         api = self._get_api()
         got = ("unknown", self._why or "not known") if api is None else \
-            look(api, self.monitor)
+            look(api, self.monitor, self.rack)
         with self._lock:
             self._last = (got, self._clock())
         return got
@@ -548,7 +617,8 @@ class RackKeeper:
     def __init__(self, api, monitor=1, log=None, clock=time.monotonic,
                  boot_settle_s=BOOT_SETTLE_S, app_settle_s=APP_SETTLE_S,
                  title_re=RACK_TITLE, rack_pid=None, opened=None,
-                 wall=time.time):
+                 wall=time.time, tick_s=2.0):
+        self.tick_s = tick_s
         self.api = api
         # opened() -> wall time of the last Open BEYOND press, or None.
         self.opened = opened or (lambda: None)
@@ -616,7 +686,10 @@ class RackKeeper:
             # Seconds ago it came forward, on the wall clock.
             fwd = self._wall() - (now - self.fg_since[fg])
             why = ""
-            if age is not None and now - age >= self.fg_since[fg]:
+            # The click or Alt+Tab that brought it forward came up to one
+            # tick before this look saw it (review B round 2).
+            if age is not None and now - age >= self.fg_since[fg] - \
+                    self.tick_s:
                 why = "a key, touch or click since it came to the front"
             elif pressed is not None and app_name_of(apps, fg) == \
                     "BEYOND" and pressed >= fwd - OPENED_S:
@@ -644,8 +717,21 @@ class RackKeeper:
                                    "minimized; left as it is (open it from "
                                    "the taskbar)")
             return "none"
+        if not mons:
+            # The displays cannot be read: nothing is known about where
+            # the projection is, so nothing is moved (review A round 2).
+            self._say("nomons", "rack screen keeper: the displays cannot be "
+                                "read; nothing is moved")
+            return "left"
+        self._say("nomons", "")
         area = inset(rack["rect"])
-        outs = {w["hwnd"] for w, _n in output_windows(wins, mons)}
+        # Every MadMapper window with no title bar may be its output (one
+        # that does not fill a display exactly, during a resolution
+        # change, too): never a cover, and never raised over (review A
+        # round 2). If unsure, do not raise.
+        outs = {w["hwnd"] for w, _n in output_windows(wins, mons)} | {
+            w["hwnd"] for w in wins
+            if image_is(w.get("image"), MADMAPPER) and not w.get("caption")}
         if any(overlap(w["rect"], area) > 0 for w in wins
                if w["hwnd"] in outs):
             self._say("output", "rack screen keeper: MadMapper's output "
@@ -736,8 +822,13 @@ class OutputWatch:
 
     def __init__(self, api, monitor=0, log=None, alert=None, clear=None,
                  clock=time.monotonic, settle_s=180.0, debounce_s=10.0,
-                 retry_s=30.0, rack=None):
+                 retry_s=30.0, rack=None, epoch=None):
         self.api = api
+        # epoch() -> the engine's start count: a new engine has lost the
+        # alert, so it is raised again (review B round 2 of #176).
+        self.epoch = epoch or (lambda: 0)
+        self._epoch = None
+        self.backoff = retry_s
         self.monitor = monitor
         self.rack = rack
         self.log = log or (lambda s: None)
@@ -749,7 +840,10 @@ class OutputWatch:
         self.first_seen = None     # MadMapper first seen running
         self.off_since = None
         self.alerted = False       # this off spell's alert is accepted
-        self.raised = False        # an alert of ours may be open
+        # An alert of ours may be open: true at start, so an alert a
+        # supervisor before this one raised is cleared once the output is
+        # on (a clear with nothing open counts as done).
+        self.raised = True
         self.retry_s = retry_s     # an alert or clear the engine did not take
         self.next_try = 0.0
         self.state = None
@@ -767,8 +861,28 @@ class OutputWatch:
         except Exception:                        # noqa: BLE001
             return False
 
+    def _fail(self, now):
+        self.next_try = now + self.backoff
+        self.backoff = min(self.backoff * 2, 600.0)
+
+    def _ok(self):
+        self.next_try = 0.0
+        self.backoff = self.retry_s
+
     def _tick(self):
         now = self._clock()
+        try:
+            ep = self.epoch()
+        except Exception:                        # noqa: BLE001
+            ep = None
+        if ep != self._epoch:
+            if self._epoch is not None:
+                self.log("MadMapper output watch: the engine started again; "
+                         "its alerts start empty")
+                self.alerted = False
+                self.raised = True
+                self._ok()
+            self._epoch = ep
         wins = snapshot(self.api)
         try:
             mons = self.api.monitors()
@@ -803,14 +917,14 @@ class OutputWatch:
             if self.raised and now >= self.next_try:
                 if self._call(self.clear):
                     self.raised = False
-                    self.next_try = 0.0
-                    self.log("MadMapper output: on again, so its alert is "
+                    self._ok()
+                    self.log("MadMapper output: on, so any output alert is "
                              "cleared")
                 else:
-                    self.next_try = now + self.retry_s
-                    self.log("MadMapper output: on again, but its alert "
-                             "could not be cleared yet (the engine did not "
-                             "answer); trying again")
+                    self._fail(now)
+                    self.log(f"MadMapper output: on, but its alert could not "
+                             f"be cleared yet; trying again in "
+                             f"{self.next_try - now:g} s")
             return state
         if self.off_since is None:
             self.off_since = now
@@ -820,15 +934,22 @@ class OutputWatch:
             self.log(f"MadMapper output: OFF. {why}. {ENABLE_STEPS}")
             self.state = "off"
         if due and not self.alerted and now >= self.next_try:
-            self.next_try = now + self.retry_s
+            if self.raised:
+                # The last spell's alert is still open (its clear never
+                # landed): cleared first, so this spell's alert is new,
+                # with its own id and time (review A round 2).
+                if not self._call(self.clear):
+                    self._fail(now)
+                    return "off"
+                self.raised = False
             self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}")
             if self.alerted:
                 self.raised = True
-                self.next_try = 0.0
+                self._ok()
             else:
-                self.log("MadMapper output: the alert could not be raised "
-                         "yet (the engine did not answer); trying again in "
-                         f"{self.retry_s:g} s")
+                self._fail(now)
+                self.log(f"MadMapper output: the alert could not be raised "
+                         f"yet; trying again in {self.next_try - now:g} s")
         return "off" if due else "waiting"
 
 

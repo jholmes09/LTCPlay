@@ -1385,18 +1385,19 @@ def post_alert(port, kind, text=None):
         log(f"the engine refused the {kind} alert "
             f"{'raise' if text is not None else 'clear'} (HTTP {e.code})")
         return False
-    except (TimeoutError, OSError) as e:
-        if "timed out" in str(e) or isinstance(e, TimeoutError):
-            # The engine may have taken it and been slow to answer (review
-            # B of #176): never sent again, so an Acknowledge is never
-            # undone by a retry. Said in the log.
-            log(f"the {kind} alert {'raise' if text is not None else 'clear'}"
-                f" got no answer within 3 s; it may have reached the engine "
-                f"and is not sent again")
-            return True
+    except urllib.error.URLError as e:
+        # Not connected (refused, or the connect itself timed out): it
+        # never reached the engine, so it is sent again later.
         log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
-            f"did not reach the engine ({type(e).__name__}: {e})")
+            f"did not reach the engine ({e.reason})")
         return False
+    except TimeoutError:
+        # Sent, and no answer in time (review B of #176): the engine may
+        # have taken it, so it is never sent again and an Acknowledge is
+        # never undone. Said in the log.
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"was sent but got no answer within 3 s; it is not sent again")
+        return True
     except Exception as e:
         log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
             f"did not reach the engine ({type(e).__name__}: {e})")
@@ -1417,6 +1418,18 @@ def output_settings(settings):
         return True, 0
     if not isinstance(doc, dict):
         return True, 0
+    # Only for a show whose MadMapper runs on this PC, as the engine's
+    # rig check (review B round 2 of #176): a stray MadMapper here never
+    # raises an alert nothing would clear.
+    mm = doc.get("madmapper")
+    if not isinstance(mm, dict):
+        log("MadMapper output watch: the show has no MadMapper "
+            "(no madmapper block in ltcplay_fire_ice.json)")
+        return False, 0
+    if not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):
+        log(f"MadMapper output watch: the show's MadMapper is on another "
+            f"machine ({mm.get('host')}), so its output is not watched here")
+        return False, 0
     chk = doc.get("madmapper_output_check", True)
     mon = doc.get("madmapper_output_monitor", 0)
     if chk is not True and chk is not False:
@@ -1490,7 +1503,8 @@ def start_window_watch(settings, port, api=None):
             api, monitor=mon, log=log, rack=page if isinstance(page, int)
             else 1,
             alert=lambda text: output_alert(settings, port, text),
-            clear=lambda: post_alert(port, "output"))
+            clear=lambda: post_alert(port, "output"),
+            epoch=lambda: ENGINE_STARTS[0])
         try:
             n = len(api.monitors())
         except Exception:
@@ -1508,6 +1522,11 @@ def start_window_watch(settings, port, api=None):
         log("MadMapper output watch: OFF (ltcplay_fire_ice.json "
             "\"madmapper_output_check\": false)")
     return out
+
+
+# How many times this supervisor started the engine: a new engine has no
+# alerts, so the MadMapper output watch raises its alert again.
+ENGINE_STARTS = [0]
 
 
 def start_window_thread(settings, port):
@@ -1725,6 +1744,8 @@ def run_loop(open_page=False):
             if now >= p.next_try and not ENDING.is_set():
                 try:
                     p.start(args, settings)
+                    if n == "engine":
+                        ENGINE_STARTS[0] += 1
                     audit_event("program-start", EXE[n])
                     note = restart_note(n, progs,
                                         settings.get("flamesafe_config"))
