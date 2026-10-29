@@ -2679,6 +2679,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         httpd.remote.flame_cues = getattr(wiring.flame_link, "cues", None)
         # Aim slots (2026-10-28): this engine's, and the file they came
         # from, for the rack screen's aim line and the mismatch alert.
+        # Flame frame timing (2026-10-29): the rack screen's Systems line
+        # and the display only "timing" alert read the link's own counts.
+        httpd.remote.flame_link_get = (
+            lambda: getattr(httpd.fire_ice, "flame_link", None))
         if wiring.flame_link is not None:
             httpd.remote.flame_aim = (
                 frozenset(getattr(wiring.flame_link.cfg, "aim_slots", ())),

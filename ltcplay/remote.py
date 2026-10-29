@@ -1499,6 +1499,11 @@ class Remote:
         self.flame_aim = None
         self._aim_said = None        # the mismatch sentence last raised
         self._aim_alert_id = None    # ...and its alert's id
+        # Flame frame timing (2026-10-29): () -> the FlameLink or None, set
+        # by web.serve; the late frames last raised as the display only
+        # "timing" alert (_frame_timing_work).
+        self.flame_link_get = None
+        self._timing_said = 0
         self._aim_lock = threading.Lock()
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
@@ -2587,6 +2592,7 @@ class Remote:
     def _booth_work(self):
         """The booth note again for alerts still open. Never raises."""
         self._follow_work()
+        self._frame_timing_work()
         try:
             self.alerts.tick()
         except Exception:                        # noqa: BLE001
@@ -2696,6 +2702,39 @@ class Remote:
                     # Only the one raised here, by its id.
                     self.alerts.clear(id=aid, who="LTC Player",
                                       action="Confirm", screen="engine")
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def _flame_link(self):
+        get = self.flame_link_get
+        try:
+            return get() if get is not None else None
+        except Exception:                        # noqa: BLE001
+            return None
+
+    TIMING_TEXT = ("Flame frames late: {n} in the last hour, worst {w} ms "
+                   "between two frames to flamesafe (the limit is {lim} ms). "
+                   "flamesafe holds a fire value only briefly after the last "
+                   "frame (its fire_hold_ms), so a flame pulse may have been "
+                   "cut short. The show carries on; nothing was changed.")
+
+    def _frame_timing_work(self):
+        """Flame frames late (flamelink.FrameTiming, 2026-10-29): on the
+        alert worker, a display only "timing" alert (alerts.DISPLAY_ONLY:
+        shown and journaled, no booth note, never holds a show) each time
+        the last hour has more frames over flamelink.TIMING_ALERT_MS than
+        when it was last raised. It stays until a person acknowledges it,
+        like every alert. Sends nothing anywhere. Never raises."""
+        try:
+            link = self._flame_link()
+            if link is None:
+                return
+            n, worst = link.late_last_hour()
+            if n > self._timing_said:
+                from . import flamelink as fl
+                self.alerts.raise_("timing", self.TIMING_TEXT.format(
+                    n=n, w=f"{worst:.0f}", lim=fl.TIMING_ALERT_MS))
+            self._timing_said = n
         except Exception:                        # noqa: BLE001
             pass
 
@@ -6740,6 +6779,24 @@ class Remote:
             fl = self.flame_status.view() if self.flame_status else None
         except Exception:
             fl = None
+        link = self._flame_link()
+        if link is not None:
+            # Flame frame timing (2026-10-29), in plain words: frames to
+            # flamesafe late by more than the limit in the last hour.
+            try:
+                tv = link.timing_view()
+                n = tv.get("late_last_hour", 0)
+                hour = tv.get("this_hour") or {}
+                if n:
+                    add("Flame timing", "warn",
+                        f"{n} frame(s) late in the last hour, worst "
+                        f"{tv.get('late_last_hour_worst_ms', 0):.0f} ms")
+                else:
+                    add("Flame timing", "ok",
+                        f"on time, worst {hour.get('worst_ms', 0):.0f} ms "
+                        f"this hour")
+            except Exception:                    # noqa: BLE001
+                pass
         if not fl or not fl.get("connected"):
             add("Flamesafe", "off", "not connected")
         elif fl.get("stale"):

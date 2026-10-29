@@ -509,6 +509,21 @@ def preroll_off_refused():
         error(f"a soak kit's preroll_s 0 was refused: {e}")
 
 
+# The flame frame interval a CI runner may never exceed in a show (see
+# soak_check: three times the worst its soak has shown, and flamesafe's
+# example fire_hold_ms).
+CI_FLAME_INTERVAL_MS = 100
+
+
+def flame_over(detail, limit):
+    """How many intervals in shows the soak's "Flame frame intervals"
+    detail counts over `limit` ms (its first "over N ms: K"), or None when
+    it does not say."""
+    import re
+    m = re.search(rf"over {int(limit)} ms: (\d+)", detail or "")
+    return int(m.group(1)) if m else None
+
+
 def soak_check():
     """ltcplay-soak.exe must stop LTC Player, run the real programs, measure
     them, write its report, and start LTC Player again. On a shared CI
@@ -544,7 +559,19 @@ def soak_check():
             parts = detail.split(" | ")
             timing_only = ("Real faults" in ln and
                            all("has not moved" in x for x in parts))
-            hard = not timing_only and (
+            # Flame frame intervals in shows (2026-10-29): the soak fails it
+            # at any interval over 75 ms (the show PC's bar); on a shared
+            # runner that is a warning, and a hard error only past
+            # CI_FLAME_INTERVAL_MS. Why that number: in the 40 runs of
+            # this job before it (bench-build and its PRs, 2026-10-27 to
+            # 29) the soak's relay never heard a flame frame interval over
+            # 50 ms and the worst it named was 33 ms, so 100 ms (flamesafe's
+            # example fire_hold_ms, the gap that can cut a pulse short) is
+            # three times the worst the runner has shown and still the
+            # limit that matters on the rig.
+            flame_hard = ("Flame frame intervals" in ln and
+                          flame_over(detail, CI_FLAME_INTERVAL_MS) != 0)
+            hard = flame_hard or not timing_only and (
                 "Crashes" in ln or "frames arrived" in detail or
                 "never answered" in detail or "Scheduled shows" in ln or
                 "Show audio player" in ln or "Lasers" in ln or
@@ -571,8 +598,13 @@ def soak_check():
                  "Show audio player", "Lasers (BEYOND", "Video (MadMapper",
                  # The installed engine ran its stall probe (bench_probe
                  # frozen into ltcplay.exe) and wrote its readings.
-                 "[INFO] Engine stalls, inside the engine"):
+                 "[INFO] Engine stalls, inside the engine",
+                 # The flame link's own frame timing in shows (2026-10-29):
+                 # counted, never NOT TESTED (a show always plays here).
+                 "Flame frame intervals in shows"):
         check(need in text, f"the soak report has no '{need}' item")
+    check("[NOT TESTED] Flame frame intervals" not in text,
+          "the soak counted no flame frame interval in a show")
     check(wait(all_running, 90), "LTC Player did not come back after the "
                                  "soak test")
     body = "%0A".join(x.replace("%", "%25") for x in lines[:60])

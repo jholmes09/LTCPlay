@@ -105,6 +105,10 @@ EXPECTED_FAULTS = (
     ("beyond: beyond is not running", "BEYOND is not running"),
     ("example key", "the bench uses flamesafe's example key"),
     ("unconfirmed", "flamesafe's example group map is unconfirmed"),
+    # The flame frame timing alert (2026-10-29) is judged on its own, by
+    # the "Flame frame intervals in shows" item and its own limit.
+    ("flame frames late", "the flame frame timing alert, judged by the "
+                          "Flame frame intervals item"),
 )
 SAMPLE_S = 5.0
 REPORT_EVERY_S = 60.0
@@ -116,6 +120,9 @@ PIXEL_DEV_MS = 15.0        # selftest: a frame within half a frame of target
 PIXEL_DEV_RATE = 0.001     # this soak: fewer than 1 in 1000 frames past it
 PIXEL_GAP_MS = 100.0       # this soak: never four frames' worth of nothing
 LINK_GAP_MS = 50.0         # CONTRACT.md: never more than 50 ms between frames
+FRAME_TIMING_LIMIT_MS = 75  # 2026-10-29: no flame frame interval in a show
+                            # over this, counted inside the engine (Jeff:
+                            # "tighten up the lateness altogether")
 SACN_LATE_MS = 250.0       # flamesafe overrun_ms: a tick this late is a fault
 SACN_NOTE_MS = 100.0       # each heard sACN gap over this: its time, listed
 MEM_GROWTH_MB_H = 10.0     # this soak: steady growth past this is a leak
@@ -655,6 +662,9 @@ class Soak:
         self.bey_show = 0           # ... in the show zone
         self.bey_bad = []           # (time, why): show zone while dark
         self.bey_stats = None       # the engine's own counts (all mode)
+        # The flame link's own frame timing (flamelink.FrameTiming,
+        # 2026-10-29), the last one the engine answered with.
+        self.frame_timing = None
         self.outside_timing = True
         self.fs_source = "(not read yet)"
         self.tick_hz = 40.0
@@ -1345,6 +1355,34 @@ class Soak:
                        + (" (a cold start inside the run's first 10 "
                           "minutes)" if -600 < d < 600 else ""))
         return "; ".join(out)
+
+    def frame_timing_item(self):
+        """The flame link's own count of the intervals between its frames
+        during shows (flamelink.FrameTiming, 2026-10-29: Jeff's Pico had
+        frames 78 to 178 ms late, and flamesafe holds a fire value only for
+        its fire_hold_ms). Counted on the engine's sender thread, so a
+        starved soak cannot add to it. FAIL at any interval over
+        FRAME_TIMING_LIMIT_MS in a show."""
+        title = ("Flame frame intervals in shows (the engine's flame link, "
+                 "counted on its sender thread)")
+        ft = self.frame_timing or {}
+        w = ft.get("in_shows") or {}
+        n = int(w.get("intervals") or 0)
+        if not n:
+            return ("NOT TESTED", title, "no interval was counted in a show "
+                    "(no show ran, or the engine never answered)")
+        o = w.get("over_ms") or {}
+        tot = ft.get("since_start") or {}
+        over = int(o.get(str(FRAME_TIMING_LIMIT_MS)) or 0)
+        return ("PASS" if over == 0 else "FAIL", title,
+                f"{n} intervals in shows: worst {w.get('worst_ms', 0):.1f} "
+                f"ms, 99 in 100 within {w.get('p99_ms', 0)} ms, mean "
+                f"{w.get('mean_ms', 0):.2f} ms; over 50 ms: {o.get('50', 0)}, "
+                f"over {FRAME_TIMING_LIMIT_MS} ms: {over} (limit 0), over 100 "
+                f"ms: {o.get('100', 0)}, over 150 ms: {o.get('150', 0)}; "
+                f"since the engine started (its start up included): worst "
+                f"{tot.get('worst_ms', 0):.1f} ms, over 100 ms: "
+                f"{(tot.get('over_ms') or {}).get('100', 0)}")
 
     def starvation_item(self):
         bad = sorted(m for m, v in self.oversleep.items() if v >= 20.0)
@@ -2601,6 +2639,10 @@ class Soak:
                 self.oversleep[m] = max(self.oversleep.get(m, 0.0), float(v))
             except (TypeError, ValueError):
                 pass
+        ft = fl.get("frame_timing")
+        if isinstance(ft, dict) and isinstance(ft.get("in_shows"), dict):
+            self.frame_timing = ft
+        out.append(self.frame_timing_item())
         las = (st.get("lasers") or {}) if isinstance(st, dict) else {}
         if las.get("timecode"):
             self.bey_stats = las

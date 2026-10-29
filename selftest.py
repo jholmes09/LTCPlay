@@ -41950,6 +41950,102 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     print("  ok")
 
 
+def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
+    section("fire & ice (2026-10-29): in serve's background mode the flame "
+            "universe of every frame is cut ahead of time on the reading "
+            "thread, equal to what the direct read gives frame by frame "
+            "(a sparse render too), and the sender never decompresses a "
+            "block; a table cut for another span is never used")
+    import shutil
+    import tempfile
+    import threading
+    import types
+    import test_show_fixtures as _fx
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    real_load = FS.FSEQ._load_block
+    me = threading.current_thread()
+    on_caller = []
+
+    def spy_load(self, idx):
+        # Only the background provider's own renders: the direct one,
+        # compared against it below, decompresses on the caller by design.
+        if threading.current_thread() is me and any(
+                self is g[0] for g in list(bg._open.values())):
+            on_caller.append(idx)
+        return real_load(self, idx)
+    try:
+        show = os.path.join(work, "show")
+        os.makedirs(show)
+        with open(os.path.join(show, "xlights_networks.xml"), "w") as fh:
+            fh.write(_FI2_NETWORKS.format(extra="", name="Flames",
+                                          state="Inactive", after=""))
+        render = os.path.join(show, "Show.fseq")
+        # Pixels A is channels 1 to 510 and Flames 511 to 1022. The render
+        # is sparse: part of the pixels, then flame channels 601 to 800
+        # only, so the cut has holes at both ends (zeros there). Each frame
+        # carries its own index, so a frame or channel off by one shows.
+        _fx.write_fseq(render, frame_count=300, step_ms=25,
+                       compression="zlib", block_frames=37,
+                       sparse_ranges=[(0, 100), (600, 200)],
+                       fill=lambda i: (i * 7 + 3) & 0xFF)
+        clk = types.SimpleNamespace(source="audio_master", paused=False,
+                                    _cue={"label": "Show", "position_s": 0.0},
+                                    last_sent=(0, 0, 0, 0))
+        sess = types.SimpleNamespace(
+            running=True, clock=clk,
+            player=types.SimpleNamespace(override=None, freerun_epoch=None),
+            tl=types.SimpleNamespace(show_dir=show, cues=[
+                types.SimpleNamespace(name="Show", path=render)]))
+        ctl = types.SimpleNamespace(session=sess)
+        direct = F.FlameCues(ctl, "Flames")
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg.start()
+
+        def at(tc_frames):
+            s, f = divmod(tc_frames, 30)
+            clk.last_sent = (0, 0, s, f)
+            return f"00:00:{s:02d}:{f:02d}"
+        tc = at(0)
+        got = None
+        for _ in range(250):
+            got = bg(tc)
+            if got:
+                break
+            time.sleep(0.02)
+        check(got is not None, "the cut-ahead cues arrive")
+        FS.FSEQ._load_block = spy_load
+        bad = []
+        for n in range(0, 7 * 30 + 15):          # 7.5 s: every 25 ms frame
+            tc = at(n)
+            a, b = bg(tc), direct(tc)
+            if a != b:
+                bad.append((tc, a and a[100:102], b and b[100:102]))
+        FS.FSEQ._load_block = real_load
+        check(not bad, f"background equals the direct read every frame: "
+                       f"{bad[:3]}")
+        want = [0] * 512
+        idx = int(((0 * 3600 + 0 * 60 + 3) + 10 / 30.0) * 1000.0 // 25)
+        v = (idx * 7 + 3) & 0xFF
+        want[90:290] = [v] * 200
+        check(bg(at(100)) == want,
+              "flame channels 601 to 800 carry the frame, the rest zero")
+        check(not on_caller, f"the caller (the sender) decompressed no "
+                             f"block: {on_caller[:5]}")
+        # A table cut for another span is never used.
+        path, tab = next(iter(bg._tables.items()))
+        bg._tables = {path: (tab[0], (tab[1][0] + 1, tab[1][1]), tab[2])}
+        check(bg(at(100)) is None,
+              "a table cut for another span: zeros, never used")
+        bg.close()
+        direct.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_onlyone_named_lock_sees_a_copy_in_another_folder():
     section("one copy: on Windows every lock is also a named kernel mutex, "
             "so a copy whose files were redirected into another app's "
@@ -44275,6 +44371,344 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
           and all(abs(g - period) < 1e-6 for g in pg if g not in stall),
           f"the schedule: one period between frames, the stall once, no "
           f"burst after it: {sorted(set(pg))}")
+
+
+def test_flame_link_schedule_absolute_deadlines_no_burst():
+    section("flame link timing (2026-10-29): absolute deadlines on a fake "
+            "clock, no drift from late wakes, and after a stall the latest "
+            "frame once and then the cadence, never a burst")
+    import json
+    from ltcplay import flamelink as fl
+    P = 0.025
+    nd = fl.next_deadline
+    # Waking a little late is made up on the next sleep: the deadlines stay
+    # on the grid (no drift builds up).
+    check(abs(nd(1.000, 1.003, P) - 1.025) < 1e-9 and
+          abs(nd(1.025, 1.0374, P) - 1.050) < 1e-9,
+          "a wake up to half a period late keeps the grid")
+    # Behind by half a period or more: the frame just sent was the overdue
+    # one, the next is a whole period from now; never closer than half.
+    check(abs(nd(1.000, 1.013, P) - 1.038) < 1e-9 and
+          abs(nd(1.000, 1.200, P) - 1.225) < 1e-9,
+          "behind: the next frame is one period from now")
+    for now in (1.0, 1.001, 1.0124, 1.0126, 1.02, 1.03, 1.3, 5.0):
+        got = nd(1.0, now, P)
+        check(got - now >= P / 2 - 1e-9,
+              f"never a frame sooner than half a period: {now} -> {got}")
+
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "send_hz": 40,
+                                    "frame_stale_ms": 500})
+
+    def run(late, n=200, early=0.0):
+        """The real _run on a fake clock: each sleep takes what it was
+        asked for plus late[k] (the k-th sleep), minus `early` never."""
+        clk = [100.0]
+
+        class Stop:
+            def __init__(self):
+                self.left = n
+                self.k = 0
+
+            def is_set(self):
+                return self.left <= 0
+
+            def set(self):
+                self.left = 0
+
+            def clear(self):
+                pass
+        st = Stop()
+
+        def sleep(d):
+            st.k += 1
+            clk[0] += d + late.get(st.k, 0.0)
+            st.left -= 1
+        lk = fl.FlameLink(cfg, clock=lambda: clk[0], sleep=sleep)
+        sk = _FlSock()
+        lk._sock = sk
+        lk._stop = st
+        lk._run()
+        mono = [json.loads(d)["mono"] for d, _a in sk.sent]
+        return lk, [round(b - a, 6) for a, b in zip(mono, mono[1:])], mono
+
+    # Every sleep 3 ms late: the cadence stays 25 ms on average and every
+    # frame stays on the 25 ms grid from the first one (absolute deadlines).
+    lk, gaps, mono = run({k: 0.003 for k in range(1, 400)})
+    span = mono[-1] - mono[0]
+    check(abs(span / (len(mono) - 1) - P) < 1e-4,
+          f"3 ms late every time: still 40 a second on average "
+          f"({span / (len(mono) - 1) * 1000:.2f} ms)")
+    check(all(abs(((m - mono[0]) / P) - round((m - mono[0]) / P)) * P
+              <= 0.0031 for m in mono),
+          "and each frame within 3 ms of its own grid point: no drift")
+    # One 200 ms stall: one long gap, then the next frame one period after
+    # the overdue one, and the cadence again. Never two frames closer
+    # together than half a period, so never a burst to catch up.
+    lk, gaps, mono = run({60: 0.2})
+    long_ = [g for g in gaps if g > P * 1.5]
+    check(len(long_) == 1 and abs(long_[0] - (P + 0.2)) < 1e-6,
+          f"the stall shows once: {sorted(set(gaps))[-3:]}")
+    i = gaps.index(long_[0])
+    check(all(abs(g - P) < 1e-6 for g in gaps[i + 1:]),
+          f"after the stall the cadence carries on at once: "
+          f"{gaps[i + 1:i + 5]}")
+    check(min(gaps) >= P / 2 - 1e-6, f"no burst: shortest gap {min(gaps)}")
+    # A wake 20 ms late (less than a period, more than half): the late frame
+    # goes, the next one a period after it, not 5 ms after.
+    lk, gaps, mono = run({60: 0.020})
+    check(min(gaps) >= P / 2 - 1e-6 and max(gaps) <= P + 0.020 + 1e-6,
+          f"a 20 ms late wake: no frame squeezed in after it: "
+          f"{sorted(set(gaps))}")
+    # The timing counters saw the same intervals the frames carry.
+    v = lk.timing_view()["since_start"]
+    check(v["intervals"] == len(gaps) and abs(v["worst_ms"] - 45.0) < 0.01,
+          f"the sender counted every interval and the worst: {v}")
+    print("  ok")
+
+
+def test_flame_link_frame_timing_counts_and_journals():
+    section("flame link timing (2026-10-29): intervals counted per show and "
+            "per hour on the sender (over 50, 75, 100, 150 ms, worst, 99 in "
+            "100), journaled by the watch thread, the last hour's late "
+            "frames for the alert, in the status")
+    from ltcplay import flamelink as fl
+    t = fl.FrameTiming(0.0)
+    for _ in range(990):
+        t.add(0.025)
+    for ms in (60, 80, 120, 178, 40, 30, 26, 27, 28, 29):
+        t.add(ms / 1000.0)
+    v = t.view()
+    check(v["intervals"] == 1000 and v["over_ms"] == {"50": 4, "75": 3,
+                                                      "100": 2, "150": 1}
+          and abs(v["worst_ms"] - 178.0) < 1e-6 and v["over_limit"] == 2
+          and v["limit_ms"] == 100,
+          f"counts over each limit, the worst: {v}")
+    check(v["p99_ms"] == 26, f"99 in 100 within 26 ms (to the ms above): "
+                             f"{v['p99_ms']}")
+    t3 = fl.FrameTiming()
+    for _ in range(980):
+        t3.add(0.025)
+    for _ in range(20):
+        t3.add(0.060)
+    check(t3.p99_ms() == 61, f"the 99th in 100 is in the tail: "
+                             f"{t3.p99_ms()}")
+    s = t.sentence("this hour")
+    check("worst 178 ms" in s and "over 100 ms: 2" in s and
+          "–" not in s and "—" not in s,
+          f"one plain line, no dashes: {s}")
+    check(fl.FrameTiming().view()["p99_ms"] == 0 and
+          fl.FrameTiming().view()["mean_ms"] == 0.0, "empty: zeros")
+    t2 = fl.FrameTiming()
+    t2.add(2.0)
+    check(t2.view()["p99_ms"] == 301 and t2.view()["worst_ms"] == 2000.0,
+          f"past the last bin: at least 300, the worst exact: {t2.view()}")
+    t2.add("rubbish")
+    check(t2.frames == 1, "rubbish is not counted and does not raise")
+
+    # On the link: the sender's _timing_add, a show window from the first
+    # live frame to the first frame with no show timecode, an hour window,
+    # each finished one journaled once by the watch thread's half.
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "frame_stale_ms": 500})
+    clk = [1000.0]
+    jl = _FlJournal()
+    lk = fl.FlameLink(cfg, clock=lambda: clk[0], journal=jl)
+
+    def tick(gap, live, tc):
+        clk[0] += gap
+        lk._haze_live, lk._frame_tc = live, tc
+        lk._timing_add(gap, clk[0])
+    for _ in range(10):
+        tick(0.025, False, None)
+    check(lk.timing_view()["this_show"] is None, "no show: no show window")
+    tick(0.025, True, "00:00:00:01")
+    for _ in range(40):
+        tick(0.025, True, "00:00:01:00")
+    tick(0.130, True, "00:00:02:00")             # one late frame in the show
+    tick(0.025, False, "00:00:02:00")            # a Hold: still the show
+    check(lk.timing_view()["this_show"]["intervals"] == 42,
+          f"the show window counts from its first live frame, through a "
+          f"Hold: {lk.timing_view()['this_show']}")
+    tick(0.025, False, None)                     # the show is over
+    check(lk.timing_view()["this_show"] is None, "the show window closed")
+    lk._timing_journal()
+    lines = [(t, kw) for t, kw in jl.lines
+             if kw.get("outcome") in ("frame_timing", "frames_late")]
+    check(len(lines) == 2 and "in the show that just ended" in lines[0][0]
+          and "over 100 ms: 1" in lines[0][0]
+          and lines[0][1]["timing"]["over_limit"] == 1
+          and lines[1][0].startswith("Flame frames late: 1 in the show")
+          and not any(kw.get("fault") for _t, kw in lines),
+          f"one line for the show, one more for its late frame, notes "
+          f"(the alert is the fault): {lines}")
+    lk._timing_journal()
+    check(len([1 for _t, kw in jl.lines
+               if kw.get("outcome") == "frame_timing"]) == 1,
+          "each finished window is journaled once")
+    n, worst = lk.late_last_hour()
+    check((n, worst) == (1, 130.0), f"the last hour: 1, 130 ms: {n} {worst}")
+    # An hour on: the hour window rolls over and is journaled; the late
+    # frame drops out of "the last hour".
+    clk[0] += fl.TIMING_HOUR_S
+    tick(0.025, False, None)
+    lk._timing_journal()
+    check(any("in the last hour" in t for t, _kw in jl.lines),
+          "the finished hour is journaled")
+    tv = lk.timing_view()
+    check(tv["late_last_hour"] == 0 and tv["last_hour"]["over_limit"] == 1
+          and tv["this_hour"]["intervals"] == 1
+          and tv["since_start"]["intervals"] == 55
+          and tv["in_shows"]["intervals"] == 43
+          and tv["in_shows"]["over_limit"] == 1,
+          f"the late frame is out of the last hour; the hour that had it is "
+          f"kept as last_hour: {tv}")
+    snap = lk.snapshot()
+    check(snap["frame_timing"]["limit_ms"] == 100 and
+          "since_start" in snap["frame_timing"],
+          "the status carries frame_timing")
+    print("  ok")
+
+
+def test_flame_link_sender_not_held_by_other_threads():
+    section("flame link timing (2026-10-29): the real sender thread keeps "
+            "sending while another thread holds the show's lock and a "
+            "request-style lock, while the journal hangs, and while another "
+            "thread sleeps holding them")
+    import threading as _th
+    from ltcplay import flamelink as fl
+    F = _fi_mod()
+    import types
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "send_hz": 40,
+                                    "frame_stale_ms": 500})
+    hang = _th.Event()
+
+    def stuck_journal(text, **kw):
+        hang.wait(10.0)              # a journal that never comes back
+    jr = F.OffThreadJournal(stuck_journal)
+    clk = types.SimpleNamespace(source="audio_master", playing=True,
+                                paused=False, _halting=False,
+                                last_sent=(0, 0, 1, 0), _paused=False,
+                                on_pause=None, on_resume=None)
+    control = types.SimpleNamespace(session=types.SimpleNamespace(
+        running=True, clock=clk, player=None, tl=None))
+    show = F.FireIceShow(control, journal=None, flame_link=object())
+    calls = [0]
+
+    def raising_cues(tc):
+        calls[0] += 1
+        raise RuntimeError("a provider that fails every frame")
+    lk = fl.FlameLink(cfg, cues=raising_cues,
+                      show_state=fl.audio_master_state(show.clock_nolock),
+                      journal=jr)
+    sk = _FlSock()
+    lk._sock = sk
+    request_lock = _th.Lock()
+    held = _th.Event()
+
+    def hold_locks():
+        # A request thread holding the show's own lock and a lock of its
+        # own, asleep with both held (GIL-free), for the whole measurement.
+        with show._lock, request_lock:
+            held.set()
+            hang.wait(10.0)
+    h = _th.Thread(target=hold_locks, daemon=True)
+    h.start()
+    held.wait(2.0)
+    # The timecode moves, so the provider is asked (and raises, so the
+    # sender writes a journal line, which hangs on its own thread).
+    def move():
+        f = 0
+        while not hang.is_set():
+            f = (f + 1) % 30
+            clk.last_sent = (0, 0, 1 + (f // 30), f)
+            time.sleep(0.03)
+    m = _th.Thread(target=move, daemon=True)
+    m.start()
+    lk.release()
+    lk.start()
+    time.sleep(0.6)
+    n = len(sk.sent)
+    sender = lk.sender_state()
+    hang.set()
+    lk.stop()
+    h.join(2.0)
+    m.join(2.0)
+    check(n >= 12 and calls[0] >= 5,
+          f"the sender kept sending ({n} frames in 0.6 s, the provider asked "
+          f"{calls[0]} times) with the show's lock and a request lock held "
+          f"by a sleeping thread and the journal hung")
+    check(sender in ("running",),
+          f"and it never read as stalled: {sender}")
+    print("  ok")
+
+
+def test_flame_frame_timing_alert_and_systems_line():
+    section("flame link timing (2026-10-29): frames over 100 ms in the last "
+            "hour raise a display only 'timing' alert in plain words (again "
+            "only for new late frames), and the rack screen's Systems sheet "
+            "has a Flame timing line")
+    import tempfile
+    from ltcplay import alerts as AL
+    from ltcplay import flamelink as fl
+    from ltcplay import remote as RM
+    check("timing" in AL.KINDS and "timing" in AL.DISPLAY_ONLY and
+          AL.SEVERITY["timing"] == "warning",
+          "timing is a display only kind: shown and journaled, no booth "
+          "note, never holds a show")
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "frame_stale_ms": 500})
+    clk = [5000.0]
+    lk = fl.FlameLink(cfg, clock=lambda: clk[0])
+    rm = RM.Remote(None, None, folder=tempfile.mkdtemp(), log=lambda t: None)
+    lines = []
+    rm._journal = lambda *a, **k: lines.append(a)
+
+    def row():
+        got = [x for x in rm.subsystems({}) if x["name"] == "Flame timing"]
+        return got[0] if got else None
+    check(row() is None, "no flame link: no Flame timing line")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "no flame link: no alert")
+    rm.flame_link_get = lambda: lk
+    for _ in range(100):
+        clk[0] += 0.025
+        lk._timing_add(0.025, clk[0])
+    rm._frame_timing_work()
+    r = row()
+    check(not rm.alerts.open() and r and r["state"] == "ok" and
+          r["word"] == "on time, worst 25 ms this hour",
+          f"on time: no alert, the line says so: {r}")
+    clk[0] += 0.178
+    lk._timing_add(0.178, clk[0])
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    r = row()
+    check(len(al) == 1 and al[0].kind == "timing" and
+          al[0].text.startswith("Flame frames late: 1 in the last hour, "
+                                "worst 178 ms") and
+          "nothing was changed" in al[0].text and
+          "–" not in al[0].text and "—" not in al[0].text,
+          f"a frame 178 ms late: the alert, in plain words: "
+          f"{[a.text for a in al]}")
+    check(r and r["state"] == "warn" and
+          r["word"] == "1 frame(s) late in the last hour, worst 178 ms",
+          f"and the Systems line: {r}")
+    first = al[0].id
+    rm.alerts.clear(id=first, who="Andy", action="Acknowledge",
+                    screen="rack")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "acknowledged, and no new late frame: it "
+                                "stays cleared")
+    clk[0] += 0.120
+    lk._timing_add(0.120, clk[0])
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(len(al) == 1 and al[0].text.startswith(
+        "Flame frames late: 2 in the last hour, worst 178 ms"),
+          f"a new late frame raises it again: {[a.text for a in al]}")
+    print("  ok")
 
 
 def test_flame_link_end_to_end_against_the_real_flamesafe():
@@ -88044,6 +88478,7 @@ if __name__ == "__main__":
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,
         test_fire_ice_flame_link_from_flamesafe_config,
+        test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress,
         test_onlyone_named_lock_sees_a_copy_in_another_folder,
         test_onlyone_named_lock_is_machine_wide_or_says_so,
         test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,
@@ -88068,6 +88503,10 @@ if __name__ == "__main__":
         test_flame_link_fix_round_2,
         test_the_deck_arm_hold_fits_inside_the_post_abort_window,
         test_flame_link_sends_at_its_rate_on_one_socket,
+        test_flame_link_schedule_absolute_deadlines_no_burst,
+        test_flame_link_frame_timing_counts_and_journals,
+        test_flame_link_sender_not_held_by_other_threads,
+        test_flame_frame_timing_alert_and_systems_line,
         test_flame_link_end_to_end_against_the_real_flamesafe,
         test_the_gpl_path_never_loads_the_flame_link,
         test_remote_no_sign_in_over_the_network,

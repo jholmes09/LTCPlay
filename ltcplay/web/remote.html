@@ -2780,7 +2780,7 @@ let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
 const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note", "cfg-note": "Settings changed"};
 const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
   lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check", aim:"Aim slots",
-  hazers:"Hazers"};
+  hazers:"Hazers", timing:"Flame timing"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",

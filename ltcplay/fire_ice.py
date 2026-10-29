@@ -1180,6 +1180,15 @@ class FlameCues:
         self._bg = bool(background)
         self._layout = None      # (session, span, total, layout mtime)
         self._by_path = {}       # fseq path -> _render's tuple, or an error
+        # Background mode (2026-10-29, Jeff's Pico: flame frames 78 to 178
+        # ms late): the flame controller's channels of EVERY frame of each
+        # render, cut out ahead of time on the reading thread, so the
+        # sender only slices memory. It used to decompress the render's
+        # block (megabytes) on the sender thread itself each time the show
+        # crossed into the next one. fseq path -> (the FSEQ it was cut
+        # from, the span it was cut for, frame_count * count bytes).
+        self._tables = {}
+        self._data = {}          # fseq path -> (its FSEQ, the render's bytes)
         self._stop = threading.Event()
         self._thread = None
         # The CUES FAULT said at show load (soak 2026-10-21): renders of
@@ -1284,7 +1293,47 @@ class FlameCues:
                 spans.append((start0, src, length))
                 src += length
             got = self._open[key] = (f, spans, key[1], start)
+            if self._bg:
+                self._data[path] = (f, data)
         return got
+
+    @staticmethod
+    def _cut(data, spans, span):
+        """The flame controller's `span` (first channel, count) out of one
+        frame's channel bytes, as count bytes: the same cut __call__ makes,
+        a channel no range covers left at zero."""
+        start, count = span
+        first, end = start - 1, start - 1 + count
+        row = bytearray(count)
+        for dst, src, length in spans:
+            lo, hi = max(dst, first), min(dst + length, end)
+            if lo < hi:
+                row[lo - first:hi - first] = data[src + lo - dst:
+                                                  src + hi - dst]
+        return bytes(row)
+
+    def _flame_table(self, path, got, span):
+        """Background mode, on the reading thread: every frame's flame
+        channels of the render `got` (_render's tuple), cut for `span`,
+        one after the other. Read through an FSEQ of its own over the same
+        bytes in memory (never `got`'s, which another thread may be
+        reading). Raises if the render cannot be read."""
+        import io
+        from .fseq import FSEQ
+        f, spans = got[0], got[1]
+        mine = self._data.get(path)
+        if mine is None or mine[0] is not f:
+            raise ValueError("the render's bytes are not in memory")
+        data = mine[1]
+        g = FSEQ(path, fileobj=io.BytesIO(data))
+        try:
+            if g.frame_count != f.frame_count or \
+                    g.channel_count != f.channel_count:
+                raise ValueError("the render changed while it was read")
+            return b"".join(self._cut(g.frame(i), spans, span)
+                            for i in range(g.frame_count))
+        finally:
+            g.close()
 
     def _refresh_once(self):
         """Background mode: the channels and every cue's render of the
@@ -1304,6 +1353,27 @@ class FlameCues:
                 except Exception as e:
                     by[path] = e
         self._by_path = by
+        # Then each render's flame channels, cut ahead of time (see
+        # _tables): until a render's table is there its cues are zero, as
+        # while it is still being read.
+        tables = {}
+        for path, got in by.items():
+            if isinstance(got, Exception) or span is None:
+                continue
+            have = self._tables.get(path)
+            if have is not None and have[0] is got[0] and have[1] == span:
+                tables[path] = have
+                continue
+            try:
+                built = (got[0], span, self._flame_table(path, got, span))
+            except Exception:
+                continue    # zero; __call__ says the render's own fault
+            tables[path] = built
+            # Each one published as soon as it is cut.
+            now = dict(self._tables)
+            now[path] = built
+            self._tables = now
+        self._tables = tables
 
     def _refresher(self):
         while not self._stop.is_set():
@@ -1391,6 +1461,8 @@ class FlameCues:
             except Exception:
                 pass
         self._open.clear()
+        self._data.clear()
+        self._tables = {}
 
     def __call__(self, tc):
         s = getattr(self.control, "session", None)
@@ -1510,6 +1582,21 @@ class FlameCues:
                         "cues")
                 return self._zero("the timecode is past the end of the "
                                   "show's render", fault=True)
+            if self._bg:
+                # Memory only on the sender (2026-10-29): the frame's flame
+                # channels as the reading thread cut them from this very
+                # render, for this very span. Not there yet: zero.
+                tab = self._tables.get(hits[0].path)
+                if tab is None or tab[0] is not f or tab[1] != span:
+                    return self._zero("the show's flame cues are still being "
+                                      "read into memory (off the flame "
+                                      "link's sender)")
+                count = span[1]
+                out = [0] * 512
+                out[0:count] = tab[2][idx * count:(idx + 1) * count]
+                self._why = ""
+                self.fault = ""
+                return out
             data = f.frame(idx)
         except Exception as e:
             return self._zero(f"the show's render could not be read "

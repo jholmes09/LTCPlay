@@ -122,6 +122,7 @@ more than 1 s, journals flamesafe's confirmation of an Abort (its
 confirmed within 1 s. Until a status frame confirms it, an Abort is
 journaled and shown as "sent, not confirmed by flamesafe", never as done.
 """
+import collections
 import json
 import math
 import re
@@ -489,6 +490,108 @@ def _ipv4(text):
                                    for p in parts)
 
 
+# -- frame timing (2026-10-29) -------------------------------------------------
+# Jeff's Pico, 2026-10-29: "flamesafe keeps a fire value on the output for at
+# most 100 ms after the last frame it received (fire_hold_ms)", and the
+# journal had 11 frames 78 to 178 ms late in 2.5 hours. A late frame can
+# drop or shorten a 25 ms pulse on every wave flamer at once. So every
+# interval between two frames this sender sends is counted, on the sender
+# thread (one compare and two additions a frame; nothing it can wait on),
+# and summed up per show and per hour for the journal, the status and the
+# rack screen. Display and journal only: nothing here changes what is sent.
+TIMING_LIMITS_MS = (50, 75, 100, 150)
+# The limit the alert and the rack screen judge by: flamesafe's example
+# fire_hold_ms. Only a WORD here; flamesafe's own config is never read for
+# it and never changed by it.
+TIMING_ALERT_MS = 100
+TIMING_HOUR_S = 3600.0
+_TIMING_BINS = 301              # 0 to 299 ms by the millisecond, then more
+
+
+class FrameTiming:
+    """The intervals between flame frames, in one window (a show, an hour,
+    since start). add() is the sender thread's; everything else only
+    reads. Never raises."""
+
+    __slots__ = ("since", "frames", "worst_ms", "over", "bins", "total_ms")
+
+    def __init__(self, since=None):
+        self.since = since
+        self.frames = 0
+        self.worst_ms = 0.0
+        self.over = [0] * len(TIMING_LIMITS_MS)
+        self.bins = [0] * _TIMING_BINS
+        self.total_ms = 0.0
+
+    def add(self, gap_s):
+        try:
+            ms = gap_s * 1000.0
+            self.frames += 1
+            self.total_ms += ms
+            if ms > self.worst_ms:
+                self.worst_ms = ms
+            self.bins[min(_TIMING_BINS - 1, max(0, int(ms)))] += 1
+            if ms > TIMING_LIMITS_MS[0]:
+                for i, lim in enumerate(TIMING_LIMITS_MS):
+                    if ms > lim:
+                        self.over[i] += 1
+        except Exception:
+            pass
+
+    def p99_ms(self):
+        """The interval 99 in 100 were at or under, to the millisecond
+        above (the last bin: at least 300)."""
+        n = self.frames
+        if not n:
+            return 0
+        want = n - n // 100
+        run = 0
+        for ms, c in enumerate(self.bins):
+            run += c
+            if run >= want:
+                return ms + 1
+        return _TIMING_BINS
+
+    def view(self):
+        """A plain dict for the status JSON and the soak report."""
+        return {"intervals": self.frames,
+                "worst_ms": round(self.worst_ms, 1),
+                "p99_ms": self.p99_ms(),
+                "mean_ms": round(self.total_ms / self.frames, 2)
+                if self.frames else 0.0,
+                "over_ms": {str(lim): self.over[i]
+                            for i, lim in enumerate(TIMING_LIMITS_MS)},
+                "limit_ms": TIMING_ALERT_MS,
+                "over_limit": self.over[TIMING_LIMITS_MS.index(
+                    TIMING_ALERT_MS)]}
+
+    def sentence(self, what):
+        """One plain journal line: what (e.g. "this hour") and the counts."""
+        v = self.view()
+        o = v["over_ms"]
+        return (f"Flame frame timing, {what}: {v['intervals']} intervals, "
+                f"worst {v['worst_ms']:.0f} ms, 99 in 100 within "
+                f"{v['p99_ms']} ms; over 50 ms: {o['50']}, over 75 ms: "
+                f"{o['75']}, over 100 ms: {o['100']}, over 150 ms: "
+                f"{o['150']}.")
+
+
+def next_deadline(next_at, now, period):
+    """When the sender sends next: one period after the last deadline
+    (absolute deadlines: a sleep that wakes a little late is made up on the
+    next one, so no drift builds up), unless that is less than half a
+    period away. Then the sender is behind (a stall: the OS woke it late,
+    or something held the interpreter) and the frame it just sent was the
+    overdue one: the next is one whole period from now. So after a stall
+    the latest frame goes once and the cadence carries on from there; no
+    two frames ever go closer together than half a period, and a missed
+    tick is never sent late in a burst to catch up."""
+    nxt = next_at + period
+    if nxt - now < period / 2.0:
+        return now + period
+    return nxt
+
+
 # -- the two inputs ----------------------------------------------------------
 
 def zero_cues(tc):
@@ -725,6 +828,21 @@ class FlameLink:
         # each frame send_frame sent. It only appends to a queue; it can
         # neither change nor hold up a frame. None: nothing is called.
         self.observer = None
+        # Frame timing (2026-10-29, FrameTiming): every interval between
+        # two frames of the sender thread, since start, this hour and this
+        # show. Only the sender thread writes them. A finished hour or show
+        # goes on _timing_done, which the watch thread journals; every
+        # interval over TIMING_ALERT_MS also goes on _timing_late (when,
+        # how long), for "N in the last hour". deque append and popleft
+        # are atomic, so neither side ever waits on the other.
+        self._timing_total = FrameTiming()
+        self._timing_shows = FrameTiming()   # every show so far, together
+        self._timing_hour = None
+        self._timing_last_hour = None
+        self._timing_show = None
+        self._timing_done = collections.deque()
+        self._timing_late = collections.deque(maxlen=2000)
+        self._frame_tc = None
 
     # -- the journal -----------------------------------------------------------
     def _note(self, text, **fields):
@@ -797,6 +915,7 @@ class FlameLink:
         """Journals a stall once when it starts and once when it ends.
         Never sends anything and never touches the link's locks."""
         while not self._stop.wait(0.05):
+            self._timing_journal()
             try:
                 stalled = self.sender_state() == "stalled"
                 if stalled and not self._stall_noted:
@@ -861,16 +980,15 @@ class FlameLink:
                     self.send_frame()
                     took = self._clock() - start
                     if last_start is not None:
+                        self._timing_add(start - last_start, start)
                         self._note_late(start - last_start, slept, took)
                     last_start = start
                     self._run_ok()
-                    next_at += period
                     now = self._clock()
-                    if next_at < now - period:
-                        # Fell behind (the OS woke us late): the overdue
-                        # frame has just gone, the next is one period on.
-                        # No burst to catch up, not even one extra frame.
-                        next_at = now + period
+                    # Fell behind (the OS woke us late): the overdue frame
+                    # has just gone, the next is one period on. No burst to
+                    # catch up, not even one extra frame (next_deadline).
+                    next_at = next_deadline(next_at, now, period)
                     delay = next_at - now
                 except Exception as e:
                     self._run_failed(e)
@@ -899,6 +1017,96 @@ class FlameLink:
                            f"disarms every group. Restart ltcplay.",
                            fault=True, action="flame_link",
                            outcome="sender_dead")
+
+    def _timing_add(self, gap, now):
+        """The sender thread's count of one interval (FrameTiming): since
+        start, this hour, this show. A show is counted from its first live
+        frame to the first frame with no show timecode at all (a Hold is
+        still the show). Never raises, never waits."""
+        try:
+            self._timing_total.add(gap)
+            hour = self._timing_hour
+            if hour is None:
+                hour = self._timing_hour = FrameTiming(now)
+            elif now - hour.since >= TIMING_HOUR_S:
+                self._timing_done.append(("in the last hour", hour))
+                self._timing_last_hour = hour
+                hour = self._timing_hour = FrameTiming(now)
+            hour.add(gap)
+            show = self._timing_show
+            if show is not None:
+                show.add(gap)
+                self._timing_shows.add(gap)
+            if gap * 1000.0 > TIMING_ALERT_MS:
+                self._timing_late.append((now, gap * 1000.0))
+            if self._haze_live:
+                if show is None:
+                    self._timing_show = FrameTiming(now)
+            elif show is not None and self._frame_tc is None:
+                self._timing_show = None
+                self._timing_done.append(("in the show that just ended",
+                                          show))
+        except Exception:
+            pass
+
+    def _timing_journal(self):
+        """The watch thread's half: one journal line for each finished hour
+        and show, and one more when it had a frame over TIMING_ALERT_MS.
+        Notes, not faults: the rack screen's alert (remote.py) is the
+        fault, raised as it happens. Never raises."""
+        try:
+            while self._timing_done:
+                what, w = self._timing_done.popleft()
+                v = w.view()
+                self._note(w.sentence(what), action="flame_link",
+                           outcome="frame_timing", timing=v)
+                if v["over_limit"]:
+                    self._note(f"Flame frames late: {v['over_limit']} "
+                               f"{what} more than {TIMING_ALERT_MS} ms "
+                               f"after the one before, worst "
+                               f"{v['worst_ms']:.0f} ms. flamesafe holds a "
+                               f"fire value for its fire_hold_ms after the "
+                               f"last frame, so a pulse may have been cut "
+                               f"short.", action="flame_link",
+                               outcome="frames_late")
+        except Exception:
+            pass
+
+    def late_last_hour(self, now=None):
+        """(how many intervals over TIMING_ALERT_MS in the last hour, the
+        worst of them in ms). Never raises."""
+        try:
+            now = self._clock() if now is None else now
+            got = []
+            for _ in range(3):
+                try:
+                    got = list(self._timing_late)
+                    break
+                except RuntimeError:
+                    continue
+            got = [ms for t, ms in got if now - t <= TIMING_HOUR_S]
+            return len(got), (round(max(got), 1) if got else 0.0)
+        except Exception:
+            return 0, 0.0
+
+    def timing_view(self):
+        """The status's "frame_timing": since start, in every show so far,
+        this hour, the last whole hour, this show (None outside one), and
+        the last hour's frames over the limit. Plain reads; never
+        raises."""
+        try:
+            n, worst = self.late_last_hour()
+            out = {"limit_ms": TIMING_ALERT_MS,
+                   "late_last_hour": n, "late_last_hour_worst_ms": worst}
+            for k, w in (("since_start", self._timing_total),
+                         ("in_shows", self._timing_shows),
+                         ("this_hour", self._timing_hour),
+                         ("last_hour", self._timing_last_hour),
+                         ("this_show", self._timing_show)):
+                out[k] = w.view() if w is not None else None
+            return out
+        except Exception:
+            return {"limit_ms": TIMING_ALERT_MS}
 
     LATE_S = 0.045      # a frame this long after the last one is noted
     LATE_NOTE_EVERY_S = 10.0
@@ -1587,6 +1795,7 @@ class FlameLink:
         with self._read_lock:
             tc, values = self.values_now()
             run = self._haze_running()
+            self._frame_tc = tc         # frame timing's show window only
         with self._lock:
             if gen != self._zero_gen or (self.zeroed and self._purge is None
                                          and self._program is None
@@ -1883,6 +2092,7 @@ class FlameLink:
                 "oversleep_ms_by_minute": {
                     str(k): round(v * 1000.0, 1) for k, v in
                     list(getattr(self, "_oversleep", {}).items())},
+                "frame_timing": self.timing_view(),
                 "cue_problem": self._cue_problem,
                 "purge": self.purge_active(),
                 "purges_sent": self.purges_sent,
