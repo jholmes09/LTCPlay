@@ -17757,13 +17757,13 @@ def build():
 
  ("ui2 day: Space on a focused group button presses it instead of firing",
   "ltcplay/web/remote2.html",
-  "  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;\n  e.preventDefault();",
-  "  if(e.target && e.target.closest && e.target.closest(\"button\")) return;\n  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;\n  e.preventDefault();"),
+  "  if(fireKeyNotOurs(e)) return;\n  e.preventDefault();",
+  "  if(fireKeyNotOurs(e) || (e.target && e.target.closest && e.target.closest(\"button\"))) return;\n  e.preventDefault();"),
 
  ("ui2 day: letting go of Space presses the focused group button",
   "ltcplay/web/remote2.html",
-  "     !(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))) e.preventDefault();",
-  "     false) e.preventDefault();"),
+  "  if(TAB === \"day\" && DAY_STEP === \"purge\" && !fireKeyNotOurs(e)) e.preventDefault();",
+  "  if(false) e.preventDefault();"),
 
  ("ui2 day: the Purge step dropping out keeps this screen's selection",
   "ltcplay/web/remote2.html",
@@ -17777,11 +17777,27 @@ def build():
 
  ("ui2 page: the Programming flames pin's Stop sends nothing",
   "ltcplay/web/remote2.html",
-  "  } else if(k === \"pf\"){\n    // 1.0's Hold (its b-hold: press(\"hold\")), the same route and body.\n    press(\"hold\");",
-  "  } else if(k === \"pf\"){\n    // 1.0's Hold (its b-hold: press(\"hold\")), the same route and body.\n"),
+  "    try{ const j = await post(\"/api/remote/hold\", actor(undefined)); say(\"Held: Programming paused.\", j.text || \"\", \"ok\"); }",
+  "    try{ const j = {}; say(\"Held: Programming paused.\", j.text || \"\", \"ok\"); }"),
 
- ("ui2 day: Space fires the purge over an open sheet", "ltcplay/web/remote2.html",
-  "  if(SHEET_DONE || !$(\"sheet\").hidden) return;\n",
+ ("ui2 day: Space on a focused Abort fires the purge",
+  "ltcplay/web/remote2.html",
+  "  return !!(t && t.closest && t.closest(FIRE_KEY_NEVER));",
+  "  return false;"),
+
+ ("ui2 page: a refused Programming pin Stop is only said",
+  "ltcplay/web/remote2.html",
+  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); disarmFailed(\"Programming NOT paused. Abort or Disarm flames.\", e2.message); }",
+  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); }"),
+
+ ("ui2 page: two pins both say just Stop",
+  "ltcplay/web/remote2.html",
+  "  if(out.length > 1) out.forEach(p => { if(p.key === \"pf\") p.btn = \"Stop Programming\"; });\n",
+  ""),
+
+ ("ui2 day: Space fires the purge over an open sheet",
+  "ltcplay/web/remote2.html",
+  "  if(SHEET_DONE || !$(\"sheet\").hidden) return true;\n",
   ""),
 
  ("ui2 day: Next marks Purge done after a look", "ltcplay/web/remote2.html",

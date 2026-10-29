@@ -587,7 +587,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <dt>Hold to arm</dt><dd>Press and keep your finger down.</dd>
     <dt>Disarm</dt><dd>One tap. Always works.</dd>
     <dt>Disarm flames</dt><dd>Every flame group. Lasers have their own.</dd>
-    <dt>Red Stop at the top</dt><dd>Stops cleaning or live flame.</dd>
+    <dt>Red Stop at the top</dt><dd>Stops cleaning, live flame or Programming flames.</dd>
     <dt>Wind</dt><dd>Advisory only. The on-site wind check decides.</dd>
   </dl>
 </div>
@@ -864,6 +864,8 @@ function pinItems(st){
   const pf = s.programming_flames || {};
   if(pf.on === true) out.push({key:"pf", text:"Flames can fire from Programming.", pill:"FLAMES LIVE", btn:"Stop",
     full:"Programming playback is playing the show's flame cues: an armed group fires. Stop is Hold, which pauses the playback. Abort ends it too."});
+  // Two pins: each Stop names what it stops.
+  if(out.length > 1) out.forEach(p => { if(p.key === "pf") p.btn = "Stop Programming"; });
   return out;
 }
 // The big button: the next step, one of Reset, Resume, Run show, Start
@@ -1149,8 +1151,10 @@ $("pins").addEventListener("click", async e => {
     try{ const j = await post("/api/remote/live-flame", {on: false}); say("Live flame programming off.", j.text, "ok"); }
     catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Live flame NOT off.", e2.message); }
   } else if(k === "pf"){
-    // 1.0's Hold (its b-hold: press("hold")), the same route and body.
-    press("hold");
+    // 1.0's Hold (its b-hold: press("hold")), the same route and body; a
+    // refusal stays in the alert slot, as the other pins' do.
+    try{ const j = await post("/api/remote/hold", actor(undefined)); say("Held: Programming paused.", j.text || "", "ok"); }
+    catch(e2){ say("NOT held.", e2.message, "bad"); disarmFailed("Programming NOT paused. Abort or Disarm flames.", e2.message); }
   }
 });
 
@@ -2132,7 +2136,7 @@ $("wx").addEventListener("click", () => {
 
 // ---- "?" : one plain sentence per control ----
 const QHELP = {
-  next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning or live flame."]]],
+  next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame or Programming flames."]]],
   transport: ["Show controls", [["Run show", "Turns tonight's show on. Shows start on time."], ["Start now", "Starts the next show early."],
     ["Resume", "Carries on after a Hold."], ["Reset", "Clears an Abort. Then arm again."],
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Ends everything. Rig goes dark."],
@@ -2883,6 +2887,17 @@ function renderCleaning(){
   setText($("wc-block"), blk ? short8(blk, "Not now. Tap ? for why.") : "");
 }
 // Space fires the purge as in 1.0, on the DAY tab's Purge step only.
+// Never over an emergency or safety button with the focus (third review
+// of #169): Space on a focused Abort, Hold, Stop, Disarm, Hazers off or a
+// pinned Stop presses that button and never fires.
+const FIRE_KEY_NEVER = "#b-abort, #b-hold, #b-stop, #b-disall, #m-hold, #m-stop, #m-disf, #m-disl, #m-snd, #ann-stop, " +
+  "#pins button, #wc-stop, #hz-off, #d-hz-off, #broken-go, [data-arm][data-mode=\"disarm\"], #lz-b[data-mode=\"disarm\"], .b.red, .b.redline, .b.safe, .b.amber";
+function fireKeyNotOurs(e){
+  if(SHEET_DONE || !$("sheet").hidden) return true;
+  const t = e.target;
+  if(t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return true;
+  return !!(t && t.closest && t.closest(FIRE_KEY_NEVER));
+}
 document.addEventListener("keydown", e => {
   if(e.code !== "Space") return;
   if(TAB !== "day" || DAY_STEP !== "purge") return;
@@ -2891,16 +2906,14 @@ document.addEventListener("keydown", e => {
   // focused group button or step does not (second review of #169, 1: a
   // tap focuses it): Space fires, and its default is stopped on the way
   // down and up so the browser never presses the focused button.
-  if(SHEET_DONE || !$("sheet").hidden) return;
-  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if(fireKeyNotOurs(e)) return;
   e.preventDefault();
   if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }
   fireStart();
 });
 document.addEventListener("keyup", e => {
   if(e.code !== "Space") return;
-  if(TAB === "day" && DAY_STEP === "purge" && !SHEET_DONE && $("sheet").hidden &&
-     !(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))) e.preventDefault();
+  if(TAB === "day" && DAY_STEP === "purge" && !fireKeyNotOurs(e)) e.preventDefault();
   fireStop("the key came up");
 });
 window.addEventListener("blur", () => fireStop("the page lost focus"));

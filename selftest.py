@@ -86350,6 +86350,8 @@ L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:
 t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,off" && /Pick one in Settings/.test(L.first),
   "announcements with no output picked are a problem, all armed reads On, not set up reads Off: " + L.text + " " + L.items.map(i => i.state));
 t(sysLook([{name:"Disk", state:"bad", word:"critical"}], true).text === "No contact", "no contact: said");
+for(const [n, w] of [["Video", "not set up"], ["Show audio", "none"], ["Pixels", "stopped"], ["Flamesafe", "not connected"]])
+  t(sysItem({name:n, state:"warn", word:w}).state === "off", "a warn that is only not set up here reads Off: " + n + " " + w);
 for(const w of ["not heard", "missing", "late 1.2 s", "USB slow 2.0 s", "default keys: ltcplay_deck.json not used", "USB 3 write(s) failed", "not known", "no status", "fault",
                 "not attached", "lost", "show audio not open", "output not attached", "pick one output", "file problem", "low", "critical", "not writing", "2 of 4 armed",
                 "LINK LOST", "blanking not set up", "BEYOND restarted: dark until lit again", "lit? link unknown", "not sending", "a long engine sentence with many words in it here"])
@@ -86377,6 +86379,8 @@ s.programming_flames.on = true;
 { const pf = pinItems(s)[0], n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
   t(pf && pf.key === "pf" && pf.btn === "Stop" && n.text === "Flames can fire from Programming." && n.tone === "bad" && p.text === "FLAMES LIVE",
     "Programming flames playing: pinned in the top line with Stop: " + n.text + " / " + p.text); }
+s.cleaning = {state:"phase1"};
+t(pinItems(s).map(x => x.btn).join("|") === "Stop cleaning|Stop Programming", "two pins: each Stop names what it stops: " + pinItems(s).map(x => x.btn));
 s = base(); s.cleaning = {state:"phase1"};
 t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
 s.schedule.state = "SHOW";
@@ -86666,6 +86670,12 @@ async function go(){
     if(pb) pb.click();
     await wait(400);
     res.pf.posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+    // Refused: kept in the alert slot until seen, as the other pins'.
+    window.__fail = /\/api\/remote\/hold/;
+    if(pb) pb.click();
+    await wait(500);
+    window.__fail = null;
+    res.pf.refused = document.getElementById("al-what").textContent;
   }
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
@@ -86877,9 +86887,12 @@ def test_ui2_show_tab_in_a_browser():
                       not pf["dis"] and
                       pf["next"] == "Flames can fire from Programming." and
                       pf["pill"] == "FLAMES LIVE" and
-                      [u for u, _ in pf["posts"]] == ["/api/remote/hold"],
+                      [u for u, _ in pf["posts"]] == ["/api/remote/hold"] and
+                      pf["refused"] ==
+                      "Programming NOT paused. Abort or Disarm flames.",
                       f"{where}: Programming playback firing flames is "
-                      f"pinned with Stop, which is 1.0's Hold: {pf}")
+                      f"pinned with Stop, which is 1.0's Hold; refused, it "
+                      f"stays in the alert slot: {pf}")
             fd = res.get("fd")
             if frag.startswith("?fd"):
                 check(fd and fd["act"] == "ack" and fd["n"] >= 2 and
@@ -87166,6 +87179,17 @@ async function go(){
   res.prevented = [kd.defaultPrevented, ku.defaultPrevented];
   res.sel_after_focus = of("purge-select").length + of("purge-clear").length;
   gb.blur();
+  // Space on a focused Abort or Disarm flames presses it and never fires
+  // (third review of #169): its default is left alone, no purge beat goes.
+  res.emerg = {};
+  for(const id of ["b-abort", "m-disf"]){
+    posts.length = 0;
+    const eb = q(id); eb.focus();
+    const ed = new KeyboardEvent("keydown", kopt(false)); eb.dispatchEvent(ed); await wait(300);
+    const eu = new KeyboardEvent("keyup", kopt(false)); eb.dispatchEvent(eu); await wait(200);
+    res.emerg[id] = {focused:document.activeElement === eb, fire:of("purge-fire").length, prevented:[ed.defaultPrevented, eu.defaultPrevented]};
+    eb.blur();
+  }
   // Next on Purge moves on and leaves it to do (a look is not a purge),
   // with nothing selected (a selection keeps it to do regardless).
   MO.purge_state = Object.assign({}, MO.purge_state || {}, {selected:[]});
@@ -87316,6 +87340,12 @@ def test_ui2_day_tab_in_a_browser():
               f"does and never presses the button (second review of #169, "
               f"1): {res['fire_focused']} {res['prevented']} "
               f"{res['sel_after_focus']}")
+        em = res.get("emerg") or {}
+        check(set(em) == {"b-abort", "m-disf"} and
+              all(v["focused"] and v["fire"] == 0 and
+                  v["prevented"] == [False, False] for v in em.values()),
+              f"{where}: Space on a focused Abort or Disarm flames presses "
+              f"it and never fires the purge (third review of #169): {em}")
         check(res["clear_on_step"] >= 1 and res["clear_on_part"] >= 1 and
               res["clear_on_drop"] >= 1,
               f"{where}: leaving the Purge step or switching Startup and "
