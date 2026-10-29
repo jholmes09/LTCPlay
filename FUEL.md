@@ -50,8 +50,8 @@ Flame time goes in one of three piles:
   show.
 - **Purges.** A G-Flame's purge burns its own tank, so it counts. A Showven
   purges from separate purge fuel, so it does not.
-- **Other.** Scrubbing with flames, live flame programming and rehearsal
-  runs. Real fuel, never a show.
+- **Other.** Programming playback with flames, live flame programming and
+  rehearsal runs. Real fuel, never a show.
 
 ## How to refill
 

@@ -115,9 +115,10 @@ PERMS = (
     ("show_files", "Show files and setup: the show folder, the schedule, "
                    "reload, the machine layout"),
     ("settings", "Settings: the show network, arming from a screen, live "
-                 "flame programming, fire flames while scrubbing, the "
-                 "timecode input, the announcement output, the audit "
-                 "upload, idle sign out, sign out after the last show"),
+                 "flame programming, moving Programming playback from an "
+                 "iPad while flames follow it, the timecode input, the "
+                 "announcement output, the audit upload, idle sign out, "
+                 "sign out after the last show"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -126,7 +127,7 @@ SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
                "flames or lasers), "
                "letting go of a hold, stopping or clearing a purge, "
                "locking a machine, a laser test off, live flame "
-               "programming off, fire flames while scrubbing off, "
+               "programming off, "
                "a hazer disarm, Hazers off, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
@@ -189,7 +190,7 @@ REMOTE_ROUTES = {
     # The default interface (interface 2.0, 2026-10-28): which page a
     # screen that has not chosen gets. Setup, admin by default.
     "ui-default": "settings",
-    "live-flame": "settings", "scrub-flames": "settings",
+    "live-flame": "settings",
     "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",
     "last-show-signout": "settings",
@@ -303,11 +304,6 @@ def classify(route, body=None):
             # Live flame programming OFF (anything but the JSON word true
             # is off at the engine, remote.live_flame_post) only takes
             # risk away: anyone, any surface, signed out.
-            return "safety"
-        if name == "scrub-flames" and body.get("on") is not True:
-            # Fire flames while scrubbing OFF (anything but the JSON word
-            # true, remote.scrub_flames_post), the same as live flame
-            # programming: anyone, any surface, signed out.
             return "safety"
         if name == "laser-arm" and body.get("on") is not True:
             # morning.py arms only for "on" the JSON word true; every other

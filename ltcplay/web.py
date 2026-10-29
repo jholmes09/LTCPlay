@@ -1011,7 +1011,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
-        cut, fire while scrubbing ended, then the flame link's disarm_all
+        cut, then the flame link's disarm_all
         (the show's flames_disarm_all, never the conductor's Abort, so
         nothing is latched). {"disarmed": True/False, "text": ...}, or None
         with no flame link in this engine (the GPL path). Never raises."""
@@ -1024,7 +1024,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:                        # noqa: BLE001
             who, screen = "", "Rack screen"
         reason = f"{who or 'Someone'} pressed Stop on the {screen}"
-        for name in ("live_flame_cut", "scrub_flames_end"):
+        for name in ("live_flame_cut",):
             fn = getattr(rm, name, None)
             if fn is not None:
                 try:
@@ -1682,12 +1682,6 @@ class Handler(BaseHTTPRequestHandler):
                     _rm.live_flame_end("Run was pressed",
                                        self._ctx().user or "unsigned",
                                        self._ctx().screen)
-                # And fire flames while scrubbing (scrubflames.py): a new
-                # show file never inherits it.
-                if _rm is not None and hasattr(_rm, "scrub_flames_end"):
-                    _rm.scrub_flames_end("Run was pressed",
-                                         self._ctx().user or "unsigned",
-                                         self._ctx().screen)
                 s = c.start(body.get("timeline", ""),
                             no_output=bool(body.get("no_output")),
                             on_lost=body.get("on_lost"),
@@ -1725,8 +1719,8 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/stop":
                 # Stop takes the flames down first (Jeff, 2026-10-26;
                 # review of #126, P2-1), the Rack screen's and the Stream
-                # Deck's alike: live flame programming and fire while
-                # scrubbing end, and the flame link's disarm_all goes out
+                # Deck's alike: live flame programming ends, and the flame
+                # link's disarm_all goes out
                 # (the cues zeroed, a zero frame, the keyed disarm and its
                 # repeats: the flame half of an Abort), WITHOUT the Abort
                 # latch, which is the Abort's alone. Then playback stops.
@@ -2171,37 +2165,6 @@ def _attach_live_flame(httpd, fire_ice, flamesafe_config):
         finally:
             _close_before()
     httpd.server_close = _close_live_flame
-
-def _attach_scrub_flames(httpd):
-    """Fire flames while scrubbing (scrubflames.py, LIVE_FLAME_PROGRAMMING.md):
-    built for the Fire & Ice engine with a flame link and a flame
-    controller. Always OFF at start. A failure to build it leaves it
-    unavailable and is said once; the show is never held back."""
-    from . import scrubflames
-    remote = httpd.remote
-    try:
-        def _journal(who, screen, outcome, text, fault=False):
-            remote._journal(who or "system", screen or "engine",
-                            "scrub flames", outcome, text, fault=fault)
-        remote.scrub_flames = scrubflames.ScrubFlames(
-            link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
-            cues_get=lambda: remote.flame_cues,
-            control=remote.control,
-            blockers=remote.scrub_flames_blockers,
-            journal=_journal, audit=getattr(remote, "audit", None))
-    except Exception as e:                       # noqa: BLE001
-        print(f"Fire flames while scrubbing could not be set up: "
-              f"{type(e).__name__}: {e}")
-        return
-    _close_before = httpd.server_close
-
-    def _close_scrub_flames():
-        try:
-            remote.scrub_flames_end("the engine is closing")
-        finally:
-            _close_before()
-    httpd.server_close = _close_scrub_flames
-
 
 def _attach_hazers(httpd):
     """The hazers (hazers.py, Jeff 2026-10-29): built for the Fire & Ice
@@ -2793,7 +2756,6 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):
         _attach_live_flame(httpd, fire_ice, flamesafe_config)
-        _attach_scrub_flames(httpd)
     _bey_cfg = getattr(fire_ice, "beyond", None) if fire_ice else None
     if _bey_cfg is not None:
         # Open BEYOND on the Startup page (windowfront.py) refuses when

@@ -927,7 +927,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -1238,11 +1238,11 @@ button.fb-pad.na{opacity:.45}
         <button id="tr-follow" class="ghost" data-tr>Follow timecode again</button>
       </div>
       <div class="toast" id="tr-msg"></div>
-      <!-- Fire flames while scrubbing (scrubflames.py): off every start;
-           on here on the show machine only (Settings permission). -->
-      <div class="row" style="margin-top:8px"><b id="sf-now" style="flex:2 1 0"></b><button id="sf-on" style="flex:1 1 0">Fire flames while scrubbing</button><button id="sf-off" style="flex:1 1 0">Turn off</button></div>
-      <div class="dim" style="font-size:14px" id="sf-what"></div>
-      <div class="toast" id="sf-msg"></div>
+      <!-- The show's flame cues follow Programming playback (no switch:
+           Jeff, 2026-10-29). remote.py PROGRAMMING_FLAMES_LINE; a flame
+           cue fault is shown here in full, never cut short. -->
+      <div class="dim" style="font-size:14px;margin-top:8px" id="pf-line" hidden></div>
+      <div id="pf-warn" role="alert" style="margin-top:6px;border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);border-radius:6px;padding:4px 10px;font-size:clamp(13px,1.6vh,16px);white-space:normal;overflow-wrap:anywhere" hidden></div>
     </section>
     <!-- The show file and the Stream Deck operator, one compact column
          (Jeff, 2026-10-23, note 12: both frames were far too large). -->
@@ -3380,7 +3380,7 @@ function signinLocked(){
   if(!mayRow(ST, "arm")){
     offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));
   }
-  if(!mayRow(ST, "settings")) offs.push($("sa-on"), $("lf-on"), $("sf-on"));
+  if(!mayRow(ST, "settings")) offs.push($("sa-on"), $("lf-on"));
   // A control that is a Stop just now (Start now or Run while a show is
   // live or starting) is never locked: Stop always works (third review of
   // PR #143, 1).
@@ -3420,7 +3420,7 @@ function redrawForSignIn(){
   const box = $("lz-chips");
   if(box) box.dataset.html = "";
   ANN_SIG = "";
-  for(const f of [renderStale, renderAnnounce, renderArmingCard, renderLiveFlame, renderScrubFlames]){
+  for(const f of [renderStale, renderAnnounce, renderArmingCard, renderLiveFlame, renderProgFlames]){
     try{ f(); }catch(e){ }
   }
 }
@@ -4380,43 +4380,21 @@ $("lf-on").addEventListener("click", async () => {
   catch(e){ $("lf-msg").textContent = e.message; }
   $("lf-msg").title = $("lf-msg").textContent;
 });
-// Fire flames while scrubbing (scrubflames.py). The engine decides
-// everything; remote.py SCRUB_FLAMES_ENABLES says the same words as the
-// confirm box below.
-const SCRUB_FLAMES_ENABLES = "On, in this programming session the show's own flame cues go to flamesafe at the Programming screen's position while it is playing (Play from, Jump, Continue, the loop). flamesafe still fires only a group that is armed, and still applies lockouts and Abort. Nothing fires while paused, and nothing for half a second after every jump, loop, Pause or Play from; a flame channel already up where you land stays off until it has gone to zero. While it is on, only the show PC or an admin signed in can move the position, the loop or the marks. It turns itself off on Off, Abort, Hold, Start now, Run, Stop or a show going live. Turning it off does not disarm: disarm on the Stream Deck when you are done.";
-$("sf-what").textContent = SCRUB_FLAMES_ENABLES;
-function renderScrubFlames(){
-  const sf = (ST && ST.scrub_flames) || {};
-  const on = sf.on === true;
-  $("sf-banner").hidden = !on;
-  if(on){
-    const where = sf.position ? ("at " + sf.position) : "paused or stopped: nothing fires";
-    $("sf-banner-text").textContent = "The show's flame cues fire at the Programming screen's position, through flamesafe. Only an armed group fires. " + where + (sf.firing ? "; a flame value is going out now" : "") + (sf.fault ? "; zero: " + sf.fault : "") + ". Turned on by " + (sf.who || "someone") + ".";
-  }
-  const le = sf.last_end;
-  $("sf-now").textContent = !ST ? "" : on ? "Fire flames while scrubbing: ON" : (sf.available === false ? "Fire flames while scrubbing: not available in this engine" : "Fire flames while scrubbing: OFF");
-  if(!on && le && le.reason && !$("sf-msg").dataset.mine) $("sf-msg").textContent = "Last ended: " + le.reason;
-  $("sf-on").hidden = !(ME && ME.local);
-  $("sf-on").disabled = on || sf.available === false || !mayRow(ST, "settings");
-  $("sf-on").title = (!on && sf.blocked) ? sf.blocked : "";
-  $("sf-off").disabled = !on;
+// The show's flame cues in Programming (no switch, Jeff 2026-10-29): one
+// plain line where the switch was, and any flame cue fault in full while a
+// Play from cannot send them. The engine decides everything.
+function renderProgFlames(){
+  const pf = (ST && ST.programming_flames) || {};
+  const tr = (ST && ST.transport) || {};
+  const on = pf.available === true;
+  $("pf-line").hidden = !on;
+  if(on) $("pf-line").textContent = pf.follows === false && tr.programming ? "This show follows timecode, so no flames fire from Programming here." : (pf.line || "");
+  const fault = String((ST && ST.flames && ST.flames.cues_fault) || "");
+  const warn = on && tr.programming && fault ? "Flame cues are not going out, so nothing fires from Play from: " + fault : "";
+  $("pf-warn").hidden = !warn;
+  $("pf-warn").textContent = warn;
 }
-setInterval(renderScrubFlames, 250);
-async function scrubFlamesOff(){
-  $("sf-msg").dataset.mine = "1";
-  try{ const j = await post("/api/remote/scrub-flames", {on: false}); $("sf-msg").textContent = j.text; }
-  catch(e){ $("sf-msg").textContent = e.message; }
-  $("sf-msg").title = $("sf-msg").textContent;
-}
-$("sf-off").addEventListener("click", scrubFlamesOff);
-$("sf-banner-off").addEventListener("click", scrubFlamesOff);
-$("sf-on").addEventListener("click", async () => {
-  if(!(await confirmBox("Fire flames while scrubbing?", SCRUB_FLAMES_ENABLES, "Yes, turn it on", "go"))) return;
-  $("sf-msg").dataset.mine = "1";
-  try{ const j = await post("/api/remote/scrub-flames", actor({on: true, confirmed: true})); $("sf-msg").textContent = j.text; }
-  catch(e){ $("sf-msg").textContent = e.message; }
-  $("sf-msg").title = $("sf-msg").textContent;
-});
+setInterval(renderProgFlames, 250);
 $("net-pick").addEventListener("change", () => { if($("net-pick").value) $("net-addr").value = $("net-pick").value; });
 $("net-save").addEventListener("click", () => saveNetwork($("net-addr").value));
 
