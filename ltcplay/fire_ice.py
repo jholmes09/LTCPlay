@@ -1352,10 +1352,9 @@ class FlameCues:
                         path, span[0] if span else None)
                 except Exception as e:
                     by[path] = e
-        self._by_path = by
-        # Then each render's flame channels, cut ahead of time (see
-        # _tables): until a render's table is there its cues are zero, as
-        # while it is still being read.
+        # Each render's flame channels, cut ahead of time (see _tables),
+        # published BEFORE the renders themselves: whoever finds a render
+        # in _by_path finds its cues ready, as when only the file was read.
         tables = {}
         for path, got in by.items():
             if isinstance(got, Exception) or span is None:
@@ -1365,15 +1364,12 @@ class FlameCues:
                 tables[path] = have
                 continue
             try:
-                built = (got[0], span, self._flame_table(path, got, span))
+                tables[path] = (got[0], span,
+                                self._flame_table(path, got, span))
             except Exception:
                 continue    # zero; __call__ says the render's own fault
-            tables[path] = built
-            # Each one published as soon as it is cut.
-            now = dict(self._tables)
-            now[path] = built
-            self._tables = now
         self._tables = tables
+        self._by_path = by
 
     def _refresher(self):
         while not self._stop.is_set():

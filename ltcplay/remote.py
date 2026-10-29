@@ -2731,9 +2731,11 @@ class Remote:
                 return
             n, worst = link.late_last_hour()
             if n > self._timing_said:
-                from . import flamelink as fl
+                # The limit from the link itself: this module never
+                # imports the flame link (the GPL wall).
+                lim = (link.timing_view() or {}).get("limit_ms", 100)
                 self.alerts.raise_("timing", self.TIMING_TEXT.format(
-                    n=n, w=f"{worst:.0f}", lim=fl.TIMING_ALERT_MS))
+                    n=n, w=f"{worst:.0f}", lim=lim))
             self._timing_said = n
         except Exception:                        # noqa: BLE001
             pass

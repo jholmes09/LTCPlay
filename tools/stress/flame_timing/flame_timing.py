@@ -7,7 +7,10 @@ audio, the scheduler starting a show every few minutes, nothing leaving
 this machine) and adds, around it:
 
   - N status pollers, as the rack screens and the iPad do: GET
-    /api/remote/status, /api/state and /api/conductor, each every 250 ms;
+    /api/remote/status, /api/state and /api/conductor, each every 250 ms,
+    and an Acknowledge of every open alert every 2 s (with nothing
+    attached an alert is open from the start, and an open alert holds
+    every show at its time);
   - inside the engine (a sitecustomize module this script writes into its
     own folder and puts first on PYTHONPATH, so nothing in the repo changes
     for it): every flame frame the sender thread sends, timed on that
@@ -281,6 +284,47 @@ def poller(path, stop, counts):
         stop.wait(max(0.0, 0.25 - (time.time() - t0)))
 
 
+def acknowledger(stop, counts):
+    """Every 2 s, Acknowledge every open alert, as a person at the rack
+    screen would: on a bench with nothing attached an alert (MadMapper,
+    Art-Net timecode) is open from the start and would hold every show at
+    its time (alerthold.py), so no show would play. Acknowledge changes
+    nothing on the rig."""
+    body = json.dumps({"action": "acknowledge"}).encode()
+    while not stop.wait(2.0):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{PORT}/api/remote/alert", data=body,
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                r.read()
+            counts["acknowledged"] = counts.get("acknowledged", 0) + 1
+        except Exception as e:
+            counts["ack_errors"] = counts.get("ack_errors", 0) + 1
+            counts["ack_last_error"] = str(e)[:120]
+
+
+def renice_engine(nice):
+    """Linux: every thread of the soak's engine at `nice` (the soak's own
+    "High" is Windows only), so the operating system runs the engine first
+    and what is left is the engine's own doing."""
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read()
+        except OSError:
+            continue
+        if b"entry_engine.py" in cmd:
+            for tid in os.listdir(f"/proc/{pid}/task"):
+                try:
+                    os.setpriority(os.PRIO_PROCESS, int(tid), nice)
+                except OSError as e:
+                    print(f"flame_timing: renice {tid}: {e}")
+            print(f"flame_timing: engine {pid} at nice {nice}", flush=True)
+
+
 def engine_up():
     try:
         with socket.create_connection(("127.0.0.1", PORT), timeout=0.5):
@@ -329,6 +373,9 @@ def main(argv=None):
     ap.add_argument("--every-min", type=int, default=3)
     ap.add_argument("--no-announce", action="store_true")
     ap.add_argument("--no-config", action="store_true")
+    ap.add_argument("--renice", type=int, default=0,
+                    help="Linux: nice value for the engine (e.g. -15), the "
+                         "stand in for the show PC's High priority class")
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--report-only", default="")
@@ -372,7 +419,11 @@ def main(argv=None):
     counts = {}
     while p.poll() is None and not engine_up():
         time.sleep(0.5)
-    ths = []
+    if a.renice and sys.platform.startswith("linux"):
+        renice_engine(a.renice)
+    ths = [threading.Thread(target=acknowledger, args=(stop, counts),
+                            daemon=True)]
+    ths[0].start()
     for i in range(a.pollers):
         for path in ("/api/remote/status", "/api/state", "/api/conductor"):
             t = threading.Thread(target=poller, args=(path, stop, counts),
