@@ -78865,6 +78865,12 @@ def test_programming_flames_engine_routes_and_page():
                      "FLAMES LIVE IN REHEARSAL", "Fire flames while "
                      "scrubbing", "Rehearsal flames"):
             check(gone not in page, f"{what}: no {gone!r}")
+    doc = open(os.path.join(here, "LIVE_FLAME_PROGRAMMING.md"),
+               encoding="utf-8").read()
+    check("## Flames in Programming playback" in doc and line in doc and
+          RM.Remote.PROGRAMMING_MOVE_REFUSED.split(" Nothing")[0] in doc and
+          "## Fire flames while scrubbing" not in doc and _cfg_dashes(doc),
+          "LIVE_FLAME_PROGRAMMING.md says the new rules, not the switch")
     check('id="pf-line"' in one and 'id="pf-warn"' in one,
           "1.0: the line and the fault box where the card was")
     m = _re.search(r"function renderProgFlames\(\)\{.*?\n\}\n", one,
