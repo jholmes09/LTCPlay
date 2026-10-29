@@ -25,6 +25,10 @@
    waiting, red fault or danger, grey off or safe, blue information); an
    icon and a word on every control; fixed regions, so nothing moves when
    the state changes. */
+@font-face{font-family:"Playfair Display";font-weight:900;font-style:normal;
+  font-display:swap;src:url(/brand/PlayfairDisplay-900.woff2) format("woff2")}
+@font-face{font-family:"Cinzel";font-weight:700;font-style:normal;
+  font-display:swap;src:url(/brand/Cinzel-700.woff2) format("woff2")}
 @font-face{font-family:"Inter";font-weight:400;font-style:normal;
   font-display:swap;src:url(/brand/Inter-400.woff2) format("woff2")}
 @font-face{font-family:"Inter";font-weight:700;font-style:normal;
@@ -37,6 +41,8 @@
   --green:#28BE5A; --green-ink:#04150a; --amber:#F5A01E; --amber-ink:#1e1000;
   --red:#E61E18; --red-hi:#FF5A50; --red-deep:#9E1016; --grey:#A79C88; --blue:#5AAEFF;
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --serif:"Playfair Display",Georgia,"Times New Roman",serif;
+  --caps:"Cinzel","Trajan Pro",Georgia,serif;
   --mono:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
   /* sizes, the 1024x768 iPad first */
   --fs:20px; --gap:8px; --pad:12px;
@@ -77,6 +83,21 @@ svg.i{width:1.15em;height:1.15em;flex:0 0 auto;fill:currentColor}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);padding:var(--gap) var(--pad);
   border-bottom:1px solid var(--line)}
 #tabs{display:flex;gap:6px;flex:0 1 auto}
+/* The brand (1.0's header): the logo, the kicker and the show's name. It
+   takes only the room the header has left (a zero basis), so it never
+   adds a row or pushes a control; fitBrand() drops the kicker, then the
+   name (the page title keeps it), then the brand, to fit. The logo's box
+   is reserved, so nothing moves while it or the name loads. */
+#brand{flex:1 1 0;min-width:0;display:flex;align-items:center;overflow:hidden;height:var(--hdr-btn);
+  margin-right:calc(-1 * var(--gap))}
+/* The header's gap is inside the brand (the negative margin), so even an
+   empty brand never makes a line wrap. */
+#brand::after{content:"";flex:0 0 var(--gap)}
+#brand-logo{flex:0 0 auto;height:var(--hdr-btn);width:auto;aspect-ratio:228/166}
+#brand .bt{min-width:0;margin-left:10px;display:flex;flex-direction:column;justify-content:center}
+#brand-k{margin:0;font:700 13px/1.25 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--gold);white-space:nowrap}
+#brand-show{margin:0;font:900 22px/1.1 var(--serif);color:var(--cream);white-space:nowrap}
+#next-b{flex:0 0 auto;font-family:var(--serif);font-weight:900;color:var(--gold);white-space:nowrap}
 .tab{display:inline-flex;align-items:center;gap:8px;min-height:var(--hdr-btn);padding:0 14px;
   border:2px solid transparent;border-radius:10px;background:transparent;font-weight:700;cursor:pointer;color:var(--muted)}
 .tab.on{color:var(--cream);border-color:var(--gold);background:var(--panel2)}
@@ -289,12 +310,18 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 .qc h3{margin:12px 0 4px;font-size:calc(var(--fs) + 2px)}
 .qc dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 14px}
 .qc dt{font-weight:800}
+.qbrand{display:flex;align-items:center;gap:14px;margin:0 0 10px}
+.qbrand img{height:66px;width:auto;aspect-ratio:228/166}
+.qbrand p{margin:0}
+.qbrand .qk{font:700 14px/1.2 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--gold)}
+.qbrand .qs{font:900 26px/1.1 var(--serif)}
 .qc dd{margin:0}
 @media print{
   body{overflow:visible;background:#fff;color:#000}
   body > *{display:none !important}
   #qcard{display:block !important;color:#000;font:14pt/1.35 var(--sans);padding:12mm}
   #qcard h2{font-size:20pt;margin:0 0 6mm}
+  #qcard .qk{color:#6b4e12}
 }
 
 /* ---- narrower screens: iPad portrait, small laptops ---- */
@@ -321,6 +348,13 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 /* A phone: the SHOW pane scrolls between the header and the footer, so
    nothing ever goes under Abort. */
 @media (max-width:600px){
+  /* A phone: the logo alone, in the room left on the buttons' last line
+     (placeBrand moves it there). */
+  .hright #brand{margin-right:0;margin-left:-4px;justify-content:flex-end;height:44px}
+  .hright #brand::after{display:none}
+  .hright #brand::before{content:"";flex:0 0 4px}
+  #brand-logo{height:30px}
+  .hb{padding:0 6px}
   :root{--fs:20px; --pad:8px; --gap:6px; --next-h:auto; --state-h:auto; --tr-h:auto; --al-h:auto; --tile-btn:60px; --tc-fs:30px}
   #tabs,.hright{flex-wrap:wrap;margin-left:0}
   main{overflow-y:auto}
@@ -377,6 +411,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </svg>
 <div id="app">
 <header>
+  <div id="brand" data-brand>
+    <img id="brand-logo" src="/brand/logo_small.png" alt="Jeff Holmes Presents" width="60" height="44" onerror="this.hidden=true;if(window.fitBrand)fitBrand()">
+    <div class="bt"><p id="brand-k">Jeff Holmes Presents</p><p id="brand-show">Show remote</p></div>
+  </div>
   <nav id="tabs" role="tablist" aria-label="Screens">
     <button class="tab on" data-tab="show" role="tab"><svg class="i"><use href="#i-play"/></svg>Show</button>
     <button class="tab" data-tab="day" role="tab"><svg class="i"><use href="#i-sun"/></svg>Day</button>
@@ -392,7 +430,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
      flames in rehearsal) pinned here with its own Stop, never paged. -->
-<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
+<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
 <main>
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
@@ -493,6 +531,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 
 <!-- The quick card (Help, Quick card): what to print and keep by the rack. -->
 <div id="qcard" class="qc">
+  <div class="qbrand" data-brand><img src="/brand/logo_small.png" alt="Jeff Holmes Presents" width="91" height="66" onerror="this.hidden=true"><div><p class="qk">Jeff Holmes Presents</p><p class="qs">Show remote</p></div></div>
   <h2>LTC Player: quick card</h2>
   <h3>The four big ones</h3>
   <dl>
@@ -1160,9 +1199,12 @@ function renderStale(){
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
   try{ renderAnnounce(); }catch(e){}
+  // A hazer's arm goes quiet the moment contact is lost, not at the next poll.
+  if(ST) try{ renderHazers(ST); }catch(e){}
   // The calm tone (Jeff, 2026-10-29): signed out, no contact or the show
   // not running, everything that is not an emergency control is quieter.
   document.body.classList.toggle("inactive", inactiveNow(ST, isSt));
+  try{ fitNextBrand(); }catch(e){}
   if(isSt) drawSlotStale(); else if($("alert").classList.contains("stale")){ $("alert").className = ""; renderAlertSlot(); }
   renderMini(isSt);
   if(isSt){
@@ -1749,10 +1791,12 @@ function renderAllButtons(isSt){
   // once (an Abort standing, live flame programming one group at a time).
   const can = (HOLD && HOLD.all) || (allButtonMode(ST, isSt) === "arm" && !armAllRefusal(ST));
   if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
-  // Why it is off, in a few words.
+  // Why it is off, in a word or two (the cell is narrow; the SHOW tab must
+  // not scroll); the engine's own refusal in full on the button's title.
   const ar = armAllRefusal(ST);
-  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? "Sign in to use" :
-    ar ? short8(ar, "Not now") : allButtonMode(ST, isSt) === "arm" ? "Not now" : "Already armed");
+  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? "Sign in" :
+    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : "All armed");
+  b.title = b.disabled && ar ? ar : "";
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
@@ -1836,8 +1880,8 @@ let ANN_SIG = "", ANN_BUSY = false;
 // page for a Play, the run permission, and announceLook's own reasons. ""
 // when a Play can go. Pure.
 function annWhy(st, isStaleNow, local){
-  if(!st || isStaleNow) return "No contact with the show PC";
-  if(!local) return "Plays from the show PC only";
+  if(!st || isStaleNow) return "No contact";
+  if(!local) return "Show PC only";
   if(!mayRow(st, "show")) return "Sign in to use";
   const an = st.announce || {};
   if(an.ok === false) return "Cannot play now";
@@ -1861,11 +1905,12 @@ function renderAnnounce(){
   setText($("ann-word"), playing ? (starting ? "Starting" : "Playing") : (an.held_failed ? "Failed" : "Announce"));
   $("ann-w").style.color = (playing || an.held_failed) ? "var(--amber)" : "";
   let note = "";
-  if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : "");
+  if(playing && stopWhy) note = "Stop sound: " + stopWhy;
+  else if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : "");
   else if(why) note = why;
   else note = an.over_show ? "Plays over the show" : "Holds the schedule";
   setText($("ann-note"), note);
-  $("ann-note").className = why && !playing ? "bad" : "";
+  $("ann-note").className = (why && !playing) || (playing && stopWhy) ? "bad" : "";
   const sig = JSON.stringify([L.buttons, ANN_BUSY, why]);
   if(sig !== ANN_SIG){
     ANN_SIG = sig;
@@ -2129,6 +2174,64 @@ async function loadUiDefault(){
   catch(e){ say("Not changed.", e.message, "bad"); }
   loadUiDefault();
 }));
+
+// ---- The brand (1.0's loadBrand): the show's name from the settings, the
+// page fine without it. The one GET 1.0 already makes; never a write.
+let SHOW_NAME = "";
+async function loadBrand(){
+  try{
+    const b = await getJSON("/api/brand", 3000);
+    const title = b.show || b.product || "Show remote";
+    SHOW_NAME = b.show || b.product || "";
+    setText($("brand-show"), title);
+    document.querySelectorAll("#qcard .qs").forEach(e => setText(e, title));
+    document.title = title + " remote";
+    $("brand").title = title;
+  }catch(e){ /* the credit is not worth failing the page over */ }
+  fitBrand();
+}
+// What of the brand fits the room the header leaves it: the kicker over
+// 1100 px, the name over 700 px, each only while nothing is cut; the logo
+// alone, or nothing, when even the name does not fit.
+function fitBrand(){
+  const br = $("brand"), k = $("brand-k"), n = $("brand-show"), logo = $("brand-logo");
+  if(!br) return;
+  br.style.visibility = "";
+  k.hidden = innerWidth < 1100; n.hidden = innerWidth < 700;
+  const fits = () => br.scrollWidth <= br.clientWidth + 1 && n.scrollWidth <= n.clientWidth + 1;
+  if(!fits()) k.hidden = true;
+  if(!fits()) n.hidden = true;
+  if(!fits() || (logo.hidden && n.hidden)) br.style.visibility = "hidden";
+}
+// The calm screens (signed out, not running, no contact) carry the show's
+// name in the top line too, when it fits there on one line.
+let NEXT_B_KEY = "";
+function fitNextBrand(){
+  const nb = $("next-b"), t = $("next-t");
+  const want = document.body.classList.contains("inactive") && SHOW_NAME ? SHOW_NAME + "." : "";
+  const key = want + "|" + t.textContent + "|" + innerWidth + "x" + innerHeight;
+  if(key === NEXT_B_KEY) return;
+  NEXT_B_KEY = key;
+  nb.hidden = true;
+  if(!want) return;
+  const h0 = t.getBoundingClientRect().height;
+  setText(nb, want); nb.hidden = false;
+  const nx = $("next");
+  if(t.getBoundingClientRect().height > h0 + 1 || t.scrollWidth > t.clientWidth + 1 ||
+     nx.scrollWidth > nx.clientWidth + 1) nb.hidden = true;
+}
+// On a phone the brand sits in the buttons' group, whose last line has the
+// room; elsewhere first in the header, on the left.
+function placeBrand(){
+  const hr = document.querySelector("header .hright"), br = $("brand");
+  if(innerWidth <= 600){ if(br.parentElement !== hr) hr.appendChild(br); }
+  else if(br.parentElement !== hr.parentElement || br.nextElementSibling !== $("tabs")) hr.parentElement.insertBefore(br, $("tabs"));
+}
+placeBrand();
+try{ new ResizeObserver(fitBrand).observe($("brand")); }catch(e){}
+window.addEventListener("resize", () => { placeBrand(); fitBrand(); });
+if(document.fonts && document.fonts.ready) document.fonts.ready.then(fitBrand);
+loadBrand();
 
 // The announcements: in the footer beside Abort, or on a phone in the
 // SHOW pane (which scrolls there), so the footer stays the sign's height.

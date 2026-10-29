@@ -87257,11 +87257,86 @@ async function fdPresses(){
   res.fail_next = q("next-t").textContent;
   return res;
 }
+// The calm screens (Jeff, 2026-10-29): what may not act is disabled, says
+// why and sends nothing when tapped; the emergency controls never dim; the
+// brand is there and never adds a header row.
+function sat(c, k){
+  const [r, g, b] = c;
+  return [(0.213 + 0.787 * k) * r + (0.715 - 0.715 * k) * g + (0.072 - 0.072 * k) * b,
+          (0.213 - 0.213 * k) * r + (0.715 + 0.285 * k) * g + (0.072 - 0.072 * k) * b,
+          (0.213 - 0.213 * k) * r + (0.715 - 0.715 * k) * g + (0.072 + 0.928 * k) * b];
+}
+function rgb(s){ const m = String(s).match(/rgba?\(([^)]+)\)/); return m ? m[1].split(",").map(Number) : [0, 0, 0, 0]; }
+function lum(c){ const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); }
+function filtOf(el){ for(let p = el; p; p = p.parentElement){ const f = getComputedStyle(p).filter; if(f && f !== "none") return {f:f, at:p}; } return null; }
+function inactSnap(){
+  const q = id => document.getElementById(id);
+  const s = {inactive:document.body.classList.contains("inactive"), next:q("next-t").textContent,
+    next_b:q("next-b").hidden ? "" : q("next-b").textContent, title:document.title,
+    brand:q("brand").style.visibility === "hidden" ? "" : (q("brand-show").hidden ? "logo" : q("brand-show").textContent),
+    note:q("ann-note").textContent, armall:q("armall-why").textContent};
+  s.ann = [...q("ann-btns").querySelectorAll(".b"), q("ann-stop")].map(b => {
+    const f = b.querySelector(".fill");
+    return {id:b.dataset.ann || b.id, dis:b.disabled, fill:f ? getComputedStyle(f).display : "none", pe:getComputedStyle(b).pointerEvents};
+  });
+  s.hz = [...document.querySelectorAll("#hazers [data-hzb]")].map(b => ({dis:b.disabled, w:b.querySelector(".hw").textContent}));
+  s.safe = ["b-abort", "b-hold", "b-stop", "b-disall"].map(id => {
+    let op = 1; for(let p = q(id); p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
+    return {id:id, dis:q(id).disabled, filt:filtOf(q(id)) ? filtOf(q(id)).f : "none", op:op};
+  });
+  // Text under the calm tone keeps 4.5:1 (the filter applied to both).
+  s.lowc = [];
+  for(const el of document.querySelectorAll("body *")){
+    if(!shown(el) || ![...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim())) continue;
+    const fo = filtOf(el); if(!fo) continue;
+    const k = Number((fo.f.match(/saturate\(([\d.]+)\)/) || [0, 1])[1]);
+    let bg = null, bgEl = null;
+    for(let p = el; p; p = p.parentElement){ const c = rgb(getComputedStyle(p).backgroundColor); if(c.length < 4 || c[3] > 0.5){ bg = c; bgEl = p; break; } }
+    bg = bg || [7, 6, 5];
+    const fg = sat(rgb(getComputedStyle(el).color), k), b2 = bgEl && fo.at.contains(bgEl) ? sat(bg, k) : bg;
+    const x = lum(fg), y = lum(b2), cr = (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    if(cr < 4.5) s.lowc.push(el.textContent.trim().slice(0, 30) + " " + cr.toFixed(2));
+  }
+  // The brand never adds a header row: the header is as tall without it.
+  const hd = document.querySelector("header"), h1 = hd.getBoundingClientRect().height;
+  q("brand").style.display = "none"; const h0 = hd.getBoundingClientRect().height; q("brand").style.display = "";
+  s.hdr_same = Math.abs(h1 - h0) < 1; s.hdr = [Math.round(h0), Math.round(h1)];
+  s.xscroll = document.scrollingElement.scrollWidth - innerWidth;
+  return s;
+}
+async function tapDisabled(){
+  posts.length = 0;
+  const els = [...document.querySelectorAll("#ann-btns .b, #ann-stop, #m-snd, #hazers [data-hzb], #b-armall")].filter(b => b.disabled);
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
+  for(const b of els){
+    b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(120);
+    b.dispatchEvent(new PointerEvent("pointerup", o)); b.click(); await wait(80);
+  }
+  await wait(300);
+  return {n:els.length, posts:posts.map(p => p.u)};
+}
+async function inact(){
+  const out = {};
+  out.first = inactSnap(); out.first_taps = await tapDisabled();
+  if(/ipad=1/.test(location.search)){
+    ME.local = false; await wait(700);
+    out.ipad = inactSnap(); out.ipad_taps = await tapDisabled();
+    ME.local = true; await wait(700);
+  }
+  if(/dead=1/.test(location.search)){
+    window.__dead = true; await wait(3500);
+    out.stale = inactSnap(); out.stale_taps = await tapDisabled();
+    window.__dead = false; await wait(2500);
+    out.back = inactSnap();
+  }
+  return out;
+}
 async function go(){
   if(!document.querySelector("#groups .tile") || document.getElementById("next-t").textContent === "Connecting to the show PC") return setTimeout(go, 100);
   await wait(600);
   const res = {layout:measure()};
   if(/presses=1/.test(location.search)) res.presses = await presses();
+  if(/inact=1/.test(location.search)) res.inact = await inact();
   if(/prhold=1/.test(location.search)) res.pr = await prPresses();
   if(/fd=1/.test(location.search)) res.fd = await fdPresses();
   const pre = document.createElement("pre"); pre.id = "rack-measure";
@@ -87361,6 +87436,220 @@ def _ui2_status_rigcheck():
 UI2_NO_SCROLL = ((1920, 1080), (1366, 768), (1280, 800), (1024, 768),
                  (820, 1180), (768, 1024))
 UI2_SPARE = {(1024, 768): 24, (768, 1024): 40}
+
+
+def _ui2_status_inactive(kind):
+    """Run off (operator on the show PC, screen arming off), signed out,
+    or a show running; three hazers disarmed. For the calm screens."""
+    st = _ui2_status_running()
+    st["hazers"] = {"available": True, "down": "", "agree": True,
+                    "show": "held", "levels_fault": "", "last_off": None,
+                    "hazers": [{"name": f"Hazer {i + 1}", "haze_slot": 1,
+                                "fan_slot": 2, "armed": False,
+                                "label": f"Hazer {i + 1} DISARMED",
+                                "state": "disarmed", "haze": 102,
+                                "fan": 153, "haze_pct": 40, "fan_pct": 60,
+                                "why": ""} for i in range(3)]}
+    st["arming"] = dict(st.get("arming") or {}, enabled=False)
+    st["announce"]["route"] = {"ok": True, "kind": "show",
+                               "text": "the show audio"}
+    if kind != "running":
+        st["schedule"].update({"state": "STANDBY", "running": None,
+                               "next": {"show": 5, "start": "19:50",
+                                        "in_s": 900}})
+        st["show"] = {"running": False, "timecode": None}
+        st["countdown"] = {"kind": "next", "label": "Next show", "s": 900,
+                           "running": True}
+        st["flames"]["groups"] = [{"name": n, "armed": "disarmed"} for n in
+                                  ("front row", "cat-walk", "wave flamer")]
+        st["laser_arm"]["lasers"][0]["armed"] = False
+    else:
+        # Three groups beside the lasers and the hazers, as the hazers'
+        # own drawing test has them.
+        st["flames"]["groups"] = st["flames"]["groups"][:3]
+    if kind in ("signed out", "playing"):
+        st["me"] = {"local": True, "user": None, "role": None,
+                    "view_only": True,
+                    "may": {k: False for k in ("show", "arm", "unlock",
+                                               "checklist", "show_files",
+                                               "settings", "users")}}
+    if kind == "playing":
+        # One playing: its Stop is never gated on the show PC, signed out
+        # or not (users.REMOTE_ROUTES: announce-stop is "safety").
+        st["announce"]["playing"] = {"id": "delayed", "name": "Delayed",
+                                     "elapsed_s": 3, "length_s": 12,
+                                     "held_schedule": True}
+    return st
+
+
+def test_ui2_calm_screens_and_brand():
+    section("interface 2.0 when the show cannot act (Jeff, 2026-10-29): "
+            "signed out, Run off, no contact or off the show PC, every "
+            "control that cannot act is disabled, says why in 8 words or "
+            "fewer and sends nothing when tapped; the screen goes calm "
+            "(4.5:1 kept) and the top line says what is needed; Abort, "
+            "Hold, Stop show and Disarm flames never dim or disable; the "
+            "show's brand (1.0's logo and name) is in the header and the "
+            "top line, never adding a header row")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    # The brand as 1.0 shows it, the one GET 1.0 already makes.
+    check('<img id="brand-logo" src="/brand/logo_small.png" alt="Jeff '
+          'Holmes Presents"' in two and 'onerror="this.hidden=true' in two
+          and 'getJSON("/api/brand", 3000)' in two and
+          'document.title = title + " remote";' in two and
+          "/api/brand" in one,
+          "2.0 shows 1.0's logo (its alt text, hidden if missing) and the "
+          "show's name from 1.0's /api/brand, the page title like 1.0's")
+    check('class="qbrand"' in two[two.find('<div id="qcard"'):],
+          "the quick card prints the brand")
+    for word in ("No contact", "Show PC only", "Sign in to use",
+                 "Cannot play now", "No sound output", "Sign in to arm",
+                 "Arming off here", "Sign in"):
+        check(len(word.split()) <= 8 and ('"' + word + '"') in two,
+              f"2.0 says why in 8 words or fewer: {word!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    brand = {"/api/brand": {"show": "Fire and Ice"}}
+    longb = {"/api/brand": {"show": "The Grand Winter Fire and Ice "
+                                    "Spectacle"}}
+    sizes = UI2_NO_SCROLL + ((390, 844),)
+    runs = [("Run off", "run off", ((1366, 768),),
+             "?inact=1&ipad=1&dead=1&tour=0", brand),
+            ("signed out", "signed out", ((1024, 768),),
+             "?inact=1&tour=0", brand),
+            ("signed out, one playing", "playing", ((1366, 768),),
+             "?inact=1&ipad=1&tour=0", brand),
+            ("a show running", "running", ((1366, 768),),
+             "?inact=1&tour=0", brand),
+            ("a long show name", "signed out", sizes, "?inact=1&tour=0",
+             longb),
+            ("a long show name, running", "running", sizes,
+             "?inact=1&tour=0", longb)]
+    safe_ok = lambda sn: all(not x["dis"] and "saturate" not in x["filt"]
+                             and x["op"] == 1 for x in sn["safe"])
+    for what, kind, sz, frag, routes in runs:
+        got = _rack_screen_in_chromium(chrome, page,
+                                       _ui2_status_inactive(kind), sz,
+                                       measure_js=_UI2_MEASURE_JS,
+                                       frag=frag, routes=routes,
+                                       budget_ms=25000)
+        for (w, h), res in got.items():
+            where = f"2.0, {what}, {w}x{h}"
+            if not check(isinstance(res, dict) and "inact" in res,
+                         f"{where}: drawn and measured: {res!r}"[:900]):
+                continue
+            m, r = res["layout"], res["inact"]
+            a = r["first"]
+            check(not m["problems"], f"{where}: {m['problems'][:12]}")
+            if (w, h) in UI2_NO_SCROLL:
+                check(m["main_excess"] <= 1 and m["doc_excess"] <= 1,
+                      f"{where}: no scroll: {m['main_excess']} "
+                      f"{m['doc_excess']}")
+            check(a["hdr_same"] and a["xscroll"] <= 0,
+                  f"{where}: the brand adds no header row and nothing "
+                  f"goes off the side: {a['hdr']} {a['xscroll']}")
+            check(not a["lowc"], f"{where}: the calm tone keeps 4.5:1: "
+                                 f"{a['lowc'][:8]}")
+            check(safe_ok(a), f"{where}: Abort, Hold, Stop show and "
+                              f"Disarm flames live and full colour: "
+                              f"{a['safe']}")
+            check(not r["first_taps"]["posts"],
+                  f"{where}: a disabled control sends nothing: "
+                  f"{r['first_taps']}")
+            check(all(x["fill"] == "none" for x in a["ann"] if x["dis"]),
+                  f"{where}: a disabled control shows no press: {a['ann']}")
+            check(a["title"].startswith(routes["/api/brand"]["show"]) and
+                  a["title"].endswith(" remote"),
+                  f"{where}: the page title is the show's: {a['title']!r}")
+            if (w, h) == (1366, 768) and routes is brand:
+                check(a["brand"] == "Fire and Ice",
+                      f"{where}: the header names the show: "
+                      f"{a['brand']!r}")
+            if kind == "running":
+                check(not a["inactive"] and not a["next_b"] and
+                      not any(x["dis"] for x in a["ann"][:-1]) and
+                      a["note"] == "Plays over the show",
+                      f"{where}: a running show is not calm and its "
+                      f"announcements are live: {a}"[:900])
+                continue
+            check(a["inactive"], f"{where}: the screen is calm")
+            if routes is brand:
+                check(a["next_b"] == "Fire and Ice.",
+                      f"{where}: the top line carries the show's name: "
+                      f"{a['next_b']!r}")
+            if kind == "playing":
+                check(not a["ann"][-1]["dis"],
+                      f"{where}: Stop sound is never refused on the show "
+                      f"PC, signed out included: {a['ann']}")
+                ip = r["ipad"]
+                check(ip["ann"][-1]["dis"] and ip["note"] ==
+                      "Stop sound: Show PC only" and safe_ok(ip) and
+                      not r["ipad_taps"]["posts"],
+                      f"{where}: off the show PC Stop sound is disabled "
+                      f"(the engine refuses it there), says why and sends "
+                      f"nothing: {ip['ann']} {ip['note']!r} "
+                      f"{r['ipad_taps']}")
+            if kind == "signed out":
+                check(a["next"] == "Signed out: view only. Sign in to "
+                                   "control.",
+                      f"{where}: the top line says to sign in: "
+                      f"{a['next']!r}")
+                check(all(x["dis"] for x in a["ann"][:-1]) and
+                      a["note"] == "Sign in to use" and
+                      all(x["dis"] and x["w"] == "Sign in to arm"
+                          for x in a["hz"]) and a["armall"] == "Sign in",
+                      f"{where}: announcements, hazer arming and Arm all "
+                      f"are disabled and say why: {a}"[:900])
+
+            if kind == "run off":
+                check(a["next"] == "Show not running. Press Run show.",
+                      f"{where}: the top line says to press Run: "
+                      f"{a['next']!r}")
+                # The engine plays an announcement with Run off (it holds
+                # the schedule), so on the show PC they stay live.
+                check(not any(x["dis"] for x in a["ann"][:-1]),
+                      f"{where}: on the show PC the announcements stay "
+                      f"live with Run off (the engine plays them): "
+                      f"{a['ann']}")
+                ip = r["ipad"]
+                check(all(x["dis"] for x in ip["ann"][:-1]) and
+                      ip["note"] == "Show PC only" and
+                      all(x["dis"] and x["w"] == "Arming off here"
+                          for x in ip["hz"]) and safe_ok(ip) and
+                      not r["ipad_taps"]["posts"] and
+                      r["ipad_taps"]["n"] >= 7,
+                      f"{where}: off the show PC the announcements, Stop "
+                      f"sound and hazer arming (screen arming off) are "
+                      f"disabled, say why and send nothing: {ip} "
+                      f"{r['ipad_taps']}"[:1200])
+                sl = r["stale"]
+                check(sl["inactive"] and sl["next"].startswith("No contact")
+                      and all(x["dis"] for x in sl["ann"][:-1]) and
+                      sl["note"] == "No contact" and
+                      all(x["dis"] and x["w"] == "No contact"
+                          for x in sl["hz"]) and safe_ok(sl) and
+                      not sl["lowc"] and not r["stale_taps"]["posts"],
+                      f"{where}: no contact, the screen is calm within a "
+                      f"poll, what needs the engine is disabled and says "
+                      f"No contact, Abort and the rest stay live: {sl} "
+                      f"{r['stale_taps']}"[:1200])
+                check(not r["back"]["inactive"] or
+                      r["back"]["next"] == "Show not running. Press Run "
+                                           "show.",
+                      f"{where}: contact back, the screen is as before: "
+                      f"{r['back']['next']!r}")
+    print("  ok")
 
 
 def test_ui2_show_tab_in_a_browser():
@@ -88320,6 +88609,7 @@ if __name__ == "__main__":
         test_ui2_pages_served_and_switched,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_show_tab_in_a_browser,
+        test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
     ]
     _stopped = _run_tests(TESTS)
