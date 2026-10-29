@@ -66,7 +66,7 @@ function baseStatus(){
     schedule_path: "C:\\Users\\show\\AppData\\Local\\ltcplay\\ltcplay_schedule.json"});
   s.transport = {programming: false, why: "Nothing is playing. To scrub, on the show machine choose Programming on the Show file card and press Run.", freerun: false, paused: false, loop: null, marks: {}};
   s.live_flame = {available: true, on: false, why: ""};
-  s.scrub_flames = {available: true, on: false, why: ""};
+  s.programming_flames = {available: true, follows: true, on: false, line: "Flames follow the show while you play here. Only armed groups fire. Hold, Stop or Abort ends it."};
   // The hazers (hazers.py, 2026-10-29): Jeff's three, all disarmed.
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
@@ -120,7 +120,7 @@ const SCENARIOS = {
     s.alert_hold = {held: true, text: "Held at showtime: an alert is open."}; },
   rig_continued: s => { SCENARIOS.running(s); s.preroll = {state: "failed", label: "show 4", continued: {by: "Dallen", off: ["video"], failed: "Video"}}; },
   all_live: s => { s.me = me("Jeff", "admin"); s.cleaning = {available: true, state: "phase2", text: "Phase 2 of 2: purge bursts"};
-    s.live_flame = {available: true, on: true, who: "Jeff"}; s.scrub_flames = {available: true, on: true, who: "Jeff"}; },
+    s.live_flame = {available: true, on: true, who: "Jeff"}; },
   hazers_on: s => { SCENARIOS.running(s); s.hazers.show = "playing"; s.hazers.hazers.forEach((h, i) => { h.armed = i !== 1; h.state = h.armed ? "running" : "disarmed"; }); },
   hazers_held: s => { SCENARIOS.held(s); s.hazers.show = "held"; s.hazers.hazers.forEach(h => { h.armed = true; h.state = "held"; }); },
   flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },

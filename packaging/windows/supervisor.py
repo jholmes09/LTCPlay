@@ -495,7 +495,7 @@ def engine_restart_refusal(port):
     """Why the engine may not be restarted now, in the engine's own words
     (its restart-check: a show running or starting, an announcement
     playing, a flame group armed or asked for, flamesafe's state not seen,
-    live flame programming or fire flames while scrubbing on, a purge, the
+    live flame programming on, a purge, the
     Fireball, a laser armed or in test), or "" when it may. Fails closed:
     an engine that does not answer, or answers with anything else, may not
     be restarted (2026-10-28). The second check, right before the stop, so

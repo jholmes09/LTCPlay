@@ -33,6 +33,14 @@ rules (its seek guard sees every move of the timecode), and flamesafe, which
 fires only a group an operator has armed. A cue the playhead jumps over is
 simply not played.
 
+The show's flame cues follow this playhead whenever it plays: there is no
+switch for it (Jeff, 2026-10-29, "Fire flames while scrubbing" removed).
+Every move here (Play from, Back, Ahead, Continue, the loop) tells the
+flame link it is a landing, before the move and again after it
+(_landing, FlameLink.landing): nothing fires for half a second however
+small the move, and a flame channel already up where it lands stays off
+until it has gone to zero. That only ever takes fire away.
+
 Used only when the running show's clock can start part way and move
 (Session.playhead_clock: this machine is the clock, AudioMaster). Anything
 else (GPL, a show that follows timecode) keeps the free run, as before.
@@ -199,10 +207,28 @@ class ShowAudioPlayhead:
             return match[0].tc_seconds
         return tl.parse(text)
 
+    def _landing(self):
+        """The flame link's landing (FlameLink.landing): the seek guard
+        starts again at every move, however small. Nothing when there is
+        no flame link. Never raises."""
+        link = getattr(getattr(self._conductor(), "show", None),
+                       "flame_link", None)
+        fn = getattr(link, "landing", None)
+        if fn is None:
+            return
+        try:
+            fn()
+        except Exception:                           # noqa: BLE001
+            pass
+
     def play_from(self, show_s, who="", screen=""):
         """The show start, from `show_s`. Returns show seconds."""
         with self._op:
-            return self._play_from(show_s, who, screen)
+            self._landing()
+            try:
+                return self._play_from(show_s, who, screen)
+            finally:
+                self._landing()
 
     def _play_from(self, show_s, who, screen):
         # A Start now waiting for the show audio is cancelled: it must not
@@ -266,7 +292,11 @@ class ShowAudioPlayhead:
                                 "timecode first.")
         with self._op:
             was = self.active()
-            at = s.clock_seek(max(0.0, here + float(seconds)))
+            self._landing()
+            try:
+                at = s.clock_seek(max(0.0, here + float(seconds)))
+            finally:
+                self._landing()
             if was:
                 self._adopt(s)      # a move into another cue is ours too
             return at
@@ -289,10 +319,14 @@ class ShowAudioPlayhead:
             raise PlayheadError("Nothing is playing to continue. Play from "
                                 "a timecode first.")
         cond = self._conductor()
-        if cond is not None:
-            self._refused(cond.resume(who, screen), "Continue")
-        else:
-            s.clock_resume()
+        self._landing()
+        try:
+            if cond is not None:
+                self._refused(cond.resume(who, screen), "Continue")
+            else:
+                s.clock_resume()
+        finally:
+            self._landing()
         return s.clock_here()
 
     def loop(self, a, b, who="", screen=""):
@@ -304,7 +338,11 @@ class ShowAudioPlayhead:
             return None
         if s.clock_here() is None:
             self.play_from(a, who, screen)
-        return s.clock_set_loop(a, b)
+        self._landing()
+        try:
+            return s.clock_set_loop(a, b)
+        finally:
+            self._landing()
 
     def follow(self, who="", screen="", only=None):
         """Stop the playhead: the conductor's out-of-the-show look first
