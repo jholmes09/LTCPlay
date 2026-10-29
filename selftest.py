@@ -65923,6 +65923,7 @@ def test_timed_purge_every_end_cause():
 
     def start(seconds=30):
         R.m.purge.clear("test reset")
+        R.remote._deck_seen = R.mono[0]
         link.sender = "running"
         R.groups[0]["armed"] = "armed"
         R.groups[0]["wanted"] = True
@@ -66208,6 +66209,58 @@ def test_timed_purge_every_end_cause():
             finally:
                 del link.purge_set
             check_end(m)
+        # The Stream Deck program stops reading the engine while it runs
+        # (review of #172, S1): it ends, said why.
+        if start():
+            m = ended("the deck stops reading", "Stream Deck program stopped")
+            for _ in range(30):
+                R.mono[0] += 0.1
+                R.wall[0] += 0.1
+                R.feed()
+                R.m.open_beat("Rack screen")
+                if R.m.purge.timed_send():
+                    break
+            check_end(m)
+        # An announcement's Hold ends it at once, as the operator's Hold.
+        if start():
+            m = ended("an announcement's Hold", "for an announcement")
+            hold = R.remote.announce_hold(R.svc)
+            refusal, _epoch = hold("Andy", "Rack screen")
+            check(not refusal, f"setup: the announcement held: {refusal}")
+            check_end(m)
+            R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
+                  client=loop)
+        # The start's own refusals, each on the first beat (no hold begun).
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(R.m.purge.selected == ["g1"], "setup: Ground 1 selected")
+        R.remote._deck_seen = R.mono[0] - 3.0
+        st, _h, out = _tp_beat(R, "nodeck-1", 5)
+        check(st == 409 and "Stream Deck program has not read" in
+              out.get("error", "") and R.m.purge.timed_hold is None,
+              f"no deck reading the engine: the start is refused: {out}")
+        R.remote._deck_seen = R.mono[0]
+        R.m.open_beat("iPad at 10.20.0.44", arranging=True, inst="B")
+        st, _h, out = _tp_beat(R, "arr-1", 5)
+        check(st == 409 and "Arrange mode" in out.get("error", "") and
+              R.m.purge.timed_hold is None,
+              f"a screen arranging: the start hold is refused: {out}")
+        R.m.open_beat("iPad at 10.20.0.44", arranging=False, inst="B")
+        R.m._arranging.clear()
+
+        class _NoLimitLink(_FakeTimedLink):
+            purge_limit = None
+        R.link = _NoLimitLink()
+        try:
+            st, _h, out = _tp_beat(R, "nolimit-1", 5)
+            check(st == 409 and "hard end" in out.get("error", "") and
+                  not R.link.frames and R.m.purge.timed_hold is None,
+                  f"a flame link that cannot take the hard end: refused: "
+                  f"{out}")
+        finally:
+            R.link = link
         # The watcher's own deadline, whatever the timer does.
         if start(seconds=2):
             m = ended("the watcher's deadline", "2 s were up")
@@ -66434,21 +66487,36 @@ def test_timed_purge_end_to_end_real_flamesafe():
 
     def start(seconds, run):
         """A whole hold, beats every 100 ms on the real clock, as the page
-        sends them. The start's clock, or None."""
-        end = time.monotonic() + 3.0
-        while time.monotonic() < end:
-            seq[0] += 1
-            code, out = purge.timed_beat({"hold": True, "run": run,
-                                          "seq": seq[0], "seconds": seconds},
-                                         me, True, who="Andy",
-                                         screen="Rack screen")
-            if code != 200:
+        sends them. The start's clock, or None. A busy runner can leave a
+        gap of 0.25 s between two beats; the engine then ends the hold
+        (the guard), and the page's person would hold again: so does this,
+        with a new hold, up to three times."""
+        for attempt in range(3):
+            rid = f"{run}-{attempt}"
+            end = time.monotonic() + 3.0
+            out = {}
+            while time.monotonic() < end:
+                seq[0] += 1
+                code, out = purge.timed_beat(
+                    {"hold": True, "run": rid, "seq": seq[0],
+                     "seconds": seconds}, me, True, who="Andy",
+                    screen="Rack screen")
+                if code != 200:
+                    break
+                if out.get("started"):
+                    return time.monotonic()
+                time.sleep(0.1)
+            if "interrupted" not in str(out.get("error", "")):
                 check(False, f"the hold was refused: {out}")
                 return None
-            if out.get("started"):
-                return time.monotonic()
-            time.sleep(0.1)
+        check(False, f"three holds interrupted by the runner's load: {out}")
         return None
+
+    def stalled():
+        """The last end was the engine's timer stalling on a loaded
+        runner (the stall guard ending it, as it must): the step is run
+        again rather than counted."""
+        return bool(lines) and "timer stalled" in lines[-1][0]
 
     def on_spans(trace):
         on = [t for t, v, _s in trace if v == 240]
@@ -66464,8 +66532,11 @@ def test_timed_purge_end_to_end_real_flamesafe():
         code, out = purge.select("g1", True, "Rack screen", True)
         check(code == 200, f"Ground 1 selected: {out}")
         # 1. A 2 s timed purge: 240 at the node for 2 s, then zero.
-        t0 = start(2, "e1")
-        tr = node_trace(3.2)
+        for attempt in range(3):
+            t0 = start(2, f"e1-{attempt}")
+            tr = node_trace(3.2)
+            if not stalled():
+                break
         first, last = on_spans(tr)
         check(t0 is not None and first is not None and
               1.6 <= last - t0 <= 2.4,
@@ -66480,13 +66551,17 @@ def test_timed_purge_end_to_end_real_flamesafe():
         check(state().get("armed") == "armed",
               "the purge never disarmed the group itself")
         # 2. The link's own hard end, with the engine's deadline gone.
-        t0 = start(2, "e2")
-        f = purge.fire
-        if f is not None:
-            # The engine's own deadline pushed out of reach: only the
-            # link's hard end (purge_limit, set at the start) is left.
-            f["timed"]["deadline"] += 1000.0
-        tr = node_trace(3.2)
+        for attempt in range(3):
+            t0 = start(2, f"e2-{attempt}")
+            f = purge.fire
+            if f is not None:
+                # The engine's own deadline pushed out of reach: only the
+                # link's hard end (purge_limit, set at the start) is left.
+                f["timed"]["deadline"] += 1000.0
+            tr = node_trace(3.2)
+            purge.stop("test")
+            if not stalled():
+                break
         first, last = on_spans(tr)
         tail = [v for t, v, _s in tr if last is not None and t > last + 0.3]
         check(t0 is not None and last is not None and

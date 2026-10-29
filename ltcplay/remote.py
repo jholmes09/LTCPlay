@@ -4987,6 +4987,15 @@ class Remote:
                             f"({sender}).")
                 if getattr(link, "lock_alarm", ""):
                     return f"the flame link has an alarm: {link.lock_alarm}"
+            if t is not None:
+                # The Stream Deck program is what keeps the purge's groups
+                # armed and the operator's own disarm path: once it stops
+                # reading the engine, a timed purge ends (review of #172,
+                # S1). The start has its own check (morning_post).
+                seen = self._deck_seen
+                if seen is None or self.clock() - seen > self.DECK_QUIET_S:
+                    return (f"the Stream Deck program stopped reading this "
+                            f"engine ({self.DECK_QUIET_S:g} s with nothing)")
             if t is not None and self.users_active():
                 token = t.get("token") or ""
                 if not token or self.users.session(token) is None:

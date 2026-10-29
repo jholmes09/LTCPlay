@@ -18271,8 +18271,10 @@ def build():
                             f"({sender}).")
                 if getattr(link, "lock_alarm", ""):
                     return f"the flame link has an alarm: {link.lock_alarm}"
-            if t is not None and self.users_active():''',
-  '''            if t is not None and self.users_active():'''),
+            if t is not None:
+                # The Stream Deck program is what keeps''',
+  '''            if t is not None:
+                # The Stream Deck program is what keeps'''),
 
  ("timed purge: the starter signing out is not seen on a send",
   "ltcplay/remote.py",
@@ -18379,6 +18381,31 @@ def build():
   "ltcplay/flamelink.py",
   "            if not s > 0 or not math.isfinite(s):",
   "            if not s > 0 or s != s:"),
+
+ ("timed purge: the Stream Deck going quiet does not end it",
+  "ltcplay/remote.py",
+  "                if seen is None or self.clock() - seen > self.DECK_QUIET_S:\n                    return (f\"the Stream Deck program stopped reading",
+  "                if False:\n                    return (f\"the Stream Deck program stopped reading"),
+
+ ("timed purge: it starts with no Stream Deck reading the engine",
+  "ltcplay/remote.py",
+  "        if (name == \"purge-select\" and body.get(\"on\") is not False) or \\\n                timed_start:",
+  "        if (name == \"purge-select\" and body.get(\"on\") is not False):"),
+
+ ("timed purge: its start hold is not held back by Arrange mode",
+  "ltcplay/morning.py",
+  "        if name == \"purge-timed\" and body.get(\"hold\") is True:\n            # The timed purge's start hold: the same as any fire.",
+  "        if False:\n            # The timed purge's start hold: the same as any fire."),
+
+ ("timed purge: it starts on a flame link that cannot take the hard end",
+  "ltcplay/morning.py",
+  "        if self._gen(link) is None or \\\n                not callable(getattr(link, \"purge_limit\", None)):",
+  "        if self._gen(link) is None:"),
+
+ ("timed purge: an announcement's Hold does not end it at once",
+  "ltcplay/remote.py",
+  "                    self.timed_purge_cut(why, who, screen)\n                    self.live_flame_cut(why, who, screen)",
+  "                    self.live_flame_cut(why, who, screen)"),
 
  ("timed purge: a refused beat from a made-up window makes a replay record",
   "ltcplay/morning.py",
