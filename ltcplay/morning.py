@@ -1588,9 +1588,11 @@ class Purge:
             why = self._live()
             if why:
                 self.clear(why)
-            elif not page_open and not self.timed_running():
+            elif self.timed_running():
                 # A timed purge carries on with its page closed (it ends on
                 # its own clock); once it is over the selection goes.
+                pass
+            elif not page_open:
                 self.clear("the Morning and Shutdown page is no longer open")
 
     def view(self):
@@ -1707,7 +1709,7 @@ class Purge:
             return (f"{owner} has the purge selection; only that screen "
                     f"starts a timed purge." if owner else
                     "Nothing is armed for a purge. Click a machine first.")
-        if self.press_live():
+        if self.press_live(self._clock()):
             return ("A purge is firing (Space or the Stream Deck's FIRE "
                     "key). One purge at a time: let go of it first.")
         ms, why = self._timed_firing_machines()
@@ -2419,8 +2421,10 @@ class Morning:
         takes risk away is never held back by Arrange mode, from any
         device: a select or laser test going OFF, a laser disarm, a
         lockout, a stop and a clear."""
-        if name == "purge-fire" or (name == "purge-timed" and
-                                    body.get("hold") is True):
+        if name == "purge-fire":
+            return self.fire_arrange_refusal()
+        if name == "purge-timed" and body.get("hold") is True:
+            # The timed purge's start hold: the same as any fire.
             return self.fire_arrange_refusal()
         off = body.get("on") is False
         gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \
@@ -2626,14 +2630,16 @@ class Morning:
                  if n in self.cfg.fireball_groups or
                  n in self.cfg.unknown_groups]
         tv = self.purge.timed_view()
-        return {"open": open_,
+        view = {"open": open_,
                 "purge": {"wanted_groups": pv["groups_wanted"] if open_
                           else [], "selected": len(pv["selected"]),
-                          "firing": pv["firing"], "never_groups": never,
-                          "timed_left_s": tv["left_s"]},
+                          "firing": pv["firing"], "never_groups": never},
                 "locks": {"groups_fully_locked": fully,
                           "machines": len(self.lockout.machines),
                           "lasers": len(self.lockout.lasers)}}
+        # The timed purge's seconds left, for the deck's key 0 (PURGING).
+        view["purge"]["timed_left_s"] = tv["left_s"]
+        return view
 
     def status_view(self):
         """The compact part every screen shows: the lock banner and whether

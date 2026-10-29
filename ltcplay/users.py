@@ -285,7 +285,7 @@ def classify(route, body=None):
         if name == "purge-timed":
             # Only "hold" the JSON word true can start a timed purge
             # (morning.Purge.timed_beat); every other body is a release.
-            return "arm" if body.get("hold") is True else "safety"
+            return "safety" if body.get("hold") is not True else "arm"
         if name == "cleaning-beat":
             # Only "hold" the JSON word true runs it (cleaning.py); every
             # other body is a release, which only stops it.

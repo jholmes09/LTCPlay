@@ -66075,6 +66075,49 @@ def test_timed_purge_every_end_cause():
             R.m.open_beat("Rack screen")
             R.m.tick()
             check_end(m)
+        # Each look at the deadline and at the flame link's zero count on
+        # its own (they back each other up, so each is proved alone).
+        if start(seconds=2):
+            f = R.m.purge.fire
+            dl = f["timed"]["deadline"]
+            check(R.m.purge._timed_end_reason(f, dl) == "its 2 s were up"
+                  and R.m.purge._timed_end_reason(f, dl - 0.01) == "",
+                  "every send asks the deadline first: up at 2 s, not before")
+            link.zero()
+            check("zeroed" in R.m.purge._timed_end_reason(f, R.mono[0]),
+                  "and the flame link's zero count")
+            R.m.purge.clear("test reset")
+        if start(seconds=2):
+            # The send's last look, under the lock, just before the frame:
+            # the deadline passed while the end causes were being read.
+            m = ended("the last look before the frame", "2 s were up")
+            R.m.purge._timed_end_reason = lambda f, now: ""
+            try:
+                n0 = len(link.frames)
+                R.mono[0] += 2.0
+                R.wall[0] += 2.0
+                R.feed()
+                R.m.purge.timed_send()
+            finally:
+                del R.m.purge._timed_end_reason
+            check(len(link.frames) == n0, "no frame set past the deadline")
+            check_end(m)
+        if start():
+            # A zero landing while the frame is being set: the count is
+            # read again after the set, and that ends it.
+            m = ended("a zero during the set", "zeroed")
+            real_set = link.purge_set
+
+            def set_then_zero(values):
+                real_set(values)
+                link.zero()
+                return True
+            link.purge_set = set_then_zero
+            try:
+                R.m.purge.timed_send()
+            finally:
+                del link.purge_set
+            check_end(m)
         # The watcher's own deadline, whatever the timer does.
         if start(seconds=2):
             m = ended("the watcher's deadline", "2 s were up")
@@ -66615,6 +66658,15 @@ t(timedBanner({machines:["Ground 1"], left_s:3.5, seconds:10, device:"iPad at 10
           '"Stop purge"' in pin and "timedLeft(tp.left_s)" in pin,
           "2.0: a running timed purge is pinned with its countdown and Stop "
           "purge")
+    # 2.0's pin, run in node on 1.0's rules (the page carries them).
+    bad = _page_logic_in_node(one, pin + r"""
+let P = pinItems({morning:{timed:{left_s:12.2, seconds:20, machines:["Ground 1"], device:"iPad at 10.20.0.44", who:"Dallen"}}});
+t(P.length === 1 && P[0].key === "tp" && P[0].pill === "PURGING 13 s" && P[0].btn === "Stop purge" &&
+  P[0].text === "Purging: 13 s left. Stop when done." && P[0].full.indexOf("Ground 1: 13 s left of 20 s") >= 0, "2.0 pins it: " + JSON.stringify(P));
+t(pinItems({morning:{timed:null}}).length === 0 && pinItems({}).length === 0, "nothing running: no pin");
+""") if pin else ["no pinItems in 2.0"]
+    if bad is not None:
+        check(not bad, f"2.0's pin in node: {bad}")
     check('if(k === "tp"){' in two and
           'post("/api/remote/purge-stop", actor({}))' in two,
           "2.0: its pin's Stop purge is 1.0's press")
@@ -66622,7 +66674,7 @@ t(timedBanner({machines:["Ground 1"], left_s:3.5, seconds:10, device:"iPad at 10
         for frag in ((blk + _js_function(p, "timedPurgeLook") +
                       _js_function(p, "timedBanner")) if name == "1.0"
                      else pin or "",):
-            check("—" not in frag and "–" not in frag,
+            check("\u2014" not in frag and "\u2013" not in frag,
                   f"{name}: no em or en dash in the timed purge's words")
     chrome = _find_chromium()
     if not chrome:

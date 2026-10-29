@@ -2269,6 +2269,7 @@ class Remote:
                 self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",
                                      ctx.user, ctx.device,
                                      token=getattr(ctx, "token", "") or "")
+            if ended:
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
                 # sign-out from somewhere else never lets go of another
@@ -3850,11 +3851,11 @@ class Remote:
                       self.clock() - seen <= PLAIN_DECK_FRESH_S)
         status_fresh = self._flame_status_fresh()
         reads0 = self._deck_reads
-        self._drop_hold(i)
         # A timed purge firing this group ends at the press, before the
         # deck has read the disarm (Jeff, 2026-10-29).
         self.timed_purge_cut(f"{who or 'someone'} pressed Disarm {gname} "
                              f"on the {device}", who, device, group=gname)
+        self._drop_hold(i)
         with self._arm_lock:
             self._disarm_ids += 1
             self._disarms.append({"id": self._disarm_ids, "group": i,
@@ -4855,9 +4856,9 @@ class Remote:
         # purge-fire body is a release, which morning.py turns into a stop
         # and which therefore goes whatever the switch says.
         timed_start = name == "purge-timed" and body.get("hold") is True
-        if (name == "purge-select" and body.get("on") is not False) or \
-                (name == "purge-fire" and users_mod.purge_fire_wanted(body)) \
-                or timed_start:
+        if timed_start or \
+                (name == "purge-select" and body.get("on") is not False) or \
+                (name == "purge-fire" and users_mod.purge_fire_wanted(body)):
             if not self.purge_enabled(ctx.local):
                 return 403, {"error": "Arming a purge from here is switched "
                                       "off (purge_arming, and from the show "
@@ -4943,18 +4944,19 @@ class Remote:
             svc = self.schedule
             state = getattr(getattr(svc, "machine", None), "state", None)
             if state == "HOLD":
-                return "a Hold is standing; Resume or Reset first."
+                return ("a Hold is standing; Resume or Reset first, then "
+                        "start it again.")
             if getattr(svc, "halting", lambda: False)() is True:
                 return "Stop is under way."
-            s = getattr(self.control, "session", None)
-            if s is not None and getattr(s, "running", False):
+            if getattr(getattr(self.control, "session", None), "running",
+                       False):
                 return ("Run is pressed (a show file is running), so the "
                         "show file owns the flame channels; press Stop first.")
             try:
                 cs = self.control.state() or {}
             except Exception:                    # noqa: BLE001
                 cs = {}
-            if cs.get("running") or cs.get("starting"):
+            if cs.get("starting") or cs.get("running"):
                 return ("Run is pressed (a show file is running), so the "
                         "show file owns the flame channels; press Stop first.")
             m = self.morning
@@ -5243,8 +5245,8 @@ class Remote:
             # 2. Live flame programming and fire while scrubbing, cut as an
             # Abort cuts them (review of #130, second pass, 3).
             why = f"{label} held Stop on the {screen}"
-            for name in ("timed_purge_cut", "live_flame_cut",
-                         "scrub_flames_cut"):
+            self.timed_purge_cut(why, who, screen)
+            for name in ("live_flame_cut", "scrub_flames_cut"):
                 fn = getattr(self, name, None)
                 try:
                     if fn is not None:

@@ -18087,6 +18087,269 @@ def build():
   "  else if(isHeld(st)) L = {mode:\"resume\", label:\"Resume\", icon:\"play\", tone:\"green\", off:!fresh || !sch.attached,",
   "  else if(isHeld(st)) L = {mode:\"resume\", label:\"Resume\", icon:\"play\", tone:\"green\", off:!sch.attached,"),
 
+ # -- the timed purge (Jeff, 2026-10-29; morning.py, MORNING.md) -----------
+ # The cap, the hold, the three ways it stops on time, every ending cause
+ # and the one-purge-at-a-time rule: each a way a hands-off fire could run
+ # on, start by itself, or never stop.
+ ("timed purge: a duration over the show machine's longest is taken",
+  "ltcplay/morning.py",
+  "    if v > max_s:\n        return None, (f\"{v} s is longer than the longest timed purge this \"",
+  "    if False:\n        return None, (f\"{v} s is longer than the longest timed purge this \""),
+
+ ("timed purge: purge_timed_max_s above 120 s is read",
+  "ltcplay/remote.py",
+  "                not lo <= v <= TIMED_MAX_LIMIT_S:",
+  "                not lo <= v:"),
+
+ ("timed purge: a tap starts it (the hold is not timed)",
+  "ltcplay/morning.py",
+  '            complete = now - h["start"] >= TIMED_HOLD_S',
+  "            complete = True"),
+
+ ("timed purge: a replayed hold id starts it again",
+  "ltcplay/morning.py",
+  '''        e = self._timed_ended.get(owner)
+        if e is None:
+            return False
+        if rid in e["ids"]:
+            return True''',
+  '''        e = self._timed_ended.get(owner)
+        if e is None:
+            return False'''),
+
+ ("timed purge: an old beat number starts a new hold",
+  "ltcplay/morning.py",
+  '''        starting = live is None or live["id"] != rid
+        return starting and seq is not None and e["seq"] is not None and \\
+            seq <= e["seq"]
+
+    def _timed_hold_end(self, why):''',
+  '''        return False
+
+    def _timed_hold_end(self, why):'''),
+
+ ("timed purge: it starts with a selected group not armed",
+  "ltcplay/morning.py",
+  "        waiting = sorted({m.group for m in ms if m.group not in armed})\n        if waiting:\n            return (f\"flamesafe does not report",
+  "        waiting = []\n        if waiting:\n            return (f\"flamesafe does not report"),
+
+ ("timed purge: another screen starts the owner's selection",
+  "ltcplay/morning.py",
+  "        if owner != owner_device:",
+  "        if False:"),
+
+ ("timed purge: the engine's checks missing let it start",
+  "ltcplay/morning.py",
+  '''                               self.timed_blockers(t)
+                               if self.timed_blockers is not None else
+                               "the engine's checks for a timed purge are "
+                               "not connected in this engine."),''',
+  '''                               self.timed_blockers(t)
+                               if self.timed_blockers is not None else
+                               ""),'''),
+
+ ("timed purge: the flame link is never given its hard end",
+  "ltcplay/morning.py",
+  '        if link.purge_limit(t["seconds"]) is not True:',
+  '        if False:'),
+
+ ("timed purge: the flame link ignores the hard end on the frames it sends",
+  "ltcplay/flamelink.py",
+  "        until = self._purge_until\n        if until is not None and now >= until:\n            # A timed purge's hard end (purge_limit): zeros from here on,",
+  "        until = self._purge_until\n        if False:\n            # A timed purge's hard end (purge_limit): zeros from here on,"),
+
+ ("timed purge: the flame link takes a frame after the hard end",
+  "ltcplay/flamelink.py",
+  "            if until is not None and now >= until:\n                # Past a timed purge's hard end: refused until purge_clear().",
+  "            if False:\n                # Past a timed purge's hard end: refused until purge_clear()."),
+
+ ("timed purge: a send never asks the deadline",
+  "ltcplay/morning.py",
+  '''        t = f["timed"]
+        if now >= t["deadline"]:
+            return f"its {t['seconds']} s were up"''',
+  '''        t = f["timed"]'''),
+
+ ("timed purge: the last look at the deadline before the frame is gone",
+  "ltcplay/morning.py",
+  '''            if self._clock() >= t["deadline"]:
+                lost = f"its {t['seconds']} s were up"
+            else:''',
+  '''            if False:
+                lost = ""
+            else:'''),
+
+ ("timed purge: the watcher never looks at the deadline",
+  "ltcplay/morning.py",
+  '''        if t is not None and now >= t["deadline"]:
+            # The watcher's own look at the deadline''',
+  '''        if False:
+            # The watcher's own look at the deadline'''),
+
+ ("timed purge: a timer that stopped sending is never ended",
+  "ltcplay/morning.py",
+  '''        elif stale:
+            self.stop("the engine's timer stopped sending it (nothing for "''',
+  '''        elif False:
+            self.stop("the engine's timer stopped sending it (nothing for "'''),
+
+ ("timed purge: closing the page ends it early",
+  "ltcplay/morning.py",
+  '''            elif self.timed_running():
+                # A timed purge carries on with its page closed (it ends on
+                # its own clock); once it is over the selection goes.
+                pass''',
+  '''            elif False:
+                pass'''),
+
+ ("timed purge: the deck lets go of the group when the page closes",
+  "ltcplay/morning.py",
+  "        open_ = self.page_open() or self.purge.timed_running()",
+  "        open_ = self.page_open()"),
+
+ ("timed purge: the purge's own rules are not asked while it runs",
+  "ltcplay/morning.py",
+  '''        why = self._refusal(f["device"], True)
+        if why:
+            return why''',
+  '''        why = ""'''),
+
+ ("timed purge: the flame link zeroed is not seen before a send",
+  "ltcplay/morning.py",
+  '''        if self._gen(self._link()) != t["gen"]:
+            return "the flame link was zeroed (Stop, Hold, Abort or a disarm)"''',
+  '''        if False:
+            return ""'''),
+
+ ("timed purge: a zero landing during the set is not seen",
+  "ltcplay/morning.py",
+  '''                lost = "" if self._gen(link) == t["gen"] else \\''',
+  '''                lost = "" if True else \\'''),
+
+ ("timed purge: the engine's checks are not asked while it runs",
+  "ltcplay/morning.py",
+  '''        why = self._timed_engine(t)
+        if why:
+            return why
+        cfg = self._cfg()''',
+  '''        cfg = self._cfg()'''),
+
+ ("timed purge: a selected group seen disarmed does not end it",
+  "ltcplay/morning.py",
+  '''        gone = [g for g in t["groups"] if g not in armed]''',
+  '''        gone = []'''),
+
+ ("timed purge: a machine taken off (or locked) does not end it",
+  "ltcplay/morning.py",
+  "            if self.timed_running() and machine_id in self.selected:",
+  "            if False:"),
+
+ ("timed purge: Stop purge does not say it ended a timed purge",
+  "ltcplay/morning.py",
+  '''                if self.purge.timed_running():
+                    # The same Stop purge for both kinds (Jeff, 2026-10-29).''',
+  '''                if False:
+                    # The same Stop purge for both kinds (Jeff, 2026-10-29).'''),
+
+ ("timed purge: Abort, Hold and Start now do not end it at the press",
+  "ltcplay/remote.py",
+  '''            self.timed_purge_cut(f"{who or 'someone'} pressed {_lbl} on the "
+                                 f"{screen}", who, screen)''',
+  '''            pass'''),
+
+ ("timed purge: a Hold standing does not end it",
+  "ltcplay/remote.py",
+  '''            if state == "HOLD":
+                return ("a Hold is standing; Resume or Reset first, then "''',
+  '''            if False:
+                return ("a Hold is standing; Resume or Reset first, then "'''),
+
+ ("timed purge: the flame link not sending does not end it",
+  "ltcplay/remote.py",
+  '''                if sender != "running":
+                    return (f"the flame link to flamesafe is not sending "
+                            f"({sender}).")
+                if getattr(link, "lock_alarm", ""):
+                    return f"the flame link has an alarm: {link.lock_alarm}"
+            if t is not None and self.users_active():''',
+  '''            if t is not None and self.users_active():'''),
+
+ ("timed purge: the starter signing out is not seen on a send",
+  "ltcplay/remote.py",
+  "            if t is not None and self.users_active():",
+  "            if False:"),
+
+ ("timed purge: a sign-out does not end it at once",
+  "ltcplay/remote.py",
+  '''                self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",''',
+  '''                (lambda *a, **k: None)(f"{_who} signed out on the {ctx.device}",'''),
+
+ ("timed purge: a disarm of one of its groups does not end it at once",
+  "ltcplay/remote.py",
+  '''        self.timed_purge_cut(f"{who or 'someone'} pressed Disarm {gname} "''',
+  '''        (lambda *a, **k: None)(f"{who or 'someone'} pressed Disarm {gname} "'''),
+
+ ("timed purge: Run does not end it",
+  "ltcplay/web.py",
+  '''                if _rm0 is not None and hasattr(_rm0, "timed_purge_cut"):''',
+  '''                if False:'''),
+
+ ("timed purge: Space while it runs fires instead of ending it (one purge at a time)",
+  "ltcplay/morning.py",
+  '''        if self.timed_running():
+            # One purge at a time, and any second purge press ends a timed
+            # one at once (Jeff, 2026-10-29).''',
+  '''        if False:
+            # One purge at a time, and any second purge press ends a timed
+            # one at once (Jeff, 2026-10-29).'''),
+
+ ("timed purge: a second hold does not end it",
+  "ltcplay/morning.py",
+  '''        if t is not None:
+            self.stop(f"a second purge press (a new hold on the {device})",''',
+  '''        if False:
+            self.stop(f"a second purge press (a new hold on the {device})",'''),
+
+ ("timed purge: it starts while Space is firing (one purge at a time)",
+  "ltcplay/morning.py",
+  "        if self.press_live(self._clock()):",
+  "        if False:"),
+
+ ("timed purge: the role matrix lets a release-shaped body start it",
+  "ltcplay/users.py",
+  '''            return "safety" if body.get("hold") is not True else "arm"''',
+  '''            return "safety"'''),
+
+ ("timed purge: the deck's key 0 does not say PURGING",
+  "ltcplay/streamdeck.py",
+  "            left = self.purge_timed_left()\n            if left is not None:",
+  "            left = self.purge_timed_left()\n            if False:"),
+
+ ("timed purge page: a press while it runs is not Stop purge",
+  "ltcplay/web/remote.html",
+  "  if(st.running){ tpStopPress(); return; }",
+  ""),
+
+ ("timed purge page: Other is not kept to the longest",
+  "ltcplay/web/remote.html",
+  "  return Math.min(max, Math.max(min, n));",
+  "  return n;"),
+
+ ("timed purge page: the start beats stop before the engine's start",
+  "ltcplay/web/remote.html",
+  "    if(j.started || j.running){",
+  "    if(true){"),
+
+ ("timed purge page: leaving the page clears its selection (and ends it)",
+  "ltcplay/web/remote.html",
+  " && !MO.purge_state.timed)",
+  ")"),
+
+ ("ui2 page: a running timed purge is not pinned",
+  "ltcplay/web/remote2.html",
+  "  if(tp) out.push({key:\"tp\",",
+  "  if(false) out.push({key:\"tp\","),
+
 ]
 
 
