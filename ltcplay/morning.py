@@ -2696,14 +2696,14 @@ class Morning:
         return ""
 
     # -- the routes ---------------------------------------------------------
-    def full_view(self, ctx_device, owner=None):
+    def full_view(self, ctx_device):
         pos, saved = self.layout.load(self.cfg)
         v = self.cfg.view()
         v["layout"] = pos
         v["layout_saved"] = saved
         v["lockout"] = self.lockout.view(self.cfg)
         v["purge_state"] = self.purge.view()
-        v["timed"] = self.purge.timed_view(owner)
+        v["timed"] = self.purge.timed_view()
         v["group_state"] = self.purge.group_view(self.cfg.banks)
         v["lasers"] = self.lasers.view()
         v["laser_arm"] = self.laser_arm.view()

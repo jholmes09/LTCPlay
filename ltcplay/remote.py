@@ -4711,9 +4711,14 @@ class Remote:
                                   "set up in this engine (it needs the Fire "
                                   "& Ice scheduler)."}
         if name == "morning":
-            v = m.full_view(ctx.device, owner=self._page_owner(ctx))
+            v = m.full_view(ctx.device)
             v["purge_enabled"] = self.purge_enabled(ctx.local)
+            # The timed purge: its numbers here, and this page's own view
+            # of it (its start hold is this page load's, by window).
             v["timed_settings"] = self.timed_purge_settings()
+            purge = getattr(m, "purge", None)
+            if purge is not None and hasattr(purge, "timed_view"):
+                v["timed"] = purge.timed_view(self._page_owner(ctx))
             v["checks"] = self.engine_checks()
             v["served_at"] = int(self.wall() * 1000)
             return 200, v
