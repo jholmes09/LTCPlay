@@ -107,7 +107,8 @@ PERMS = (
     ("show", "Start now, Resume, Reset, Run a show file, rehearsal "
              "scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
-            "keys, a purge, the Fireball page's channels, the wave flamer "
+            "keys, a purge (momentary or timed), the Fireball page's "
+            "channels, the wave flamer "
             "cleaning, arming a laser, arming a hazer, the hazer levels"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
@@ -221,6 +222,9 @@ REMOTE_ROUTES = {
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
+    # The timed purge's start hold: the purge's own row (Jeff,
+    # 2026-10-29); a release only lets go (classify).
+    "purge-timed": "arm",
     "laser-arm": "arm",
     "lock": "unlock",
 }
@@ -278,6 +282,10 @@ def classify(route, body=None):
         if name == "fireball-beat":
             # A beat with every channel off only turns things off.
             return "arm" if fireball_on_wanted(raw) else "safety"
+        if name == "purge-timed":
+            # Only "hold" the JSON word true can start a timed purge
+            # (morning.Purge.timed_beat); every other body is a release.
+            return "arm" if body.get("hold") is True else "safety"
         if name == "cleaning-beat":
             # Only "hold" the JSON word true runs it (cleaning.py); every
             # other body is a release, which only stops it.

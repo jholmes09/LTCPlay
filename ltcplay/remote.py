@@ -107,6 +107,8 @@ from . import appdata
 from . import settings as settings_mod
 from . import users as users_mod
 from . import version as version_mod
+from .morning import (TIMED_DEFAULT_S, TIMED_MAX_DEFAULT_S,
+                      TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S)
 from .playhead import ShowAudioPlayhead
 
 FIXED_PORT = 7878
@@ -182,6 +184,7 @@ SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 # the flame link's purge frame, the lockout writes the file flamesafe reads.
 MORNING_GET_ROUTES = ("morning", "checklist-pdf", "checklist-export")
 MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
+                       "purge-timed",
                        "purge-stop", "purge-clear", "laser-test",
                        "open-beyond",
                        "laser-arm", "lock",
@@ -575,9 +578,15 @@ def load_settings(folder=None):
     # unless the file says false: a click on that page arms a machine for
     # a purge, from the Rack screen itself; from a device on the show
     # network it also needs screen_arming (MORNING.md).
+    # purge_timed_max_s (Jeff, 2026-10-29, the timed purge): the longest
+    # timed purge this show machine allows, 30 s unless an admin sets it in
+    # this file, never more than morning.TIMED_MAX_LIMIT_S; purge_timed_s
+    # the duration last started here, the page's default.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
-           "alert_pixels": None, "ui_default": 1, "path": path}
+           "alert_pixels": None, "ui_default": 1,
+           "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
+           "purge_timed_s": TIMED_DEFAULT_S, "path": path}
     if not os.path.exists(path):
         return out
     try:
@@ -596,7 +605,8 @@ def settings_from_doc(doc, path, out=None):
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
                "booth_alert": None, "alert_pixels": None,
-               "ui_default": 1, "path": path}
+               "ui_default": 1, "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
+               "purge_timed_s": TIMED_DEFAULT_S, "path": path}
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a settings object.")
     if doc.get("show_network_address"):
@@ -617,6 +627,17 @@ def settings_from_doc(doc, path, out=None):
         if v is not True and v is not False:
             raise ValueError(f"{path}: purge_arming must be true or false.")
         out["purge_arming"] = v
+    for k, lo in (("purge_timed_max_s", TIMED_MIN_S),
+                  ("purge_timed_s", TIMED_MIN_S)):
+        if k not in doc:
+            continue
+        v = doc[k]
+        if isinstance(v, bool) or not isinstance(v, int) or \
+                not lo <= v <= TIMED_MAX_LIMIT_S:
+            # Never unlimited, never a guess: a wrong value is refused.
+            raise ValueError(f"{path}: {k} must be a whole number of "
+                             f"seconds from {lo} to {TIMED_MAX_LIMIT_S}.")
+        out[k] = v
     if doc.get("booth_alert") is not None:
         # Checked by boothaudio.parse_config, which owns the shape; a bad
         # block is refused here, at load, never at show time.
@@ -2241,6 +2262,13 @@ class Remote:
             ended = u.sign_out(getattr(ctx, "token", ""), ctx.source,
                                local=ctx.local)
             if ended:
+                # A timed purge this sign-in started ends with it (Jeff,
+                # 2026-10-29); the purge's own check on every send is the
+                # belt.
+                _who = ctx.user or "the person who started it"
+                self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",
+                                     ctx.user, ctx.device,
+                                     token=getattr(ctx, "token", "") or "")
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
                 # sign-out from somewhere else never lets go of another
@@ -2826,6 +2854,7 @@ class Remote:
                     held = True
                     why = (f"{who or 'someone'} held the schedule for an "
                            f"announcement on the {screen}")
+                    self.timed_purge_cut(why, who, screen)
                     self.live_flame_cut(why, who, screen)
                     self.scrub_flames_cut(why, who, screen)
                     self._lasers_disarm_now(who, screen, "announcement")
@@ -3095,6 +3124,11 @@ class Remote:
             # rest of it is refused below.
             flames = self._disarm_now(who, screen, "Abort")
         if name in ("abort", "hold", "start-now"):
+            # A timed purge ends at the press too (Jeff, 2026-10-29), from
+            # every surface, before the confirm check: it only takes risk
+            # away. The flame link's purge frame is cleared on this thread.
+            self.timed_purge_cut(f"{who or 'someone'} pressed {name} on the "
+                                 f"{screen}", who, screen)
             # Live flame programming ends at the press, from every surface,
             # before the confirm check and before the scheduler: it only
             # takes risk away. Only the flame link's program slot is shut
@@ -3815,6 +3849,10 @@ class Remote:
         status_fresh = self._flame_status_fresh()
         reads0 = self._deck_reads
         self._drop_hold(i)
+        # A timed purge firing this group ends at the press, before the
+        # deck has read the disarm (Jeff, 2026-10-29).
+        self.timed_purge_cut(f"{who or 'someone'} pressed Disarm {gname} "
+                             f"on the {device}", who, device, group=gname)
         with self._arm_lock:
             self._disarm_ids += 1
             self._disarms.append({"id": self._disarm_ids, "group": i,
@@ -4670,8 +4708,9 @@ class Remote:
                                   "set up in this engine (it needs the Fire "
                                   "& Ice scheduler)."}
         if name == "morning":
-            v = m.full_view(ctx.device)
+            v = m.full_view(ctx.device, owner=self._page_owner(ctx))
             v["purge_enabled"] = self.purge_enabled(ctx.local)
+            v["timed_settings"] = self.timed_purge_settings()
             v["checks"] = self.engine_checks()
             v["served_at"] = int(self.wall() * 1000)
             return 200, v
@@ -4813,8 +4852,10 @@ class Remote:
         # carries on a press needs the purge arming switch; every other
         # purge-fire body is a release, which morning.py turns into a stop
         # and which therefore goes whatever the switch says.
+        timed_start = name == "purge-timed" and body.get("hold") is True
         if (name == "purge-select" and body.get("on") is not False) or \
-                (name == "purge-fire" and users_mod.purge_fire_wanted(body)):
+                (name == "purge-fire" and users_mod.purge_fire_wanted(body)) \
+                or timed_start:
             if not self.purge_enabled(ctx.local):
                 return 403, {"error": "Arming a purge from here is switched "
                                       "off (purge_arming, and from the show "
@@ -4831,7 +4872,8 @@ class Remote:
                          " from a device on the show network needs "
                          "screen_arming true in ltcplay_remote.json. Do it on "
                          "the show machine itself."}
-        if name == "purge-select" and body.get("on") is not False:
+        if (name == "purge-select" and body.get("on") is not False) or \
+                timed_start:
             try:
                 deck_alive = self.clock() - (self._deck_seen or -1e9) <= \
                     self.DECK_QUIET_S
@@ -4841,8 +4883,114 @@ class Remote:
                 return 409, {"error": "The Stream Deck program has not read "
                                       "this engine in the last 2 s, and it "
                                       "is what arms a group for the purge. "
-                                      "Nothing was armed."}
+                                      "Nothing was armed.", "cut": True}
+        if name == "purge-timed":
+            ts = self.timed_purge_settings()
+            if timed_start and ts["error"]:
+                return 409, {"error": f"No timed purge: {ts['error']}",
+                             "cut": True}
+            code, out = m.post(name, body, device, who, screen, seen_ok,
+                               ctx.local, owner=self._page_owner(ctx),
+                               token=getattr(ctx, "token", "") or "",
+                               max_s=ts["max_s"])
+            if code == 200 and out.get("started") is True:
+                # The duration started last is this show PC's default next
+                # time. After the start, never before it: a slow disk never
+                # delays a purge, and a failed save changes nothing.
+                try:
+                    if load_settings(self.folder)["purge_timed_s"] != \
+                            out.get("seconds"):
+                        save_settings(self.folder,
+                                      purge_timed_s=out.get("seconds"))
+                except (ValueError, OSError, TypeError):
+                    pass
+            return code, out
         return m.post(name, body, device, who, screen, seen_ok, ctx.local)
+
+    @staticmethod
+    def _page_owner(ctx):
+        """(device, window): one page load, as the cleaning and the
+        Fireball page tell screens apart."""
+        return (ctx.device, str(getattr(ctx, "window", "") or "")[:64])
+
+    def timed_purge_settings(self):
+        """The timed purge's numbers on this show machine: the presets, the
+        page's default (the last started here) and the longest, from
+        ltcplay_remote.json; "error" when that file cannot be read (then no
+        timed purge starts)."""
+        out = {"presets": list(TIMED_PRESETS_S), "default_s": TIMED_DEFAULT_S,
+               "max_s": TIMED_MAX_DEFAULT_S, "min_s": TIMED_MIN_S,
+               "limit_s": TIMED_MAX_LIMIT_S, "hold_s": SCREEN_HOLD_S,
+               "error": ""}
+        try:
+            rs = load_settings(self.folder)
+        except (ValueError, OSError) as e:
+            out["error"] = str(e)
+            return out
+        out["max_s"] = rs["purge_timed_max_s"]
+        out["default_s"] = min(rs["purge_timed_s"], rs["purge_timed_max_s"])
+        return out
+
+    def timed_purge_blockers(self, t):
+        """morning.Purge's engine checks for a timed purge, at its start
+        (`t` None) and on every send while it runs: a Hold standing, Stop
+        under way, Run pressed or starting, the flame link not sending or
+        alarmed, and (running) the starter's sign-in gone. "" or why.
+        Plain reads; fails closed."""
+        try:
+            svc = self.schedule
+            state = getattr(getattr(svc, "machine", None), "state", None)
+            if state == "HOLD":
+                return "a Hold is standing; Resume or Reset first."
+            if getattr(svc, "halting", lambda: False)() is True:
+                return "Stop is under way."
+            s = getattr(self.control, "session", None)
+            if s is not None and getattr(s, "running", False):
+                return ("Run is pressed (a show file is running), so the "
+                        "show file owns the flame channels; press Stop first.")
+            try:
+                cs = self.control.state() or {}
+            except Exception:                    # noqa: BLE001
+                cs = {}
+            if cs.get("running") or cs.get("starting"):
+                return ("Run is pressed (a show file is running), so the "
+                        "show file owns the flame channels; press Stop first.")
+            m = self.morning
+            link = m._link_get() if m is not None else None
+            if link is not None:
+                try:
+                    sender = link.sender_state()
+                except Exception:                # noqa: BLE001
+                    sender = "unknown"
+                if sender != "running":
+                    return (f"the flame link to flamesafe is not sending "
+                            f"({sender}).")
+                if getattr(link, "lock_alarm", ""):
+                    return f"the flame link has an alarm: {link.lock_alarm}"
+            if t is not None and self.users_active():
+                token = t.get("token") or ""
+                if not token or self.users.session(token) is None:
+                    return (f"{t.get('who') or 'the person who started it'} "
+                            f"signed out")
+        except Exception as e:                   # noqa: BLE001
+            return f"the engine's state could not be read ({type(e).__name__})."
+        return ""
+
+    def timed_purge_cut(self, why, who="", screen="", token=None,
+                        group=None):
+        """End a running timed purge at once (a Hold, Start now, Run, Stop,
+        a disarm of one of its groups, its starter signing out): every slot
+        it fired back to zero and a journal line saying why. Never raises,
+        never waits."""
+        m = self.morning
+        purge = getattr(m, "purge", None) if m is not None else None
+        if purge is None:
+            return False
+        try:
+            return purge.timed_end(why, device=screen or None, token=token,
+                                   group=group)
+        except Exception:                        # noqa: BLE001
+            return False
 
     def _disarm_fn(self):
         if self._flame_disarm is not None:
@@ -5093,7 +5241,8 @@ class Remote:
             # 2. Live flame programming and fire while scrubbing, cut as an
             # Abort cuts them (review of #130, second pass, 3).
             why = f"{label} held Stop on the {screen}"
-            for name in ("live_flame_cut", "scrub_flames_cut"):
+            for name in ("timed_purge_cut", "live_flame_cut",
+                         "scrub_flames_cut"):
                 fn = getattr(self, name, None)
                 try:
                     if fn is not None:

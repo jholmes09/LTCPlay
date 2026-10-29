@@ -1651,6 +1651,14 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/check":
                 return self._send(200, c.check(body.get("timeline", "")))
             if route == "/api/start":
+                # Run ends a timed purge at once (morning.py), refused or
+                # not: it only takes risk away.
+                _rm0 = getattr(self.server, "remote", None)
+                if _rm0 is not None and hasattr(_rm0, "timed_purge_cut"):
+                    _rm0.timed_purge_cut("Run was pressed on the " +
+                                         str(self._ctx().screen),
+                                         self._ctx().user or "unsigned",
+                                         self._ctx().screen)
                 # Never while a Stop's halt is under way (re-review of
                 # #144, N2): a Run from another screen would bring the rig
                 # back in the middle of the Stop.
@@ -2750,6 +2758,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 laser_blank=_laser_blank, night_state=_night_state,
                 audit=getattr(httpd.remote, "audit", None))
             httpd.remote.morning = httpd.morning
+            # The timed purge's engine checks (a Hold, Run, the flame link,
+            # the starter's sign-in): without them no timed purge starts.
+            httpd.morning.timed_blockers = httpd.remote.timed_purge_blockers
             # The laser arm (Jeff, 2026-10-22): the conductor's laser gate,
             # its Abort and Hold disarm and the Blanking's unblank all ask
             # it from here on. Without it the lasers stay dark.

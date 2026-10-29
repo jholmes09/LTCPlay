@@ -172,6 +172,11 @@ TC_FPS_DEFAULT = 30.0
 # gap, a connection drop or an engine thread that stops all read as "let
 # go" here, whatever the web layer does. zero() and disarm_all() clear it.
 PURGE_HOLD_S = 0.25
+# A timed purge (Jeff, 2026-10-29: "a designated time length purge"): the
+# engine also gives the link the purge's hard end (purge_limit), on this
+# link's own clock. From that moment the purge frame is zeros on every
+# frame and purge_set() is refused until purge_clear(), whatever keeps
+# calling it: the link's own deadline, checked on every frame it sends.
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): fire
 # values xLights sends on loopback while the mode is on, re-set by the
 # listener on every accepted packet. Like the purge frame they go out ONLY
@@ -660,6 +665,9 @@ class FlameLink:
         # None. Read by values_now while the show is not live.
         self._purge = None
         self.purges_sent = 0
+        # A timed purge's hard end on this link's clock (purge_limit), or
+        # None: past it the purge frame is zeros until purge_clear().
+        self._purge_until = None
         # Live flame programming (PROGRAM_HOLD_S): on between program_begin
         # and program_end (or a disarm_all); the frame is (bytes(512),
         # clock when set) or None.
@@ -1091,6 +1099,12 @@ class FlameLink:
         if now - p[1] > PURGE_HOLD_S or now < p[1]:
             self._purge = None
             return bytes(UNIVERSE_SIZE)
+        until = self._purge_until
+        if until is not None and now >= until:
+            # A timed purge's hard end (purge_limit): zeros from here on,
+            # whatever is still calling purge_set().
+            self._purge = None
+            return bytes(UNIVERSE_SIZE)
         self.purges_sent += 1
         return self._unlocked(p[0])
 
@@ -1106,20 +1120,47 @@ class FlameLink:
         except Exception:
             return False
         with self._lock:
-            self._purge = (vals, self._clock())
+            now = self._clock()
+            until = self._purge_until
+            if until is not None and now >= until:
+                # Past a timed purge's hard end: refused until purge_clear().
+                self._purge = None
+                return False
+            self._purge = (vals, now)
         return True
+
+    def purge_limit(self, seconds):
+        """A timed purge's hard end: `seconds` from now on this link's own
+        clock, the purge frame stops on every frame sent after it and
+        purge_set() is refused, until purge_clear() (which every end of a
+        timed purge calls). True when taken. Never raises."""
+        try:
+            s = float(seconds)
+            if not s > 0 or s != s:
+                return False
+            with self._lock:
+                self._purge_until = self._clock() + s
+            return True
+        except Exception:
+            return False
 
     def purge_clear(self):
         """Stop a purge now: the next frame carries zeros (or the show's
-        cues, if a show is live). Also done by zero() and disarm_all()."""
+        cues, if a show is live). Also done by zero() and disarm_all().
+        Lifts a timed purge's hard end (purge_limit) too."""
         with self._lock:
             self._purge = None
+            self._purge_until = None
 
     def purge_active(self):
-        """True while a purge frame set within PURGE_HOLD_S is held."""
+        """True while a purge frame set within PURGE_HOLD_S is held (and
+        before a timed purge's hard end)."""
         p = self._purge
+        until = self._purge_until
         try:
-            return p is not None and 0 <= self._clock() - p[1] <= PURGE_HOLD_S
+            now = self._clock()
+            return p is not None and 0 <= now - p[1] <= PURGE_HOLD_S and \
+                (until is None or now < until)
         except Exception:
             return False
 
