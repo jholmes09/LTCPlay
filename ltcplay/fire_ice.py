@@ -1151,6 +1151,109 @@ def _tail_by_design(clk, label, f, rel):
         return False
 
 
+# Background mode's cut ahead (2026-10-29): each cue's first CUT_START_S
+# before its render is published, and the playing cue CUT_AHEAD_S ahead of
+# its show timecode.
+CUT_START_S = 0.5
+CUT_AHEAD_S = 3.0
+CUES_LOADING = ("the show's flame cues are still being cut from its render "
+                "(off the flame link's sender), so they are zero here; "
+                "they follow within a second")
+
+
+class _FlameCut:
+    """One render's flame channels for one span, cut block by block on
+    the reading thread (FlameCues background mode), through an FSEQ of its
+    own over the render's bytes in memory (never the published one, which
+    another thread may be reading). The sender only reads `row`: a dict
+    lookup and a slice. A block that cannot be cut keeps its error, which
+    `row` raises; it is never tried again for this FSEQ."""
+
+    def __init__(self, path, f, spans, span, data):
+        import io
+        from .fseq import FSEQ
+        self.f = f
+        self.span = tuple(span)
+        self.count = int(span[1])
+        self.spans = spans
+        g = FSEQ(path, fileobj=io.BytesIO(data))
+        if g.frame_count != f.frame_count or \
+                g.channel_count != f.channel_count:
+            g.close()
+            raise ValueError("the render changed while it was read")
+        self.g = g
+        self.firsts = [b[0] for b in g._blocks]
+        self.blocks = {}         # block index -> its frames' rows, joined
+        self.errors = {}         # block index -> the error cutting it
+
+    @classmethod
+    def failed(cls, f, span, error):
+        """A render that could not be cut at all: every row raises `error`
+        (a CUES FAULT), and it is never tried again for this FSEQ."""
+        c = cls.__new__(cls)
+        c.f, c.span, c.count, c.spans = f, tuple(span), int(span[1]), []
+        c.g = None
+        c.firsts = [0]
+        c.blocks, c.errors = {}, {0: error}
+        return c
+
+    def frames(self, seconds):
+        if self.g is None:
+            return 0
+        return int(seconds * 1000.0 // self.g.step_time_ms) + 1
+
+    def _block(self, idx):
+        import bisect
+        return max(0, bisect.bisect_right(self.firsts, idx) - 1)
+
+    def ensure(self, lo, hi):
+        """Cut every block holding frames lo to hi (inside the render),
+        yielding the interpreter between blocks. Never raises."""
+        if self.g is None:
+            return
+        n = self.g.frame_count
+        lo, hi = max(0, lo), min(n - 1, hi)
+        if lo > hi:
+            return
+        import time as _t
+        for b in range(self._block(lo), self._block(hi) + 1):
+            if b in self.blocks or b in self.errors:
+                continue
+            try:
+                self.blocks[b] = self._cut_block(b)
+            except Exception as e:
+                self.errors[b] = e
+            _t.sleep(0)
+
+    def _cut_block(self, b):
+        g, cc = self.g, self.g.channel_count
+        first = self.firsts[b]
+        last = self.firsts[b + 1] if b + 1 < len(self.firsts) \
+            else g.frame_count
+        raw = memoryview(g._load_block(b))
+        rows = []
+        for n in range(first, last):
+            at = (n - first) * cc
+            if at + cc > len(raw):
+                raise ValueError(f"frame {n} runs past the end of block {b}")
+            rows.append(FlameCues._cut(raw[at:at + cc], self.spans,
+                                       self.span))
+        return b"".join(rows)
+
+    def row(self, idx):
+        """Frame idx's flame channels (count bytes), None while its block
+        is not cut yet; raises the error its block could not be cut with."""
+        b = self._block(idx)
+        e = self.errors.get(b)
+        if e is not None:
+            raise e
+        blk = self.blocks.get(b)
+        if blk is None:
+            return None
+        at = (idx - self.firsts[b]) * self.count
+        return blk[at:at + self.count]
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
     show's OWN render at the show timecode (PR #43 review, finding 1).
@@ -1185,16 +1288,6 @@ class FlameCues:
         # made for another flame controller start): "" when none. Read by
         # /api/conductor (the Stream Deck) and the rack screen.
         self.fault = ""
-        # Fire flames while scrubbing (at_transport): its own refusal that
-        # is a fault, for the banner; never in `fault` above.
-        self.scrub_fault = ""
-        self._scrub_why = ""
-        # Re-renders seen by at_transport (review of #117, P2-1): fseq path
-        # -> the render it last read for it, and a count bumped when that
-        # changes, which the scrub's position carries (scrubflames.py), so
-        # a render swapped under the playhead is a landing.
-        self._scrub_used = {}
-        self.scrub_render_gen = 0
         self._layout_mtime = None   # xlights_networks.xml's, at _locate
         self._open = {}     # fseq path -> (FSEQ, spans, its mtime, start)
         self.link = None    # the FlameLink (closing it closes the files)
@@ -1207,6 +1300,16 @@ class FlameCues:
         self._bg = bool(background)
         self._layout = None      # (session, span, total, layout mtime)
         self._by_path = {}       # fseq path -> _render's tuple, or an error
+        # Background mode (2026-10-29, Jeff's Pico: flame frames 78 to 178
+        # ms late): the flame controller's channels, cut out of each render
+        # block by block on the reading thread (_FlameCut), so the sender
+        # only slices memory. It used to decompress the render's block
+        # (megabytes) on the sender thread itself each time the show
+        # crossed into the next one. Cut ahead: every cue's first
+        # CUT_START_S before its render is published, and the playing cue
+        # CUT_AHEAD_S ahead of the show timecode. fseq path -> _FlameCut.
+        self._cuts = {}
+        self._data = {}          # fseq path -> (its FSEQ, the render's bytes)
         self._stop = threading.Event()
         self._thread = None
         # The CUES FAULT said at show load (soak 2026-10-21): renders of
@@ -1311,7 +1414,24 @@ class FlameCues:
                 spans.append((start0, src, length))
                 src += length
             got = self._open[key] = (f, spans, key[1], start)
+            if self._bg:
+                self._data[path] = (f, data)
         return got
+
+    @staticmethod
+    def _cut(data, spans, span):
+        """The flame controller's `span` (first channel, count) out of one
+        frame's channel bytes, as count bytes: the same cut __call__ makes,
+        a channel no range covers left at zero."""
+        start, count = span
+        first, end = start - 1, start - 1 + count
+        row = bytearray(count)
+        for dst, src, length in spans:
+            lo, hi = max(dst, first), min(dst + length, end)
+            if lo < hi:
+                row[lo - first:hi - first] = data[src + lo - dst:
+                                                  src + hi - dst]
+        return bytes(row)
 
     def _refresh_once(self):
         """Background mode: the channels and every cue's render of the
@@ -1330,7 +1450,56 @@ class FlameCues:
                         path, span[0] if span else None)
                 except Exception as e:
                     by[path] = e
+        # Each render's cut (_FlameCut), its first CUT_START_S and the
+        # playing cue's next CUT_AHEAD_S cut, published BEFORE the renders
+        # themselves: whoever finds a render in _by_path finds the start of
+        # its cues ready, as when only the file was read. One _FlameCut per
+        # (FSEQ, span), kept from pass to pass and session to session; a
+        # block that cannot be cut is kept as its error, never tried again.
+        cuts = {}
+        for path, got in by.items():
+            if isinstance(got, Exception) or span is None:
+                continue
+            cut = self._cuts.get(path)
+            if cut is None or cut.f is not got[0] or cut.span != tuple(span):
+                mine = self._data.get(path)
+                if mine is None or mine[0] is not got[0]:
+                    continue    # its bytes are not this render's: not cut
+                try:
+                    cut = _FlameCut(path, got[0], got[1], span, mine[1])
+                except Exception as e:
+                    cut = _FlameCut.failed(got[0], span, e)
+            cuts[path] = cut
+        for cut in cuts.values():
+            cut.ensure(0, cut.frames(CUT_START_S))
+        self._cut_ahead(s, cuts)
+        self._cuts = cuts
         self._by_path = by
+
+    def _cut_ahead(self, s=None, cuts=None):
+        """The playing cue's blocks from its show timecode to CUT_AHEAD_S
+        on, cut now (the reading thread). Never raises."""
+        try:
+            s = s or getattr(self.control, "session", None)
+            cuts = self._cuts if cuts is None else cuts
+            clk = getattr(s, "clock", None)
+            cue = getattr(clk, "_cue", None)
+            last = getattr(clk, "last_sent", None)
+            label = cue.get("label") if isinstance(cue, dict) else None
+            if not label or not last:
+                return
+            hits = [c for c in (getattr(getattr(s, "tl", None), "cues",
+                                        None) or ())
+                    if getattr(c, "name", None) == label]
+            cut = cuts.get(getattr(hits[0], "path", None)) \
+                if len(hits) == 1 else None
+            if cut is None:
+                return
+            rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
+            idx = int(rel * 1000.0 // cut.g.step_time_ms)
+            cut.ensure(idx, idx + cut.frames(CUT_AHEAD_S))
+        except Exception:
+            pass
 
     def _refresher(self):
         while not self._stop.is_set():
@@ -1342,7 +1511,12 @@ class FlameCues:
                 self._refresh_once()
             except Exception:
                 pass
-            self._stop.wait(0.25)
+            # Between full passes, keep cutting ahead of the play position
+            # every 50 ms (cheap once the blocks are cut).
+            for _ in range(5):
+                if self._stop.wait(0.05):
+                    break
+                self._cut_ahead()
 
     def start(self):
         """Background mode: the reading thread, started now, so the
@@ -1418,6 +1592,8 @@ class FlameCues:
             except Exception:
                 pass
         self._open.clear()
+        self._data.clear()
+        self._cuts = {}
 
     def __call__(self, tc):
         s = getattr(self.control, "session", None)
@@ -1537,6 +1713,25 @@ class FlameCues:
                         "cues")
                 return self._zero("the timecode is past the end of the "
                                   "show's render", fault=True)
+            if self._bg:
+                # Memory only on the sender (2026-10-29): the frame's flame
+                # channels as the reading thread cut them from this very
+                # render, for this very span. A block it could not cut
+                # raises its error here (the render could not be read, a
+                # fault). Not cut yet while the show plays: a CUES FAULT,
+                # never a silent zero.
+                cut = self._cuts.get(hits[0].path)
+                row = None
+                if cut is not None and cut.f is f and cut.span == span:
+                    row = cut.row(idx)
+                if row is None:
+                    return self._zero(CUES_LOADING, fault=True)
+                count = span[1]
+                out = [0] * 512
+                out[0:count] = row
+                self._why = ""
+                self.fault = ""
+                return out
             data = f.frame(idx)
         except Exception as e:
             return self._zero(f"the show's render could not be read "
@@ -1551,133 +1746,6 @@ class FlameCues:
                                                   src + hi - dst]
         self._why = ""
         self.fault = ""
-        return out
-
-    # -- fire flames while scrubbing (scrubflames.py) ---------------------
-    def at_transport(self, tc):
-        """Fire flames while scrubbing: the flame universe at `tc`, the
-        programming session's transport position written as show clock
-        text (30 frames a second, timeline seconds, as player.tc_seconds
-        reads them), from the render of the cue the pixels are playing
-        there (timeline.cue_at, as player._play_at). None (all zeros)
-        unless: a session running; its player on a free run (the
-        Programming screen's transport), not paused, no Blackout, Preshow
-        or look; `tc` is the player's own position (within half a second);
-        the show clock playing no cue; and every check __call__ makes of
-        the render (a usable flame controller, the render not older than
-        the layout, its channel count fitting the layout, the flame
-        controller where it was when the render was checked, the frame
-        inside the render). __call__, the live show's own path, is not
-        used and not changed. A refusal that is a FAULT is held in
-        scrub_fault, never in fault (the Stream Deck's CUES FAULT is the
-        live show's). Never raises."""
-        try:
-            return self._at_transport(tc)
-        except Exception as e:
-            self.scrub_fault = (f"the scrub could not be read "
-                                f"({type(e).__name__}: {e})")
-            return None
-
-    def _scrub_zero(self, why="", fault=False):
-        self.scrub_fault = why if fault else ""
-        if fault and why != getattr(self, "_scrub_why", ""):
-            self._note(f"Fire flames while scrubbing: zero, {why}",
-                       action="flames", outcome="scrub_refused", fault=True)
-        self._scrub_why = why if fault else ""
-        return None
-
-    def _at_transport(self, tc):
-        s = getattr(self.control, "session", None)
-        if s is None or not getattr(s, "running", False):
-            return self._scrub_zero()
-        clk = getattr(s, "clock", None)
-        if clk is not None and getattr(clk, "playing", False):
-            return self._scrub_zero()
-        p = getattr(s, "player", None)
-        if p is None or getattr(p, "override", None) is not None:
-            return self._scrub_zero()
-        if getattr(p, "freerun_epoch", None) is None or \
-                getattr(p, "freerun_paused_at", None) is not None:
-            return self._scrub_zero()
-        if not isinstance(tc, str) or len(tc) != 11:
-            return self._scrub_zero()
-        h, m, sec, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), \
-            int(tc[9:11])
-        at = h * 3600 + m * 60 + sec + f / 30.0
-        here = getattr(p, "tc_seconds", None)
-        if here is None or here < 0 or abs(here - at) > 0.5:
-            return self._scrub_zero()
-        tl = getattr(s, "tl", None)
-        cue_at = getattr(tl, "cue_at", None)
-        cue = cue_at(at) if cue_at is not None else None
-        path = getattr(cue, "path", None)
-        if cue is None or not path:
-            return self._scrub_zero()
-        if self._bg:
-            self.start()
-            stale_s, stale = self._stale
-            if stale_s is s and path in stale:
-                return self._scrub_zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
-            lay = self._layout
-            if lay is None or lay[0] is not s:
-                return self._scrub_zero()
-            span, total, laid = lay[1], lay[2], lay[3]
-            if span is None:
-                return self._scrub_zero()
-            got = self._by_path.get(path)
-            if got is None:
-                return self._scrub_zero()
-            if isinstance(got, Exception):
-                return self._scrub_zero(
-                    f"the show's render could not be read "
-                    f"({type(got).__name__}: {got})", fault=True)
-            fs, spans, made, checked_at = got
-        else:
-            span = self._locate(s)
-            total, laid = self._total, self._layout_mtime
-            if span is None:
-                return self._scrub_zero()
-            fs, spans, made, checked_at = self._render(path, span[0])
-        have = max(st + n for st, _src, n in spans)
-        whole = len(spans) == 1 and spans[0][0] == 0
-        if total is None or (have != total if whole else have > total):
-            return self._scrub_zero(
-                f"the show's render has {have} channels but "
-                f"xlights_networks.xml lays out {total}. Render the show "
-                f"again for this layout", fault=True)
-        if made is not None and laid is not None and made < laid:
-            return self._scrub_zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
-        if checked_at is not None and checked_at != span[0]:
-            return self._scrub_zero(
-                f"the flame controller starts at channel {span[0]} in "
-                f"xlights_networks.xml now, but at channel {checked_at} "
-                f"when this render was checked. Render the show again for "
-                f"this layout", fault=True)
-        ident = (id(fs), made)
-        was = self._scrub_used.get(path)
-        self._scrub_used[path] = ident
-        if was is not None and was != ident:
-            # A new render of this cue under the playhead: zero now, and
-            # the next position carries the new count, a landing.
-            self.scrub_render_gen += 1
-            return self._scrub_zero()
-        rel = at - float(getattr(cue, "tc_seconds", 0.0) or 0.0)
-        idx = int(rel * 1000.0 // fs.step_time_ms)
-        if not 0 <= idx < fs.frame_count:
-            # Between cues, or past this render's end: zero, never the
-            # last frame held. Not a fault while scrubbing.
-            return self._scrub_zero()
-        data = fs.frame(idx)
-        start, count = span
-        first, end = start - 1, start - 1 + count
-        out = [0] * 512
-        for dst, src, length in spans:
-            lo, hi = max(dst, first), min(dst + length, end)
-            if lo < hi:
-                out[lo - first:hi - first] = data[src + lo - dst:
-                                                  src + hi - dst]
-        self.scrub_fault = ""
-        self._scrub_why = ""
         return out
 
 
@@ -1797,6 +1865,55 @@ class BackgroundShowLog(showlog_mod.ShowLog):
         if w is not None and w is _log_writer:
             w.stop()
             w.start()
+
+
+# The interpreter's switch interval while a flame link sends (2026-10-29).
+# Python hands its lock (the GIL) to a waiting thread only after the
+# running one has held it this long; the default is 5 ms. Every flame frame
+# needs the lock two or three times (waking from its sleep, after each
+# send), so with a few busy threads (status requests, the pixel output) the
+# sender waited 5 ms a time, again and again: in the timing harness four
+# busy threads made 99 in 100 frames within 190 ms at 5 ms and within
+# 102 ms at 1 ms. Only `ltc serve` with a flame link sets it.
+FLAME_SWITCH_INTERVAL_S = 0.001
+
+
+def keep_flame_frames_on_time(sys_mod=None, gc_mod=None):
+    """`ltc serve` with a flame link, once everything is built and before
+    it serves (cli._cmd_serve): the switch interval to
+    FLAME_SWITCH_INTERVAL_S, then one full garbage collection and
+    gc.freeze(), so the objects made before it serves (the modules, the
+    engine's own objects) are never walked again by the collector. A full
+    collection holds the GIL from start to end: 24 to 97 ms each, every
+    20 s or so, in the timing harness's engine, and no flame frame goes out
+    meanwhile; after this a pass no longer walks those. Only once, at
+    start: an object set aside is never collected, so nothing made later
+    (a show loaded by Run) is ever frozen. Nothing about what is sent
+    changes. Returns one sentence for the log. Never raises."""
+    import gc as _gc
+    import sys as _sys
+    sys_mod = sys_mod or _sys
+    gc_mod = gc_mod or _gc
+    out = []
+    try:
+        was = sys_mod.getswitchinterval()
+        sys_mod.setswitchinterval(FLAME_SWITCH_INTERVAL_S)
+        out.append(f"the interpreter lock changes hands every "
+                   f"{FLAME_SWITCH_INTERVAL_S * 1000:g} ms (was "
+                   f"{was * 1000:g} ms)")
+    except Exception as e:                       # noqa: BLE001
+        out.append(f"the switch interval could not be set "
+                   f"({type(e).__name__})")
+    try:
+        gc_mod.collect()
+        gc_mod.freeze()
+        out.append(f"{gc_mod.get_freeze_count()} objects made at start are "
+                   f"left out of every garbage collection from now on")
+    except Exception as e:                       # noqa: BLE001
+        out.append(f"the start up objects could not be set aside "
+                   f"({type(e).__name__})")
+    return ("Flame link timing: " + "; ".join(out) + ", so neither can hold "
+            "up a flame frame for long.")
 
 
 def flame_link_config(cfg):

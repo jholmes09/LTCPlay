@@ -42,7 +42,7 @@ The rules, each a refusal or a cut
   - The page is unavailable while a show can send flame cues or another
     source has the flame values: a scheduled show live or paused, a Hold,
     an Abort standing, the show clock playing a cue, Run pressed, live
-    flame programming or fire flames while scrubbing on, a purge selected
+    flame programming on, a purge selected
     or firing on the Startup page, any screen in Arrange mode, the lock
     state not trusted, the flame link not sending. Each says why.
   - The Startup page's purge rules: purge_arming on, and from the show
@@ -567,8 +567,8 @@ class FireballPanel:
 def engine_blockers(remote, link=None, cleaning=True):
     """Why the engine forbids the Fireball page's controls right now, in a
     sentence, or "": the Startup page's purge rules (a show live or paused,
-    an Abort standing, the show clock playing, live flame programming or
-    fire flames while scrubbing on, its settings or lock state not
+    an Abort standing, the show clock playing, live flame programming
+    on, its settings or lock state not
     trusted, flamesafe not holding the engine's locks, Arrange mode, a
     purge selected or firing), a Hold, Run pressed, the flame link not
     sending, and (with `cleaning`) the wave flamer cleaning running

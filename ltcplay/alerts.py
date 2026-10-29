@@ -48,12 +48,12 @@ import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
          "timecode", "lasers", "users", "aim", "follow", "preroll",
-         "hazers", "output")
+         "hazers", "timing", "output")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
             "users": "fault", "aim": "warning", "follow": "warning",
-            "hazers": "warning",
+            "hazers": "warning", "timing": "warning",
             # The rig check before a show failed (preroll.py): it holds the
             # show at its time like any fault (alerthold.py).
             "preroll": "fault",
@@ -73,6 +73,11 @@ DISPLAY_ONLY = frozenset(("aim", "follow"))
 # "hazers": flamesafe's hazers and LTC Player's differ (remote.Remote.
 # hazers_view, 2026-10-29). Display only, like "aim".
 DISPLAY_ONLY = DISPLAY_ONLY | {"hazers"}
+# "timing": flame frames to flamesafe late by more than flamelink.
+# TIMING_ALERT_MS in the last hour (remote.Remote._frame_timing_work,
+# 2026-10-29). Display only, like "aim": a late frame is over by the time
+# anyone reads it, so it never holds the next show.
+DISPLAY_ONLY = DISPLAY_ONLY | {"timing"}
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any

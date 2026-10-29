@@ -52,7 +52,9 @@ The values in each frame are ALL ZEROS unless every one of these holds:
      more than SEEK_JUMP_S more or less than the time that passed is a
      seek; the first timecode ever seen counts as one. So a scrub never
      fires anything on the way, and a flame cue whose start was jumped
-     over never fires at all: it stays zero until it has ended.
+     over never fires at all: it stays zero until it has ended. Every
+     Programming transport move (landing(), playhead.py) counts as a seek
+     too, however small, so a jump shorter than SEEK_JUMP_S is one.
 
 THE CUE PROVIDER IS A STUB IN THIS BUILD. `cues(tc)` is "the flame universe
 for timecode tc": a sequence of 512 ints, or None for all zeros. Handoff
@@ -122,6 +124,7 @@ more than 1 s, journals flamesafe's confirmation of an Abort (its
 confirmed within 1 s. Until a status frame confirms it, an Abort is
 journaled and shown as "sent, not confirmed by flamesafe", never as done.
 """
+import collections
 import json
 import math
 import re
@@ -185,20 +188,18 @@ PURGE_HOLD_S = 0.25
 # fire. While the mode is on the show's own cues are never sent (one
 # source at a time).
 PROGRAM_HOLD_S = 0.25
-# Fire flames while scrubbing (scrubflames.py, LIVE_FLAME_PROGRAMMING.md,
-# Jeff 2026-10-26): in a programming session the show's own flame cues, read
-# at the Programming screen's transport position, between rehearse_begin()
-# and rehearse_end(). Its own path through values_now (_rehearse_values),
-# never the live show's: zeros whenever the show clock has a cue at all (a
-# show live, starting or held), and the seek guard ALWAYS applies to it,
-# whatever seek_guard says. zero() and disarm_all() end it, like live flame
-# programming, so a Hold or an Abort stops it at the link at once.
-# Every move of the transport is a landing (review of #117, P1-1: a Jump
-# shorter than SEEK_JUMP_S, or a slow drag, was not a seek): state() may
-# answer (tc, token) with a token the player bumps on every transport
-# command, and a position more than REHEARSE_DRIFT_S off the time that has
-# passed since the last landing is a landing too, however it got there.
-REHEARSE_DRIFT_S = 0.15
+# Programming playback (playhead.py, Jeff 2026-10-29: the switch "Fire
+# flames while scrubbing" is gone). The show's own flame cues follow the
+# Programming screen's transport through this link's show path, exactly as
+# in a show. Every transport move (Play from, Back, Ahead, Continue, the
+# loop) is a landing however small (landing(), called before and after the
+# move): the seek guard starts again, so nothing fires for SEEK_SETTLE_S
+# and a channel already up where it lands stays zero until it has been
+# seen at zero. The landing lasts until the show timecode differs from the
+# one the clock had sent when landing() was called: the show audio keeps
+# its last frame while it starts on the new sample, and that old frame
+# must never clear a channel. A frame read across a landing goes out as
+# zeros (_land_gen).
 # The hazers (Jeff, 2026-10-29; flamesafe/CONTRACT.md, "Passthrough: the
 # hazers"): flamesafe's "passthrough" entries, read from its own config,
 # each a haze and a fan channel. Their values never come from the show's
@@ -252,7 +253,7 @@ class FlameLinkConfig:
 
     def __init__(self, ip, port, universe, key, send_hz=SEND_HZ_DEFAULT,
                  frame_stale_ms=FRAME_STALE_MS_DEFAULT, aim_slots=(),
-                 hazers=()):
+                 hazers=(), fire_hold_ms=None):
         self.ip = ip
         self.port = port
         self.universe = universe
@@ -266,6 +267,9 @@ class FlameLinkConfig:
         # flamesafe's "passthrough" (hazers_of). Empty: none.
         self.hazers = tuple((str(n), tuple(int(x) for x in sl))
                             for n, sl in hazers)
+        # flamesafe's fire_hold_ms (2026-10-29), or None: only the frame
+        # timing's limit (FrameTiming); nothing sent depends on it.
+        self.fire_hold_ms = fire_hold_ms
 
     @property
     def abort_repeat_s(self):
@@ -350,6 +354,9 @@ class FlameLinkConfig:
                         where=str(path))
         cfg.aim_slots = aim_slots_of(doc, path)
         cfg.hazers = hazers_of(doc, path)
+        hold = doc.get("fire_hold_ms")
+        cfg.fire_hold_ms = (hold if _is_int(hold)
+                            and 1 <= hold < cfg.frame_stale_ms else None)
         return cfg
 
 
@@ -489,6 +496,119 @@ def _ipv4(text):
                                    for p in parts)
 
 
+# -- frame timing (2026-10-29) -------------------------------------------------
+# Jeff's Pico, 2026-10-29: "flamesafe keeps a fire value on the output for at
+# most 100 ms after the last frame it received (fire_hold_ms)", and the
+# journal had 11 frames 78 to 178 ms late in 2.5 hours. A late frame can
+# drop or shorten a 25 ms pulse on every wave flamer at once. So every
+# interval between two frames this sender sends is counted, on the sender
+# thread (one compare and two additions a frame; nothing it can wait on),
+# and summed up per show and per hour for the journal, the status and the
+# rack screen. Display and journal only: nothing here changes what is sent.
+TIMING_LIMITS_MS = (50, 75, 100, 150)
+# The limit the alert, the rack screen and the soak judge by: flamesafe's
+# own fire_hold_ms, read from its config with the rest of the link
+# (FlameLinkConfig.fire_hold_ms), the gap after which flamesafe zeroes the
+# fire slots. This is only the fallback when that is not known (a config
+# built in code). Read here, never changed here.
+TIMING_ALERT_MS = 100
+TIMING_HOUR_S = 3600.0
+# next_deadline: no two frames closer together than this share of a period
+# (5 ms at 40 a second).
+MIN_GAP_SHARE = 0.2
+_TIMING_BINS = 301              # 0 to 299 ms by the millisecond, then more
+
+
+class FrameTiming:
+    """The intervals between flame frames, in one window (a show, an hour,
+    since start). add() is the sender thread's; everything else only
+    reads. Never raises."""
+
+    __slots__ = ("since", "frames", "worst_ms", "over", "bins", "total_ms",
+                 "limit_ms", "over_lim")
+
+    def __init__(self, since=None, limit_ms=TIMING_ALERT_MS):
+        self.since = since
+        self.limit_ms = limit_ms
+        self.over_lim = 0
+        self.frames = 0
+        self.worst_ms = 0.0
+        self.over = [0] * len(TIMING_LIMITS_MS)
+        self.bins = [0] * _TIMING_BINS
+        self.total_ms = 0.0
+
+    def add(self, gap_s):
+        try:
+            ms = gap_s * 1000.0
+            self.frames += 1
+            self.total_ms += ms
+            if ms > self.worst_ms:
+                self.worst_ms = ms
+            self.bins[min(_TIMING_BINS - 1, max(0, int(ms)))] += 1
+            if ms > self.limit_ms:
+                self.over_lim += 1
+            if ms > TIMING_LIMITS_MS[0]:
+                for i, lim in enumerate(TIMING_LIMITS_MS):
+                    if ms > lim:
+                        self.over[i] += 1
+        except Exception:
+            pass
+
+    def p99_ms(self):
+        """The interval 99 in 100 were at or under, to the millisecond
+        above (the last bin: at least 300)."""
+        n = self.frames
+        if not n:
+            return 0
+        want = n - n // 100
+        run = 0
+        for ms, c in enumerate(self.bins):
+            run += c
+            if run >= want:
+                return ms + 1
+        return _TIMING_BINS
+
+    def view(self):
+        """A plain dict for the status JSON and the soak report."""
+        return {"intervals": self.frames,
+                "worst_ms": round(self.worst_ms, 1),
+                "p99_ms": self.p99_ms(),
+                "mean_ms": round(self.total_ms / self.frames, 2)
+                if self.frames else 0.0,
+                "over_ms": {str(lim): self.over[i]
+                            for i, lim in enumerate(TIMING_LIMITS_MS)},
+                "limit_ms": self.limit_ms,
+                "over_limit": self.over_lim}
+
+    def sentence(self, what):
+        """One plain journal line: what (e.g. "this hour") and the counts."""
+        v = self.view()
+        o = v["over_ms"]
+        return (f"Flame frame timing, {what}: {v['intervals']} intervals, "
+                f"worst {v['worst_ms']:.0f} ms, 99 in 100 within "
+                f"{v['p99_ms']} ms; over 50 ms: {o['50']}, over 75 ms: "
+                f"{o['75']}, over 100 ms: {o['100']}, over 150 ms: "
+                f"{o['150']}; over flamesafe's fire_hold_ms "
+                f"({v['limit_ms']} ms): {v['over_limit']}.")
+
+
+def next_deadline(next_at, now, period):
+    """When the sender sends next: always on the grid of its first frame,
+    one period apart (absolute deadlines: a sleep that wakes late is made
+    up on the next one, so no drift ever builds up and the rate stays 40 a
+    second). The next grid point is skipped while it is less than
+    MIN_GAP_SHARE of a period away (or already gone): after a stall the
+    frame just sent was the overdue one, it went once, and the cadence
+    carries on at the next grid point. A missed tick is never sent late,
+    so there is never a burst to catch up, and no two frames ever go
+    closer together than MIN_GAP_SHARE of a period."""
+    nxt = next_at + period
+    gap = period * MIN_GAP_SHARE
+    if nxt - now >= gap:
+        return nxt
+    return nxt + math.ceil((now + gap - nxt) / period) * period
+
+
 # -- the two inputs ----------------------------------------------------------
 
 def zero_cues(tc):
@@ -533,14 +653,38 @@ def encode_flame(seq, tc, mono, universe, values, key, hazers_on=None):
     hazers; None (no hazers configured) leaves the field out, so the frame
     is exactly the one before hazers existed (CONTRACT.md: left out or
     empty is every hazer off)."""
-    obj = {
+    # Byte for byte what json.dumps of the whole object gives (the selftest
+    # compares the two), built from parts so that the 512 values, which
+    # are the same frame after frame, are turned into text once and not
+    # on every frame (2026-10-29: the sender's own time per frame is time
+    # another thread can take the interpreter from it).
+    head = json.dumps({
         "v": CONTRACT_VERSION, "k": key, "t": "flame", "seq": int(seq),
         "tc": tc, "mono": float(mono), "universe": int(universe),
-        "values": [int(v) for v in values],
-    }
-    if hazers_on is not None:
-        obj["hazers_on"] = sorted(str(h) for h in hazers_on)
-    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    }, separators=(",", ":"))
+    tail = "" if hazers_on is None else ',"hazers_on":' + json.dumps(
+        sorted(str(h) for h in hazers_on), separators=(",", ":"))
+    return (head[:-1] + ',"values":' + _values_json(values) + tail
+            + "}").encode("utf-8")
+
+
+_VALUES_TEXT = (None, None)     # (the last values as bytes, their JSON)
+
+
+def _values_json(values):
+    """The values as JSON text, "[0,0,...]", the same as json.dumps of
+    [int(v) for v in values]. The last bytes seen are remembered (one
+    tuple, swapped whole, so two threads can never mix a key and a text)."""
+    global _VALUES_TEXT
+    if isinstance(values, (bytes, bytearray)):
+        b = bytes(values)
+        last = _VALUES_TEXT
+        if last[0] == b:
+            return last[1]
+        text = json.dumps(list(b), separators=(",", ":"))
+        _VALUES_TEXT = (b, text)
+        return text
+    return json.dumps([int(v) for v in values], separators=(",", ":"))
 
 
 def encode_disarm_all(seq, mono, abort_id, reason, key):
@@ -667,15 +811,12 @@ class FlameLink:
         self._program = None
         self._program_session = 0
         self.programs_sent = 0
-        # Fire flames while scrubbing: on between rehearse_begin and
-        # rehearse_end (or a zero() or disarm_all()); the providers are
-        # (state, cues): state() -> the transport position as timecode text
-        # or None (zeros), cues(tc) -> 512 ints or None.
-        self._rehearse_on = False
-        self._rehearse = None
-        self._rehearse_session = 0
-        self._r_anchor = None       # (seconds, clock, token) at the landing
-        self.rehearse_sent = 0      # frames with a flame value in them
+        # Programming transport moves (landing()): +1 on each, so a frame
+        # whose values were read across one goes out as zeros.
+        self._land_gen = 0
+        self.landings = 0
+        self._land_open = False     # a landing not yet over (_landing_now)
+        self._land_tc = None        # the timecode when it was called
         # Lockout (2026-10-17): channels (1-based slots) zeroed in every
         # frame this link sends, cue or purge. flamesafe enforces the same
         # set from the lockout file; this is the belt to its braces.
@@ -725,6 +866,24 @@ class FlameLink:
         # each frame send_frame sent. It only appends to a queue; it can
         # neither change nor hold up a frame. None: nothing is called.
         self.observer = None
+        # Frame timing (2026-10-29, FrameTiming): every interval between
+        # two frames of the sender thread, since start, this hour and this
+        # show. Only the sender thread writes them. A finished hour or show
+        # goes on _timing_done, which the watch thread journals; every
+        # interval over TIMING_ALERT_MS also goes on _timing_late (when,
+        # how long), for "N in the last hour". deque append and popleft
+        # are atomic, so neither side ever waits on the other.
+        # The limit: flamesafe's own fire_hold_ms when its config said it.
+        self.timing_limit_ms = int(getattr(cfg, "fire_hold_ms", None)
+                                   or TIMING_ALERT_MS)
+        self._timing_total = FrameTiming(None, self.timing_limit_ms)
+        self._timing_shows = FrameTiming(None, self.timing_limit_ms)
+        self._timing_hour = None
+        self._timing_last_hour = None
+        self._timing_show = None
+        self._timing_done = collections.deque()
+        self._timing_late = collections.deque(maxlen=2000)
+        self._frame_tc = None
 
     # -- the journal -----------------------------------------------------------
     def _note(self, text, **fields):
@@ -797,6 +956,7 @@ class FlameLink:
         """Journals a stall once when it starts and once when it ends.
         Never sends anything and never touches the link's locks."""
         while not self._stop.wait(0.05):
+            self._timing_journal()
             try:
                 stalled = self.sender_state() == "stalled"
                 if stalled and not self._stall_noted:
@@ -861,16 +1021,15 @@ class FlameLink:
                     self.send_frame()
                     took = self._clock() - start
                     if last_start is not None:
+                        self._timing_add(start - last_start, start)
                         self._note_late(start - last_start, slept, took)
                     last_start = start
                     self._run_ok()
-                    next_at += period
                     now = self._clock()
-                    if next_at < now - period:
-                        # Fell behind (the OS woke us late): the overdue
-                        # frame has just gone, the next is one period on.
-                        # No burst to catch up, not even one extra frame.
-                        next_at = now + period
+                    # Fell behind (the OS woke us late): the overdue frame
+                    # has just gone, the next is one period on. No burst to
+                    # catch up, not even one extra frame (next_deadline).
+                    next_at = next_deadline(next_at, now, period)
                     delay = next_at - now
                 except Exception as e:
                     self._run_failed(e)
@@ -899,6 +1058,99 @@ class FlameLink:
                            f"disarms every group. Restart ltcplay.",
                            fault=True, action="flame_link",
                            outcome="sender_dead")
+
+    def _timing_add(self, gap, now):
+        """The sender thread's count of one interval (FrameTiming): since
+        start, this hour, this show. A show is counted from its first live
+        frame to the first frame with no show timecode at all (a Hold is
+        still the show). Never raises, never waits."""
+        try:
+            self._timing_total.add(gap)
+            hour = self._timing_hour
+            if hour is None:
+                hour = self._timing_hour = FrameTiming(
+                    now, self.timing_limit_ms)
+            elif now - hour.since >= TIMING_HOUR_S:
+                self._timing_done.append(("in the last hour", hour))
+                self._timing_last_hour = hour
+                hour = self._timing_hour = FrameTiming(
+                    now, self.timing_limit_ms)
+            hour.add(gap)
+            show = self._timing_show
+            if show is not None:
+                show.add(gap)
+                self._timing_shows.add(gap)
+            if gap * 1000.0 > self.timing_limit_ms:
+                self._timing_late.append((now, gap * 1000.0))
+            if self._haze_live:
+                if show is None:
+                    self._timing_show = FrameTiming(
+                        now, self.timing_limit_ms)
+            elif show is not None and self._frame_tc is None:
+                self._timing_show = None
+                self._timing_done.append(("in the show that just ended",
+                                          show))
+        except Exception:
+            pass
+
+    def _timing_journal(self):
+        """The watch thread's half: one journal line for each finished hour
+        and show, and one more when it had a frame over TIMING_ALERT_MS.
+        Notes, not faults: the rack screen's alert (remote.py) is the
+        fault, raised as it happens. Never raises."""
+        try:
+            while self._timing_done:
+                what, w = self._timing_done.popleft()
+                v = w.view()
+                self._note(w.sentence(what), action="flame_link",
+                           outcome="frame_timing", timing=v)
+                if v["over_limit"]:
+                    self._note(f"Flame frames late: {v['over_limit']} "
+                               f"{what} more than {v['limit_ms']} ms "
+                               f"after the one before, worst "
+                               f"{v['worst_ms']:.0f} ms. flamesafe holds a "
+                               f"fire value for its fire_hold_ms after the "
+                               f"last frame, so a pulse may have been cut "
+                               f"short.", action="flame_link",
+                               outcome="frames_late")
+        except Exception:
+            pass
+
+    def late_last_hour(self, now=None):
+        """(how many intervals over TIMING_ALERT_MS in the last hour, the
+        worst of them in ms). Never raises."""
+        try:
+            now = self._clock() if now is None else now
+            got = []
+            for _ in range(3):
+                try:
+                    got = list(self._timing_late)
+                    break
+                except RuntimeError:
+                    continue
+            got = [ms for t, ms in got if now - t <= TIMING_HOUR_S]
+            return len(got), (round(max(got), 1) if got else 0.0)
+        except Exception:
+            return 0, 0.0
+
+    def timing_view(self):
+        """The status's "frame_timing": since start, in every show so far,
+        this hour, the last whole hour, this show (None outside one), and
+        the last hour's frames over the limit. Plain reads; never
+        raises."""
+        try:
+            n, worst = self.late_last_hour()
+            out = {"limit_ms": self.timing_limit_ms,
+                   "late_last_hour": n, "late_last_hour_worst_ms": worst}
+            for k, w in (("since_start", self._timing_total),
+                         ("in_shows", self._timing_shows),
+                         ("this_hour", self._timing_hour),
+                         ("last_hour", self._timing_last_hour),
+                         ("this_show", self._timing_show)):
+                out[k] = w.view() if w is not None else None
+            return out
+        except Exception:
+            return {"limit_ms": self.timing_limit_ms}
 
     LATE_S = 0.045      # a frame this long after the last one is noted
     LATE_NOTE_EVERY_S = 10.0
@@ -981,10 +1233,6 @@ class FlameLink:
         """(tc, values) for a frame sent now. Never raises; zeros on
         anything uncertain. Calls the providers: never under self._lock."""
         self._haze_live = False
-        if self._rehearse_on:
-            # Fire flames while scrubbing: its own path, start to end. With
-            # it off (always, during a show) nothing below changes.
-            return self._rehearse_values()
         zeros = bytes(UNIVERSE_SIZE)
         try:
             tc, live = self.show_state()
@@ -999,7 +1247,15 @@ class FlameLink:
         now = self._clock()
         if tc is not None and tc != self._tc_last:
             self._tc_last, self._tc_moved_at = tc, now
-        settled = self._seek_guard(tc, now) if self.seek_guard else True
+        # A Programming transport move still landing (landing()): the
+        # timecode is still the one from before it, so it is never used.
+        land = self.seek_guard and self._landing_now(tc)
+        if not self.seek_guard:
+            settled = True
+        elif land:
+            settled = False
+        else:
+            settled = self._seek_guard(tc, now)
         # A Hold: not live with the show's timecode still there. Its Resume
         # is the first live frame after it.
         if live is True:
@@ -1029,7 +1285,7 @@ class FlameLink:
             # off (one source at a time) and its frame is not read either.
             # The mode ends as soon as the engine sees the show start.
             return tc, zeros
-        if self.zeroed or tc is None:
+        if self.zeroed or tc is None or land:
             self._cue_episode("", "")
             return tc, zeros
         if self._tc_moved_at is None or now - self._tc_moved_at > TC_STILL_S:
@@ -1199,165 +1455,54 @@ class FlameLink:
         flamesafe still sends it only while its group is armed."""
         return set(range(UNIVERSE_SIZE)) - self._aim
 
-    # -- fire flames while scrubbing (scrubflames.py) ------------------------
+    # -- Programming transport moves (playhead.py) ----------------------------
     def _seek_reset(self):
         """The seek guard as a new link has it: the next timecode is a
         landing and every channel waits to be seen at zero."""
         self._seek_last = None
         self._steady_since = None
         self._blocked = self._guarded()
-        self._r_anchor = None
 
-    def rehearse_begin(self, state, cues):
-        """Fire flames while scrubbing is on: from the next frame the
-        values are cues(state()), by _rehearse_values's rules. Refused
-        (None) while live flame programming is on; else the session number.
-        The seek guard starts again, so nothing fires until the position
-        has run steadily for SEEK_SETTLE_S, and a cue already under way
-        stays zero until it ends."""
-        with self._lock:
-            if self._program_on:
-                return None
-            self._rehearse = (state, cues)
-            self._rehearse_session += 1
-            self._seek_reset()
-            self._rehearse_on = True
-            return self._rehearse_session
-
-    def rehearse_end(self):
-        """Fire flames while scrubbing is off: one zero frame now, and a
-        frame read before this goes out as zeros (_zero_gen). The seek
-        guard starts again too, so the next show lands as a fresh link
-        does. True when it was on. Never asks the providers."""
-        with self._lock:
-            was = self._rehearse_on
-            self._rehearse_on = False
-            self._rehearse = None
-            if not was:
-                return False
-            self._zero_gen += 1
-            self._seek_reset()
-            self._send_zero_frame()
-            return True
-
-    @property
-    def rehearse_on(self):
-        return self._rehearse_on
-
-    @property
-    def rehearse_session(self):
-        return self._rehearse_session
-
-    def _rehearse_values(self):
-        """(tc, values) while fire flames while scrubbing is on. ALL ZEROS
-        unless every one of these holds:
-
-          1. the show clock has no cue at all (show_state gives no timecode
-             and is not live): a show live, starting, held or fading out
-             is never fed from the scrub, and the mode ends;
-          2. live flame programming is off (one source at a time);
-          3. state() answered a timecode (None: paused, stopped, a look,
-             following timecode, not the programming session);
-          4. the seek guard, ALWAYS, whatever self.seek_guard says: run
-             steadily for SEEK_SETTLE_S since the last landing (the mode
-             starting, a Pause, every transport command however small,
-             a loop wrap, any position off the time that passed by more
-             than REHEARSE_DRIFT_S), and channel by channel
-             seen at zero since then. A position that stands still for
-             more than TC_STILL_S ends the steady run, so it is moving
-             too;
-          5. cues(tc) answered 512 whole numbers 0 to 255.
-
-        The lockout is applied last, as for every frame. Never raises."""
-        zeros = bytes(UNIVERSE_SIZE)
-        now = self._clock()
+    def landing(self):
+        """A Programming transport move (Play from, Back, Ahead, Continue,
+        the loop; playhead.py calls it before and after each): the seek
+        guard starts again however small the move, so every flame value is
+        zero until the timecode has run steadily for SEEK_SETTLE_S, and a
+        channel already up where it lands stays zero until it has been
+        seen at zero. Until the show timecode differs from the one the
+        clock has sent now, every frame is zero and nothing is learned
+        from it (_landing_now). A frame read across it goes out as zeros
+        (send_frame). It only takes fire away. Never raises. It reads the
+        show state once, outside the lock, and never the cues."""
         try:
-            show_tc, live = self.show_state()
-        except Exception as e:
-            self._cue_episode("state", f"the show state could not be read "
-                                       f"({_exc_text(e)})")
-            return None, zeros
-        if live is True or show_tc is not None:
-            self._cue_episode(
-                "rehearse_show", "the show clock is playing a cue, so "
-                                 "nothing fires from the scrub")
-            return None, zeros
-        if self._program_on:
-            return None, zeros
-        r = self._rehearse
-        if r is None:
-            return None, zeros
-        try:
-            tc = r[0]()
-        except Exception as e:
-            self._cue_episode("rehearse_state", f"the scrub position could "
-                                                f"not be read "
-                                                f"({_exc_text(e)})")
-            return None, zeros
-        tok = None
-        landing = False
-        if isinstance(tc, tuple) and len(tc) == 2:
-            tc, tok = tc
-        if not isinstance(tc, str) or not _TC.fullmatch(tc):
-            tc = None
-        if tc is not None:
-            # A landing: the first position, any transport command (the
-            # token changed), or a position off the time that passed since
-            # the last landing by more than REHEARSE_DRIFT_S. The seek guard
-            # starts again from it, so nothing fires for SEEK_SETTLE_S and
-            # a channel already up stays zero until it has been at zero.
-            secs = self._tc_seconds(tc)
-            a = self._r_anchor
-            if a is None or tok != a[2] or \
-                    abs((secs - a[0]) - (now - a[1])) > REHEARSE_DRIFT_S:
-                self._seek_reset()
-                self._r_anchor = (secs, now, tok)
-                landing = True
-        settled = self._seek_guard(tc, now)
-        if tc is None:
-            # Paused, stopped or not on the transport: zero, and whatever
-            # comes next is a landing (the seek guard starts again), so a
-            # cue under way at a Pause stays zero after Continue until it
-            # has ended.
-            self._seek_reset()
-            self._cue_episode("", "")
-            return None, zeros
-        try:
-            v = r[1](tc)
-        except Exception as e:
-            self._cue_episode("raised", f"the flame cue provider raised "
-                                        f"{_exc_text(e)}")
-            return tc, zeros
-        if v is None:
-            self._cue_episode("", "")
-            return tc, zeros
-        try:
-            vals = list(v)
-            ok = len(vals) == UNIVERSE_SIZE and all(
-                _is_int(x) and 0 <= x <= 255 for x in vals)
+            tc = self.show_state()[0]
+            if not isinstance(tc, str) or not _TC.fullmatch(tc):
+                tc = None
         except Exception:
-            ok = False
-        if not ok:
-            self._cue_episode("garbage", f"the flame cue provider did not "
-                                         f"answer {UNIVERSE_SIZE} whole "
-                                         f"numbers 0 to 255")
-            return tc, zeros
-        self._cue_episode("", "")
-        blocked = self._blocked
-        if not landing:
-            # Never on the landing frame itself (review of #117, P1-A): a
-            # position read just before a move landed could clear a
-            # channel that is up where the move lands.
-            for i in [i for i in blocked if vals[i] == 0]:
-                blocked.discard(i)
-        if not settled:
-            return tc, zeros
-        for i in blocked:
-            vals[i] = 0
-        out = self._unlocked(bytes(vals))
-        if any(out):
-            self.rehearse_sent += 1
-        return tc, out
+            tc = None
+        try:
+            with self._lock:
+                self._land_gen += 1
+                self.landings += 1
+                self._land_tc = tc
+                self._land_open = True
+                self._seek_reset()
+        except Exception:
+            pass
+
+    def _landing_now(self, tc):
+        """True while a landing is not over: the timecode is none, or still
+        the one the clock had sent at landing(). Each such frame starts the
+        seek guard again. The first other timecode ends it, and is the
+        guard's first timecode, as on a new link."""
+        if not self._land_open:
+            return False
+        if tc is None or tc == self._land_tc:
+            self._seek_reset()
+            return True
+        self._land_open = False
+        self._seek_reset()
+        return False
 
     # -- the hazers (2026-10-29) ---------------------------------------------
     def hazer_levels_set(self, levels):
@@ -1426,7 +1571,7 @@ class FlameLink:
 
     def _with_haze(self, values, run):
         """`values` with every hazer channel replaced: zero, whatever the
-        FSEQ, xLights or the scrub carried there; then, when `run`, each
+        FSEQ or xLights carried there; then, when `run`, each
         ARMED hazer's stored haze and fan levels. Under self._lock."""
         if not self._hazer_chans:
             return values
@@ -1584,20 +1729,27 @@ class FlameLink:
         were read before a zero() or disarm_all() that landed meanwhile
         goes out as zeros: `_zero_gen` says one did."""
         gen = self._zero_gen
+        lgen = self._land_gen
         with self._read_lock:
             tc, values = self.values_now()
             run = self._haze_running()
+            self._frame_tc = tc         # frame timing's show window only
         with self._lock:
+            if lgen != self._land_gen:
+                # A Programming transport move landed while this frame was
+                # read: its position may be from before the move, and what
+                # it saw (a channel at zero, a steady run) is not true
+                # where the move landed. Zeros, and the guard starts again.
+                values = bytes(UNIVERSE_SIZE)
+                self._seek_reset()
             if gen != self._zero_gen or (self.zeroed and self._purge is None
-                                         and self._program is None
-                                         and not self._rehearse_on):
+                                         and self._program is None):
                 # A zero() or disarm_all() that landed since the values were
                 # read wins (gen); and with the cues zeroed, only a purge
                 # frame still held may carry a value (the purge frame is the
                 # one thing that goes out while the conductor has the cues
                 # zeroed, and only while the show is not live: values_now;
-                # so is a live flame programming frame, by the same rule,
-                # and fire flames while scrubbing, by _rehearse_values's).
+                # so is a live flame programming frame, by the same rule).
                 values = bytes(UNIVERSE_SIZE)
             # The hazers (2026-10-29): their channels zero in the flame
             # values (fire, the fuel tracker, "firing"), then each ARMED
@@ -1681,13 +1833,6 @@ class FlameLink:
             # Any zero (a Hold, a show's end, the dark sequence) ends live
             # flame programming at the link too: xLights stops with the
             # fire (flameprog.py ends the mode on its next pass).
-            # So does fire flames while scrubbing (scrubflames.py ends the
-            # mode on its next pass), with the seek guard started again as
-            # rehearse_end does (review of #117, P2-1).
-            if self._rehearse_on:
-                self._seek_reset()
-            self._rehearse_on = False
-            self._rehearse = None
             self._program = None
             self._program_on = False
             self.zeroed = True
@@ -1722,11 +1867,6 @@ class FlameLink:
                 self._purge = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
-                # And fire flames while scrubbing, the same way.
-                if self._rehearse_on:
-                    self._seek_reset()
-                self._rehearse_on = False
-                self._rehearse = None
                 self._program = None
                 self._program_on = False
                 self.zeroed = True
@@ -1883,14 +2023,14 @@ class FlameLink:
                 "oversleep_ms_by_minute": {
                     str(k): round(v * 1000.0, 1) for k, v in
                     list(getattr(self, "_oversleep", {}).items())},
+                "frame_timing": self.timing_view(),
                 "cue_problem": self._cue_problem,
                 "purge": self.purge_active(),
                 "purges_sent": self.purges_sent,
                 "program_on": self._program_on,
                 "program": self.program_active(),
                 "programs_sent": self.programs_sent,
-                "rehearse_on": self._rehearse_on,
-                "rehearse_sent": self.rehearse_sent,
+                "landings": self.landings,
                 "locked_channels": sorted(self._locked),
                 "hazers_on": sorted(self._hazers_on),
                 "lock_alarm": self.lock_alarm,

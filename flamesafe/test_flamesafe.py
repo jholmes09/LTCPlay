@@ -1031,6 +1031,50 @@ def test_ltcplay_stale_zeros_fire_then_disarms():
           "its frames pass, but nothing fires: the group is disarmed")
 
 
+def test_fire_hold_250_holds_a_late_frame_then_zeros():
+    section("liveness at fire_hold_ms 250 (Jeff is raising it, 2026-10-29): "
+            "a frame 200 ms late keeps the fire value through the gap; "
+            "silence zeros it inside 250 ms plus a tick, with the link "
+            "still fresh, and disarms at frame_stale_ms")
+    tick = 0.025 + 1e-9
+    r = armed_rig(fire_hold_ms=250)
+    r.run(4, {411: 255})
+    check(r.fire(0)[0] == 255, "firing at fire_hold_ms 250")
+    # A late frame: 200 ms with no frame, then the next one. The fire value
+    # never drops in the gap (at 100 it would have, after 100 ms).
+    t_last = r.t
+    r.frame({411: 255})
+    dropped = None
+    while r.t - t_last < 0.2:
+        r.step()
+        if dropped is None and r.fire(0)[0] == 0:
+            dropped = r.t - t_last
+    check(dropped is None, f"a 200 ms gap at fire_hold_ms 250: the fire "
+                           f"value held through it (dropped at {dropped})")
+    r.run(2, {411: 255})
+    check(r.fire(0)[0] == 255 and r.out.status["frames"]["fire"] == "passing",
+          "and the next frame carries on firing")
+    # Silence: zero inside fire_hold_ms (plus a tick) with the link still
+    # fresh, then the disarm at frame_stale_ms.
+    r.link_alive = False
+    t_last = r.t
+    r.frame({411: 255})
+    zero_at = None
+    while r.t - t_last < 2.0:
+        r.step()
+        if zero_at is None and r.fire(0)[0] == 0:
+            zero_at = r.t - t_last
+            check(r.out.status["frames"]["state"] == "fresh",
+                  "fire zeroed while the link is still fresh")
+        if r.safety(0) == 0:
+            break
+    check(zero_at is not None and 0.25 - tick <= zero_at <= 0.25 + tick,
+          f"silence: the fire slot is zero after {zero_at} s (fire_hold_ms "
+          f"250)")
+    check(r.safety(0) == 0 and r.t - t_last <= 0.5 + tick,
+          f"and the group disarmed at frame_stale_ms: {r.t - t_last:.3f} s")
+
+
 # =========================================================================
 # the link: reject everything that is not the contract
 # =========================================================================
@@ -6364,6 +6408,7 @@ if __name__ == "__main__":
     test_rule7_interruptions_clear_the_latches()
     test_liveness_loss_zeros_within_a_bounded_time()
     test_ltcplay_stale_zeros_fire_then_disarms()
+    test_fire_hold_250_holds_a_late_frame_then_zeros()
     test_link_rejects_malformed_datagrams()
     test_arm_link_rejects_malformed_datagrams_and_round_trips()
     test_socket_arm_input_is_the_real_build_step_7b_driver()

@@ -1572,6 +1572,16 @@ def _cmd_serve(args):
             webbrowser.open(url)
         except Exception:
             pass
+    _link = getattr(getattr(httpd, "fire_ice", None), "flame_link", None)
+    if _link is not None:
+        # Flame frame timing (2026-10-29): see fire_ice.
+        # keep_flame_frames_on_time. Only a real serve with a flame link.
+        from . import fire_ice as _fim
+        _line = _fim.keep_flame_frames_on_time()
+        print(_line)
+        _say = getattr(_link, "journal_line", None)
+        if _say is not None:
+            _say(_line, action="flame_link", outcome="timing_setup")
     # A closed Terminal window is a SIGHUP and a `kill` is a SIGTERM, and
     # neither used to reach this. The rig was left holding whatever frame was
     # last sent, while the page cheerfully said the show was still running.
