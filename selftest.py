@@ -50904,6 +50904,54 @@ out.stale_holds = h.posts("arm-hold").length;
         check(m["stale_posts"] == [1] and m["stale_holds"] == 0,
               f"no contact: one press disarms, nothing is held: "
               f"{m['stale_posts']} {m['stale_holds']}")
+    # A group's Disarm says the engine's answer (2026-10-29): confirmed,
+    # forced, or an older engine's "sent"; the button and its word stay
+    # what the polled status says.
+    steps3 = r"""
+window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; return st; };
+await h.sleep(700);
+out.gd = {};
+const said = {confirmed:{ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."},
+  forced:{ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."},
+  old:{ok:true, text:"Disarm front row sent."}};
+for(const k of ["confirmed", "forced", "old"]){
+  window.__answer["group-disarm"] = b => [200, said[k]];
+  const before = h.look(0);
+  h.tap(h.lamp(0));
+  await h.sleep(200);
+  out.gd[k] = {msg:document.getElementById("ctl-msg").textContent, same:JSON.stringify(h.look(0)) === JSON.stringify(before)};
+}
+// A Disarm answered late (the engine waits up to 1 s) never covers an
+// Abort pressed after it.
+window.__delay["group-disarm"] = 900;
+window.__answer["group-disarm"] = b => [200, said.forced];
+window.__answer["abort"] = b => [200, {ok:true, disarmed:true, text:"Aborted for the test."}];
+h.tap(h.lamp(0));
+await h.sleep(100);
+const ab = document.getElementById("b-abort");
+h.tap(ab); await h.sleep(150); h.tap(ab);
+await h.sleep(1300);
+out.late = {msg:document.getElementById("ctl-msg").textContent, posts:h.posts("group-disarm").length, aborts:h.posts("abort").length};
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps3)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"drawn, then Disarm answered three ways: {m!r}"):
+        gd = m["gd"]
+        check(gd["confirmed"]["msg"] == "Disarm front row confirmed: "
+              "flamesafe reports it off." and
+              gd["forced"]["msg"].startswith("Deck did not answer: ALL "
+                                             "groups disarm sent.") and
+              "hazer" in gd["forced"]["msg"] and
+              gd["old"]["msg"] == "Disarm front row sent.",
+              f"1.0 says the engine's answer to a group's Disarm: {gd}")
+        check(all(gd[k]["same"] for k in ("confirmed", "forced", "old")),
+              f"and the tile stays what the polled status says (ARMED): "
+              f"{gd}")
+        la = m.get("late") or {}
+        check(la.get("aborts") == 1 and la.get("posts") == 4 and
+              la.get("msg") == "Aborted for the test.",
+              f"review of #170: a Disarm answered late never covers the "
+              f"Abort pressed after it: {la}")
     print("  ok")
 
 
@@ -53801,6 +53849,24 @@ def _arm_rig(S):
     # it reading at the rig's clock unless a test sets keep_deck False.
     R.keep_deck = True
     R.remote._deck_seen = R.mono[0]
+    # A per-group Disarm waits for flamesafe's word (2026-10-29): while
+    # it waits, this rig's Stream Deck reads deck-input and acts on each
+    # new disarm, and flamesafe reports the group off (R.deck_acts False:
+    # a deck that reads but does not act).
+    R.deck_acts = True
+    R.deck_done = R.remote._disarm_ids
+
+    def deck_step(seconds):
+        d = R.remote.deck_input()
+        for e in d["disarms"]:
+            if e["id"] > R.deck_done:
+                R.deck_done = e["id"]
+                if R.deck_acts and 0 <= e["group"] < len(R.groups):
+                    R.groups[e["group"]]["armed"] = "disarmed"
+                    R.groups[e["group"]]["wanted"] = False
+        R.mono[0] += seconds
+        feed()
+    R.remote._pause = deck_step
     return R
 
 
@@ -54055,8 +54121,10 @@ def test_screen_arm_engine_rules():
         check(st == 200 and R.remote.deck_input()["disarms"][-1]["group"]
               == 0 and R.remote.deck_input()["disarms"][-1]["who"] ==
               "iPad at 10.20.0.45"
-              and R.remote.deck_input()["disarms"][-1]["device"] == "iPad",
-              "a per-group disarm goes to the deck with the surface")
+              and R.remote.deck_input()["disarms"][-1]["device"] == "iPad"
+              and out.get("confirmed") is True,
+              f"a per-group disarm goes to the deck with the surface, and "
+              f"is answered once flamesafe reports it off: {st} {out}")
         st, _h, out = _hold(R, "front row", hold_id=hid)
         check(st == 409, "and the first device's hold on it is over")
         # An Abort cancels every hold, before anything else.
@@ -73725,6 +73793,660 @@ def test_disarm_all_end_to_end_rearms_without_a_cycle():
     print("  ok")
 
 
+def test_group_disarm_is_confirmed_or_forced():
+    section("a screen's per-group Disarm (Jeff, 2026-10-29: 'armed in 2.0 "
+            "but disarmed in 1.0'): the same rule as Disarm all. Confirmed "
+            "only when flamesafe reports the group off and not wanted on a "
+            "status after the Stream Deck read it, within 1 s; the deck "
+            "not reading, or no such word, forces the flame link's "
+            "disarm_all with a flames alert and a fault in the journal; "
+            "the answer says which, never only 'sent'; a disarm from any "
+            "device ends every device's hold on the group")
+    import types
+    from ltcplay import remote as RM
+    S = _sched()
+    if S is None:
+        return
+    check(RM.PLAIN_DECK_FRESH_S == 0.5 and RM.PLAIN_CONFIRM_S == 1.0 and
+          RM.GROUP_DISARM_SETTLE_S == 0.15,
+          "the numbers are Disarm all's, with 0.15 s for the deck's next "
+          "pass and flamesafe's next tick")
+    R = _arm_rig(S)
+    rem = R.remote
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    other = ("10.20.0.45", 50000)
+    paused = []
+    real_step = rem._pause
+
+    def step(s):
+        paused.append(s)
+        real_step(s)
+    rem._pause = step
+
+    def flames_alerts():
+        return [a for a in rem.alerts.view() if a["kind"] == "flames"]
+
+    def rows(outcome=None):
+        return [r for r in R.svc.journal if r.get("action") == "disarm" and
+                (outcome is None or r.get("outcome") == outcome)]
+
+    def arm(i, wanted=True):
+        R.groups[i]["armed"] = "armed"
+        R.groups[i]["wanted"] = wanted
+        R.feed()
+
+    def disarm(group, client=ipad):
+        rem._deck_seen = R.mono[0]           # the deck reads at 20 Hz
+        return R.ask("POST", "/api/remote/group-disarm", {"group": group},
+                     client=client)
+    try:
+        # 1. The deck reads it and acts: confirmed, nothing forced.
+        arm(0)
+        n = R.rig.count("flames_disarm_all")
+        j0 = len(R.svc.journal)
+        st, _h, out = disarm("front row")
+        check(st == 200 and out.get("confirmed") is True and
+              out.get("text") == "Disarm front row confirmed: flamesafe "
+                                 "reports it off." and
+              R.rig.count("flames_disarm_all") == n and
+              not flames_alerts(),
+              f"the deck acted: confirmed, said, no forced disarm, no "
+              f"alert: {st} {out}")
+        _no_dashes(out.get("text", ""), "the confirmed answer")
+        new = [r for r in list(R.svc.journal)[j0:]
+               if r.get("action") == "disarm"]
+        check([r["outcome"] for r in new] == ["sent", "confirmed"] and
+              "pressed Disarm front row on the iPad. Sent to the Stream "
+              "Deck" in new[0]["text"],
+              f"journaled: the press handed to the deck, then confirmed: "
+              f"{new}")
+        check(paused and sum(paused) >= RM.GROUP_DISARM_SETTLE_S - 1e-9,
+              f"it waited for a status after the deck's read: {paused}")
+        # 2. The deck has not read the engine for 0.6 s: forced at once.
+        arm(0)
+        del paused[:]
+        n = R.rig.count("flames_disarm_all")
+        R.mono[0] += 0.6
+        R.feed()
+        # The forced disarm goes out before anything is written to disk
+        # (Abort's _disarm_now): every journal line of the press sees it.
+        real_journal = rem._journal
+        seen_at_journal = []
+
+        def journal_spy(*a, **kw):
+            seen_at_journal.append(R.rig.count("flames_disarm_all"))
+            return real_journal(*a, **kw)
+        rem._journal = journal_spy
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"}, client=other)
+        rem._journal = real_journal
+        check(st == 200 and out.get("forced") is True and
+              out.get("confirmed") is False and
+              out.get("text", "").startswith(
+                  "Deck did not answer: ALL groups disarm sent. Disarm "
+                  "front row forced (the Stream Deck program has not read "
+                  "this engine in the last 0.5 s") and
+              "every hazer is off" in out["text"] and
+              "flames stay at zero until Hold then Resume or a new run" in
+              out["text"] and "Arm again" in out["text"] and
+              "were disarmed" not in out["text"] and
+              R.rig.count("flames_disarm_all") == n + 1 and not paused,
+              f"a deck that last read 0.6 s ago: the flame link's "
+              f"disarm_all at once, with no wait, said plainly (all "
+              f"groups, hazers off, flames at zero): {st} {out}")
+        check(seen_at_journal and all(c == n + 1 for c in seen_at_journal),
+              f"the forced disarm went out before the first journal "
+              f"write: {seen_at_journal} (before: {n})")
+        _no_dashes(out.get("text", ""), "the forced answer")
+        al = flames_alerts()
+        check(len(al) == 1 and al[0]["text"].startswith(out["text"]) and
+              al[0]["severity"] == "fault",
+              f"and a flames alert says the same: {al}")
+        f = rows("forced")
+        check(f and f[-1].get("fault") is True and
+              "Disarm front row forced" in f[-1]["text"],
+              f"journaled as a fault: {f[-1:]}")
+        check(rem.deck_input()["disarms"][-1]["group"] == 0,
+              "the plain disarm is still handed to the deck too")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        # 2b. flamesafe's status not reaching the engine (the deck fresh):
+        # nothing can confirm it, so forced at once, and said so.
+        arm(0)
+        del paused[:]
+        R.mono[0] += 5.0
+        n = R.rig.count("flames_disarm_all")
+        rem._deck_seen = R.mono[0]
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"}, client=other)
+        check(st == 200 and out.get("forced") is True and
+              out.get("text", "").startswith(
+                  "No word from flamesafe: ALL groups disarm sent. Disarm "
+                  "front row forced (flamesafe's status is not reaching "
+                  "this engine") and
+              R.rig.count("flames_disarm_all") == n + 1 and not paused,
+              f"flamesafe's status not arriving: forced at once, no 1 s "
+              f"of silence, said: {st} {out}")
+        _no_dashes(out.get("text", ""), "the no-status answer")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        R.feed()
+        # 3. The deck reads but does not act (its own state disagrees):
+        # flamesafe still reports it armed, so forced after 1 s.
+        arm(0)
+        R.deck_acts = False
+        del paused[:]
+        n = R.rig.count("flames_disarm_all")
+        st, _h, out = disarm("front row")
+        check(st == 200 and out.get("forced") is True and
+              out.get("text", "").startswith(
+                  "Not confirmed: ALL groups disarm sent. Disarm front row "
+                  "forced (flamesafe did not report front row off within "
+                  "1 s") and
+              R.rig.count("flames_disarm_all") == n + 1 and
+              len(flames_alerts()) == 1,
+              f"a deck that reads and does nothing: forced after the "
+              f"wait, with an alert: {st} {out}")
+        check(0.9 <= sum(paused) <= 1.1,
+              f"after waiting PLAIN_CONFIRM_S: {sum(paused):.2f}")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        # 4. Off but still wanted is not confirmed.
+        R.groups[0].update(armed="disarmed", wanted=True)
+        R.feed()
+        n = R.rig.count("flames_disarm_all")
+        st, _h, out = disarm("front row")
+        check(out.get("forced") is True and
+              R.rig.count("flames_disarm_all") == n + 1,
+              f"off but still asked for: forced: {st} {out}")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        # 5. Off, but no status since the deck read it: an old word
+        # confirms nothing (flamesafe silent, the deck reading).
+        R.groups[0].update(armed="disarmed", wanted=False)
+        R.feed()
+        rem._pause = lambda s: (paused.append(s), rem.deck_input())
+        n = R.rig.count("flames_disarm_all")
+        st, _h, out = disarm("front row")
+        check(out.get("forced") is True and
+              R.rig.count("flames_disarm_all") == n + 1,
+              f"a status from before the deck's read confirms nothing: "
+              f"{st} {out}")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        # 5b. Off, flamesafe reporting, but the deck never reads again
+        # after the press (it read 0.4 s before, then stopped): forced.
+        R.mono[0] += 0.4
+        R.feed()
+
+        def silent_deck(s):
+            paused.append(s)
+            R.mono[0] += s
+            R.feed()
+        rem._pause = silent_deck
+        n = R.rig.count("flames_disarm_all")
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"}, client=ipad)
+        check(out.get("forced") is True and
+              R.rig.count("flames_disarm_all") == n + 1,
+              f"a deck that never read the Disarm: forced, whatever "
+              f"flamesafe says: {st} {out}")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        rem._pause = step
+        R.deck_acts = True
+        # 6. The forced disarm failing too: 409, COULD NOT, the alert.
+        arm(0)
+        R.mono[0] += 0.6
+        R.feed()
+        rem._flame_disarm = lambda reason: types.SimpleNamespace(
+            ok=False, sentence="no flame link frame went out")
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"})
+        check(st == 409 and out.get("ok") is False and
+              out.get("error", "").startswith(
+                  "Disarm front row COULD NOT be confirmed") and
+              "press Abort" in out["error"] and
+              "no flame link frame went out" in out["error"] and
+              flames_alerts() and "COULD NOT" in flames_alerts()[-1]["text"],
+              f"a forced disarm that failed is never said as done: {st} "
+              f"{out}")
+        _no_dashes(out.get("error", ""), "the failed forced answer")
+        rem._flame_disarm = None
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        # 7. A disarm from any device ends every device's hold on it.
+        R.groups[0].update(armed="disarmed", wanted=False)
+        for holder, presser in ((ipad, loop), (loop, ipad), (ipad, other),
+                                (ipad, ipad)):
+            R.feed()
+            st, _h, out = _hold(R, "front row", client=holder)
+            hid = out.get("hold_id")
+            st2, _h, out2 = disarm("front row", client=presser)
+            check(st == 200 and hid and st2 == 200 and
+                  rem.deck_input()["holds"] == [],
+                  f"a hold from {holder[0]}, a Disarm from {presser[0]}: "
+                  f"the deck sees the hold gone: {st} {out} {st2} {out2}")
+            R.feed()
+            st, _h, out = _hold(R, "front row", hold_id=hid, client=holder)
+            check(st == 409 and "interrupted" in out.get("error", ""),
+                  f"and its old hold id never carries on: {st} {out}")
+            R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
+                  client=holder)
+            R.mono[0] += 0.3
+        # 8. The cleaning's own call answers at once, as before.
+        del paused[:]
+        code, out = rem.group_disarm({"group": "cat-walk"},
+                                     RM.Ctx(True, "127.0.0.1"),
+                                     confirm=False)
+        check(code == 200 and out.get("text") == "Disarm cat-walk sent." and
+              not paused,
+              f"confirm=False (the cleaning, which confirms itself): "
+              f"handed over and answered at once: {code} {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_group_disarm_across_two_screens_real_flamesafe():
+    section("a per-group Disarm end to end across two screens (Jeff, "
+            "2026-10-29: 'armed in 2.0 but disarmed in 1.0'): the real "
+            "flamesafe, deck controller and engine, the rack screen and an "
+            "iPad (127.0.0.2); armed on one and disarmed on the other, a "
+            "page that keeps beating its old hold id, a Disarm in the "
+            "middle of a hold and inside the deck's confirm wait, Disarm "
+            "all against a broken loop: never armed again, and every "
+            "Disarm answered confirmed; then a deck that reads and does "
+            "not act, and one that stopped reading: forced, with an alert")
+    import http.client as _hc
+    import json as _j
+    import socket as _so
+    import subprocess
+    import tempfile
+    import threading
+    import types
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    S = _sched()
+    if S is None:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    names = ["front row", "cat-walk"]
+    # The iPad is a second loopback address, so the engine names it as a
+    # device on the show network. Linux has all of 127/8; a Mac has only
+    # 127.0.0.1 unless aliased, and then the rack screen plays both.
+    ipad_ip = "127.0.0.2"
+    try:
+        _p = _so.socket(_so.AF_INET, _so.SOCK_STREAM)
+        _p.bind((ipad_ip, 0))
+        _p.close()
+    except OSError:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "127.0.0.2 could not be bound on a Linux CI runner")
+        print("  note: 127.0.0.2 is not usable here, so the rack screen "
+              "plays both screens")
+        ipad_ip = "127.0.0.1"
+    SRC = {"rack": "127.0.0.1", "ipad": ipad_ip}
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    ports = []
+    while len(ports) < 4:
+        p_ = free_port()
+        if p_ not in ports and p_ != node.getsockname()[1]:
+            ports.append(p_)
+    listen, armp, statusp, mirror = ports
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "status_mirror_port": mirror, "arm_port": armp,
+                 "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": n, "safety": 401 + i, "fire": [411 + 10 * i]}
+                   for i, n in enumerate(names)],
+        # One hazer (#168): the forced disarm switches it off too.
+        "passthrough": [{"name": "hazer 1", "haze": 450, "fan": 451}]},
+        open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    stop = threading.Event()
+    fs_out = []
+    threading.Thread(target=lambda: [fs_out.append(_l.rstrip())
+                                     for _l in proc.stdout],
+                     daemon=True).start()
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    link = fl.FlameLink(cfg, show_state=lambda: (show_tc(), True)).start()
+    folder = tempfile.mkdtemp()
+    httpd = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          remote_folder=work, flamesafe_config=cfg_path)
+    rem = httpd.remote
+    # The forced disarm is the flame link's disarm_all (no scheduler here).
+    rem._flame_disarm = lambda reason: types.SimpleNamespace(
+        ok=link.disarm_all(reason), sentence="")
+    RM.save_settings(work, screen_arming=True)
+    threading.Thread(target=httpd.serve_forever,
+                     kwargs={"poll_interval": 0.05}, daemon=True).start()
+    PORT = httpd.server_address[1]
+
+    def http(path, body=None, dev="rack"):
+        c = _hc.HTTPConnection("127.0.0.1", PORT, timeout=5,
+                               source_address=(SRC[dev], 0))
+        try:
+            if body is None:
+                c.request("GET", path)
+            else:
+                c.request("POST", path, body=_j.dumps(body),
+                          headers={"Content-Type": "application/json"})
+            r = c.getresponse()
+            data = r.read()
+        finally:
+            c.close()
+        try:
+            return r.status, _j.loads(data or b"{}")
+        except ValueError:
+            return r.status, {"raw": data[:200]}
+    arm = sd.ArmSocket("127.0.0.1", armp, key, len(names))
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    screen = sd.ScreenKeys(f"http://127.0.0.1:{PORT}").start()
+    events = []
+    ctl = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                        show_running_provider=lambda: None,
+                        journal=lambda t_, **kw: events.append(t_),
+                        screen=screen)
+    lock = threading.Lock()
+
+    def deck_loop():
+        while not stop.is_set():
+            with lock:
+                ctl.screen_pass()
+                ctl.tick()
+                status.poll()
+                arm.send(names)
+            time.sleep(0.05)
+    threading.Thread(target=deck_loop, daemon=True).start()
+
+    def g0():
+        st = status.last
+        return st["groups"][0] if st else {}
+
+    def fs_armed():
+        return g0().get("armed") == "armed"
+
+    def fs_off():
+        return g0().get("armed") == "disarmed" and not g0().get("wanted")
+
+    def wait(pred, s=3.0):
+        end = time.perf_counter() + s
+        while time.perf_counter() < end:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return pred()
+
+    def watch_armed(s):
+        """True if flamesafe read the group armed at any time in s."""
+        end, ever = time.perf_counter() + s, False
+        while time.perf_counter() < end:
+            ever = ever or fs_armed()
+            time.sleep(0.02)
+        return ever
+
+    class PageHold:
+        """A page's hold loop (1.0's armBeat, which 2.0 copies): a beat
+        every 100 ms after the last answer with the latest served_at;
+        stops on armed true or any refusal, unless `keep` (a broken page
+        that keeps beating its old hold id)."""
+
+        def __init__(self, dev, keep=False):
+            self.dev, self.keep = dev, keep
+            self.answers = []
+            self.halt = threading.Event()
+            self.th = threading.Thread(target=self._run, daemon=True)
+            self.th.start()
+
+        def _run(self):
+            hid = None
+            while not self.halt.is_set():
+                try:
+                    seen = http("/api/remote/status", dev=self.dev)[1][
+                        "served_at"]
+                    body = {"group": 0, "seen": seen}
+                    if hid is not None:
+                        body["hold_id"] = hid
+                    code, out = http("/api/remote/arm-hold", body, self.dev)
+                except Exception as e:           # noqa: BLE001
+                    code, out = 0, {"error": str(e)}
+                self.answers.append((code, out.get("armed"),
+                                     out.get("hold_id")))
+                if code == 200 and not out.get("armed"):
+                    hid = out["hold_id"]
+                elif not self.keep:
+                    break
+                time.sleep(0.1)
+
+        def end(self):
+            self.halt.set()
+            self.th.join(3)
+            http("/api/remote/arm-release", {"group": 0}, self.dev)
+
+    def settle():
+        """Off, not wanted, and past the deck's refractory window."""
+        if not fs_off():
+            http("/api/remote/group-disarm", {"group": 0})
+        wait(fs_off, 3)
+        time.sleep(sd.REARM_REFRACTORY_S + 0.3)
+
+    def arm_from(dev, keep=False):
+        for _try in range(3):
+            h = PageHold(dev, keep=keep)
+            if wait(fs_armed, 4):
+                return h
+            h.end()
+            settle()
+        return None
+
+    def confirmed(code, out):
+        return code == 200 and out.get("confirmed") is True and \
+            out.get("text", "").endswith("confirmed: flamesafe reports "
+                                         "it off.")
+
+    def disarm_all_forced():
+        return (status.last or {}).get("disarm_all", {}).get("accepted", 0)
+    try:
+        end = time.perf_counter() + 30
+        up = False
+        while time.perf_counter() < end and proc.poll() is None:
+            s = http("/api/remote/status")[1]
+            if s["flames"].get("connected") and not s["flames"]["stale"] \
+                    and status.last:
+                up = True
+                break
+            time.sleep(0.1)
+        check(up, f"setup: flamesafe's status reached the engine and the "
+                  f"deck (flamesafe "
+                  f"{'exited ' + str(proc.returncode) if proc.poll() is not None else 'running'}"
+                  f"; its last lines: {fs_out[-6:]})")
+        wait(lambda: (status.last or {}).get("arm_input", {}).get("state")
+             == "live", 10)
+        time.sleep(1.2)
+        who = http("/api/remote/whoami", dev="ipad")[1].get("device", "")
+        check(ipad_ip == "127.0.0.1" or who == f"iPad at {ipad_ip}",
+              f"setup: the engine names the second screen an iPad: {who}")
+        forced0 = disarm_all_forced()
+        # A: armed on the iPad (2.0), disarmed on the rack (1.0).
+        h = arm_from("ipad")
+        check(h is not None, f"setup A: the iPad's hold armed it: {g0()}")
+        if h is not None:
+            h.th.join(2)
+            code, out = http("/api/remote/group-disarm", {"group": 0},
+                             "rack")
+            check(confirmed(code, out) and fs_off(),
+                  f"A: armed on the iPad, the rack's Disarm is answered "
+                  f"confirmed and flamesafe reads it off: {code} {out} "
+                  f"{g0()}")
+            check(not watch_armed(1.5), f"A: and it stays off: {g0()}")
+            h.end()
+        settle()
+        # B: the rack's page keeps beating its old hold id after it armed
+        # (a broken page); the iPad disarms.
+        h = arm_from("rack", keep=True)
+        check(h is not None, f"setup B: armed from the rack: {g0()}")
+        if h is not None:
+            code, out = http("/api/remote/group-disarm", {"group": 0},
+                             "ipad")
+            check(confirmed(code, out),
+                  f"B: the iPad's Disarm is confirmed: {code} {out}")
+            check(not watch_armed(2.5),
+                  f"B: a page beating its old hold id never arms it "
+                  f"again: {g0()} {h.answers[-3:]}")
+            h.end()
+            check(h.answers and h.answers[-1][0] == 409,
+                  f"B: the old hold id is refused: {h.answers[-3:]}")
+        settle()
+        # C: the iPad disarms 0.5 s into the rack's hold, before it arms.
+        h = PageHold("rack")
+        time.sleep(0.5)
+        code, out = http("/api/remote/group-disarm", {"group": 0}, "ipad")
+        check(confirmed(code, out),
+              f"C: a Disarm in the middle of a hold is confirmed: {code} "
+              f"{out}")
+        check(not watch_armed(2.0),
+              f"C: and the hold never arms it: {g0()} {h.answers[-3:]}")
+        h.end()
+        settle()
+        # D: the rack disarms the moment flamesafe reports it asked for
+        # (the deck took the iPad's hold; inside its confirm wait).
+        h = PageHold("ipad")
+        took = wait(lambda: bool(g0().get("wanted")), 4)
+        code, out = http("/api/remote/group-disarm", {"group": 0}, "rack")
+        check(took and confirmed(code, out),
+              f"D: a Disarm inside the deck's confirm wait is confirmed: "
+              f"{took} {code} {out}")
+        check(not watch_armed(2.0),
+              f"D: and it is not armed after: {g0()} {h.answers[-3:]}")
+        h.end()
+        settle()
+        # E: Disarm all from the rack while the iPad's broken loop runs.
+        h = arm_from("ipad", keep=True)
+        check(h is not None, f"setup E: armed from the iPad: {g0()}")
+        if h is not None:
+            code, out = http("/api/remote/disarm-all", {"confirmed": True},
+                             "rack")
+            check(code == 200 and out.get("plain") is True and
+                  wait(fs_off, 2),
+                  f"E: Disarm all turns it off: {code} {out} {g0()}")
+            check(not watch_armed(2.0),
+                  f"E: and the broken loop never arms it again: {g0()}")
+            h.end()
+        time.sleep(RM.PLAIN_CONFIRM_S)
+        check(disarm_all_forced() == forced0 and
+              not [a for a in rem.alerts.view() if a["kind"] == "flames"],
+              f"A to E: nothing was forced and no flames alert: "
+              f"{status.last.get('disarm_all')} {rem.alerts.view()}")
+        settle()
+        # F: the deck reads the engine but does not act on the Disarm (its
+        # own state disagrees with flamesafe's): forced, with an alert.
+        h = arm_from("rack")
+        check(h is not None, f"setup F: armed from the rack: {g0()}")
+        if h is not None:
+            h.th.join(2)
+            check(link.hazers_set(["hazer 1"]) == {"hazer 1"} and
+                  link.release() and not link.zeroed,
+                  "setup F: the hazer is ARMED and the cues released on "
+                  "the flame link")
+            real_new = screen.new_disarms
+            screen.new_disarms = lambda: (real_new(), [])[1]
+            t_press = time.perf_counter()
+            code, out = http("/api/remote/group-disarm", {"group": 0},
+                             "ipad")
+            took = time.perf_counter() - t_press
+            screen.new_disarms = real_new
+            check(code == 200 and out.get("forced") is True and
+                  out.get("text", "").startswith(
+                      "Not confirmed: ALL groups disarm sent. Disarm "
+                      "front row forced (flamesafe did not report front "
+                      "row off") and
+                  took >= RM.PLAIN_CONFIRM_S - 0.05,
+                  f"F: a deck that drops the Disarm: forced after 1 s, "
+                  f"said: {code} {out} {took:.2f} s")
+            check(link.hazers_on == frozenset() and link.zeroed,
+                  f"F: the forced disarm switched the hazer off and put "
+                  f"the show's flames at zero, as the answer says: "
+                  f"{link.hazers_on} {link.zeroed}")
+            check(wait(lambda: not fs_armed(), 2) and
+                  disarm_all_forced() > forced0 and
+                  wait(lambda: "Abort" in g0().get("reason", ""), 2),
+                  f"F: flamesafe took the disarm_all and reads the "
+                  f"Abort's cycle: {g0()} {status.last.get('disarm_all')}")
+            al = [a for a in rem.alerts.view() if a["kind"] == "flames"]
+            check(al and al[-1]["text"].startswith("Not confirmed: ALL "
+                                                   "groups disarm sent."),
+                  f"F: a flames alert says so: {al}")
+            h.end()
+            rem.alerts.clear(kind="flames", action="Acknowledge")
+        # G: the deck stopped reading the engine: forced at once.
+        screen.stop()
+        time.sleep(RM.PLAIN_DECK_FRESH_S + 0.2)
+        n = disarm_all_forced()
+        t_press = time.perf_counter()
+        code, out = http("/api/remote/group-disarm", {"group": 0}, "rack")
+        took = time.perf_counter() - t_press
+        check(code == 200 and out.get("forced") is True and
+              "has not read this engine" in out.get("text", "") and
+              took < RM.PLAIN_CONFIRM_S / 2 and
+              wait(lambda: disarm_all_forced() > n, 2),
+              f"G: a deck that stopped reading: forced at once, said, and "
+              f"flamesafe took it: {code} {out} {took:.2f} s")
+        check([a for a in rem.alerts.view() if a["kind"] == "flames"],
+              f"G: with an alert: {rem.alerts.view()}")
+    finally:
+        stop.set()
+        screen.stop()
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        rs = getattr(httpd.remote, "flame_status", None)
+        if rs is not None:
+            rs.stop()
+        link.stop()
+        arm.close()
+        status.close()
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(folder, ignore_errors=True)
+    print("  ok")
+
+
 def test_lasers_lamp_follows_the_beyond_link():
     section("BEYOND exited at 03:27 and the Lasers lamp said lit for hours "
             "(2026-10-23): the watch says up, lost or unknown, a look older "
@@ -86347,6 +87069,8 @@ window.fetch = function(u, o){
   if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
   if(window.__fail && o && o.method === "POST" && window.__fail.test(String(u)))
     return Promise.resolve(new Response(JSON.stringify({error:"Refused for the test."}), {status:409, headers:{"Content-Type":"application/json"}}));
+  if(window.__answer && o && o.method === "POST" && window.__answer.re.test(String(u)))
+    return Promise.resolve(new Response(JSON.stringify(window.__answer.body), {status:200, headers:{"Content-Type":"application/json"}}));
   return realFetch.apply(this, arguments);
 };
 function shown(el){
@@ -86463,6 +87187,21 @@ async function presses(){
   res.arm_beats_later = n("/api/remote/arm-hold");
   document.getElementById("b-disall").click(); await wait(300);
   res.disarm_all = n("/api/remote/disarm-all");
+  // A group's Disarm (2026-10-29): the engine's answer is said, confirmed
+  // or forced; the tile stays what the polled status says.
+  const lamp0 = () => { const t = document.querySelector('[data-lamp="0"]'); return t ? t.className : ""; };
+  const lampBefore = lamp0(), gd = {};
+  for(const [k, body] of [["confirmed", {ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."}],
+      ["forced", {ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."}],
+      ["notconf", {ok:true, confirmed:false, forced:true, text:"Not confirmed: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the rest."}],
+      ["old", {ok:true, text:"Disarm front row sent."}]]){
+    window.__answer = {re:/group-disarm/, body:body};
+    await press("group-disarm", {group:0});
+    gd[k] = {msg:document.getElementById("msg-t").textContent, cls:document.getElementById("msg").className, full:MSG_FULL};
+  }
+  window.__answer = null;
+  gd.lamp_same = lamp0() === lampBefore && lampBefore !== "";
+  res.gd = gd;
   // No contact: the status stops coming.
   window.__dead = true; await wait(2800);
   const q = id => document.getElementById(id);
@@ -86540,6 +87279,7 @@ async function fdPresses(){
   window.__fail = null;
   await wait(1200);
   res.fail_slot = q("al-what").textContent; res.fail_act = q("al-act-l").textContent;
+  res.fail_msg = q("msg-t").textContent;
   res.fail_next = q("next-t").textContent;
   return res;
 }
@@ -86760,6 +87500,10 @@ def test_ui2_show_tab_in_a_browser():
                       fd["fail_act"] == "Seen" and "e-stop" in fd["fail_next"],
                       f"{where}: a refused Disarm stays in the slot until "
                       f"Seen and the next step says e-stop: {fd}")
+                check(fd and fd.get("fail_msg") ==
+                      "Disarm NOT done. Use Deck or e-stop.",
+                      f"{where}: a Disarm that did not go is never said as "
+                      f"refused: {fd}")
             p = res.get("presses")
             if frag.startswith("?presses"):
                 check(p and p["abort_after_one"] == 0 and
@@ -86779,6 +87523,29 @@ def test_ui2_show_tab_in_a_browser():
                       f"go on release, with no beat after: {p}")
                 check(p and p["disarm_all"] == 1,
                       f"{where}: Disarm all is one tap")
+                gd = (p or {}).get("gd") or {}
+                check(gd.get("confirmed", {}).get("msg") ==
+                      "Disarm front row confirmed: flamesafe reports it "
+                      "off." and gd["confirmed"]["cls"] == "ok",
+                      f"{where}: a confirmed Disarm says so: {gd}")
+                check(gd.get("forced", {}).get("msg") ==
+                      "Deck did not answer: ALL groups disarm sent." and
+                      gd["forced"]["cls"] == "warn" and
+                      "every hazer is off" in gd["forced"]["full"] and
+                      "until Hold then Resume" in gd["forced"]["full"],
+                      f"{where}: a forced Disarm says so, the engine's "
+                      f"words behind Details: {gd}")
+                check(gd.get("notconf", {}).get("msg") ==
+                      "Not confirmed: ALL groups disarm sent." and
+                      gd["notconf"]["cls"] == "warn",
+                      f"{where}: a Disarm flamesafe did not confirm in time "
+                      f"is said apart from a deck that did not answer: "
+                      f"{gd}")
+                check(gd.get("old", {}).get("msg") ==
+                      "Disarm front row sent." and gd.get("lamp_same"),
+                      f"{where}: an older engine's answer is said as it "
+                      f"was, and no answer changes the tile (the polled "
+                      f"status does): {gd}")
                 sl = (p or {}).get("stale") or {}
                 check(sl.get("slot") == "Connection lost.",
                       f"{where}: with no contact the alert slot says "
@@ -86797,7 +87564,8 @@ def test_ui2_show_tab_in_a_browser():
                 check(p and set(p["routes"]) <= {
                     "/api/remote/abort", "/api/remote/hold",
                     "/api/remote/stop", "/api/remote/arm-hold",
-                    "/api/remote/arm-release", "/api/remote/disarm-all"},
+                    "/api/remote/arm-release", "/api/remote/disarm-all",
+                    "/api/remote/group-disarm"},
                       f"{where}: nothing else was posted: {p}")
     # The rules' request fails (safety review of #166, B1): the page says
     # so over everything but Abort, and Abort still sends 1.0's Abort on
@@ -87787,6 +88555,8 @@ if __name__ == "__main__":
         test_disarm_all_is_a_plain_disarm_and_never_gated,
         test_disarm_ids_survive_an_engine_restart,
         test_disarm_all_end_to_end_rearms_without_a_cycle,
+        test_group_disarm_is_confirmed_or_forced,
+        test_group_disarm_across_two_screens_real_flamesafe,
         test_lasers_lamp_follows_the_beyond_link,
         test_video_lamp_follows_the_madmapper_watch,
         test_madmapper_not_following_is_a_display_only_alert,

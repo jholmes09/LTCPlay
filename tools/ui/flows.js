@@ -98,6 +98,13 @@ const TASKS = [
     await o.tap("#d-next", "Next step (sign out)");
     await o.tap("#d-signout", "Sign out"); await o.tap('#sh-row [data-i="2"]', "Sign out (sheet)");
     await o.shot("10_done"); }],
+  // A group's Disarm the Stream Deck does not act on (2026-10-29): the
+  // engine forces the Abort's disarm and the page says so in amber.
+  ["11 Disarm a group the deck does not answer", "deck_not_answering", async o => {
+    await o.shot("11_armed"); await o.tap('[data-arm="0"]', "Disarm front row"); await o.shot("11_forced");
+    const said = await o.page.$eval("#msg-t", e => e.textContent).catch(() => "");
+    const cls = await o.page.$eval("#msg", e => e.className).catch(() => "");
+    if(!/^Not confirmed: ALL groups disarm sent\./.test(said) || cls !== "warn") o.notes.push("FORCED DISARM NOT SAID: '" + said + "' " + cls); }],
 ];
 
 (async () => {

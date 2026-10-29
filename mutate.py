@@ -13256,6 +13256,70 @@ def build():
   'ltcplay/remote.py',
   'PLAIN_DECK_FRESH_S = 0.5',
   'PLAIN_DECK_FRESH_S = 30.0'),
+ # A screen's per-group Disarm (2026-10-29, Jeff's "armed in 2.0 but
+ # disarmed in 1.0"): confirmed by flamesafe, or forced, never only sent.
+ ('group disarm: a deck that stopped reading the engine is waited on',
+  'ltcplay/remote.py',
+  '        if confirm and not deck_fresh:\n',
+  '        if False:\n'),
+ ('group disarm: a press with no flamesafe status waits, then forces',
+  'ltcplay/remote.py',
+  '        elif confirm and not status_fresh:\n',
+  '        elif False:\n'),
+ ('group disarm: the forced disarm waits for the journal on disk',
+  'ltcplay/remote.py',
+  '        if forced is not None:\n'
+  '            # The disarm first, the disk after (Abort\'s _disarm_now).\n'
+  '            sent = self._group_force_send(who, device, gname, forced[1])\n'
+  '        self._journal(who, device, "disarm", "sent",\n'
+  '                      f"{who or \'Someone\'} pressed Disarm {gname} on the "\n'
+  '                      f"{device}. Sent to the Stream Deck, which owns the "\n'
+  '                      f"arm link; flamesafe\'s lamp shows when it is off.")\n',
+  '        self._journal(who, device, "disarm", "sent",\n'
+  '                      f"{who or \'Someone\'} pressed Disarm {gname} on the "\n'
+  '                      f"{device}. Sent to the Stream Deck, which owns the "\n'
+  '                      f"arm link; flamesafe\'s lamp shows when it is off.")\n'
+  '        if forced is not None:\n'
+  '            # The disk first, then the disarm (Abort\'s _disarm_now).\n'
+  '            sent = self._group_force_send(who, device, gname, forced[1])\n'),
+ ('group disarm: answered confirmed without flamesafe\'s word',
+  'ltcplay/remote.py',
+  '        if self._group_seen_off(i, gname, reads0):\n',
+  '        if True:\n'),
+ ('group disarm: a status from before the deck read it confirms',
+  'ltcplay/remote.py',
+  '                        got - read_at >= GROUP_DISARM_SETTLE_S:\n',
+  '                        True:\n'),
+ ('group disarm: confirmed with no deck read after the press',
+  'ltcplay/remote.py',
+  '                if read_at is None and self._deck_reads > reads0:\n',
+  '                if read_at is None:\n'),
+ ('group disarm: a group still wanted counts as off',
+  'ltcplay/remote.py',
+  '                            g.get("armed") == "disarmed" and \\\n'
+  '                            not g.get("wanted"):\n',
+  '                            g.get("armed") == "disarmed":\n'),
+ ('group disarm: the forced disarm is never sent',
+  'ltcplay/remote.py',
+  '            r = fn(f"{label} pressed Disarm {gname} on the {device} "',
+  '            r = None and fn(f"{label} pressed Disarm {gname} on the '
+  '{device} "'),
+ ('group disarm: a forced disarm raises no alert',
+  'ltcplay/remote.py',
+  '            self.alerts.raise_("flames", alert)\n',
+  '            pass\n'),
+ ('group disarm: a forced disarm that failed is said as forced',
+  'ltcplay/remote.py',
+  '        if ok:\n            alert = (f"{lead}: ALL groups disarm sent.',
+  '        if True:\n            alert = (f"{lead}: ALL groups disarm sent.'),
+ ('rack screen: a late Disarm answer covers the Abort pressed after it',
+  'ltcplay/web/remote.html',
+  '  if(seq >= (SAID_SEQ[el.id] || 0) && (el.id !== "ctl-msg" || seq >= ABORT_SEQ)){',
+  '  if(true){'),
+ ('ui2 page: a forced Disarm is said as done',
+  'ltcplay/web/remote2.html',
+  '    const forced = route === "group-disarm" && j.forced === true;\n',
+  '    const forced = false;\n'),
  ('disarm all: a forced disarm that failed is said as done',
   'ltcplay/remote.py',
   '        if out.get("ok"):\n            text = (f"Disarm all flame groups was not confirmed',
@@ -18020,8 +18084,12 @@ def build():
   "  if(false) drawSlotStale(); else"),
 
  ("ui2 page: a refused Disarm is said only in the footer", "ltcplay/web/remote2.html",
-  "    if(route === \"disarm-all\" || route === \"group-disarm\") disarmFailed(",
+  "    if(dis) disarmFailed(",
   "    if(false) disarmFailed("),
+ ("ui2 page: a Disarm that did not go is said as refused",
+  "ltcplay/web/remote2.html",
+  "    say(dis ? \"Disarm NOT done. Use Deck or e-stop.\" : short8(",
+  "    say(false ? \"Disarm NOT done. Use Deck or e-stop.\" : short8("),
 
  ("ui2 page: a failed Stop disarm does not say e-stop", "ltcplay/web/remote2.html",
   "  if(bad.some(i => i.key === \"abort\" || i.key === \"stop\")) return",
