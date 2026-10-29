@@ -66179,6 +66179,262 @@ def test_timed_purge_every_end_cause():
     print("  ok")
 
 
+
+def test_timed_purge_end_to_end_real_flamesafe():
+    section("timed purge end to end (Jeff, 2026-10-29): the real "
+            "flamesafe, the real flame link and arm link, the engine's own "
+            "timer thread; Ground 1 (front row, slot 411) armed and held "
+            "for a 2 s timed purge: 240 at the node for 2 s, then zero by "
+            "itself with nothing pressed; the link's own hard end zeroes it "
+            "even if the engine's deadline is gone; a timer that hangs is "
+            "zero at the node within the link's 0.25 s; an Abort at the "
+            "link ends it at once; the engine dying (the link stops) is "
+            "zero at the node by flamesafe's own frame staleness")
+    import json as _j
+    import socket as _so
+    import subprocess
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    from ltcplay import streamdeck as sd
+    from ltcplay import morning as MO
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.01)
+    listen, statusp, armp = _lf_free_udps(3)
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    groups = [{"name": "front row", "safety": 401, "fire": [411]}]
+    names = [g["name"] for g in groups]
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "arm_port": armp, "key": key},
+        "gflame_range": "60-80%", "arm_value": 157,
+        "accept_unsourced_risk": True, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": groups}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    link = fl.FlameLink(fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+                        ).start()
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 1)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    stop = threading.Event()
+
+    def flames():
+        st, at = status.last, status.last_at
+        if st is None or at is None:
+            return None
+        return {"connected": True, "stale": False,
+                "age_ms": int((time.monotonic() - at) * 1000),
+                "groups": [{"name": g.get("name"), "armed": g.get("armed")}
+                           for g in st.get("groups") or []]}
+    mcfg = MO.MorningConfig.parse(
+        {"machines": [{"id": "g1", "name": "Ground 1", "kind": "gflame",
+                       "group": "front row", "fire": [411]}],
+         "groups": {"Ground G-Flames": ["g1"]},
+         "purge": {"gflame_fire": 240}}, "selftest",
+        groups=MO.load_flamesafe_groups(cfg_path))
+    lockout = MO.Lockout(os.path.join(work, MO.LOCKOUT_FILE))
+    lines = []
+    purge = MO.Purge(lambda: mcfg, lockout, lambda: link, flames,
+                     lambda: "", lambda: names,
+                     journal=lambda text, **f: lines.append((text, f)),
+                     timed_checks=lambda t: "", threaded=True)
+    me = ("Rack screen", "w-e2e")
+    seq = [0]
+
+    def deck():
+        while not stop.is_set():
+            arm.send(names)
+            status.poll()
+            time.sleep(0.02)
+
+    def wait_for(cond, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return cond()
+
+    def state():
+        st = status.last
+        return st["groups"][0] if st else {}
+
+    def arm_front():
+        ok = False
+        for _cycle in range(5):
+            arm.set_group(0, False)
+            time.sleep(1.2)
+            arm.set_group(0, True)
+            ok = wait_for(lambda: state().get("armed") == "armed", 4)
+            if ok:
+                break
+        return ok
+
+    def node_trace(seconds):
+        """(clock, slot 411, safety 401) of every universe frame for
+        `seconds`."""
+        out = []
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            v = fp.parse_e131(data).values
+            out.append((time.monotonic(), v[410], v[400]))
+        return out
+
+    def start(seconds, run):
+        """A whole hold, beats every 100 ms on the real clock, as the page
+        sends them. The start's clock, or None."""
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            seq[0] += 1
+            code, out = purge.timed_beat({"hold": True, "run": run,
+                                          "seq": seq[0], "seconds": seconds},
+                                         me, True, who="Andy",
+                                         screen="Rack screen")
+            if code != 200:
+                check(False, f"the hold was refused: {out}")
+                return None
+            if out.get("started"):
+                return time.monotonic()
+            time.sleep(0.1)
+        return None
+
+    def on_spans(trace):
+        on = [t for t, v, _s in trace if v == 240]
+        return (on[0], on[-1]) if on else (None, None)
+    dt = threading.Thread(target=deck, daemon=True)
+    dt.start()
+    try:
+        if not check(wait_for(lambda: status.last is not None, 15),
+                     "flamesafe is up: " + "".join(said)[-500:]):
+            return
+        if not check(arm_front(), f"front row armed: {state()}"):
+            return
+        code, out = purge.select("g1", True, "Rack screen", True)
+        check(code == 200, f"Ground 1 selected: {out}")
+        # 1. A 2 s timed purge: 240 at the node for 2 s, then zero.
+        t0 = start(2, "e1")
+        tr = node_trace(3.2)
+        first, last = on_spans(tr)
+        check(t0 is not None and first is not None and
+              1.6 <= last - t0 <= 2.4,
+              f"240 at the node from the start for about 2 s "
+              f"({(last - t0) if last and t0 else None!r} s)")
+        tail = [v for t, v, _s in tr if last is not None and t > last + 0.3]
+        check(len(tail) > 20 and not any(tail),
+              f"then zero by itself, nothing pressed: {tail[-3:]}")
+        check(not purge.timed_running() and
+              any("2 s were up" in x[0] for x in lines),
+              f"and the engine says why it ended: {lines[-1:]}")
+        check(state().get("armed") == "armed",
+              "the purge never disarmed the group itself")
+        # 2. The link's own hard end, with the engine's deadline gone.
+        t0 = start(2, "e2")
+        f = purge.fire
+        if f is not None:
+            # The engine's own deadline pushed out of reach: only the
+            # link's hard end (purge_limit, set at the start) is left.
+            f["timed"]["deadline"] += 1000.0
+        tr = node_trace(3.2)
+        first, last = on_spans(tr)
+        tail = [v for t, v, _s in tr if last is not None and t > last + 0.3]
+        check(t0 is not None and last is not None and
+              last - t0 <= 2.4 and len(tail) > 20 and not any(tail),
+              f"the engine's deadline gone, the timer still sending: the "
+              f"link's hard end zeroes the node at 2 s "
+              f"({(last - t0) if last and t0 else None!r} s)")
+        purge.stop("test")
+        # 3. The engine's timer hangs: zero at the node within the hold.
+        real_send = purge.timed_send
+        hang = threading.Event()
+        try:
+            t0 = start(10, "e3")
+            check(t0 is not None, "a 10 s timed purge started")
+            node_trace(0.5)
+            purge.timed_send = lambda now=None: hang.wait(30) and ""
+            t_hang = time.monotonic()
+            tr = node_trace(1.5)
+        finally:
+            hang.set()
+            purge.timed_send = real_send
+        first, last = on_spans(tr)
+        tail = [v for t, v, _s in tr if t > t_hang + 0.5]
+        check(len(tail) > 20 and not any(tail) and
+              (last is None or last - t_hang <= 0.6),
+              f"the timer hung: zero at the node within the link's 0.25 s "
+              f"(last 240 {(last - t_hang) if last else None!r} s after)")
+        purge.tick(time.monotonic(), True)
+        check(not purge.timed_running() and
+              any("timer stopped" in x[0] for x in lines),
+              f"and the watcher ends it, saying why: {lines[-1:]}")
+        # 4. Abort at the link: zero at once, the purge ends on its next
+        # send.
+        t0 = start(10, "e4")
+        node_trace(0.5)
+        t_ab = time.monotonic()
+        link.disarm_all("Abort from the rack screen (selftest)")
+        tr = node_trace(1.0)
+        first, last = on_spans(tr)
+        check(last is None or last - t_ab <= 0.3,
+              f"Abort: zero at the node at once "
+              f"({(last - t_ab) if last else None!r} s)")
+        check(wait_for(lambda: not purge.timed_running(), 1.0) and
+              any("zeroed" in x[0] for x in lines),
+              f"and the timed purge ended, saying why: {lines[-1:]}")
+        # 5. The engine dies: the link stops sending, flamesafe zeroes.
+        if check(arm_front(), f"front row armed again: {state()}"):
+            purge.select("g1", True, "Rack screen", True)
+            t0 = start(10, "e5")
+            node_trace(0.5)
+            t_dead = time.monotonic()
+            link.stop()
+            tr = node_trace(2.0)
+            first, last = on_spans(tr)
+            tail = [v for t, v, _s in tr if t > t_dead + 1.2]
+            check(len(tail) > 20 and not any(tail) and
+                  (last is None or last - t_dead <= 1.0),
+                  f"the engine stopped sending: flamesafe's frame "
+                  f"staleness zeroes the node "
+                  f"({(last - t_dead) if last else None!r} s)")
+    finally:
+        stop.set()
+        dt.join(2)
+        try:
+            purge.clear("the test is over")
+        except Exception:
+            pass
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        arm.close()
+        status.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_windows_rack_window_and_explorer_front():
     section("rack screen window (Jeff, 2026-10-19): the Windows app opens "
             "the page as an ordinary Edge app window, Minimize, Maximize "
@@ -88930,6 +89186,7 @@ if __name__ == "__main__":
         test_timed_purge_flame_link_hard_end,
         test_timed_purge_at_the_engine,
         test_timed_purge_every_end_cause,
+        test_timed_purge_end_to_end_real_flamesafe,
         test_windows_rack_window_and_explorer_front,
         test_users_passwords_are_slow_salted_hashes_and_never_stored,
         test_users_lockout_is_short_and_never_permanent,
