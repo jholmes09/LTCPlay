@@ -135,9 +135,11 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 /* The quiet tone: signed out, no contact or the show not running. Only
    what is not an emergency control is quieter (less colour, the same
    lightness, so text keeps its contrast); Abort, Hold, Stop, every Disarm
-   and the live modes' Stops keep their full colour. Nothing moves. */
-body.inactive .state, body.inactive #b-go, body.inactive #b-armall, body.inactive #ann .head, body.inactive #ann-btns,
-body.inactive .tile:not(.armed) .tn, body.inactive .tile:not(.armed) .ts, body.inactive #hazers [data-hzb]:not(.on),
+   and the live modes' Stops keep their full colour, and so do the state
+   pill (NO CONTACT, NOT READY) and a hazer whose state is not known (its
+   button is a disarm). Nothing moves. */
+body.inactive .state > div:not(#pill), body.inactive #b-go, body.inactive #b-armall, body.inactive #ann .head, body.inactive #ann-btns,
+body.inactive .tile:not(.armed) .tn, body.inactive .tile:not(.armed) .ts, body.inactive #hazers [data-hzb]:not(.on):not(.unk),
 body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
 .b .fill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(255,255,255,.28);pointer-events:none;transition:width .1s linear}
 .q{width:56px;height:56px;min-width:56px;border-radius:50%;border:2px solid var(--blue);background:#0d1d30;
@@ -859,7 +861,7 @@ function goLook(st, isStaleNow, local, waiting){
     else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "Starts the next show" : "No contact"};
   }
   // Signed out is view only: none of these is a safety press.
-  if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = "Sign in first"; }
+  if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = signWhy(st, "show"); }
   return L;
 }
 // The line at the top: what to do next, in eight words or fewer.
@@ -904,11 +906,21 @@ function nextStep(st, isStaleNow, local, items){
 }
 // Signed out (view only), no contact, nothing heard yet, or the show not
 // running: the page's quiet tone. From the engine's status only. Pure.
+// Why a press is not this screen's (review of #175): signed out, sign
+// in; signed in without the right, say so rather than "Sign in".
+function signWhy(st, perm, short){
+  const me = (st && st.me) || (typeof ME !== "undefined" && ME) || {};
+  if(me.user) return perm === "arm" ? (short ? "Cannot arm" : "Your sign-in cannot arm") : "View only";
+  return perm === "arm" ? (short ? "Sign in" : "Sign in to arm") : short ? "Sign in" : "Sign in first";
+}
 function inactiveNow(st, isStaleNow){
-  if(!st || isStaleNow) return true;
   // A live hazard (cleaning, live flame, flames in Programming) never
-  // looks calm, whoever is signed in.
-  if(pinItems(st).length) return false;
+  // looks calm, whoever is signed in, and least of all with no contact
+  // (review of #175: the last status still says it is live).
+  if(st && pinItems(st).length) return false;
+  if(!st || isStaleNow) return true;
+  // A show playing is never calm, signed out or not.
+  if(isLive(st)) return false;
   if(st.me && st.me.view_only) return true;
   const sch = st.schedule || {};
   return !!(sch.attached && !runIsOn(st) && !isLive(st));
@@ -1028,7 +1040,7 @@ function renderAlertSlot(){
   // Continue anyway is the run permission's (1.0's engine rule); never
   // turned off under a finger that holds it.
   if(!PR_HOLD) ab.disabled = it.act === "pr-continue" && !mayRow(ST, "show");
-  if(!PR_HOLD && ab.disabled) setText($("al-act-l"), "Sign in first");
+  if(!PR_HOLD && ab.disabled) setText($("al-act-l"), signWhy(ST, "show"));
   if(it.act === "pr-continue" && it.holdMs) PR_HOLD_MS = it.holdMs;
 }
 // No contact: the slot never shows an old "No alerts"; it says the
@@ -1114,10 +1126,10 @@ $("m-snd").addEventListener("click", () => annPress("announce-stop"));
 let PIN_SIG = "";
 function renderPins(){
   const pins = pinItems(ST);
-  const sig = pins.map(p => p.key + (p.off ? "-" : "")).join(",");
+  const sig = pins.map(p => p.key + ":" + p.btn).join(",");
   if(sig === PIN_SIG) return;
   PIN_SIG = sig;
-  $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}"${p.off ? " disabled" : ""}>${icon("stop")}${esc(p.btn)}</button>`).join("");
+  $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
 }
 $("pins").addEventListener("click", async e => {
   const b = e.target.closest("button[data-pin]"); if(!b) return;
@@ -1654,7 +1666,7 @@ function renderHazers(s){
     // never.
     // Arming needs the arm permission, a live page and, from the show
     // network, arming from a screen (remote.hazer_post); a disarm never.
-    const hzWhy = look.armed ? "" : stale() ? "No contact" : !mayArm ? "Sign in to arm" :
+    const hzWhy = look.armed ? "" : stale() ? "No contact" : !mayArm ? signWhy(s, "arm") :
       !(ME && ME.local) && !(s.arming && s.arming.enabled) ? "Arming off here" : "";
     b.disabled = !!hzWhy;
     if(hzWhy) setText(b.querySelector(".hw"), hzWhy);
@@ -1814,7 +1826,7 @@ function renderAllButtons(isSt){
   const ar = armAllRefusal(ST);
   // Off, it reads "Arm flames" over the reason: two lines, as tall as the
   // live label, so the SHOW tab never grows.
-  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? "Sign in" :
+  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? signWhy(ST, "arm", true) :
     ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : "All armed");
   setText($("armall-l"), b.disabled ? "Arm flames" : "Hold: arm flames");
   b.title = b.disabled && ar ? ar : "";
@@ -1878,7 +1890,7 @@ function renderLasers(isSt){
     const why = lzArmRefusal(la, ls, isSt);
     b.className = "b " + (why ? "" : "green");
     const may = mayRow(ST, "arm");
-    setIcon(b.querySelector("svg"), "laser"); setText($("lz-bl"), why ? (locked ? "Laser locked" : "Arming off") : !may ? "Sign in to arm" : "Arm lasers");
+    setIcon(b.querySelector("svg"), "laser"); setText($("lz-bl"), why ? (locked ? "Laser locked" : "Arming off") : !may ? signWhy(ST, "arm") : "Arm lasers");
     b.disabled = !!why || !may;
   }
 }
@@ -1903,7 +1915,7 @@ let ANN_SIG = "", ANN_BUSY = false;
 function annWhy(st, isStaleNow, local){
   if(!st || isStaleNow) return "No contact";
   if(!local) return "Show PC only";
-  if(!mayRow(st, "show")) return "Sign in to use";
+  if(!mayRow(st, "show")) return (st.me && st.me.user) ? "View only" : "Sign in to use";
   const an = st.announce || {};
   if(an.ok === false) return "Cannot play now";
   if(!(an.route || {}).ok) return "No sound output";
@@ -2202,8 +2214,10 @@ let SHOW_NAME = "";
 async function loadBrand(){
   try{
     const b = await getJSON("/api/brand", 3000);
-    const title = b.show || b.product || "Show remote";
-    SHOW_NAME = b.show || b.product || "";
+    // Only words: a value that is not a string is not a name.
+    const str = v => typeof v === "string" ? v.trim() : "";
+    const title = str(b.show) || str(b.product) || "Show remote";
+    SHOW_NAME = str(b.show) || str(b.product);
     setText($("brand-show"), title);
     document.querySelectorAll("#qcard .qs").forEach(e => setText(e, title));
     document.title = title + " remote";

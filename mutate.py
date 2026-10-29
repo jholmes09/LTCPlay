@@ -2716,8 +2716,8 @@ MUTATIONS = [
 
  ("ui 2.0: arming a hazer is not greyed for a role that may not arm",
   "ltcplay/web/remote2.html",
-  " !mayArm ? \"Sign in to arm\" :",
-  " false ? \"Sign in to arm\" :"),
+  " !mayArm ? signWhy(s, \"arm\") :",
+  " false ? signWhy(s, \"arm\") :"),
 
  ("ui 2.0: announcements play from off the show PC",
   "ltcplay/web/remote2.html",
@@ -2751,8 +2751,29 @@ MUTATIONS = [
 
  ("ui 2.0: a live hazard reads calm",
   "ltcplay/web/remote2.html",
-  "  if(pinItems(st).length) return false;\n",
+  "  if(st && pinItems(st).length) return false;\n",
   ""),
+
+ ("ui 2.0: a live hazard reads calm once contact is lost",
+  "ltcplay/web/remote2.html",
+  "  if(st && pinItems(st).length) return false;\n  if(!st || isStaleNow) return true;",
+  "  if(!st || isStaleNow) return true;\n  if(st && pinItems(st).length) return false;"),
+
+ ("ui 2.0: a show playing reads calm when signed out",
+  "ltcplay/web/remote2.html",
+  "  if(isLive(st)) return false;\n  if(st.me && st.me.view_only) return true;",
+  "  if(st.me && st.me.view_only) return true;"),
+
+ ("ui 2.0: the calm tone mutes the state pill",
+  "ltcplay/web/remote2.html",
+  "body.inactive .state > div:not(#pill), body.inactive #b-go,",
+  "body.inactive .state, body.inactive #b-go,"),
+
+ ("ui 2.0: a signed-in viewer is told to sign in",
+  "ltcplay/web/remote2.html",
+  "  if(me.user) return perm === \"arm\" ? (short ? \"Cannot arm\" : \"Your sign-in cannot arm\") : \"View only\";\n",
+  ""),
+
 
  ("ui2 page: Programming playback firing flames is not pinned",
   "ltcplay/web/remote2.html",

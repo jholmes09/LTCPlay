@@ -60293,7 +60293,7 @@ def test_hazers_on_the_rack_screens():
               f"{name}: the row, its taps, Hazers off and the levels")
         check(("b.disabled = !look.armed && !mayArm;" in p or
                ('const hzWhy = look.armed ? "" :' in p and
-                '!mayArm ? "Sign in to arm" :' in p and
+                '!mayArm ? signWhy(s, "arm") :' in p and
                 "b.disabled = !!hzWhy;" in p)) and
               'mayRow(s, "arm")' in p,
               f"{name}: arming greyed for a role that may not arm, a "
@@ -86266,8 +86266,8 @@ def test_ui2_page_makes_only_1_0_presses():
         print("  ok")
         return
     fns = "\n".join(_js_function(two, n) or "" for n in (
-        "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "goLook",
-        "nextStep", "pillLook", "alertItems"))
+        "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "signWhy",
+        "goLook", "nextStep", "pillLook", "alertItems"))
     # alertItems' words and the page's own state it reads.
     for c in ("ALERT_WHAT", "ALERT_DO"):
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
@@ -86642,6 +86642,7 @@ function inactSnap(){
     next_b:q("next-b").hidden ? "" : q("next-b").textContent, title:document.title,
     brand:q("brand").style.visibility === "hidden" ? "" : (q("brand-show").hidden ? "logo" : q("brand-show").textContent),
     note:q("ann-note").textContent, armall:q("armall-why").textContent,
+    pillf:filtOf(q("pill")) ? filtOf(q("pill")).f : "none",
     pins:[...document.querySelectorAll("#pins .b")].map(b => ({k:b.dataset.pin, dis:b.disabled, t:b.textContent.trim()}))};
   s.ann = [...q("ann-btns").querySelectorAll(".b"), q("ann-stop")].map(b => {
     const f = b.querySelector(".fill");
@@ -86835,7 +86836,7 @@ def _ui2_status_inactive(kind, hazers=True):
     st["arming"] = dict(st.get("arming") or {}, enabled=False)
     st["announce"]["route"] = {"ok": True, "kind": "show",
                                "text": "the show audio"}
-    if kind != "running":
+    if kind not in ("running", "running out"):
         st["schedule"].update({"state": "STANDBY", "running": None,
                                "next": {"show": 5, "start": "19:50",
                                         "in_s": 900}})
@@ -86853,7 +86854,14 @@ def _ui2_status_inactive(kind, hazers=True):
         st["programming_flames"] = {"available": True, "follows": True,
                                     "on": True, "line": ""}
         st["transport"] = {"programming": True}
-    if kind in ("signed out", "playing", "pf out"):
+    if kind == "viewer":
+        # Signed in, but a role that may press nothing.
+        st["me"] = {"local": True, "user": "Guest", "role": "viewer",
+                    "view_only": False,
+                    "may": {k: False for k in ("show", "arm", "unlock",
+                                               "checklist", "show_files",
+                                               "settings", "users")}}
+    if kind in ("signed out", "playing", "pf out", "running out"):
         st["me"] = {"local": True, "user": None, "role": None,
                     "view_only": True,
                     "may": {k: False for k in ("show", "arm", "unlock",
@@ -86895,7 +86903,8 @@ def test_ui2_calm_screens_and_brand():
           "the quick card prints the brand")
     for word in ("No contact", "Show PC only", "Sign in to use",
                  "Cannot play now", "No sound output", "Sign in to arm",
-                 "Arming off here", "Sign in"):
+                 "Arming off here", "Sign in", "View only",
+                 "Your sign-in cannot arm", "Cannot arm"):
         check(len(word.split()) <= 8 and ('"' + word + '"') in two,
               f"2.0 says why in 8 words or fewer: {word!r}")
     chrome = _find_chromium()
@@ -86919,7 +86928,11 @@ def test_ui2_calm_screens_and_brand():
             ("a show running", "running", ((1366, 768),),
              "?inact=1&tour=0", brand),
             ("Programming flames playing", "pf", ((1366, 768),),
-             "?inact=1&pf=1&tour=0", brand),
+             "?inact=1&pf=1&dead=1&tour=0", brand),
+            ("a show playing, signed out", "running out", ((1366, 768),),
+             "?inact=1&tour=0", brand),
+            ("signed in, may press nothing", "viewer", ((1366, 768),),
+             "?inact=1&tour=0", brand),
             ("Programming flames playing, signed out", "pf out",
              ((1024, 768),), "?inact=1&pf=1&tour=0", brand),
             ("a long show name", "signed out", sizes, "?inact=1&tour=0",
@@ -86973,8 +86986,35 @@ def test_ui2_calm_screens_and_brand():
                 check(a["brand"] == "Fire and Ice",
                       f"{where}: the header names the show: "
                       f"{a['brand']!r}")
+            if kind == "running out":
+                check(not a["inactive"],
+                      f"{where}: a show playing is never calm, signed out "
+                      f"or not: {a['inactive']} {a['next']!r}")
+                continue
+            if kind == "viewer":
+                check(a["inactive"] and a["note"] == "View only" and
+                      a["armall"] == "Cannot arm" and
+                      all(x["w"] == "Your sign-in cannot arm" and x["dis"]
+                          for x in a["hz"]) and len(a["hz"]) == 3,
+                      f"{where}: signed in without the right, it says so "
+                      f"rather than Sign in: {a['note']!r} {a['armall']!r} "
+                      f"{a['hz']}")
+                continue
+            if a["inactive"]:
+                check("saturate" not in a["pillf"],
+                      f"{where}: the state pill keeps its full colour on a "
+                      f"calm screen: {a['pillf']}")
             if kind.startswith("pf"):
                 pin = [x for x in a["pins"] if x["k"] == "pf"]
+                if "stale" in r:
+                    sl = r["stale"]
+                    sp = [x for x in sl["pins"] if x["k"] == "pf"]
+                    check(not sl["inactive"] and sp and not sp[0]["dis"] and
+                          "saturate" not in sl["pillf"] and safe_ok(sl),
+                          f"{where}: contact lost with flames live: never "
+                          f"calm, the pin's Stop live, the pill full colour "
+                          f"(review of #175): {sl['inactive']} {sl['pins']} "
+                          f"{sl['pillf']}")
                 # Hold is a safety press: never off, signed out included.
                 check(pin and not pin[0]["dis"] and pin[0]["t"] == "Stop"
                       and a["next"] == "Flames can fire from Programming."
