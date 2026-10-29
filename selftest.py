@@ -50894,6 +50894,38 @@ out.stale_holds = h.posts("arm-hold").length;
         check(m["stale_posts"] == [1] and m["stale_holds"] == 0,
               f"no contact: one press disarms, nothing is held: "
               f"{m['stale_posts']} {m['stale_holds']}")
+    # A group's Disarm says the engine's answer (2026-10-29): confirmed,
+    # forced, or an older engine's "sent"; the button and its word stay
+    # what the polled status says.
+    steps3 = r"""
+window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; return st; };
+await h.sleep(700);
+out.gd = {};
+const said = {confirmed:{ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."},
+  forced:{ok:true, confirmed:false, forced:true, text:"Disarm front row forced: the Stream Deck did not answer (flamesafe did not report front row off within 1 s of the Disarm)."},
+  old:{ok:true, text:"Disarm front row sent."}};
+for(const k of ["confirmed", "forced", "old"]){
+  window.__answer["group-disarm"] = b => [200, said[k]];
+  const before = h.look(0);
+  h.tap(h.lamp(0));
+  await h.sleep(200);
+  out.gd[k] = {msg:document.getElementById("ctl-msg").textContent, same:JSON.stringify(h.look(0)) === JSON.stringify(before)};
+}
+"""
+    m = _rack_drive(chrome, page, _rack_status_off(), steps3)
+    if check(isinstance(m, dict) and not m.get("problems"),
+             f"drawn, then Disarm answered three ways: {m!r}"):
+        gd = m["gd"]
+        check(gd["confirmed"]["msg"] == "Disarm front row confirmed: "
+              "flamesafe reports it off." and
+              gd["forced"]["msg"].startswith("Disarm front row forced: "
+                                             "the Stream Deck did not "
+                                             "answer") and
+              gd["old"]["msg"] == "Disarm front row sent.",
+              f"1.0 says the engine's answer to a group's Disarm: {gd}")
+        check(all(gd[k]["same"] for k in ("confirmed", "forced", "old")),
+              f"and the tile stays what the polled status says (ARMED): "
+              f"{gd}")
     print("  ok")
 
 
@@ -85826,6 +85858,8 @@ window.fetch = function(u, o){
   if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
   if(window.__fail && o && o.method === "POST" && window.__fail.test(String(u)))
     return Promise.resolve(new Response(JSON.stringify({error:"Refused for the test."}), {status:409, headers:{"Content-Type":"application/json"}}));
+  if(window.__answer && o && o.method === "POST" && window.__answer.re.test(String(u)))
+    return Promise.resolve(new Response(JSON.stringify(window.__answer.body), {status:200, headers:{"Content-Type":"application/json"}}));
   return realFetch.apply(this, arguments);
 };
 function shown(el){
@@ -85942,6 +85976,20 @@ async function presses(){
   res.arm_beats_later = n("/api/remote/arm-hold");
   document.getElementById("b-disall").click(); await wait(300);
   res.disarm_all = n("/api/remote/disarm-all");
+  // A group's Disarm (2026-10-29): the engine's answer is said, confirmed
+  // or forced; the tile stays what the polled status says.
+  const lamp0 = () => { const t = document.querySelector('[data-lamp="0"]'); return t ? t.className : ""; };
+  const lampBefore = lamp0(), gd = {};
+  for(const [k, body] of [["confirmed", {ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."}],
+      ["forced", {ok:true, confirmed:false, forced:true, text:"Disarm front row forced: the Stream Deck did not answer (flamesafe did not report front row off within 1 s of the Disarm). The flame link has no one-group disarm, so every flame group was disarmed the way Abort does it."}],
+      ["old", {ok:true, text:"Disarm front row sent."}]]){
+    window.__answer = {re:/group-disarm/, body:body};
+    await press("group-disarm", {group:0});
+    gd[k] = {msg:document.getElementById("msg-t").textContent, cls:document.getElementById("msg").className, full:MSG_FULL};
+  }
+  window.__answer = null;
+  gd.lamp_same = lamp0() === lampBefore && lampBefore !== "";
+  res.gd = gd;
   // No contact: the status stops coming.
   window.__dead = true; await wait(2800);
   const q = id => document.getElementById(id);
@@ -86256,6 +86304,23 @@ def test_ui2_show_tab_in_a_browser():
                       f"go on release, with no beat after: {p}")
                 check(p and p["disarm_all"] == 1,
                       f"{where}: Disarm all is one tap")
+                gd = (p or {}).get("gd") or {}
+                check(gd.get("confirmed", {}).get("msg") ==
+                      "Disarm front row confirmed: flamesafe reports it "
+                      "off." and gd["confirmed"]["cls"] == "ok",
+                      f"{where}: a confirmed Disarm says so: {gd}")
+                check(gd.get("forced", {}).get("msg") ==
+                      "Disarm forced: the deck did not answer." and
+                      gd["forced"]["cls"] == "warn" and
+                      gd["forced"]["full"].startswith(
+                          "Disarm front row forced: the Stream Deck"),
+                      f"{where}: a forced Disarm says so, the engine's "
+                      f"words behind Details: {gd}")
+                check(gd.get("old", {}).get("msg") ==
+                      "Disarm front row sent." and gd.get("lamp_same"),
+                      f"{where}: an older engine's answer is said as it "
+                      f"was, and no answer changes the tile (the polled "
+                      f"status does): {gd}")
                 sl = (p or {}).get("stale") or {}
                 check(sl.get("slot") == "Connection lost.",
                       f"{where}: with no contact the alert slot says "
@@ -86274,7 +86339,8 @@ def test_ui2_show_tab_in_a_browser():
                 check(p and set(p["routes"]) <= {
                     "/api/remote/abort", "/api/remote/hold",
                     "/api/remote/stop", "/api/remote/arm-hold",
-                    "/api/remote/arm-release", "/api/remote/disarm-all"},
+                    "/api/remote/arm-release", "/api/remote/disarm-all",
+                    "/api/remote/group-disarm"},
                       f"{where}: nothing else was posted: {p}")
     # The rules' request fails (safety review of #166, B1): the page says
     # so over everything but Abort, and Abort still sends 1.0's Abort on
