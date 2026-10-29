@@ -2126,9 +2126,10 @@ class ScreenKeys:
 
     def flames_live(self):
         """True while the engine's last fresh answer says live flame
-        programming or fire while scrubbing is on (deck-input
-        "flames_live"), False when it says neither, None when the engine
-        has not answered within SCREEN_STALE_S."""
+        programming is on, or Programming playback with the show's flame
+        cues following it (deck-input "flames_live"), False when it says
+        neither, None when the engine has not answered within
+        SCREEN_STALE_S."""
         with self._lock:
             last = self._last
         if last is None or self._clock() - last[1] > SCREEN_STALE_S:
@@ -3398,8 +3399,9 @@ class Controller:
         return self.start_key_mode() in STOP_MODES or self._idle_stop()
 
     def _flames_live(self):
-        """True while the engine says live flame programming or fire while
-        scrubbing is on (deck-input "flames_live"), False when it says
+        """True while the engine says live flame programming or flame-
+        following Programming playback is on (deck-input "flames_live"),
+        False when it says
         neither, None when not known: a stale or missing answer, or one
         that raised (review of #132, 4). A deck with no screen wired at
         all (no engine) has no live flames: False. Never raises."""
@@ -3416,7 +3418,8 @@ class Controller:
     def _idle_stop(self):
         """With no show or run going, key 0 is still Stop (STOP ALL) while
         a group is armed other than for the purge, or live flame
-        programming or fire while scrubbing is on: those count as running
+        programming or flame-following Programming playback is on: those
+        count as running
         (review of #130, low items, 3). The purge still works when nothing
         at all is running."""
         # Live flames not known count as on (review of #132, 4): Stop
@@ -3428,7 +3431,7 @@ class Controller:
         """Stop (Jeff, 2026-10-26): first every flame group disarmed on the
         arm link at once (_disarm_all_groups; never the Abort latch), then
         the Rack screen's Stop button, POST /api/stop: the engine ends live
-        flame programming and fire while scrubbing, sends the flame link's
+        flame programming, sends the flame link's
         disarm_all (cues zeroed, a zero frame, the keyed disarm and its
         repeats; review of #126, P2-1), then stops playback and blacks the
         outputs out. The lasers: exactly what the Rack screen's Stop does
