@@ -50,6 +50,32 @@ REMOTE2_PAGE = os.path.join(HERE, "web", "remote2.html")
 UI_COOKIE = "ltcplay_ui"
 UI_ROUTES = ("/remote1", "/remote2", "/remote-logic.js", "/ui")
 LOGIC_OPEN = '<script id="remote-logic">'
+LOGIC_TAG = '<script src="/remote-logic.js"></script>'
+
+
+def remote_logic():
+    """1.0's pure rules (remote.html's remote-logic block), or None."""
+    with open(REMOTE_PAGE, encoding="utf-8") as fh:
+        page = fh.read()
+    a = page.find(LOGIC_OPEN)
+    b = page.find("</script>", a) if a >= 0 else -1
+    if a < 0 or b < 0:
+        return None
+    return page[a + len(LOGIC_OPEN):b]
+
+
+def remote2_page():
+    """remote2.html with 1.0's rules written into it (safety review of
+    #166, B1): the page arrives whole in one answer, never waiting on a
+    second request for its rules. Without the block, the page as it is
+    (its own tag then asks /remote-logic.js, and it says when that fails;
+    its Abort needs neither)."""
+    with open(REMOTE2_PAGE, encoding="utf-8") as fh:
+        page = fh.read()
+    logic = remote_logic()
+    if logic is not None and LOGIC_TAG in page:
+        page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + "</script>", 1)
+    return page.encode("utf-8")
 # The pages' icons (tab, iPad home screen, installed web app), made from the
 # LTC Player app icon by tools/make_web_icons.py. A fixed list of files at
 # fixed addresses: nothing here reads a path the request names.
@@ -1396,6 +1422,9 @@ class Handler(BaseHTTPRequestHandler):
                 page = {"/remote1": REMOTE_PAGE,
                         "/remote2": REMOTE2_PAGE}.get(route) or (
                     REMOTE2_PAGE if self._ui_choice() == 2 else REMOTE_PAGE)
+                if page == REMOTE2_PAGE:
+                    return self._send(200, remote2_page(),
+                                      "text/html; charset=utf-8")
                 with open(page, "rb") as fh:
                     return self._send(200, fh.read(),
                                       "text/html; charset=utf-8")
@@ -1504,14 +1533,11 @@ class Handler(BaseHTTPRequestHandler):
         """GET /remote-logic.js: 1.0's pure rules, cut out of remote.html
         (its remote-logic block) at each request, so 2.0 runs the very
         functions 1.0 runs and selftest.py proves."""
-        with open(REMOTE_PAGE, encoding="utf-8") as fh:
-            page = fh.read()
-        a = page.find(LOGIC_OPEN)
-        b = page.find("</script>", a) if a >= 0 else -1
-        if a < 0 or b < 0:
+        logic = remote_logic()
+        if logic is None:
             return self._send(500, {"error": "remote.html has no "
                                              "remote-logic block."})
-        return self._send(200, page[a + len(LOGIC_OPEN):b],
+        return self._send(200, logic,
                           "application/javascript; charset=utf-8")
 
     def _abort_latched(self):

@@ -1430,14 +1430,28 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   the show state, the timecode and the time left; the big button for the
   next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
-  per flame group and one for the lasers, with Hold: arm all and Disarm
-  all; the announcements; the wind on one line; Abort in the corner, 96
-  px, tap twice. Run show is the 1.0 Run in Show mode, on the show PC only.
+  per flame group and one for the lasers, with Hold: arm flames and Disarm
+  flames (flames only; the lasers' tile has its own Disarm lasers); the
+  announcements; the wind on one line; Abort in the corner, 96 px, tap
+  twice. Run show is the 1.0 Run in Show mode, on the show PC only.
+- Anything live that has to be stopped by hand (the wave flamer cleaning,
+  live flame programming, flames while scrubbing) sits in the next-step
+  line with its own red Stop, on every tab, never behind another alert,
+  and the state never reads READY while it runs, or while a fault is open.
+  A rehearsal reads REHEARSAL and never counts down to a show.
+- Off the SHOW tab, Hold, Stop show, Disarm flames, Disarm lasers and Stop
+  sound stay one tap away under the next-step line, and a new alert brings
+  the screen back to SHOW.
+- A Disarm that is refused stays in the alert slot until Seen, and the
+  next step says to use the Deck or the e-stop. With no contact the slot
+  says Connection lost.
+- Abort does not depend on the rest of the page: if the page did not load
+  whole it says "Page not fully loaded. Reload it." across the top, and
+  Abort still works.
 - The rig check before a show: the big button says Checking rig while it
   runs. When it fails, the alert slot says so and its button is 1.0's
   "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
-  alert's details have Check again. A wave flamer cleaning that is running
-  shows in the same slot with Stop cleaning.
+  alert's details have Check again.
 - Help (header): the tour again, and a quick card to print. Each "?" says
   what the buttons near it do, in one sentence each.
 

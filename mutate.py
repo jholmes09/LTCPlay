@@ -17633,8 +17633,8 @@ def build():
   '        if not v:\n            return self._send(400, {"error": "v has to be 1 or 2."})'),
 
  ("ui2: /remote-logic.js serves the whole of 1.0", "ltcplay/web.py",
-  "        return self._send(200, page[a + len(LOGIC_OPEN):b],",
-  "        return self._send(200, page,"),
+  "    return page[a + len(LOGIC_OPEN):b]\n",
+  "    return page\n"),
 
  ("ui2: the default interface is set from the network", "ltcplay/remote.py",
   "            if not ctx.local:\n                return 403, {\"error\": \"The default interface is set on the \"",
@@ -17657,8 +17657,8 @@ def build():
   '    "ui-default": None,'),
 
  ("ui2 page: Abort fires on its first tap", "ltcplay/web/remote2.html",
-  "  const step = abortTapStep(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(!step.fire){",
-  "  const step = abortTapStep(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(false){"),
+  "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(!step.fire){",
+  "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(false){"),
 
  ("ui2 page: Stop is sent with no confirm", "ltcplay/web/remote2.html",
   '  if(!(await confirmBox("Stop the show?",',
@@ -17671,6 +17671,46 @@ def build():
  ("ui2 page: the copied hold beats faster than 1.0's", "ltcplay/web/remote2.html",
   "    p.timer = setTimeout(() => armBeat(h, p), 100);",
   "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
+
+ ("ui2: 2.0 is served without 1.0's rules written in", "ltcplay/web.py",
+  "    if logic is not None and LOGIC_TAG in page:\n",
+  "    if False:\n"),
+
+ ("ui2 page: Abort leans on 1.0's rules", "ltcplay/web/remote2.html",
+  "  const kind = abortTapKind2(e);",
+  "  const kind = abortTapKind(e);"),
+
+ ("ui2 page: a page whose rules did not load says nothing", "ltcplay/web/remote2.html",
+  "window.addEventListener(\"load\", () => { if(!ui2Whole()) $(\"broken\").hidden = false; });\nsetInterval(() => { if(!ui2Whole()) $(\"broken\").hidden = false; }, 1000);",
+  ""),
+
+ ("ui2 page: a running cleaning is not pinned", "ltcplay/web/remote2.html",
+  "  if(wc && wc.state && wc.state !== \"idle\") out.push({key:\"wc\",",
+  "  if(false) out.push({key:\"wc\","),
+
+ ("ui2 page: a live mode reads READY", "ltcplay/web/remote2.html",
+  "  if(pins.length) return {cls:\"bad\", icon:\"flame\", text:pins[0].pill};\n",
+  ""),
+
+ ("ui2 page: a fault reads READY", "ltcplay/web/remote2.html",
+  "  if((items || []).some(i => i.tone === \"bad\")) return {cls:\"bad\", icon:\"warn\", text:\"NOT READY\"};\n",
+  ""),
+
+ ("ui2 page: the slot's button acts on whatever shows at the lift", "ltcplay/web/remote2.html",
+  "  if(down && (down.key !== ALERT_KEY || down.act !== $(\"al-act\").dataset.act)){",
+  "  if(false){"),
+
+ ("ui2 page: no contact leaves the old alert slot", "ltcplay/web/remote2.html",
+  "  if(isSt) drawSlotStale(); else",
+  "  if(false) drawSlotStale(); else"),
+
+ ("ui2 page: a refused Disarm is said only in the footer", "ltcplay/web/remote2.html",
+  "    if(route === \"disarm-all\" || route === \"group-disarm\") disarmFailed(",
+  "    if(false) disarmFailed("),
+
+ ("ui2 page: a failed Stop disarm does not say e-stop", "ltcplay/web/remote2.html",
+  "  if(bad.some(i => i.key === \"abort\" || i.key === \"stop\")) return",
+  "  if(bad.some(i => i.key === \"abort\")) return"),
 
  ("ui2 page: letting go of Continue anyway early still continues", "ltcplay/web/remote2.html",
   '  if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done."',
