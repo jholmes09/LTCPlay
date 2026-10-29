@@ -2553,6 +2553,77 @@ MUTATIONS = [
   "    if False:"),
 
  # aim slots (2026-10-28): the wave flamer's angle is not a flame
+ # passthrough (2026-10-29): the hazers
+ ("flamesafe: passthrough: a hazer passes without being switched on",
+  "flamesafe/composer.py",
+  "            passing = (self._pt_on[i] and frame_fresh",
+  "            passing = (True and frame_fresh"),
+
+ ("flamesafe: passthrough: a hazer passes on a stale link",
+  "flamesafe/composer.py",
+  "            passing = (self._pt_on[i] and frame_fresh",
+  "            passing = (self._pt_on[i]"),
+
+ ("flamesafe: passthrough: a stale link leaves the hazers switched on",
+  "flamesafe/composer.py",
+  "            self._pt_reset(PT_LINK)",
+  "            pass"),
+
+ ("flamesafe: passthrough: the Abort leaves the hazers on",
+  "flamesafe/composer.py",
+  "        self._pt_reset(PT_ABORT)",
+  "        pass"),
+
+ ("flamesafe: passthrough: a change of sender leaves the hazers as they were",
+  "flamesafe/composer.py",
+  "                self._pt_reset(PT_NEW_SENDER)",
+  "                pass"),
+
+ ("flamesafe: passthrough: ON enables a hazer not seen OFF since it was taken away",
+  "flamesafe/composer.py",
+  "                self._pt_on[i] = self._pt_block[i] == \"\"",
+  "                self._pt_on[i] = True"),
+
+ ("flamesafe: passthrough: OFF never clears the block",
+  "flamesafe/composer.py",
+  "            if not on:\n                self._pt_block[i] = \"\"",
+  "            if not on:\n                pass"),
+
+ ("flamesafe: passthrough: a hazer slot in the lockout file passes",
+  "flamesafe/composer.py",
+  "                    if sl not in self._locked:\n                        buf[sl - 1] = self._frame[sl - 1]",
+  "                    if True:\n                        buf[sl - 1] = self._frame[sl - 1]"),
+
+ ("flamesafe: passthrough: a hazer slot may be a group's slot",
+  "flamesafe/config.py",
+  "            if s in group_slots:",
+  "            if False:"),
+
+ ("flamesafe: passthrough: two hazers may share a slot",
+  "flamesafe/config.py",
+  "            if s in owner:",
+  "            if False:"),
+
+ ("flamesafe: passthrough: a hazer may take a group's name",
+  "flamesafe/config.py",
+  "        if name in names:\n            raise ConfigError(f\"passthrough {name!r}: that name",
+  "        if False:\n            raise ConfigError(f\"passthrough {name!r}: that name"),
+
+ ("flamesafe: passthrough: a hazer with no slots loads",
+  "flamesafe/config.py",
+  "        if not isinstance(slots, list) or not slots:",
+  "        if not isinstance(slots, list):"),
+
+ ("flamesafe: passthrough: a slot outside 1 to 512 loads",
+  "flamesafe/config.py",
+  "                    or not (1 <= s <= rules.UNIVERSE_SIZE):\n                raise ConfigError(f\"passthrough",
+  "                    or False:\n                raise ConfigError(f\"passthrough"),
+
+ ("flamesafe: passthrough: a malformed hazers_on is not refused",
+  "flamesafe/link.py",
+  "    if not isinstance(hazers, list) or len(hazers) > HAZERS_MAX \\",
+  "    if False and not isinstance(hazers, list) or len(hazers) > HAZERS_MAX \\"),
+
  ("flamesafe: aim: every fire slot skips the edge check",
   "flamesafe/composer.py",
   "            if f in g.aim:\n                # An aim slot points the head; it never lights it.",
@@ -2784,9 +2855,9 @@ MUTATIONS = [
  # rule 9: only the writer
  ("flamesafe: ltcplay's values on channels that belong to no group pass through",
   "flamesafe/composer.py",
-  "        buf = bytearray(rules.UNIVERSE_SIZE)\n        sent_fire = []",
+  "        buf = bytearray(rules.UNIVERSE_SIZE)\n        # Passthrough (Jeff, 2026-10-29, the hazers), written BEFORE every",
   "        buf = bytearray(commanded if commanded is not None\n"
-  "                        else rules.UNIVERSE_SIZE)\n        sent_fire = []"),
+  "                        else rules.UNIVERSE_SIZE)\n        # Passthrough (Jeff, 2026-10-29, the hazers), written BEFORE every"),
 
  ("flamesafe: a disarmed group passes its fire values through",
   "flamesafe/composer.py",

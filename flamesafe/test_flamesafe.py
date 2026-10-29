@@ -111,6 +111,8 @@ class Rig:
         # disarms every group and nothing could arm in a rig without one.
         self.link_alive = True
         self.cue = {}
+        # The hazers the rig's ltcplay says ON in every frame (2026-10-29).
+        self.hazers = ()
         self.mono_floor = 0.0
 
     def step(self, dt=None, n=1):
@@ -149,7 +151,8 @@ class Rig:
         f = link.FlameFrame(self.seq, "00:00:01:00",
                             max(self.t, self.mono_floor) if mono is None
                             else mono,
-                            self.cfg.universe, bytes(vals))
+                            self.cfg.universe, bytes(vals),
+                            frozenset(self.hazers))
         why = self.c.ingest_frame(f, sender=sender)
         if why and seq is not None and seq > before:
             # a rejected explicit seq must not move the rig's own counter
@@ -5814,6 +5817,344 @@ def test_aim_slots_are_reported_at_start_and_in_status():
     check('journal.event("config", aim_line(cfg.groups, argv[0]))' in src,
           "python -m flamesafe journals the aim line at start")
 # =========================================================================
+# Passthrough: the hazers (Jeff, 2026-10-29). Three 2-channel hazers on the
+# flame universe at slots 80 to 85, in no group. Their slots carry the show
+# program's values only while it has that hazer switched ON (hazers_on), the
+# link is fresh and nothing has taken it away since it was last seen OFF.
+# =========================================================================
+
+HAZERS = [("Hazer 1", [80, 81]), ("Hazer 2", [82, 83]), ("Hazer 3", [84, 85])]
+HAZE = {80: 200, 81: 120, 82: 201, 83: 121, 84: 202, 85: 122}
+# Jeff's live flamesafe.json groups (2026-10-29), none touching 78 to 85.
+JEFF_GROUPS = [
+    {"name": "front row", "safety": 33, "fire": [21, 22, 23, 24, 25, 26]},
+    {"name": "cat-walk", "safety": 66, "fire": [41, 42, 43, 44, 45]},
+    {"name": "wave flamer", "safety": [6, 12, 18],
+     "safety_profile": {"arm_value": 178},
+     "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
+     "aim": [1, 7, 13]},
+    {"name": "fireball", "safety": 77, "fire": [55, 56, 57, 58, 59]},
+]
+
+
+def _haze(r):
+    return [r.out.universe[s - 1] for s in range(80, 86)]
+
+
+def _pt(r, i=0):
+    return r.out.status["passthrough"][i]
+
+
+def test_passthrough_config():
+    section("passthrough config (2026-10-29): the example's three hazers "
+            "load; Jeff's live group layout plus the hazers loads; every "
+            "overlap, bad slot and bad name is refused")
+    cfg = make_config()
+    check([(p.name, p.slots) for p in cfg.passthrough] == HAZERS,
+          f"the example lists the three hazers at 80 to 85: "
+          f"{cfg.passthrough}")
+    d = example_dict()
+    d.pop("passthrough")
+    check(config.from_dict(d).passthrough == [],
+          "a config without passthrough has none")
+    jeff = make_config(groups=copy.deepcopy(JEFF_GROUPS),
+                       gflame_range="60-80%", arm_value=157,
+                       accept_unsourced_risk=True)
+    check([(p.name, p.slots) for p in jeff.passthrough] == HAZERS,
+          "Jeff's live layout (front row 33/21-26, cat-walk 66/41-45, wave "
+          "flamer 6,12,18/1-17 aim 1,7,13, fireball 77/55-59) with the "
+          "three hazers at 80 to 85 validates")
+
+    def refused(pt, want, **over):
+        d = example_dict()
+        d.update(over)
+        d["passthrough"] = pt
+        try:
+            config.from_dict(d)
+        except config.ConfigError as e:
+            return check(want in str(e), f"{pt!r} refused for {want!r}: {e}")
+        return check(False, f"passthrough {pt!r} was accepted")
+
+    one = lambda slots, name="Hazer 1": [{"name": name, "slots": slots}]
+    refused(one([401]), "a safety slot of front row")
+    refused(one([411]), "a fire slot of front row")
+    refused(one([1]), "an aim slot of wave flamer")
+    refused(one([12]), "a safety slot of wave flamer")
+    refused(one([2]), "a fire slot of wave flamer")
+    refused(one([461, 80]), "a fire slot of spare")
+    refused([{"name": "Hazer 1", "slots": [80, 81]},
+             {"name": "Hazer 2", "slots": [81, 82]}], "already a slot of")
+    refused(one([80, 80]), "already a slot of")
+    refused(one([0]), "not a slot between 1 and 512")
+    refused(one([513]), "not a slot between 1 and 512")
+    refused(one([True]), "not a slot between 1 and 512")
+    refused(one(["80"]), "not a slot between 1 and 512")
+    refused(one([]), "at least one slot")
+    refused(one(80), "at least one slot")
+    refused(one([80], name=""), "has no name")
+    refused(one([80], name="x" * 65), "longer than")
+    refused(one([80], name="front row"), "already used")
+    refused([{"name": "Hazer 1", "slots": [80]},
+             {"name": "Hazer 1", "slots": [81]}], "already used")
+    refused([{"name": "Hazer 1", "slots": [80], "arm": 1}],
+            "a key this program does not know")
+    refused(["Hazer 1"], "is not an object")
+    refused({"name": "Hazer 1", "slots": [80]}, "must be a list")
+    refused([{"name": f"H{i}", "slots": [100 + i]} for i in range(17)],
+            "at most 16")
+    for bad in (dict(groups=copy.deepcopy(JEFF_GROUPS) + [
+            {"name": "spare", "safety": 80, "fire": [90]}]),
+                dict(groups=copy.deepcopy(JEFF_GROUPS) + [
+            {"name": "spare", "safety": 91, "fire": [85]}])):
+        d = example_dict()
+        d.update(bad, gflame_range="60-80%", arm_value=157,
+                 accept_unsourced_risk=True)
+        try:
+            config.from_dict(d)
+            check(False, "a group on a hazer slot was accepted")
+        except config.ConfigError as e:
+            check("never a flame group's slot" in str(e),
+                  f"a group on a hazer slot is refused: {e}")
+
+
+def test_passthrough_link_decoding():
+    section("passthrough on the wire (2026-10-29): hazers_on is optional, a "
+            "list of distinct names; absent is every hazer off; anything "
+            "else refuses the whole frame, after the key")
+    vals = [0] * 512
+    f = link.decode_flame(link.encode_flame(5, None, 1.0, 1, vals, KEY), 1,
+                          KEY)
+    check(f.hazers_on == frozenset(), "absent hazers_on is every hazer off")
+    f = link.decode_flame(link.encode_flame(5, None, 1.0, 1, vals, KEY,
+                                            hazers_on=["Hazer 1", "Hazer 3"]),
+                          1, KEY)
+    check(f.hazers_on == {"Hazer 1", "Hazer 3"}, f"names read: {f.hazers_on}")
+
+    def frame(h, key=KEY):
+        return json.dumps({"v": 2, "k": key, "t": "flame", "seq": 5,
+                           "tc": None, "mono": 1.0, "universe": 1,
+                           "values": vals, "hazers_on": h}).encode()
+
+    for bad in ("Hazer 1", ["Hazer 1", "Hazer 1"], [1], [""], ["x" * 65],
+                [None], {"Hazer 1": True}, 7, [f"h{i}" for i in range(17)],
+                True):
+        try:
+            link.decode_from_ltcplay(frame(bad), 1, KEY)
+            check(False, f"hazers_on {bad!r} was accepted")
+        except link.LinkError as e:
+            check(str(e).startswith("hazers_on is not"),
+                  f"hazers_on {bad!r} refused: {e}")
+    try:
+        link.decode_from_ltcplay(frame(7, key="y" * 20), 1, KEY)
+        check(False, "a wrong key with bad hazers_on was accepted")
+    except link.LinkError as e:
+        check(str(e) == "wrong key", f"the key is checked first: {e}")
+    check(composer._flame_reason("hazers_on is not a list of at most 16 "
+                                 "distinct hazer names") == "hazers_on is not",
+          "a bad hazers_on is journaled under its own fixed reason")
+
+
+def test_passthrough_passes_only_while_on_and_fresh():
+    section("passthrough (2026-10-29): a hazer's slots carry the show's "
+            "values only while it is switched ON and the link is fresh; off "
+            "at start until seen OFF; every other unlisted slot stays zero")
+    r = Rig()
+    r.hazers = ("Hazer 1",)
+    cue = dict(HAZE)
+    cue.update({79: 255, 86: 255, 300: 255, 512: 255})
+    r.run(4, cue)
+    check(_haze(r) == [0] * 6 and not _pt(r)["enabled"],
+          f"ON in the very first frames is not enough: off at start until "
+          f"seen OFF: {_haze(r)}")
+    check(_pt(r)["why"] == composer.PT_START, f"and says so: {_pt(r)}")
+    r.hazers = ()
+    r.run(2, cue)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_OFF,
+          f"OFF is zero, said: {_pt(r)}")
+    r.hazers = ("Hazer 1",)
+    r.run(1, cue)
+    check(_haze(r) == [200, 120, 0, 0, 0, 0],
+          f"Hazer 1 switched ON: its two slots carry the show's values, the "
+          f"other hazers stay zero: {_haze(r)}")
+    st = _pt(r)
+    check(st["asked"] and st["enabled"] and st["passing"] and st["why"] == ""
+          and st["sent"] == [200, 120] and st["slots"] == [80, 81],
+          f"the status says it: {st}")
+    check(all(r.out.universe[s - 1] == 0 for s in (79, 86, 300, 512)),
+          "every other slot in no group stays zero")
+    r.hazers = ("Hazer 1", "Hazer 2", "Hazer 3")
+    r.run(1, cue)
+    check(_haze(r) == [200, 120, 201, 121, 202, 122],
+          f"Hazers 2 and 3, seen OFF in the frames before, pass once ON: "
+          f"{_haze(r)}")
+    r.hazers = ("Hazer 1", "Hazer 3", "a hazer this config has not got")
+    r.run(1, cue)
+    check(_haze(r) == [200, 120, 0, 0, 202, 122],
+          f"switching one off zeroes it at once; an unknown name does "
+          f"nothing: {_haze(r)}")
+    # The link: a frame older than fire_hold_ms still passes (haze is not
+    # a flame), one older than frame_stale_ms does not, and the link back
+    # with the hazer still asked ON is not enough.
+    r.link_alive = False
+    r.wait(r.cfg.fire_hold_ms / 1000.0 + 0.05)
+    check(_haze(r)[0] == 200, "past fire_hold_ms the hazer still passes")
+    r.wait(r.cfg.frame_stale_ms / 1000.0)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_LINK,
+          f"a stale link zeroes every hazer: {_pt(r)}")
+    r.c._pt_on = [True] * 3
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6, "belt and braces: a stale link is zero even "
+                               "with a hazer somehow left enabled")
+    r.link_alive = True
+    r.run(3, cue)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_LINK,
+          f"the link back with ON still asked is not enough: {_pt(r)}")
+    r.hazers = ()
+    r.run(1, cue)
+    r.hazers = ("Hazer 1",)
+    r.run(1, cue)
+    check(_haze(r)[:2] == [200, 120], "OFF then ON after the link is back")
+    r.c.note_locked_slots({80})
+    r.run(1, cue)
+    check(_haze(r)[:2] == [0, 120],
+          f"a slot in the lockout file is zero whatever else holds: "
+          f"{_haze(r)}")
+
+
+def test_passthrough_abort_and_senders():
+    section("passthrough (2026-10-29): the show's Abort zeroes every hazer "
+            "on its tick and they stay zero until switched OFF and ON again; "
+            "a foreign sender or a new sender can never switch one on")
+    r = Rig()
+    r.run(2, HAZE)
+    r.hazers = ("Hazer 1", "Hazer 2")
+    r.run(1, HAZE)
+    check(_haze(r)[:4] == [200, 120, 201, 121], "two hazers running")
+    check(_disarm(r) == "", "the Abort is accepted")
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_ABORT,
+          f"zero on the Abort's own tick: {_pt(r)}")
+    check(any(k == "passthrough" and "Hazer 1, Hazer 2" in m
+              for k, m in r.log.events),
+          "the journal says the Abort switched them off")
+    r.run(5, HAZE)
+    check(_haze(r) == [0] * 6,
+          "frames still asking ON after the Abort keep them zero")
+    r.hazers = ()
+    r.run(1, HAZE)
+    r.hazers = ("Hazer 2",)
+    r.run(1, HAZE)
+    check(_haze(r) == [0, 0, 201, 121, 0, 0],
+          f"OFF then ON after the Abort brings that hazer back: {_haze(r)}")
+
+    OTHER = ("127.0.0.1", 40999)
+    r.hazers = ()
+    r.run(1, HAZE)
+    vals = bytearray(512)
+    for k, v in HAZE.items():
+        vals[k - 1] = v
+    why = r.c.ingest_frame(link.FlameFrame(10 ** 6, None, r.t + 1, 1,
+                                           bytes(vals),
+                                           frozenset(["Hazer 1", "Hazer 2",
+                                                      "Hazer 3"])),
+                           sender=OTHER)
+    check(why == "another sender", f"a foreign frame is refused: {why}")
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6,
+          "a foreign sender saying every hazer ON switches none on")
+    # A new sender after the link went stale: must be seen OFF first.
+    r.link_alive = False
+    r.wait(r.cfg.frame_stale_ms / 1000.0 + 0.1)
+    r.hazers = ()
+    r.frame(HAZE)
+    r.hazers = ("Hazer 1",)
+    r.link_alive = True
+    r.run(1, HAZE)
+    check(_haze(r)[:2] == [200, 120], "the same sender back: OFF then ON")
+    r.link_alive = False
+    r.wait(r.cfg.frame_stale_ms / 1000.0 + 0.1)
+    r.frame(HAZE, sender=OTHER)
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_NEW_SENDER,
+          f"a different sender taking the link asking ON is zero: {_pt(r)}")
+
+
+def test_passthrough_never_touches_a_group():
+    section("passthrough (2026-10-29): hazers switched on and off, and an "
+            "Abort's hazer reset, change no group's arming, edges or "
+            "outputs: every non-hazer slot is identical with and without")
+    script = [((), {}), (("Hazer 1",), {411: 200}), ((), {80: 255, 411: 0}),
+              (("Hazer 1", "Hazer 2"), {80: 255, 82: 40, 412: 230}),
+              (("Hazer 2",), {83: 1})]
+    outs = []
+    for with_haze in (False, True):
+        r = Rig()
+        r.prove_alive()
+        r.inp.set(0, 2)
+        seen = []
+        for hz, cue in script * 3:
+            r.hazers = hz if with_haze else ()
+            c = dict(HAZE) if with_haze else {}
+            c.update(cue)
+            r.run(4, c)
+            seen.append((bytes(b for i, b in enumerate(r.out.universe)
+                               if not 80 <= i + 1 <= 85),
+                         [(g["armed"], g["reason"]) for g in
+                          r.out.status["groups"]]))
+        outs.append(seen)
+        if with_haze:
+            check(any(_haze(r)), "the hazers did pass in this run")
+    check(outs[0] == outs[1], "every group's arming and every non-hazer "
+                              "slot are identical with the hazers running")
+    r = armed_rig()
+    r.hazers = ()
+    r.run(1)
+    r.hazers = ("Hazer 1",)
+    r.run(3, {80: 255, 81: 255})
+    check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
+          "a hazer at 255 does not hold or drop an armed group")
+    check(set(r.out.universe[s - 1] for s in range(1, 513)
+              if s not in (80, 81) and s not in r.cfg.all_slots()) == {0},
+          "nothing outside the groups and the hazer's own slots is non-zero")
+
+
+def test_passthrough_status_and_start_line():
+    section("passthrough is said (2026-10-29): the status frame carries "
+            "every hazer, and flamesafe journals one start line")
+    r = Rig()
+    r.run(2)
+    pt = r.out.status["passthrough"]
+    check([(p["name"], p["slots"]) for p in pt] == HAZERS,
+          f"one status entry per hazer: {pt}")
+    check(all(set(p) == {"name", "slots", "asked", "enabled", "passing",
+                         "sent", "why"} for p in pt), f"its fields: {pt[0]}")
+    check(json.loads(link.encode_status(r.out.status, KEY).decode())
+          ["passthrough"] == pt, "it survives the wire")
+    d = example_dict()
+    d.pop("passthrough")
+    r2 = Rig(**{})
+    r2.c = Composer(config.from_dict(d), clock=lambda: r2.t, log=r2.log)
+    check(r2.c.tick().status["passthrough"] == [],
+          "a config without passthrough reports an empty list")
+    line = fsmain.passthrough_line(r.cfg.passthrough, "some/flamesafe.json")
+    check(line.startswith("passthrough: Hazer 1 80, 81; Hazer 2 82, 83; "
+                          "Hazer 3 84, 85 ")
+          and os.path.abspath("some/flamesafe.json") in line,
+          f"the start line: {line}")
+    check(fsmain.passthrough_line([], "x.json").startswith(
+        "passthrough: none in "), "none is said too")
+    check("–" not in line and "—" not in line, "no dashes")
+    src = open(os.path.join(HERE, "__main__.py"), encoding="utf-8").read()
+    check('journal.event("config", passthrough_line(cfg.passthrough, '
+          'argv[0]))' in src, "python -m flamesafe journals it at start")
+    r.c._pt_on[0] = True
+    out = r.c._panic()
+    check(not out.status["passthrough"][0]["passing"]
+          and out.universe == bytes(512),
+          "a panic tick is all zeros, hazers included")
+
+
+# =========================================================================
 # The Fireball page (Jeff, 2026-10-28): Jeff's fireball group as the Pico's
 # flamesafe.json has it. Its Valve Open (slot 57) is not a G-Flame channel,
 # so nothing on the head itself holds it: flamesafe must.
@@ -6040,6 +6381,12 @@ if __name__ == "__main__":
     test_safety_profile_composes()
     test_fireball_fire_slots_are_zero_unless_armed()
     test_wave_cleaning_sequence_through_the_composer()
+    test_passthrough_config()
+    test_passthrough_link_decoding()
+    test_passthrough_passes_only_while_on_and_fresh()
+    test_passthrough_abort_and_senders()
+    test_passthrough_never_touches_a_group()
+    test_passthrough_status_and_start_line()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

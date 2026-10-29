@@ -52,7 +52,9 @@ same strictness.  The rules, and the reason each exists:
      group is without fire slots, and every slot is inside one universe.
 
   9. ONLY THE WRITER.  This program alone writes the flame universe, at sACN
-     priority 200.  Every channel that belongs to no group is always zero.
+     priority 200.  Every channel that belongs to no group is always zero,
+     except a passthrough entry's (a hazer's, 2026-10-29) while the show
+     program has it switched on (composer.py, CONTRACT.md).
      A group's fire slots carry ltcplay's values only while that group's
      safety slot carries the arm value on the same frame and the edge-quiet
      window has passed.  A disarmed group never emits a fire value; a fire

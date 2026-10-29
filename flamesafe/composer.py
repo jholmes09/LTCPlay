@@ -83,6 +83,18 @@ SAFETY_UNCONFIRMED = ("Not every unlocked safety slot of this group was up: "
 # text and numbers the SENDER chose, and a sender varying them must not get
 # a fresh episode, and a fresh line, every datagram.  A refused disarm_all
 # is throttled under its own "disarm_all: <reason>" keys.
+# Passthrough (Jeff, 2026-10-29, the hazers): why a passthrough entry's
+# slots are zero, in the status frame's per entry "why".  Each is set by
+# something that can only take a hazer away; only a frame from the locked
+# sender that first says it OFF and then ON brings it back.
+PT_OFF = "switched off in the show program"
+PT_LINK = "the show program link is not fresh"
+PT_START = ("not yet seen switched off by the show program since this "
+            "program started: switch it off and on again")
+PT_ABORT = ("zeroed by the show's Abort: switch it off and on again in the "
+            "show program")
+PT_NEW_SENDER = ("the show program link changed hands: switch it off and on "
+                 "again in the show program")
 _FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
                   "not a JSON object", "wrong contract version",
                   "wrong key", "wrong message type", "seq is not",
@@ -92,6 +104,7 @@ _FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
                   "another sender", "out of order",
                   "sender clock went backwards",
                   "no live flame link", "wrong length", "not a FlameFrame",
+                  "hazers_on is not",
                   "not a DisarmAll")
 
 
@@ -224,6 +237,16 @@ class Composer:
         # confirmation step (tick, step 6) took down; read by nothing that
         # decides a safety value.  Cleared when the group latches again.
         self._unconfirmed = [False] * self.n
+        # Passthrough (Jeff, 2026-10-29, the hazers): one entry per device
+        # on the flame universe that is not a flame.  _pt_on[i] is True only
+        # while the last accepted frame from the locked sender asked for it
+        # AND it was seen asked OFF since the last thing that took it away
+        # (_pt_block[i] empty): this program's start, a lost link, a change
+        # of sender, an Abort.  It never reads or writes any group state.
+        self.pt = list(getattr(config, "passthrough", None) or [])
+        self._pt_asked = [False] * len(self.pt)
+        self._pt_on = [False] * len(self.pt)
+        self._pt_block = [PT_START] * len(self.pt)
         self._name_mismatch_logging = False   # item 10: once per episode
         self._name_mismatch_count = 0
         self._last_tick = None
@@ -570,6 +593,7 @@ class Composer:
                 # frame_stale_ms before any cycle counts.
                 self._flame_changed_at = t
                 self._reset_latches("show program link changed sender")
+                self._pt_reset(PT_NEW_SENDER)
                 self._event("link",
                             f"show program link taken by "
                             f"{_addr(sender)}, which is not "
@@ -584,12 +608,33 @@ class Composer:
             self._frame_tc = frame.timecode
             self._frame_sender = sender
             self.stats["frames_accepted"] += 1
+            self._pt_ingest(getattr(frame, "hazers_on", frozenset()))
             return ""
         except Exception as e:                          # noqa: BLE001
             self.stats["frames_rejected"] += 1
             self._last_reject = str(e) or type(e).__name__
             self._note_reject(self._last_reject, sender)
             return self._last_reject
+
+    def _pt_reset(self, why):
+        """Every passthrough entry off, and off until a frame says it OFF
+        and then ON again.  Can only take a hazer away."""
+        for i in range(len(self.pt)):
+            self._pt_on[i] = False
+            self._pt_block[i] = why
+
+    def _pt_ingest(self, asked):
+        """An accepted frame's hazers_on.  OFF clears the block; ON enables
+        only an entry with no block (seen OFF since it was taken away).  A
+        name this config does not have is ignored."""
+        for i, p in enumerate(self.pt):
+            on = p.name in asked
+            self._pt_asked[i] = on
+            if not on:
+                self._pt_block[i] = ""
+                self._pt_on[i] = False
+            else:
+                self._pt_on[i] = self._pt_block[i] == ""
 
     def reject_frame(self, why, sender=None):
         """The link layer could not even decode a datagram."""
@@ -663,6 +708,15 @@ class Composer:
         self.stats["disarm_all"] += 1
         self._disarm_count += 1
         self._low_predates_abort = [True] * self.n
+        # Passthrough (2026-10-29): the Abort switches every hazer off,
+        # and off until the show program says it OFF and then ON again.
+        pt_was_on = [p.name for p, on in zip(self.pt, self._pt_on) if on]
+        self._pt_reset(PT_ABORT)
+        if pt_was_on:
+            self._event("passthrough",
+                        f"the show program's Abort switched off "
+                        f"{', '.join(pt_was_on)}: zero until the show "
+                        f"program switches each off and on again")
         # Fix round 1 of PR #34, item 4: a new Abort is a new (id, sender)
         # pair.  ltcplay's abort ids now start at a random number per run,
         # and a restarted ltcplay is a new sender too, so a second run's
@@ -908,6 +962,10 @@ class Composer:
                                 "group stays disarmed until a cycle")
             self._link_lost_at = None
         if not link_live:
+            # Passthrough: off with the link, and off until the show
+            # program, back, has said it OFF and then ON again.
+            self._pt_reset(PT_LINK)
+        if not link_live:
             # Every stale tick clears, but only the first one is journaled
             # and counted: the deck re-reports its OFF keys every tick, so
             # there is always a down edge to forget, and one line per tick
@@ -1027,9 +1085,26 @@ class Composer:
                                           f"{rules.GFLAME_EDGE_BELOW}")
 
         # 5. The universe.  Zeros everywhere, then our slots.  Every channel
-        # that belongs to no group is always zero: Galaxis require an
-        # exclusive universe with zeros on unused channels.
+        # that belongs to no group is always zero (Galaxis require an
+        # exclusive universe with zeros on unused channels), except a
+        # passthrough entry's slots while it is switched on (2026-10-29).
         buf = bytearray(rules.UNIVERSE_SIZE)
+        # Passthrough (Jeff, 2026-10-29, the hazers), written BEFORE every
+        # group, so a group's slot could never be left holding a hazer's
+        # value even if a config somehow named it twice (the loader refuses
+        # that).  The show program's value on an entry's slots only while
+        # it is switched on (_pt_on) and the link is fresh; a slot in the
+        # lockout file is zero whatever else holds.  Never armed, never a
+        # fire slot, never part of any group's edge or confirmation.
+        pt_passing = []
+        for i, p in enumerate(self.pt):
+            passing = (self._pt_on[i] and frame_fresh
+                       and self._frame is not None)
+            pt_passing.append(passing)
+            if passing:
+                for sl in p.slots:
+                    if sl not in self._locked:
+                        buf[sl - 1] = self._frame[sl - 1]
         sent_fire = []
         commanded_fire = []
         for i, g in enumerate(self.groups):
@@ -1134,7 +1209,8 @@ class Composer:
             self._fault = fault
             self._fault_at = t
         status = self._status(t, values, sent_fire, commanded_fire, held,
-                              live, frame_fresh, fire_live, ups, locks)
+                              live, frame_fresh, fire_live, ups, locks,
+                              pt_passing, buf)
         return Output(bytes(buf), status, fault)
 
     def _why_not(self, i, live, link_live, flame_disturbed=False):
@@ -1224,8 +1300,35 @@ class Composer:
             return 0
         return int(math.ceil(left_ms / 1000.0))
 
+    def _pt_status(self, frame_fresh, passing, buf):
+        """The status frame's "passthrough" list: per entry what the show
+        program asked, whether this program has it enabled, whether its
+        values are on the wire this tick, the values sent, and why not."""
+        out = []
+        for i, p in enumerate(self.pt):
+            ok = bool(passing[i]) if passing else False
+            if ok:
+                why = ""
+            elif not frame_fresh:
+                why = PT_LINK
+            elif self._pt_block[i]:
+                why = self._pt_block[i]
+            elif not self._pt_asked[i]:
+                why = PT_OFF
+            else:
+                why = "safety program fault"
+            out.append({"name": p.name, "slots": list(p.slots),
+                        "asked": self._pt_asked[i],
+                        "enabled": self._pt_on[i],
+                        "passing": ok,
+                        "sent": [buf[sl - 1] if buf is not None else 0
+                                 for sl in p.slots],
+                        "why": why})
+        return out
+
     def _status(self, t, values, sent_fire, commanded_fire, held, live,
-                frame_fresh, fire_live, ups, locks):
+                frame_fresh, fire_live, ups, locks, pt_passing=None,
+                buf=None):
         groups = []
         for i, g in enumerate(self.groups):
             reason, amber = held[i]
@@ -1328,6 +1431,9 @@ class Composer:
                           journal_dropped=int(getattr(self._log, "dropped",
                                                       0) or 0)),
             "groups": groups,
+            # Passthrough (2026-10-29): the hazers, per entry.  [] for a
+            # config without any.  An older ltcplay ignores it.
+            "passthrough": self._pt_status(frame_fresh, pt_passing, buf),
         }
 
     def _event(self, kind, msg):
