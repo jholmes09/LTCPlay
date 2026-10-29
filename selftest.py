@@ -87225,6 +87225,34 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                   f"the off switches: {said[-2:]}")
         finally:
             sup.log = was
+        d = tempfile.mkdtemp()
+        try:
+            sched = os.path.join(d, "ltcplay_schedule.json")
+            check(sup.soak_kit({"schedule": sched}) is False,
+                  "no ltcplay_fire_ice.json: not a soak kit")
+            with open(os.path.join(d, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"soak_only": True, "preroll_s": 0}, fh)
+            said = []
+            sup.log = said.append
+            posted = []
+            was_post = sup.post_alert
+            sup.post_alert = lambda *a: posted.append(a) or True
+            try:
+                check(sup.output_alert({"schedule": sched}, 7878, "x") and
+                      not posted and "soak kit" in said[-1],
+                      "a soak kit's shows are never held by the alert")
+                with open(os.path.join(d, "ltcplay_fire_ice.json"),
+                          "w") as fh:
+                    json.dump({}, fh)
+                check(sup.output_alert({"schedule": sched}, 7878, "x") and
+                      posted == [(7878, "video", "x")],
+                      "a show's: the engine's video alert")
+            finally:
+                sup.post_alert = was_post
+                sup.log = was
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
         check(sup.load_settings.__doc__ is not None and
               "rack_screen_keep_in_front" in open(
                   sup.__file__, encoding="utf-8").read(),

@@ -89,9 +89,13 @@ try:
     # (this program does not bundle the ltcplay package).
     import showwindows
 except ImportError:
-    sys.path.append(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
-    import showwindows
+    try:
+        # The soak program imports this file and carries the package.
+        from ltcplay import showwindows
+    except ImportError:
+        sys.path.append(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
+        import showwindows
 
 # Global\, not the session's own namespace (locked decision 21): a second
 # supervisor started in another Windows session (a second sign-in, Remote
@@ -1379,6 +1383,29 @@ def post_alert(port, kind, text):
         return False
 
 
+def soak_kit(settings):
+    """True when ltcplay_fire_ice.json beside the schedule is a soak kit's
+    (soak.py writes "soak_only": true, with the rig check off): the bench
+    soak's shows are never held by the MadMapper output alert."""
+    try:
+        fi = os.path.join(os.path.dirname(settings["schedule"]),
+                          "ltcplay_fire_ice.json")
+        with open(fi, encoding="utf-8-sig") as fh:
+            return json.load(fh).get("soak_only") is True
+    except Exception:
+        return False
+
+
+def output_alert(settings, port, text):
+    """OutputWatch's alert: the engine's video alert, except under a soak
+    kit (said in the log instead). True once done."""
+    if soak_kit(settings):
+        log("MadMapper output: OFF, no alert raised (a soak kit's "
+            "ltcplay_fire_ice.json is in use)")
+        return True
+    return post_alert(port, "video", text)
+
+
 def start_window_watch(settings, port, api=None):
     """[True, RackKeeper or None, OutputWatch or None] (showwindows.py),
     as showpc.json says, each said in the log. Windows only; never
@@ -1412,7 +1439,7 @@ def start_window_watch(settings, port, api=None):
         mon = settings.get("madmapper_output_monitor", 0)
         out[2] = showwindows.OutputWatch(
             api, monitor=mon if isinstance(mon, int) else 0, log=log,
-            alert=lambda text: post_alert(port, "video", text))
+            alert=lambda text: output_alert(settings, port, text))
         log("MadMapper output watch: ON (showpc.json "
             "\"madmapper_output_check\": false turns it off). Read from "
             "the window list only; nothing is sent to MadMapper.")
