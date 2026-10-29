@@ -30,11 +30,11 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["admin", "show"],
   ["running", "show", "stop_confirm"], ["running", "show", "abort_first_tap"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
   ["rig_checking", "show"], ["rig_failed", "show"], ["rig_continued", "show"], ["cleaning", "show"],
-  ["all_live", "show"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
+  ["all_live", "show"], ["hazers_on", "show"], ["hazers_held", "show"], ["hazers_on", "show", "hazer_sheet"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
   ["sys_one", "show"], ["sys_many", "show"], ["sys_offonly", "show"], ["sys_one", "show", "sys"], ["sys_many", "show", "sys"],
   ["idle_operator", "day"], ["signed_out", "day"], ["day_jeff", "day"], ["idle_operator", "day", "step_checks"],
   ["day_jeff", "day", "step_startlist"], ["idle_operator", "day", "step_startlist"], ["idle_operator", "day", "step_fuel"],
-  ["idle_operator", "day", "step_purge"], ["day_firing", "day", "step_purge"], ["idle_operator", "day", "step_lasers"],
+  ["idle_operator", "day", "step_purge"], ["day_firing", "day", "step_purge"], ["idle_operator", "day", "step_lasers"], ["idle_operator", "day", "step_hazers"],
   ["day_locked", "day", "step_locks"], ["day_shut", "day"], ["day_shut_jeff", "day", "step_shutlist"], ["day_shut", "day", "step_clean"],
   ["day_clean_paused", "day", "step_clean"], ["day_shut", "day", "step_locks-shut"], ["day_shut", "day", "step_signout"], ["idle_operator", "day", "shut"], ["idle_operator", "schedule"], ["admin", "settings"], ["signed_out", "show", "signin"],
 ];
@@ -42,7 +42,7 @@ const CASES_1 = [
   ["idle_operator", "show"], ["signed_out", "show"], ["show_pending", "show"], ["running", "show"],
   ["held", "show"], ["aborted", "show"], ["alerts_open", "show"], ["alerts_open", "show", "expand_alerts"],
   ["armed_groups", "show"], ["locked", "show"], ["announcing", "show"], ["alert_hold", "show"],
-  ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"],
+  ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["hazers_on", "show"],
   ["idle_operator", "tonight"], ["admin", "programming"], ["idle_operator", "programming"], ["programming", "programming"],
   ["idle_operator", "morning"], ["locked", "morning"], ["purge", "morning"],
   ["signed_out", "users"], ["admin", "users"], ["idle_operator", "fuel"], ["idle_operator", "fireball"],
@@ -271,6 +271,7 @@ async function act(page, extra){
   if(extra && extra.startsWith("step_")){ await page.waitForTimeout(700); const b = await page.$(`[data-step="${extra.slice(5)}"]`); if(b) await b.click(); }
   if(extra === "sys"){ await page.click("#sys"); }
   if(extra === "shut"){ await page.click('#d-seg [data-part="shut"]'); }
+  if(extra === "hazer_sheet"){ await page.click("#hz-open"); }
   await page.waitForTimeout(500);
 }
 

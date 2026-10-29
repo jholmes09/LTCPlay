@@ -47,11 +47,13 @@ asking before an unattended start.
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
-         "timecode", "lasers", "users", "aim", "follow", "preroll")
+         "timecode", "lasers", "users", "aim", "follow", "preroll",
+         "hazers")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
             "users": "fault", "aim": "warning", "follow": "warning",
+            "hazers": "warning",
             # The rig check before a show failed (preroll.py): it holds the
             # show at its time like any fault (alerthold.py).
             "preroll": "fault"}
@@ -64,6 +66,9 @@ SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
 # MadMapper is not following the show's timecode (madmapperwatch.
 # FollowCheck; Jeff's field report, 2026-10-28).
 DISPLAY_ONLY = frozenset(("aim", "follow"))
+# "hazers": flamesafe's hazers and LTC Player's differ (remote.Remote.
+# hazers_view, 2026-10-29). Display only, like "aim".
+DISPLAY_ONLY = DISPLAY_ONLY | {"hazers"}
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any

@@ -204,6 +204,7 @@ reason.
 | `mono` | number | the sender's own `time.perf_counter()` at the frame, seconds; must not go backwards while the link is live |
 | `universe` | integer | must equal flamesafe's configured flame universe |
 | `values` | list of exactly 512 integers, each 0 to 255 | the whole flame universe, slot 1 first |
+| `hazers_on` | optional list of strings | the passthrough entries (the hazers) the show program has switched ON, by name: at most 16, distinct, each 1 to 64 characters. Left out is the empty list: every hazer off. ltcplay sends it (`[]` for none ON) only while flamesafe's config lists hazers; with none, its frame is exactly the frame before this field existed. Added 2026-10-29; see "Passthrough: the hazers" |
 
 **ltcplay's side: when values may be non-zero.** ltcplay sends non-zero
 values only while a show is released, live, and its timecode is moving
@@ -218,7 +219,9 @@ not JSON, not an object, longer than 16384 bytes, wrong `v`, wrong or
 missing `k`, wrong `t`, any field missing or of the wrong type, a `seq` at
 or below the last accepted one, a `mono` below the last accepted one, a
 `values` list that is not exactly 512 integers 0 to 255, a `universe` that
-is not the flame universe, a sender other than the locked one.
+is not the flame universe, a `hazers_on` that is present and not a list of
+at most 16 distinct names of 1 to 64 characters (checked after the key, so a
+wrong key is still "wrong key"), a sender other than the locked one.
 
 **Rejections are journaled once per episode (2026-10-02).** Before this
 date a rejected flame frame was counted and shown in `last_reject` but
@@ -313,6 +316,7 @@ Top level:
 | `frames.foreign_senders` | how many OTHER senders had a keyed, well-formed flame frame or disarm_all refused as `another sender` inside the last `frame_stale_ms` (added 2026-10-03, the second-copy guard). Zero almost always. The first such datagram of an episode disarms every group; while non-zero, no consent edge counts (see "Second copies" above) |
 | `frames.new_sender` | true for `frame_stale_ms` after the flame link's lock passed to a different sender (added 2026-10-03). The change itself disarms every group; no consent edge counts while it is true. True for about half a second after every normal ltcplay restart |
 | `frames.flooded` | true for `frame_stale_ms` after a tick that found more than 50 datagrams, or more than 256 KiB, waiting on the flame link (added 2026-10-03, fix round 1 of PR #40). No consent edge counts while it is true |
+| `passthrough` | the hazers (added 2026-10-29): one entry per config `passthrough` entry, `[]` for none. See "Passthrough: the hazers" |
 | `disarm_all` | what the show program's Abort did: `accepted` (disarm_all datagrams taken, cumulative), `last_id`, `last_reason`, `age_ms` (null before the first). Added 2026-10-02, see "Disarm every group" below |
 | `sacn.sent`, `sacn.errors`, `sacn.status_errors` | packets sent to the node, sends that failed, status sends that failed. Cumulative, never reset; shown in health. A failed send also sets `fault` for 5 s, which is the red |
 | `stats.journal_dropped` | journal lines lost while the console was blocked, cumulative. When the backlog drains the journal writes how many were lost |
@@ -502,6 +506,114 @@ flame universe.
 If no status frame arrives for 1 s, ltcplay shows red for the safety
 program and keeps running the rest of the show. It never takes over the
 flame universe. There is no fallback path, deliberately.
+
+## Passthrough: the hazers (added 2026-10-29)
+
+Jeff, 2026-10-29: three haze machines join the flame universe. "Abort
+turns off the hazers. Hazers don't have an arm/disarm channel." And: "I
+want haze control to be in LTC Play, not the FSEQ. I want Andy to be able
+to set the show levels of both Haze and Fan, in addition to arming which
+ones run during the show." Before this every slot in no group was zero. A
+haze machine is not a flame: it gets no safety slot, no edge check and no
+dwell. It gets an arm that only the show program can set, and that
+everything uncertain clears; the show program writes its levels.
+
+The config's optional top-level `passthrough`, one entry per hazer, its
+haze channel and its fan channel by role (swap the two numbers if a
+fixture is the other way round):
+
+```json
+"passthrough": [
+  {"name": "Hazer 1", "haze": 80, "fan": 81},
+  {"name": "Hazer 2", "haze": 82, "fan": 83},
+  {"name": "Hazer 3", "haze": 84, "fan": 85}
+]
+```
+
+Refused at start (flamesafe does not start) unless: a list of at most 16
+objects with exactly `name`, `haze` and `fan`; each name 1 to 64
+characters and used by no other entry and no group; `haze` and `fan` each
+a whole number 1 to 512, two different slots; no slot listed by another
+entry; and no slot that is any group's safety, fire or aim slot. Left out,
+there is none and every slot in no group is zero, exactly as before. An
+entry's two slots pass and zero together; flamesafe never looks at the
+roles, which are for the show program and the screens.
+
+**The rule.** An entry's slots carry the values of the last accepted flame
+frame only while ALL of these hold; otherwise they are zero:
+
+1. the flame link is fresh (`frame_stale_ms`; stale or never is zero). The
+   hold is `frame_stale_ms`, not `fire_hold_ms`: haze is not a flame;
+2. the last accepted frame from the locked sender lists the entry in
+   `hazers_on`;
+3. since the last thing that took it away, an accepted frame from the
+   locked sender has listed it OFF (left it out of `hazers_on`). What takes
+   it away: flamesafe starting, the link going stale, the link's lock
+   changing hands, a panic tick (an overrun or a compose fault, after
+   which every group needs a fresh cycle too), and an accepted
+   `disarm_all` (the show's Abort). So an
+   Abort zeroes every hazer on the tick it arrives in, and a hazer stays
+   zero, whatever later frames ask, until the show program has sent it
+   OFF and then ON again. A frame still asking ON after an Abort (an
+   engine that did not switch its hazers off) is not enough;
+4. the slot is not in the lockout file (zero whatever else holds, the
+   safe side; the engine's lockout names flame machines, so this is only
+   ever a guard).
+
+Only the locked flame-link sender can arm one: `hazers_on` rides on
+the flame frame, after the key, the sender lock, the sequence and the
+sender's clock. A foreign keyed frame is refused as `another sender` before
+its `hazers_on` is used (and disarms every group as before). A refused
+`disarm_all` (another sender, no live link) changes no hazer, by design:
+only the locked sender's own frames and its accepted `disarm_all` decide
+them; an older
+ltcplay that sends no `hazers_on` switches every hazer off. A name this
+config does not have is ignored.
+
+**What it never does.** It never reads or writes any group's state: no
+latch, no consent edge, no dwell, no safety or fire slot, no confirmation
+step. Its slots are written before the groups', and the config refuses any
+overlap, so a group's slot can never hold a hazer value. Arming never
+depends on it and it never depends on arming. A panic tick (overrun,
+compose fault) is all zeros, hazers included. Every other slot in no group
+is still zero.
+
+**Seeing it.** The status frame's top-level `passthrough` lists every
+entry: `name`, `slots` (haze then fan), `haze`, `fan`, `asked` (in the last accepted frame's
+`hazers_on`), `enabled` (switched on here: asked and not taken away),
+`passing` (its slots carry the show's values on this tick), `locked` (one
+per slot: true for a slot in the lockout file, which is zero whatever
+else holds, and then `why` says so), `sent` (the
+values on its slots this tick) and `why` (empty while passing, else one of:
+`switched off in the show program`, `the show program link is not fresh`,
+`not yet seen switched off by the show program since this program started:
+switch it off and on again`, `zeroed by the show's Abort: switch it off
+and on again in the show program`, `the show program link changed hands:
+switch it off and on again in the show program`, `the safety program
+faulted (an overrun or a compose fault): ...`, `a slot of it is in the
+lockout file: held at zero`). A Composer also refuses, when it is built,
+a passthrough slot that is any group's slot, however its Config was made.
+flamesafe journals one
+start line, `passthrough: Hazer 1 80, 81; ... read from <path>` (or
+`passthrough: none in <path>`), and one line when an Abort switches off a
+hazer that was on.
+
+**ltcplay's side** (`ltcplay/hazers.py`, `ltcplay/flamelink.py`). The
+engine reads the same `passthrough` list from this file and holds, per
+hazer, ARMED or DISARMED and a Haze and a Fan level (0 to 255, set in
+percent on the rack screen, kept in `ltcplay_hazers.json` in its settings
+folder). The hazer slots never carry show data: the engine zeroes them in
+whatever the FSEQ, xLights or the Programming transport carries, and
+writes an ARMED hazer's two levels there only while a show is playing (the
+show audio playing a cue and the scheduled show in SHOW; not on Hold, not
+between shows, not in Programming). Every flame frame carries `hazers_on`,
+the names ARMED, whenever this file lists hazers. DISARMED at start, after
+Abort, after Stop (both send `disarm_all`, which disarms them at the link
+before its first copy), when live flame programming ends (it sends
+`disarm_all` too; arming a hazer is refused while it is on), and while it
+has no fresh status from flamesafe. While the engine's list and the
+status frame's differ, the rack screen raises a display only alert of
+kind "hazers".
 
 ## The arm link (build step 7b, landed 2026-10-01)
 
@@ -1009,7 +1121,8 @@ its rules belong here because they are what the consent rule rests on:
 flamesafe sends the whole flame universe as one ANSI E1.31 data packet per
 tick, priority 200, to the configured unicast destination, with its own
 CID (a uuid5 of `flamesafe.jeffholmespresents`) and source name
-`flamesafe`. Every channel that belongs to no group is always zero. A
+`flamesafe`. Every channel that belongs to no group is always zero, except
+a passthrough entry's slots while it is switched on (2026-10-29, above). A
 group's safety slot is 0 or the arm value. A group's fire slots carry
 ltcplay's values only while that group's safety slot carries the arm value
 on the same packet and the edge-quiet window (3 ticks from the rise) has
@@ -1194,6 +1307,15 @@ file's arm value; no existing field's name, type or meaning changed.
 Version 2, 2026-10-28 (aim slots): a group may carry `aim`, the fire slots
 that only point a head (see "Aim slots" under the status frame). No field
 on any wire changed.
+
+Version 2, 2026-10-29 (passthrough, the hazers): the config gains
+`passthrough` (name, haze, fan); the flame frame gains an optional
+`hazers_on`; the status frame gains a top-level `passthrough`. No existing field's name, type or
+meaning changed: a frame without `hazers_on` is read as before (every
+hazer off), and a flamesafe from before this date ignores the field, so its
+hazers stay zero (fail closed). A flamesafe from before this date refuses a
+config with `passthrough` as an unknown key and does not start. Deploy and
+restart flamesafe and ltcplay together.
 
 Version 2, 2026-10-28 (aim slots seen): the status frame gains a per group
 `aim_slots`, and flamesafe journals one `aim slots:` line at start naming

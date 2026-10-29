@@ -296,6 +296,23 @@ button.stopnow{background:var(--red-deep);border-color:var(--red);color:var(--ch
 .lamp button.armb .act:empty{display:none}
 .lamp button.armb.dis{cursor:pointer;box-shadow:inset 0 0 0 2px var(--champ)}
 @media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .armb{animation-duration:2s}}
+.hzrow{flex:0 0 auto;grid-template-columns:repeat(5,minmax(0,1fr));grid-auto-rows:auto}
+#hz-panel{position:fixed;inset:0;z-index:14;background:rgba(7,6,5,.82);display:flex;align-items:center;justify-content:center;padding:16px}
+#hz-panel[hidden]{display:none}
+#hz-panel .box{background:var(--bg);border:1px solid var(--gold);border-radius:8px;max-width:760px;width:100%;max-height:100%;overflow:auto;padding:16px 18px}
+#hz-panel h2{font:700 clamp(12px,1.5vh,14px)/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;color:var(--champ);margin:0 0 6px}
+.hzp-note{color:var(--cream);margin-bottom:8px}
+.hzp{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px 10px;align-items:center;padding:6px 0;border-top:1px solid var(--hair)}
+.hzp b{color:var(--champ);grid-row:span 2}
+.hzp .st{display:flex;align-items:center;gap:6px}
+.hzp .st span{min-width:4.2em;text-align:center;font-weight:700;color:var(--cream)}
+.hzp .st i{font-style:normal;color:var(--muted);min-width:2.5em}
+.hzp button{min-width:56px;min-height:56px;font-size:24px;font-weight:800}
+.hzp-foot{margin-top:10px;display:flex;gap:10px;flex-wrap:wrap}
+.hzp-foot button{min-height:56px}
+.hzrow .lamp button.armb{min-height:44px}
+.hzrow .lamp button.armb .word{font-size:clamp(14px,min(2.6vh,2.3vw),28px)}
+.hzrow .lamp.disarmed .armb{background:var(--bronze);color:var(--champ)}
 .flamefoot{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center}
 button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);letter-spacing:.04em}
 button.disarm small{display:block;font:400 clamp(10px,1.3vh,13px)/1.1 var(--sans);letter-spacing:0;color:var(--cream)}
@@ -942,6 +959,10 @@ button.fb-pad.na{opacity:.45}
     </section>
     <div class="flames">
       <div class="lamps" id="fl-lamps"></div>
+      <!-- The hazers (hazers.py, Jeff 2026-10-29): one tile per hazer, a
+           plain tap ON or OFF, and Hazers off. Abort and Stop switch every
+           hazer off. -->
+      <div class="lamps hzrow" id="hz-row" hidden aria-label="Hazers"></div>
       <div class="flamefoot">
         <!-- One two-way button (Jeff, 2026-10-26): Disarm all flame groups
              while any group is armed or asked for, or the state is not
@@ -1324,6 +1345,22 @@ button.fb-pad.na{opacity:.45}
       <button id="m-no" class="ghost">Cancel</button>
       <button id="m-yes" class="yes"></button>
     </div>
+  </div>
+</div>
+
+<!-- The hazer levels (hazers.py): Haze and Fan per hazer, 0 to 100
+     percent, a step of 5 a tap. Under the Abort bar's layer, so Abort is
+     never covered. -->
+<div id="hz-panel" hidden role="dialog" aria-label="Hazer levels">
+  <div class="box">
+    <h2>Hazers: show levels</h2>
+    <div class="hzp-note">Each armed hazer runs at these levels while a show plays. They take effect at once.</div>
+    <div id="hz-levels"></div>
+    <div class="row hzp-foot">
+      <button class="ghost" id="hz-same" aria-pressed="false">Same for all hazers: off</button>
+      <button id="hz-close">Done</button>
+    </div>
+    <div class="toast" id="hz-msg"></div>
   </div>
 </div>
 
@@ -2203,6 +2240,31 @@ function cleaningWords(p){
   parts.push("Running " + Math.floor(p.elapsed_s || 0) + " s.");
   return parts.join(" ");
 }
+// A hazer's tile or button (hazers.py, Jeff 2026-10-29): ARMED or
+// DISARMED in words, what a tap does, and a line with its state and levels.
+// A plain tap, never a hold: a hazer is not a flame. The state is the
+// engine's, from flamesafe's own word ("waiting" until flamesafe has taken
+// the arm). Stale reads as not known; a tap that disarms is never held back.
+function hazerLook(h, stale){
+  h = h || {};
+  const armed = !!h.armed, name = h.name || "Hazer";
+  const word = armed ? "ARMED" : "DISARMED";
+  const out = {armed: armed, word: word, state: word, act: armed ? "Tap to disarm" : "Tap to arm",
+    cls: armed ? "armed" : "disarmed", label: name + " " + word, line: ""};
+  const lv = "Haze " + (h.haze_pct || 0) + "%, fan " + (h.fan_pct || 0) + "%";
+  if(stale){ out.cls = "unknown"; out.line = "Not known: no fresh status"; return out; }
+  const st = {running: "Running", held: "Paused by Hold", standby: "Runs when the show plays",
+    waiting: "Waiting for flamesafe"}[h.state] || "";
+  out.line = armed && st ? st + ". " + lv : lv;
+  if(armed && h.state === "waiting") out.cls = "held";
+  if(armed && h.state === "held"){ out.state = "ARMED, paused by Hold"; out.label = name + " ARMED, paused by Hold"; }
+  return out;
+}
+// One step of a level stepper: 0 to 100 percent, never outside.
+function hazerStep(pct, delta){
+  const v = Math.round(Number(pct) || 0) + Number(delta || 0);
+  return Math.max(0, Math.min(100, v));
+}
 // LOGIC END
 </script>
 <script>
@@ -2545,6 +2607,7 @@ function render(){
   renderAlerts(s.alerts || []);
   renderAnnounce();
   renderLamps(fl);
+  renderHazers(s);
   // The Morning and Shutdown page exists only with the Fire & Ice engine;
   // its lock banner shows on every screen while anything is locked out.
   const mo = s.morning;
@@ -2716,7 +2779,8 @@ let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
 // The page's own banners: whether each is a fault now, and its label.
 const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note", "cfg-note": "Settings changed"};
 const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
-  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check", aim:"Aim slots"};
+  lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check", aim:"Aim slots",
+  hazers:"Hazers"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
@@ -2843,6 +2907,87 @@ function renderLamps(fl){
 // flame group. `level` 1 keeps it in sight in a short window too (where
 // the note otherwise gives way); 2, a refusal, also puts it in the
 // controls' message line. Never a silent no-op.
+// The hazers row (hazers.py): built once per set of names, then updated.
+var HZ_KEY = "", HZ_SAME = false;
+function renderHazers(s){
+  const v = s && s.hazers, row = $("hz-row");
+  if(!v || !v.available || !(v.hazers || []).length){ row.hidden = true; $("hz-panel").hidden = true; HZ_KEY = ""; return; }
+  row.hidden = false;
+  const key = v.hazers.map(h => h.name).join("\n");
+  if(key !== HZ_KEY){
+    HZ_KEY = key;
+    row.innerHTML = v.hazers.map((h, i) =>
+      `<div class="lamp disarmed" data-hz="${i}"><b>${esc(h.name)}</b><div class="lb"><button class="armb" data-hzb="${i}"><span class="word"></span><span class="act"></span></button></div><i class="why"></i></div>`).join("") +
+      `<div class="lamp" id="hz-all"><b>Hazers</b><div class="lb"><button class="armb" id="hz-off"><span class="word">Hazers off</span><span class="act">Disarm every hazer</span></button></div><i class="why"></i></div>` +
+      `<div class="lamp" id="hz-lv"><b>Levels</b><div class="lb"><button class="armb" id="hz-open"><span class="word">Levels</span><span class="act">Haze and fan</span></button></div><i class="why"></i></div>`;
+    row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
+    $("hz-off").addEventListener("click", hazersOff);
+    $("hz-open").addEventListener("click", () => { $("hz-panel").hidden = false; renderHazerLevels(ST, true); });
+    $("hz-levels").innerHTML = v.hazers.map((h, i) =>
+      `<div class="hzp" data-hzp="${i}"><b>${esc(h.name)}</b>` +
+      ["haze", "fan"].map(r => `<div class="st"><i>${r === "haze" ? "Haze" : "Fan"}</i><button data-hzl="${i}" data-role="${r}" data-d="-5" aria-label="${esc(h.name)} ${r} down 5">-</button><span data-hzv="${r}"></span><button data-hzl="${i}" data-role="${r}" data-d="5" aria-label="${esc(h.name)} ${r} up 5">+</button></div>`).join("") + `</div>`).join("");
+    $("hz-levels").querySelectorAll("[data-hzl]").forEach(b => b.addEventListener("click", () =>
+      hazerLevel(Number(b.dataset.hzl), b.dataset.role, Number(b.dataset.d))));
+  }
+  const fl = s.flames || {};
+  const stale = !fl.connected || !!fl.stale;
+  const mayArm = mayRow(s, "arm");
+  v.hazers.forEach((h, i) => {
+    const el = row.querySelector(`[data-hz="${i}"]`);
+    if(!el) return;
+    const look = hazerLook(h, stale);
+    el.className = "lamp " + look.cls;
+    el.querySelector(".word").textContent = look.word;
+    el.querySelector(".act").textContent = look.act;
+    const b = el.querySelector("button");
+    // Signed out, or a role that may not arm: arming is greyed (reviewer
+    // B, 6); a disarm is never held back.
+    b.disabled = !look.armed && !mayArm;
+    b.title = look.label + ". " + look.act + (!look.armed && v.down ? " (" + v.down + ")" : "") +
+      ". Haze slot " + h.haze_slot + ", fan slot " + h.fan_slot;
+    const w = look.line || (!look.armed && v.down ? "Cannot arm: " + v.down : "");
+    el.querySelector(".why").textContent = w;
+    el.querySelector(".why").title = w;
+  });
+  $("hz-all").querySelector(".why").textContent = v.hazers.some(h => h.armed) ? "" : "Every hazer is disarmed";
+  $("hz-open").disabled = !mayArm;
+  renderHazerLevels(s, false);
+}
+function renderHazerLevels(s, force){
+  if($("hz-panel").hidden && !force) return;
+  const v = (s && s.hazers) || {};
+  const mayArm = mayRow(s, "arm");
+  (v.hazers || []).forEach((h, i) => {
+    const r = $("hz-levels").querySelector(`[data-hzp="${i}"]`);
+    if(!r) return;
+    r.querySelector('[data-hzv="haze"]').textContent = (h.haze_pct || 0) + "%";
+    r.querySelector('[data-hzv="fan"]').textContent = (h.fan_pct || 0) + "%";
+    r.querySelectorAll("button").forEach(b => { b.disabled = !mayArm; });
+  });
+  $("hz-same").textContent = "Same for all hazers: " + (HZ_SAME ? "on" : "off");
+  $("hz-same").setAttribute("aria-pressed", HZ_SAME ? "true" : "false");
+}
+$("hz-close").addEventListener("click", () => { $("hz-panel").hidden = true; });
+$("hz-same").addEventListener("click", () => { HZ_SAME = !HZ_SAME; renderHazerLevels(ST, false); });
+async function hazerLevel(i, role, d){
+  const hs = (ST && ST.hazers && ST.hazers.hazers) || [];
+  const h = hs[i];
+  if(!h) return;
+  const body = {hazer: HZ_SAME ? "all" : h.name};
+  body[role] = hazerStep(h[role + "_pct"], d);
+  try{ const j = await post("/api/remote/hazer-level", actor(body)); $("hz-msg").textContent = j.text || ""; }
+  catch(e){ $("hz-msg").textContent = e.message; }
+}
+async function hazerTap(i){
+  const h = ((ST && ST.hazers && ST.hazers.hazers) || [])[i];
+  if(!h) return;
+  try{ const j = await post("/api/remote/hazer", actor({hazer: h.name, on: !h.armed})); armSay(j.text || "", 1); }
+  catch(e){ armSay(e.message, 2); }
+}
+async function hazersOff(){
+  try{ const j = await post("/api/remote/hazers-off", actor({})); armSay(j.text || "Every hazer is DISARMED.", 1); }
+  catch(e){ armSay(e.message, 2); }
+}
 function armSay(text, level){
   const n = $("arm-note");
   n.textContent = text; n.title = text;

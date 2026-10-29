@@ -1031,6 +1031,14 @@ class Handler(BaseHTTPRequestHandler):
                     fn(reason, who, screen)
                 except Exception:                # noqa: BLE001
                     pass
+        # The hazers OFF (hazers.py, Jeff 2026-10-29: Stop is a complete
+        # halt); the flame link's disarm_all below does it at the link too.
+        fn = getattr(rm, "hazers_cut", None)
+        if fn is not None:
+            try:
+                fn(reason, who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
         # The wave flamer cleaning (cleaning.py): Stop ends it, from the
         # rack screen, an iPad or the Stream Deck.
         cl = getattr(rm, "cleaning", None)
@@ -2187,6 +2195,41 @@ def _attach_scrub_flames(httpd):
     httpd.server_close = _close_scrub_flames
 
 
+def _attach_hazers(httpd):
+    """The hazers (hazers.py, Jeff 2026-10-29): built for the Fire & Ice
+    engine with a flame link whose flamesafe config lists any. Every hazer
+    DISARMED at start, its levels read from the settings folder. A failure
+    leaves them unavailable (every hazer DISARMED, its slots zero) and is
+    said once; the show is never held back."""
+    from . import hazers as hazers_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None or not link.hazer_names():
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine", "hazers",
+                            outcome, text, fault=fault)
+        fs = remote.flame_status
+        remote.hazers = hazers_mod.Hazers(
+            link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
+            flames_get=lambda: fs.view() if fs is not None else None,
+            abort_standing=remote._abort_standing,
+            show_state=remote.hazer_show_state,
+            blocker=remote.hazer_blocker, folder=remote.folder,
+            journal=_journal, audit=getattr(remote, "audit", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"The hazers could not be set up: {type(e).__name__}: {e}")
+        return
+    say = getattr(link, "journal_line", None)
+    if say is not None:
+        say("Flame link: hazers " + "; ".join(
+            f"{n} haze {sl[0]}, fan {sl[1]}" for n, sl in link.cfg.hazers)
+            + f" read from {getattr(link, 'flamesafe_path', '')}. Every "
+              f"hazer is DISARMED until armed; it runs at its levels only "
+              f"while a show plays.", action="flame_link", outcome="hazers")
+
+
 def _attach_fuel(httpd):
     """The Fuel page (fuel.py, FUEL.md): the Morning page's machines, and
     the flame link watched when there is one. It only observes: a failure
@@ -2726,6 +2769,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             # the show engine. Said once, here.
             print(f"The Morning and Shutdown page could not be built: "
                   f"{type(e).__name__}: {e}")
+    if fire_ice is not None and \
+            getattr(httpd.fire_ice, "flame_link", None) is not None:
+        _attach_hazers(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
         if fire_ice is not None and \
