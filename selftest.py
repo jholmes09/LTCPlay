@@ -86335,7 +86335,7 @@ for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLE
   s = base(); f(s);
   const n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
   t(n.tone === "bad" && p.text === word && p.cls === "bad", "a live mode is the next step and the state: " + n.text + " / " + p.text);
-  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "sf", "pf"].includes(i.key)), "a live mode is pinned, never paged");
+  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "pf"].includes(i.key)), "a live mode is pinned, never paged");
   t(n.text.split(/\s+/).length <= 8, "pinned words are 8 or fewer: " + n.text);
 }
 // The switch "Fire flames while scrubbing" is gone (2026-10-29): an old
