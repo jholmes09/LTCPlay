@@ -40982,6 +40982,22 @@ def test_soak_schedule_is_refused_outside_the_soak():
         check(S.parse_rule(json.dumps(r)) is not None and
               F.FireIceConfig.parse(fi).soak_only is True,
               "and both still parse")
+        # The rig check (PR #162) is OFF in the soak kit, said at the top
+        # of its report; outside a soak kit 0 is refused.
+        check(fi.get("preroll_s") == 0 and
+              F.FireIceConfig.parse(fi).preroll_s == 0,
+              f"the soak kit runs with the rig check off: "
+              f"{fi.get('preroll_s')!r}")
+        check(soak.PREROLL_LINE.startswith("Pre-roll check: OFF (soak kit")
+              and "PREROLL_LINE," in __import__("inspect").getsource(
+                  soak.Soak.report_lines),
+              "and its report says so")
+        _no_dashes(soak.PREROLL_LINE, "the soak's pre-roll line")
+        try:
+            F.FireIceConfig.parse(dict(fi, soak_only=False))
+            check(False, "preroll_s 0 outside a soak kit was accepted")
+        except F.FireIceConfigError:
+            pass
     finally:
         sys.dont_write_bytecode = was
         if sp in sys.path:
