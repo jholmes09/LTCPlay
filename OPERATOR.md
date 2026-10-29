@@ -1432,8 +1432,8 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   alert at a time with Acknowledge (tap the words for the details); a tile
   per flame group and one for the lasers, with Hold: arm flames and Disarm
   flames (flames only; the lasers' tile has its own Disarm lasers); the
-  announcements; the wind on one line; Abort in the corner, 96 px, tap
-  twice. Run show is the 1.0 Run in Show mode, on the show PC only.
+  announcements and the wind along the bottom, left of Abort in its
+  corner, 96 px, tap twice. Tap "Announce" for what the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming, flames while scrubbing) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,

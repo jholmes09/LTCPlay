@@ -73,7 +73,7 @@ svg.i{width:1.15em;height:1.15em;flex:0 0 auto;fill:currentColor}
 
 /* ---- the frame: header, the tab, the footer with Abort ---- */
 #app{height:calc(100vh - var(--pad-bottom, 0px));height:calc(100dvh - var(--pad-bottom, 0px));
-  display:grid;grid-template-rows:auto calc(var(--next-h) + var(--gap)) minmax(0,1fr) var(--foot-h);grid-template-columns:minmax(0,1fr)}
+  display:grid;grid-template-rows:auto calc(var(--next-h) + var(--gap)) minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr)}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);padding:var(--gap) var(--pad);
   border-bottom:1px solid var(--line)}
 #tabs{display:flex;gap:6px;flex:0 1 auto}
@@ -92,7 +92,10 @@ a.b{text-decoration:none}
 main{min-height:0;position:relative;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .pane{flex:1 0 auto;padding:var(--gap) var(--pad);min-height:0}
 footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(var(--abort) + 32px) var(--gap) var(--pad);
-  border-top:1px solid var(--line);min-width:0}
+  border-top:1px solid var(--line);min-width:0;min-height:var(--foot-h)}
+#foot-l{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:var(--gap)}
+#foot-l > .ann{height:var(--ann-h)}
+.frow{display:flex;align-items:center;gap:var(--gap);min-width:0}
 
 /* ---- buttons: one look per meaning ---- */
 .b{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:56px;min-width:56px;
@@ -113,7 +116,7 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 
 /* ---- SHOW ---- */
 #t-show{display:grid;gap:var(--gap);
-  grid-template-rows:var(--state-h) var(--tr-h) var(--al-h) minmax(min-content,1fr) var(--ann-h);
+  grid-template-rows:var(--state-h) var(--tr-h) var(--al-h) minmax(min-content,1fr);
   grid-template-columns:minmax(0,1fr)}
 #t-show > *{min-width:0;min-height:0}
 #next{display:flex;align-items:center;gap:12px;padding:0 12px;margin:var(--gap) var(--pad) 0;border-radius:12px;border:2px solid var(--line);
@@ -175,12 +178,15 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 .allcol{display:grid;grid-template-rows:minmax(56px,1fr) minmax(56px,1fr);gap:var(--gap);min-width:0}
 .allcol .b{min-height:56px;height:100%;padding:0 6px;gap:6px}
 .ann{display:flex;align-items:center;gap:var(--gap);min-width:0}
-.ann .head{display:flex;flex-direction:column;justify-content:center;min-width:0;flex:0 1 auto;max-width:24%}
+.ann .head{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;min-width:0;flex:0 1 auto;max-width:20%;
+  height:100%;min-height:56px;padding:2px 8px;border:2px solid var(--line);border-radius:12px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.ann .head .qm{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;border:2px solid var(--blue);color:#E3F1FF;font-weight:800;margin-left:2px}
 .ann .head b{display:flex;align-items:center;gap:8px;font-weight:800;white-space:nowrap}
 .ann .head span{color:var(--muted);line-height:1.1}
 .ann .head span.bad{color:#FFB3AB}
 #ann-btns{display:flex;gap:var(--gap);flex:1 1 auto;min-width:0;height:100%}
 #ann-btns .b,#ann-stop{height:100%;min-height:0;flex:1 1 0;padding:0 4px;gap:4px}
+#ann-stop{max-width:7em;white-space:normal;line-height:1.05}
 #ann-btns .b.on{border-color:var(--amber);background:#3a2604}
 #ann-btns .b svg.i{width:18px;height:18px}
 #ann-stop{flex:0 0 auto}
@@ -269,17 +275,14 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 @media (max-width:900px){
   :root{--next-h:60px; --next-fs:22px; --state-h:68px; --tc-fs:30px; --al-h:76px; --hdr-btn:44px}
   header{row-gap:4px;padding-top:4px;padding-bottom:4px}
-  #t-show{grid-template-rows:var(--state-h) var(--tr-h) var(--al-h) minmax(min-content,1fr) auto}
+  #foot-l > .ann{height:auto}
   .ann{flex-wrap:wrap}
-  .ann .head{max-width:none;flex:1 0 calc(100% - 68px);flex-direction:row;gap:12px;align-items:baseline;justify-content:flex-start;order:0}
-  .ann > .q{order:1}
-  #ann-btns{order:2} #ann-stop{order:3}
-  /* One line of buttons, however wide the font: a label wraps inside its
-     button, never a button onto a line of its own. */
-  #ann-btns{flex:1 1 55%;min-width:0;height:var(--ann-h)}
-  #ann-btns .b,#ann-stop{min-width:0;height:var(--ann-h);padding:0 6px;gap:6px;white-space:normal;line-height:1.05}
-  #ann-btns .b{flex:1 1 0}
-  #ann-stop{flex:0 1 auto;max-width:6.5em}
+  /* Narrow: the heading and Stop sound share the first line, the
+     announcements have the whole second line to themselves. */
+  .ann .head{max-width:none;flex:1 1 0;flex-direction:row;gap:12px;align-items:center;justify-content:flex-start;order:0;height:var(--ann-h)}
+  #ann-stop{order:1;flex:0 0 auto;max-width:none;height:var(--ann-h)}
+  #ann-btns{order:2;flex:1 1 100%;min-width:0;height:var(--ann-h)}
+  #ann-btns .b{min-width:0;height:var(--ann-h);padding:0 6px;gap:6px;white-space:normal;line-height:1.05;flex:1 1 0}
 }
 @media (max-width:900px) and (min-width:601px) and (max-height:960px){
   :root{--gap:6px; --pad:10px; --state-h:60px; --tr-h:64px; --al-h:64px; --ann-h:56px}
@@ -291,7 +294,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #tabs,.hright{flex-wrap:wrap;margin-left:0}
   main{overflow-y:auto}
   #t-show{grid-template-rows:none;height:auto}
-  #app{grid-template-rows:auto auto minmax(0,1fr) var(--foot-h)}
+  #app{grid-template-rows:auto auto minmax(0,1fr) auto}
   #next{min-height:64px;padding:8px 12px;flex-wrap:wrap}
   #mini .b{flex:1 1 40%}
   #pins{flex:1 1 100%;flex-wrap:wrap}
@@ -397,12 +400,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
     </div>
-    <div class="ann" id="ann">
-      <div class="head"><b id="ann-w"><svg class="i"><use href="#i-mega"/></svg><span id="ann-word">Announce</span></b><span id="ann-note"></span></div>
-      <div id="ann-btns"></div>
-      <button class="b redline" id="ann-stop"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
-      <button class="q" data-q="announce" aria-label="Help: announcements">?</button>
-    </div>
   </section>
 
   <!-- The other tabs: 1.0 does these for now (later PRs bring them here). -->
@@ -427,9 +424,23 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     </div>
   </section>
 </main>
+<!-- The footer: the announcements, then the wind and the last message, all
+     left of Abort's corner (the footer keeps the sign's width and height
+     for it, so nothing is ever under it). On a phone the announcements go
+     into the SHOW pane instead (placeAnn). -->
 <footer>
-  <button class="b" id="wx"><svg class="i"><use href="#i-wind"/></svg><span id="wx-t">Wind: waiting</span></button>
-  <div id="msg"><span id="msg-t"></span><button class="b blue" id="msg-more" hidden><svg class="i"><use href="#i-info"/></svg>Details</button></div>
+  <div id="foot-l">
+    <div class="ann" id="ann">
+      <!-- The heading is the announcements' "?": a tap says what they do. -->
+      <button class="head" data-q="announce" aria-label="Announcements: what they do"><b id="ann-w"><svg class="i"><use href="#i-mega"/></svg><span id="ann-word">Announce</span><span class="qm" aria-hidden="true">?</span></b><span id="ann-note"></span></button>
+      <div id="ann-btns"></div>
+      <button class="b redline" id="ann-stop"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
+    </div>
+    <div class="frow">
+      <button class="b" id="wx"><svg class="i"><use href="#i-wind"/></svg><span id="wx-t">Wind: waiting</span></button>
+      <div id="msg"><span id="msg-t"></span><button class="b blue" id="msg-more" hidden><svg class="i"><use href="#i-info"/></svg>Details</button></div>
+    </div>
+  </div>
 </footer>
 </div>
 
@@ -1898,6 +1909,14 @@ async function loadUiDefault(){
   loadUiDefault();
 }));
 
+// The announcements: in the footer beside Abort, or on a phone in the
+// SHOW pane (which scrolls there), so the footer stays the sign's height.
+function placeAnn(){
+  const want = innerWidth <= 600 ? $("t-show") : $("foot-l");
+  if($("ann").parentElement !== want) want.insertBefore($("ann"), want === $("foot-l") ? want.firstChild : null);
+}
+placeAnn();
+window.addEventListener("resize", placeAnn);
 showTab((location.hash || "").replace("#", ""));
 UI2_READY = true;
 whoami().then(() => setTimeout(coachMaybe, 1500)).catch(e => { say("Cannot reach the show PC.", e.message, "bad"); startPolling(); });

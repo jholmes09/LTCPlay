@@ -85287,6 +85287,20 @@ function measure(){
   }
   out.next = document.getElementById("next-t").textContent;
   out.go = document.getElementById("go-l").textContent;
+  // The spare height: the SHOW pane with the flame tiles at their least,
+  // against the room it has (the margin for wider fonts).
+  const rh = s => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().height) : 0; };
+  out.rows = {header:rh("header"), next:rh("#next"), state:rh(".state"), tr:rh(".tr"), alert:rh("#alert"), flames:rh(".flames"), footer:rh("footer")};
+  const fl = document.querySelector(".flames");
+  const rows = getComputedStyle(show).gridTemplateRows.split(" ");
+  if(rows.length >= 4){
+    const keep = [fl.style.gridAutoRows, show.style.gridTemplateRows, show.style.flex];
+    fl.style.gridAutoRows = "min-content";
+    show.style.gridTemplateRows = rows.slice(0, 3).join(" ") + " min-content";
+    show.style.flex = "0 0 auto";
+    out.spare = Math.round(main.clientHeight - show.getBoundingClientRect().height);
+    [fl.style.gridAutoRows, show.style.gridTemplateRows, show.style.flex] = keep;
+  }
   return out;
 }
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -85506,6 +85520,7 @@ def _ui2_status_rigcheck():
 # The SHOW tab must fit these windows whole; a phone may scroll its pane.
 UI2_NO_SCROLL = ((1920, 1080), (1366, 768), (1280, 800), (1024, 768),
                  (820, 1180), (768, 1024))
+UI2_SPARE = {(1024, 768): 24, (768, 1024): 40}
 
 
 def test_ui2_show_tab_in_a_browser():
@@ -85563,7 +85578,14 @@ def test_ui2_show_tab_in_a_browser():
             if (w, h) in UI2_NO_SCROLL:
                 check(m["main_excess"] <= 1 and m["doc_excess"] <= 1,
                       f"{where}: the SHOW tab fits with no scroll: "
-                      f"{m['main_excess']} {m['doc_excess']}")
+                      f"{m['main_excess']} {m['doc_excess']} "
+                      f"{m.get('rows')}")
+                # Room to spare for a wider font (the Windows and Ubuntu
+                # runners differ): 24 px at 1024x768, 40 at 768x1024.
+                need = UI2_SPARE.get((w, h), 0)
+                check(isinstance(m.get("spare"), int) and m["spare"] >= need,
+                      f"{where}: {need} px or more to spare: "
+                      f"{m.get('spare')} {m.get('rows')}")
             ab = m["abort"]
             check(ab["w"] == 96 and ab["h"] == 96 and
                   ab["right"] <= 24 and ab["bottom"] <= 24,
