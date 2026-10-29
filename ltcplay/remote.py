@@ -1949,10 +1949,27 @@ class Remote:
         if pr is None:
             return None
         try:
-            return pr.view()
+            v = pr.view()
         except Exception as e:                   # noqa: BLE001
             return {"state": "idle", "items": [], "text": "",
                     "error": f"{type(e).__name__}: {e}"}
+        if v.get("cleared"):
+            # A failure a later check cleared (Jeff's field report,
+            # 2026-10-29): what to press now, in the same words on every
+            # screen. Nothing starts by itself.
+            v["cleared"]["say"] = self._cleared_say()
+        return v
+
+    def _cleared_say(self):
+        m = getattr(self.schedule, "machine", None)
+        st = getattr(m, "state", None)
+        if st == "HOLD":
+            return "Rig check passed. Press Resume."
+        if m is not None and m.delayed() is not None:
+            return (f"Rig check passed. Press Start now for show "
+                    f"{m.delayed().n}.")
+        return "Rig check passed. The failure is cleared."
+
 
     PRECHECK_CLEAR_S = 60.0
 
@@ -1996,7 +2013,8 @@ class Remote:
         threading.Thread(target=pr.run, daemon=True,
                          name="ltcplay-precheck",
                          args=(key, f"a Pre-check by {who}"),
-                         kwargs={"alerts": False, "manual": True}).start()
+                         kwargs={"alerts": False, "manual": True,
+                                 "by": f"Check again by {who}"}).start()
         return 200, {"ok": True, "text": "Checking the rig. Nothing is "
                                          "started, nothing is armed and "
                                          "nothing is played; the screens "

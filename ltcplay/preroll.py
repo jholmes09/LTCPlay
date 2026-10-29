@@ -29,7 +29,21 @@ When it runs
   - Programming: skipped. The Programming screen's Play from never runs
     it either (it is not a Start now).
   - Pre-check (the rack screen, an admin, between shows): the same checks,
-    nothing started, no alert raised or cleared.
+    nothing started. With no failure in force it raises or clears nothing.
+  - A failure cleared by a later pass (Jeff's field report, 2026-10-29:
+    "I fixed the issue and then hit Check Again. It said it passed but
+    the main page still says it failed."): while a failure is in force (a
+    failed check before a show, and/or the open "preroll" alert), a check
+    that PASSES on a fresh run (Check again, Check the rig, Start now's own
+    check, a show's own check) clears the failed verdict and the preroll
+    alert, journaled "Rig check passed, failure cleared (who)". It starts
+    nothing: a show held for that failure stays held, and the scheduler
+    never starts it by itself until a person presses Resume (then the show
+    is checked again before it starts) or Start now. A pass never clears a
+    failure raised after it began (the failure sequence and the alert's id
+    are compared), and never touches any other alert kind. A Pre-check
+    that FAILS while a failure is in force refreshes it with the new
+    reasons (the alert text, and what Continue anyway leaves off).
 
 What it may do to the rig: nothing the audience can see or hear. It never
 arms, fires or plays a sound. It blanks the lasers again (a blank only
@@ -180,13 +194,16 @@ class PreRoll:
 
     def __init__(self, checks, window_s=DEFAULT_S, journal=None, alert=None,
                  clear_alert=None, skip=None, clock=time.monotonic,
-                 open_alert=None):
+                 open_alert=None, alert_id=None):
         self.checks = list(checks)
         self.window_s = float(window_s)
         self._journal = journal or (lambda text, **kw: None)
         self._alert = alert
         self._clear_alert = clear_alert
         self._open_alert = open_alert
+        # alert_id() -> the open "preroll" alert's id, or None. With it, a
+        # pass clears only the alert that was open when it began, by id.
+        self._alert_id = alert_id
         self.skip = skip or (lambda: "")
         self._clock = clock
         self._lock = threading.Lock()
@@ -201,6 +218,16 @@ class PreRoll:
         # runs (it applies to that one show only).
         self.continued = None
         self._holds = {}                   # Continue anyway holds
+        # A failure cleared by a later pass, for the screens: {"by",
+        # "label", "at", "failed"}; None once a show's own check starts, a
+        # new failure is recorded, Resume is pressed or the night ends.
+        self.cleared = None
+        # The order of events: every run's start and every failure takes
+        # the next number, so a pass knows whether a failure came after it
+        # began (it never clears one that did).
+        self._seq = 0
+        self._fail_seq = 0
+        self._alert_lock = threading.Lock()
 
     # -- the scheduler's side ---------------------------------------------
     def late_ok_s(self):
@@ -218,8 +245,9 @@ class PreRoll:
             if r is not None and r["state"] == "passed" and \
                     self._fresh(r):
                 return False
-            if r is not None and r["state"] == "failed":
-                # A failure stands for its show: the alert hold decides.
+            if r is not None and r["state"] in ("failed", "cleared"):
+                # A failure stands for its show: the alert hold decides. A
+                # cleared one waits for a person (Resume or Start now).
                 return False
             self._runs[key] = {"key": key, "label": label,
                                "state": "queued", "items": [],
@@ -227,8 +255,10 @@ class PreRoll:
             return True
 
     def verdict(self, key):
-        """'passed' (fresh), 'failed', 'checking' (or queued), or None
-        (never ran, cancelled, or a pass gone stale)."""
+        """'passed' (fresh), 'failed', 'cleared' (failed, then a later
+        check passed: the show waits for Resume or Start now), 'checking'
+        (or queued), or None (never ran, cancelled, or a pass gone
+        stale)."""
         with self._lock:
             r = self._runs.get(key)
             if r is None:
@@ -263,13 +293,45 @@ class PreRoll:
         with self._lock:
             self._runs = {k: v for k, v in self._runs.items()
                           if v["state"] in ("queued", "checking")}
+            self.cleared = None
+
+    def release_cleared(self):
+        """Resume was pressed (schedule_service, under its lock): every
+        show whose failure a later pass cleared is no longer held back by
+        it; the scheduler checks it again before it starts it. Returns
+        the keys released."""
+        with self._lock:
+            keys = [k for k, v in self._runs.items()
+                    if v["state"] == "cleared"]
+            for k in keys:
+                del self._runs[k]
+            self.cleared = None
+        return keys
+
+    def failure_in_force(self):
+        """True while a failed check stands (any key) or the preroll alert
+        is open."""
+        with self._lock:
+            failed = any(v["state"] == "failed" and not v.get("manual")
+                         for v in self._runs.values())
+        return failed or self.alert_open()
+
+    def mark_failure(self):
+        """A failure of the rig check raised from outside a run (the
+        scheduler's "could not run"): numbered, so no pass that began
+        before it can clear it."""
+        with self._lock:
+            self._seq += 1
+            self._fail_seq = self._seq
+            self.cleared = None
 
     # -- a run ------------------------------------------------------------
     def run(self, key, label="", show=None, cancelled=None, alerts=True,
-            manual=False):
+            manual=False, by=""):
         """Run every check now, on this thread (each check on its own),
         and return the run record {"state", "items", "text", ...}. State
-        is 'passed', 'failed' or 'cancelled'. Never raises."""
+        is 'passed', 'failed' or 'cancelled'. `by` names who asked (for
+        the journal line when a pass clears a failure). Never raises."""
         gen = self._cancel
 
         def stop():
@@ -288,8 +350,11 @@ class PreRoll:
                      "items": [], "at": self._clock(), "done": None}
                 self._runs[key] = r
             if not manual:
-                # A new show's check: the last Continue anyway is over.
+                # A new show's check: the last Continue anyway is over, and
+                # so is the last "failure cleared" note.
                 self.continued = None
+                self.cleared = None
+            r["by"] = str(by or "")
         # One run at a time: a Start now during a scheduled pre-roll waits
         # for it (its budget at most).
         if not self._one.acquire(timeout=budget_s(self.window_s) + 2.0):
@@ -301,6 +366,12 @@ class PreRoll:
                 r["state"] = "checking"
                 r["at"] = self._clock()
                 r["manual"] = manual
+                # Where this run stands in the order of events, and the
+                # preroll alert open as it began (a pass clears only that
+                # one, and only when no failure came after this number).
+                self._seq += 1
+                r["seq"] = self._seq
+                r["alert_at_start"] = self._open_alert_id()
                 self._last = r
                 if not manual:
                     self._last_show = r
@@ -371,6 +442,7 @@ class PreRoll:
             r["items"] = items
             r["text"] = text
             r["done"] = self._clock()
+            r["manual"] = bool(manual)
             self._last = r
         if state == "cancelled":
             self._note(f"Pre-roll for {label} cancelled: {why}. Nothing was "
@@ -380,8 +452,7 @@ class PreRoll:
         if state == "passed":
             self._note(f"Pre-roll for {label} passed: {text}.",
                        outcome="passed")
-            if alerts and not manual:
-                self._clear()
+            self._clear_failure(r)
             return r
         r["failed"] = frozenset(i["name"] for i in bad)
         r["alert"] = (
@@ -390,17 +461,118 @@ class PreRoll:
             + ". The show does not start by itself while this alert is "
               "open. Fix it, then press Resume and Start now (Start now "
               "checks the rig again).")
+        in_force = manual and self.failure_in_force()
+        with self._lock:
+            self._seq += 1
+            self._fail_seq = self._seq
+            self.cleared = None
         self._note(f"Pre-roll for {label} FAILED: {text}.", fault=True,
                    outcome="failed")
         if alerts and not manual:
             self.raise_alert(r["alert"])
+        elif in_force:
+            self._refresh_failure(r, bad)
         return r
+
+    def _refresh_failure(self, r, bad):
+        """A Pre-check failed while a failure is in force: that failure
+        now carries this check's reasons (its items, so Continue anyway
+        leaves off what fails NOW, and its alert text). Its show stays
+        held; one Continue anyway per failure, as before."""
+        why = "; ".join(item_text(i) for i in bad)
+        with self._lock:
+            for v in self._runs.values():
+                if v["state"] != "failed" or v.get("manual"):
+                    continue
+                lbl = v.get("label") or "the show"
+                v["items"] = [dict(i) for i in r["items"]]
+                v["text"] = r.get("text", "")
+                v["failed"] = r["failed"]
+                v["done"] = r["done"]
+                v["alert"] = (
+                    f"The rig check before {lbl} FAILED, and failed again "
+                    f"on {r.get('label') or 'a later check'}: {why}. The "
+                    f"show does not start by itself while this alert is "
+                    f"open. Fix it, then press Check again, or Resume and "
+                    f"Start now (Start now checks the rig again).")
+            sh = self._last_show
+            text = sh.get("alert") if sh is not None and \
+                sh["state"] == "failed" and sh.get("alert") else (
+                f"The rig check FAILED again on "
+                f"{r.get('label') or 'a later check'}: {why}. The show "
+                f"does not start by itself while this alert is open. Fix "
+                f"it, then press Check again, or Resume and Start now.")
+        again = r.get("label") or "a later check"
+        self._note(f"The rig check failure stays: {again} FAILED again "
+                   f"({why}).", fault=True, outcome="failed again")
+        if self.alert_open():
+            self.raise_alert(text)
+
+    def _clear_failure(self, r):
+        """A check passed on a fresh run. While a failure is in force it
+        is cleared: every failed verdict becomes 'cleared' (the scheduler
+        still never starts that show by itself: Resume or Start now) and
+        the preroll alert that was open when this check began is cleared
+        by its id. Nothing is cleared when a failure was recorded or
+        raised after this check began, or when a different preroll alert
+        is open now. Never touches another alert kind. Never raises."""
+        try:
+            if not self.failure_in_force():
+                return
+            by = r.get("by") or r.get("label") or WHO
+            with self._alert_lock:
+                with self._lock:
+                    if self._fail_seq > r.get("seq", 0):
+                        newer = True
+                    else:
+                        newer = False
+                    now_id = self._open_alert_id()
+                    if not newer and now_id is not None and \
+                            self._alert_id is not None and \
+                            now_id != r.get("alert_at_start"):
+                        newer = True
+                    if newer:
+                        cleared = []
+                    else:
+                        cleared = [v for v in self._runs.values()
+                                   if v["state"] == "failed" and
+                                   not v.get("manual")]
+                        for v in cleared:
+                            v["state"] = "cleared"
+                            v["cleared_by"] = by
+                        names = sorted({n for v in cleared
+                                        for n in v.get("failed", ())})
+                        self.cleared = {
+                            "by": by, "label": ", ".join(
+                                v.get("label") or "the show"
+                                for v in cleared) or "the rig",
+                            "at": self._clock(), "failed": names}
+                if newer:
+                    self._note(f"Rig check passed ({by}), but a rig check "
+                               f"failure was raised after it began, so that "
+                               f"failure stays.", outcome="not cleared")
+                    return
+                if self.alert_open():
+                    self._clear(now_id)
+            self._note(f"Rig check passed, failure cleared ({by}). "
+                       f"Nothing was started: a show held for it waits for "
+                       f"Resume or Start now.", outcome="failure cleared")
+        except Exception as e:                   # noqa: BLE001
+            self._note(f"A passed rig check could not clear the failure "
+                       f"({type(e).__name__}: {e}); it stays.", fault=True,
+                       outcome="not cleared")
 
     def raise_alert(self, text):
         if self._alert is None or not text:
             return
+        with self._lock:
+            # Numbered first: a pass that began before this never clears it.
+            self._seq += 1
+            self._fail_seq = self._seq
+            self.cleared = None
         try:
-            self._alert(KIND, text)
+            with self._alert_lock:
+                self._alert(KIND, text)
         except Exception as e:                   # noqa: BLE001
             self._note(f"The pre-roll alert could not be raised "
                        f"({type(e).__name__}: {e}); this line is the only "
@@ -412,11 +584,22 @@ class PreRoll:
         except Exception:                        # noqa: BLE001
             return False
 
-    def _clear(self):
+    def _open_alert_id(self):
+        if self._alert_id is None:
+            return None
+        try:
+            return self._alert_id()
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def _clear(self, alert_id=None):
         if self._clear_alert is None:
             return
         try:
-            self._clear_alert(KIND)
+            if self._alert_id is not None and alert_id is not None:
+                self._clear_alert(KIND, alert_id)
+            else:
+                self._clear_alert(KIND)
         except Exception:                        # noqa: BLE001
             pass
 
@@ -454,6 +637,12 @@ class PreRoll:
             c = self.continued
             if c is not None:
                 out["continued"] = dict(c, off=sorted(c["off"]))
+            cl = self.cleared
+            if cl is not None:
+                out["cleared"] = {"by": cl["by"], "label": cl["label"],
+                                  "failed": list(cl["failed"]),
+                                  "age_s": round(self._clock() - cl["at"],
+                                                 1)}
             return out
 
     def last_failed(self):

@@ -2614,7 +2614,10 @@ class Service:
             v = pr.verdict(key)
             if v == "passed":
                 return False
-            if v == "failed":
+            if v in ("failed", "cleared"):
+                # Cleared: it failed, and a later check passed (Jeff's
+                # field report, 2026-10-29). Still never started unattended:
+                # Resume (it is then checked again) or Start now.
                 return True
             if key not in self._preroll_late:
                 self._preroll_late[key] = pr.late_ok_s()
@@ -2640,6 +2643,11 @@ class Service:
         if getattr(self, "_preroll_broke", None) == why:
             return
         self._preroll_broke = why
+        try:
+            # Numbered, so a check that began before it never clears it.
+            self.preroll.mark_failure()
+        except Exception:                        # noqa: BLE001
+            pass
         text = (f"The rig check before the show could not run ({why}), so "
                 f"the show does not start by itself. Press Start now to try "
                 f"again; the journal has the details.")
@@ -2650,6 +2658,33 @@ class Service:
                 self.alert_sink("preroll", text)
         except Exception:                        # noqa: BLE001
             pass
+
+    def _preroll_release(self, who, screen):
+        """Resume was pressed (lock held): a show whose rig check failed
+        and then passed on a later check (preroll.PreRoll._clear_failure)
+        is checked again now and starts when that passes, at most
+        late_ok_s late; it is never started on the old pass. Never
+        raises."""
+        pr = self.preroll
+        if pr is None:
+            return
+        try:
+            keys = pr.release_cleared()
+            for key in keys:
+                if not isinstance(key, tuple) or len(key) != 2 or \
+                        not isinstance(key[1], int):
+                    continue
+                self._preroll_late[key] = pr.late_ok_s()
+                self._journal_line(
+                    "system", f"{who or 'Someone'} pressed Resume after the "
+                              f"rig check for show {key[1]} failed and then "
+                              f"passed. Show {key[1]} is checked again now "
+                              f"and starts only if that check passes (at "
+                              f"most {pr.late_ok_s()} s late); if its time "
+                              f"has passed it waits for Start now.",
+                    action="pre-roll", outcome="released", show=key[1])
+        except Exception:                        # noqa: BLE001
+            return
 
     def _preroll_for_start_now(self, who, screen, gen):
         """Start now: the rig is checked first, on the pressing thread,
@@ -2663,6 +2698,7 @@ class Service:
         self._preroll_seq += 1
         who_ = who or "someone"
         r = pr.run(("start now", self._preroll_seq), f"Start now by {who_}",
+                   by=f"Start now by {who_}",
                    cancelled=lambda: (self._start_cancel[0] != gen or
                                       self.halting()))
         if r["state"] == "passed":
@@ -3570,6 +3606,8 @@ class Service:
                                             screen=screen,
                                             confirmed=bool(confirmed),
                                             surface=bool(surface)))
+                if kind == sch.RESUME and not out.refused:
+                    self._preroll_release(who, screen)
             finally:
                 self._press_stamp = None
         if out.refused:

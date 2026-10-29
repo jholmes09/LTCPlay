@@ -17809,8 +17809,8 @@ def build():
   '            if False:'),
 
  ('pre-roll: a failed check lets the scheduler start the show', 'ltcplay/schedule_service.py',
-  '            if v == "failed":\n                return True\n',
-  '            if v == "failed":\n                return False\n'),
+  '            if v in ("failed", "cleared"):\n',
+  '            if v in ("cleared",):\n'),
 
  ('pre-roll: a show due with no check starts unchecked', 'ltcplay/schedule_service.py',
   '            if v is None:\n                self._preroll_kick(n)\n            return True',
@@ -17953,7 +17953,7 @@ def build():
   '        if False:'),
 
  ("continue anyway: the next show's check does not end the Continue", 'ltcplay/preroll.py',
-  "            if not manual:\n                # A new show's check: the last Continue anyway is over.\n                self.continued = None",
+  "            if not manual:\n                # A new show's check: the last Continue anyway is over, and\n                # so is the last \"failure cleared\" note.\n                self.continued = None",
   '            if False:\n                self.continued = None'),
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,

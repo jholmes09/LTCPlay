@@ -819,6 +819,7 @@ function nextStep(st, isStaleNow, local, items){
   const pins = pinItems(st);
   if(pins.length) return {tone:"bad", icon:"flame", text: pins.length > 1 ? pins.length + " live modes on. Stop when done." : pins[0].text};
   const pch = prerollChoice(st.preroll, sch);
+  if(pch && pch.cleared) return {tone:"warn", icon:"check", text:String((st.preroll.cleared || {}).say || "Rig check passed. Press Resume.")};
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
   if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
   if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Sign in to use the controls."};
@@ -888,6 +889,7 @@ function alertItems(st){
   // Hold to continue anyway as the slot's one button.
   const pch = prerollChoice(s.preroll, s.schedule || {});
   if(pch && pch.continued) items.push({key:"pr-cont", tone:"warn", what:"Continued anyway.", do:"Some outputs are off.", full:pch.text});
+  else if(pch && pch.cleared) items.push({key:"pr-cleared", tone:"warn", what:"Rig check passed.", do:String((s.preroll.cleared || {}).say || "Press Resume.").replace(/^Rig check passed\. /, ""), full:pch.text});
   else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",

@@ -2066,11 +2066,13 @@ def _attach_preroll(httpd, fire_ice, fstatus):
         pr = P.PreRoll(
             checks, window_s=fire_ice.preroll_s, journal=note,
             alert=remote.alerts.raise_,
-            clear_alert=lambda kind: remote.alerts.clear(
-                kind=kind, action="Confirm", who="LTC Player (a later rig "
-                "check passed)", screen="engine"),
+            clear_alert=lambda kind, id=None: remote.alerts.clear(
+                kind=kind, id=id, action="Confirm", who="LTC Player (a "
+                "later rig check passed)", screen="engine"),
             open_alert=lambda: any(a.kind == P.KIND
                                    for a in remote.alerts.open()),
+            alert_id=lambda: next((a.id for a in remote.alerts.open()
+                                   if a.kind == P.KIND), None),
             skip=skip)
         svc.preroll = pr
         remote.preroll = pr

@@ -2051,6 +2051,11 @@ function prerollChoice(pr, sch){
     return {continued:true, text:"Continued anyway by " + String(c.by || "someone") + ", late. Left off for this show: " +
       ((c.off || []).join(", ") || "nothing") + ". Failed: " + String(c.failed || "") + "."};
   }
+  // A failure a later check cleared (Jeff's field report, 2026-10-29):
+  // the failure is gone from every screen; what to press is said.
+  if(p.cleared && !p.show_check && s.state !== "SHOW" && s.state !== "PAUSED")
+    return {continued:false, cleared:true, text:String(p.cleared.say || "Rig check passed. Press Resume.") +
+      " Cleared by " + String(p.cleared.by || "a check") + "; nothing was started."};
   const f = p.show_check;
   if(!f || p.continued) return null;
   if(s.state === "SHOW" || s.state === "PAUSED") return null;
@@ -2539,8 +2544,8 @@ function render(){
   $("pr-box").hidden = !pch;
   if(pch){
     $("pr-text").textContent = pch.text;
-    $("pr-recheck").hidden = pch.continued || !(ME && ME.local);
-    $("pr-continue").hidden = pch.continued;
+    $("pr-recheck").hidden = pch.continued || pch.cleared || !(ME && ME.local);
+    $("pr-continue").hidden = pch.continued || pch.cleared;
     $("pr-continue").title = pch.confirm || "";
     PR_HOLD_MS = pch.holdMs || 1000;
   }

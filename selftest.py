@@ -85551,9 +85551,9 @@ def _pr_night(results=None, window=10, hold_until=None,
     n.svc.showtime_gate = hold.gate
     pr = P.PreRoll([(x, True, mk(x)) for x in names],
                    window_s=window, alert=al.raise_,
-                   clear_alert=lambda k: al.clear(kind=k, action="Confirm",
-                                                  who="LTC Player",
-                                                  screen="engine"),
+                   clear_alert=lambda k, id=None: al.clear(
+                       kind=k, id=id, action="Confirm", who="LTC Player",
+                       screen="engine"),
                    open_alert=lambda: any(a.kind == "preroll"
                                           for a in al.open()))
     n.svc.preroll = pr
@@ -86484,6 +86484,327 @@ def test_preroll_wiring_in_the_engine():
     rig.baseline = None
     check("10.0.1.2" in [ip for _l, ip in W._preroll_hosts(h, cfg)],
           "before the first sweep: every pixel controller")
+def _pr_notes(n):
+    """The pre-roll's own journal lines, collected (the engine's go to the
+    schedule journal; _pr_night's PreRoll has none)."""
+    notes = []
+    n.pr._journal = lambda text, **kw: notes.append((text, kw))
+    return notes
+
+
+def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
+    section("rig check failure cleared (Jeff's field report, 2026-10-29: "
+            "'I fixed the issue and then hit Check Again. It said it passed "
+            "but the main page still says it failed'): fail at showtime, "
+            "held; fixed; Check again passes: the failed verdict and the "
+            "preroll alert are cleared, journaled with who, every screen "
+            "and the Stream Deck say so, the show stays HELD and nothing "
+            "starts by itself; Resume checks it again and starts it; Start "
+            "now runs a normal check; Continue anyway is gone with the "
+            "failure")
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode")})
+    if n is None:
+        return
+    from ltcplay import alerthold as AH, streamdeck as SD
+    S, svc, c = n.S, n.svc, n.c
+    notes = _pr_notes(n)
+    svc.tick()
+    _settle(svc, c)
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+          "the show's own check failed")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.HOLD and
+          [a.kind for a in n.al.open()] == ["preroll"],
+          f"held at its time, the preroll alert open: {svc.machine.state}")
+    sk = SD.ScreenKeys("http://127.0.0.1:1", fetcher=lambda u: {})
+    sk._last = ({"alerts": n.al.view()}, sk._clock())
+    check([a["kind"] for a in sk.alerts()] == ["preroll"],
+          "the Stream Deck shows the alert (ACK)")
+    other = n.al.raise_("deck", "Stream Deck unplugged")
+    # Fixed. Check again (a Pre-check) passes on a fresh run.
+    n.results["Video"] = (True, "")
+    ran0 = n.ran.count("Video")
+    r = n.pr.run(("pre-check", 1), "a Pre-check by Andy", alerts=False,
+                 manual=True, by="Check again by Andy")
+    check(r["state"] == "passed" and n.ran.count("Video") == ran0 + 1,
+          f"Check again ran every check afresh and passed: {r['state']}")
+    check(n.pr.verdict(_pr_key(n)) == "cleared",
+          f"the failed verdict is cleared: {n.pr.verdict(_pr_key(n))}")
+    check([a.kind for a in n.al.open()] == ["deck"] and
+          n.al.open()[0].id == other.id,
+          f"the preroll alert is cleared, the other kind is not: "
+          f"{n.al.view()}")
+    hold = AH.AlertHold(n.al, svc)
+    n.al.clear(kind="deck", action="Acknowledge", who="Andy",
+               screen="Rack screen")
+    check(hold.gate() is None, "nothing holds the show for an alert now")
+    sk._last = ({"alerts": n.al.view()}, sk._clock())
+    check(sk.alerts() == (), "the Stream Deck's ACK goes out with it")
+    lines = [t for t, _kw in notes if "failure cleared" in t]
+    check(lines and "Rig check passed, failure cleared (Check again by "
+          "Andy)" in lines[-1], f"journaled with who: {lines[-1:]}")
+    _no_dashes(" ".join(lines), "the failure cleared line")
+    v = n.pr.view()
+    check("show_check" not in v and v.get("cleared", {}).get("by") ==
+          "Check again by Andy" and n.pr.last_failed() is None,
+          f"the screens: no failed check, the clearing said: {v}")
+    rc = svc.continue_anyway("Andy", "Rack screen")
+    check(rc["ok"] is False and "no failed rig check" in rc["text"],
+          f"Continue anyway is gone with the failure: {rc}")
+    # Never started unattended: held, then still held, nothing played.
+    import dataclasses
+    svc.machine = dataclasses.replace(svc.machine, late_grace_s=30)
+    for sec in (2, 5):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state == S.HOLD and not _pr_audio_started(n),
+          f"the show stays held after the pass: {svc.machine.state}")
+    # Resume: the show is checked again, then starts.
+    ran1 = n.ran.count("Video")
+    rr = svc.operator_press("resume", "Andy", "Rack screen")
+    check(rr["ok"] and n.pr.verdict(_pr_key(n)) is None and
+          n.pr.view().get("cleared") is None,
+          f"Resume released the cleared show: {rr}")
+    n.now[0] = _den(S, 18, 0, 6)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "passed", 3),
+          f"Resume: the show is checked again first: {n.pr.view()}")
+    n.now[0] = _den(S, 18, 0, 7)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW and n.ran.count("Video") == ran1 + 1
+          and len(_pr_audio_started(n)) == 1,
+          f"then started, late, on its own fresh check: "
+          f"{svc.machine.state}")
+    rows = [x for x in svc.journal if x.get("outcome") == "released"]
+    check(rows and "Andy" in rows[-1]["text"],
+          f"the release is journaled: {rows[-1:]}")
+    c.close()
+    n.link.close()
+    # Past its time: the show waits as delayed; the screens say Start now,
+    # and Start now runs a normal check before it starts.
+    n = _pr_night({"Audio": (False, "the show audio interface is not "
+                                    "open")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+          "failed")
+    for t in ((18, 0), (18, 2)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        _settle(svc, c)
+    n.results["Audio"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Jeff")
+    check(not n.al.open() and svc.machine.state == S.HOLD,
+          "cleared, still held")
+    svc.operator_press("resume", "Jeff", "Rack screen")
+    n.now[0] = _den(S, 18, 2, 5)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state != S.SHOW and svc.machine.delayed() is not None
+          and not _pr_audio_started(n),
+          f"after its time, Resume starts nothing: delayed: "
+          f"{svc.machine.state}")
+    ran2 = n.ran.count("Audio")
+    got = svc.operator_press("start-now", "Jeff", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW and
+          n.ran.count("Audio") == ran2 + 1,
+          f"Start now ran a normal check and started: {got}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
+    section("rig check failure cleared: a check that FAILS again keeps the "
+            "failure with the new reasons (the alert's words, what Continue "
+            "anyway leaves off); a failure raised after a passing check "
+            "began is never cleared by it (the order of events and the "
+            "alert's id); a Pre-check failing with no failure in force "
+            "raises nothing; Start now's own pass clears it too; only an "
+            "admin may press Check again, as before")
+    from ltcplay import preroll as P, users as U
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode")})
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    notes = _pr_notes(n)
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+          "failed")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    # Fails again, for a different reason: the failure stays and says so.
+    n.results["Video"] = (True, "")
+    n.results["Lasers"] = (False, "BEYOND is not running")
+    r = n.pr.run(("pre-check", 1), "a Pre-check by Andy", alerts=False,
+                 manual=True, by="Check again by Andy")
+    al = n.al.open()
+    check(r["state"] == "failed" and n.pr.verdict(_pr_key(n)) == "failed"
+          and al and al[0].kind == "preroll" and
+          "BEYOND is not running" in al[0].text,
+          f"failed again: the failure stays, with the new reason: "
+          f"{n.al.view()}")
+    lf = n.pr.last_failed()
+    check(lf is not None and P.outputs_off(lf["items"]) ==
+          frozenset({"lasers"}),
+          f"Continue anyway now leaves off what fails now: "
+          f"{lf and P.outputs_off(lf['items'])}")
+    check(any("failed again" in kw.get("outcome", "") for _t, kw in notes),
+          "journaled: failed again")
+    # A failure raised while a passing check runs is never cleared by it.
+    n.results["Lasers"] = (True, "")
+    gate = threading.Event()
+    n.pr.checks = [(x, True, (lambda p, _x=x: (gate.wait(2) or True,
+                                               "")))
+                   for x in ("Audio", "Video", "Lasers")]
+    box = {}
+    t = threading.Thread(target=lambda: box.update(r=n.pr.run(
+        ("pre-check", 2), "a Pre-check by Andy", alerts=False,
+        manual=True, by="Check again by Andy")))
+    t.start()
+    check(wait_for(n.pr.checking, 2), "the check is under way")
+    n.pr.raise_alert("The rig check before show 1 FAILED: Audio FAILED: "
+                     "the interface went away.")
+    gate.set()
+    t.join(5)
+    check(box.get("r", {}).get("state") == "passed" and
+          n.pr.verdict(_pr_key(n)) == "failed" and
+          [a.kind for a in n.al.open()] == ["preroll"] and
+          "the interface went away" in n.al.open()[0].text,
+          f"a newer failure stays after the pass: {n.al.view()}")
+    check(any(kw.get("outcome") == "not cleared" for _t, kw in notes),
+          "journaled: the newer failure stays")
+    # A preroll alert opened from elsewhere during the check (a new id).
+    aid = [None]
+    n.pr._alert_id = lambda: next((a.id for a in n.al.open()
+                                   if a.kind == "preroll"), None)
+    n.al.clear(kind="preroll", action="Acknowledge", who="Andy",
+               screen="Rack screen")
+    gate.clear()
+    t = threading.Thread(target=lambda: box.update(r=n.pr.run(
+        ("pre-check", 3), "x", alerts=False, manual=True, by="Andy")))
+    t.start()
+    check(wait_for(n.pr.checking, 2), "the check is under way")
+    aid[0] = n.al.raise_("preroll", "The rig check could not run.").id
+    gate.set()
+    t.join(5)
+    check([a.id for a in n.al.open()] == [aid[0]] and
+          n.pr.verdict(_pr_key(n)) == "failed",
+          f"an alert opened after the check began stays: {n.al.view()}")
+    # The same alert, open from before the check: cleared, by its id.
+    r = n.pr.run(("pre-check", 4), "x", alerts=False, manual=True,
+                 by="Andy")
+    check(r["state"] == "passed" and not n.al.open() and
+          n.pr.verdict(_pr_key(n)) == "cleared",
+          f"an older alert is cleared by a later pass: {n.al.view()}")
+    c.close()
+    n.link.close()
+    # No failure in force: a failed Pre-check raises nothing, as before,
+    # and a pass after it says nothing was cleared.
+    m = _pr_night({"Video": (False, "x")})
+    notes = _pr_notes(m)
+    m.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True)
+    check(not m.al.open() and not m.pr.failure_in_force(),
+          "a Pre-check's failure alone raises nothing")
+    m.results["Video"] = (True, "")
+    m.pr.run(("pre-check", 2), "a Pre-check", alerts=False, manual=True)
+    check(not any("failure cleared" in t for t, _kw in notes),
+          "nothing to clear: nothing said")
+    m.c.close()
+    m.link.close()
+    # Start now's own check passing clears it too (and starts the show).
+    k = _pr_night({"Video": (False, "x")})
+    S, svc, c = k.S, k.svc, k.c
+    svc.tick()
+    k.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: k.pr.verdict(_pr_key(k)) == "failed", 3),
+          "failed")
+    k.results["Video"] = (True, "")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW and not k.al.open(),
+          f"Start now's pass: the alert cleared, the show started: {got}")
+    c.close()
+    k.link.close()
+    check(U.classify("/api/remote/preroll-check") == "settings",
+          "Check again needs the Settings row (an admin), as before")
+    print("  ok")
+
+
+def test_preroll_failure_cleared_on_both_screens():
+    section("rig check failure cleared, on the screens: 1.0's box and 2.0's "
+            "status line and alert slot say 'Rig check passed. Press "
+            "Resume.' (or Start now for a delayed show), with no Continue "
+            "anyway and no Check again; the engine's words follow the "
+            "schedule's state")
+    import types
+    from ltcplay import remote as RM, preroll as P
+    pr = P.PreRoll([("Video", True, lambda p: (False, "x"))], window_s=3)
+    pr.run(("s", 1), "show 1")
+    pr.checks = [("Video", True, lambda p: (True, ""))]
+    pr.run(("p", 1), "a Pre-check", alerts=False, manual=True, by="Andy")
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll = pr
+    held = types.SimpleNamespace(state="HOLD", delayed=lambda: None)
+    rm.schedule = types.SimpleNamespace(machine=held)
+    v = rm.preroll_view()
+    check(v["cleared"]["say"] == "Rig check passed. Press Resume.",
+          f"held: Press Resume: {v.get('cleared')}")
+    d = types.SimpleNamespace(state="STANDBY",
+                              delayed=lambda: types.SimpleNamespace(n=2))
+    rm.schedule = types.SimpleNamespace(machine=d)
+    check(rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now for show 2.",
+          "delayed: Press Start now")
+    _no_dashes(json.dumps(rm.preroll_view()), "the cleared view")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    p2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote2.html"),
+              encoding="utf-8").read()
+    check('pch && pch.cleared' in p2 and 'key:"pr-cleared"' in p2,
+          "2.0 reads the same rule for its status line and alert slot")
+    import shutil as _sh
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const cl = {state:"passed", manual:true, cleared:{by:"Check again by Andy", say:"Rig check passed. Press Resume."}};
+const a = prerollChoice(cl, {state:"HOLD"});
+t(a && a.cleared === true && /^Rig check passed\. Press Resume\./.test(a.text) && /Check again by Andy/.test(a.text), "cleared: " + JSON.stringify(a));
+t(prerollChoice(cl, {state:"SHOW"}) === null, "during a show: nothing");
+const f = prerollChoice({state:"passed", manual:true, show_check:{label:"show 1", items:[{name:"Video", ok:false, text:"x"}], off:["video"]}}, {state:"HOLD"});
+t(f && !f.cleared && /FAILED/.test(f.text), "a standing failure still reads failed: " + JSON.stringify(f));
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
+        check(not bad, f"the pages' cleared words: {bad}")
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _ui2_pages():
@@ -87831,6 +88152,9 @@ if __name__ == "__main__":
         test_preroll_continue_anyway_starts_now_with_failed_outputs_off,
         test_preroll_continue_anyway_needs_a_signed_in_hold,
         test_preroll_wiring_in_the_engine,
+        test_preroll_a_pass_clears_the_failure_and_keeps_the_hold,
+        test_preroll_a_pass_never_clears_a_newer_or_other_failure,
+        test_preroll_failure_cleared_on_both_screens,
         test_alert_booth_never_waits_behind_the_delayed,
         test_alert_hold_an_old_hold_never_clears_a_newer_one,
         test_alert_hold_resume_covers_only_its_own_show,
