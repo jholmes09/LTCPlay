@@ -30,14 +30,14 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["admin", "show"],
   ["running", "show", "stop_confirm"], ["running", "show", "abort_first_tap"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
   ["rig_checking", "show"], ["rig_failed", "show"], ["rig_continued", "show"], ["cleaning", "show"],
-  ["all_live", "show"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
+  ["all_live", "show"], ["hazers_on", "show"], ["hazers_held", "show"], ["hazers_on", "show", "hazer_sheet"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
   ["idle_operator", "day"], ["idle_operator", "schedule"], ["admin", "settings"], ["signed_out", "show", "signin"],
 ];
 const CASES_1 = [
   ["idle_operator", "show"], ["signed_out", "show"], ["show_pending", "show"], ["running", "show"],
   ["held", "show"], ["aborted", "show"], ["alerts_open", "show"], ["alerts_open", "show", "expand_alerts"],
   ["armed_groups", "show"], ["locked", "show"], ["announcing", "show"], ["alert_hold", "show"],
-  ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"],
+  ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["hazers_on", "show"],
   ["idle_operator", "tonight"], ["admin", "programming"], ["idle_operator", "programming"], ["programming", "programming"],
   ["idle_operator", "morning"], ["locked", "morning"], ["purge", "morning"],
   ["signed_out", "users"], ["admin", "users"], ["idle_operator", "fuel"], ["idle_operator", "fireball"],
@@ -263,6 +263,7 @@ async function act(page, extra){
   if(extra === "info") await page.click("#nav-info");
   if(extra === "stop_confirm"){ await page.click("#b-stop"); }
   if(extra === "abort_first_tap"){ await page.click("#b-abort"); }
+  if(extra === "hazer_sheet"){ await page.click("#hz-open"); }
   await page.waitForTimeout(500);
 }
 

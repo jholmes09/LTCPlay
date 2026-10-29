@@ -23,7 +23,7 @@ TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
             "destination", "link", "gflame_range", "arm_value",
             "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
             "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
-            "log_dir", "groups", "lockout_file"}
+            "log_dir", "groups", "lockout_file", "passthrough"}
 DESTINATION_KEYS = {"ip", "port"}
 LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key",
              "arm_ip", "arm_port", "status_mirror_port"}
@@ -33,6 +33,12 @@ GROUP_KEYS = {"name", "safety", "fire", "arm_value", "safety_profile",
 # required, the rest are optional guards.  Nothing else is allowed.  See
 # _safety_profile.
 PROFILE_KEYS = ("arm_value", "enable_lo", "enable_hi", "fire_at")
+# A passthrough entry (Jeff, 2026-10-29, the hazers): a device on the flame
+# universe that is not a flame.  Nothing else is allowed in one.
+PASSTHROUGH_KEYS = {"name", "haze", "fan"}
+# At most this many passthrough entries (the flame frame's hazers_on list
+# is refused longer than this, link.HAZERS_MAX).
+PASSTHROUGH_MAX = 16
 
 
 def _aim(g, name, fire, safeties, profile):
@@ -190,6 +196,30 @@ class Group:
                 f"arm={self.arm_value}>")
 
 
+class Passthrough:
+    """One passthrough entry (Jeff, 2026-10-29): a hazer on the flame
+    universe.  Its slots carry ltcplay's values only while the show program
+    has it switched on (the flame frame's hazers_on), the link is fresh and
+    no Abort has stood since; else zero.  It never arms, never fires and
+    never touches a group's slots: the config refuses any overlap."""
+
+    __slots__ = ("name", "haze", "fan", "slots")
+
+    def __init__(self, name, haze, fan):
+        self.name = str(name)
+        # The hazer's two channels by role (Jeff, 2026-10-29: the haze
+        # output and the fan). flamesafe treats them alike; the role is
+        # for the engine and the screens. Swap them in the config if a
+        # fixture is the other way round.
+        self.haze = int(haze)
+        self.fan = int(fan)
+        self.slots = [self.haze, self.fan]
+
+    def __repr__(self):
+        return (f"<Passthrough {self.name!r} haze={self.haze} "
+                f"fan={self.fan}>")
+
+
 class Config:
     """Validated settings.  Construct through load() or from_dict()."""
 
@@ -201,7 +231,7 @@ class Config:
                  "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
                  "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
                  "groups", "confirmed", "note", "log_dir",
-                 "lights_warning_led", "lockout_file")
+                 "lights_warning_led", "lockout_file", "passthrough")
 
     def test_only_override_dwell_ms(self, ms):
         """FOR TESTS ONLY.  The file loader floors the dwell at 1000 ms; the
@@ -672,7 +702,71 @@ def from_dict(d, source="config"):
         if clash:
             raise ConfigError(f"{g.name}: fire slot(s) {sorted(clash)} are "
                               f"safety slots of another group.")
+    c.passthrough = _passthrough(d, c.groups)
     return c
+
+
+def _passthrough(d, groups):
+    """The "passthrough" list (Jeff, 2026-10-29, the hazers): optional, one
+    entry per hazer, each {"name": text, "haze": slot, "fan": slot}, slots
+    1..512.  Refused unless both slots are given, are different, and are
+    slots of no group (safety, fire or aim) and of no other entry, and
+    every name is its own (no other entry and no group has it).  Left out,
+    there is none and every slot that belongs to no group is zero, as
+    before."""
+    raw = d.get("passthrough", [])
+    if not isinstance(raw, list):
+        raise ConfigError("passthrough must be a list of {\"name\", "
+                          "\"haze\", \"fan\"} entries, one per hazer.")
+    if len(raw) > PASSTHROUGH_MAX:
+        raise ConfigError(f"passthrough has {len(raw)} entries; at most "
+                          f"{PASSTHROUGH_MAX}.")
+    group_slots = {}
+    for g in groups:
+        for s in g.safeties:
+            group_slots[s] = f"a safety slot of {g.name}"
+        for f in g.fire:
+            group_slots[f] = (f"an aim slot of {g.name}" if f in g.aim
+                              else f"a fire slot of {g.name}")
+    names = {g.name for g in groups}
+    owner = {}
+    out = []
+    for i, e in enumerate(raw):
+        if not isinstance(e, dict):
+            raise ConfigError(f"passthrough entry {i + 1} is not an object.")
+        _only_known(e, PASSTHROUGH_KEYS, f"passthrough entry {i + 1}")
+        name = e.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigError(f"passthrough entry {i + 1} has no name.")
+        if NAME_MAX < len(name):
+            raise ConfigError(f"passthrough entry {i + 1}: the name is longer "
+                              f"than {NAME_MAX} characters.")
+        if name in names:
+            raise ConfigError(f"passthrough {name!r}: that name is already "
+                              f"used by a group or another passthrough "
+                              f"entry.")
+        names.add(name)
+        for role in ("haze", "fan"):
+            if role not in e:
+                raise ConfigError(f"passthrough {name!r}: {role} is missing; "
+                                  f"give the {role} channel's slot.")
+        slots = [e.get("haze"), e.get("fan")]
+        for s in slots:
+            if isinstance(s, bool) or not isinstance(s, int) \
+                    or not (1 <= s <= rules.UNIVERSE_SIZE):
+                raise ConfigError(f"passthrough {name!r}: slot {s!r} is not a "
+                                  f"slot between 1 and "
+                                  f"{rules.UNIVERSE_SIZE}.")
+            if s in group_slots:
+                raise ConfigError(f"passthrough {name!r}: slot {s} is "
+                                  f"{group_slots[s]}. A passthrough slot is "
+                                  f"never a flame group's slot.")
+            if s in owner:
+                raise ConfigError(f"passthrough {name!r}: slot {s} is "
+                                  f"already a slot of {owner[s]!r}.")
+            owner[s] = name
+        out.append(Passthrough(name, slots[0], slots[1]))
+    return out
 
 
 def load(path):

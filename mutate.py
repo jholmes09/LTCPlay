@@ -2553,6 +2553,293 @@ MUTATIONS = [
   "    if False:"),
 
  # aim slots (2026-10-28): the wave flamer's angle is not a flame
+ # the hazers at the engine (2026-10-29)
+ ("hazers: the FSEQ's data on a hazer slot reaches it",
+  "ltcplay/flamelink.py",
+  "        for c in self._hazer_chans:\n            out[c] = 0\n",
+  "        for c in ():\n            out[c] = 0\n"),
+
+ ("hazers: the flame frame never says which hazers are armed",
+  "ltcplay/flamelink.py",
+  "        obj[\"hazers_on\"] = sorted(str(h) for h in hazers_on)",
+  "        obj[\"hazers_on\"] = []"),
+
+ ("hazers: the flame link's Abort leaves the hazers armed",
+  "ltcplay/flamelink.py",
+  "                self._hazers_on = frozenset()\n                self._purge = None",
+  "                pass\n                self._purge = None"),
+
+ ("hazers: arming is taken while an Abort is being repeated",
+  "ltcplay/flamelink.py",
+  "            if self.abort_repeating():\n                want &= self._hazers_on",
+  "            if False:\n                want &= self._hazers_on"),
+
+ ("hazers: the fuel tracker and the firing flag are told haze values",
+  "ltcplay/flamelink.py",
+  "            values = self._with_haze(values, False)\n            self.last_values_nonzero",
+  "            self.last_values_nonzero"),
+
+ ("hazers: arming while an Abort is standing",
+  "ltcplay/hazers.py",
+  "            if self._abort_standing():",
+  "            if False:"),
+
+ ("hazers: arming with flamesafe's status stale",
+  "ltcplay/hazers.py",
+  "        if fl.get(\"stale\") or age is None or age > STATUS_FRESH_S * 1000:",
+  "        if False:"),
+
+ ("hazers: arming with flamesafe's hazers not the engine's",
+  "ltcplay/hazers.py",
+  "        if sorted(theirs) != sorted(mine):",
+  "        if False:"),
+
+ ("hazers: the watch never disarms them",
+  "ltcplay/hazers.py",
+  "        if why:\n            return self.all_off(why)\n        return False",
+  "        if False:\n            return self.all_off(why)\n        return False"),
+
+ ("hazers: arming from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if on and not self.may_act_from(ctx.local):",
+  "        if False:"),
+
+ ("hazers: an Abort press leaves the hazers armed",
+  "ltcplay/remote.py",
+  "            self.hazers_cut(f\"{who or 'someone'} pressed Abort on the \"",
+  "            (f\"{who or 'someone'} pressed Abort on the \""),
+
+ ("hazers: Stop leaves the hazers armed",
+  "ltcplay/remote.py",
+  "            self.hazers_cut(why, who, screen)",
+  "            pass"),
+
+ ("hazers: arming a hazer needs no permission",
+  "ltcplay/users.py",
+  "    \"hazers-off\": \"safety\", \"hazer\": \"arm\",",
+  "    \"hazers-off\": \"safety\", \"hazer\": None,"),
+
+ ("hazers: a hazer disarm needs the arm permission",
+  "ltcplay/users.py",
+  "        if name == \"hazer\" and body.get(\"on\") is not True:",
+  "        if False:"),
+
+ ("deck: arming a hazer needs no operator or arm permission",
+  "ltcplay/streamdeck.py",
+  "        if on:\n            refusal = operator_gate(who, \"arm\")",
+  "        if False:\n            refusal = operator_gate(who, \"arm\")"),
+
+ ("hazers: Stop on the rack screen's /api/stop leaves the hazers armed",
+  "ltcplay/web.py",
+  "        fn = getattr(rm, \"hazers_cut\", None)",
+  "        fn = None"),
+
+ ("hazers: a zero landing mid-read still carries haze",
+  "ltcplay/flamelink.py",
+  "            wire = self._with_haze(values, run and gen == self._zero_gen)",
+  "            wire = self._with_haze(values, run)"),
+
+ ("hazers: haze runs while the show state is not live",
+  "ltcplay/flamelink.py",
+  "        if not self._haze_live:\n            return False",
+  "        if False:\n            return False"),
+
+ ("hazers: haze runs on Hold",
+  "ltcplay/hazers.py",
+  "        return self.show() == \"playing\"",
+  "        return self.show() != \"idle\""),
+
+ ("hazers: the engine takes a haze slot that is the fan slot",
+  "ltcplay/flamelink.py",
+  "               for x in slots) or slots[0] == slots[1]:",
+  "               for x in slots) or False:"),
+
+ ("hazers: the engine takes a hazer slot that is a group's or another hazer's",
+  "ltcplay/flamelink.py",
+  "        if any(not _is_int(x) or not 1 <= x <= UNIVERSE_SIZE or x in taken",
+  "        if any(not _is_int(x) or not 1 <= x <= UNIVERSE_SIZE"),
+
+ ("hazers: a level outside 0 to 100 percent is taken",
+  "ltcplay/hazers.py",
+  "    if not 0 <= p <= 100:",
+  "    if False:"),
+
+ ("hazers: a levels file with a value past 255 is read",
+  "ltcplay/hazers.py",
+  "                    if isinstance(v, bool) or not isinstance(v, int) or \\\n                            not 0 <= v <= 255:",
+  "                    if isinstance(v, bool) or not isinstance(v, int):"),
+
+ ("hazers: arming while live flame programming is on",
+  "ltcplay/remote.py",
+  "        if lf is not None and getattr(lf, \"on\", False):",
+  "        if False:"),
+
+ ("hazers: the screens say armed before flamesafe has taken it",
+  "ltcplay/hazers.py",
+  "            elif not p or not p.get(\"enabled\"):",
+  "            elif False:"),
+
+ ("hazers: an Abort's journal line forgets what was armed",
+  "ltcplay/remote.py",
+  "            was = hz.cut()",
+  "            hz.cut()\n            was = []"),
+
+ ("deck: with announcements a tap of key 5 opens the hazers page",
+  "ltcplay/streamdeck.py",
+  "                if self.hazers_view():\n                    # Hazers too: a hold opens their page (tick), a tap",
+  "                if False:\n                    # Hazers too: a hold opens their page (tick), a tap"),
+
+ ("deck: the key 5 hold never opens the hazers page",
+  "ltcplay/streamdeck.py",
+  "        if self.page == 1 and self._prev_keys[ANNOUNCE_KEY] and \\\n                self._key5_hold.fired(now):",
+  "        if False:"),
+
+ ("deck: the key 5 hold opens the hazers page over an open alert",
+  "ltcplay/streamdeck.py",
+  "            if self.alert_pending():\n                self._log(\"Stream Deck: the hazers page was not opened: an \"",
+  "            if False:\n                self._log(\"Stream Deck: the hazers page was not opened: an \""),
+
+ ("deck: letting go of key 5 early opens nothing",
+  "ltcplay/streamdeck.py",
+  "            if not pending:\n                self._open_page2(down, now, latched, morning)\n        self._prev_keys = list(down)",
+  "            pass\n        self._prev_keys = list(down)"),
+
+ ("deck: a latch leaves the key 5 hold filling",
+  "ltcplay/streamdeck.py",
+  "            self._key5_hold.release()\n            self._fire_release(\"the rig is aborted\")",
+  "            self._fire_release(\"the rig is aborted\")"),
+
+ ("ui 1.0: arming a hazer is not greyed for a role that may not arm",
+  "ltcplay/web/remote.html",
+  "    b.disabled = !look.armed && !mayArm;",
+  "    b.disabled = false;"),
+
+ ("ui 2.0: arming a hazer is not greyed for a role that may not arm",
+  "ltcplay/web/remote2.html",
+  "    b.disabled = !look.armed && !mayArm;",
+  "    b.disabled = false;"),
+
+ ("ui: a hazer on Hold reads plain ARMED",
+  "ltcplay/web/remote.html",
+  "  if(armed && h.state === \"held\"){ out.state = \"ARMED, paused by Hold\";",
+  "  if(false){ out.state = \"ARMED, paused by Hold\";"),
+
+ ("ui: a level stepper goes past 100 percent",
+  "ltcplay/web/remote.html",
+  "  return Math.max(0, Math.min(100, v));",
+  "  return Math.max(0, v);"),
+
+ # passthrough (2026-10-29): the hazers
+ ("flamesafe: passthrough: a Composer takes a hazer on a group slot",
+  "flamesafe/composer.py",
+  "        if overlap:\n            raise ValueError(f\"passthrough slots {overlap} are flame group \"",
+  "        if False:\n            raise ValueError(f\"passthrough slots {overlap} are flame group \""),
+
+ ("flamesafe: passthrough: the hazers are written after the groups",
+  "flamesafe/composer.py",
+  "        # 6. Every raised group is confirmed: each of its safety slots carries",
+  "        for i, p in enumerate(self.pt):\n            if pt_passing[i]:\n                for sl in p.slots:\n                    buf[sl - 1] = self._frame[sl - 1]\n        # 6. Every raised group is confirmed: each of its safety slots carries"),
+
+ ("flamesafe: passthrough: hazers resume after a panic without off then on",
+  "flamesafe/composer.py",
+  "            self._pt_reset(PT_FAULT)",
+  "            pass"),
+
+ ("flamesafe: passthrough: a locked hazer slot is not said",
+  "flamesafe/composer.py",
+  "            if ok and any(locked):",
+  "            if False:"),
+
+ ("flamesafe: passthrough: more than 16 hazers load",
+  "flamesafe/config.py",
+  "    if len(raw) > PASSTHROUGH_MAX:",
+  "    if False:"),
+
+ ("flamesafe: passthrough: a hazer name over 64 characters loads",
+  "flamesafe/config.py",
+  "        if NAME_MAX < len(name):",
+  "        if False:"),
+
+ ("flamesafe: passthrough: hazers_on may list more than 16 names",
+  "flamesafe/link.py",
+  "    if not isinstance(hazers, list) or len(hazers) > HAZERS_MAX \\",
+  "    if not isinstance(hazers, list) or len(hazers) > 10 ** 6 \\"),
+
+ ("flamesafe: passthrough: hazers_on may carry a name over 64 characters",
+  "flamesafe/link.py",
+  "            or any(not isinstance(h, str) or not 1 <= len(h) <= HAZER_NAME_MAX",
+  "            or any(not isinstance(h, str) or not 1 <= len(h)"),
+
+ ("flamesafe: passthrough: hazers_on may name a hazer twice",
+  "flamesafe/link.py",
+  "                   for h in hazers) or len(set(hazers)) != len(hazers):",
+  "                   for h in hazers) or False:"),
+
+ ("flamesafe: passthrough: a hazer passes without being switched on",
+  "flamesafe/composer.py",
+  "            passing = self._pt_on[i] and self._frame is not None",
+  "            passing = self._frame is not None"),
+
+ ("flamesafe: passthrough: a stale link leaves the hazers switched on",
+  "flamesafe/composer.py",
+  "            self._pt_reset(PT_LINK)",
+  "            pass"),
+
+ ("flamesafe: passthrough: the Abort leaves the hazers on",
+  "flamesafe/composer.py",
+  "        self._pt_reset(PT_ABORT)",
+  "        pass"),
+
+ ("flamesafe: passthrough: a change of sender leaves the hazers as they were",
+  "flamesafe/composer.py",
+  "                self._pt_reset(PT_NEW_SENDER)",
+  "                pass"),
+
+ ("flamesafe: passthrough: ON enables a hazer not seen OFF since it was taken away",
+  "flamesafe/composer.py",
+  "                self._pt_on[i] = self._pt_block[i] == \"\"",
+  "                self._pt_on[i] = True"),
+
+ ("flamesafe: passthrough: OFF never clears the block",
+  "flamesafe/composer.py",
+  "            if not on:\n                self._pt_block[i] = \"\"",
+  "            if not on:\n                pass"),
+
+ ("flamesafe: passthrough: a hazer slot in the lockout file passes",
+  "flamesafe/composer.py",
+  "                    if sl not in self._locked:\n                        buf[sl - 1] = self._frame[sl - 1]",
+  "                    if True:\n                        buf[sl - 1] = self._frame[sl - 1]"),
+
+ ("flamesafe: passthrough: a hazer slot may be a group's slot",
+  "flamesafe/config.py",
+  "            if s in group_slots:",
+  "            if False:"),
+
+ ("flamesafe: passthrough: two hazers may share a slot",
+  "flamesafe/config.py",
+  "            if s in owner:",
+  "            if False:"),
+
+ ("flamesafe: passthrough: a hazer may take a group's name",
+  "flamesafe/config.py",
+  "        if name in names:\n            raise ConfigError(f\"passthrough {name!r}: that name",
+  "        if False:\n            raise ConfigError(f\"passthrough {name!r}: that name"),
+
+ ("flamesafe: passthrough: a hazer without its haze or fan slot loads",
+  "flamesafe/config.py",
+  "            if role not in e:",
+  "            if False:"),
+
+ ("flamesafe: passthrough: a slot outside 1 to 512 loads",
+  "flamesafe/config.py",
+  "                    or not (1 <= s <= rules.UNIVERSE_SIZE):\n                raise ConfigError(f\"passthrough",
+  "                    or False:\n                raise ConfigError(f\"passthrough"),
+
+ ("flamesafe: passthrough: a malformed hazers_on is not refused",
+  "flamesafe/link.py",
+  "    if not isinstance(hazers, list) or len(hazers) > HAZERS_MAX \\",
+  "    if False and not isinstance(hazers, list) or len(hazers) > HAZERS_MAX \\"),
+
  ("flamesafe: aim: every fire slot skips the edge check",
   "flamesafe/composer.py",
   "            if f in g.aim:\n                # An aim slot points the head; it never lights it.",
@@ -2784,9 +3071,9 @@ MUTATIONS = [
  # rule 9: only the writer
  ("flamesafe: ltcplay's values on channels that belong to no group pass through",
   "flamesafe/composer.py",
-  "        buf = bytearray(rules.UNIVERSE_SIZE)\n        sent_fire = []",
+  "        buf = bytearray(rules.UNIVERSE_SIZE)\n        # Passthrough (Jeff, 2026-10-29, the hazers), written BEFORE every",
   "        buf = bytearray(commanded if commanded is not None\n"
-  "                        else rules.UNIVERSE_SIZE)\n        sent_fire = []"),
+  "                        else rules.UNIVERSE_SIZE)\n        # Passthrough (Jeff, 2026-10-29, the hazers), written BEFORE every"),
 
  ("flamesafe: a disarmed group passes its fire values through",
   "flamesafe/composer.py",

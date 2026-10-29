@@ -199,6 +199,18 @@ PROGRAM_HOLD_S = 0.25
 # command, and a position more than REHEARSE_DRIFT_S off the time that has
 # passed since the last landing is a landing too, however it got there.
 REHEARSE_DRIFT_S = 0.15
+# The hazers (Jeff, 2026-10-29; flamesafe/CONTRACT.md, "Passthrough: the
+# hazers"): flamesafe's "passthrough" entries, read from its own config,
+# each a haze and a fan channel. Their values never come from the show's
+# FSEQ, xLights or the Programming transport: every hazer channel is zero
+# in whatever those carry, and this link writes the hazer's stored Haze and
+# Fan levels (hazer_levels_set) on its two channels only while it is ARMED
+# here (hazers_set) and a show is playing (the show state live AND the
+# engine's haze_gate: a scheduled show in SHOW, not on Hold). Every frame
+# carries "hazers_on", the names ARMED. DISARMED at start; disarm_all
+# (Abort, Stop) disarms every one before its first copy goes out.
+HAZERS_MAX = 16
+HAZER_NAME_MAX = 64
 LOCK_ALARM_S = 1.0         # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
 KEY_MIN, KEY_MAX = 16, 128
@@ -239,7 +251,8 @@ class FlameLinkConfig:
     written in this repo (CLAUDE.md: never commit keys)."""
 
     def __init__(self, ip, port, universe, key, send_hz=SEND_HZ_DEFAULT,
-                 frame_stale_ms=FRAME_STALE_MS_DEFAULT, aim_slots=()):
+                 frame_stale_ms=FRAME_STALE_MS_DEFAULT, aim_slots=(),
+                 hazers=()):
         self.ip = ip
         self.port = port
         self.universe = universe
@@ -249,6 +262,10 @@ class FlameLinkConfig:
         # The flame universe slots (1 to 512) that only aim a head, from
         # flamesafe's groups' "aim" lists. The zero-first hold skips them.
         self.aim_slots = frozenset(aim_slots)
+        # The hazers, ((name, (slot, ...)), ...), slots 1 to 512, from
+        # flamesafe's "passthrough" (hazers_of). Empty: none.
+        self.hazers = tuple((str(n), tuple(int(x) for x in sl))
+                            for n, sl in hazers)
 
     @property
     def abort_repeat_s(self):
@@ -332,7 +349,53 @@ class FlameLinkConfig:
                          "frame_stale_ms": doc.get("frame_stale_ms")},
                         where=str(path))
         cfg.aim_slots = aim_slots_of(doc, path)
+        cfg.hazers = hazers_of(doc, path)
         return cfg
+
+
+def hazers_of(doc, path="flamesafe's config"):
+    """flamesafe's "passthrough" list (2026-10-29, the hazers) as ((name,
+    (haze slot, fan slot)), ...), read as plain JSON (the wall). Left out:
+    none. A malformed list is refused, never skipped, so `ltc serve` does
+    not start on a file flamesafe would refuse: a list of at most
+    HAZERS_MAX objects, each a name of 1 to HAZER_NAME_MAX characters used
+    once, and a haze and a fan slot, 1 to 512, two different slots, none a
+    group's safety or fire slot or another hazer's. flamesafe checks the
+    same file on its own; this is the second reader, not the guard."""
+    raw = doc.get("passthrough", []) if isinstance(doc, dict) else []
+    where = f"{path}: 'passthrough'"
+    if not isinstance(raw, list) or len(raw) > HAZERS_MAX:
+        raise FlameLinkConfigError(f"{where} has to be a list of at most "
+                                   f"{HAZERS_MAX} hazers. flamesafe refuses "
+                                   f"this file too.")
+    taken = set()
+    for g in doc.get("groups") or []:
+        if isinstance(g, dict):
+            saf = g.get("safety")
+            for x in (saf if isinstance(saf, list) else [saf]) + list(
+                    g.get("fire") or []):
+                if _is_int(x):
+                    taken.add(x)
+    names, out = set(), []
+    for e in raw:
+        name = e.get("name") if isinstance(e, dict) else None
+        if not isinstance(name, str) or not name.strip() or \
+                len(name) > HAZER_NAME_MAX or name in names:
+            raise FlameLinkConfigError(f"{where}: {name!r} is not a hazer "
+                                       f"name of its own. flamesafe refuses "
+                                       f"this file too.")
+        slots = [e.get("haze"), e.get("fan")]
+        if any(not _is_int(x) or not 1 <= x <= UNIVERSE_SIZE or x in taken
+               for x in slots) or slots[0] == slots[1]:
+            raise FlameLinkConfigError(f"{where}: {name!r} needs a haze and "
+                                       f"a fan slot, 1 to {UNIVERSE_SIZE}, "
+                                       f"two different slots, neither a "
+                                       f"flame group's or another hazer's. "
+                                       f"flamesafe refuses this file too.")
+        names.add(name)
+        taken.update(slots)
+        out.append((name, tuple(slots)))
+    return tuple(out)
 
 
 def aim_slots_of(doc, path="flamesafe's config"):
@@ -464,12 +527,20 @@ def audio_master_state(get_clock):
 
 # -- the wire ----------------------------------------------------------------
 
-def encode_flame(seq, tc, mono, universe, values, key):
-    return json.dumps({
+def encode_flame(seq, tc, mono, universe, values, key, hazers_on=None):
+    """A flame frame. `hazers_on` (2026-10-29): the names of the hazers
+    switched ON, [] for none, sent whenever flamesafe's config lists any
+    hazers; None (no hazers configured) leaves the field out, so the frame
+    is exactly the one before hazers existed (CONTRACT.md: left out or
+    empty is every hazer off)."""
+    obj = {
         "v": CONTRACT_VERSION, "k": key, "t": "flame", "seq": int(seq),
         "tc": tc, "mono": float(mono), "universe": int(universe),
         "values": [int(v) for v in values],
-    }, separators=(",", ":")).encode("utf-8")
+    }
+    if hazers_on is not None:
+        obj["hazers_on"] = sorted(str(h) for h in hazers_on)
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
 def encode_disarm_all(seq, mono, abort_id, reason, key):
@@ -538,6 +609,20 @@ class FlameLink:
         # Aim slots as 0-based channel indexes: never held by the zero-
         # first rule (see _guarded).
         self._aim = frozenset(s - 1 for s in getattr(cfg, "aim_slots", ()))
+        # The hazers (2026-10-29): name -> its 0-based (haze, fan)
+        # channels, every hazer channel, the names ARMED (none at start),
+        # each one's stored (haze, fan) levels 0 to 255 (0 until the engine
+        # says), the engine's gate (() -> True while a show is playing and
+        # not held; None: never), and whether this pass's show state was
+        # live (values_now).
+        self._hazers = {n: tuple(x - 1 for x in sl)
+                        for n, sl in getattr(cfg, "hazers", ())}
+        self._hazer_chans = frozenset(c for sl in self._hazers.values()
+                                      for c in sl)
+        self._hazers_on = frozenset()
+        self._hazer_levels = {}
+        self.haze_gate = None
+        self._haze_live = False
         self.tc_fps = float(tc_fps)
         # Always on in the program. Only the selftest's tests of the OTHER
         # rules (moving, released, providers) turn it off, so their cue
@@ -895,6 +980,7 @@ class FlameLink:
     def values_now(self):
         """(tc, values) for a frame sent now. Never raises; zeros on
         anything uncertain. Calls the providers: never under self._lock."""
+        self._haze_live = False
         if self._rehearse_on:
             # Fire flames while scrubbing: its own path, start to end. With
             # it off (always, during a show) nothing below changes.
@@ -917,6 +1003,9 @@ class FlameLink:
         # A Hold: not live with the show's timecode still there. Its Resume
         # is the first live frame after it.
         if live is True:
+            # A show cue is playing: the hazers may run (send_frame also
+            # asks the engine's haze_gate).
+            self._haze_live = True
             if not self._was_live:
                 self._resumed_at = now if self._held_tc is not None else None
             self._was_live = True
@@ -1270,6 +1359,88 @@ class FlameLink:
             self.rehearse_sent += 1
         return tc, out
 
+    # -- the hazers (2026-10-29) ---------------------------------------------
+    def hazer_levels_set(self, levels):
+        """Each hazer's stored levels, {name: (haze, fan)}, whole numbers 0
+        to 255, from the next frame. A name this link does not have, or a
+        value that is not a whole number 0 to 255, is dropped (that hazer
+        then outputs 0). Never raises."""
+        out = {}
+        try:
+            for n, (h, f) in dict(levels).items():
+                if n in self._hazers and all(
+                        _is_int(v) and 0 <= v <= 255 for v in (h, f)):
+                    out[n] = (h, f)
+        except Exception:
+            out = {}
+        with self._lock:
+            self._hazer_levels = out
+        return out
+
+    def _haze_running(self):
+        """True when the hazers may output this frame: the show state was
+        live on this pass AND the engine's gate says a show is playing and
+        not held. Asked outside self._lock. Never raises."""
+        if not self._haze_live:
+            return False
+        gate = self.haze_gate
+        try:
+            return gate is not None and gate() is True
+        except Exception:
+            return False
+
+    def hazer_names(self):
+        """Every hazer's name, in flamesafe's config order."""
+        return [n for n, _sl in getattr(self.cfg, "hazers", ())]
+
+    @property
+    def hazers_on(self):
+        return self._hazers_on
+
+    def abort_repeating(self):
+        """True while an Abort (or Stop) is still being repeated to
+        flamesafe (disarm_all): flamesafe zeroes every hazer on each copy,
+        so none is switched on until the copies have stopped."""
+        rep = self._abort_repeat
+        try:
+            return rep is not None and self._clock() <= rep[2]
+        except Exception:
+            return True
+
+    def hazers_set(self, names):
+        """The hazers switched ON from the next frame: every other one OFF.
+        A name this link does not have is dropped, and so is any hazer not
+        already ON while an Abort is being repeated (abort_repeating).
+        Returns what is ON."""
+        with self._lock:
+            want = frozenset(n for n in names if n in self._hazers)
+            if self.abort_repeating():
+                want &= self._hazers_on
+            self._hazers_on = want
+            return self._hazers_on
+
+    def _hazers_said(self):
+        """The frame's hazers_on: the names ON, or None (the field left
+        out) when flamesafe's config lists no hazers."""
+        return self._hazers_on if self._hazers else None
+
+    def _with_haze(self, values, run):
+        """`values` with every hazer channel replaced: zero, whatever the
+        FSEQ, xLights or the scrub carried there; then, when `run`, each
+        ARMED hazer's stored haze and fan levels. Under self._lock."""
+        if not self._hazer_chans:
+            return values
+        out = bytearray(values)
+        for c in self._hazer_chans:
+            out[c] = 0
+        if run:
+            for n in self._hazers_on:
+                ch = self._hazers.get(n)
+                lv = self._hazer_levels.get(n)
+                if ch and lv:
+                    out[ch[0]], out[ch[1]] = lv[0], lv[1]
+        return bytes(out)
+
     def set_locked_channels(self, slots):
         """The locked out fire slots (1-based), zeroed in every frame this
         link sends from now on. Rubbish locks nothing extra here: flamesafe
@@ -1415,6 +1586,7 @@ class FlameLink:
         gen = self._zero_gen
         with self._read_lock:
             tc, values = self.values_now()
+            run = self._haze_running()
         with self._lock:
             if gen != self._zero_gen or (self.zeroed and self._purge is None
                                          and self._program is None
@@ -1427,10 +1599,17 @@ class FlameLink:
                 # so is a live flame programming frame, by the same rule,
                 # and fire flames while scrubbing, by _rehearse_values's).
                 values = bytes(UNIVERSE_SIZE)
-            seq, mono = self._next()
+            # The hazers (2026-10-29): their channels zero in the flame
+            # values (fire, the fuel tracker, "firing"), then each ARMED
+            # hazer's stored levels while a show plays. A frame read before
+            # a zero() or disarm_all() that landed meanwhile carries none.
+            values = self._with_haze(values, False)
             self.last_values_nonzero = any(values)
+            wire = self._with_haze(values, run and gen == self._zero_gen)
+            seq, mono = self._next()
             ok = self._send(encode_flame(seq, tc, mono, self.cfg.universe,
-                                         values, self.cfg.key))
+                                         wire, self.cfg.key,
+                                         self._hazers_said()))
             self._last_frame_at = self._clock()
             self._repeat_abort()
             late = self._abort_overdue()
@@ -1451,7 +1630,8 @@ class FlameLink:
         seq, mono = self._next()
         self.last_values_nonzero = False
         return self._send(encode_flame(seq, None, mono, self.cfg.universe,
-                                       bytes(UNIVERSE_SIZE), self.cfg.key))
+                                       bytes(UNIVERSE_SIZE), self.cfg.key,
+                                       self._hazers_said()))
 
     def _abort_overdue(self):
         """The pending Abort's id the first time it is overdue (sent more
@@ -1534,6 +1714,11 @@ class FlameLink:
             why = " ".join(str(reason or "Abort").split())[:REASON_MAX] \
                 or "Abort"
             with self._lock:
+                # Abort and Stop switch every hazer OFF (Jeff, 2026-10-29),
+                # here at the link before the zero frame and the first
+                # copy, whichever surface sent it. flamesafe does the same
+                # on the disarm_all itself.
+                self._hazers_on = frozenset()
                 self._purge = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
@@ -1707,6 +1892,7 @@ class FlameLink:
                 "rehearse_on": self._rehearse_on,
                 "rehearse_sent": self.rehearse_sent,
                 "locked_channels": sorted(self._locked),
+                "hazers_on": sorted(self._hazers_on),
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,
                 "abort": self.abort_state(),
