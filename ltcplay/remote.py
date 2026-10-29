@@ -3862,8 +3862,9 @@ class Remote:
                      f"hold) before it can fire. {said}").strip()
         else:
             alert = (f"Disarm {gname} COULD NOT be confirmed: {why}, and "
-                     f"the forced disarm did not go out either ({said or "
-                     f"'no answer'}). {gname} may still be armed: press "
+                     f"the forced disarm did not go out either "
+                     f"({said or 'no answer'}). {gname} may still be "
+                     f"armed: press "
                      f"Abort, or disarm at the Stream Deck.")
         self._journal(who, device, "disarm", "forced" if ok else "fault",
                       f"{label} pressed Disarm {gname} on the {device}. "
