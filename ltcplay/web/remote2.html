@@ -51,11 +51,11 @@
 /* A short window (the rack window under its frame, an iPad's Safari): the
    same regions, tighter. Targets stay 56 px on SHOW. */
 @media (max-height:800px) and (min-width:601px){
-  :root{--gap:6px; --pad:10px; --hdr-btn:44px; --next-h:60px; --next-fs:22px; --state-h:56px; --tc-fs:32px;
+  :root{--gap:4px; --pad:10px; --hdr-btn:44px; --next-h:60px; --next-fs:22px; --state-h:56px; --tc-fs:32px;
     --tr-h:64px; --al-h:64px; --tile-btn:56px; --ann-h:56px}
 }
 @media (max-height:700px) and (min-width:601px){
-  :root{--gap:5px; --pad:8px; --hdr-btn:44px; --next-h:60px; --next-fs:21px; --state-h:50px; --tc-fs:28px; --tr-h:56px; --al-h:60px}
+  :root{--gap:4px; --pad:8px; --hdr-btn:44px; --next-h:60px; --next-fs:21px; --state-h:50px; --tc-fs:28px; --tr-h:56px; --al-h:60px}
   header{padding-top:4px;padding-bottom:4px}
 }
 /* ABORT's corner (safety review of #166): the footer is always the sign
@@ -285,7 +285,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #ann-btns .b{min-width:0;height:var(--ann-h);padding:0 6px;gap:6px;white-space:normal;line-height:1.05;flex:1 1 0}
 }
 @media (max-width:900px) and (min-width:601px) and (max-height:960px){
-  :root{--gap:6px; --pad:10px; --state-h:60px; --tr-h:64px; --al-h:64px; --ann-h:56px}
+  :root{--gap:4px; --pad:10px; --state-h:60px; --tr-h:56px; --al-h:60px; --ann-h:56px}
 }
 /* A phone: the SHOW pane scrolls between the header and the footer, so
    nothing ever goes under Abort. */
