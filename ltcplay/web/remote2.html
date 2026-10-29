@@ -857,6 +857,13 @@ function pinItems(st){
   const lf = s.live_flame || {};
   if(lf.on === true) out.push({key:"lf", text:"Live flame on. Armed groups can fire.", pill:"LIVE FLAME", btn:"Live flame off",
     full:"Live flame programming: xLights drives the flames. Only an armed group fires. Never use xLights' test tools while a group is armed. Turned on by " + (lf.who || "someone") + "."});
+  // Programming playback playing the show's flame cues (#173: no switch,
+  // so nothing else here says flames can fire). Its Stop is 1.0's Hold,
+  // which the engine makes Programming playback's Pause; a safety press,
+  // never refused.
+  const pf = s.programming_flames || {};
+  if(pf.on === true) out.push({key:"pf", text:"Flames can fire from Programming.", pill:"FLAMES LIVE", btn:"Stop",
+    full:"Programming playback is playing the show's flame cues: an armed group fires. Stop is Hold, which pauses the playback. Abort ends it too."});
   return out;
 }
 // The big button: the next step, one of Reset, Resume, Run show, Start
@@ -1141,6 +1148,9 @@ $("pins").addEventListener("click", async e => {
   } else if(k === "lf"){
     try{ const j = await post("/api/remote/live-flame", {on: false}); say("Live flame programming off.", j.text, "ok"); }
     catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Live flame NOT off.", e2.message); }
+  } else if(k === "pf"){
+    // 1.0's Hold (its b-hold: press("hold")), the same route and body.
+    press("hold");
   }
 });
 
@@ -2592,7 +2602,12 @@ function renderMorning(){
   $("d-seg").querySelectorAll("[data-part]").forEach(b => { b.classList.toggle("on", b.dataset.part === DAY_PART); b.setAttribute("aria-selected", b.dataset.part === DAY_PART ? "true" : "false"); });
   const done = steps.filter(x => x.state === "done").length;
   setText($("d-prog"), done + " of " + steps.length + " done");
-  if(!steps.some(x => x.key === DAY_STEP)) DAY_STEP = (steps.find(x => x.state !== "done") || steps[0] || {}).key || null;
+  if(!steps.some(x => x.key === DAY_STEP)){
+    // A step that drops out of the list on a redraw goes as if left: the
+    // Purge step's fire and this screen's selection with it.
+    if(DAY_STEP === "purge"){ fireStop("the Purge step went"); purgeDrop(); }
+    DAY_STEP = (steps.find(x => x.state !== "done") || steps[0] || {}).key || null;
+  }
   const key = JSON.stringify(steps.map(x => [x.key, x.state, x.title]));
   if(key !== DAY_KEY){
     DAY_KEY = key;
@@ -2871,15 +2886,23 @@ function renderCleaning(){
 document.addEventListener("keydown", e => {
   if(e.code !== "Space") return;
   if(TAB !== "day" || DAY_STEP !== "purge") return;
-  // An open sheet, or a focused button or field, takes Space as itself
-  // (review of #169, 3): it presses that button and never fires.
+  // An open sheet takes Space as itself (review of #169, 3): it presses
+  // the sheet's button and never fires; a field takes it as typing. A
+  // focused group button or step does not (second review of #169, 1: a
+  // tap focuses it): Space fires, and its default is stopped on the way
+  // down and up so the browser never presses the focused button.
   if(SHEET_DONE || !$("sheet").hidden) return;
-  if(e.target && e.target.closest && e.target.closest("input, select, textarea, button, a, [role=button]")) return;
+  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
   e.preventDefault();
   if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }
   fireStart();
 });
-document.addEventListener("keyup", e => { if(e.code === "Space") fireStop("the key came up"); });
+document.addEventListener("keyup", e => {
+  if(e.code !== "Space") return;
+  if(TAB === "day" && DAY_STEP === "purge" && !SHEET_DONE && $("sheet").hidden &&
+     !(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))) e.preventDefault();
+  fireStop("the key came up");
+});
 window.addEventListener("blur", () => fireStop("the page lost focus"));
 document.addEventListener("visibilitychange", () => { if(document.hidden) fireStop("the page was hidden"); });
 window.addEventListener("pagehide", () => fireStop("the page closed"));

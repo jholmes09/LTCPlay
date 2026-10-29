@@ -86369,6 +86369,14 @@ for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLE
 // engine's scrub_flames is never pinned, and no button posts its route.
 s = base(); s.scrub_flames = {on:true};
 t(pinItems(s).length === 0, "an old scrub_flames is not pinned");
+// Programming playback playing the flame cues (#173): pinned, said first,
+// its Stop 1.0's Hold.
+s = base(); s.programming_flames = {available:true, follows:true, on:false};
+t(pinItems(s).length === 0, "Programming flames not playing: nothing pinned");
+s.programming_flames.on = true;
+{ const pf = pinItems(s)[0], n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
+  t(pf && pf.key === "pf" && pf.btn === "Stop" && n.text === "Flames can fire from Programming." && n.tone === "bad" && p.text === "FLAMES LIVE",
+    "Programming flames playing: pinned in the top line with Stop: " + n.text + " / " + p.text); }
 s = base(); s.cleaning = {state:"phase1"};
 t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
 s.schedule.state = "SHOW";
@@ -86648,6 +86656,17 @@ async function go(){
   if(/presses=1/.test(location.search)) res.presses = await presses();
   if(/prhold=1/.test(location.search)) res.pr = await prPresses();
   if(/fd=1/.test(location.search)) res.fd = await fdPresses();
+  if(/pfpin=1/.test(location.search)){
+    // Programming playback playing the flame cues (#173): pinned, and its
+    // Stop is 1.0's Hold.
+    const pb = document.querySelector('#pins [data-pin="pf"]');
+    res.pf = {shown:!!pb && shown(pb), label:pb ? pb.textContent.trim() : "", dis:pb ? pb.disabled : null,
+              next:document.getElementById("next-t").textContent, pill:document.getElementById("pill-t").textContent};
+    posts.length = 0;
+    if(pb) pb.click();
+    await wait(400);
+    res.pf.posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+  }
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
   document.body.appendChild(pre);
@@ -86656,6 +86675,17 @@ go();
 })();
 </script>
 """
+
+
+def _ui2_status_pf():
+    """Programming playback playing with the show's flame cues following
+    it (#173's programming_flames.on)."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    st["transport"] = {"programming": True}
+    st["programming_flames"] = {"available": True, "follows": True,
+                                "on": True, "line": ""}
+    return st
 
 
 def _ui2_status_running():
@@ -86785,7 +86815,9 @@ def test_ui2_show_tab_in_a_browser():
             ("rig check pressed", _ui2_status_rigcheck(), ((1024, 768),),
              "?prhold=1&tour=0"),
             ("finger down", _rack_status_pico(), ((1366, 768),),
-             "?fd=1&tour=0")]
+             "?fd=1&tour=0"),
+            ("Programming flames playing", _ui2_status_pf(), ((1366, 768),),
+             "?pfpin=1&tour=0")]
     for what, status, sz, frag in runs:
         if not frag:
             frag = "?tour=0"
@@ -86839,6 +86871,15 @@ def test_ui2_show_tab_in_a_browser():
                       pr["wc_pill"] == "CLEANING" and not pr["wc_in_slot"],
                       f"{where}: a running cleaning is pinned with its "
                       f"Stop, never paged, and never READY: {pr}")
+            pf = res.get("pf")
+            if frag.startswith("?pfpin"):
+                check(pf and pf["shown"] and pf["label"] == "Stop" and
+                      not pf["dis"] and
+                      pf["next"] == "Flames can fire from Programming." and
+                      pf["pill"] == "FLAMES LIVE" and
+                      [u for u, _ in pf["posts"]] == ["/api/remote/hold"],
+                      f"{where}: Programming playback firing flames is "
+                      f"pinned with Stop, which is 1.0's Hold: {pf}")
             fd = res.get("fd")
             if frag.startswith("?fd"):
                 check(fd and fd["act"] == "ack" and fd["n"] >= 2 and
@@ -87101,8 +87142,8 @@ async function go(){
   res.fire_held = of("purge-fire");
   key("Space", "keyup"); await wait(300);
   res.fire_after = of("purge-fire").length; res.stop = of("purge-stop").length;
-  // Space over an open sheet, or on a focused button, presses that and
-  // never fires (review of #169, 3).
+  // Space over an open sheet presses the sheet's button and never fires
+  // (review of #169, 3).
   posts.length = 0;
   q("d-q").click(); await wait(300);
   const sb = document.querySelector("#sheet button");
@@ -87110,10 +87151,21 @@ async function go(){
   if(sb){ sb.focus(); sb.dispatchEvent(new KeyboardEvent("keydown", {code:"Space", key:" ", bubbles:true})); }
   key("Space", "keydown"); await wait(300); key("Space", "keyup");
   document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true})); await wait(200);
-  q("mo-clear").focus();
-  q("mo-clear").dispatchEvent(new KeyboardEvent("keydown", {code:"Space", key:" ", bubbles:true})); await wait(300);
-  q("mo-clear").dispatchEvent(new KeyboardEvent("keyup", {code:"Space", key:" ", bubbles:true})); q("mo-clear").blur();
   res.fire_sheet = of("purge-fire").length;
+  // A tapped group button keeps the focus (second review of #169, 1):
+  // Space on it still fires, and its default is stopped down and up, so
+  // the browser never presses the button (which would drop the group).
+  posts.length = 0;
+  const gb = document.querySelector('#mo-groups [data-grp="cat-walk"]');
+  gb.focus(); res.focus_is_btn = document.activeElement === gb;
+  const kopt = r => ({code:"Space", key:" ", bubbles:true, cancelable:true, repeat:!!r});
+  const kd = new KeyboardEvent("keydown", kopt(false)); gb.dispatchEvent(kd);
+  for(let i = 0; i < 4; i++){ await wait(90); gb.dispatchEvent(new KeyboardEvent("keydown", kopt(true))); }
+  res.fire_focused = of("purge-fire").length;
+  const ku = new KeyboardEvent("keyup", kopt(false)); gb.dispatchEvent(ku); await wait(300);
+  res.prevented = [kd.defaultPrevented, ku.defaultPrevented];
+  res.sel_after_focus = of("purge-select").length + of("purge-clear").length;
+  gb.blur();
   // Next on Purge moves on and leaves it to do (a look is not a purge),
   // with nothing selected (a selection keeps it to do regardless).
   MO.purge_state = Object.assign({}, MO.purge_state || {}, {selected:[]});
@@ -87124,6 +87176,14 @@ async function go(){
   posts.length = 0;
   document.querySelector('[data-step="locks"]').click(); await wait(300);
   res.clear_on_step = of("purge-clear").length;
+  // The Purge step dropping out on a redraw (no purge groups now) goes as
+  // if left: this screen's selection with it.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  const g0 = MO.groups; MO.groups = {}; renderMorning(); await wait(300);
+  res.clear_on_drop = of("purge-clear").length;
+  MO.groups = g0; renderMorning(); await wait(100);
+  document.querySelector('[data-step="locks"]').click(); await wait(300);
   // Space on another step fires nothing.
   posts.length = 0;
   key("Space", "keydown"); await wait(300); key("Space", "keyup"); await wait(100);
@@ -87247,12 +87307,22 @@ def test_ui2_day_tab_in_a_browser():
               f"{where}: letting go of Space stops it, no beat after: "
               f"{res}")
         check(res["sheet_open"] and res["fire_sheet"] == 0,
-              f"{where}: Space over an open sheet or on a focused button "
-              f"never fires (review of #169, 3): {res['fire_sheet']}")
-        check(res["clear_on_step"] >= 1 and res["clear_on_part"] >= 1,
+              f"{where}: Space over an open sheet never fires (review of "
+              f"#169, 3): {res['fire_sheet']}")
+        check(res["focus_is_btn"] and res["fire_focused"] >= 2 and
+              res["prevented"] == [True, True] and
+              res["sel_after_focus"] == 0,
+              f"{where}: Space on a focused group button fires as 1.0's "
+              f"does and never presses the button (second review of #169, "
+              f"1): {res['fire_focused']} {res['prevented']} "
+              f"{res['sel_after_focus']}")
+        check(res["clear_on_step"] >= 1 and res["clear_on_part"] >= 1 and
+              res["clear_on_drop"] >= 1,
               f"{where}: leaving the Purge step or switching Startup and "
               f"Shutdown drops this screen's purge selection (review of "
-              f"#169, 1): {res['clear_on_step']} {res['clear_on_part']}")
+              f"#169, 1), or when the step drops out: "
+              f"{res['clear_on_step']} {res['clear_on_part']} "
+              f"{res['clear_on_drop']}")
         check("done" not in res["purge_after_next"].split(),
               f"{where}: Next on Purge leaves it to do: "
               f"{res['purge_after_next']}")

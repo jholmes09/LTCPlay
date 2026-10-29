@@ -17755,6 +17755,31 @@ def build():
   "      if(DAY_TICK_BUSY || monoNow() - DAY_TICK_AT < DAY_TICK_QUIET_MS) return;\n",
   ""),
 
+ ("ui2 day: Space on a focused group button presses it instead of firing",
+  "ltcplay/web/remote2.html",
+  "  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;\n  e.preventDefault();",
+  "  if(e.target && e.target.closest && e.target.closest(\"button\")) return;\n  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;\n  e.preventDefault();"),
+
+ ("ui2 day: letting go of Space presses the focused group button",
+  "ltcplay/web/remote2.html",
+  "     !(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))) e.preventDefault();",
+  "     false) e.preventDefault();"),
+
+ ("ui2 day: the Purge step dropping out keeps this screen's selection",
+  "ltcplay/web/remote2.html",
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); purgeDrop(); }",
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); }"),
+
+ ("ui2 page: Programming playback firing flames is not pinned",
+  "ltcplay/web/remote2.html",
+  "  if(pf.on === true) out.push({key:\"pf\",",
+  "  if(false) out.push({key:\"pf\","),
+
+ ("ui2 page: the Programming flames pin's Stop sends nothing",
+  "ltcplay/web/remote2.html",
+  "  } else if(k === \"pf\"){\n    // 1.0's Hold (its b-hold: press(\"hold\")), the same route and body.\n    press(\"hold\");",
+  "  } else if(k === \"pf\"){\n    // 1.0's Hold (its b-hold: press(\"hold\")), the same route and body.\n"),
+
  ("ui2 day: Space fires the purge over an open sheet", "ltcplay/web/remote2.html",
   "  if(SHEET_DONE || !$(\"sheet\").hidden) return;\n",
   ""),
