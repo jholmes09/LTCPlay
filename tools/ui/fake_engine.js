@@ -126,6 +126,9 @@ const SCENARIOS = {
   flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
+  // A timed purge running (morning.py, 2026-10-29): the engine's countdown.
+  timed_purge: s => { s.morning.timed = {left_s: 17.4, seconds: 30, elapsed_s: 12.6, machines: ["front row 1", "front row 2", "front row 3", "cat-walk 1"],
+    device: "iPad at 10.20.0.44", who: "Dallen"}; s.flames.groups[0].armed = "armed"; s.flames.groups[1].armed = "armed"; },
   // The Stream Deck program reads the engine but does not act on a group's
   // Disarm: the engine forces the flame link's disarm_all (2026-10-29).
   deck_not_answering: s => { s.flames.groups[0].armed = "armed"; s.flames.groups[0].wanted = true; },
@@ -138,6 +141,13 @@ function routesFor(name, st){
   r["/api/remote/setup"] = FX("real_setup");
   const mo = name === "locked" ? (() => { const m = FX("morning"); m.lockout = {machines: {m8: {by: "Andy", at: 0}}, lasers: {}}; return m; })()
            : name === "purge" ? FX("morning_firing") : FX("morning");
+  // The timed purge's numbers, as the engine sends them (2026-10-29), and
+  // one running in the timed_purge scenario.
+  mo.timed_settings = {presets: [2, 5, 10, 20, 30], default_s: 5, max_s: 30, min_s: 1, limit_s: 120, hold_s: 1.0, error: ""};
+  const tm = st.morning && st.morning.timed;
+  mo.timed = Object.assign({running: !!tm, left_s: null, seconds: null, elapsed_s: null, machines: [], firing: [], waiting: [], device: null,
+    who: "", holding: false, holder: null, mine: false, held_s: null, hold_s: 1.0, last: ""}, tm ? Object.assign({running: true}, tm) : {});
+  if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
   const fu = FX("fuel");
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
@@ -251,6 +261,7 @@ class FakeEngine {
         if(sch.state !== "SHOW") sch.held = true; return ok("Playing."); }
       case "/api/remote/preroll-continue": if(body.phase === "done"){ s.preroll.continued = {by: s.me.user, off: ["video"], failed: "Video"}; delete s.preroll.show_check; s.alert_hold = {held: false}; s.alerts = []; } return ok("Continuing.");
       case "/api/remote/cleaning-stop": s.cleaning = {available: true, state: "idle", text: ""}; return ok("Stopped.");
+      case "/api/remote/purge-stop": if(s.morning) s.morning.timed = null; return ok("Timed purge stopped: everything it fired is back to zero.");
       case "/api/remote/announce-stop": s.announce.playing = null; return ok("Stopped.");
       case "/api/remote/laser-arm": (s.laser_arm.lasers || []).forEach(l => { if(body.all || (body.lasers || []).includes(l.id)) l.armed = !!body.on; }); return ok("Done.");
       default: return ok();

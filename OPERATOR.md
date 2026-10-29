@@ -478,7 +478,7 @@ it skipped and why, such as one locked out; it is green when all of the
 group is armed, amber with the count and the reason when only part is,
 and while any of it is armed, clicking it again takes the whole group off;
 let go and it stops; nothing fires while a show is live or an Abort
-stands); lock out of any one machine or laser (the L button on it: one tap
+stands); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
 way; a line under the machine map, or under the lasers, says what was
 done, with Undo for 5 seconds; a tap does what the screen showed when you
@@ -499,6 +499,27 @@ While the page is open the Stream Deck's Start key is FIRE and reads
 PURGE ARMED on an armed group's key; it goes back to normal when you
 leave the page. MORNING.md says how it all works and where every setting
 lives.
+
+**The timed purge (Startup page, Jeff, 2026-10-29).** For a longer test,
+say to check a DMX problem, without holding Space. Select the machines
+exactly as for the purge and wait for their groups to read armed. Pick the
+seconds: 2, 5, 10, 20 or 30, or type Other (whole seconds; this show PC
+allows up to 30 unless an admin has set `purge_timed_max_s` in
+`ltcplay_remote.json`, never more than 120). Then hold the button that
+says "Hold to purge (the machines) for (the seconds)", the same as a Hold
+to arm: a tap does nothing, let go too soon and nothing fires. Once it
+says it started you can let go: the machines fire for those seconds and
+stop by themselves, even if the page or the iPad is closed. The rack
+screen, every screen's banner, 2.0's top line and the Stream Deck's key 0
+(PURGING and the seconds) count down. To end it early press Stop purge
+(on the Startup page or the banner, from the screen that started it or
+the show PC), or Stop, Hold or Abort; Start now, Run, a disarm of one of
+its groups, a lock, signing out and any other purge press (Space, the
+deck's FIRE, the button again) also end it at once. Only one purge at a
+time; the Fireball page, the cleaning and live flame programming wait for
+it. The journal says when it started (the machines, the seconds, who and
+where) and when and why it ended. The seconds you start are this show PC's
+default next time.
 
 **The Fireball page (Fire & Ice, when flamesafe's config has a group named
 fireball).** The header's Fireball button opens one big button per Fireball
