@@ -3127,7 +3127,9 @@ class Remote:
             # A timed purge ends at the press too (Jeff, 2026-10-29), from
             # every surface, before the confirm check: it only takes risk
             # away. The flame link's purge frame is cleared on this thread.
-            self.timed_purge_cut(f"{who or 'someone'} pressed {name} on the "
+            _lbl = {"abort": "Abort", "hold": "Hold",
+                    "start-now": "Start now"}[name]
+            self.timed_purge_cut(f"{who or 'someone'} pressed {_lbl} on the "
                                  f"{screen}", who, screen)
             # Live flame programming ends at the press, from every surface,
             # before the confirm check and before the scheduler: it only

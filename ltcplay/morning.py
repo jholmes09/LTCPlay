@@ -1419,12 +1419,6 @@ class Purge:
         Any refusal ends the press. Only a body purge_fire_wanted() says
         asks to fire gets past the first line: a release can only stop."""
         if not purge_fire_wanted(body):
-            if self.timed_running():
-                # A release is never a second press: a timed purge carries
-                # on (Stop purge, or the hold's own end, stops it).
-                return 409, {"error": "That press asked to let go, not to "
-                                      "fire. Nothing was fired.",
-                             "let_go": True}
             stopped = self.stop("a release reached the fire heartbeat",
                                 device=device)
             return 409, {"error": "That press asked to let go, not to "

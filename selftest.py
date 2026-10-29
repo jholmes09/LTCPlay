@@ -65462,6 +65462,723 @@ def test_purge_release_can_never_start_a_fire():
         shutil.rmtree(udir, ignore_errors=True)
 
 
+# ----------------------------------------------------- the timed purge ----
+# Jeff, 2026-10-29: "In addition to momentary purges, we would like a
+# designated time length purge option. This is to allow for longer spurts
+# of testing in case there is a DMX issue." morning.Purge.timed_beat,
+# MORNING.md "The timed purge".
+
+class _FakeTimedLink(_FakePurgeLink):
+    """_FakePurgeLink with what a timed purge also asks of the flame link:
+    the zero count, the hard end (purge_limit), the sender's state and the
+    lock alarm. zero() bumps the count and clears, as the link does."""
+
+    def __init__(self):
+        super().__init__()
+        self._zero_gen = 0
+        self.limits = []
+        self.sender = "running"
+        self.lock_alarm = ""
+
+    def purge_limit(self, seconds):
+        self.limits.append(seconds)
+        return True
+
+    def sender_state(self):
+        return self.sender
+
+    def zero(self):
+        self._zero_gen += 1
+        self.purge_clear()
+
+
+def _tp_rig(S, link=None):
+    """The Morning rig with a timed-purge link, the engine's checks wired
+    as web.serve wires them, front row armed at flamesafe, and Ground 1
+    selected from the rack screen."""
+    R = _morning_rig(S, _MO_CONFIG, link=link or _FakeTimedLink())
+    R.m.timed_blockers = R.remote.timed_purge_blockers
+    R.groups[0]["armed"] = "armed"
+    R.groups[0]["wanted"] = True
+    R.feed()
+    R.loop = ("127.0.0.1", 5000)
+    R.ipad = ("10.20.0.44", 50000)
+    R.m.open_beat("Rack screen")
+    st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                        {"machine": "g1", "seen": R.seen()}, client=R.loop)
+    check(st == 200 and R.m.purge.selected == ["g1"],
+          f"setup: Ground 1 selected: {st} {out}")
+    R.tp_seq = [0]
+    R.tp_runs = [0]
+    return R
+
+
+def _tp_beat(R, run, seconds=5, hold=True, client=None, window="W1",
+             headers=None, seen=None):
+    R.tp_seq[0] += 1
+    h = {"X-LTC-Window": window}
+    h.update(headers or {})
+    return R.ask("POST", "/api/remote/purge-timed",
+                 {"hold": hold, "run": run, "seq": R.tp_seq[0],
+                  "seconds": seconds,
+                  "seen": R.seen() if seen is None else seen},
+                 client=client or R.loop, headers=h)
+
+
+def _tp_step(R, dt=0.1, beat_page=True):
+    """Time passes on every clock; flamesafe and the deck keep reporting;
+    the page beats while `beat_page`; the engine's timer sends once and the
+    watcher runs (threaded=False in the rig)."""
+    R.mono[0] += dt
+    R.wall[0] += dt
+    R.feed()
+    R.remote._deck_seen = R.mono[0]
+    if beat_page:
+        R.m.open_beat("Rack screen")
+    if R.m.purge.timed_running():
+        R.m.purge.timed_send()
+    R.m.tick()
+
+
+def _tp_hold(R, seconds=5, hold_s=None, client=None, window="W1",
+             headers=None):
+    """A whole hold from the page: a beat every 100 ms until the engine
+    says it started (or refuses). (code, out, run id)."""
+    from ltcplay import morning as MO
+    R.tp_runs[0] += 1
+    run = f"{window}-t{R.tp_runs[0]}"
+    # A whole hold: beats until the engine says it started (its own timing
+    # decides, never this loop's); or exactly `hold_s` of them.
+    n = int(round(hold_s / 0.1)) if hold_s is not None else \
+        int(round(MO.TIMED_HOLD_S / 0.1)) + 3
+    st, out = 0, {}
+    for i in range(n + 1):
+        st, _h, out = _tp_beat(R, run, seconds, client=client,
+                               window=window, headers=headers)
+        if st != 200 or out.get("started"):
+            break
+        if i < n:
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            R.remote._deck_seen = R.mono[0]
+            R.m.open_beat("Rack screen")
+    return st, out, run
+
+
+def _tp_lines(R, outcome):
+    return [r for r in R.svc.journal
+            if r.get("action") == "purge" and r.get("outcome") == outcome]
+
+
+def test_timed_purge_flame_link_hard_end():
+    section("timed purge, the flame link (Jeff, 2026-10-29): purge_limit "
+            "sets a hard end on the link's own clock; past it every frame "
+            "carries zeros and purge_set is refused, whatever keeps calling "
+            "it, until purge_clear; zero() and a stale frame still stop it "
+            "as before")
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    cfg = fl.FlameLinkConfig("127.0.0.1", 5571, 1, key, frame_stale_ms=500)
+    t = [100.0]
+    link = fl.FlameLink(cfg, cues=lambda tc: [0] * 512,
+                        show_state=lambda: (None, False),
+                        clock=lambda: t[0], seek_guard=False)
+    link._send = lambda data: True
+    frame = bytes([0] * 410 + [240] + [0] * 101)
+    check(link.purge_limit(0) is False and link.purge_limit(-1) is False and
+          link.purge_limit("x") is False and
+          link.purge_limit(float("nan")) is False,
+          "a hard end of 0, less, or not a number is refused")
+    check(link.purge_limit(1.0) is True, "a 1 s hard end is taken")
+    sent = []
+    for i in range(14):
+        t[0] = 100.0 + i * 0.1
+        link.purge_set(frame)
+        sent.append((round(i * 0.1, 2), link.values_now()[1][410]))
+    t[0] = 101.0
+    sent.append((1.0, link.values_now()[1][410]))
+    before = [v for at, v in sent if at < 0.95]
+    after = [v for at, v in sent if at >= 0.99]
+    check(before and all(v == 240 for v in before),
+          f"before the hard end the frame goes out: {sent[:3]}")
+    check(after and all(v == 0 for v in after),
+          f"from the hard end on, zeros on every frame though purge_set "
+          f"is still called every 100 ms: {sent[-4:]}")
+    check(link.purge_set(frame) is False and not link.purge_active(),
+          "past it purge_set is refused and the purge reads not active")
+    link.purge_clear()
+    check(link.purge_set(frame) is True and link.values_now()[1] == frame,
+          "purge_clear lifts it: the next purge (momentary) goes as before")
+    link.purge_limit(5.0)
+    link.purge_set(frame)
+    t[0] += fl.PURGE_HOLD_S + 0.01
+    check(link.values_now()[1] == bytes(512),
+          "within the hard end, a frame not set again still drops after "
+          "0.25 s (a timer that stopped is a purge that stopped)")
+    link.purge_set(frame)
+    link.zero()
+    check(link.values_now()[1] == bytes(512) and not link.purge_active(),
+          "zero() still clears it")
+    print("  ok")
+
+
+def test_timed_purge_at_the_engine():
+    section("timed purge at the engine (Jeff, 2026-10-29): the same "
+            "selection, a duration from 1 s to this show machine's longest "
+            "(30 s, purge_timed_max_s up to 120, never unlimited), a whole "
+            "hold timed by the engine (a tap, a gap, a release, a replay "
+            "fire nothing), every selected group armed first; the frame "
+            "for exactly that long, the countdown from the engine's clock, "
+            "then zero by itself with its page closed; journal lines for "
+            "the start and the end")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import morning as MO
+    from ltcplay import users as U
+    check(MO.TIMED_HOLD_S == RM.SCREEN_HOLD_S,
+          "the start hold is the Hold to arm buttons' dwell")
+    check(MO.TIMED_PRESETS_S == (2, 5, 10, 20, 30) and
+          MO.TIMED_DEFAULT_S == 5 and MO.TIMED_MAX_DEFAULT_S == 30 and
+          MO.TIMED_MAX_LIMIT_S == 120 and MO.TIMED_MIN_S == 1,
+          "presets 2, 5, 10, 20, 30 s, 5 s by default, 30 s at most unless "
+          "an admin sets up to 120 s")
+    check(MO.TIMED_SEND_S < MO.BEAT_STALE_S,
+          "the engine's timer sends well within the link's 0.25 s")
+    for v, ok in ((5, True), (30, True), (1, True), (5.0, True),
+                  (31, False), (0, False), (-2, False), (2.5, False),
+                  ("5", False), (True, False), (None, False),
+                  (float("inf"), False), (float("nan"), False)):
+        got, why = MO.timed_seconds(v, 30)
+        check((got is not None) == ok and (bool(why) != ok),
+              f"timed_seconds({v!r}): {got} {why!r}")
+    check("30 s" in MO.timed_seconds(31, 30)[1] and
+          "purge_timed_max_s" in MO.timed_seconds(31, 30)[1],
+          "a longer one is refused, naming the longest and the setting")
+    check(U.classify("/api/remote/purge-timed", {"hold": True}) == "arm" and
+          U.classify("/api/remote/purge-timed", {"hold": False}) ==
+          "safety" and
+          U.classify("/api/remote/purge-timed", {"hold": "true"}) ==
+          "safety" and U.classify("/api/remote/purge-timed", None) ==
+          "safety" and U.REMOTE_ROUTES["purge-timed"] == "arm",
+          "the role matrix: the purge's own row (arm); a release is safety")
+    R = _tp_rig(S)
+    loop = R.loop
+    link = R.link
+    try:
+        # The settings: the longest, the remembered default.
+        rs = RM.load_settings(R.work)
+        check(rs["purge_timed_max_s"] == 30 and rs["purge_timed_s"] == 5,
+              f"no setting: 30 s at most, 5 s by default: {rs}")
+        for bad in (121, 0, "30", True, 30.5, None):
+            try:
+                RM.save_settings(R.work, purge_timed_max_s=bad)
+                check(False, f"purge_timed_max_s {bad!r} was taken")
+            except ValueError as e:
+                check("120" in str(e), f"purge_timed_max_s {bad!r} refused: "
+                                       f"{e}")
+        check(RM.load_settings(R.work)["purge_timed_max_s"] == 30,
+              "and the file is unchanged by a refused value")
+        st, _h, mo = R.ask("GET", "/api/remote/morning", client=loop)
+        check(st == 200 and mo["timed_settings"]["presets"] ==
+              [2, 5, 10, 20, 30] and mo["timed_settings"]["max_s"] == 30 and
+              mo["timed_settings"]["default_s"] == 5 and
+              mo["timed_settings"]["hold_s"] == 1.0 and
+              mo["timed"]["running"] is False,
+              f"the page's view carries the numbers: {mo.get('timed_settings')}")
+        # A tap: one beat and a release. Nothing.
+        st, _h, out = _tp_beat(R, "tap-1", 5)
+        check(st == 200 and out["holding"] is True and not link.frames,
+              f"the first beat of a hold fires nothing: {st} {out}")
+        st, _h, out = _tp_beat(R, "tap-1", 5, hold=False)
+        check(st == 200 and out["holding"] is False and
+              R.m.purge.fire is None and not link.frames,
+              f"a tap fires nothing: {st} {out}")
+        check(_tp_lines(R, "timed_not_started"),
+              "journaled: the hold ended before it was complete")
+        # A hold let go at 0.9 s: nothing.
+        st, out, run = _tp_hold(R, 5, hold_s=0.9)
+        check(st == 200 and not out.get("started") and not link.frames,
+              f"0.9 s of holding starts nothing: {out}")
+        _tp_beat(R, run, 5, hold=False)
+        # A gap of 0.3 s in the beats: the hold is over.
+        st, _h, out = _tp_beat(R, "gap-1", 5)
+        for _ in range(4):
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            _tp_beat(R, "gap-1", 5)
+        R.mono[0] += 0.3
+        R.wall[0] += 0.3
+        R.feed()
+        st, _h, out = _tp_beat(R, "gap-1", 5)
+        check(st == 409 and "interrupted" in out["error"] and
+              not link.frames, f"a gap of 0.3 s ends the hold: {out}")
+        # The duration changes during the hold: refused.
+        st, _h, out = _tp_beat(R, "chg-1", 5)
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        R.feed()
+        st, _h, out = _tp_beat(R, "chg-1", 10)
+        check(st == 409 and "duration changed" in out["error"],
+              f"seconds changed mid hold: refused: {out}")
+        # Over the longest, and a broken number: refused in full.
+        st, out, _r = _tp_hold(R, 31)
+        check(st == 409 and "longer than the longest" in out["error"] and
+              "30 s" in out["error"] and not link.frames,
+              f"31 s with 30 s the longest: refused, said in full: {out}")
+        RM.save_settings(R.work, purge_timed_max_s=10)
+        st, out, _r = _tp_hold(R, 20)
+        check(st == 409 and "10 s" in out["error"],
+              f"an admin's longest of 10 s refuses 20 s: {out}")
+        st, _h, mo = R.ask("GET", "/api/remote/morning", client=loop)
+        check(mo["timed_settings"]["max_s"] == 10 and
+              mo["timed_settings"]["default_s"] == 5,
+              f"and the page is told the longest: {mo['timed_settings']}")
+        RM.save_settings(R.work, purge_timed_max_s=30)
+        st, out, _r = _tp_hold(R, 2.5)
+        check(st == 409 and "whole number" in out["error"],
+              f"2.5 s: a whole number of seconds: {out}")
+        # A selected group not armed yet: refused, named.
+        R.groups[0]["armed"] = "disarmed"
+        R.feed()
+        st, out, _r = _tp_hold(R, 5)
+        check(st == 409 and "front row" in out["error"] and
+              "armed" in out["error"] and not link.frames,
+              f"front row not armed: no timed purge, and why: {out}")
+        R.groups[0]["armed"] = "armed"
+        R.feed()
+        # Another screen does not own the selection.
+        st, out, _r = _tp_hold(R, 5, client=R.ipad)
+        check(st == 409 and not link.frames,
+              f"another device cannot start the owner's purge: {out}")
+        # A stale page: refused.
+        st, _h, out = _tp_beat(R, "stale-1", 5, seen=R.seen() - 1500)
+        check(st == 409 and "1 s old" in out["error"],
+              f"a page status 1.5 s old: {out}")
+        # The whole hold: it starts at 1 s of holding, not before.
+        n_start = len(_tp_lines(R, "timed_start"))
+        st, out, run = _tp_hold(R, 3)
+        check(st == 200 and out.get("started") is True and
+              "Ground 1" in out["text"] and "3 s" in out["text"],
+              f"a whole hold starts it, the machines and seconds said: "
+              f"{st} {out}")
+        t0 = R.mono[0]
+        check(link.frames and link.frames[-1][410] == 240 and
+              sum(link.frames[-1]) == 240 and link.limits[-1] == 3,
+              f"the first frame at once, 240 on slot 411 only, and the "
+              f"link's hard end 3 s: {link.limits}")
+        ln = _tp_lines(R, "timed_start")
+        check(len(ln) == n_start + 1 and "Ground 1" in ln[-1]["text"] and
+              "3 s" in ln[-1]["text"] and
+              "Rack screen" in ln[-1]["text"],
+              f"journaled: machines, seconds, where: {ln[-1:]}")
+        check(RM.load_settings(R.work)["purge_timed_s"] == 3,
+              "the duration started is this show PC's default next time")
+        st, _h, mo = R.ask("GET", "/api/remote/morning", client=loop)
+        check(mo["timed_settings"]["default_s"] == 3, "and the page says so")
+        # The finger still down: its beats change nothing.
+        st, _h, out = _tp_beat(R, run, 3)
+        check(st == 200 and out["running"] is True and
+              R.m.purge.timed_running(),
+              f"the starting hold's own beats carry nothing on, end nothing: "
+              f"{out}")
+        _tp_beat(R, run, 3, hold=False)
+        check(R.m.purge.timed_running(), "letting go after the start: it "
+                                          "runs on")
+        # The countdown is the engine's: the status, and deck-input.
+        st, _h, sv = R.ask("GET", "/api/remote/status", client=loop)
+        tm = sv["morning"]["timed"]
+        check(tm and tm["left_s"] == 3.0 and tm["seconds"] == 3 and
+              tm["machines"] == ["Ground 1"],
+              f"every screen's status carries it: {tm}")
+        # The page closes: no open beats at all from here on.
+        frames0 = len(link.frames)
+        for _ in range(10):
+            _tp_step(R, 0.1, beat_page=False)
+        st, _h, sv = R.ask("GET", "/api/remote/status", client=loop)
+        check(abs(sv["morning"]["timed"]["left_s"] - 2.0) < 0.05,
+              f"a second on the engine's clock: 2 s left: "
+              f"{sv['morning']['timed']}")
+        d = R.remote.deck_input()
+        check(d["morning"]["open"] is True and
+              d["morning"]["purge"]["wanted_groups"] == [0] and
+              abs(d["morning"]["purge"]["timed_left_s"] - 2.0) < 0.05,
+              f"page closed: the deck keeps the group wanted and is told the "
+              f"seconds left: {d['morning']}")
+        check(len(link.frames) - frames0 == 10 and
+              all(f[410] == 240 for f in link.frames[frames0:]),
+              "the engine's timer re-sends the frame every 100 ms, page "
+              "closed")
+        while R.mono[0] + 0.1 < t0 + 2.95:
+            _tp_step(R, 0.1, beat_page=False)
+        check(R.m.purge.timed_running() and link.frames[-1][410] == 240,
+              f"still firing just before 3 s ({R.mono[0] - t0:.2f} s)")
+        cleared = link.cleared
+        _tp_step(R, t0 + 3.0 - R.mono[0], beat_page=False)
+        check(not R.m.purge.timed_running() and link.cleared > cleared,
+              f"at 3 s it ends by itself and the frame is cleared at once "
+              f"({R.mono[0] - t0:.2f} s)")
+        ln = _tp_lines(R, "timed_end")
+        check(ln and "3 s were up" in ln[-1]["text"] and
+              "after 3.0 s of 3 s" in ln[-1]["text"],
+              f"journaled: why and the actual seconds: {ln[-1:]}")
+        _tp_step(R, 0.1, beat_page=False)
+        check(R.m.purge.selected == [] and
+              R.remote.deck_input()["morning"]["open"] is False,
+              "once it has ended, the closed page's selection goes and the "
+              "deck lets go of the group")
+        # A replay of the hold that started it, and an old beat number.
+        R.m.open_beat("Rack screen")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()},
+                            client=loop)
+        frames0 = len(link.frames)
+        st, _h, out = R.ask("POST", "/api/remote/purge-timed",
+                            {"hold": True, "run": run, "seq": 999999,
+                             "seconds": 3, "seen": R.seen()}, client=loop,
+                            headers={"X-LTC-Window": "W1"})
+        check(st == 409 and "ended" in out["error"],
+              f"the hold that started it can never start one again: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-timed",
+                            {"hold": True, "run": "W1-new", "seq": 1,
+                             "seconds": 3, "seen": R.seen()}, client=loop,
+                            headers={"X-LTC-Window": "W1"})
+        check(st == 409 and len(link.frames) == frames0,
+              f"a new hold with a beat number already used (a replay) "
+              f"starts nothing: {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_timed_purge_every_end_cause():
+    section("timed purge, every end (Jeff, 2026-10-29): Stop purge, Stop, "
+            "Abort, Hold, Start now, Run, a show going live, flamesafe "
+            "stale, the flame link not sending, a lockout, a disarm of a "
+            "selected group (pressed, or seen at flamesafe), sign-out of "
+            "the person who started it, a second purge press (Space, the "
+            "deck's FIRE, another hold), Arrange mode, the timer dying: "
+            "each ends it at once, the frame cleared, a journal line "
+            "saying why; one purge at a time; the Fireball page, the "
+            "cleaning and live flame programming refuse meanwhile")
+    S = _sched()
+    if S is None:
+        return
+    import dataclasses as _dc
+    import tempfile
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import fireball as FB
+    R = _tp_rig(S)
+    loop, link = R.loop, R.link
+
+    def start(seconds=30):
+        R.m.purge.clear("test reset")
+        link.sender = "running"
+        R.groups[0]["armed"] = "armed"
+        R.groups[0]["wanted"] = True
+        R.groups[1]["armed"] = "armed"
+        R.feed()
+        R.m.open_beat("Rack screen")
+        st_, _h_, out_ = R.ask("POST", "/api/remote/purge-select",
+                               {"machine": "g1", "seen": R.seen()},
+                               client=loop)
+        st_, out_, _r = _tp_hold(R, seconds)
+        ok = check(st_ == 200 and out_.get("started") and
+                   R.m.purge.timed_running(),
+                   f"setup: a timed purge running: {st_} {out_}")
+        _tp_step(R, 0.1)
+        return ok
+
+    def ended(what, words):
+        cleared = link.cleared
+        n = len(_tp_lines(R, "timed_end"))
+        return cleared, n, what, words
+
+    def check_end(mark):
+        cleared, n, what, words = mark
+        ln = _tp_lines(R, "timed_end")
+        check(not R.m.purge.timed_running() and link.cleared > cleared and
+              len(ln) == n + 1 and words in ln[-1]["text"],
+              f"{what}: ended at once, frame cleared, journaled with why "
+              f"({words!r}): {ln[-1:] if len(ln) > n else 'no line'}")
+
+    try:
+        # Stop purge, from the rack screen.
+        if start():
+            m = ended("Stop purge", "pressed Stop purge")
+            st, _h, out = R.ask("POST", "/api/remote/purge-stop", {},
+                                client=loop)
+            check(st == 200 and "back to zero" in out.get("text", ""),
+                  f"Stop purge answers: {out}")
+            check_end(m)
+        # Stop purge from another device: the owner rule, as the momentary.
+        if start():
+            st, _h, out = R.ask("POST", "/api/remote/purge-stop", {},
+                                client=R.ipad)
+            check(st == 409 and R.m.purge.timed_running(),
+                  f"another device's Stop purge is refused (Abort is "
+                  f"everyone's): {out}")
+        # Stop (the rack screen's Stop).
+        if start():
+            m = ended("Stop", "Stop")
+            R.ask("POST", "/api/remote/stop", {"seen": R.seen()},
+                  client=loop)
+            check_end(m)
+        # Abort.
+        if start():
+            m = ended("Abort", "pressed Abort")
+            R.ask("POST", "/api/remote/abort",
+                  {"confirmed": True, "seen": R.seen()}, client=loop)
+            check_end(m)
+            R.ask("POST", "/api/remote/reset",
+                  {"confirmed": True, "seen": R.seen()}, client=loop)
+        # Hold.
+        if start():
+            m = ended("Hold", "pressed Hold")
+            R.ask("POST", "/api/remote/hold", {"seen": R.seen()},
+                  client=loop)
+            check_end(m)
+            R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
+                  client=loop)
+        # Start now (even unconfirmed: it only takes risk away).
+        if start():
+            m = ended("Start now", "pressed Start now")
+            R.ask("POST", "/api/remote/start-now", {"seen": R.seen()},
+                  client=loop)
+            check_end(m)
+        # Run (refused or not).
+        if start():
+            m = ended("Run", "Run was pressed")
+            R.ask("POST", "/api/start", {"timeline": "nope.json"},
+                  client=loop)
+            check_end(m)
+        # A show going live.
+        if start():
+            m = ended("a show going live", "is live")
+            was = R.svc.machine
+            R.svc.machine = _dc.replace(was, state="SHOW")
+            try:
+                _tp_step(R, 0.1)
+            finally:
+                R.svc.machine = was
+            check_end(m)
+        # A Hold standing (seen on a send, the belt under the press).
+        if start():
+            m = ended("a Hold standing", "Hold is standing")
+            was = R.svc.machine
+            R.svc.machine = _dc.replace(was, state="HOLD")
+            try:
+                _tp_step(R, 0.1)
+            finally:
+                R.svc.machine = was
+            check_end(m)
+        # flamesafe stale: no status for 1.1 s.
+        if start():
+            m = ended("flamesafe stale", "flamesafe has not reported")
+            R.mono[0] += 1.1
+            R.wall[0] += 1.1
+            R.m.purge.timed_send()
+            check_end(m)
+        # The flame link not sending.
+        if start():
+            m = ended("flame link not sending", "not sending")
+            link.sender = "failing"
+            _tp_step(R, 0.1)
+            check_end(m)
+            link.sender = "running"
+        # The flame link zeroed (Stop, Hold, Abort at the link).
+        if start():
+            m = ended("link zeroed", "zeroed")
+            link.zero()
+            _tp_step(R, 0.1)
+            check_end(m)
+        # A lockout of a selected machine.
+        if start():
+            m = ended("a lockout", "Ground 1")
+            R.ask("POST", "/api/remote/lock",
+                  {"kind": "machine", "id": "g1", "on": True,
+                   "reason": "test"}, client=loop)
+            check_end(m)
+            R.m.lockout.set(R.m.cfg, "machine", "g1", False, "test",
+                            "Rack screen", confirmed=True)
+            R.m._lock_written_at = None
+        # A disarm of a selected group, pressed on a screen.
+        if start():
+            m = ended("Disarm front row", "Disarm front row")
+            R.ask("POST", "/api/remote/group-disarm",
+                  {"group": "front row", "seen": R.seen()}, client=loop)
+            check_end(m)
+        # A disarm of another group does not end it.
+        if start():
+            R.ask("POST", "/api/remote/group-disarm",
+                  {"group": "cat-walk", "seen": R.seen()}, client=loop)
+            _tp_step(R, 0.1)
+            check(R.m.purge.timed_running(),
+                  "a disarm of a group it does not fire leaves it running")
+        # flamesafe reports a selected group disarmed (the deck's key).
+        if start():
+            m = ended("group seen disarmed", "no longer reports front row")
+            R.groups[0]["armed"] = "disarmed"
+            _tp_step(R, 0.1)
+            check_end(m)
+        # A second purge press: Space (a momentary fire heartbeat).
+        if start():
+            m = ended("Space", "second purge press")
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"on": True, "seen": R.seen()}, client=loop)
+            check(st == 409 and out.get("ended") and
+                  link.frames[-1][410] in (0, 240),
+                  f"Space while it runs: refused, nothing else fired: {out}")
+            check_end(m)
+        # A purge-fire release is a stop (Morning.post's purge-stop): it
+        # ends it too, and fires nothing.
+        if start():
+            m = ended("a purge-fire release", "Stop purge")
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"on": False, "seen": R.seen()},
+                                client=loop)
+            check_end(m)
+        # The deck's FIRE key.
+        if start():
+            m = ended("the deck's FIRE", "second purge press")
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"on": True, "seen": R.seen(),
+                                 "who": "Andy", "screen": "Stream Deck"},
+                                client=loop)
+            check_end(m)
+        # Another hold, from this screen or another.
+        if start():
+            m = ended("another hold", "second purge press")
+            st, _h, out = _tp_beat(R, "other-hold", 5, client=R.ipad,
+                                   window="W9")
+            check(st == 409 and out.get("ended"),
+                  f"a new hold from an iPad ends it: {out}")
+            check_end(m)
+        # Arrange mode on any screen.
+        if start():
+            m = ended("Arrange", "Arrange")
+            R.m.open_beat("iPad at 10.20.0.44", arranging=True, inst="A")
+            check_end(m)
+            R.m.open_beat("iPad at 10.20.0.44", arranging=False, inst="A")
+            R.m._arranging.clear()
+        # The engine's timer dies: the watcher ends it after 0.25 s, and
+        # the link has dropped the frame by itself meanwhile.
+        if start():
+            m = ended("the timer stopped", "timer stopped")
+            R.mono[0] += 0.3
+            R.wall[0] += 0.3
+            R.feed()
+            R.m.open_beat("Rack screen")
+            R.m.tick()
+            check_end(m)
+        # The watcher's own deadline, whatever the timer does.
+        if start(seconds=2):
+            m = ended("the watcher's deadline", "2 s were up")
+            R.mono[0] += 2.0
+            R.wall[0] += 2.0
+            R.feed()
+            R.m.tick()
+            check_end(m)
+        # One purge at a time: a timed one refused while Space fires.
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"on": True, "seen": R.seen()}, client=loop)
+        check(st == 200, f"setup: Space is firing: {out}")
+        st, _h, out = _tp_beat(R, "while-space", 5)
+        check(st == 409 and "One purge at a time" in out["error"],
+              f"a timed purge while Space fires: refused: {out}")
+        R.m.purge.stop("test")
+        # And the other sources of the frame refuse while one runs, and it
+        # refuses while they hold it.
+        if start():
+            why = FB.engine_blockers(R.remote, None)
+            check("purge" in why, f"the Fireball page and the cleaning "
+                                  f"refuse: {why}")
+            why = R.remote.live_flame_blockers()
+            check("purge" in why, f"live flame programming refuses: {why}")
+            R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(R.m.purge.selected == ["g1"], "setup: Ground 1 selected")
+        R.m.purge_blocker = lambda: "the Fireball page has a channel on; " \
+                                    "turn it off there first."
+        try:
+            st, out, _r = _tp_hold(R, 5)
+            check(st == 409 and "Fireball page" in out.get("error", ""),
+                  f"a Fireball channel on: no timed purge: {out}")
+        finally:
+            R.m.purge_blocker = lambda: ""
+        # Not connected: the engine's checks missing fail closed.
+        R.m.timed_blockers = None
+        st, out, _r = _tp_hold(R, 5)
+        check(st == 409 and "not connected" in out.get("error", ""),
+              f"the engine's checks not wired: no timed purge: {out}")
+        R.m.timed_blockers = R.remote.timed_purge_blockers
+        # The switches: purge arming off; an iPad without screen_arming.
+        RM.save_settings(R.work, purge_arming=False)
+        st, _h, out = _tp_beat(R, "sw-1", 5)
+        check(st == 403 and "switched off" in out["error"],
+              f"purge_arming false: refused: {out}")
+        RM.save_settings(R.work, purge_arming=True)
+        # Sign-out of the person who started it.
+        udir = tempfile.mkdtemp()
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"),
+                 ("Vic", "viewer")])
+        R.remote.users = us
+        ok, why, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        ok, why, vtok, _n = us.sign_in("Vic", "", True, "rack",
+                                       new_password="Vic-pw-1234")
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop, headers=hdr)
+        st, out, _r = _tp_hold(R, 5, headers={"Cookie":
+                                              f"{U.COOKIE}={vtok}"})
+        check(st == 403 and not R.m.purge.timed_running(),
+              f"a viewer (no arm row) cannot start one: {st} {out}")
+        st, out, _r = _tp_hold(R, 5, headers={})
+        check(st == 403 and not R.m.purge.timed_running(),
+              f"signed out cannot start one: {st} {out}")
+        st, out, _r = _tp_hold(R, 5, headers=hdr)
+        check(st == 200 and out.get("started"),
+              f"Ollie (operator) starts one: {st} {out}")
+        ln = _tp_lines(R, "timed_start")
+        check(ln and ln[-1].get("who") == "Ollie",
+              f"journaled with who started it: {ln[-1:]}")
+        m = ended("sign-out", "Ollie signed out")
+        R.ask("POST", "/api/remote/signout", {}, client=loop, headers=hdr)
+        check_end(m)
+        # And the per-send check alone (the sign-in ended some other way).
+        ok, why, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop, headers=hdr)
+        st, out, _r = _tp_hold(R, 5, headers=hdr)
+        if check(st == 200 and out.get("started"),
+                 f"setup: Ollie's second timed purge: {out}"):
+            m = ended("session gone", "signed out")
+            us.sign_out(tok, "rack", local=False)
+            _tp_step(R, 0.1)
+            check_end(m)
+        R.remote.users = None
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_windows_rack_window_and_explorer_front():
     section("rack screen window (Jeff, 2026-10-19): the Windows app opens "
             "the page as an ordinary Edge app window, Minimize, Maximize "
@@ -88210,6 +88927,9 @@ if __name__ == "__main__":
         test_morning_arrange_mode_arms_nothing,
         test_morning_arrange_disables_firing,
         test_purge_release_can_never_start_a_fire,
+        test_timed_purge_flame_link_hard_end,
+        test_timed_purge_at_the_engine,
+        test_timed_purge_every_end_cause,
         test_windows_rack_window_and_explorer_front,
         test_users_passwords_are_slow_salted_hashes_and_never_stored,
         test_users_lockout_is_short_and_never_permanent,
