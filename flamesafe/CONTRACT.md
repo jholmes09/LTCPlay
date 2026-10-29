@@ -902,10 +902,12 @@ instant tap of that key. The engine answers it only once it is known
 (2026-10-29, the same rule as Disarm all flame groups): "confirmed" when
 flamesafe's own status, received after the deck read the Disarm, reports
 the group disarmed and not wanted within 1 s; when the deck has not read
-the engine in the last 0.5 s, or that word does not come, the engine sends
-the flame link's `disarm_all` (below; there is no one-group disarm on the
-link, so every group needs a fresh cycle), raises a flames alert and says
-"forced". Nothing new reaches flamesafe: the plain disarm is still the
+the engine in the last 0.5 s, flamesafe's status is not reaching the
+engine, or that word does not come, the engine sends the flame link's
+`disarm_all` (below; there is no one-group disarm on the link, so every
+group needs a fresh cycle, every hazer goes off and the show's flames stay
+at zero until Hold then Resume or a new run), raises a flames alert and
+says "forced" and exactly that. Nothing new reaches flamesafe: the plain disarm is still the
 deck's tap, and the forced one is the Abort's `disarm_all`. So:
 
 - There is still exactly **one sender on the arm link**, the deck process.

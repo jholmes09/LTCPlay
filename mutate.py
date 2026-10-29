@@ -13260,8 +13260,28 @@ def build():
  # disarmed in 1.0"): confirmed by flamesafe, or forced, never only sent.
  ('group disarm: a deck that stopped reading the engine is waited on',
   'ltcplay/remote.py',
-  '        if not deck_fresh:\n            return self._group_disarm_forced(',
-  '        if False:\n            return self._group_disarm_forced('),
+  '        if confirm and not deck_fresh:\n',
+  '        if False:\n'),
+ ('group disarm: a press with no flamesafe status waits, then forces',
+  'ltcplay/remote.py',
+  '        elif confirm and not status_fresh:\n',
+  '        elif False:\n'),
+ ('group disarm: the forced disarm waits for the journal on disk',
+  'ltcplay/remote.py',
+  '        if forced is not None:\n'
+  '            # The disarm first, the disk after (Abort\'s _disarm_now).\n'
+  '            sent = self._group_force_send(who, device, gname, forced[1])\n'
+  '        self._journal(who, device, "disarm", "sent",\n'
+  '                      f"{who or \'Someone\'} pressed Disarm {gname} on the "\n'
+  '                      f"{device}. Sent to the Stream Deck, which owns the "\n'
+  '                      f"arm link; flamesafe\'s lamp shows when it is off.")\n',
+  '        self._journal(who, device, "disarm", "sent",\n'
+  '                      f"{who or \'Someone\'} pressed Disarm {gname} on the "\n'
+  '                      f"{device}. Sent to the Stream Deck, which owns the "\n'
+  '                      f"arm link; flamesafe\'s lamp shows when it is off.")\n'
+  '        if forced is not None:\n'
+  '            # The disk first, then the disarm (Abort\'s _disarm_now).\n'
+  '            sent = self._group_force_send(who, device, gname, forced[1])\n'),
  ('group disarm: answered confirmed without flamesafe\'s word',
   'ltcplay/remote.py',
   '        if self._group_seen_off(i, gname, reads0):\n',
@@ -13281,8 +13301,8 @@ def build():
   '                            g.get("armed") == "disarmed":\n'),
  ('group disarm: the forced disarm is never sent',
   'ltcplay/remote.py',
-  '                r = fn(f"{label} pressed Disarm {gname} on the {device} "',
-  '                r = None and fn(f"{label} pressed Disarm {gname} on the '
+  '            r = fn(f"{label} pressed Disarm {gname} on the {device} "',
+  '            r = None and fn(f"{label} pressed Disarm {gname} on the '
   '{device} "'),
  ('group disarm: a forced disarm raises no alert',
   'ltcplay/remote.py',
@@ -13290,8 +13310,8 @@ def build():
   '            pass\n'),
  ('group disarm: a forced disarm that failed is said as forced',
   'ltcplay/remote.py',
-  '        if ok:\n            alert = (f"Disarm {gname} forced:',
-  '        if True:\n            alert = (f"Disarm {gname} forced:'),
+  '        if ok:\n            alert = (f"{lead}: ALL groups disarm sent.',
+  '        if True:\n            alert = (f"{lead}: ALL groups disarm sent.'),
  ('ui2 page: a forced Disarm is said as done',
   'ltcplay/web/remote2.html',
   '    const forced = route === "group-disarm" && j.forced === true;\n',

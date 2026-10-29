@@ -181,9 +181,10 @@ class FakeEngine {
     if(!g) return {code: 400, body: {error: "That is not a flame group flamesafe reports."}};
     this.dropHolds(i);
     if(this.name === "deck_not_answering"){
-      const text = "Disarm " + g.name + " forced: the Stream Deck did not answer (flamesafe did not report " + g.name +
-        " off within 1 s of the Disarm). The flame link has no one-group disarm, so every flame group was disarmed the way " +
-        "Abort does it: each needs Arm again (let go, then hold) before it can fire.";
+      const text = "Deck did not answer: ALL groups disarm sent. Disarm " + g.name + " forced (flamesafe did not report " + g.name +
+        " off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, " +
+        "every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run. Each group needs Arm again " +
+        "(let go, then hold) before it can fire.";
       s.flames.groups.forEach(x => { x.armed = "disarmed"; x.wanted = false; x.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
       s.alerts = (s.alerts || []).concat([{id: 900 + i, kind: "flames", severity: "fault", text: text, options: ["Acknowledge"]}]);
       return {code: 200, body: {ok: true, confirmed: false, forced: true, text: text}};

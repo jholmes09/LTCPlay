@@ -50907,7 +50907,7 @@ window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0
 await h.sleep(700);
 out.gd = {};
 const said = {confirmed:{ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."},
-  forced:{ok:true, confirmed:false, forced:true, text:"Disarm front row forced: the Stream Deck did not answer (flamesafe did not report front row off within 1 s of the Disarm)."},
+  forced:{ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."},
   old:{ok:true, text:"Disarm front row sent."}};
 for(const k of ["confirmed", "forced", "old"]){
   window.__answer["group-disarm"] = b => [200, said[k]];
@@ -50923,9 +50923,9 @@ for(const k of ["confirmed", "forced", "old"]){
         gd = m["gd"]
         check(gd["confirmed"]["msg"] == "Disarm front row confirmed: "
               "flamesafe reports it off." and
-              gd["forced"]["msg"].startswith("Disarm front row forced: "
-                                             "the Stream Deck did not "
-                                             "answer") and
+              gd["forced"]["msg"].startswith("Deck did not answer: ALL "
+                                             "groups disarm sent.") and
+              "hazer" in gd["forced"]["msg"] and
               gd["old"]["msg"] == "Disarm front row sent.",
               f"1.0 says the engine's answer to a group's Disarm: {gd}")
         check(all(gd[k]["same"] for k in ("confirmed", "forced", "old")),
@@ -73848,18 +73848,35 @@ def test_group_disarm_is_confirmed_or_forced():
         n = R.rig.count("flames_disarm_all")
         R.mono[0] += 0.6
         R.feed()
+        # The forced disarm goes out before anything is written to disk
+        # (Abort's _disarm_now): every journal line of the press sees it.
+        real_journal = rem._journal
+        seen_at_journal = []
+
+        def journal_spy(*a, **kw):
+            seen_at_journal.append(R.rig.count("flames_disarm_all"))
+            return real_journal(*a, **kw)
+        rem._journal = journal_spy
         st, _h, out = R.ask("POST", "/api/remote/group-disarm",
                             {"group": "front row"}, client=other)
+        rem._journal = real_journal
         check(st == 200 and out.get("forced") is True and
               out.get("confirmed") is False and
               out.get("text", "").startswith(
-                  "Disarm front row forced: the Stream Deck did not "
-                  "answer (the Stream Deck program has not read this "
-                  "engine in the last 0.5 s") and
-              "Arm again" in out["text"] and
+                  "Deck did not answer: ALL groups disarm sent. Disarm "
+                  "front row forced (the Stream Deck program has not read "
+                  "this engine in the last 0.5 s") and
+              "every hazer is off" in out["text"] and
+              "flames stay at zero until Hold then Resume or a new run" in
+              out["text"] and "Arm again" in out["text"] and
+              "were disarmed" not in out["text"] and
               R.rig.count("flames_disarm_all") == n + 1 and not paused,
               f"a deck that last read 0.6 s ago: the flame link's "
-              f"disarm_all at once, with no wait, said: {st} {out}")
+              f"disarm_all at once, with no wait, said plainly (all "
+              f"groups, hazers off, flames at zero): {st} {out}")
+        check(seen_at_journal and all(c == n + 1 for c in seen_at_journal),
+              f"the forced disarm went out before the first journal "
+              f"write: {seen_at_journal} (before: {n})")
         _no_dashes(out.get("text", ""), "the forced answer")
         al = flames_alerts()
         check(len(al) == 1 and al[0]["text"].startswith(out["text"]) and
@@ -73872,6 +73889,26 @@ def test_group_disarm_is_confirmed_or_forced():
         check(rem.deck_input()["disarms"][-1]["group"] == 0,
               "the plain disarm is still handed to the deck too")
         rem.alerts.clear(kind="flames", action="Acknowledge")
+        # 2b. flamesafe's status not reaching the engine (the deck fresh):
+        # nothing can confirm it, so forced at once, and said so.
+        arm(0)
+        del paused[:]
+        R.mono[0] += 5.0
+        n = R.rig.count("flames_disarm_all")
+        rem._deck_seen = R.mono[0]
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"}, client=other)
+        check(st == 200 and out.get("forced") is True and
+              out.get("text", "").startswith(
+                  "No word from flamesafe: ALL groups disarm sent. Disarm "
+                  "front row forced (flamesafe's status is not reaching "
+                  "this engine") and
+              R.rig.count("flames_disarm_all") == n + 1 and not paused,
+              f"flamesafe's status not arriving: forced at once, no 1 s "
+              f"of silence, said: {st} {out}")
+        _no_dashes(out.get("text", ""), "the no-status answer")
+        rem.alerts.clear(kind="flames", action="Acknowledge")
+        R.feed()
         # 3. The deck reads but does not act (its own state disagrees):
         # flamesafe still reports it armed, so forced after 1 s.
         arm(0)
@@ -74054,7 +74091,10 @@ def test_group_disarm_across_two_screens_real_flamesafe():
         "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
         "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
         "groups": [{"name": n, "safety": 401 + i, "fire": [411 + 10 * i]}
-                   for i, n in enumerate(names)]}, open(cfg_path, "w"))
+                   for i, n in enumerate(names)],
+        # One hazer (#168): the forced disarm switches it off too.
+        "passthrough": [{"name": "hazer 1", "haze": 450, "fan": 451}]},
+        open(cfg_path, "w"))
     proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
                              cfg_path], cwd=here, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
@@ -74306,6 +74346,10 @@ def test_group_disarm_across_two_screens_real_flamesafe():
         check(h is not None, f"setup F: armed from the rack: {g0()}")
         if h is not None:
             h.th.join(2)
+            check(link.hazers_set(["hazer 1"]) == {"hazer 1"} and
+                  link.release() and not link.zeroed,
+                  "setup F: the hazer is ARMED and the cues released on "
+                  "the flame link")
             real_new = screen.new_disarms
             screen.new_disarms = lambda: (real_new(), [])[1]
             t_press = time.perf_counter()
@@ -74315,19 +74359,25 @@ def test_group_disarm_across_two_screens_real_flamesafe():
             screen.new_disarms = real_new
             check(code == 200 and out.get("forced") is True and
                   out.get("text", "").startswith(
-                      "Disarm front row forced: the Stream Deck did not "
-                      "answer (flamesafe did not report front row off") and
+                      "Deck did not answer: ALL groups disarm sent. Disarm "
+                      "front row forced (flamesafe did not report front "
+                      "row off") and
                   took >= RM.PLAIN_CONFIRM_S - 0.05,
                   f"F: a deck that drops the Disarm: forced after 1 s, "
                   f"said: {code} {out} {took:.2f} s")
+            check(link.hazers_on == frozenset() and link.zeroed,
+                  f"F: the forced disarm switched the hazer off and put "
+                  f"the show's flames at zero, as the answer says: "
+                  f"{link.hazers_on} {link.zeroed}")
             check(wait(lambda: not fs_armed(), 2) and
                   disarm_all_forced() > forced0 and
                   wait(lambda: "Abort" in g0().get("reason", ""), 2),
                   f"F: flamesafe took the disarm_all and reads the "
                   f"Abort's cycle: {g0()} {status.last.get('disarm_all')}")
             al = [a for a in rem.alerts.view() if a["kind"] == "flames"]
-            check(al and al[-1]["text"].startswith("Disarm front row "
-                                                   "forced"),
+            check(al and al[-1]["text"].startswith("Deck did not answer: "
+                                                   "ALL groups disarm "
+                                                   "sent."),
                   f"F: a flames alert says so: {al}")
             h.end()
             rem.alerts.clear(kind="flames", action="Acknowledge")
@@ -87096,7 +87146,7 @@ async function presses(){
   const lamp0 = () => { const t = document.querySelector('[data-lamp="0"]'); return t ? t.className : ""; };
   const lampBefore = lamp0(), gd = {};
   for(const [k, body] of [["confirmed", {ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."}],
-      ["forced", {ok:true, confirmed:false, forced:true, text:"Disarm front row forced: the Stream Deck did not answer (flamesafe did not report front row off within 1 s of the Disarm). The flame link has no one-group disarm, so every flame group was disarmed the way Abort does it."}],
+      ["forced", {ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."}],
       ["old", {ok:true, text:"Disarm front row sent."}]]){
     window.__answer = {re:/group-disarm/, body:body};
     await press("group-disarm", {group:0});
@@ -87425,10 +87475,10 @@ def test_ui2_show_tab_in_a_browser():
                       "off." and gd["confirmed"]["cls"] == "ok",
                       f"{where}: a confirmed Disarm says so: {gd}")
                 check(gd.get("forced", {}).get("msg") ==
-                      "Disarm forced: the deck did not answer." and
+                      "Deck did not answer: ALL groups disarm sent." and
                       gd["forced"]["cls"] == "warn" and
-                      gd["forced"]["full"].startswith(
-                          "Disarm front row forced: the Stream Deck"),
+                      "every hazer is off" in gd["forced"]["full"] and
+                      "until Hold then Resume" in gd["forced"]["full"],
                       f"{where}: a forced Disarm says so, the engine's "
                       f"words behind Details: {gd}")
                 check(gd.get("old", {}).get("msg") ==
