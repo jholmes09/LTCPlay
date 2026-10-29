@@ -1187,8 +1187,8 @@ class CleaningPanel:
 def engine_blockers(remote, link, name, arming=None):
     """Why the engine forbids the cleaning right now, in a sentence, or "":
     the Fireball page's rules (a show live or paused, an Abort standing, a
-    Hold, Run pressed, the show clock playing, live flame programming or
-    fire while scrubbing, Arrange mode, the lock state not trusted, a purge
+    Hold, Run pressed, the show clock playing, live flame programming,
+    Arrange mode, the lock state not trusted, a purge
     selected or firing, the flame link not sending), the Fireball page
     with a channel on, arming from a screen switched off, the Stream Deck
     not reading the engine, an open alert of a blocking kind, and anyone

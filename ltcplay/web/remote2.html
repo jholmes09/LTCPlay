@@ -587,7 +587,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <dt>Hold to arm</dt><dd>Press and keep your finger down.</dd>
     <dt>Disarm</dt><dd>One tap. Always works.</dd>
     <dt>Disarm flames</dt><dd>Every flame group. Lasers have their own.</dd>
-    <dt>Red Stop at the top</dt><dd>Stops cleaning, live flame or rehearsal flames.</dd>
+    <dt>Red Stop at the top</dt><dd>Stops cleaning or live flame.</dd>
     <dt>Wind</dt><dd>Advisory only. The on-site wind check decides.</dd>
   </dl>
 </div>
@@ -847,18 +847,16 @@ function runIsOn(st){
 function isRehearsal(st){ return modeLook(st).cls === "prog"; }
 // What is live and must be stopped by hand, pinned in the next-step bar
 // with its own Stop and never paged behind an alert (safety review of
-// #166, B2): the wave flamer cleaning (its phase 2 fires until Stop), live
-// flame programming, flames while scrubbing. Each button is 1.0's press.
+// #166, B2): the wave flamer cleaning (its phase 2 fires until Stop) and
+// live flame programming. Each button is 1.0's press.
 function pinItems(st){
   const s = st || {}, out = [];
   const wc = s.cleaning;
   if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
     pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
-  const lf = s.live_flame || {}, sf = s.scrub_flames || {};
+  const lf = s.live_flame || {};
   if(lf.on === true) out.push({key:"lf", text:"Live flame on. Armed groups can fire.", pill:"LIVE FLAME", btn:"Live flame off",
     full:"Live flame programming: xLights drives the flames. Only an armed group fires. Never use xLights' test tools while a group is armed. Turned on by " + (lf.who || "someone") + "."});
-  if(sf.on === true) out.push({key:"sf", text:"Rehearsal flames on. Armed groups fire.", pill:"FLAMES LIVE", btn:"Flames off",
-    full:"Fire flames while scrubbing is on. Only an armed group fires. Turned on by " + (sf.who || "someone") + "."});
   return out;
 }
 // The big button: the next step, one of Reset, Resume, Run show, Start
@@ -1074,7 +1072,7 @@ $("al-text").addEventListener("click", async () => {
   }
 });
 // The alert's one button: 1.0's own presses. Acknowledge is 1.0's body
-// exactly; Turn off is 1.0's live flame and scrub Off.
+// exactly; Turn off is 1.0's live flame Off.
 // The slot's button acts on the alert that was showing when the finger
 // went down (1.0's pressDecision idea): if the slot changed under the
 // finger, nothing is done and it says so.
@@ -1143,9 +1141,6 @@ $("pins").addEventListener("click", async e => {
   } else if(k === "lf"){
     try{ const j = await post("/api/remote/live-flame", {on: false}); say("Live flame programming off.", j.text, "ok"); }
     catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Live flame NOT off.", e2.message); }
-  } else if(k === "sf"){
-    try{ const j = await post("/api/remote/scrub-flames", {on: false}); say("Flames in rehearsal off.", j.text, "ok"); }
-    catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Rehearsal flames NOT off.", e2.message); }
   }
 });
 
@@ -2127,7 +2122,7 @@ $("wx").addEventListener("click", () => {
 
 // ---- "?" : one plain sentence per control ----
 const QHELP = {
-  next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame, rehearsal flames."]]],
+  next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning or live flame."]]],
   transport: ["Show controls", [["Run show", "Turns tonight's show on. Shows start on time."], ["Start now", "Starts the next show early."],
     ["Resume", "Carries on after a Hold."], ["Reset", "Clears an Abort. Then arm again."],
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Ends everything. Rig goes dark."],

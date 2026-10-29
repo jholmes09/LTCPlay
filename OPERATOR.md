@@ -207,7 +207,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   the buttons says so in one line. An announcement never starts a show.
 - **Between shows** a press puts the schedule on Hold first, so the next
   show does not start while you are away. That Hold does what your own
-  Hold does: live flame programming and fire while scrubbing end, and
+  Hold does: live flame programming ends, and
   every laser is disarmed (arm them again by hand). The rack screen says HELD FOR
   ANNOUNCEMENT, with a Stop button, while it plays. When it ends the
   schedule STAYS on Hold: press Resume when you are ready to carry on.
@@ -393,13 +393,13 @@ flames and lasers went off but playback itself did not stop, the key reads
 PLAYBACK FAILED: press Stop on the Rack screen. If the show itself did not
 end, the key flashes SHOW NOT STOPPED: press Abort on the Rack screen. The key also reads STOP
 ALL when nothing is running but a flame group is armed, or live flame
-programming or fire while scrubbing is on, and the hold turns everything
+programming or Programming playback with flames is on, and the hold turns everything
 off. An alert waiting on the deck never eats a
 Stop: a quick tap only acknowledges it, and a full half second hold stops
 (the key switches to HOLD TO STOP as soon as it is held, so let go to
 cancel). With the Morning page open, key 0 is FIRE for the purge, except
 whenever anything is running (a show live, Run pressed and playback
-going, or live flame programming or fire while scrubbing on), the deck
+going, or live flame programming or Programming playback with flames on), the deck
 cannot read the show computer, or a group is armed for
 anything but the purge (a group the purge selection wants counts as the
 purge's, even if it was armed by hand first): then it is Stop. If FIRE is
@@ -531,7 +531,7 @@ comes back on by itself: press again.
 
 **When it will not work** it says why in plain words: a show live or on
 Hold, an Abort standing, Run pressed (the show file owns the channels),
-live flame programming or fire flames while scrubbing on, a purge selected
+live flame programming on, a purge selected
 on the Startup page (and that purge waits while a Fireball channel is on),
 any screen in Arrange mode, the Fireball locked out, or the purge switch
 off (`purge_arming`, and from an iPad `screen_arming`, in
@@ -602,8 +602,8 @@ Signed out it is view only; Stop always works.
 **It stops at once, the ignition off first and then the wave flamers
 disarmed,** on: Stop (anywhere); Abort; Hold; any disarm anywhere; the
 wave flamers disarming by themselves; flamesafe not reporting; a wave
-flamer locked or unlocked; a show starting; live flame programming or
-fire while scrubbing going on; another flame group armed; an alert about
+flamer locked or unlocked; a show starting; live flame programming
+going on; another flame group armed; an alert about
 the flames, the flame link or the Stream Deck; screen arming switched off;
 the Stream Deck not reading the engine; the person who started it (or
 gave the go-ahead) signing out; any refusal. If flamesafe does not report
@@ -611,7 +611,7 @@ the wave flamers off within a second, Disarm all flame groups goes.
 Nothing comes back by itself: start again with a hold.
 
 **When it will not start** it says why: a show live or on Hold, an Abort
-standing, Run pressed, live flame programming or fire while scrubbing on,
+standing, Run pressed, live flame programming on,
 a purge selected (and the purge waits while the cleaning runs), the
 Fireball page with a channel on, any screen in Arrange mode, another flame
 group armed or being armed, the wave flamers already armed (it starts
@@ -764,8 +764,7 @@ restarted. Within about 5 seconds of the edit, the rack screen shows a note
   rack screen offers **Reload engine** under the note to someone signed in
   with the Settings permission. It is offered only when no show is running
   or starting, no announcement is playing, flamesafe is reporting and every
-  flame group is disarmed, live flame programming and fire flames while
-  scrubbing are off, no purge is selected, the Fireball page is not in use,
+  flame group is disarmed, live flame programming is off, no purge is selected, the Fireball page is not in use,
   and no laser is armed or in a test. Anything not known counts as a
   reason not to. LTC Player asks the engine the same question again right
   before it restarts it. LTC
@@ -1297,11 +1296,13 @@ The lasers stay dark in Programming: the laser gate lights them only
 while a scheduled show is live. BEYOND's own timeline still follows the
 timecode, so its position moves with the playhead.
 
-Fire flames while scrubbing, on the Programming screen, lets the show's own
-flame cues fire while you play, jump and loop in Programming. It is off
-every time LTC Player starts, and only an admin on the show machine can
-turn it on. While it is on, a red FLAMES LIVE IN REHEARSAL bar is on every
-screen with its Turn off button. LIVE_FLAME_PROGRAMMING.md has the rules.
+There is no switch for flames in Programming (the old "Fire flames while
+scrubbing" was removed): while you play here, the show's own flame cues go
+to flamesafe and only armed groups fire. The Programming screen says so in
+one line, and shows in full why the flame cues cannot go out when they
+cannot. While flames follow the transport, only the show PC or an admin
+can move the position, the loop or the marks. Hold, Stop or Abort ends it.
+LIVE_FLAME_PROGRAMMING.md, "Flames in Programming playback", has the rules.
 
 The time zone on the schedule card is a list of plain names (for example
 Mountain Time (Denver)); the show's local time is shown under it. The
@@ -1474,7 +1475,7 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   announcements and the wind along the bottom, left of Abort in its
   corner, 96 px, tap twice. Tap "Announce" for what the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
-  live flame programming, flames while scrubbing) sits in the next-step
+  live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,
   and the state never reads READY while it runs, or while a fault is open.
   A rehearsal reads REHEARSAL and never counts down to a show.
