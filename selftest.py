@@ -72835,6 +72835,399 @@ def test_group_disarm_is_confirmed_or_forced():
     print("  ok")
 
 
+def test_group_disarm_across_two_screens_real_flamesafe():
+    section("a per-group Disarm end to end across two screens (Jeff, "
+            "2026-10-29: 'armed in 2.0 but disarmed in 1.0'): the real "
+            "flamesafe, deck controller and engine, the rack screen and an "
+            "iPad (127.0.0.2); armed on one and disarmed on the other, a "
+            "page that keeps beating its old hold id, a Disarm in the "
+            "middle of a hold and inside the deck's confirm wait, Disarm "
+            "all against a broken loop: never armed again, and every "
+            "Disarm answered confirmed; then a deck that reads and does "
+            "not act, and one that stopped reading: forced, with an alert")
+    import http.client as _hc
+    import json as _j
+    import socket as _so
+    import subprocess
+    import tempfile
+    import threading
+    import types
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    S = _sched()
+    if S is None:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    names = ["front row", "cat-walk"]
+    # The iPad is a second loopback address, so the engine names it as a
+    # device on the show network. Linux has all of 127/8; a Mac has only
+    # 127.0.0.1 unless aliased, and then the rack screen plays both.
+    ipad_ip = "127.0.0.2"
+    try:
+        _p = _so.socket(_so.AF_INET, _so.SOCK_STREAM)
+        _p.bind((ipad_ip, 0))
+        _p.close()
+    except OSError:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "127.0.0.2 could not be bound on a Linux CI runner")
+        print("  note: 127.0.0.2 is not usable here, so the rack screen "
+              "plays both screens")
+        ipad_ip = "127.0.0.1"
+    SRC = {"rack": "127.0.0.1", "ipad": ipad_ip}
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    ports = []
+    while len(ports) < 4:
+        p_ = free_port()
+        if p_ not in ports and p_ != node.getsockname()[1]:
+            ports.append(p_)
+    listen, armp, statusp, mirror = ports
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "status_mirror_port": mirror, "arm_port": armp,
+                 "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": n, "safety": 401 + i, "fire": [411 + 10 * i]}
+                   for i, n in enumerate(names)]}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    stop = threading.Event()
+    fs_out = []
+    threading.Thread(target=lambda: [fs_out.append(_l.rstrip())
+                                     for _l in proc.stdout],
+                     daemon=True).start()
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    link = fl.FlameLink(cfg, show_state=lambda: (show_tc(), True)).start()
+    folder = tempfile.mkdtemp()
+    httpd = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          remote_folder=work, flamesafe_config=cfg_path)
+    rem = httpd.remote
+    # The forced disarm is the flame link's disarm_all (no scheduler here).
+    rem._flame_disarm = lambda reason: types.SimpleNamespace(
+        ok=link.disarm_all(reason), sentence="")
+    RM.save_settings(work, screen_arming=True)
+    threading.Thread(target=httpd.serve_forever,
+                     kwargs={"poll_interval": 0.05}, daemon=True).start()
+    PORT = httpd.server_address[1]
+
+    def http(path, body=None, dev="rack"):
+        c = _hc.HTTPConnection("127.0.0.1", PORT, timeout=5,
+                               source_address=(SRC[dev], 0))
+        try:
+            if body is None:
+                c.request("GET", path)
+            else:
+                c.request("POST", path, body=_j.dumps(body),
+                          headers={"Content-Type": "application/json"})
+            r = c.getresponse()
+            data = r.read()
+        finally:
+            c.close()
+        try:
+            return r.status, _j.loads(data or b"{}")
+        except ValueError:
+            return r.status, {"raw": data[:200]}
+    arm = sd.ArmSocket("127.0.0.1", armp, key, len(names))
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    screen = sd.ScreenKeys(f"http://127.0.0.1:{PORT}").start()
+    events = []
+    ctl = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                        show_running_provider=lambda: None,
+                        journal=lambda t_, **kw: events.append(t_),
+                        screen=screen)
+    lock = threading.Lock()
+
+    def deck_loop():
+        while not stop.is_set():
+            with lock:
+                ctl.screen_pass()
+                ctl.tick()
+                status.poll()
+                arm.send(names)
+            time.sleep(0.05)
+    threading.Thread(target=deck_loop, daemon=True).start()
+
+    def g0():
+        st = status.last
+        return st["groups"][0] if st else {}
+
+    def fs_armed():
+        return g0().get("armed") == "armed"
+
+    def fs_off():
+        return g0().get("armed") == "disarmed" and not g0().get("wanted")
+
+    def wait(pred, s=3.0):
+        end = time.perf_counter() + s
+        while time.perf_counter() < end:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return pred()
+
+    def watch_armed(s):
+        """True if flamesafe read the group armed at any time in s."""
+        end, ever = time.perf_counter() + s, False
+        while time.perf_counter() < end:
+            ever = ever or fs_armed()
+            time.sleep(0.02)
+        return ever
+
+    class PageHold:
+        """A page's hold loop (1.0's armBeat, which 2.0 copies): a beat
+        every 100 ms after the last answer with the latest served_at;
+        stops on armed true or any refusal, unless `keep` (a broken page
+        that keeps beating its old hold id)."""
+
+        def __init__(self, dev, keep=False):
+            self.dev, self.keep = dev, keep
+            self.answers = []
+            self.halt = threading.Event()
+            self.th = threading.Thread(target=self._run, daemon=True)
+            self.th.start()
+
+        def _run(self):
+            hid = None
+            while not self.halt.is_set():
+                try:
+                    seen = http("/api/remote/status", dev=self.dev)[1][
+                        "served_at"]
+                    body = {"group": 0, "seen": seen}
+                    if hid is not None:
+                        body["hold_id"] = hid
+                    code, out = http("/api/remote/arm-hold", body, self.dev)
+                except Exception as e:           # noqa: BLE001
+                    code, out = 0, {"error": str(e)}
+                self.answers.append((code, out.get("armed"),
+                                     out.get("hold_id")))
+                if code == 200 and not out.get("armed"):
+                    hid = out["hold_id"]
+                elif not self.keep:
+                    break
+                time.sleep(0.1)
+
+        def end(self):
+            self.halt.set()
+            self.th.join(3)
+            http("/api/remote/arm-release", {"group": 0}, self.dev)
+
+    def settle():
+        """Off, not wanted, and past the deck's refractory window."""
+        if not fs_off():
+            http("/api/remote/group-disarm", {"group": 0})
+        wait(fs_off, 3)
+        time.sleep(sd.REARM_REFRACTORY_S + 0.3)
+
+    def arm_from(dev, keep=False):
+        for _try in range(3):
+            h = PageHold(dev, keep=keep)
+            if wait(fs_armed, 4):
+                return h
+            h.end()
+            settle()
+        return None
+
+    def confirmed(code, out):
+        return code == 200 and out.get("confirmed") is True and \
+            out.get("text", "").endswith("confirmed: flamesafe reports "
+                                         "it off.")
+
+    def disarm_all_forced():
+        return (status.last or {}).get("disarm_all", {}).get("accepted", 0)
+    try:
+        end = time.perf_counter() + 30
+        up = False
+        while time.perf_counter() < end and proc.poll() is None:
+            s = http("/api/remote/status")[1]
+            if s["flames"].get("connected") and not s["flames"]["stale"] \
+                    and status.last:
+                up = True
+                break
+            time.sleep(0.1)
+        check(up, f"setup: flamesafe's status reached the engine and the "
+                  f"deck (flamesafe "
+                  f"{'exited ' + str(proc.returncode) if proc.poll() is not None else 'running'}"
+                  f"; its last lines: {fs_out[-6:]})")
+        wait(lambda: (status.last or {}).get("arm_input", {}).get("state")
+             == "live", 10)
+        time.sleep(1.2)
+        who = http("/api/remote/whoami", dev="ipad")[1].get("device", "")
+        check(ipad_ip == "127.0.0.1" or who == f"iPad at {ipad_ip}",
+              f"setup: the engine names the second screen an iPad: {who}")
+        forced0 = disarm_all_forced()
+        # A: armed on the iPad (2.0), disarmed on the rack (1.0).
+        h = arm_from("ipad")
+        check(h is not None, f"setup A: the iPad's hold armed it: {g0()}")
+        if h is not None:
+            h.th.join(2)
+            code, out = http("/api/remote/group-disarm", {"group": 0},
+                             "rack")
+            check(confirmed(code, out) and fs_off(),
+                  f"A: armed on the iPad, the rack's Disarm is answered "
+                  f"confirmed and flamesafe reads it off: {code} {out} "
+                  f"{g0()}")
+            check(not watch_armed(1.5), f"A: and it stays off: {g0()}")
+            h.end()
+        settle()
+        # B: the rack's page keeps beating its old hold id after it armed
+        # (a broken page); the iPad disarms.
+        h = arm_from("rack", keep=True)
+        check(h is not None, f"setup B: armed from the rack: {g0()}")
+        if h is not None:
+            code, out = http("/api/remote/group-disarm", {"group": 0},
+                             "ipad")
+            check(confirmed(code, out),
+                  f"B: the iPad's Disarm is confirmed: {code} {out}")
+            check(not watch_armed(2.5),
+                  f"B: a page beating its old hold id never arms it "
+                  f"again: {g0()} {h.answers[-3:]}")
+            h.end()
+            check(h.answers and h.answers[-1][0] == 409,
+                  f"B: the old hold id is refused: {h.answers[-3:]}")
+        settle()
+        # C: the iPad disarms 0.5 s into the rack's hold, before it arms.
+        h = PageHold("rack")
+        time.sleep(0.5)
+        code, out = http("/api/remote/group-disarm", {"group": 0}, "ipad")
+        check(confirmed(code, out),
+              f"C: a Disarm in the middle of a hold is confirmed: {code} "
+              f"{out}")
+        check(not watch_armed(2.0),
+              f"C: and the hold never arms it: {g0()} {h.answers[-3:]}")
+        h.end()
+        settle()
+        # D: the rack disarms the moment flamesafe reports it asked for
+        # (the deck took the iPad's hold; inside its confirm wait).
+        h = PageHold("ipad")
+        took = wait(lambda: bool(g0().get("wanted")), 4)
+        code, out = http("/api/remote/group-disarm", {"group": 0}, "rack")
+        check(took and confirmed(code, out),
+              f"D: a Disarm inside the deck's confirm wait is confirmed: "
+              f"{took} {code} {out}")
+        check(not watch_armed(2.0),
+              f"D: and it is not armed after: {g0()} {h.answers[-3:]}")
+        h.end()
+        settle()
+        # E: Disarm all from the rack while the iPad's broken loop runs.
+        h = arm_from("ipad", keep=True)
+        check(h is not None, f"setup E: armed from the iPad: {g0()}")
+        if h is not None:
+            code, out = http("/api/remote/disarm-all", {"confirmed": True},
+                             "rack")
+            check(code == 200 and out.get("plain") is True and
+                  wait(fs_off, 2),
+                  f"E: Disarm all turns it off: {code} {out} {g0()}")
+            check(not watch_armed(2.0),
+                  f"E: and the broken loop never arms it again: {g0()}")
+            h.end()
+        time.sleep(RM.PLAIN_CONFIRM_S)
+        check(disarm_all_forced() == forced0 and
+              not [a for a in rem.alerts.view() if a["kind"] == "flames"],
+              f"A to E: nothing was forced and no flames alert: "
+              f"{status.last.get('disarm_all')} {rem.alerts.view()}")
+        settle()
+        # F: the deck reads the engine but does not act on the Disarm (its
+        # own state disagrees with flamesafe's): forced, with an alert.
+        h = arm_from("rack")
+        check(h is not None, f"setup F: armed from the rack: {g0()}")
+        if h is not None:
+            h.th.join(2)
+            real_new = screen.new_disarms
+            screen.new_disarms = lambda: (real_new(), [])[1]
+            t_press = time.perf_counter()
+            code, out = http("/api/remote/group-disarm", {"group": 0},
+                             "ipad")
+            took = time.perf_counter() - t_press
+            screen.new_disarms = real_new
+            check(code == 200 and out.get("forced") is True and
+                  out.get("text", "").startswith(
+                      "Disarm front row forced: the Stream Deck did not "
+                      "answer (flamesafe did not report front row off") and
+                  took >= RM.PLAIN_CONFIRM_S - 0.05,
+                  f"F: a deck that drops the Disarm: forced after 1 s, "
+                  f"said: {code} {out} {took:.2f} s")
+            check(wait(lambda: not fs_armed(), 2) and
+                  disarm_all_forced() > forced0 and
+                  wait(lambda: "Abort" in g0().get("reason", ""), 2),
+                  f"F: flamesafe took the disarm_all and reads the "
+                  f"Abort's cycle: {g0()} {status.last.get('disarm_all')}")
+            al = [a for a in rem.alerts.view() if a["kind"] == "flames"]
+            check(al and al[-1]["text"].startswith("Disarm front row "
+                                                   "forced"),
+                  f"F: a flames alert says so: {al}")
+            h.end()
+            rem.alerts.clear(kind="flames", action="Acknowledge")
+        # G: the deck stopped reading the engine: forced at once.
+        screen.stop()
+        time.sleep(RM.PLAIN_DECK_FRESH_S + 0.2)
+        n = disarm_all_forced()
+        t_press = time.perf_counter()
+        code, out = http("/api/remote/group-disarm", {"group": 0}, "rack")
+        took = time.perf_counter() - t_press
+        check(code == 200 and out.get("forced") is True and
+              "has not read this engine" in out.get("text", "") and
+              took < RM.PLAIN_CONFIRM_S / 2 and
+              wait(lambda: disarm_all_forced() > n, 2),
+              f"G: a deck that stopped reading: forced at once, said, and "
+              f"flamesafe took it: {code} {out} {took:.2f} s")
+        check([a for a in rem.alerts.view() if a["kind"] == "flames"],
+              f"G: with an alert: {rem.alerts.view()}")
+    finally:
+        stop.set()
+        screen.stop()
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        rs = getattr(httpd.remote, "flame_status", None)
+        if rs is not None:
+            rs.stop()
+        link.stop()
+        arm.close()
+        status.close()
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(folder, ignore_errors=True)
+    print("  ok")
+
+
 def test_lasers_lamp_follows_the_beyond_link():
     section("BEYOND exited at 03:27 and the Lasers lamp said lit for hours "
             "(2026-10-23): the watch says up, lost or unknown, a look older "
@@ -86580,6 +86973,7 @@ if __name__ == "__main__":
         test_disarm_ids_survive_an_engine_restart,
         test_disarm_all_end_to_end_rearms_without_a_cycle,
         test_group_disarm_is_confirmed_or_forced,
+        test_group_disarm_across_two_screens_real_flamesafe,
         test_lasers_lamp_follows_the_beyond_link,
         test_video_lamp_follows_the_madmapper_watch,
         test_madmapper_not_following_is_a_display_only_alert,
