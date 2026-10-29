@@ -54,6 +54,7 @@ import atexit
 import json
 import os
 import threading
+import time
 
 from . import benchhooks
 from . import conductor as C
@@ -1125,26 +1126,46 @@ def _tail_by_design(clk, label, f, rel):
 
 
 # Background mode's cut ahead (2026-10-29): each cue's first CUT_START_S
-# before its render is published, and the playing cue CUT_AHEAD_S ahead of
-# its show timecode.
+# before its render is published (the reading thread), and the playing cue
+# CUT_AHEAD_S ahead of its show timecode on a thread of its own that never
+# touches the disk (review of #174: a stalled stat on the reading thread
+# used to stop the cutting too, and the playing cue ran out of cut frames
+# after 3 s).
 CUT_START_S = 0.5
-CUT_AHEAD_S = 3.0
+CUT_AHEAD_S = 15.0
+# An uncompressed render (v1, or v2 stored whole) is cut in pieces of this
+# many frames, sliced straight out of the bytes in memory: never one copy
+# of the whole render (review of #174: 230 MB renders were copied whole
+# at Run, holding every other thread for half a second).
+CUT_PIECE_FRAMES = 200
+# A frame whose block is not cut yet is zero, and a CUES FAULT only once it
+# has stayed so this long (review of #174: every far move blinked a CUES
+# FAULT for 25 to 75 ms). The flame link's own seek guard holds every flame
+# at zero for 0.5 s after any move anyway.
+CUT_FAULT_AFTER_S = 1.0
 CUES_LOADING = ("the show's flame cues are still being cut from its render "
                 "(off the flame link's sender), so they are zero here; "
                 "they follow within a second")
+CUES_CUTTER_DEAD = ("the thread that cuts the show's flame cues from its "
+                    "render has stopped and could not be started again, so "
+                    "every flame cue is zero; restart LTC Player")
 
 
 class _FlameCut:
-    """One render's flame channels for one span, cut block by block on
-    the reading thread (FlameCues background mode), through an FSEQ of its
-    own over the render's bytes in memory (never the published one, which
-    another thread may be reading). The sender only reads `row`: a dict
-    lookup and a slice. A block that cannot be cut keeps its error, which
-    `row` raises; it is never tried again for this FSEQ."""
+    """One render's flame channels for one span, cut block by block off
+    the sender (FlameCues background mode), through an FSEQ of its own over
+    the render's bytes in memory (never the published one, which another
+    thread may be reading). The sender only reads `row`: dict lookups and a
+    slice, no lock. The cutting threads share `lock`. A block that cannot
+    be cut keeps its error, which `row` raises; it is never tried again
+    for this FSEQ. A block cut only part of the way (its later frames
+    missing) keeps the rows it has and the error from the first missing
+    frame on."""
 
     def __init__(self, path, f, spans, span, data):
         import io
-        from .fseq import FSEQ
+        import threading as _th
+        from .fseq import FSEQ, NONE
         self.f = f
         self.span = tuple(span)
         self.count = int(span[1])
@@ -1155,19 +1176,31 @@ class _FlameCut:
             g.close()
             raise ValueError("the render changed while it was read")
         self.g = g
-        self.firsts = [b[0] for b in g._blocks]
+        self.whole = g.compression == NONE and len(g._blocks) == 1
+        if self.whole:
+            # Uncompressed: pieces sliced straight from the bytes.
+            self.mv = memoryview(data)
+            self.firsts = list(range(0, max(1, g.frame_count),
+                                     CUT_PIECE_FRAMES))
+        else:
+            self.mv = None
+            self.firsts = [b[0] for b in g._blocks]
+        self.lock = _th.Lock()
         self.blocks = {}         # block index -> its frames' rows, joined
         self.errors = {}         # block index -> the error cutting it
+        self.short = {}          # block index -> (first missing frame, error)
 
     @classmethod
     def failed(cls, f, span, error):
         """A render that could not be cut at all: every row raises `error`
         (a CUES FAULT), and it is never tried again for this FSEQ."""
+        import threading as _th
         c = cls.__new__(cls)
         c.f, c.span, c.count, c.spans = f, tuple(span), int(span[1]), []
-        c.g = None
+        c.g, c.whole, c.mv = None, False, None
         c.firsts = [0]
-        c.blocks, c.errors = {}, {0: error}
+        c.lock = _th.Lock()
+        c.blocks, c.errors, c.short = {}, {0: error}, {}
         return c
 
     def frames(self, seconds):
@@ -1192,30 +1225,50 @@ class _FlameCut:
         for b in range(self._block(lo), self._block(hi) + 1):
             if b in self.blocks or b in self.errors:
                 continue
-            try:
-                self.blocks[b] = self._cut_block(b)
-            except Exception as e:
-                self.errors[b] = e
+            with self.lock:
+                if b in self.blocks or b in self.errors:
+                    continue
+                try:
+                    rows, short = self._cut_block(b)
+                    if short is not None:
+                        self.short[b] = short
+                    self.blocks[b] = rows
+                except Exception as e:
+                    self.errors[b] = e
             _t.sleep(0)
 
     def _cut_block(self, b):
+        """(the rows of block b joined, None or (first missing frame, its
+        error))."""
         g, cc = self.g, self.g.channel_count
         first = self.firsts[b]
         last = self.firsts[b + 1] if b + 1 < len(self.firsts) \
             else g.frame_count
-        raw = memoryview(g._load_block(b))
-        rows = []
+        if self.whole:
+            off = g.chan_data_offset + first * cc
+            raw = self.mv[off:min(len(self.mv), off + (last - first) * cc)]
+        else:
+            try:
+                raw = memoryview(g._load_block(b))
+            finally:
+                # Only this block's rows are kept, never its channel data.
+                g._cache_idx, g._cache = -1, b""
+        rows, short = [], None
         for n in range(first, last):
             at = (n - first) * cc
             if at + cc > len(raw):
-                raise ValueError(f"frame {n} runs past the end of block {b}")
+                from .fseq import FSEQError
+                short = (n, FSEQError(f"frame {n} runs past the end of the "
+                                      f"render's data"))
+                break
             rows.append(FlameCues._cut(raw[at:at + cc], self.spans,
                                        self.span))
-        return b"".join(rows)
+        return b"".join(rows), short
 
     def row(self, idx):
         """Frame idx's flame channels (count bytes), None while its block
-        is not cut yet; raises the error its block could not be cut with."""
+        is not cut yet; raises the error its block (or, in a block cut part
+        of the way, that frame) could not be cut with."""
         b = self._block(idx)
         e = self.errors.get(b)
         if e is not None:
@@ -1223,6 +1276,9 @@ class _FlameCut:
         blk = self.blocks.get(b)
         if blk is None:
             return None
+        sh = self.short.get(b)
+        if sh is not None and idx >= sh[0]:
+            raise sh[1]
         at = (idx - self.firsts[b]) * self.count
         return blk[at:at + self.count]
 
@@ -1285,6 +1341,12 @@ class FlameCues:
         self._data = {}          # fseq path -> (its FSEQ, the render's bytes)
         self._stop = threading.Event()
         self._thread = None
+        self._cutter = None      # the cutting thread (review of #174)
+        self._died = {}          # thread attribute -> what ended it
+        self._restarted = {}     # thread attribute -> when last restarted
+        self._start_failed = set()
+        self._uncut = None       # ((cut, block), since) while not cut yet
+        self._mono = time.monotonic
         # The CUES FAULT said at show load (soak 2026-10-21): renders of
         # the running show older than its xlights_networks.xml, which
         # __call__ refuses. "" when none. on_render_fault(text) is told
@@ -1445,13 +1507,12 @@ class FlameCues:
             cuts[path] = cut
         for cut in cuts.values():
             cut.ensure(0, cut.frames(CUT_START_S))
-        self._cut_ahead(s, cuts)
         self._cuts = cuts
         self._by_path = by
 
     def _cut_ahead(self, s=None, cuts=None):
         """The playing cue's blocks from its show timecode to CUT_AHEAD_S
-        on, cut now (the reading thread). Never raises."""
+        on, cut now (the cutting thread). Never raises."""
         try:
             s = s or getattr(self.control, "session", None)
             cuts = self._cuts if cuts is None else cuts
@@ -1475,6 +1536,9 @@ class FlameCues:
             pass
 
     def _refresher(self):
+        """The reading thread: file dates, the layout, the renders read
+        into memory and their cuts made. The only one that touches the
+        disk."""
         while not self._stop.is_set():
             try:
                 self._check_renders_once()
@@ -1484,25 +1548,69 @@ class FlameCues:
                 self._refresh_once()
             except Exception:
                 pass
-            # Between full passes, keep cutting ahead of the play position
-            # every 50 ms (cheap once the blocks are cut).
-            for _ in range(5):
-                if self._stop.wait(0.05):
-                    break
-                self._cut_ahead()
+            self._stop.wait(0.25)
+
+    def _cutting(self):
+        """The cutting thread (review of #174): the playing cue cut
+        CUT_AHEAD_S ahead, every 50 ms. Memory only, never the disk, so a
+        read or a stat stalled on the reading thread cannot stop it."""
+        while not self._stop.wait(0.05):
+            self._cut_ahead()
+
+    def _guarded(self, attr, body):
+        """A background thread's body. Whatever ends it is kept (its
+        sentence), so start() can say so when it starts it again."""
+        try:
+            body()
+        except BaseException as e:               # noqa: BLE001
+            self._died[attr] = f"{type(e).__name__}: {e}"[:200]
+
+    THREADS = (("_thread", "_refresher", "ltcplay-flame-cues-read"),
+               ("_cutter", "_cutting", "ltcplay-flame-cues-cut"))
+    RESTART_EVERY_S = 1.0
 
     def start(self):
-        """Background mode: the reading thread, started now, so the
-        running show's renders are read into memory when Run is pressed,
-        long before its first flame frame (soak 2026-10-21: it used to
-        start on the first live frame, so every read landed at the top of
-        a show). Does nothing without background mode, or once closed."""
-        if self._bg and self._thread is None and not self._stop.is_set():
-            self._thread = threading.Thread(
-                target=self._refresher, daemon=True,
-                name="ltcplay-flame-cues-read")
-            self._thread.start()
+        """Background mode: the reading thread and the cutting thread,
+        started now, so the running show's renders are read into memory
+        when Run is pressed, long before its first flame frame (soak
+        2026-10-21: it used to start on the first live frame, so every read
+        landed at the top of a show). Asked again on every flame frame: a
+        thread that has ended without close() is started again, at most
+        once a RESTART_EVERY_S, journaled as a fault (review of #174: a
+        dead reader left every flame zero for the rest of the night). Does
+        nothing without background mode, or once closed."""
+        if not self._bg or self._stop.is_set():
+            return self
+        for attr, body, name in self.THREADS:
+            t = getattr(self, attr)
+            if t is not None and t.is_alive():
+                continue
+            now = self._mono()
+            if t is not None:
+                last = self._restarted.get(attr)
+                if last is not None and now - last < self.RESTART_EVERY_S:
+                    continue
+                self._restarted[attr] = now
+                why = self._died.pop(attr, "it ended")
+                self._note(f"Flame cues: the thread {name} stopped ({why}); "
+                           f"it was started again.", fault=True,
+                           action="flames", outcome="cues_thread_restarted")
+            try:
+                nt = threading.Thread(target=self._guarded,
+                                      args=(attr, getattr(self, body)),
+                                      daemon=True, name=name)
+                nt.start()
+                setattr(self, attr, nt)
+                self._start_failed.discard(attr)
+            except Exception:                    # noqa: BLE001
+                self._start_failed.add(attr)
         return self
+
+    def _cutter_dead(self):
+        """True when a background thread could not be started again: the
+        cues cannot follow, and the fault says so instead of promising
+        them within a second."""
+        return bool(self._start_failed)
 
     def _check_renders_once(self):
         """The running show's renders against its layout, by file date
@@ -1556,9 +1664,9 @@ class FlameCues:
 
     def close(self):
         self._stop.set()
-        t = self._thread
-        if t is not None and t is not threading.current_thread():
-            t.join(2.0)
+        for t in (self._thread, self._cutter):
+            if t is not None and t is not threading.current_thread():
+                t.join(2.0)
         for got in self._open.values():
             try:
                 got[0].close()
@@ -1691,14 +1799,29 @@ class FlameCues:
                 # channels as the reading thread cut them from this very
                 # render, for this very span. A block it could not cut
                 # raises its error here (the render could not be read, a
-                # fault). Not cut yet while the show plays: a CUES FAULT,
-                # never a silent zero.
+                # fault). Not cut yet while the show plays: zero, and a CUES
+                # FAULT once it has stayed so for CUT_FAULT_AFTER_S (a move
+                # lands on uncut frames for a moment; the link's seek guard
+                # holds them at zero then anyway), never a silent zero for
+                # longer; and at once if the cutting thread is gone.
                 cut = self._cuts.get(hits[0].path)
                 row = None
                 if cut is not None and cut.f is f and cut.span == span:
                     row = cut.row(idx)
                 if row is None:
-                    return self._zero(CUES_LOADING, fault=True)
+                    dead = self._cutter_dead()
+                    key = (id(cut), cut._block(idx) if cut is not None
+                           else None)
+                    now = self._mono()
+                    u = self._uncut
+                    if u is None or u[0] != key:
+                        u = self._uncut = (key, now)
+                    if not dead and now - u[1] < CUT_FAULT_AFTER_S:
+                        self.fault = ""
+                        return None
+                    return self._zero(CUES_CUTTER_DEAD if dead
+                                      else CUES_LOADING, fault=True)
+                self._uncut = None
                 count = span[1]
                 out = [0] * 512
                 out[0:count] = row

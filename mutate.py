@@ -1149,13 +1149,13 @@ MUTATIONS = [
 
  ("soak: FlameCues.start() starts nothing until a frame asks",
   "ltcplay/fire_ice.py",
-  "        if self._bg and self._thread is None and not self._stop.is_set():\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,",
-  "        if self._bg and self._thread is None and not self._stop.is_set() \\\n"
-  "                and getattr(self, '_layout', None) is not None:\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,"),
+  "        if not self._bg or self._stop.is_set():\n"
+  "            return self\n"
+  "        for attr, body, name in self.THREADS:",
+  "        if not self._bg or self._stop.is_set() or \\\n"
+  "                getattr(self, '_layout', None) is None:\n"
+  "            return self\n"
+  "        for attr, body, name in self.THREADS:"),
 
  ("soak: another show folder in showpc.json goes unsaid",
   "ltcplay/remote.py",
@@ -7189,8 +7189,14 @@ def build():
 
  ("flame cues: a block that could not be cut is tried again",
   "ltcplay/fire_ice.py",
-  "            if b in self.blocks or b in self.errors:",
-  "            if b in self.blocks:"),
+  "            if b in self.blocks or b in self.errors:\n"
+  "                continue\n"
+  "            with self.lock:\n"
+  "                if b in self.blocks or b in self.errors:",
+  "            if b in self.blocks:\n"
+  "                continue\n"
+  "            with self.lock:\n"
+  "                if b in self.blocks:"),
 
  ("flame cues: a block that could not be cut is a silent zero",
   "ltcplay/fire_ice.py",
@@ -7199,8 +7205,46 @@ def build():
 
  ("flame cues: a block not cut yet is a silent zero",
   "ltcplay/fire_ice.py",
-  "                    return self._zero(CUES_LOADING, fault=True)",
-  "                    return self._zero(CUES_LOADING, fault=False)"),
+  "                    return self._zero(CUES_CUTTER_DEAD if dead\n"
+  "                                      else CUES_LOADING, fault=True)",
+  "                    return self._zero(CUES_CUTTER_DEAD if dead\n"
+  "                                      else CUES_LOADING, fault=False)"),
+
+ # -- review of #174, round 2 follow-ups (2026-10-29)
+ ("flame cues: the cutting thread never cuts ahead",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(0.05):\n            self._cut_ahead()",
+  "        while not self._stop.wait(0.05):\n            pass"),
+
+ ("flame cues: a dead background thread is never started again",
+  "ltcplay/fire_ice.py",
+  "            if t is not None and t.is_alive():\n                continue",
+  "            if t is not None:\n                continue"),
+
+ ("flame cues: a cutter that cannot start still promises the cues",
+  "ltcplay/fire_ice.py",
+  "        return bool(self._start_failed)",
+  "        return False"),
+
+ ("flame cues: every move to an uncut frame is a CUES FAULT at once",
+  "ltcplay/fire_ice.py",
+  "                    if not dead and now - u[1] < CUT_FAULT_AFTER_S:",
+  "                    if False:"),
+
+ ("flame cues: one missing frame faults its whole block",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None:"),
+
+ ("flame cues: an uncompressed render is copied whole to be cut",
+  "ltcplay/fire_ice.py",
+  "        self.whole = g.compression == NONE and len(g._blocks) == 1",
+  "        self.whole = False"),
+
+ ("flame cues: a cut block's channel data is kept",
+  "ltcplay/fire_ice.py",
+  "                g._cache_idx, g._cache = -1, b\"\"",
+  "                pass"),
 
  ("flame cues: nothing is cut ahead of the show timecode",
   "ltcplay/fire_ice.py",
