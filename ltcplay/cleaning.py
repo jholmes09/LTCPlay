@@ -1262,7 +1262,9 @@ def build(remote, morning, link, journal=None, threaded=True,
         remote._drop_hold(i, token)
 
     def disarm_group(ctx):
-        code, out = remote.group_disarm({"group": name}, ctx)
+        # Handed over and answered at once (confirm=False): the cleaning
+        # confirms it itself, with Disarm all after DISARM_CONFIRM_S.
+        code, out = remote.group_disarm({"group": name}, ctx, confirm=False)
         return code == 200, str(out.get("text") or out.get("error") or "")
 
     def disarm_all(who, screen):
