@@ -18165,10 +18165,10 @@ def build():
 
  ("timed purge: a send never asks the deadline",
   "ltcplay/morning.py",
-  '''        t = f["timed"]
-        if now >= t["deadline"]:
-            return f"its {t['seconds']} s were up"''',
-  '''        t = f["timed"]'''),
+  '''        if now >= t["deadline"]:
+            return f"its {t['seconds']} s were up"
+        why = self._refusal''',
+  '''        why = self._refusal'''),
 
  ("timed purge: the last look at the deadline before the frame is gone",
   "ltcplay/morning.py",
@@ -18349,6 +18349,41 @@ def build():
   "ltcplay/web/remote2.html",
   "  if(tp) out.push({key:\"tp\",",
   "  if(false) out.push({key:\"tp\","),
+
+ ("timed purge: after an engine stall the timer relights it",
+  "ltcplay/morning.py",
+  "        if now - f[\"beat\"] > BEAT_STALE_S:\n            # The engine stalled",
+  "        if False:\n            # The engine stalled"),
+
+ ("timed purge: Stop purge from another screen is refused",
+  "ltcplay/morning.py",
+  "                (name == \"purge-stop\" and self.purge.timed_running())",
+  "                False"),
+
+ ("timed purge: a switch or the deck holds back a second press that only ends it",
+  "ltcplay/remote.py",
+  "        if m.purge.timed_running() and (timed_start or (",
+  "        if False and (timed_start or ("),
+
+ ("timed purge: zero() leaves the hard end behind",
+  "ltcplay/flamelink.py",
+  "            # No timed purge's hard end outlives a zero (review of #172).\n            self._purge_until = None\n",
+  ""),
+
+ ("timed purge: disarm_all() leaves the hard end behind",
+  "ltcplay/flamelink.py",
+  "                # purge's hard end outlives it either (review of #172).\n                self._purge_until = None\n",
+  "                # purge's hard end outlives it either (review of #172).\n"),
+
+ ("timed purge: an endless hard end is taken",
+  "ltcplay/flamelink.py",
+  "            if not s > 0 or not math.isfinite(s):",
+  "            if not s > 0 or s != s:"),
+
+ ("timed purge: a refused beat from a made-up window makes a replay record",
+  "ltcplay/morning.py",
+  "                    self._timed_remember(owner, rid, seq)\n                self._note(f\"{who or device}'s timed purge on the {device} \"",
+  "                    self._timed_remember(owner, rid, seq, make=True)\n                self._note(f\"{who or device}'s timed purge on the {device} \""),
 
 ]
 

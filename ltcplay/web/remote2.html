@@ -1059,8 +1059,8 @@ $("pins").addEventListener("click", async e => {
   const b = e.target.closest("button[data-pin]"); if(!b) return;
   const k = b.dataset.pin;
   if(k === "tp"){
-    // 1.0's Stop purge: the starting screen's or the show PC's (Abort
-    // works from every screen).
+    // 1.0's Stop purge: from every screen, never refused for a timed
+    // purge (review of #172).
     try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Purge NOT stopped.", e2.message + " Abort ends it from any screen.", "bad"); }
   } else if(k === "wc"){

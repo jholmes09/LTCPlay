@@ -1630,8 +1630,19 @@ class Purge:
                 return
             e = self._timed_ended[owner] = {
                 "ids": collections.deque(maxlen=TIMED_DEAD_IDS), "seq": None}
-            while len(self._timed_ended) > TIMED_OWNERS_KEPT:
-                self._timed_ended.popitem(last=False)
+            # Only a hold that passed every rule makes a record (review of
+            # #172), and the oldest is let go only when it belongs to no
+            # running purge and no hold under way: a made-up window name
+            # can never push out the record that refuses a replay.
+            f = self.fire
+            t = f.get("timed") if f is not None else None
+            keep = {owner, t["owner"] if t is not None else None,
+                    self.timed_hold["owner"] if self.timed_hold else None}
+            for old in list(self._timed_ended):
+                if len(self._timed_ended) <= TIMED_OWNERS_KEPT:
+                    break
+                if old not in keep:
+                    del self._timed_ended[old]
         self._timed_ended.move_to_end(owner)
         if rid is not None and rid not in e["ids"]:
             e["ids"].append(rid)
@@ -1781,7 +1792,7 @@ class Purge:
             self.stop(f"a second purge press (a new hold on the {device})",
                       device=device)
             with self._lock:
-                self._timed_remember(owner, rid, seq, make=True)
+                self._timed_remember(owner, rid, seq)
             return 409, {"error": "A second purge press ended the timed "
                                   "purge: everything it fired is back to "
                                   "zero. Nothing else was fired.",
@@ -1818,7 +1829,7 @@ class Purge:
                 self._timed_hold_end(f"refused: {why}")
             else:
                 with self._lock:
-                    self._timed_remember(owner, rid, seq, make=True)
+                    self._timed_remember(owner, rid, seq)
                 self._note(f"{who or device}'s timed purge on the {device} "
                            f"was refused: {why}", action="purge",
                            outcome="timed_refused", who=who, screen=device)
@@ -1904,6 +1915,13 @@ class Purge:
         the flame link not sending, the starter signed out), the selection
         gone, a selected machine locked, a selected group no longer armed."""
         t = f["timed"]
+        if now - f["beat"] > BEAT_STALE_S:
+            # The engine stalled (a pause, a hung thread): the flame link
+            # has dropped the frame and flamesafe has zeroed. It never
+            # comes back by itself, as a momentary press never does
+            # (review of #172, B1).
+            return (f"the engine's timer stalled (nothing sent for "
+                    f"{now - f['beat']:.2f} s)")
         if now >= t["deadline"]:
             return f"its {t['seconds']} s were up"
         why = self._refusal(f["device"], True)
@@ -2780,7 +2798,8 @@ class Morning:
             # stays the one path everyone has.
             pv = self.purge.view()
             mine = local or device == pv["owner"] or \
-                (name == "purge-stop" and device == pv["fire_device"])
+                (name == "purge-stop" and device == pv["fire_device"]) or \
+                (name == "purge-stop" and self.purge.timed_running())
             if not mine and (pv["selected"] or pv["firing"]):
                 return 409, {"error": f"{pv['owner']} has the purge "
                                       f"selection; only that device or the "

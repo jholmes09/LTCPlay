@@ -4716,9 +4716,9 @@ class Remote:
             # The timed purge: its numbers here, and this page's own view
             # of it (its start hold is this page load's, by window).
             v["timed_settings"] = self.timed_purge_settings()
-            purge = getattr(m, "purge", None)
-            if purge is not None and hasattr(purge, "timed_view"):
-                v["timed"] = purge.timed_view(self._page_owner(ctx))
+            pg = getattr(m, "purge", None)
+            if pg is not None and hasattr(pg, "timed_view"):
+                v["timed"] = pg.timed_view(self._page_owner(ctx))
             v["checks"] = self.engine_checks()
             v["served_at"] = int(self.wall() * 1000)
             return 200, v
@@ -4861,6 +4861,17 @@ class Remote:
         # purge-fire body is a release, which morning.py turns into a stop
         # and which therefore goes whatever the switch says.
         timed_start = name == "purge-timed" and body.get("hold") is True
+        if m.purge.timed_running() and (timed_start or (
+                name == "purge-fire" and users_mod.purge_fire_wanted(body))):
+            # A second purge press while a timed purge runs only ends it
+            # (Purge.fire_beat, Purge.timed_beat): no switch, deck or
+            # settings check may hold back a stop (review of #172).
+            if name == "purge-fire":
+                return m.post(name, body, device, who, screen, seen_ok,
+                              ctx.local)
+            return m.post(name, body, device, who, screen, seen_ok,
+                          ctx.local, owner=self._page_owner(ctx),
+                          token=getattr(ctx, "token", "") or "")
         if timed_start or \
                 (name == "purge-select" and body.get("on") is not False) or \
                 (name == "purge-fire" and users_mod.purge_fire_wanted(body)):

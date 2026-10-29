@@ -65631,6 +65631,15 @@ def test_timed_purge_flame_link_hard_end():
     link.zero()
     check(link.values_now()[1] == bytes(512) and not link.purge_active(),
           "zero() still clears it")
+    check(link._purge_until is None and link.purge_set(frame) is True,
+          "zero() lifts the hard end too: no stale limit is left behind")
+    link.purge_limit(0.05)
+    link.disarm_all("selftest")
+    check(link._purge_until is None, "and so does disarm_all()")
+    check(link.purge_limit(float("inf")) is False and
+          link.purge_limit(float("-inf")) is False and
+          link._purge_until is None,
+          "an endless hard end is refused")
     print("  ok")
 
 
@@ -65868,6 +65877,24 @@ def test_timed_purge_at_the_engine():
         check(st == 409 and len(link.frames) == frames0,
               f"a new hold with a beat number already used (a replay) "
               f"starts nothing: {out}")
+        # Made-up window names never wear out the replay table: a refused
+        # beat makes no record, and W1's stays (review of #172).
+        n_own = len(R.m.purge._timed_ended)
+        for i in range(MO.TIMED_OWNERS_KEPT + 20):
+            R.ask("POST", "/api/remote/purge-timed",
+                  {"hold": True, "run": f"x{i}", "seq": 1, "seconds": 3,
+                   "seen": R.seen()}, client=R.ipad,
+                  headers={"X-LTC-Window": f"F{i}"})
+        check(len(R.m.purge._timed_ended) == n_own and
+              ("Rack screen", "W1") in R.m.purge._timed_ended,
+              f"84 made-up windows: no record made, W1's kept "
+              f"({len(R.m.purge._timed_ended)} records)")
+        st, _h, out = R.ask("POST", "/api/remote/purge-timed",
+                            {"hold": True, "run": run, "seq": 10 ** 7,
+                             "seconds": 3, "seen": R.seen()}, client=loop,
+                            headers={"X-LTC-Window": "W1"})
+        check(st == 409 and "ended" in out["error"],
+              f"and the old hold id is still refused: {out}")
     finally:
         R.close()
     print("  ok")
@@ -65934,13 +65961,42 @@ def test_timed_purge_every_end_cause():
             check(st == 200 and "back to zero" in out.get("text", ""),
                   f"Stop purge answers: {out}")
             check_end(m)
-        # Stop purge from another device: the owner rule, as the momentary.
+        # Stop purge from another device, signed out, purge arming off:
+        # stopping a timed purge is never refused (review of #172).
         if start():
+            RM.save_settings(R.work, purge_arming=False)
+            m = ended("Stop purge from an iPad", "pressed Stop purge on the "
+                                                 "iPad")
             st, _h, out = R.ask("POST", "/api/remote/purge-stop", {},
                                 client=R.ipad)
-            check(st == 409 and R.m.purge.timed_running(),
-                  f"another device's Stop purge is refused (Abort is "
-                  f"everyone's): {out}")
+            check(st == 200, f"another device's Stop purge is taken: {out}")
+            check_end(m)
+            RM.save_settings(R.work, purge_arming=True)
+        # A hold from an iPad with purge arming off while one runs: the
+        # second press still ends it (no switch holds back a stop).
+        if start():
+            RM.save_settings(R.work, purge_arming=False)
+            m = ended("an iPad's hold, purge arming off", "second purge press")
+            st, _h, out = _tp_beat(R, "ipad-stop", 5, client=R.ipad,
+                                   window="W8")
+            check(st == 409 and out.get("ended"),
+                  f"the iPad's hold ended it: {st} {out}")
+            check_end(m)
+            RM.save_settings(R.work, purge_arming=True)
+        # The engine stalls (a pause longer than the link's 0.25 s): the
+        # next send ends it, never sets the frame again (review of #172,
+        # B1).
+        if start(seconds=10):
+            m = ended("an engine stall", "timer stalled")
+            n0 = len(link.frames)
+            R.mono[0] += 0.6
+            R.wall[0] += 0.6
+            R.feed()
+            why = R.m.purge.timed_send()
+            check("stalled" in why and len(link.frames) == n0,
+                  f"after a 0.6 s stall the send ends it and sets no frame: "
+                  f"{why!r}")
+            check_end(m)
         # Stop (the rack screen's Stop).
         if start():
             m = ended("Stop", "Stop")
@@ -65998,9 +66054,12 @@ def test_timed_purge_every_end_cause():
         # flamesafe stale: no status for 1.1 s.
         if start():
             m = ended("flamesafe stale", "flamesafe has not reported")
-            R.mono[0] += 1.1
-            R.wall[0] += 1.1
-            R.m.purge.timed_send()
+            for _ in range(12):
+                R.mono[0] += 0.1
+                R.wall[0] += 0.1
+                R.remote._deck_seen = R.mono[0]
+                if R.m.purge.timed_send():
+                    break
             check_end(m)
         # The flame link not sending.
         if start():
@@ -66033,8 +66092,19 @@ def test_timed_purge_every_end_cause():
             check_end(m)
         # A disarm of another group does not end it.
         if start():
-            R.ask("POST", "/api/remote/group-disarm",
-                  {"group": "cat-walk", "seen": R.seen()}, client=loop)
+            # The request waits for flamesafe's word on the disarm; the
+            # engine's timer thread keeps sending meanwhile (here, by hand).
+            pause = R.remote._pause
+
+            def pause_sending(seconds):
+                pause(seconds)
+                R.m.purge.timed_send()
+            R.remote._pause = pause_sending
+            try:
+                R.ask("POST", "/api/remote/group-disarm",
+                      {"group": "cat-walk", "seen": R.seen()}, client=loop)
+            finally:
+                R.remote._pause = pause
             _tp_step(R, 0.1)
             check(R.m.purge.timed_running(),
                   "a disarm of a group it does not fire leaves it running")
@@ -66099,6 +66169,7 @@ def test_timed_purge_every_end_cause():
         if start(seconds=2):
             f = R.m.purge.fire
             dl = f["timed"]["deadline"]
+            f["beat"] = dl - 0.05          # the timer sending all along
             check(R.m.purge._timed_end_reason(f, dl) == "its 2 s were up"
                   and R.m.purge._timed_end_reason(f, dl - 0.01) == "",
                   "every send asks the deadline first: up at 2 s, not before")

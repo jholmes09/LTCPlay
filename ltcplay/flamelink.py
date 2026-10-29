@@ -1136,7 +1136,7 @@ class FlameLink:
         timed purge calls). True when taken. Never raises."""
         try:
             s = float(seconds)
-            if not s > 0 or s != s:
+            if not s > 0 or not math.isfinite(s):
                 return False
             with self._lock:
                 self._purge_until = self._clock() + s
@@ -1725,6 +1725,8 @@ class FlameLink:
             # So does fire flames while scrubbing (scrubflames.py ends the
             # mode on its next pass), with the seek guard started again as
             # rehearse_end does (review of #117, P2-1).
+            # No timed purge's hard end outlives a zero (review of #172).
+            self._purge_until = None
             if self._rehearse_on:
                 self._seek_reset()
             self._rehearse_on = False
@@ -1763,7 +1765,9 @@ class FlameLink:
                 self._purge = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
-                # And fire flames while scrubbing, the same way.
+                # And fire flames while scrubbing, the same way. No timed
+                # purge's hard end outlives it either (review of #172).
+                self._purge_until = None
                 if self._rehearse_on:
                     self._seek_reset()
                 self._rehearse_on = False

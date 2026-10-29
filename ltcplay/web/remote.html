@@ -5687,11 +5687,9 @@ function renderTimedBanner(){
   const t = (ST && ST.morning && ST.morning.timed) || null;
   $("tp-banner").hidden = !t;
   if(!t) return;
-  // Stop purge is the starting screen's or the show PC's (the engine's
-  // owner rule); Abort works from every screen.
-  const mine = !!(ME && (ME.local || ME.device === t.device));
-  $("tp-banner-stop").hidden = !mine;
-  const text = timedBanner(t) + (mine ? "" : " Stop it from that screen or the show PC, or Abort.");
+  // Stop purge works from every screen, signed in or not (review of #172):
+  // stopping fire is never refused.
+  const text = timedBanner(t);
   if($("tp-banner-text").textContent !== text) $("tp-banner-text").textContent = text;
 }
 setInterval(renderTimedBanner, 250);
