@@ -55,6 +55,21 @@ def aim_line(groups, path):
             f"the group is armed), read from {where}")
 
 
+def passthrough_line(entries, path):
+    """The start line for the passthrough entries (2026-10-29, the hazers):
+    each name and its slots, or that there are none, and the file. Display
+    only."""
+    where = os.path.abspath(str(path))
+    if not entries:
+        return (f"passthrough: none in {where}. Every slot that belongs to "
+                f"no group is zero.")
+    parts = [f"{p.name} haze {p.haze}, fan {p.fan}" for p in entries]
+    return (f"passthrough: {'; '.join(parts)} (the show's values only while "
+            f"the show program has it switched on, the link is fresh and no "
+            f"Abort has stood since; else zero; off at start), read from "
+            f"{where}")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if len(argv) != 1:
@@ -77,6 +92,7 @@ def main(argv=None):
         if g.profile is not None:
             journal.event("config", profile_line(g))
     journal.event("config", aim_line(cfg.groups, argv[0]))
+    journal.event("config", passthrough_line(cfg.passthrough, argv[0]))
     if cfg.link_arm_port is not None:
         arm_input = SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
                                    cfg.link_key, cfg.n, log=journal,
