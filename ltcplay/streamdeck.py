@@ -2383,6 +2383,12 @@ class PurgeFire:
                 self._journal(f"Stream Deck FIRE: the engine refused the "
                               f"purge fire: {text}", fault=True,
                               action="purge", who=who, screen="Stream Deck")
+                # And purge-stop goes on the way out (_run): a refusal of
+                # any kind, a sign-in one included, still stops a purge
+                # (re-review of #172, B2: a timed purge kept firing).
+                with self._lock:
+                    if press.stop_who is None:
+                        press.stop_who = who
                 self._end_press(press)
                 return
             self.beats += 1

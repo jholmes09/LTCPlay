@@ -17854,8 +17854,8 @@ def build():
 
  ("timed purge: the flame link is never given its hard end",
   "ltcplay/morning.py",
-  '        if link.purge_limit(t["seconds"]) is not True:',
-  '        if False:'),
+  "        if link.purge_limit(max(0.001, t[\"deadline\"] - self._clock())) \\\n                is not True:",
+  "        if False:"),
 
  ("timed purge: the flame link ignores the hard end on the frames it sends",
   "ltcplay/flamelink.py",
@@ -17876,12 +17876,10 @@ def build():
 
  ("timed purge: the last look at the deadline before the frame is gone",
   "ltcplay/morning.py",
-  '''            if self._clock() >= t["deadline"]:
-                lost = f"its {t['seconds']} s were up"
-            else:''',
+  '''            if fresh >= t["deadline"]:
+                lost = f"its {t['seconds']} s were up"''',
   '''            if False:
-                lost = ""
-            else:'''),
+                lost = ""'''),
 
  ("timed purge: the watcher never looks at the deadline",
   "ltcplay/morning.py",
@@ -18085,6 +18083,46 @@ def build():
   "ltcplay/flamelink.py",
   "            if not s > 0 or not math.isfinite(s):",
   "            if not s > 0 or s != s:"),
+
+ ("timed purge: a fire press let past the switches to end it fires when it ended meanwhile",
+  "ltcplay/morning.py",
+  "        if end_only:\n            # Let past the switches only",
+  "        if False:\n            # Let past the switches only"),
+
+ ("timed purge: a hold let past the switches to end it starts when it ended meanwhile",
+  "ltcplay/morning.py",
+  "        if end_only:\n            # As fire_beat:",
+  "        if False:\n            # As fire_beat:"),
+
+ ("timed purge: a pause inside one send relights the frame",
+  "ltcplay/morning.py",
+  "            elif fresh - f[\"beat\"] > BEAT_STALE_S:",
+  "            elif False:"),
+
+ ("timed purge: a frame the flame link refused is not heard",
+  "ltcplay/morning.py",
+  "            elif link.purge_set(vals, gen=t[\"gen\"]) is not True:",
+  "            elif link.purge_set(vals, gen=t[\"gen\"]) and False:"),
+
+ ("timed purge: the link takes a timed frame again after dropping it stale",
+  "ltcplay/flamelink.py",
+  "            self._purge_until = min(self._purge_until, now)",
+  "            pass"),
+
+ ("timed purge: the link sets a frame read before a zero",
+  "ltcplay/flamelink.py",
+  "            if gen is not None and gen != self._zero_gen:",
+  "            if False:"),
+
+ ("timed purge: a refused deck FIRE posts no purge-stop",
+  "ltcplay/streamdeck.py",
+  "                with self._lock:\n                    if press.stop_who is None:\n                        press.stop_who = who",
+  "                with self._lock:\n                    pass"),
+
+ ("timed purge: a signed-out purge press does not end it",
+  "ltcplay/web.py",
+  "                ended = rm.timed_purge_cut(",
+  "                ended = (lambda *a, **k: False)("),
 
  ("timed purge: the Stream Deck going quiet does not end it",
   "ltcplay/remote.py",

@@ -4749,12 +4749,16 @@ class Remote:
             # A second purge press while a timed purge runs only ends it
             # (Purge.fire_beat, Purge.timed_beat): no switch, deck or
             # settings check may hold back a stop (review of #172).
+            # end_only: if the purge ends between this look and the press,
+            # the press is refused, never taken as a fresh one past the
+            # switches (re-review of #172).
             if name == "purge-fire":
                 return m.post(name, body, device, who, screen, seen_ok,
-                              ctx.local)
+                              ctx.local, end_only=True)
             return m.post(name, body, device, who, screen, seen_ok,
                           ctx.local, owner=self._page_owner(ctx),
-                          token=getattr(ctx, "token", "") or "")
+                          token=getattr(ctx, "token", "") or "",
+                          end_only=True)
         if timed_start or \
                 (name == "purge-select" and body.get("on") is not False) or \
                 (name == "purge-fire" and users_mod.purge_fire_wanted(body)):

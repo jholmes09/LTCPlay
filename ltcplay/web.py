@@ -1103,6 +1103,27 @@ class Handler(BaseHTTPRequestHandler):
             role = who.get("role") if who else None
             if users.may(role, perm):
                 return False
+        except Exception:                        # noqa: BLE001
+            who = None
+        ended = False
+        try:
+            # A purge press while a timed purge runs is a second press: it
+            # ends it, whoever is signed in (re-review of #172, B2), and
+            # is refused for everything else as before.
+            rm = getattr(self.server, "remote", None)
+            m = getattr(rm, "morning", None)
+            if route in ("/api/remote/purge-fire",
+                         "/api/remote/purge-timed") and m is not None and \
+                    m.purge.timed_running():
+                ended = rm.timed_purge_cut(
+                    f"a second purge press on the {self._ctx().screen} "
+                    f"({(who or {}).get('name') or 'signed out'})",
+                    (who or {}).get("name") or "", self._ctx().screen)
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            who = self._acting_user(body)
+            role = who.get("role") if who else None
             name = (who or {}).get("name")
             why = (f"{name} ({role}) may not do this: "
                    if name else "Nobody is signed in on this screen, and "
@@ -1115,7 +1136,11 @@ class Handler(BaseHTTPRequestHandler):
                    f", so this was refused: {users_mod.perm_label(perm)}. "
                    f"Abort, Hold, Stop and every disarm always work. Nothing "
                    f"was changed.")
-        self._send(403, {"error": why, "role_refused": True})
+        if ended:
+            why = ("The timed purge was ended (a second purge press stops "
+                   "it, signed in or not); nothing else was done. " + why)
+        self._send(403, {"error": why, "role_refused": True,
+                         "ended": bool(ended)})
         return True
 
     # Presses repeated many times a second while a finger is down (or a

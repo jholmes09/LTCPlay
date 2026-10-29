@@ -1097,6 +1097,13 @@ class FlameLink:
         p = self._purge
         if p is None:
             return bytes(UNIVERSE_SIZE)
+        if self._purge_until is not None and \
+                (now - p[1] > PURGE_HOLD_S or now < p[1]):
+            # A timed purge whose frame went stale (its timer stalled)
+            # never comes back by itself: its hard end is now, so
+            # purge_set() is refused until purge_clear() (re-review of
+            # #172, B1).
+            self._purge_until = min(self._purge_until, now)
         if now - p[1] > PURGE_HOLD_S or now < p[1]:
             self._purge = None
             return bytes(UNIVERSE_SIZE)
@@ -1109,7 +1116,7 @@ class FlameLink:
         self.purges_sent += 1
         return self._unlocked(p[0])
 
-    def purge_set(self, values):
+    def purge_set(self, values, gen=None):
         """The engine's purge heartbeat: `values` (512 ints 0 to 255) go out
         on the next frames for PURGE_HOLD_S, then stop by themselves unless
         set again. Only while the show is not live (values_now). Returns
@@ -1121,6 +1128,11 @@ class FlameLink:
         except Exception:
             return False
         with self._lock:
+            if gen is not None and gen != self._zero_gen:
+                # A zero() or disarm_all() (Stop, Hold, Abort) landed after
+                # the caller read the count: under this lock, never set.
+                self._purge = None
+                return False
             now = self._clock()
             until = self._purge_until
             if until is not None and now >= until:

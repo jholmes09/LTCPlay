@@ -274,6 +274,9 @@ fires a slot only for a group it reports ARMED.
   admin sets it, never more than 120 s, never unlimited. A longer request
   is refused in full (the page also keeps Other within it). The last
   duration started on a show PC is its default (`purge_timed_s`).
+  The longest is read when a purge starts: lowering `purge_timed_max_s`
+  while one runs does not shorten it (it still ends at its own time, or
+  at any stop).
 - **How it starts.** A hold, timed by the engine from the page's beats
   (every 100 ms, `TIMED_HOLD_S`, the Hold to arm buttons' 1 s): a tap, a
   release, a gap of 0.25 s, a changed duration, a stale page (`seen`) or any
@@ -293,8 +296,16 @@ fires a slot only for a group it reports ARMED.
   that hangs or dies is a purge that stops; the watcher (10 a second) then
   ends it in the engine too, and also checks the deadline itself. If the
   whole engine stops, flamesafe zeroes by its own `frame_stale_ms`.
-- **What ends it at once.** Stop purge (the owner's screen or the show
-  PC), Stop, Abort, Hold (and a Hold standing), Start now, Run (refused or
+  A stall never relights it: a send more than 0.25 s after the last one,
+  judged on a clock read just before the frame is set, ends the purge, and
+  the link itself refuses a timed frame once it has dropped one as stale,
+  or once a zero (Stop, Hold, Abort) landed after the count was read. The
+  hard end is given as the time left to the deadline, so a pause before it
+  never loosens it. A purge press while one runs ends it even from a
+  screen whose sign-in may not arm (it is refused for anything else), and
+  a Stream Deck FIRE the engine refuses posts Stop purge on its way out.
+- **What ends it at once.** Stop purge (from any screen, signed in or
+  not), Stop, Abort, Hold (and a Hold standing), Start now, Run (refused or
   not), a show going live or the show clock playing, an Abort standing,
   flamesafe's status over 1 s old, the flame link not sending or alarmed or
   zeroed, a selected machine locked out or taken off, a disarm of one of

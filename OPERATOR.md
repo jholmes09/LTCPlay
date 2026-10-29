@@ -512,8 +512,8 @@ says it started you can let go: the machines fire for those seconds and
 stop by themselves, even if the page or the iPad is closed. The rack
 screen, every screen's banner, 2.0's top line and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
-(on the Startup page or the banner, from the screen that started it or
-the show PC), or Stop, Hold or Abort; Start now, Run, a disarm of one of
+(on the Startup page or the banner, from any screen, signed in or
+not), or Stop, Hold or Abort; Start now, Run, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for

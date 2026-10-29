@@ -65456,6 +65456,12 @@ class _FakeTimedLink(_FakePurgeLink):
         self.limits.append(seconds)
         return True
 
+    def purge_set(self, values, gen=None):
+        # As the link: a frame read before a zero is refused under its lock.
+        if gen is not None and gen != self._zero_gen:
+            return False
+        return super().purge_set(values)
+
     def sender_state(self):
         return self.sender
 
@@ -65762,7 +65768,8 @@ def test_timed_purge_at_the_engine():
               f"{st} {out}")
         t0 = R.mono[0]
         check(link.frames and link.frames[-1][410] == 240 and
-              sum(link.frames[-1]) == 240 and link.limits[-1] == 3,
+              sum(link.frames[-1]) == 240 and
+              abs(link.limits[-1] - 3) < 0.01,
               f"the first frame at once, 240 on slot 411 only, and the "
               f"link's hard end 3 s: {link.limits}")
         ln = _tp_lines(R, "timed_start")
@@ -65956,6 +65963,38 @@ def test_timed_purge_every_end_cause():
                   f"the iPad's hold ended it: {st} {out}")
             check_end(m)
             RM.save_settings(R.work, purge_arming=True)
+        # The race past the switches (re-review of #172): a press let past
+        # purge arming only to end a timed purge that ends in between is
+        # refused, never taken as a fresh press.
+        for route, body in (("purge-fire", {"on": True}),
+                            ("purge-timed", {"hold": True, "run": "race-1",
+                                             "seq": 10 ** 6, "seconds": 5})):
+            if not start():
+                continue
+            RM.save_settings(R.work, purge_arming=False)
+            real_tr = R.m.purge.timed_running
+            seen = {"n": 0}
+
+            def racing():
+                r = real_tr()
+                if seen["n"] == 0:
+                    seen["n"] = 1
+                    R.m.purge.stop("the timer ended it (test)")
+                return r
+            R.m.purge.timed_running = racing
+            try:
+                n0 = len(link.frames)
+                st, _h, out = R.ask("POST", "/api/remote/" + route,
+                                    dict(body, seen=R.seen()), client=loop,
+                                    headers={"X-LTC-Window": "W1"})
+            finally:
+                del R.m.purge.timed_running
+                RM.save_settings(R.work, purge_arming=True)
+            check(st == 409 and "already ended" in out.get("error", "") and
+                  len(link.frames) == n0 and R.m.purge.fire is None and
+                  R.m.purge.timed_hold is None,
+                  f"{route} let past purge arming to end a purge that ended "
+                  f"meanwhile: refused, nothing fired: {st} {out}")
         # The engine stalls (a pause longer than the link's 0.25 s): the
         # next send ends it, never sets the frame again (review of #172,
         # B1).
@@ -65965,6 +66004,9 @@ def test_timed_purge_every_end_cause():
             R.mono[0] += 0.6
             R.wall[0] += 0.6
             R.feed()
+            check("stalled" in R.m.purge._timed_end_reason(
+                R.m.purge.fire, R.mono[0]),
+                  "the send's first look sees the stall itself")
             why = R.m.purge.timed_send()
             check("stalled" in why and len(link.frames) == n0,
                   f"after a 0.6 s stall the send ends it and sets no frame: "
@@ -66171,8 +66213,8 @@ def test_timed_purge_every_end_cause():
             m = ended("a zero during the set", "zeroed")
             real_set = link.purge_set
 
-            def set_then_zero(values):
-                real_set(values)
+            def set_then_zero(values, **kw):
+                real_set(values, **kw)
                 link.zero()
                 return True
             link.purge_set = set_then_zero
@@ -66464,6 +66506,10 @@ def test_timed_purge_end_to_end_real_flamesafe():
         (the guard), and the page's person would hold again: so does this,
         with a new hold, up to three times."""
         for attempt in range(3):
+            # flamesafe's armed state is waited for, never assumed (a
+            # loaded runner can be slow to report it, or need a cycle).
+            if not wait_for(lambda: state().get("armed") == "armed", 3.0):
+                arm_front()
             rid = f"{run}-{attempt}"
             end = time.monotonic() + 3.0
             out = {}
@@ -66478,7 +66524,11 @@ def test_timed_purge_end_to_end_real_flamesafe():
                 if out.get("started"):
                     return time.monotonic()
                 time.sleep(0.1)
-            if "interrupted" not in str(out.get("error", "")):
+            err = str(out.get("error", ""))
+            if "armed yet" in err:
+                arm_front()
+                continue
+            if "interrupted" not in err:
                 check(False, f"the hold was refused: {out}")
                 return None
         check(False, f"three holds interrupted by the runner's load: {out}")
@@ -67048,6 +67098,203 @@ def test_timed_purge_deck_key():
                   f"once it has ended: FIRE HOLD again: {faces[0]}")
     finally:
         restore()
+    print("  ok")
+
+
+
+def test_timed_purge_stall_inside_a_send_and_a_signed_out_deck():
+    section("timed purge, re-review of #172 (B1, B2): a pause INSIDE one "
+            "send of the engine's timer, long or short, never relights a "
+            "frame the flame link has dropped (the real FlameLink on the "
+            "test's clock); a zero landing after the count was read is "
+            "refused under the link's lock; and the Stream Deck's FIRE "
+            "with nobody signed in on the rack screen still ends a timed "
+            "purge an iPad started")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    from ltcplay import users as U
+    R = _tp_rig(S)
+
+    def real_link():
+        cfg = fl.FlameLinkConfig("127.0.0.1", 5571, 1, _fl_key(),
+                                 frame_stale_ms=500)
+        lk = fl.FlameLink(cfg, cues=lambda tc: [0] * 512,
+                          show_state=lambda: (None, False),
+                          clock=lambda: R.mono[0], seek_guard=False)
+        lk._send = lambda d: True
+        lk.sender_state = lambda: "running"
+        return lk
+
+    def slot(lk):
+        return lk.values_now()[1][410]
+
+    def step(dt):
+        R.mono[0] += dt
+        R.wall[0] += dt
+        R.feed()
+        R.remote._deck_seen = R.mono[0]
+
+    def fresh_start(seconds=10):
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=R.loop)
+        st, out, _r = _tp_hold(R, seconds)
+        return check(st == 200 and out.get("started"),
+                     f"setup: a timed purge running: {out}")
+    real_checks = R.m.timed_blockers
+    try:
+        # B1, large: a 2 s pause inside one send, after its first look.
+        R.link = link = real_link()
+        if fresh_start():
+            check(slot(link) == 240, "firing on the real link")
+            _tp_step(R, 0.1)
+            seen = {}
+
+            def slow(t):
+                r = real_checks(t)
+                if t is not None and not seen:
+                    step(2.0)
+                    seen["during"] = slot(link)
+                return r
+            R.m.timed_blockers = slow
+            step(0.1)
+            why = R.m.purge.timed_send()
+            R.m.timed_blockers = real_checks
+            check(seen.get("during") == 0,
+                  "the link dropped the frame during the pause")
+            check(why and not R.m.purge.timed_running() and slot(link) == 0,
+                  f"after a 2 s pause inside the send: ended, the frame "
+                  f"never comes back: {why!r} slot {slot(link)}")
+            check("stalled" in why or "did not take" in why,
+                  f"and said why: {why!r}")
+        # The engine's own look, alone (a link with no belt): the same
+        # pause inside a send ends it there, and the frame is never set.
+        R.link = fake = _FakeTimedLink()
+        if fresh_start():
+            _tp_step(R, 0.1)
+            n0 = len(fake.frames)
+            seen = {}
+
+            def slow_fake(t):
+                r = real_checks(t)
+                if t is not None and not seen:
+                    seen["x"] = True
+                    step(0.5)
+                return r
+            R.m.timed_blockers = slow_fake
+            step(0.1)
+            why = R.m.purge.timed_send()
+            R.m.timed_blockers = real_checks
+            check("stalled" in why and len(fake.frames) == n0,
+                  f"a 0.5 s pause inside the send: the engine itself ends "
+                  f"it and sets no frame: {why!r}")
+        # And a link that refuses the frame (zeroed, dropped, past its
+        # hard end): the engine ends it, never carries on unheard.
+        R.link = fake = _FakeTimedLink()
+        if fresh_start():
+            fake.purge_set = lambda values, gen=None: False
+            step(0.1)
+            why = R.m.purge.timed_send()
+            check("did not take" in why and not R.m.purge.timed_running(),
+                  f"a refused frame ends it: {why!r}")
+        # B1, small: 0.225 s with no send, then 60 ms inside the send.
+        R.link = link = real_link()
+        if fresh_start():
+            trace = []
+            for _ in range(9):
+                step(0.025)
+                trace.append(slot(link))
+
+            def slow2(t):
+                r = real_checks(t)
+                if t is not None:
+                    for _ in range(3):
+                        step(0.02)
+                        trace.append(slot(link))
+                return r
+            R.m.timed_blockers = slow2
+            why = R.m.purge.timed_send()
+            R.m.timed_blockers = real_checks
+            after = []
+            for _ in range(8):
+                step(0.025)
+                R.m.tick()
+                after.append(slot(link))
+            check(0 in trace and not any(after) and
+                  not R.m.purge.timed_running(),
+                  f"the link dropped it at 0.25 s; the send that came late "
+                  f"ends it rather than relight it: {trace} -> {after} "
+                  f"({why!r})")
+        # The link's own belt: a timed purge's frame that went stale is
+        # refused from then on, until purge_clear().
+        lk = real_link()
+        frame = bytes([0] * 410 + [240] + [0] * 101)
+        lk.purge_limit(30)
+        lk.purge_set(frame)
+        step(0.3)
+        check(slot(lk) == 0 and lk.purge_set(frame) is False and
+              slot(lk) == 0, "a timed frame dropped stale is never set "
+                             "again by the link")
+        lk.purge_clear()
+        check(lk.purge_set(frame) is True, "until purge_clear()")
+        # The zero count, under the link's lock.
+        g = lk._zero_gen
+        lk.zero()
+        check(lk.purge_set(frame, gen=g) is False and slot(lk) == 0,
+              "a frame whose count was read before a zero is refused")
+        check(lk.purge_set(frame, gen=lk._zero_gen) is True,
+              "with the current count it is taken")
+        # B2: nobody signed in on the rack screen; Ollie started it on an
+        # iPad; the deck's FIRE ends it.
+        R.link = link = real_link()
+        udir = tempfile.mkdtemp()
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        R.remote.users = us
+        ok, why, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        us.sign_out(tok, "rack", local=True)
+        ok, why, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                      "10.20.0.44")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        R.m.purge.clear("test reset")
+        R.m.open_beat("iPad at 10.20.0.44")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=R.ipad,
+              headers=hdr)
+        st, out, _r = _tp_hold(R, 30, client=R.ipad, headers=hdr)
+        if check(st == 200 and out.get("started"),
+                 f"setup: Ollie's timed purge from the iPad: {out}"):
+            posts = []
+
+            def poster(path, body):
+                st_, _h_, o = R.ask("POST", path, body, client=R.loop)
+                posts.append((path, st_, bool((o or {}).get("ended"))))
+                return (st_ == 200, (o or {}).get("error", ""), o)
+            pf = sd.PurgeFire(poster)
+            pf.start(who="")
+            pf.join(2.0)
+            check(not R.m.purge.timed_running() and slot(link) == 0,
+                  f"the deck's FIRE with nobody signed in ends it: "
+                  f"{posts}")
+            check(posts and posts[0][:3] == ("/api/remote/purge-fire", 403,
+                                             True),
+                  f"the press itself ended it (refused as an arm, but a "
+                  f"second purge press): {posts}")
+            check(any(p[:2] == ("/api/remote/purge-stop", 200)
+                      for p in posts),
+                  f"and the refused press posts purge-stop on its way out: "
+                  f"{posts}")
+            pf.stop(who="")
+        R.remote.users = None
+    finally:
+        R.m.timed_blockers = real_checks
+        R.close()
     print("  ok")
 
 
@@ -72215,14 +72462,20 @@ def test_deck_purge_fire_stop_never_waits_on_a_post():
     check(log.count("purge-stop") == 2 and len(log) == n,
           f"the second press's stop: one more purge-stop, then silence: "
           f"{log[-3:]}")
-    # A press the engine refused ended itself: stop() posts nothing more.
+    # A press the engine refused ended itself, and posted one purge-stop
+    # on its way out (re-review of #172, B2: a refusal never leaves a
+    # purge running): stop() posts nothing more.
     log.clear()
     refuse = sd.PurgeFire(lambda path, body: (
         log.append(path.rsplit("/", 1)[-1]) or (False, "no", {})))
     refuse.start()
-    _wait(lambda: not refuse.firing, 1)
-    check(refuse.stop() is False and log == ["purge-fire"],
-          f"a refused press: no purge-stop from stop(): {log}")
+    _wait(lambda: not refuse.firing and "purge-stop" in log, 1)
+    check(refuse.stop() is False,
+          "a refused press has already ended itself")
+    time.sleep(0.3)
+    check(log == ["purge-fire", "purge-stop"],
+          f"a refused press: its own one purge-stop, none from stop(): "
+          f"{log}")
     refuse.join()
     print("  ok")
 
@@ -89191,6 +89444,7 @@ if __name__ == "__main__":
         test_timed_purge_on_the_pages,
         test_timed_purge_button_driven,
         test_timed_purge_deck_key,
+        test_timed_purge_stall_inside_a_send_and_a_signed_out_deck,
         test_windows_rack_window_and_explorer_front,
         test_users_passwords_are_slow_salted_hashes_and_never_stored,
         test_users_lockout_is_short_and_never_permanent,

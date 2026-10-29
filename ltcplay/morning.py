@@ -1413,7 +1413,7 @@ class Purge:
                 firing.append(m.name)
         return bytes(vals), firing, waiting
 
-    def fire_beat(self, body, device, seen_ok, deck=False):
+    def fire_beat(self, body, device, seen_ok, deck=False, end_only=False):
         """One fire heartbeat (every 100 ms while the key is down). The
         first call (no fire_id) starts a press; later ones carry its id.
         Any refusal ends the press. Only a body purge_fire_wanted() says
@@ -1435,6 +1435,13 @@ class Purge:
                                   "purge: everything it fired is back to "
                                   "zero. Nothing else was fired.",
                          "let_go": True, "ended": True}
+        if end_only:
+            # Let past the switches only to end a timed purge that has
+            # ended meanwhile (re-review of #172): never a fresh press.
+            return 409, {"error": "The timed purge had already ended. This press came past the "
+                                  "purge switches only to end it, so it "
+                                  "fired nothing. Press again if you "
+                                  "mean to purge.", "let_go": True}
         if self.timed_hold is not None:
             self._timed_hold_end(f"a purge fire press from {who_pressed}")
         why = self._refusal(device, seen_ok)
@@ -1744,7 +1751,7 @@ class Purge:
         return ""
 
     def timed_beat(self, body, owner, seen_ok, who="", screen="", token="",
-                   max_s=TIMED_MAX_DEFAULT_S):
+                   max_s=TIMED_MAX_DEFAULT_S, end_only=False):
         """One beat of the hold that starts a timed purge (every 100 ms
         while the finger is down), from `owner` (device, window). (code,
         body). The body names the hold ("run", a new one each press),
@@ -1797,6 +1804,13 @@ class Purge:
                                   "purge: everything it fired is back to "
                                   "zero. Nothing else was fired.",
                          "cut": True, "ended": True}
+        if end_only:
+            # As fire_beat: a press let past the switches only to end one
+            # never starts a hold (re-review of #172).
+            return 409, {"error": "The timed purge had already ended. This press came past the "
+                                  "purge switches only to end it, so it "
+                                  "fired nothing. Press again if you "
+                                  "mean to purge.", "cut": True}
         with self._lock:
             h = self.timed_hold
             if h is not None and h["owner"] != owner:
@@ -1881,7 +1895,10 @@ class Purge:
                           "firing": [], "waiting": []}}
             self.fires += 1
         t = f["timed"]
-        if link.purge_limit(t["seconds"]) is not True:
+        # The hard end counts from the deadline, not from this call: a
+        # pause before it never loosens it (re-review of #172).
+        if link.purge_limit(max(0.001, t["deadline"] - self._clock())) \
+                is not True:
             self.stop("the flame link did not take its hard end",
                       device=device)
             return 409, {"error": "The flame link did not take the timed "
@@ -1972,11 +1989,23 @@ class Purge:
             if self.fire is not f:
                 # A stop that landed while the frame was worked out wins.
                 return "it was stopped"
-            if self._clock() >= t["deadline"]:
+            # A fresh reading, taken here: the reads above can take long
+            # (a pause inside this send), and the gap since the last send
+            # is judged on it, never on `now` (re-review of #172, B1).
+            fresh = self._clock()
+            if fresh >= t["deadline"]:
                 lost = f"its {t['seconds']} s were up"
+            elif fresh - f["beat"] > BEAT_STALE_S:
+                lost = (f"the engine's timer stalled (nothing sent for "
+                        f"{fresh - f['beat']:.2f} s)")
+            elif link.purge_set(vals, gen=t["gen"]) is not True:
+                # The link refused it: zeroed since (its count, checked
+                # under its own lock), or past its hard end or its own
+                # drop of a stale frame.
+                lost = ("the flame link did not take the frame (zeroed, "
+                        "dropped or past its hard end)")
             else:
-                link.purge_set(vals)
-                f["beat"] = now
+                f["beat"] = fresh
                 t["firing"], t["waiting"] = firing, waiting
                 lost = "" if self._gen(link) == t["gen"] else \
                     "the flame link was zeroed (Stop, Hold, Abort or a disarm)"
@@ -2734,7 +2763,8 @@ class Morning:
         return v
 
     def post(self, name, body, device, who, screen, seen_ok, local,
-             owner=None, token="", max_s=TIMED_MAX_DEFAULT_S):
+             owner=None, token="", max_s=TIMED_MAX_DEFAULT_S,
+             end_only=False):
         """(code, body) for the page's POST routes. `screen` is the surface
         the engine gave the press (Rack screen, iPad at ..., or "Stream
         Deck" for the deck process over loopback, which the purge fire
@@ -2783,14 +2813,16 @@ class Morning:
             # show machine's longest (purge_timed_max_s).
             return self.purge.timed_beat(body, owner or (device, ""),
                                          seen_ok, who=who, screen=screen,
-                                         token=token, max_s=max_s)
+                                         token=token, max_s=max_s,
+                                         end_only=end_only)
         if name == "purge-fire":
             # The deck process names itself in `screen` (streamdeck.PurgeFire
             # sends screen "Stream Deck" and the operator's name in `who`),
             # and only over loopback (review of PR #68, P1-2).
             deck = local and screen == "Stream Deck"
             return self.purge.fire_beat(body, device if not deck else
-                                        "Stream Deck", seen_ok, deck=deck)
+                                        "Stream Deck", seen_ok, deck=deck,
+                                        end_only=end_only)
         if name in ("purge-stop", "purge-clear"):
             # Only the owner's device, or the show machine itself, ends the
             # owner's purge (review of PR #68, P2-11): another device's page
