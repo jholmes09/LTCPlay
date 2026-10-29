@@ -494,6 +494,27 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .lkundo[hidden]{display:none}
 .lkundo button{min-height:36px;padding:2px 12px;font-size:14px}
 #mo-firebar .key.firing{background:var(--red-deep);border-color:var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
+/* The timed purge (Jeff, 2026-10-29; morning.py): the seconds, then one
+   button HELD like a Hold to arm (a tap does nothing) whose words name the
+   machines and the seconds, and Stop purge beside it. The countdown is the
+   engine's, in words and on the button. */
+#tp{display:flex;flex-direction:column;gap:6px;border:1px solid var(--hair);border-radius:8px;padding:6px 10px;min-width:0}
+#tp[hidden]{display:none}
+#tp .tp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+#tp .tp-h{font:800 clamp(15px,1.9vh,18px)/1.2 var(--sans);margin-right:4px}
+#tp .tp-presets{display:flex;gap:6px;flex-wrap:wrap}
+#tp .tp-presets button{min-height:44px;min-width:56px;padding:4px 10px;font:700 15px/1 var(--sans)}
+#tp .tp-presets button.on{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
+#tp .tp-custom{display:flex;align-items:center;gap:6px;font:700 15px/1.2 var(--sans)}
+#tp .tp-custom input{width:5em;min-height:44px;font-size:16px;padding:4px 8px}
+#tp button.tp-hold{flex:1 1 14em;min-width:0;min-height:clamp(56px,7vh,72px);font:800 clamp(15px,2vh,19px)/1.15 var(--sans);
+  white-space:normal;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#tp button.tp-hold.on{background:var(--red-deep);border:3px solid var(--red);color:var(--champ)}
+#tp button.tp-hold.run{background:var(--red-deep);border:3px solid var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
+#tp button.tp-hold.na{opacity:.45}
+#tp button.tp-stop{flex:0 0 auto;min-width:7em;min-height:clamp(56px,7vh,72px);font:800 clamp(16px,2vh,20px)/1 var(--sans)}
+#tp .tp-st{font:700 clamp(14px,1.8vh,17px)/1.3 var(--sans);color:var(--champ)}
+#tp .tp-st:empty{display:none}
 .mo-lasers{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px}
 .laser{position:relative;display:flex;flex-direction:column;gap:2px;border:2px solid #7A6032;border-radius:8px;
   background:var(--bronze);color:var(--champ);padding:6px 8px;min-height:clamp(44px,6vh,64px);cursor:pointer;text-align:left}
@@ -906,7 +927,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="sf-banner" hidden><b>FLAMES LIVE IN REHEARSAL</b><span id="sf-banner-text"></span><button id="sf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -1022,6 +1043,15 @@ button.fb-pad.na{opacity:.45}
         <span class="dim">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
       <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
       <div id="mo-firebar"><div class="key" id="mo-key">Hold Space (this page must be selected)</div><div class="toast" id="mo-msg"></div><div class="lkundo" id="mo-lkundo" hidden><span></span><button class="ghost" id="mo-lkundo-go">Undo</button></div><div class="focusnote" id="mo-focus" hidden></div></div>
+      <!-- The timed purge (Jeff, 2026-10-29; morning.py, MORNING.md): the
+           same selection, fired for a chosen number of seconds by the
+           engine, then off by itself. Started by a hold, never a tap. -->
+      <div id="tp" hidden aria-label="Timed purge">
+        <div class="tp-row"><b class="tp-h">Timed purge</b><div class="tp-presets" id="tp-presets" role="group" aria-label="Seconds"></div>
+          <label class="tp-custom">Other <input id="tp-secs" type="number" inputmode="numeric" min="1" max="30" step="1" aria-label="Seconds"> s</label></div>
+        <div class="tp-row"><button class="tp-hold" id="tp-hold" title="Hold it like a Hold to arm button. The selected machines fire for the seconds chosen, then stop by themselves.">Hold to start a timed purge</button><button class="disarm tp-stop" id="tp-stop" title="Ends a purge now, timed or held. Always works.">Stop purge</button></div>
+        <div class="tp-st" id="tp-st" aria-live="polite"></div>
+      </div>
       <!-- Shutdown (Jeff, 2026-10-23): its own labelled section on the
            Startup page. Whether it becomes its own tab is still open. -->
       <section class="card compact" id="mo-shut">
@@ -2264,6 +2294,58 @@ function hazerLook(h, stale){
 function hazerStep(pct, delta){
   const v = Math.round(Number(pct) || 0) + Number(delta || 0);
   return Math.max(0, Math.min(100, v));
+}
+// The timed purge (Jeff, 2026-10-29; morning.py). What the Startup page's
+// control may do now: mo is GET morning, secs the seconds chosen here,
+// holding this page's own start hold, stale and viewOnly the page's.
+// {ok: a hold may start, block: why not, word: the button's words (the
+// machines and the seconds, the confirmation), cut: a hold under way must
+// end now, running}. The engine times the hold and decides; this only
+// says what the button may do.
+function timedPurgeNames(mo){
+  const sel = ((mo && mo.purge_state) || {}).selected || [];
+  return ((mo && mo.machines) || []).filter(m => sel.includes(m.id)).map(m => m.name);
+}
+function timedLeft(s){ return Math.ceil(Math.max(0, Number(s) || 0)) + " s"; }
+// The custom box: a whole number, kept within what this show machine
+// allows (the engine refuses anything else anyway). null for no number.
+function timedClamp(v, min, max){
+  const n = Math.round(Number(v));
+  if(String(v).trim() === "" || !isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+function timedPurgeLook(mo, secs, holding, stale, viewOnly){
+  const out = {ok:false, block:"", word:"Hold to start a timed purge", cut:"", running:false};
+  const t = (mo && mo.timed) || {}, ts = (mo && mo.timed_settings) || {};
+  const min = Number(ts.min_s) || 1, max = Number(ts.max_s) || 30;
+  const names = timedPurgeNames(mo);
+  if(t.running){
+    out.running = true;
+    out.word = "PURGING " + (t.machines || []).join(", ") + ": " + timedLeft(t.left_s) + " left";
+    out.block = "A timed purge is running. Stop purge ends it now, and so does any other purge press.";
+    return out;
+  }
+  if(!mo) out.block = "Not known yet.";
+  else if(ts.error) out.block = "No timed purge: " + ts.error;
+  else if(stale) out.block = "This page's status is not live, so a hold cannot start.";
+  else if(viewOnly) out.block = "Signed out: this screen is view only. Sign in to purge.";
+  else if(!mo.purge_enabled) out.block = "Purge arming is switched off for this device.";
+  else if(mo.live_refusal) out.block = "Purge not allowed now: " + mo.live_refusal;
+  else if(!names.length) out.block = "Click a machine or a group first.";
+  else if(!(Number.isInteger(secs) && secs >= min && secs <= max)) out.block = "Choose " + min + " to " + max + " seconds.";
+  else if(t.holding && !t.mine) out.block = (t.holder || "Another screen") + " is holding to start a timed purge. One screen at a time.";
+  else if((mo.purge_state || {}).firing) out.block = "A purge is firing. One purge at a time.";
+  if(names.length && Number.isInteger(secs) && (holding || !out.block))
+    out.word = (holding ? "Keep holding: " : "Hold to purge ") + names.join(", ") + " for " + secs + " s";
+  out.cut = holding && out.block ? out.block : "";
+  out.ok = !out.block;
+  return out;
+}
+// The banner on every screen while one runs: what, how long, who.
+function timedBanner(t){
+  if(!t) return "";
+  return (t.machines || []).join(", ") + ": " + timedLeft(t.left_s) + " left of " + t.seconds + " s. Started on the " +
+    (t.device || "rack screen") + (t.who ? " by " + t.who : "") + ".";
 }
 // LOGIC END
 </script>
@@ -4355,7 +4437,10 @@ function morningView(on){
     // Leaving the page drops OUR purge selection now, not 2 s later when
     // the open beats stop (the engine does that too, as the backstop).
     // Another device's selection is not ours to clear.
-    if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me)
+    // A timed purge carries on: it ends on the engine's clock, and the
+    // engine clears the selection once it has.
+    tpLetGo("the page was left");
+    if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me && !MO.purge_state.timed)
       post("/api/remote/purge-clear", moActor({})).catch(() => {});
   }
 }
@@ -4448,11 +4533,12 @@ function renderMorning(){
   const k = $("mo-key");
   const any = (purge.selected || []).length > 0;
   k.className = "key" + (purge.firing ? " firing" : any ? " ready" : ""); k.title = "";
-  k.textContent = purge.firing ? "FIRING" : any ? SPACE_KEY : "Click a machine or a group to arm it";
+  k.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? "FIRING" : any ? SPACE_KEY : "Click a machine or a group to arm it";
   if(!mo.purge_enabled) k.textContent = "Purge arming is switched off for this device";
   if(mo.live_refusal) k.textContent = "Purge not allowed now: " + mo.live_refusal;
   if(ARRANGE){ k.className = "key"; k.textContent = ARRANGE_BANNER; k.title = "Save layout or Cancel first"; }
   renderFocusNote();
+  renderTimedPurge();
   // A lock problem (the file and the config, or flamesafe, disagree): the
   // one way out is a confirmed rewrite on the show machine itself.
   let rw = $("mo-rewrite");
@@ -5469,6 +5555,146 @@ document.addEventListener("visibilitychange", () => { if(document.hidden && WC_H
 window.addEventListener("pagehide", () => wcLetGo("the page closed"));
 $("wc-stop").addEventListener("click", wcStopPress);
 $("wc-banner-stop").addEventListener("click", wcStopPress);
+
+// ---- The timed purge (Jeff, 2026-10-29; morning.py) ---------------------
+// The machines are selected exactly as for the Space bar's purge. The
+// seconds: a preset or Other (a whole number, at most this show machine's
+// longest). The button is HELD like a Hold to arm: the page beats every
+// 100 ms and the engine starts the purge only after a whole hold of its
+// own timing; a tap, letting go early, pointer cancel, losing focus,
+// hiding or closing the page, a stale status, signing out and every
+// refusal fire nothing. Once it runs you may let go: the engine ends it by
+// itself, and its countdown is the engine's. Stop purge (here and on the
+// banner on every screen) ends it now, as does Abort, Hold, Stop and any
+// other purge press.
+let TP_SECS = null, TP_HOLD = false, TP_RUN = null, TP_SEQ = 0, TP_RUNS = 0, TP_BEAT = null, TP_WIRED = false, TP_MSG = null;
+// A line this page said (a refusal, the hold ended, started): shown for
+// TP_SAY_MS, then the control's own state again.
+const TP_SAY_MS = 6000;
+function tpSay(text){ TP_MSG = {text:String(text || ""), at:Date.now()}; renderTimedPurge(); }
+function tpSettings(){ return (MO && MO.timed_settings) || {presets:[2, 5, 10, 20, 30], default_s:5, max_s:30, min_s:1}; }
+function tpNow(){
+  return timedPurgeLook(MO, TP_SECS, TP_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+}
+function tpLetGo(why){
+  const had = TP_HOLD, run = TP_RUN;
+  TP_HOLD = false; TP_RUN = null; clearTimeout(TP_BEAT); TP_BEAT = null;
+  if(run !== null) post("/api/remote/purge-timed", moActor({hold:false, run:run, seq:++TP_SEQ, seconds:TP_SECS})).catch(() => {});
+  if(had && why) TP_MSG = {text:"Hold ended: " + why + ". Nothing was fired.", at:Date.now()};
+  renderTimedPurge();
+}
+function tpStart(){
+  if(TP_HOLD) return;
+  const st = tpNow();
+  // A press on a timed purge that is running is a second purge press: it
+  // ends it, as at the engine.
+  if(st.running){ tpStopPress(); return; }
+  if(arrangeBlocked("purge-fire", {})) return;
+  if(!st.ok){ tpSay(st.block); return; }
+  TP_HOLD = true;
+  TP_RUN = WINDOW_ID + "-t" + (++TP_RUNS) + "-" + Date.now().toString(36);
+    renderTimedPurge();
+  tpBeat();
+}
+async function tpBeat(){
+  clearTimeout(TP_BEAT); TP_BEAT = null;
+  if(!TP_HOLD || TP_RUN === null) return;
+  const st = tpNow();
+  if(st.cut){ tpLetGo(st.cut.replace(/[.\s]+$/, "")); return; }
+  const run = TP_RUN, seq = ++TP_SEQ;
+  TP_BEAT = setTimeout(tpBeat, 100);
+  try{
+    const j = await post("/api/remote/purge-timed", moActor({hold:true, run:run, seq:seq, seconds:TP_SECS}));
+    if(run !== TP_RUN || j.overtaken) return;
+    if(j.started || j.running){
+      // Started: the engine runs it to its end now; the finger may lift.
+      TP_HOLD = false; TP_RUN = null; clearTimeout(TP_BEAT); TP_BEAT = null;
+      TP_MSG = {text:(j.text || "Timed purge started.") + " You can let go.", at:Date.now()};
+      try{ MO = await getJSON("/api/remote/morning", 1500); renderMorning(); }catch(e2){}
+    }
+    renderTimedPurge();
+  }catch(e){ if(run === TP_RUN){ TP_HOLD = false; TP_RUN = null; clearTimeout(TP_BEAT); TP_BEAT = null; tpSay(e.message); } }
+}
+async function tpStopPress(){
+  tpLetGo("");
+  try{ const j = await post("/api/remote/purge-stop", moActor({})); TP_MSG = {text:j.text || "Purge stopped.", at:Date.now()}; }
+  catch(e){ TP_MSG = {text:e.message, at:Date.now()}; }
+  try{ MO = await getJSON("/api/remote/morning", 1500); renderMorning(); }catch(e2){}
+}
+function tpWire(){
+  if(TP_WIRED) return;
+  TP_WIRED = true;
+  const hb = $("tp-hold");
+  // Never the disabled attribute: a held button that turned disabled could
+  // lose its lift. One that may not be pressed only says so.
+  hb.addEventListener("pointerdown", e => { e.preventDefault(); try{ hb.setPointerCapture(e.pointerId); }catch(err){} tpStart(); });
+  for(const ev of ["pointerup", "pointercancel", "lostpointercapture"])
+    hb.addEventListener(ev, () => { if(TP_HOLD) tpLetGo("you let go before the hold was complete"); });
+  hb.addEventListener("contextmenu", e => e.preventDefault());
+  $("tp-stop").addEventListener("click", tpStopPress);
+  $("tp-secs").addEventListener("change", () => {
+    const ts = tpSettings();
+    const v = timedClamp($("tp-secs").value, ts.min_s || 1, ts.max_s || 30);
+    if(v === null){ $("tp-secs").value = TP_SECS === null ? "" : TP_SECS; return; }
+    if(String(v) !== String($("tp-secs").value).trim()) TP_MSG = {text:"Kept to " + (ts.min_s || 1) + " to " + (ts.max_s || 30) + " s on this show machine.", at:Date.now()};
+    TP_SECS = v; $("tp-secs").value = v;
+    if(TP_HOLD) tpLetGo("the seconds changed");
+    renderTimedPurge();
+  });
+}
+window.addEventListener("blur", () => { if(TP_HOLD) tpLetGo("the page lost focus"); });
+document.addEventListener("visibilitychange", () => { if(document.hidden && TP_HOLD) tpLetGo("the page was hidden"); });
+window.addEventListener("pagehide", () => tpLetGo("the page closed"));
+$("tp-banner-stop").addEventListener("click", tpStopPress);
+function renderTimedPurge(){
+  const box = $("tp"), mo = MO;
+  box.hidden = !mo || !mo.timed_settings;
+  if(box.hidden) return;
+  tpWire();
+  const ts = tpSettings();
+  if(TP_SECS === null) TP_SECS = Math.min(Number(ts.default_s) || 5, Number(ts.max_s) || 30);
+  const pk = JSON.stringify([ts.presets, ts.max_s]);
+  const pb = $("tp-presets");
+  if(pb.dataset.key !== pk){
+    pb.dataset.key = pk;
+    pb.innerHTML = (ts.presets || []).filter(n => n <= (ts.max_s || 30)).map(n => `<button class="ghost" data-s="${n}">${n} s</button>`).join("");
+    pb.querySelectorAll("[data-s]").forEach(b => b.addEventListener("click", () => {
+      if(TP_HOLD) tpLetGo("the seconds changed");
+      TP_SECS = Number(b.dataset.s); renderTimedPurge();
+    }));
+    $("tp-secs").max = ts.max_s || 30; $("tp-secs").min = ts.min_s || 1;
+  }
+  pb.querySelectorAll("[data-s]").forEach(b => b.classList.toggle("on", Number(b.dataset.s) === TP_SECS));
+  if(document.activeElement !== $("tp-secs")) $("tp-secs").value = TP_SECS;
+  const st = tpNow();
+  if(st.cut && TP_HOLD){ tpLetGo(st.cut.replace(/[.\s]+$/, "")); return; }
+  const hb = $("tp-hold");
+  hb.classList.toggle("on", TP_HOLD);
+  hb.classList.toggle("run", st.running);
+  hb.classList.toggle("na", !st.ok && !TP_HOLD && !st.running);
+  hb.setAttribute("aria-pressed", TP_HOLD ? "true" : "false");
+  hb.setAttribute("aria-disabled", !st.ok && !TP_HOLD ? "true" : "false");
+  if(hb.textContent !== st.word) hb.textContent = st.word;
+  const t = mo.timed || {};
+  const said = TP_MSG && Date.now() - TP_MSG.at < TP_SAY_MS ? TP_MSG.text : "";
+  const line = st.running ? "Purging " + (t.machines || []).join(", ") + " for " + t.seconds + " s: " + timedLeft(t.left_s) + " left. It stops by itself." :
+    TP_HOLD ? "Keep holding, as for a Hold to arm." : said || st.block || t.last || "";
+  if($("tp-st").textContent !== line){ $("tp-st").textContent = line; $("tp-st").title = line; }
+}
+// The banner on every screen while a timed purge runs, from the status:
+// the engine's own countdown, with Stop purge.
+function renderTimedBanner(){
+  const t = (ST && ST.morning && ST.morning.timed) || null;
+  $("tp-banner").hidden = !t;
+  if(!t) return;
+  // Stop purge is the starting screen's or the show PC's (the engine's
+  // owner rule); Abort works from every screen.
+  const mine = !!(ME && (ME.local || ME.device === t.device));
+  $("tp-banner-stop").hidden = !mine;
+  const text = timedBanner(t) + (mine ? "" : " Stop it from that screen or the show PC, or Abort.");
+  if($("tp-banner-text").textContent !== text) $("tp-banner-text").textContent = text;
+}
+setInterval(renderTimedBanner, 250);
 
 // WEATHER (weather.py, WEATHER.md): its own slow poll, display only. A
 // reply that does not come leaves the block to grey itself (wxBlock).
