@@ -1285,16 +1285,19 @@ async function press(route, extra){
   try{
     j = await post("/api/remote/" + route, actor(extra));
     // A group's Disarm says what is known (the engine waits for
-    // flamesafe): confirmed, or forced (the engine's first sentence, e.g.
-    // "Deck did not answer: ALL groups disarm sent.", the rest in Details).
+    // flamesafe): confirmed, or forced (the engine's first sentence names
+    // the cause: "Deck did not answer: ALL groups disarm sent.", "Not
+    // confirmed: ...", "No word from flamesafe: ...", the rest in Details).
     // The tile still shows only the polled status.
     const forced = route === "group-disarm" && j.forced === true;
     const said = forced ? "Disarm forced: ALL groups disarm sent." :
       (route === "group-disarm" && j.confirmed === true ? "Disarm confirmed." : (PRESS_SAID[route] || "Done."));
     say(short8(j.text, said), j.text || "", forced ? "warn" : "ok");
   }catch(e){
-    say(short8(e.message, "Refused. Tap Details."), e.message, "bad");
-    if(route === "disarm-all" || route === "group-disarm") disarmFailed("Disarm NOT done.", e.message);
+    // A Disarm that did not go is not a refusal: said so, with what to do.
+    const dis = route === "disarm-all" || route === "group-disarm";
+    say(dis ? "Disarm NOT done. Use Deck or e-stop." : short8(e.message, "Refused. Tap Details."), e.message, "bad");
+    if(dis) disarmFailed("Disarm NOT done.", e.message);
   }
   return j;
 }

@@ -50916,6 +50916,17 @@ for(const k of ["confirmed", "forced", "old"]){
   await h.sleep(200);
   out.gd[k] = {msg:document.getElementById("ctl-msg").textContent, same:JSON.stringify(h.look(0)) === JSON.stringify(before)};
 }
+// A Disarm answered late (the engine waits up to 1 s) never covers an
+// Abort pressed after it.
+window.__delay["group-disarm"] = 900;
+window.__answer["group-disarm"] = b => [200, said.forced];
+window.__answer["abort"] = b => [200, {ok:true, disarmed:true, text:"Aborted for the test."}];
+h.tap(h.lamp(0));
+await h.sleep(100);
+const ab = document.getElementById("b-abort");
+h.tap(ab); await h.sleep(150); h.tap(ab);
+await h.sleep(1300);
+out.late = {msg:document.getElementById("ctl-msg").textContent, posts:h.posts("group-disarm").length, aborts:h.posts("abort").length};
 """
     m = _rack_drive(chrome, page, _rack_status_off(), steps3)
     if check(isinstance(m, dict) and not m.get("problems"),
@@ -50931,6 +50942,11 @@ for(const k of ["confirmed", "forced", "old"]){
         check(all(gd[k]["same"] for k in ("confirmed", "forced", "old")),
               f"and the tile stays what the polled status says (ARMED): "
               f"{gd}")
+        la = m.get("late") or {}
+        check(la.get("aborts") == 1 and la.get("posts") == 4 and
+              la.get("msg") == "Aborted for the test.",
+              f"review of #170: a Disarm answered late never covers the "
+              f"Abort pressed after it: {la}")
     print("  ok")
 
 
@@ -73917,8 +73933,10 @@ def test_group_disarm_is_confirmed_or_forced():
         n = R.rig.count("flames_disarm_all")
         st, _h, out = disarm("front row")
         check(st == 200 and out.get("forced") is True and
-              "flamesafe did not report front row off within 1 s" in
-              out.get("text", "") and
+              out.get("text", "").startswith(
+                  "Not confirmed: ALL groups disarm sent. Disarm front row "
+                  "forced (flamesafe did not report front row off within "
+                  "1 s") and
               R.rig.count("flames_disarm_all") == n + 1 and
               len(flames_alerts()) == 1,
               f"a deck that reads and does nothing: forced after the "
@@ -74359,7 +74377,7 @@ def test_group_disarm_across_two_screens_real_flamesafe():
             screen.new_disarms = real_new
             check(code == 200 and out.get("forced") is True and
                   out.get("text", "").startswith(
-                      "Deck did not answer: ALL groups disarm sent. Disarm "
+                      "Not confirmed: ALL groups disarm sent. Disarm "
                       "front row forced (flamesafe did not report front "
                       "row off") and
                   took >= RM.PLAIN_CONFIRM_S - 0.05,
@@ -74375,9 +74393,8 @@ def test_group_disarm_across_two_screens_real_flamesafe():
                   f"F: flamesafe took the disarm_all and reads the "
                   f"Abort's cycle: {g0()} {status.last.get('disarm_all')}")
             al = [a for a in rem.alerts.view() if a["kind"] == "flames"]
-            check(al and al[-1]["text"].startswith("Deck did not answer: "
-                                                   "ALL groups disarm "
-                                                   "sent."),
+            check(al and al[-1]["text"].startswith("Not confirmed: ALL "
+                                                   "groups disarm sent."),
                   f"F: a flames alert says so: {al}")
             h.end()
             rem.alerts.clear(kind="flames", action="Acknowledge")
@@ -87147,6 +87164,7 @@ async function presses(){
   const lampBefore = lamp0(), gd = {};
   for(const [k, body] of [["confirmed", {ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."}],
       ["forced", {ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."}],
+      ["notconf", {ok:true, confirmed:false, forced:true, text:"Not confirmed: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the rest."}],
       ["old", {ok:true, text:"Disarm front row sent."}]]){
     window.__answer = {re:/group-disarm/, body:body};
     await press("group-disarm", {group:0});
@@ -87232,6 +87250,7 @@ async function fdPresses(){
   window.__fail = null;
   await wait(1200);
   res.fail_slot = q("al-what").textContent; res.fail_act = q("al-act-l").textContent;
+  res.fail_msg = q("msg-t").textContent;
   res.fail_next = q("next-t").textContent;
   return res;
 }
@@ -87450,6 +87469,10 @@ def test_ui2_show_tab_in_a_browser():
                       fd["fail_act"] == "Seen" and "e-stop" in fd["fail_next"],
                       f"{where}: a refused Disarm stays in the slot until "
                       f"Seen and the next step says e-stop: {fd}")
+                check(fd and fd.get("fail_msg") ==
+                      "Disarm NOT done. Use Deck or e-stop.",
+                      f"{where}: a Disarm that did not go is never said as "
+                      f"refused: {fd}")
             p = res.get("presses")
             if frag.startswith("?presses"):
                 check(p and p["abort_after_one"] == 0 and
@@ -87481,6 +87504,12 @@ def test_ui2_show_tab_in_a_browser():
                       "until Hold then Resume" in gd["forced"]["full"],
                       f"{where}: a forced Disarm says so, the engine's "
                       f"words behind Details: {gd}")
+                check(gd.get("notconf", {}).get("msg") ==
+                      "Not confirmed: ALL groups disarm sent." and
+                      gd["notconf"]["cls"] == "warn",
+                      f"{where}: a Disarm flamesafe did not confirm in time "
+                      f"is said apart from a deck that did not answer: "
+                      f"{gd}")
                 check(gd.get("old", {}).get("msg") ==
                       "Disarm front row sent." and gd.get("lamp_same"),
                       f"{where}: an older engine's answer is said as it "

@@ -3848,7 +3848,7 @@ class Remote:
                           f"{device} is confirmed: flamesafe reports it off "
                           f"and not asked for.")
             return 200, {"ok": True, "confirmed": True, "text": text}
-        late = ("Deck did not answer",
+        late = ("Not confirmed",
                 f"flamesafe did not report {gname} off within "
                 f"{PLAIN_CONFIRM_S:g} s of the Disarm")
         sent = self._group_force_send(who, device, gname, late[1])

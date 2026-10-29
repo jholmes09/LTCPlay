@@ -181,7 +181,7 @@ class FakeEngine {
     if(!g) return {code: 400, body: {error: "That is not a flame group flamesafe reports."}};
     this.dropHolds(i);
     if(this.name === "deck_not_answering"){
-      const text = "Deck did not answer: ALL groups disarm sent. Disarm " + g.name + " forced (flamesafe did not report " + g.name +
+      const text = "Not confirmed: ALL groups disarm sent. Disarm " + g.name + " forced (flamesafe did not report " + g.name +
         " off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, " +
         "every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run. Each group needs Arm again " +
         "(let go, then hold) before it can fire.";
@@ -208,7 +208,7 @@ class FakeEngine {
       case "/api/remote/abort": this.dropHolds(); sch.aborted = true; sch.state = "STANDBY"; sch.running = null; if(s.show) s.show.running = false;
         s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
         s.laser_arm.lasers.forEach(l => l.armed = false); return ok("Aborted.");
-      case "/api/remote/reset": sch.aborted = false; s.flames.groups.forEach(g => { g.armed = "disarmed"; delete g.reason; }); return ok("Reset.");
+      case "/api/remote/reset": sch.aborted = false; s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; delete g.reason; }); return ok("Reset.");
       case "/api/remote/start-now": sch.state = "SHOW"; sch.running = (sch.next || {}).show || 1; sch.held = false;
         s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
       case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
