@@ -924,12 +924,17 @@ What each end leaves on the pixels:
 | A Start now show ends by itself | the idle look, even with nothing else tonight |
 | Programming's Play reaches the end of the cue | the idle look |
 | Stop | black, and Run is off |
-| Abort | black, latched until Reset; dark after Reset until a show starts |
-| A show that failed to start | black |
+| Abort during a show | black, latched until Reset; dark after Reset until a show starts |
+| Abort during Programming playback | the idle look; nothing latches |
+| A show that started and then failed | black |
+| A start refused before anything went out (Auto start off, an Abort standing, the show audio not ready) | left as they were |
 
 After a Start now show ends by itself with nothing else tonight, the
-night closes but the pixels stay on the idle look all through the closed
-night, until Stop, Black on the Programming screen, or the next show.
+night closes and the pixels stay on the idle look all through the closed
+night, until the next show starts. Abort is refused then (no show is
+running) and changes nothing. Stop ends no show either (the journal says
+"No show is running"), but it still turns Run off, and turning Run off
+sends black to the pixels.
 
 **Every start clears it.** Start now, a scheduled start and Programming's
 Play from all clear the pixels for the show in the same one place,
@@ -937,16 +942,17 @@ whatever ended the show before:
 
 - the show conductor's black (the closing, a stopped or failed show, an
   Abort since Reset), and a stale record of it;
-- on Start now and a scheduled start, also a Blackout or Preshow pressed
-  on the page before the start (the page is locked during a show, so it
-  could not be taken off later). On the Programming screen, which is not
-  locked, a look you pressed yourself stays; press Follow timecode to
-  give the pixels to the show.
+- on Start now and a scheduled start, also a black or preshow look put
+  on the pixel output before the start. The Fire & Ice screens have no
+  button for these looks; only the engine's override can set one. On the
+  Programming screen such a look stays through Play from; press Stop,
+  then Run, to clear it (Run starts with no look on the pixels).
 
 Nothing goes dark for it: the look that is up (the idle look, a Preshow,
 the closing black) stays until the show's first frame, and the show takes
-over on that very frame. A Hold, an Abort or a Blackout pressed after the
-start is not touched and holds. That includes a Hold, an Abort, a Stop or
+over on that very frame. A Hold, an Abort or a Stop after the start is
+not touched and holds, and so does a look set through the engine's
+override. That includes a Hold, an Abort, a Stop or
 a failed start before the show's first frame, or in the moment between
 that frame and the show being confirmed: the pixels go black, never the
 show, whatever ended the show before (a Stop, an Abort and Reset). The pre-roll blacks MadMapper's surfaces,
@@ -956,14 +962,16 @@ The journal says it at every start, in the same words, for example "Show 4
 start: the pixel output is cleared for the show (the show conductor's
 black from between shows). The black stays up until the first show frame
 goes out, and the show takes over on that frame. A Hold, an Abort or a
-Blackout pressed after this start still holds." and then "Show 4: the
+Stop after this start still holds." and then "Show 4: the
 first show frame went out on the pixels 0.21 s after the start was sent."
 
 **If the pixels are ever on a look while a show plays** (anything but a
 Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
-Deck show it as a flame cues fault: "CUES FAULT: pixels on Black, not the
-show. Pixels and flame cues are dark. Programming screen: press Follow
-timecode. Scheduled show: tell Jeff." It is display only.
+Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
+the show. Pixels and flame cues are dark. Programming: press Stop, then
+Run. Scheduled show: tell Jeff." Stop here is the Run card's Stop (it ends
+playback and turns Run off), not "Stop the show audio". It is display
+only.
 
 ## The rig check before each show (pre-roll)
 

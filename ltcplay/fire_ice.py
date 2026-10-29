@@ -571,7 +571,7 @@ class FireIceShow(C.ShowOutputs):
         if keep is not None:
             rest = (f" The page's {self.LOOK_NAMES.get(keep, keep)} look "
                     f"stays: on the Programming screen it is the operator's; "
-                    f"press Follow timecode to give the pixels to the "
+                    f"press Stop, then Run, to give the pixels to the "
                     f"show.")
         else:
             first = {None: "The idle look", "blackout": "The black",
@@ -579,8 +579,8 @@ class FireIceShow(C.ShowOutputs):
             rest = (f" {first} stays up until the first show frame goes "
                     f"out, and the show takes over on that frame.")
         text = (f"{what}: the pixel output is cleared for the show "
-                f"({cleared}).{rest} A Hold, an Abort or a Blackout pressed "
-                f"after this start still holds.")
+                f"({cleared}).{rest} A Hold, an Abort or a Stop after this "
+                f"start still holds.")
         self._note(text, action="pixels", outcome="cleared_for_show")
         return text
 
@@ -1185,14 +1185,16 @@ RENDER_END_TOLERANCE_FRAMES = 2
 # Hold's or an Abort's own fade (the music is pausing or stopping then),
 # nor the look a start holds until the first show frame.
 LOOK_IN_SHOW_FAULT_S = 1.5
-# Rack screen words (the buttons on the Programming screen are Follow
-# timecode, Preshow and Black): no line over eight words.
-LOOK_IN_SHOW = ("CUES FAULT: pixels on {look}, not the show. "
+# Rack screen words, no line over eight words. The Fire & Ice screens have
+# no look buttons (no Black, no Preshow, no Follow timecode: that page is
+# the GPL path's): what clears a look in Programming is the Run card's Stop
+# (it sends black and turns Run off), then Run (a new player, no look).
+LOOK_IN_SHOW = ("CUES FAULT: pixels show {look}, not the show. "
                 "Pixels and flame cues are dark. "
-                "Programming screen: press Follow timecode. "
+                "Programming: press Stop, then Run. "
                 "Scheduled show: tell Jeff.")
-# The look as its button on the page says it.
-LOOK_BUTTONS = {"blackout": "Black", "preshow": "Preshow"}
+# The look in plain words.
+LOOK_BUTTONS = {"blackout": "black", "preshow": "preshow"}
 
 RENDER_OLDER_THAN_LAYOUT = (
     "the show's render is older than xlights_networks.xml: the layout was "
@@ -2395,10 +2397,25 @@ class ShowRunner:
                 if self._cue is cue:
                     self._cue = None
             how = getattr(clk, "last_ended", "") or "the cue stopped"
+            self._handoff_over(cue)
             if not cue["confirmed"]:
                 how = self.NEVER_CONFIRMED.format(how=how)
             self.svc.report("SHOW_ENDED" if cue["confirmed"]
                             else "SHOW_FAILED", how, show=n)
+
+    @staticmethod
+    def _handoff_over(cue):
+        """The show this start was for failed or ended: its hand-over, if
+        still waiting for a first frame, never lifts the look on later
+        timecode (review B of PR #171: a show that never confirmed and
+        ended late, then an Abort refused as "nothing is playing", left it
+        armed). Never raises."""
+        cancel = getattr(cue.get("pix"), "cancel_show_handoff", None)
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:                    # noqa: BLE001
+                pass
 
     @staticmethod
     def _mono():

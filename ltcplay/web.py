@@ -392,6 +392,12 @@ class Control:
             raise SessionError("This show file has no preshow sequence, so "
                                "there is no look to hold. Set \"idle\" in the "
                                "show file to a .fseq in the show folder.")
+        # A show start's hand-over still waiting for its first frame
+        # (fire_ice pixels_for_show) ends: a look set now stands, even the
+        # same black the start held (review B of PR #171).
+        cancel = getattr(s.player, "cancel_show_handoff", None)
+        if cancel is not None:
+            cancel()
         s.player.override = None if what in (None, "", "auto") else what
         if s.log:
             s.log.event("override", f"operator set output to "

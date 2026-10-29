@@ -8798,10 +8798,22 @@ def build():
   "            # toward the next one's CUES FAULT.\n            self._look_since = None\n",
   "            # toward the next one's CUES FAULT.\n"),
 
- ("pixels: the look-in-show CUES FAULT says press Auto again",
+ ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
+  "screens do not have",
   'ltcplay/fire_ice.py',
-  '                "Programming screen: press Follow timecode. "\n',
-  '                "Programming screen: press Auto. "\n'),
+  '                "Programming: press Stop, then Run. "\n',
+  '                "Programming screen: press Follow timecode. "\n'),
+
+ ("pixels: a look set through the engine during a start's hand-over is "
+  "lifted by the first show frame",
+  'ltcplay/web.py',
+  '        if cancel is not None:\n            cancel()\n        s.player.override = None if what',
+  '        s.player.override = None if what'),
+
+ ("pixels: a show that ended unconfirmed leaves its start's hand-over armed",
+  'ltcplay/fire_ice.py',
+  '            self._handoff_over(cue)\n            if not cue["confirmed"]:\n',
+  '            if not cue["confirmed"]:\n'),
 
  ('fix round 2: a look chosen before the show stays on',
   'ltcplay/fire_ice.py',

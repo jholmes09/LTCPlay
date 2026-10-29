@@ -42874,17 +42874,27 @@ def test_every_show_start_clears_the_pixels():
                             "once")
     t[0] = F.LOOK_IN_SHOW_FAULT_S + 0.1
     cues(None)
-    check(cues.faults_now() == F.LOOK_IN_SHOW.format(look="Black") and
+    check(cues.faults_now() == F.LOOK_IN_SHOW.format(look="black") and
           lines and lines[-1][1].get("fault"),
           f"once it lasts it is a CUES FAULT on the screens and in the "
           f"journal: {cues.fault!r}")
-    # The rack screen's words: the buttons as the page names them, no
-    # line over eight words, Black never blackout, never Auto.
+    # The rack screen's words (review B of PR #171): only buttons the
+    # Fire & Ice screens have (the Run card's Stop, then Run), never the
+    # GPL page's Follow timecode, Black or Auto, nor the Programming
+    # card's "Stop the show audio"; no line over eight words; "black",
+    # never "blackout".
     said = cues.faults_now()
-    check("Follow timecode" in said and "Black" in said and
-          "blackout" not in said and "Auto" not in said and
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote.html"),
+              encoding="utf-8") as fh:
+        rack = fh.read()
+    check("Programming: press Stop, then Run." in said and
+          'label:"Stop"' in rack and 'label:"Run"' in rack and
+          "Follow timecode" not in said and "Auto" not in said and
+          "Black" not in said and "blackout" not in said and
+          "show audio" not in said and
           all(len(x.split()) <= 8 for x in said.split(". ")),
-          f"the CUES FAULT says what to press, as the page says it: "
+          f"the CUES FAULT says what to press on the rack screen: "
           f"{said!r}")
     # A look over the LAST show never counts toward the next one: no show
     # playing (between shows) starts the count again.
@@ -43137,6 +43147,37 @@ def test_hold_abort_stop_black_the_pixels_after_a_start():
     check(p.override == "preshow" and p.show_handoff is None,
           f"a look the Programming screen keeps ends a stale hand-over, "
           f"so later timecode never lifts it: {p.override!r}")
+    # A look set through the engine (/api/override) during a start's
+    # hand-over stands, even the same black the start held.
+    from ltcplay import web as web_mod
+    p = _FiPlayer(calls, types.SimpleNamespace(now=lambda: 0.0))
+    p.override = "blackout"
+    p.hold_until_show()
+    ctl = types.SimpleNamespace(session=types.SimpleNamespace(
+        running=True, player=p, log=None))
+    web_mod.Control.override(ctl, "blackout")
+    p.first_frame()
+    check(p.override == "blackout" and p.show_handoff is None,
+          f"a Black set during the hand-over is never lifted by the first "
+          f"show frame: {p.override!r}")
+    # A start whose show failed or ended unconfirmed ends its own
+    # hand-over, before anything the conductor does.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.sess.player.override = "blackout"
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.sess.player.show_handoff is not None,
+          "setup: the start is waiting for its first frame")
+    n.sess.clock.playing = False
+    n.sess.clock.last_ended = "Show stopped"
+    n.w.runner.poll()
+    check(n.sess.player.show_handoff is None,
+          f"a show that ended before it was confirmed ends its start's "
+          f"hand-over: {n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
     print("  ok")
 
 
