@@ -61,7 +61,7 @@ EDGE = ("msedge.exe",)
 # The rack screen page's own title: "<show> remote" (remote.html's
 # loadBrand) or "Show remote 2.0" (remote2.html), as an Edge app window
 # shows it.
-RACK_TITLE = r"(?i)\bremote( 2\.0)?$"
+RACK_TITLE = r"(?i)\bremote( 2\.0)?( - [^-]*Edge)?$"
 EDGE_TOL = 2              # px: a window this close to a display's edges fills it
 WS_CAPTION = 0x00C00000
 BOOT_SETTLE_S = 300.0     # after the supervisor starts: any cover is undone
@@ -640,7 +640,8 @@ class OutputWatch:
     Only reads windows."""
 
     def __init__(self, api, monitor=0, log=None, alert=None,
-                 clock=time.monotonic, settle_s=120.0, debounce_s=10.0):
+                 clock=time.monotonic, settle_s=120.0, debounce_s=10.0,
+                 retry_s=30.0):
         self.api = api
         self.monitor = monitor
         self.log = log or (lambda s: None)
@@ -651,6 +652,8 @@ class OutputWatch:
         self.first_seen = None     # MadMapper first seen running
         self.off_since = None
         self.alerted = False       # this off spell's alert is accepted
+        self.retry_s = retry_s     # an alert the engine did not take
+        self.next_alert = 0.0
         self.state = None
 
     def tick(self):
@@ -693,6 +696,7 @@ class OutputWatch:
             self.state = "on"
             self.off_since = None
             self.alerted = False
+            self.next_alert = 0.0
             return state
         if self.off_since is None:
             self.off_since = now
@@ -701,7 +705,8 @@ class OutputWatch:
         if self.state != "off" and due:
             self.log(f"MadMapper output: OFF. {why}. {ENABLE_STEPS}")
             self.state = "off"
-        if due and not self.alerted:
+        if due and not self.alerted and now >= self.next_alert:
+            self.next_alert = now + self.retry_s
             try:
                 self.alerted = bool(self.alert(f"{why}. {ENABLE_STEPS}"))
             except Exception:                    # noqa: BLE001

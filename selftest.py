@@ -87137,6 +87137,8 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
     check(SW.is_rack(dict(_RACK, title="Something else", pid=77), pid=77)
           and not SW.is_rack(dict(_RACK, title="Something else")) and
           SW.is_rack(dict(_RACK, title="Show remote 2.0")) and
+          SW.is_rack(dict(_RACK, title="Fire remote - Microsoft Edge")) and
+          not SW.is_rack(dict(_RACK, title="remote control docs - Google")) and
           not SW.is_rack(dict(_BEYOND, title="Show remote")),
           "the rack screen: its title, or the Edge the supervisor opened")
     bad = _FakeWins([_RACK])
@@ -87176,23 +87178,26 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     _no_dashes(alerts[0], "the output alert")
     t[0] = 123
     w.tick()
-    check(len(alerts) == 2, "the engine did not take it: sent again")
-    took[0] = True
-    t[0] = 125
+    check(len(alerts) == 1, "the engine did not take it: not every tick")
+    t[0] = 152
     w.tick()
-    t[0] = 127
+    check(len(alerts) == 2, "the engine did not take it: sent again later")
+    took[0] = True
+    t[0] = 183
+    w.tick()
+    t[0] = 215
     w.tick()
     check(len(alerts) == 3, "once taken: not again")
     check(any("OFF" in x and "Output menu" in x for x in logs),
           "logged loudly with the click path")
     api.wins.append(dict(_MM_OUT))
-    t[0] = 130
+    t[0] = 220
     check(w.tick() == "on" and any("MadMapper output: on" in x
                                    for x in logs), "on: logged")
     api.wins = [dict(_MM_UI)]
-    t[0] = 135
+    t[0] = 225
     check(w.tick() == "waiting", "off again: debounced")
-    t[0] = 146
+    t[0] = 236
     check(w.tick() == "off" and len(alerts) == 4, "off again: one more alert")
     bad = _FakeWins([])
     bad.fail = True
