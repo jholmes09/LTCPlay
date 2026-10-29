@@ -245,10 +245,29 @@ class ShowAudioPlayhead:
         # one place a show start does it (fire_ice.FireIceShow.
         # pixels_for_show; Jeff's report, 2026-10-29): the conductor's
         # black from between shows is not left for show_starting() to lift.
-        clear = getattr(getattr(cond, "show", None), "pixels_for_show", None)
+        # The conductor's pixels record goes UNKNOWN in the same step
+        # (pixels_to_show), so a Hold, an Abort or a Stop after this sends
+        # its black (review of PR #171).
+        show = getattr(cond, "show", None)
+        clear = getattr(show, "pixels_for_show", None)
         if clear is not None:
-            clear("Play from on the Programming screen", programming=True)
-        _cue, at = s.clock_play_from(show_s)
+            to_show = getattr(cond, "pixels_to_show", None)
+            if to_show is not None:
+                to_show(lambda: clear("Play from on the Programming screen",
+                                      programming=True))
+            else:
+                clear("Play from on the Programming screen",
+                      programming=True)
+        try:
+            _cue, at = s.clock_play_from(show_s)
+        except Exception:
+            # Nothing started: no hand-over is left waiting to lift the
+            # look on later timecode.
+            cancel = getattr(getattr(s, "player", None),
+                             "cancel_show_handoff", None)
+            if cancel is not None:
+                cancel()
+            raise
         self._adopt(s)
         with self._lock:
             self._seen = self._clock()
@@ -262,6 +281,14 @@ class ShowAudioPlayhead:
                 # An Abort landed while the cue was starting (the show
                 # runner's rule): the music stops here too.
                 s.clock_halt()
+                # The Abort's black stands, never the show nor the look
+                # held at the start (review of PR #171).
+                fade = getattr(show, "pixels_fade_out", None)
+                if fade is not None:
+                    try:
+                        fade(0)
+                    except Exception:               # noqa: BLE001
+                        pass
                 self._refused(r, "Play from")
         return at
 

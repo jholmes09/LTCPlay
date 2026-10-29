@@ -927,6 +927,10 @@ What each end leaves on the pixels:
 | Abort | black, latched until Reset; dark after Reset until a show starts |
 | A show that failed to start | black |
 
+After a Start now show ends by itself with nothing else tonight, the
+night closes but the pixels stay on the idle look all through the closed
+night, until Stop, Black on the Programming screen, or the next show.
+
 **Every start clears it.** Start now, a scheduled start and Programming's
 Play from all clear the pixels for the show in the same one place,
 whatever ended the show before:
@@ -936,13 +940,16 @@ whatever ended the show before:
 - on Start now and a scheduled start, also a Blackout or Preshow pressed
   on the page before the start (the page is locked during a show, so it
   could not be taken off later). On the Programming screen, which is not
-  locked, a look you pressed yourself stays; press Auto to give the
-  pixels to the show.
+  locked, a look you pressed yourself stays; press Follow timecode to
+  give the pixels to the show.
 
 Nothing goes dark for it: the look that is up (the idle look, a Preshow,
 the closing black) stays until the show's first frame, and the show takes
 over on that very frame. A Hold, an Abort or a Blackout pressed after the
-start is not touched and holds. The pre-roll blacks MadMapper's surfaces,
+start is not touched and holds. That includes a Hold, an Abort, a Stop or
+a failed start before the show's first frame, or in the moment between
+that frame and the show being confirmed: the pixels go black, never the
+show, whatever ended the show before (a Stop, an Abort and Reset). The pre-roll blacks MadMapper's surfaces,
 never the pixels.
 
 The journal says it at every start, in the same words, for example "Show 4
@@ -954,10 +961,9 @@ first show frame went out on the pixels 0.21 s after the start was sent."
 
 **If the pixels are ever on a look while a show plays** (anything but a
 Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
-Deck show it as a flame cues fault: "the pixel output is on blackout, not
-the show, while the show is playing, so the pixels and the flame cues are
-dark. On the Programming screen press Auto; in a scheduled show tell
-Jeff". It is display only.
+Deck show it as a flame cues fault: "CUES FAULT: pixels on Black, not the
+show. Pixels and flame cues are dark. Programming screen: press Follow
+timecode. Scheduled show: tell Jeff." It is display only.
 
 ## The rig check before each show (pre-roll)
 

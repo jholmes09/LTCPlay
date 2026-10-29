@@ -584,6 +584,9 @@ class Player:
             self.loop = None
             self.freerun_by = None
             self._move_mark()
+            # A show start's hand-over still waiting (a start that failed)
+            # never lifts its look on later timecode (review of PR #171).
+            self.show_handoff = None
         self._event("clock", "the show clock stopped; back to the idle look")
 
     def _now_tc(self):

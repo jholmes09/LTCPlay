@@ -42752,16 +42752,27 @@ def test_every_show_start_clears_the_pixels():
           f"Start now after Abort and Reset: the show plays as rendered: "
           f"{n.svc.machine.state} {n.sess.player.override!r}")
     # A Hold before the first show frame, then Resume: the show comes
-    # back, never the black held at the start.
+    # back, never the black held at the start. The Stop really runs its
+    # fade (the start before it put the conductor's pixels record to
+    # UNKNOWN), so the look the start holds is black, not the idle look.
     n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
     _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout" and n.w.show._pix_ours,
+          f"setup: the Stop after a start ran its own black, not left to "
+          f"the record of the Abort before: {n.sess.player.override!r}")
     n.now[0] = _den(S, 19, 10)
     n.svc._apply(_op(S, S.START_NOW))
     _settle(n.svc, n.c)
-    n.w.show.pixels_fade_out(0.25)          # a Hold's black, mid start
+    check(n.sess.player.show_handoff is not None and
+          n.sess.player.show_handoff[0] == "blackout",
+          f"setup: the start holds the Stop's black until its first frame: "
+          f"{n.sess.player.show_handoff!r}")
+    n.svc._apply(_op(S, S.HOLD))            # the real Hold, mid start
+    _settle(n.svc, n.c)
     n.sess.player.first_frame()             # no hand-over: Hold stands
     held = n.sess.player.override
-    n.w.show.pixels_restore(0.25)           # Resume
+    n.svc._apply(_op(S, S.RESUME))
+    _settle(n.svc, n.c)
     check(held == "blackout" and n.sess.player.override is None,
           f"a Hold before the first show frame holds, and Resume gives "
           f"back the show, not the start's held black: {held!r} "
@@ -42863,10 +42874,34 @@ def test_every_show_start_clears_the_pixels():
                             "once")
     t[0] = F.LOOK_IN_SHOW_FAULT_S + 0.1
     cues(None)
-    check("while the show is playing" in cues.faults_now() and
+    check(cues.faults_now() == F.LOOK_IN_SHOW.format(look="Black") and
           lines and lines[-1][1].get("fault"),
           f"once it lasts it is a CUES FAULT on the screens and in the "
           f"journal: {cues.fault!r}")
+    # The rack screen's words: the buttons as the page names them, no
+    # line over eight words, Black never blackout, never Auto.
+    said = cues.faults_now()
+    check("Follow timecode" in said and "Black" in said and
+          "blackout" not in said and "Auto" not in said and
+          all(len(x.split()) <= 8 for x in said.split(". ")),
+          f"the CUES FAULT says what to press, as the page says it: "
+          f"{said!r}")
+    # A look over the LAST show never counts toward the next one: no show
+    # playing (between shows) starts the count again.
+    clk._cue = None
+    t[0] = 2.0
+    cues(None)
+    t[0] = 3.0
+    clk._cue = {"label": "S"}
+    cues(None)
+    check(cues.fault == "", "a look between shows is no CUES FAULT for "
+                            "the next show at once")
+    t[0] = 3.0 + F.LOOK_IN_SHOW_FAULT_S + 0.1
+    cues(None)
+    check(cues.fault != "", "it is, once it lasts into that show")
+    clk._cue = None
+    cues(None)
+    clk._cue = {"label": "S"}
     clk._halting = True
     cues(None)
     check(cues.fault == "", "an Abort's own fade is no CUES FAULT")
@@ -42876,6 +42911,232 @@ def test_every_show_start_clears_the_pixels():
     t[0] = 20.0
     cues(None)
     check(cues.fault == "", "a start's hand-over is no CUES FAULT")
+    print("  ok")
+
+
+def _px_after_stop(S, ff=False):
+    """A night with a Start now show, then Stop, then Start now again,
+    with nothing confirmed yet; `ff`: its first frame has gone out (the
+    0.1 to 0.3 s before SHOW_CONFIRMED)."""
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout",
+          f"setup: Stop blacked the pixels: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 17, 45)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          n.sess.player.show_handoff is not None,
+          f"setup: the start is waiting for its first frame: "
+          f"{n.svc.machine.state} {n.sess.player.show_handoff!r}")
+    if ff:
+        n.sess.player.first_frame()
+        check(n.sess.player.override is None,
+              "setup: the first show frame went out, not confirmed yet")
+    return n
+
+
+def test_hold_abort_stop_black_the_pixels_after_a_start():
+    section("pixels: after a Stop (or an Abort and Reset) and a new start, "
+            "a Hold, an Abort, a Stop or a failed start, before the first "
+            "show frame or before the show is confirmed, still puts the "
+            "pixels to black through the real show conductor (review of "
+            "PR #171)")
+    import types
+    from ltcplay import conductor as C
+    S = _sched()
+    if S is None:
+        return
+    for ff in (False, True):
+        when = ("between the first frame and the confirmation" if ff
+                else "before the first show frame")
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.c.latched and n.sess.player.override == "blackout" and
+              n.sess.player.show_handoff is None,
+              f"Abort {when}: the pixels are black under the latch, never "
+              f"the show: {n.sess.player.override!r}")
+        n.svc.reset_conductor("Andy", "Rack screen")
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.sess.player.override == "blackout",
+              f"and after Reset the pixels stay dark until a show starts: "
+              f"{n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.HOLD))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.svc.machine.state == S.PAUSED and
+              n.sess.player.override == "blackout",
+              f"Hold {when}: the pixels are black, never the show: "
+              f"{n.svc.machine.state} {n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.sess.player.override == "blackout" and
+              n.sess.player.show_handoff is None,
+              f"Stop {when}: the pixels are black, never the show: "
+              f"{n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+    # A failed start after a Stop ends on black, not on the idle look.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+
+    def no_audio(cue=None):
+        raise RuntimeError("the show audio is not there")
+    n.sess.clock_play = no_audio
+    n.now[0] = _den(S, 17, 45)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    for _ in range(3):
+        n.w.runner.poll()
+        _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"a failed start after a Stop ends on black, with no hand-over "
+          f"left: {n.svc.machine.state} {n.sess.player.override!r}")
+    # The start itself puts its hand-over back when the clock refuses it,
+    # before the conductor's failed start runs.
+    n.sess.player.override = None
+    n.w.show._pix_ours = False
+    n.sess.player.show_handoff = None
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"a start the clock refused ends its own hand-over on black: "
+          f"{n.sess.player.override!r} {n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # An Abort that lands while the cue is starting: the start puts the
+    # black back itself, before the Abort's own fade runs.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    real = n.sess.clock_play
+
+    def aborted_meanwhile(cue=None):
+        got = real(cue)
+        n.c.abort("Andy", "Rack screen")
+        return got
+    n.sess.clock_play = aborted_meanwhile
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and n.c.latched and
+          n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"an Abort while the cue was starting: black at once, no "
+          f"hand-over: {n.sess.player.override!r} "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # An Abort just before the hand-over: nothing goes out, the music
+    # never starts, the Abort keeps its black.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    to_show = n.c.pixels_to_show
+
+    def abort_first(clear):
+        n.sess.clock.playing = True         # an earlier cue still going
+        n.c.abort("Andy", "Rack screen")
+        n.c.run_pending()
+        return to_show(clear)
+    n.c.pixels_to_show = abort_first
+    del n.calls[:]
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and "music_play" not in [k for k, _a, _t in n.calls] and
+          n.sess.player.override == "blackout" and n.w.show._pix_ours and
+          n.sess.player.show_handoff is None,
+          f"an Abort just before the hand-over: refused, no music, its "
+          f"black stands: {r.sentence} {n.sess.player.override!r}")
+    del n.c.pixels_to_show
+    # And while it stands, nothing is handed over at all.
+    n.c.run_pending()
+    got = []
+    check(n.c.pixels_to_show(lambda: got.append(1) or "x") is None and
+          not got and n.w.show._pix_ours,
+          "under a latched Abort the conductor hands nothing to a show")
+    n.c.close()
+    n.link.close()
+    # The Programming screen: a refused show start (an Abort landed) ends
+    # on black; a Play the clock refused leaves no hand-over waiting; a
+    # look the operator keeps ends a stale hand-over.
+    from ltcplay.playhead import ShowAudioPlayhead, PlayheadError
+    n = _fi_night()
+    n.svc.tick()
+    n.svc.machine = types.SimpleNamespace(state="OFF")
+    clk = n.sess.clock
+    n.sess.playhead_clock = lambda: clk
+    n.sess.clock_play_from = lambda s, check_only=False: (
+        (types.SimpleNamespace(name="Show"), s) if check_only else
+        (clk.play("Show"), (types.SimpleNamespace(name="Show"), s))[1])
+    n.sess.clock_here = lambda: 0.0
+    n.sess.clock_halt = lambda: clk.halt()
+    ph = ShowAudioPlayhead(n.control, n.svc)
+    real_start = n.c.show_starting
+    n.c.show_starting = lambda *a, **k: C.failed("aborted meanwhile")
+    try:
+        ph.play_from(3600.0, "Andy", "iPad")
+    except PlayheadError:
+        pass
+    n.c.show_starting = real_start
+    n.sess.player.first_frame()
+    check(n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"Programming Play refused at the show start: black, never the "
+          f"show: {n.sess.player.override!r}")
+    n.sess.player.override = None
+    n.w.show._pix_ours = False
+
+    def refused(s, check_only=False):
+        if check_only:
+            return types.SimpleNamespace(name="Show"), s
+        raise RuntimeError("the clock refused it")
+    n.sess.clock_play_from = refused
+    try:
+        ph.play_from(3600.0, "Andy", "iPad")
+    except Exception:                            # noqa: BLE001
+        pass
+    check(n.sess.player.show_handoff is None,
+          f"a Play the clock refused leaves no hand-over waiting: "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    F = _fi_mod()
+    calls = []
+    p = _FiPlayer(calls, types.SimpleNamespace(now=lambda: 0.0))
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    p.hold_until_show()                  # an earlier start, still waiting
+    p.override = "preshow"               # the operator's look on the page
+    p.show_handoff = ("preshow", 0)
+    fis.pixels_for_show("Play from on the Programming screen",
+                        programming=True)
+    p.first_frame()
+    check(p.override == "preshow" and p.show_handoff is None,
+          f"a look the Programming screen keeps ends a stale hand-over, "
+          f"so later timecode never lifts it: {p.override!r}")
     print("  ok")
 
 
@@ -42943,6 +43204,16 @@ def test_the_show_takes_over_the_pixels_on_its_first_frame():
           f"the show's first frame goes out on the first tick after its "
           f"timecode: {out[6][:1]!r}")
     check("stale record" in text, f"the start's line: {text}")
+    # A start that never played (the clock refused it, then stopped): no
+    # hand-over left to lift the look on later timecode.
+    p = player()
+    p.override = "blackout"
+    p.hold_until_show()
+    p.drop_clock()
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "blackout" and p.show_handoff is None,
+          "the show clock stopping ends a waiting hand-over")
     # The closing black: black frames, then the show's first frame, with
     # no idle look flashed between.
     p = player()
@@ -88480,6 +88751,7 @@ if __name__ == "__main__":
         test_fire_ice_review_hand_mutations,
         test_every_show_start_clears_the_pixels,
         test_the_show_takes_over_the_pixels_on_its_first_frame,
+        test_hold_abort_stop_black_the_pixels_after_a_start,
         test_fire_ice_show_log_is_written_off_the_logging_threads,
         test_fire_ice_abort_and_hold_before_the_show_is_confirmed,
         test_fire_ice_show_end_burst_never_holds_up_the_flame_link,
