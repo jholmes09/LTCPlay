@@ -17809,8 +17809,8 @@ def build():
   '            if False:'),
 
  ('pre-roll: a failed check lets the scheduler start the show', 'ltcplay/schedule_service.py',
-  '            if v in ("failed", "cleared"):\n',
-  '            if v in ("cleared",):\n'),
+  '            if v == "failed":\n                return True\n',
+  '            if v == "failed":\n                return False\n'),
 
  ('pre-roll: a show due with no check starts unchecked', 'ltcplay/schedule_service.py',
   '            if v is None:\n                self._preroll_kick(n)\n            return True',
@@ -17979,8 +17979,8 @@ def build():
   '        elif False:\n            self._refresh_failure(r, bad)'),
 
  ('rig check cleared: a cleared show is started by the scheduler unattended', 'ltcplay/schedule_service.py',
-  '            if v in ("failed", "cleared"):\n',
-  '            if v in ("failed",):\n'),
+  '            if v == "cleared":\n                # It failed',
+  '            if v == "cleared":\n                return False\n                # It failed'),
 
  ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
   '                if kind == sch.RESUME and not out.refused:\n                    self._preroll_release(who, screen)',

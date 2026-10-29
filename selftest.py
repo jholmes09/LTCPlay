@@ -86587,6 +86587,38 @@ def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
           f"the release is journaled: {rows[-1:]}")
     c.close()
     n.link.close()
+    # No alert hold at all (nothing holds it at showtime): a cleared show
+    # is still never started by the scheduler; Start now checks and starts.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.showtime_gate = None
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 55)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 3),
+          "failed")
+    n.results["Video"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    check(n.pr.verdict(_pr_key(n)) == "cleared", "cleared before its time")
+    for sec in (0, 1, 3):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n),
+          f"unattended, a cleared show never starts: {svc.machine.state}")
+    from ltcplay import remote as RM
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll, rm.schedule = n.pr, svc
+    check(rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now to start the show.",
+          f"the screens say Start now: {rm.preroll_view().get('cleared')}")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW,
+          f"Start now checks and starts it: {got}")
+    c.close()
+    n.link.close()
     # Past its time: the show waits as delayed; the screens say Start now,
     # and Start now runs a normal check before it starts.
     n = _pr_night({"Audio": (False, "the show audio interface is not "

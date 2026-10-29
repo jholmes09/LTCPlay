@@ -1972,7 +1972,9 @@ class Remote:
         if m is not None and m.delayed() is not None:
             return (f"Rig check passed. Press Start now for show "
                     f"{m.delayed().n}.")
-        return "Rig check passed. The failure is cleared."
+        # Not held: the show it failed for is never started by itself
+        # after a failure, so Start now (it checks again).
+        return "Rig check passed. Press Start now to start the show."
 
 
     PRECHECK_CLEAR_S = 60.0

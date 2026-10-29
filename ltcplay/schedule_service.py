@@ -2614,10 +2614,12 @@ class Service:
             v = pr.verdict(key)
             if v == "passed":
                 return False
-            if v in ("failed", "cleared"):
-                # Cleared: it failed, and a later check passed (Jeff's
-                # field report, 2026-10-29). Still never started unattended:
-                # Resume (it is then checked again) or Start now.
+            if v == "failed":
+                return True
+            if v == "cleared":
+                # It failed, and a later check passed (Jeff's field report,
+                # 2026-10-29). Still never started unattended: Resume (it
+                # is then checked again) or Start now.
                 return True
             if key not in self._preroll_late:
                 self._preroll_late[key] = pr.late_ok_s()
