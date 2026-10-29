@@ -14453,6 +14453,122 @@ def build():
 
  # Review of #117 (cold safety review): one mutation per new guard and
  # per guard it found untested.
+ # Programming playback's flame cues (Jeff 2026-10-29: the switch "Fire
+ # flames while scrubbing" removed). The protections that were the switch's
+ # own, now on the always-on path: every move a landing, who may move it,
+ # a stale page's route, the deck, the Programming screen's line and fault.
+ ("programming flames: a Programming move is no landing at the flame link",
+  "ltcplay/flamelink.py",
+  "                self._land_gen += 1\n                self.landings += 1\n"
+  "                self._land_tc = tc\n                self._land_open = True\n"
+  "                self._seek_reset()",
+  "                self.landings += 1"),
+
+ ("programming flames: a landing ends on the frame from before the move",
+  "ltcplay/flamelink.py",
+  "        if tc is None or tc == self._land_tc:\n            self._seek_reset()\n"
+  "            return True",
+  "        if tc is None:\n            self._seek_reset()\n            return True"),
+
+ ("programming flames: a landing still open lets the cue values be read",
+  "ltcplay/flamelink.py",
+  "        if self.zeroed or tc is None or land:",
+  "        if self.zeroed or tc is None:"),
+
+ ("programming flames: a frame read across a landing goes out with its values",
+  "ltcplay/flamelink.py",
+  "            if lgen != self._land_gen:",
+  "            if False:"),
+
+ ("programming flames: the playhead never finds the flame link",
+  "ltcplay/playhead.py",
+  "        fn = getattr(link, \"landing\", None)\n        if fn is None:",
+  "        fn = None\n        if fn is None:"),
+
+ ("programming flames: Play from lands only before the move",
+  "ltcplay/playhead.py",
+  "                return self._play_from(show_s, who, screen)\n"
+  "            finally:\n                self._landing()",
+  "                return self._play_from(show_s, who, screen)\n"
+  "            finally:\n                pass"),
+
+ ("programming flames: Back and Ahead land only before the move",
+  "ltcplay/playhead.py",
+  "                at = s.clock_seek(max(0.0, here + float(seconds)))\n"
+  "            finally:\n                self._landing()",
+  "                at = s.clock_seek(max(0.0, here + float(seconds)))\n"
+  "            finally:\n                pass"),
+
+ ("programming flames: Continue is no landing",
+  "ltcplay/playhead.py",
+  "        self._landing()\n        try:\n            if cond is not None:\n"
+  "                self._refused(cond.resume(who, screen), \"Continue\")\n"
+  "            else:\n                s.clock_resume()\n        finally:\n"
+  "            self._landing()",
+  "        if cond is not None:\n"
+  "            self._refused(cond.resume(who, screen), \"Continue\")\n"
+  "        else:\n            s.clock_resume()"),
+
+ ("programming flames: the loop is no landing",
+  "ltcplay/playhead.py",
+  "        self._landing()\n        try:\n            return s.clock_set_loop(a, b)\n"
+  "        finally:\n            self._landing()",
+  "        return s.clock_set_loop(a, b)"),
+
+ ("programming flames: moves while flames follow need only the Show permission",
+  "ltcplay/remote.py",
+  "                    users_mod.allowed(u.matrix(), role, \"settings\"):",
+  "                    users_mod.allowed(u.matrix(), role, \"show\"):"),
+
+ ("programming flames: moves from a signed-out iPad go while flames follow",
+  "ltcplay/remote.py",
+  "        if not self.programming_flames_follow():\n            return \"\"",
+  "        if True:\n            return \"\""),
+
+ ("programming flames: Jump is not a move that needs the show PC",
+  "ltcplay/remote.py",
+  "    PROGRAMMING_MOVES = (\"play-from\", \"jump\", \"continue\", \"loop\", \"mark-a\",",
+  "    PROGRAMMING_MOVES = (\"play-from\", \"continue\", \"loop\", \"mark-a\","),
+
+ ("programming flames: the press never asks who may move the position",
+  "ltcplay/remote.py",
+  "            why = self.programming_move_refusal(name, body, ctx)",
+  "            why = \"\""),
+
+ ("programming flames: whether flames follow fails open",
+  "ltcplay/remote.py",
+  "            return ph is not None and bool(ph.applies())\n"
+  "        except Exception:                        # noqa: BLE001\n"
+  "            return True",
+  "            return ph is not None and bool(ph.applies())\n"
+  "        except Exception:                        # noqa: BLE001\n"
+  "            return False"),
+
+ ("programming flames: a stale page's scrub-flames route is not answered",
+  "ltcplay/remote.py",
+  "        if name in REMOVED_ROUTES:",
+  "        if False:"),
+
+ ("programming flames: the deck does not count Programming playback as running",
+  "ltcplay/remote.py",
+  "        for view in (self.live_flame_view, self.programming_flames_view):",
+  "        for view in (self.live_flame_view,):"),
+
+ ("programming flames: the Programming screen cuts the cue fault short",
+  "ltcplay/web/remote.html",
+  "  $(\"pf-warn\").textContent = warn;",
+  "  $(\"pf-warn\").textContent = warn.slice(0, 80);"),
+
+ ("programming flames: the Programming screen never shows a cue fault",
+  "ltcplay/web/remote.html",
+  "  const warn = on && tr.programming && fault ?",
+  "  const warn = false && fault ?"),
+
+ ("programming flames: the Programming screen never shows the line",
+  "ltcplay/web/remote.html",
+  "  $(\"pf-line\").hidden = !on;",
+  "  $(\"pf-line\").hidden = true;"),
+
  # The fuel tracker (fuel.py, FUEL.md, Jeff 2026-10-26).
  ("fuel: the flame link's observer is told before the frame went",
   "ltcplay/flamelink.py",

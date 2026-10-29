@@ -78266,17 +78266,19 @@ def test_programming_moves_are_flame_landings():
     check(link.wire[-1]["values"][410] == 200, "setup: cue A firing")
     inner = {"done": False}
 
-    def state_landing():
+    def cues_landing(tc):
+        # A move lands while this frame's cues are being read: after the
+        # frame passed every other check.
         if not inner["done"]:
             inner["done"] = True
-            link.show_state = state
+            link.cues = _pf_cues
             link.landing()
-        return state()
-    link.show_state = state_landing
+        return _pf_cues(tc)
+    link.cues = cues_landing
     show["t"] = 11.025
     clk[0] += 0.025
     link.send_frame()
-    check(link.wire[-1]["values"][410] == 0,
+    check(inner["done"] and link.wire[-1]["values"][410] == 0,
           "a frame read across a landing goes out as zeros")
     got = run(11.05, 11.9)
     check(not any(v for t, v in got),
@@ -78808,6 +78810,15 @@ def test_programming_flames_engine_routes_and_page():
         check(rm.programming_move_refusal(name, {}, ctx_as(None)) == "",
               f"{name} only stops: allowed from anywhere")
     check(_cfg_dashes(RM.Remote.PROGRAMMING_MOVE_REFUSED), "no dashes")
+    # Through the press itself, as a page sends it.
+    fresh = {"seconds": 5, "seen": time.time() * 1000}
+    code, out, _h = rm.post("/api/remote/jump", fresh, ctx_as(None))
+    check(code == 403 and
+          out.get("error") == RM.Remote.PROGRAMMING_MOVE_REFUSED,
+          f"a Jump from a signed-out iPad is refused at the press: "
+          f"{code} {out}")
+    code, out, _h = rm.post("/api/remote/jump", fresh, ctx_as(None, True))
+    check(code != 403, f"the same Jump on the show PC is not: {code} {out}")
     applies[0] = False
     check(rm.programming_move_refusal("jump", {}, ctx_as(None)) == "",
           "a show that does not play from the show audio: no flames "
