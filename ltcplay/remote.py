@@ -166,6 +166,14 @@ MADMAPPER_LINK_TITLE = ("This is a link check, never a picture check: "
 # PLAIN_CONFIRM_S, else the flame link's disarm_all (the Abort's) goes.
 PLAIN_DECK_FRESH_S = 0.5
 PLAIN_CONFIRM_S = 1.0
+# A screen's per-group Disarm (2026-10-29, Jeff's "armed in 2.0 but
+# disarmed in 1.0"): the same rule as Disarm all, answered only once it is
+# known. Confirmed only by a fresh flamesafe status received at least
+# GROUP_DISARM_SETTLE_S after the Stream Deck read the disarm (its next
+# main-loop pass and flamesafe's next tick both fit in that), looked at
+# every GROUP_DISARM_STEP_S for up to PLAIN_CONFIRM_S.
+GROUP_DISARM_SETTLE_S = 0.15
+GROUP_DISARM_STEP_S = 0.02
 BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
@@ -1576,6 +1584,11 @@ class Remote:
         self._plain_gen = 0
         self._later = self._timer
         self._deck_seen = None       # clock() of the deck's last read
+        # How many times the deck has read deck-input: a per-group Disarm
+        # is confirmed only on a status after the deck's next read.
+        self._deck_reads = 0
+        # How a per-group Disarm waits between looks (a test steps it).
+        self._pause = time.sleep
         # The deck's worst USB frame write of its last minute, in ms, as
         # its last deck-input read carried it (streamdeck.UsbMeter), or
         # None: the rack screen's Deck chip. Display only.
@@ -3755,10 +3768,30 @@ class Remote:
                           f"{h['device']} after {held:.1f} s.")
         return 200, {"ok": True}
 
-    def group_disarm(self, body, ctx):
+    def group_disarm(self, body, ctx, confirm=True):
         """Disarm one group: handed to the Stream Deck process, which owns
         the arm link, as an instant tap of that group's key. Never waits
-        on a fresh page."""
+        on a fresh page, and never gated by a role or a sign-in.
+
+        The same rule as Disarm all flame groups (2026-10-29): the answer
+        says what is known, never only "sent".
+          - the Stream Deck program has not read this engine within
+            PLAIN_DECK_FRESH_S, or flamesafe's status is not reaching this
+            engine (nothing could confirm it): the forced disarm at once,
+            sent before anything is written to disk (as Abort's
+            _disarm_now);
+          - else flamesafe must report the group off and not wanted, in a
+            fresh status received GROUP_DISARM_SETTLE_S or more after the
+            deck read the disarm, within PLAIN_CONFIRM_S: "confirmed";
+            else the forced disarm then.
+        The forced disarm is the show's flames_disarm_all, the flame
+        link's disarm_all (the Abort's; the link has no one-group
+        disarm): every group needs Arm again, every hazer goes off, and
+        the show's flames stay at zero until Hold then Resume or a new
+        run. Said so in the answer, journaled as a fault, with a flames
+        alert. `confirm` False (the wave flamer cleaning, which confirms
+        with its own Disarm all fallback) answers once the disarm is
+        handed over, as before."""
         try:
             i, gname = self._group_index(body)
         except ValueError as e:
@@ -3776,17 +3809,147 @@ class Remote:
                           f"{who or 'Someone'}'s Disarm {gname} on the "
                           f"{device} was refused. {why}")
             return 409, {"error": why}
+        seen = self._deck_seen
+        deck_fresh = (seen is not None and
+                      self.clock() - seen <= PLAIN_DECK_FRESH_S)
+        status_fresh = self._flame_status_fresh()
+        reads0 = self._deck_reads
         self._drop_hold(i)
         with self._arm_lock:
             self._disarm_ids += 1
             self._disarms.append({"id": self._disarm_ids, "group": i,
                                   "name": gname, "who": who,
                                   "device": device})
+        forced = None
+        if confirm and not deck_fresh:
+            forced = ("Deck did not answer",
+                      f"the Stream Deck program has not read this engine in "
+                      f"the last {PLAIN_DECK_FRESH_S:g} s, and it is what "
+                      f"carries a group's Disarm")
+        elif confirm and not status_fresh:
+            forced = ("No word from flamesafe",
+                      "flamesafe's status is not reaching this engine, so "
+                      "nothing can confirm the Disarm")
+        if forced is not None:
+            # The disarm first, the disk after (Abort's _disarm_now).
+            sent = self._group_force_send(who, device, gname, forced[1])
         self._journal(who, device, "disarm", "sent",
                       f"{who or 'Someone'} pressed Disarm {gname} on the "
                       f"{device}. Sent to the Stream Deck, which owns the "
                       f"arm link; flamesafe's lamp shows when it is off.")
-        return 200, {"ok": True, "text": f"Disarm {gname} sent."}
+        if not confirm:
+            return 200, {"ok": True, "text": f"Disarm {gname} sent."}
+        if forced is not None:
+            return self._group_disarm_said(who, device, gname, forced, sent)
+        if self._group_seen_off(i, gname, reads0):
+            text = f"Disarm {gname} confirmed: flamesafe reports it off."
+            self._journal(who, device, "disarm", "confirmed",
+                          f"{who or 'Someone'}'s Disarm {gname} on the "
+                          f"{device} is confirmed: flamesafe reports it off "
+                          f"and not asked for.")
+            return 200, {"ok": True, "confirmed": True, "text": text}
+        late = ("Not confirmed",
+                f"flamesafe did not report {gname} off within "
+                f"{PLAIN_CONFIRM_S:g} s of the Disarm")
+        sent = self._group_force_send(who, device, gname, late[1])
+        return self._group_disarm_said(who, device, gname, late, sent)
+
+    def _flame_status_fresh(self):
+        """True when flamesafe's status reaches this engine (a fresh
+        view). Never raises."""
+        try:
+            v = self.flame_status.view()
+            return bool(v) and not v.get("stale")
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def _group_seen_off(self, i, gname, reads0):
+        """True once a fresh flamesafe status, received at least
+        GROUP_DISARM_SETTLE_S after the deck read deck-input again (its
+        read count past `reads0`), reports group `i` (still named
+        `gname`) disarmed and not wanted; False when none has by
+        PLAIN_CONFIRM_S. Never raises."""
+        fs = self.flame_status
+        end = time.monotonic() + PLAIN_CONFIRM_S
+        read_at = None
+        for _step in range(int(PLAIN_CONFIRM_S / GROUP_DISARM_STEP_S) + 1):
+            try:
+                if read_at is None and self._deck_reads > reads0:
+                    read_at = fs.clock()
+                got = fs.last_at
+                if read_at is not None and got is not None and \
+                        got - read_at >= GROUP_DISARM_SETTLE_S:
+                    v = fs.view()
+                    g = (v.get("groups") or [])[i]
+                    if not v.get("stale") and g.get("name") == gname and \
+                            g.get("armed") == "disarmed" and \
+                            not g.get("wanted"):
+                        return True
+            except Exception:                    # noqa: BLE001
+                pass
+            if time.monotonic() >= end:
+                break
+            try:
+                self._pause(GROUP_DISARM_STEP_S)
+            except Exception:                    # noqa: BLE001
+                break
+        return False
+
+    def _group_force_send(self, who, device, gname, why):
+        """The forced disarm of a per-group Disarm: the show's
+        flames_disarm_all (the flame link's disarm_all, the Abort's: every
+        group, a fresh arm cycle, every hazer off, the show's flames at
+        zero until Hold then Resume or a new run; the link has no
+        one-group disarm). (ok, its sentence). Nothing journaled here.
+        Never raises."""
+        label = who or "An unnamed operator"
+        fn = self._disarm_fn()
+        if fn is None:
+            return False, ("no flame link is connected in this engine, so "
+                           "nothing could be sent")
+        try:
+            r = fn(f"{label} pressed Disarm {gname} on the {device} "
+                   f"({why}: every group disarmed the Abort way)")
+            return (bool(getattr(r, "ok", False)),
+                    str(getattr(r, "sentence", "") or "").strip())
+        except Exception as e:                   # noqa: BLE001
+            return False, f"{type(e).__name__}: {e}"
+
+    def _group_disarm_said(self, who, device, gname, cause, sent):
+        """The answer, journal line (a fault) and flames alert for a
+        per-group Disarm that was forced (`cause` is (lead, why), `sent`
+        is _group_force_send's (ok, sentence)). Says what the forced
+        disarm does, and "sent", never "disarmed": only flamesafe's
+        status can say that."""
+        label = who or "An unnamed operator"
+        lead, why = cause
+        ok, said = sent
+        if ok:
+            alert = (f"{lead}: ALL groups disarm sent. Disarm {gname} "
+                     f"forced ({why}): the flame link has no one-group "
+                     f"disarm, so the Abort's disarm was sent to every "
+                     f"flame group, every hazer is off, and the show's "
+                     f"flames stay at zero until Hold then Resume or a new "
+                     f"run. Each group needs Arm again (let go, then hold) "
+                     f"before it can fire. {said}").strip()
+        else:
+            alert = (f"Disarm {gname} COULD NOT be confirmed: {why}, and "
+                     f"the forced disarm did not go out either "
+                     f"({said or 'no answer'}). {gname} may still be "
+                     f"armed: press "
+                     f"Abort, or disarm at the Stream Deck.")
+        self._journal(who, device, "disarm", "forced" if ok else "fault",
+                      f"{label} pressed Disarm {gname} on the {device}. "
+                      f"{alert}", fault=True)
+        try:
+            self.alerts.raise_("flames", alert)
+        except Exception:                        # noqa: BLE001
+            pass
+        if ok:
+            return 200, {"ok": True, "confirmed": False, "forced": True,
+                         "text": alert}
+        return 409, {"ok": False, "confirmed": False, "forced": False,
+                     "error": alert}
 
     def deck_input(self, query=""):
         """What the Stream Deck process reads, 20 times a second: the
@@ -3796,6 +3959,7 @@ class Remote:
         rack screen; nothing here acts on it."""
         now = self.clock()
         self._deck_seen = now
+        self._deck_reads += 1
         self.users_file_check()
         self._deck_usb_ms = deck_usb_ms(query)
         self._deck_usb_fail = deck_usb_fail(query)

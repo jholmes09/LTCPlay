@@ -126,6 +126,9 @@ const SCENARIOS = {
   flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
+  // The Stream Deck program reads the engine but does not act on a group's
+  // Disarm: the engine forces the flame link's disarm_all (2026-10-29).
+  deck_not_answering: s => { s.flames.groups[0].armed = "armed"; s.flames.groups[0].wanted = true; },
 };
 
 // What the other GET routes answer, per scenario.
@@ -168,7 +171,27 @@ class FakeEngine {
     this.logic = this.html.slice(a + '<script id="remote-logic">'.length, b);
     this.uiDefault = 1;
   }
-  setScenario(name){ this.name = name; this.st = baseStatus(); (SCENARIOS[name] || (s => s))(this.st); }
+  setScenario(name){ this.name = name; this.st = baseStatus(); (SCENARIOS[name] || (s => s))(this.st); this.holds = {}; }
+  // The real engine's hold registry (remote.py arm_hold): one hold per
+  // group with its own id; a beat with any other id is refused, and any
+  // disarm, Abort or Stop ends it.
+  dropHolds(group){ this.holds = this.holds || {}; if(group === undefined) this.holds = {}; else delete this.holds[group]; }
+  groupDisarm(i){
+    const s = this.st, g = s.flames.groups[i];
+    if(!g) return {code: 400, body: {error: "That is not a flame group flamesafe reports."}};
+    this.dropHolds(i);
+    if(this.name === "deck_not_answering"){
+      const text = "Not confirmed: ALL groups disarm sent. Disarm " + g.name + " forced (flamesafe did not report " + g.name +
+        " off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, " +
+        "every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run. Each group needs Arm again " +
+        "(let go, then hold) before it can fire.";
+      s.flames.groups.forEach(x => { x.armed = "disarmed"; x.wanted = false; x.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
+      s.alerts = (s.alerts || []).concat([{id: 900 + i, kind: "flames", severity: "fault", text: text, options: ["Acknowledge"]}]);
+      return {code: 200, body: {ok: true, confirmed: false, forced: true, text: text}};
+    }
+    g.armed = "disarmed"; g.wanted = false;
+    return {code: 200, body: {ok: true, confirmed: true, text: "Disarm " + g.name + " confirmed: flamesafe reports it off."}};
+  }
   onPost(route, body){
     const s = this.st, sch = s.schedule;
     this.posts.push(route);
@@ -182,32 +205,46 @@ class FakeEngine {
       case "/api/remote/hold": sch.held = true; if(sch.state === "SHOW") sch.state = "PAUSED"; return ok("Held.");
       case "/api/remote/resume": sch.held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; s.alert_hold = {held: false};
         if(s.announce) s.announce.playing = null; return ok("Resumed.");
-      case "/api/remote/abort": sch.aborted = true; sch.state = "STANDBY"; sch.running = null; if(s.show) s.show.running = false;
+      case "/api/remote/abort": this.dropHolds(); sch.aborted = true; sch.state = "STANDBY"; sch.running = null; if(s.show) s.show.running = false;
         s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
         s.laser_arm.lasers.forEach(l => l.armed = false); return ok("Aborted.");
-      case "/api/remote/reset": sch.aborted = false; s.flames.groups.forEach(g => { g.armed = "disarmed"; delete g.reason; }); return ok("Reset.");
+      case "/api/remote/reset": sch.aborted = false; s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; delete g.reason; }); return ok("Reset.");
       case "/api/remote/start-now": sch.state = "SHOW"; sch.running = (sch.next || {}).show || 1; sch.held = false;
         s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
       case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
         if(sch.start_blocked) sch.start_blocked = null; return {code: 200, body: {ok: true, banner: "Running " + body.timeline + "."}};
       case "/api/remote/ui-default": this.uiDefault = body.default; return ok("Set.");
-      case "/api/remote/stop": sch.state = "STANDBY"; sch.running = null; s.show = {running: false};
+      case "/api/remote/stop": this.dropHolds(); sch.state = "STANDBY"; sch.running = null; s.show = {running: false};
         s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Stopped.");
-      case "/api/remote/disarm-all": s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Disarmed.");
+      case "/api/remote/disarm-all": this.dropHolds(); s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; }); return ok("Disarmed.");
       case "/api/remote/hazer": { const h = s.hazers.hazers.find(x => x.name === body.hazer);
         if(h){ h.armed = body.on === true; h.state = h.armed ? "standby" : "disarmed"; } return ok((body.hazer || "Hazer") + (body.on === true ? " is ARMED." : " is DISARMED.")); }
       case "/api/remote/hazers-off": s.hazers.hazers.forEach(h => { h.armed = false; h.state = "disarmed"; }); return ok("Every hazer is DISARMED.");
       case "/api/remote/hazer-level": s.hazers.hazers.forEach(h => { if(body.hazer === "all" || h.name === body.hazer){
         if(typeof body.haze === "number") h.haze_pct = body.haze; if(typeof body.fan === "number") h.fan_pct = body.fan; } }); return ok("Set.");
-      case "/api/remote/group-disarm": if(s.flames.groups[body.group]) s.flames.groups[body.group].armed = "disarmed"; return ok("Disarmed.");
+      case "/api/remote/group-disarm": return this.groupDisarm(body.group);
       case "/api/remote/arm-hold": {
-        const g = s.flames.groups[body.group];
-        this.armHeld = this.armHeld || {}; const k = body.group;
-        this.armHeld[k] = (this.armHeld[k] || 0) + 1;
-        if(g && this.armHeld[k] >= 6){ g.armed = "armed"; }
-        return {code: 200, body: {ok: true, taken: true, armed: g && g.armed === "armed"}};
+        // A new hold has no hold_id; each beat after carries the id it was
+        // given. Armed after six beats of the same hold, as before.
+        const k = body.group, g = s.flames.groups[k], needs = (s.arming || {}).needs_s || 1.0;
+        if(!g) return {code: 400, body: {error: "That is not a flame group flamesafe reports."}};
+        this.holds = this.holds || {}; this.holdIds = this.holdIds || 0;
+        const h = this.holds[k];
+        if(body.hold_id === undefined || body.hold_id === null){
+          if(g.armed === "armed" || g.wanted) return {code: 409, body: {error: g.name + " is already armed or asked for.", let_go: true}};
+          const id = ++this.holdIds;
+          this.holds[k] = {id: id, beats: 1};
+          return {code: 200, body: {ok: true, hold_id: id, held_s: 0.0, needs_s: needs}};
+        }
+        if(!h || h.id !== body.hold_id) return {code: 409, body: {error: "The hold was interrupted. Lift your finger and hold again.", let_go: true}};
+        h.beats += 1;
+        if(h.beats >= 6){
+          g.armed = "armed"; g.wanted = true; delete this.holds[k];
+          return {code: 200, body: {ok: true, armed: true, hold_id: h.id, text: g.name + " is asked for: the Stream Deck took the hold and set it."}};
+        }
+        return {code: 200, body: {ok: true, hold_id: h.id, held_s: Math.round((h.beats - 1) * 100) / 1000, needs_s: needs}};
       }
-      case "/api/remote/arm-release": this.armHeld = {}; return ok();
+      case "/api/remote/arm-release": this.dropHolds(body.group); return ok();
       case "/api/remote/alert": s.alerts = s.alerts.filter(a => a.id !== body.id); return ok("Acknowledged.");
       case "/api/remote/announce-play": { const it = s.announce.items.find(i => i.id === body.id);
         s.announce.playing = {id: body.id, name: it ? it.name : body.id, elapsed_s: 0, length_s: it ? it.length_s : 10, held_schedule: sch.state !== "SHOW"};

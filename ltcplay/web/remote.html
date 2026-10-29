@@ -3202,14 +3202,25 @@ function confirmBox(q, detail, yes, cls, items, flip){
     $("m-no").onclick = () => done(false);
   });
 }
+// The message line is keyed by press (review of #170): a group's Disarm
+// can take up to 1 s to answer (the engine waits for flamesafe), and a late
+// answer must never cover a newer press's words, nor Abort's.
+let PRESS_SEQ = 0, ABORT_SEQ = 0;
+const SAID_SEQ = {};
 async function press(route, extra, msgEl){
   const el = $(msgEl || "ctl-msg");
-  let j = null;
+  const seq = ++PRESS_SEQ;
+  if(route === "abort") ABORT_SEQ = seq;
+  let j = null, text = "";
   try{
     j = await post("/api/remote/" + route, actor(extra));
-    el.textContent = j.text || "Done.";
-  }catch(e){ el.textContent = e.message; }
-  el.title = el.textContent;
+    text = j.text || "Done.";
+  }catch(e){ text = e.message; }
+  if(seq >= (SAID_SEQ[el.id] || 0) && (el.id !== "ctl-msg" || seq >= ABORT_SEQ)){
+    SAID_SEQ[el.id] = seq;
+    el.textContent = text;
+    el.title = text;
+  }
   return j;          // the engine's answer, or null when it refused
 }
 
