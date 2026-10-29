@@ -38137,9 +38137,36 @@ class _FiClock:
 
 
 class _FiPlayer:
+    """Stands in for player.Player as FireIceShow uses it: the override,
+    and a show start's hand-over (hold_until_show), which the real tick
+    ends on the first show frame; here first_frame() is that tick."""
+
     def __init__(self, calls, T):
         self.calls, self.T = calls, T
         self._override = None
+        self.show_handoff = None
+        self.show_handoff_done = None
+
+    def hold_until_show(self):
+        self.show_handoff = (self._override, 0)
+        self.show_handoff_done = None
+        return self._override
+
+    def cancel_show_handoff(self):
+        had = self.show_handoff is not None
+        self.show_handoff = None
+        return had
+
+    def first_frame(self):
+        """The first frame of the show's timecode reaches the tick."""
+        hand = self.show_handoff
+        if hand is None:
+            return
+        self.show_handoff = None
+        if self._override == hand[0]:
+            if self._override is not None:
+                self.override = None
+            self.show_handoff_done = (hand[0], self.T.now())
 
     @property
     def override(self):
@@ -42618,24 +42645,30 @@ def test_fire_ice_review_hand_mutations():
     n.svc.tick()
     n.sess.player.override = "preshow"
     r = n.w.runner.start_show(9, who="Andy")
-    check(r.ok and n.sess.player.override is None,
-          f"a look chosen before the show is cleared when it starts: "
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(r.ok and held == "preshow" and n.sess.player.override is None,
+          f"a look chosen before the show stays up until the first show "
+          f"frame, then is cleared on that frame: {held!r} "
           f"{n.sess.player.override!r} {r}")
     n.sess.player.override = None
     n.w.show._pix_ours, n.w.show._pix_prev = True, "preshow"
     n.sess.player.override = "blackout"
     n.w.runner.start_show(10, who="Andy")
-    check(n.sess.player.override == "blackout" and
-          n.w.show._pix_prev is None,
-          "the conductor's own black stays until the show is confirmed, "
-          "and what was under it is forgotten")
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(held == "blackout" and not n.w.show._pix_ours and
+          n.w.show._pix_prev is None and n.sess.player.override is None,
+          "the conductor's own black is cleared by the start itself (held "
+          "until the first show frame, never left for the confirmation), "
+          "and what was under it is forgotten (Jeff's report, 2026-10-29)")
+    n.w.show._pix_ours, n.w.show._pix_prev = True, None
     n.sess.player.override = "preshow"      # the page, over that black
     n.w.runner.start_show(11, who="Andy")
-    check(n.sess.player.override == "blackout" and
-          n.w.show._pix_prev is None,
-          f"a look the page put over the conductor's black goes back to "
-          f"that black, to be lifted on confirmation: "
-          f"{n.sess.player.override!r}")
+    n.sess.player.first_frame()
+    check(n.sess.player.override is None and not n.w.show._pix_ours,
+          f"a look the page put over the conductor's black is cleared with "
+          f"it: {n.sess.player.override!r}")
     # H12: closing zeroes the flames, blanks the lasers, blacks the pixels.
     n = _fi_night()
     n.svc.tick()

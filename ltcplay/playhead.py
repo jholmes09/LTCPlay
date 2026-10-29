@@ -241,6 +241,13 @@ class ShowAudioPlayhead:
             from .fire_ice import follow_show_bank
             follow_show_bank(mm, getattr(cond, "_note", None) or
                              (lambda *a, **k: None))
+        # Every start clears what is not the show from the pixels, in the
+        # one place a show start does it (fire_ice.FireIceShow.
+        # pixels_for_show; Jeff's report, 2026-10-29): the conductor's
+        # black from between shows is not left for show_starting() to lift.
+        clear = getattr(getattr(cond, "show", None), "pixels_for_show", None)
+        if clear is not None:
+            clear("Play from on the Programming screen", programming=True)
         _cue, at = s.clock_play_from(show_s)
         self._adopt(s)
         with self._lock:

@@ -145,6 +145,18 @@ class Player:
         # button you want at 6pm when the generator is running timecode from
         # yesterday's rehearsal and you just need the preshow on the trees.
         self.override = None
+        # A show start's hand-over (fire_ice.FireIceShow.pixels_for_show;
+        # Jeff's report, 2026-10-29: a dark blink between the idle look and
+        # the show): (the look that was up at the start, ltc_frames_in then)
+        # while that look is held until the first frame of the new show's
+        # timecode. The tick that first has it drops the look and renders
+        # that show frame, so nothing goes out between the two. Anyone
+        # else's look (a Hold's or an Abort's black, the page) cancels it.
+        # None otherwise; nothing on the GPL path ever sets it.
+        self.show_handoff = None
+        # (the look it ended, _now()) once a hand-over is done, for the
+        # journal's "the first show frame went out" line.
+        self.show_handoff_done = None
         # The blue floor-pixel pulse for an open alert (alerts.py, Jeff
         # 2026-10-07): a flag the alert service sets, read on this
         # player's own tick (no extra thread), painted over the configured
@@ -511,6 +523,46 @@ class Player:
         with self._lock:
             self._hard_parked = bool(active)
 
+    def hold_until_show(self):
+        """A show is being started on the show clock: keep whatever look is
+        up now (the idle look, a Preshow, a black) until the first frame of
+        its timecode, then switch to the show on that same tick (see
+        show_handoff). Returns the look held (None: the idle look)."""
+        with self._lock:
+            self.show_handoff = (self.override, self.ltc_frames_in)
+            self.show_handoff_done = None
+            return self.override
+
+    def cancel_show_handoff(self):
+        """Someone else set the look (a Hold's or an Abort's black): no
+        hand-over to the show. Returns True if one was waiting."""
+        with self._lock:
+            had = self.show_handoff is not None
+            self.show_handoff = None
+        return had
+
+    def _take_handoff(self, hand, epoch, fed, now):
+        """The hand-over's one step, on the tick: once the new show's first
+        timecode frame is in, the look held at the start is dropped here,
+        before the tick reads the override, so this tick renders the show
+        frame. Until then the held look keeps going out."""
+        look, armed = hand
+        with self._lock:
+            if self.show_handoff is not hand:
+                return
+            if self.override != look:
+                # A look set since the start: theirs stands.
+                self.show_handoff = None
+                return
+            if epoch is None or fed == armed:
+                return
+            self.show_handoff = None
+            self.override = None
+            self.show_handoff_done = (look, now)
+        self._event("override", f"the show took over from "
+                                f"{look or 'the idle look'} on its first "
+                                f"frame")
+
     def drop_clock(self):
         """The show clock stopped on purpose: hand the rig to the idle look.
 
@@ -703,6 +755,10 @@ class Player:
         with self._lock:
             epoch = self._epoch
             last = self._last_lock
+            hand = self.show_handoff
+            fed = self.ltc_frames_in
+        if hand is not None:
+            self._take_handoff(hand, epoch, fed, now)
 
         prev_state, prev_cue, prev_source = self.state, self.current_cue, self.source
 
