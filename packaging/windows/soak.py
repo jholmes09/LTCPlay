@@ -123,6 +123,13 @@ DRIFT_MS = 50.0            # this soak: one and a half frames at 30 fps
 DECK_VID, DECK_PID = 0x0FD9, 0x0063   # the Stream Deck Mini streamdeck.py drives
 
 
+# Said at the top of every soak report: the soak kit runs with the rig
+# check off (preroll_s 0, allowed only with soak_only).
+PREROLL_LINE = ("Pre-roll check: OFF (soak kit: preroll_s 0, allowed only in "
+                "a soak kit; a real install always checks the rig before "
+                "each show)")
+
+
 def now_text(t=None):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t or time.time()))
 
@@ -845,6 +852,12 @@ class Soak:
               "show_name": "Ignite the Night",
               "venue": "Thanksgiving Point",
               "notes": "BENCH ONLY, written by the soak test",
+              # The rig check before each show (PR #162) is OFF in a soak
+              # kit: the bench has no announcement output, booth speaker
+              # or real Stream Deck to prove, so it would hold every soak
+              # show. 0 is refused by every engine without soak_only
+              # (fire_ice.FireIceConfig), so a real install always checks.
+              "preroll_s": 0,
               "soak_only": True}
         if self.mode != "fallback":
             # MadMapper's heartbeat track (its project sends it; see the
@@ -2811,6 +2824,7 @@ class Soak:
             "Show audio: " + ("FAKE stand-in device (CI run)"
                               if self.fake_audio else
                               (self.audio_name or "NO interface found")),
+            PREROLL_LINE,
             f"Bench schedule: a {self.show_s:g} s show "
             f"({int(self.show_s // 60)} min {int(self.show_s % 60)} s) every "
             f"{self.every_min:g} minutes, the first at "
