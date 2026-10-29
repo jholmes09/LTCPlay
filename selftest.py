@@ -86994,7 +86994,8 @@ t(L.text === "Lasers: fault" && /BEYOND not answering/.test(L.first) && L.cls ==
 L = sysLook([{name:"Deck", state:"warn", word:"late 1.2 s"}, {name:"Pixels", state:"bad", word:"not sending"}], false);
 t(L.text === "2 to check" && /^First: Pixels\./.test(L.first), "several: the count, and the worst first: " + L.first);
 L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:"Laser arm", state:"warn", word:"ARMED"}, {name:"Deck", state:"off", word:"not heard"}], false);
-t(L.text === "All OK" && L.items.map(i => i.state).join(",") === "off,on,off", "not set up here reads Off, all armed reads On: " + L.items.map(i => i.state));
+t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,off" && /Pick one in Settings/.test(L.first),
+  "announcements with no output picked are a problem, all armed reads On, not set up reads Off: " + L.text + " " + L.items.map(i => i.state));
 t(sysLook([{name:"Disk", state:"bad", word:"critical"}], true).text === "No contact", "no contact: said");
 for(const w of ["not heard", "missing", "late 1.2 s", "USB slow 2.0 s", "default keys: ltcplay_deck.json not used", "USB 3 write(s) failed", "not known", "no status", "fault",
                 "not attached", "lost", "show audio not open", "output not attached", "pick one output", "file problem", "low", "critical", "not writing", "2 of 4 armed",
@@ -87743,8 +87744,30 @@ async function go(){
   res.fire_held = of("purge-fire");
   key("Space", "keyup"); await wait(300);
   res.fire_after = of("purge-fire").length; res.stop = of("purge-stop").length;
-  // Space on another step fires nothing.
+  // Space over an open sheet, or on a focused button, presses that and
+  // never fires (review of #169, 3).
+  posts.length = 0;
+  q("d-q").click(); await wait(300);
+  const sb = document.querySelector("#sheet button");
+  res.sheet_open = !q("sheet").hidden;
+  if(sb){ sb.focus(); sb.dispatchEvent(new KeyboardEvent("keydown", {code:"Space", key:" ", bubbles:true})); }
+  key("Space", "keydown"); await wait(300); key("Space", "keyup");
+  document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true})); await wait(200);
+  q("mo-clear").focus();
+  q("mo-clear").dispatchEvent(new KeyboardEvent("keydown", {code:"Space", key:" ", bubbles:true})); await wait(300);
+  q("mo-clear").dispatchEvent(new KeyboardEvent("keyup", {code:"Space", key:" ", bubbles:true})); q("mo-clear").blur();
+  res.fire_sheet = of("purge-fire").length;
+  // Next on Purge moves on and leaves it to do (a look is not a purge),
+  // with nothing selected (a selection keeps it to do regardless).
+  MO.purge_state = Object.assign({}, MO.purge_state || {}, {selected:[]});
+  q("d-next").click(); await wait(100);
+  res.purge_after_next = document.querySelector('[data-step="purge"]').className;
+  // Leaving the Purge step drops this screen's selection (review of #169, 1).
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
   document.querySelector('[data-step="locks"]').click(); await wait(300);
+  res.clear_on_step = of("purge-clear").length;
+  // Space on another step fires nothing.
   posts.length = 0;
   key("Space", "keydown"); await wait(300); key("Space", "keyup"); await wait(100);
   res.fire_elsewhere = of("purge-fire").length;
@@ -87752,8 +87775,8 @@ async function go(){
   posts.length = 0;
   document.querySelector('#d-locks [data-lock="m2"]').click(); await wait(500);
   res.lock = of("lock");
-  // The startup list: who, then a tick.
-  document.querySelector('[data-step="startlist"]').click(); await wait(300);
+  // The startup list: who, then a tick (a step's first second is quiet).
+  document.querySelector('[data-step="startlist"]').click(); await wait(1200);
   posts.length = 0;
   q("d-tick").click(); await wait(300);
   res.tick_noname = of("checklist-tick").length;
@@ -87762,6 +87785,23 @@ async function go(){
   posts.length = 0;
   q("d-tick").click(); await wait(300);
   res.tick = of("checklist-tick");
+  // A double tap is one tick, of the step drawn (review of #169, 2): the
+  // second tap comes inside the quiet second; after it a tap counts again.
+  await wait(1100);
+  posts.length = 0;
+  res.tick_step = q("d-tick").dataset.step;
+  q("d-tick").click(); await wait(40); q("d-tick").click(); await wait(400);
+  res.double = of("checklist-tick").map(b => b.step);
+  await wait(1100);
+  q("d-tick").click(); await wait(300);
+  res.after_quiet = of("checklist-tick").length;
+  // Switching Startup and Shutdown on the Purge step drops it too.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  document.querySelector('#d-seg [data-part="shut"]').click(); await wait(300);
+  res.clear_on_part = of("purge-clear").length;
+  document.querySelector('#d-seg [data-part="start"]').click(); await wait(300);
+  document.querySelector('[data-step="startlist"]').click(); await wait(300);
   // Next: to the next step not done.
   const before = document.querySelector("#d-steps .st.on").dataset.step;
   q("d-next").click(); await wait(300);
@@ -87849,6 +87889,22 @@ def test_ui2_day_tab_in_a_browser():
         check(res["stop"] >= 1 and res["fire_after"] == len(fh),
               f"{where}: letting go of Space stops it, no beat after: "
               f"{res}")
+        check(res["sheet_open"] and res["fire_sheet"] == 0,
+              f"{where}: Space over an open sheet or on a focused button "
+              f"never fires (review of #169, 3): {res['fire_sheet']}")
+        check(res["clear_on_step"] >= 1 and res["clear_on_part"] >= 1,
+              f"{where}: leaving the Purge step or switching Startup and "
+              f"Shutdown drops this screen's purge selection (review of "
+              f"#169, 1): {res['clear_on_step']} {res['clear_on_part']}")
+        check("done" not in res["purge_after_next"].split(),
+              f"{where}: Next on Purge leaves it to do: "
+              f"{res['purge_after_next']}")
+        check(res["double"] == [res["tick_step"]] and
+              res["tick_step"] == "s1" and res["after_quiet"] == 2,
+              f"{where}: a double tap on Tick is one tick, of the step "
+              f"drawn; a tap after the quiet second counts (review of "
+              f"#169, 2): {res['double']} {res['tick_step']} "
+              f"{res['after_quiet']}")
         check(res["fire_elsewhere"] == 0,
               f"{where}: Space on another step fires nothing: {res}")
         check(res["lock"] == [dict(res["lock"][0], kind="machine", id="m2",

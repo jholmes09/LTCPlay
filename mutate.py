@@ -18040,8 +18040,28 @@ def build():
   "      $(\"wc-hold\").addEventListener(ev, () => { if(false) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")"),
 
  ("ui2 day: leaving DAY keeps this screen's purge selection", "ltcplay/web/remote2.html",
-  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n    if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me)\n      post(\"/api/remote/purge-clear\", moActor({})).catch(() => {});\n  }\n  if(on && !FU_OPEN)",
-  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n  }\n  if(on && !FU_OPEN)"),
+  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n    purgeDrop();\n  }",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n  }"),
+
+ ("ui2 day: leaving the Purge step keeps this screen's selection", "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); }"),
+
+ ("ui2 day: a double tap on Tick ticks twice", "ltcplay/web/remote2.html",
+  "      if(DAY_TICK_BUSY || monoNow() - DAY_TICK_AT < DAY_TICK_QUIET_MS) return;\n",
+  ""),
+
+ ("ui2 day: Space fires the purge over an open sheet", "ltcplay/web/remote2.html",
+  "  if(SHEET_DONE || !$(\"sheet\").hidden) return;\n",
+  ""),
+
+ ("ui2 day: Next marks Purge done after a look", "ltcplay/web/remote2.html",
+  "[\"fuel\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)",
+  "[\"fuel\", \"purge\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)"),
+
+ ("ui2 page: announcements with no output picked read Off", "ltcplay/web/remote2.html",
+  "const SYS_OFF = /^(none|none set up|not set up|stopped|",
+  "const SYS_OFF = /^(none|none set up|not set up|pick an output|stopped|"),
 
  ("ui2 day: the copied purge fire beats faster than 1.0's", "ltcplay/web/remote2.html",
   "    f.timer = setTimeout(() => fireBeat(f), 100);",

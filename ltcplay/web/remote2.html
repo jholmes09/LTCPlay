@@ -1945,13 +1945,15 @@ function abortAnswered(j, err){
 // The systems badge (Jeff, 2026-10-29: "1 to check" said nothing of what):
 // each subsystem the engine lists, with its name, its state and what is
 // wrong and what to do in 8 words or fewer. Something not set up here
-// (the engine says "none", "not set up", "pick an output") reads Off, and
+// (the engine says "none", "not set up") reads Off, and
 // lasers fully armed are a state, not a problem. Pure.
 const SYS_LABEL = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Show audio":"Show audio", "Announcements":"Announcements",
   "Disk":"Disk", "Audit":"Audit log", "Laser arm":"Laser arm", "Lasers":"Laser output", "Video":"Video", "Pixels":"Pixels", "Timecode":"Timecode"};
 // The badge's own short names (the sheet says the whole name).
 const SYS_SHORT = {"Stream Deck":"Deck", "Show audio":"Audio", "Announcements":"Announce", "Audit log":"Audit", "Laser output":"Lasers"};
-const SYS_OFF = /^(none|none set up|not set up|pick an output|stopped|not connected|disarmed)$/i;
+// "pick an output" is not here: the announcements are set up and cannot
+// play until one is picked (review of #169).
+const SYS_OFF = /^(none|none set up|not set up|stopped|not connected|disarmed)$/i;
 const SYS_SAY = [
   [/^deck$/, /not heard|missing/, "Not heard. Check its USB cable."],
   [/^deck$/, /late|usb slow/, "Slow. Check its USB cable."],
@@ -2504,12 +2506,18 @@ function dayView(on){
   if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
   if(!on && MO_OPEN){
     MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left");
-    if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me)
-      post("/api/remote/purge-clear", moActor({})).catch(() => {});
+    purgeDrop();
   }
   if(on && !FU_OPEN){ FU_OPEN = true; fuelPoll2(); }
   if(!on && FU_OPEN){ FU_OPEN = false; clearTimeout(FU_TIMER); }
   cleaningView(on);
+}
+// This screen's own purge selection goes when its Purge step does (review
+// of #169, 1): leaving the step, switching Startup and Shutdown, or
+// leaving the page. 1.0's route and body; only this screen's own.
+function purgeDrop(){
+  if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me)
+    post("/api/remote/purge-clear", moActor({})).catch(() => {});
 }
 function dayStepsNow(){
   if(!DAY_PART) DAY_PART = dayDefaultPart(ST, MO);
@@ -2517,7 +2525,7 @@ function dayStepsNow(){
 }
 function dayGo(k){
   if(DAY_STEP === k) return;
-  if(DAY_STEP === "purge") fireStop("another step was chosen");
+  if(DAY_STEP === "purge"){ fireStop("another step was chosen"); purgeDrop(); }
   if(DAY_STEP === "clean" && WC_HOLD) wcLetGo("another step was chosen");
   DAY_STEP = k; DAY_CTL = ""; renderMorning();
 }
@@ -2528,7 +2536,9 @@ $("d-next").addEventListener("click", () => {
   const steps = dayStepsNow();
   const i = steps.findIndex(x => x.key === DAY_STEP);
   const cur = steps[i];
-  if(cur && ["fuel", "purge", "lasers", "hazers", "locks", "locks-shut", "clean"].includes(cur.key) && cur.state === "todo") dayMarkSeen(cur.key);
+  // Purge, hazers and cleaning are never done by a look (review of #169):
+  // Next moves on and leaves them to do.
+  if(cur && ["fuel", "lasers", "locks", "locks-shut"].includes(cur.key) && cur.state === "todo") dayMarkSeen(cur.key);
   const after = dayStepsNow();
   const j = after.findIndex(x => x.key === DAY_STEP);
   const nx = after.slice(j + 1).concat(after.slice(0, Math.max(0, j))).find(x => x.state !== "done");
@@ -2567,6 +2577,8 @@ const DAY_MSG = {purge:"mo-msg", locks:"mo-msg", "locks-shut":"mo-msg", checks:"
 // The checklist: who ticks is the person signed in (1.0's picker when the
 // name is not on the list), one step at a time.
 let DAY_CK = {list:null, i:0};
+let DAY_TICK_BUSY = false, DAY_TICK_AT = -1e9;
+const DAY_TICK_QUIET_MS = 1000;
 function dayWho(c){
   const me = (ST && ST.me) || ME || {};
   if(me.user && (c.names || []).includes(me.user)) MO_NAME = me.user;
@@ -2642,11 +2654,19 @@ function dayWire(k){
     sheet(c.title, `<div class="full">${esc(checkLook(c.level).word)}. ${esc(c.text)}</div>`, [{label:"Close", cls:"blue"}]);
   });
   if(k === "startlist" || k === "shutlist"){
-    $("d-tick").addEventListener("click", () => {
+    // A tick is for the step drawn on the screen (review of #169, 2): its
+    // id is on the button, a tap in the first second a step is shown or
+    // while a tick is on its way is ignored, so a double tap never ticks
+    // the next step unread.
+    $("d-tick").addEventListener("click", async () => {
+      if(DAY_TICK_BUSY || monoNow() - DAY_TICK_AT < DAY_TICK_QUIET_MS) return;
       const l = dayList(DAY_PART, MO); if(!l) return;
-      const s = l.steps[DAY_CK.i]; if(!s) return;
+      const id = $("d-tick").dataset.step;
+      const s = (l.steps || []).find(x => String(x.id) === id); if(!s) return;
       if(!dayWho(MO.checklists)){ $("mo-cmsg").textContent = "Pick who is ticking first."; return; }
-      moPress("checklist-tick", {checklist:l.id, step:s.id, done: !s.done, who:MO_NAME}, "mo-cmsg");
+      DAY_TICK_BUSY = true;
+      try{ await moPress("checklist-tick", {checklist:l.id, step:s.id, done: !s.done, who:MO_NAME}, "mo-cmsg"); }
+      finally{ DAY_TICK_BUSY = false; DAY_TICK_AT = monoNow(); }
     });
     $("d-note").addEventListener("click", async () => {
       const l = dayList(DAY_PART, MO); if(!l) return;
@@ -2736,6 +2756,8 @@ function dayUpdate(k){
     setText($("d-tick-l"), s && s.done ? "Untick" : "Tick");
     $("d-tick").className = "b " + (s && s.done ? "" : "green");
     $("d-tick").disabled = !s; $("d-note").disabled = !s;
+    const sid = s ? String(s.id) : "";
+    if($("d-tick").dataset.step !== sid){ $("d-tick").dataset.step = sid; DAY_TICK_AT = monoNow(); }
     $("d-ck-prev").disabled = DAY_CK.i <= 0; $("d-ck-next").disabled = DAY_CK.i >= steps.length - 1;
     const who = dayWho(c);
     const sig = JSON.stringify([c.names, who, s && s.done, s && s.who, s && s.note]);
@@ -2854,7 +2876,10 @@ function renderCleaning(){
 document.addEventListener("keydown", e => {
   if(e.code !== "Space") return;
   if(TAB !== "day" || DAY_STEP !== "purge") return;
-  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  // An open sheet, or a focused button or field, takes Space as itself
+  // (review of #169, 3): it presses that button and never fires.
+  if(SHEET_DONE || !$("sheet").hidden) return;
+  if(e.target && e.target.closest && e.target.closest("input, select, textarea, button, a, [role=button]")) return;
   e.preventDefault();
   if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }
   fireStart();
