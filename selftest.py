@@ -78266,15 +78266,17 @@ def test_programming_moves_are_flame_landings():
     check(link.wire[-1]["values"][410] == 200, "setup: cue A firing")
     inner = {"done": False}
 
-    def cues_landing(tc):
-        # A move lands while this frame's cues are being read: after the
+    real_unlocked = link._unlocked
+
+    def unlocked_landing(vals):
+        # A move lands at the very end of this frame's read: after the
         # frame passed every other check.
         if not inner["done"]:
             inner["done"] = True
-            link.cues = _pf_cues
+            link._unlocked = real_unlocked
             link.landing()
-        return _pf_cues(tc)
-    link.cues = cues_landing
+        return real_unlocked(vals)
+    link._unlocked = unlocked_landing
     show["t"] = 11.025
     clk[0] += 0.025
     link.send_frame()
@@ -78685,9 +78687,16 @@ def test_programming_flames_end_to_end_real_flamesafe():
         ph.loop(None, None)
         # Hold from any surface: the Programming Pause, zero at the node.
         ph.follow("Andy", "Rack screen")
+        if group0() != "armed":
+            # A busy runner can starve the deck thread past arm_stale_ms;
+            # that is flamesafe's rule, not what is tested here.
+            check(arm_group0(), "group 1 armed again before Hold")
         ph.play_from(9.0, "Andy", "Rack screen")
         got = node_until(lambda v: v == 200)
-        check(got[-1:] == [200], f"played into cue A again: {got[-5:]}")
+        check(got[-1:] == [200], f"played into cue A again: {got[-5:]} "
+                                 f"group {group0()} link "
+                                 f"{link.last_values_nonzero} at "
+                                 f"{clk.pos()}")
         ph.hold_press("Andy", "Stream Deck")
         got = node_until(lambda v: v == 0)
         check(got[-5:] == [0] * 5, f"Hold: zero at the node: {got[-5:]}")

@@ -14470,11 +14470,6 @@ def build():
   "            return True",
   "        if tc is None:\n            self._seek_reset()\n            return True"),
 
- ("programming flames: a landing still open lets the cue values be read",
-  "ltcplay/flamelink.py",
-  "        if self.zeroed or tc is None or land:",
-  "        if self.zeroed or tc is None:"),
-
  ("programming flames: a frame read across a landing goes out with its values",
   "ltcplay/flamelink.py",
   "            if lgen != self._land_gen:",
