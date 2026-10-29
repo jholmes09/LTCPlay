@@ -86805,6 +86805,434 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+class _FakeWins:
+    """showwindows.Win32 for the selftest: a window list (top first), the
+    displays, the foreground, the last input, and what was raised."""
+
+    def __init__(self, wins, mons=((0, 0, 1920, 1080), (1920, 0, 3840, 1080))):
+        self.wins = [dict(w) for w in wins]
+        self.mons = [tuple(m) for m in mons]
+        self.fg = self.wins[0]["hwnd"] if self.wins else 0
+        self.input_age = 600.0
+        self.raised = []
+        self.fail = False
+
+    def windows(self):
+        if self.fail:
+            raise OSError("no")
+        return [w["hwnd"] for w in self.wins]
+
+    def info(self, hwnd, images):
+        for w in self.wins:
+            if w["hwnd"] == hwnd:
+                d = {"pid": 1, "thread": 1, "title": "", "minimized": False,
+                     "caption": True, "owner": 0, "visible": True}
+                d.update(w)
+                return d
+        return None
+
+    def monitors(self):
+        return list(self.mons)
+
+    def foreground(self):
+        return self.fg
+
+    def input_age_s(self):
+        return self.input_age
+
+    def hung(self, hwnd):
+        return False
+
+    def bring_to_front(self, hwnd, thread):
+        self.raised.append(hwnd)
+        w = next(x for x in self.wins if x["hwnd"] == hwnd)
+        self.wins.remove(w)
+        w["minimized"] = False
+        self.wins.insert(0, w)
+        self.fg = hwnd
+        return True
+
+
+_RACK = {"hwnd": 10, "image": r"C:\Program Files (x86)\Microsoft\Edge"
+         r"\Application\msedge.exe", "title": "Fire and Ice remote",
+         "rect": (-8, -8, 1928, 1040), "caption": True}
+_BEYOND = {"hwnd": 20, "image": r"C:\BEYOND\BEYOND.exe",
+           "title": "BEYOND Ultimate", "rect": (100, 100, 1500, 900)}
+_MM_UI = {"hwnd": 30, "image": r"C:\Program Files\MadMapper\MadMapper.exe",
+          "title": "MadMapper - Fire and Ice.mad",
+          "rect": (0, 0, 1920, 1040)}
+_MM_OUT = {"hwnd": 31, "image": r"C:\Program Files\MadMapper\MadMapper.exe",
+           "title": "", "rect": (1920, 0, 3840, 1080), "caption": False}
+
+
+def test_madmapper_output_window_is_read_from_windows():
+    section("MadMapper's video output (Jeff's field report, 2026-10-29: "
+            "after a reboot it was off and the projectors showed the "
+            "Windows desktop): on only with a full-screen MadMapper window "
+            "with no title bar on a display; its control window, a "
+            "minimized or windowed output, another program's full-screen "
+            "window or the wrong display are OFF; an unreadable list is not "
+            "known; nothing is ever sent to MadMapper")
+    from ltcplay import showwindows as SW
+    mons = [(0, 0, 1920, 1080), (1920, 0, 3840, 1080)]
+
+    def st(wins, monitor=0):
+        api = _FakeWins(wins, mons)
+        return SW.look(api, monitor)
+    got = st([_MM_UI, _MM_OUT])
+    check(got[0] == "on" and "display 2 (1920x1080)" in got[1],
+          f"the output window on display 2: on: {got}")
+    got = st([_MM_UI])
+    check(got[0] == "off" and "Windows desktop" in got[1],
+          f"only MadMapper's control window: OFF: {got}")
+    _no_dashes(got[1] + " " + SW.ENABLE_STEPS, "the output OFF sentence")
+    check(st([_MM_UI, dict(_MM_OUT, minimized=True)])[0] == "off",
+          "a minimized output window: OFF")
+    check(st([_MM_UI, dict(_MM_OUT, caption=True)])[0] == "off",
+          "a window with a title bar (a desktop window, not full screen): "
+          "OFF")
+    check(st([_MM_UI, dict(_MM_OUT, rect=(1920, 0, 3000, 1080))])[0] ==
+          "off", "a window that does not fill the display: OFF")
+    check(st([_MM_UI, dict(_MM_OUT, image="vlc.exe")])[0] == "off",
+          "another program's full-screen window does not count")
+    check(st([_MM_UI, _MM_OUT], monitor=2)[0] == "on" and
+          st([_MM_UI, _MM_OUT], monitor=1)[0] == "off",
+          "madmapper_output_monitor: only that display counts")
+    check(st([])[0] == "off" and "not running" in st([])[1],
+          "MadMapper not running: OFF, said so")
+    bad = _FakeWins([_MM_UI], mons)
+    bad.fail = True
+    check(SW.look(bad)[0] == "unknown", "an unreadable list: not known")
+    check(SW.output_state([_MM_UI], [])[0] == "unknown",
+          "no displays read: not known")
+    check(SW.image_is(r"C:\x\MadMapperDemo.exe", SW.MADMAPPER) and
+          not SW.image_is("madmapperx.dll", SW.MADMAPPER),
+          "MadMapper's program names, as the MadMapper watch's")
+    from ltcplay import madmapperwatch as MW, beyondwatch as BW
+    check(SW.MADMAPPER == MW.IMAGES and SW.BEYOND == BW.IMAGES,
+          "the same program names as the watches")
+    src = open(SW.__file__, encoding="utf-8").read()
+    check("PostMessage" not in src.replace("PostMessage to", "") and
+          "SendInput" not in src and "keybd_event" not in src and
+          "SendMessage" not in src,
+          "nothing here sends MadMapper or BEYOND a key or a message")
+    check("from ." not in src and "import ltcplay" not in src,
+          "stdlib only: the supervisor carries it as a module of its own")
+    print("  ok")
+
+
+def test_preroll_madmapper_output_check_and_lamp():
+    section("the rig check's MadMapper output item: on passes; OFF fails "
+            "with what to do; not known fails (unknown is failure); not "
+            "checked (no MadMapper here, another machine, switched off) "
+            "counts as not used; Continue anyway leaves the video off; the "
+            "rack screen lamp says on, OFF or not known; the settings and "
+            "the engine wiring")
+    import types
+    from ltcplay import preroll as P, showwindows as SW, web as W
+    from ltcplay import remote as RM
+    F = _fi_mod()
+    pr = types.SimpleNamespace()
+    ok, why = P.check_madmapper_output(pr, lambda: ("on", "fills display "
+                                                          "2"))
+    check(ok is True, f"on: passes: {why}")
+    ok, why = P.check_madmapper_output(pr, lambda: (
+        "off", "MadMapper's video output is OFF"))
+    check(ok is False and "Output menu, Fullscreen" in why,
+          f"OFF: fails with what to do: {why}")
+    _no_dashes(why, "the rig check's MadMapper output sentence")
+    ok, why = P.check_madmapper_output(pr, lambda: ("unknown", "not known"))
+    check(ok is False, "not known: fails")
+    ok, why = P.check_madmapper_output(pr, lambda: 1 / 0)
+    check(ok is False, "a look that raises: fails")
+    ok, why = P.check_madmapper_output(pr, None, "not checked: MadMapper "
+                                                 "is on another machine")
+    check(ok is None and "another machine" in why,
+          "not checked here: not used, said why")
+    ok, why = P.check_madmapper_output(pr, None, "not known: the output "
+                                                 "check could not start")
+    check(ok is False, "a check that could not be set up: fails")
+    check("MadMapper output" in P.NAMES and
+          P.NAMES.index("MadMapper output") == P.NAMES.index("Video") + 1,
+          "listed after Video")
+    check(P.outputs_off([{"name": "MadMapper output", "ok": False}]) ==
+          frozenset({"video"}),
+          "Continue anyway leaves the video off when the output failed")
+    # Settings.
+    c = F.FireIceConfig.parse({})
+    check(c.madmapper_output_check is True and
+          c.madmapper_output_monitor == 0,
+          "defaults: checked, any display")
+    c = F.FireIceConfig.parse({"madmapper_output_check": False,
+                               "madmapper_output_monitor": 2})
+    check(c.madmapper_output_check is False and
+          c.madmapper_output_monitor == 2, "the off switch and a display")
+    for k, bad in (("madmapper_output_check", "yes"),
+                   ("madmapper_output_monitor", -1),
+                   ("madmapper_output_monitor", 9),
+                   ("madmapper_output_monitor", True)):
+        try:
+            F.FireIceConfig.parse({k: bad})
+            check(False, f"{k} {bad!r} should be refused")
+        except F.FireIceConfigError as e:
+            _no_dashes(str(e), f"{k} refusal")
+    # The engine wiring: why it is not checked, or a look.
+    rem = types.SimpleNamespace(mm_output=None, mm_output_why="")
+    closed = []
+    httpd = types.SimpleNamespace(remote=rem,
+                                  server_close=lambda: closed.append(1))
+    mm = types.SimpleNamespace(host="127.0.0.1")
+    check(W._attach_mm_output(httpd, F.FireIceConfig(), mm, windows=False)
+          is None and "not the Windows show PC" in rem.mm_output_why,
+          f"not Windows: not checked: {rem.mm_output_why}")
+    W._attach_mm_output(httpd, F.FireIceConfig(),
+                        types.SimpleNamespace(host="10.0.0.9"), windows=True)
+    check(rem.mm_output is None and "another machine" in rem.mm_output_why,
+          "MadMapper elsewhere: not checked")
+    W._attach_mm_output(httpd, F.FireIceConfig(madmapper_output_check=False),
+                        mm, windows=True)
+    check(rem.mm_output is None and "false" in rem.mm_output_why,
+          "switched off: not checked, said so")
+    look = W._attach_mm_output(httpd, F.FireIceConfig(
+        madmapper_output_monitor=2), mm, windows=True)
+    check(isinstance(look, SW.OutputLook) and rem.mm_output is look and
+          look.monitor == 2 and rem.mm_output_why == "",
+          "on the show PC: a look, its display")
+    if sys.platform != "win32":
+        check(look.now()[0] == "unknown" and P.check_madmapper_output(
+            pr, look.now)[0] is False,
+              "where the windows cannot be read: not known, the check fails")
+    httpd.server_close()
+    check(closed == [1] and look._stop.is_set(), "stopped with the server")
+    # The lamp.
+    d = tempfile.mkdtemp()
+    try:
+        r = RM.Remote(None, folder=d)
+        check(not [x for x in r.subsystems({})
+                   if x["name"] == "MadMapper output"],
+              "no output look: no lamp")
+        for st, state, word in (("on", "ok", "on"), ("off", "bad", "OFF"),
+                                ("unknown", "warn", "not known")):
+            r.mm_output = types.SimpleNamespace(
+                state=lambda st=st: (st, "why " + st))
+            got = [x for x in r.subsystems({})
+                   if x["name"] == "MadMapper output"]
+            check(got and got[0]["state"] == state and
+                  got[0]["word"] == word and got[0]["title"] == "why " + st,
+                  f"the lamp, {st}: {got}")
+    finally:
+        import shutil as _sh
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
+    section("the rack screen in front (Jeff's field report, 2026-10-29: "
+            "after a reboot BEYOND was in front of the rack screen): during "
+            "the boot settle a BEYOND or MadMapper window over it is undone; "
+            "later only a window that just appeared; never over a window a "
+            "person brought forward (a touch since, or Open BEYOND), never "
+            "over MadMapper's output on the rack screen's own display, a "
+            "minimized rack screen is left minimized after the settle, at "
+            "most a few tries per window, and every move logged")
+    from ltcplay import showwindows as SW
+    t = [1000.0]
+    wall = [5000.0]
+    logs = []
+
+    def keeper(api, **kw):
+        return SW.RackKeeper(api, monitor=1, log=logs.append,
+                             clock=lambda: t[0], wall=lambda: wall[0], **kw)
+    # Boot: BEYOND comes up over the rack screen; MadMapper's output on
+    # the projector display is left alone.
+    api = _FakeWins([_BEYOND, _MM_OUT, _RACK, _MM_UI])
+    k = keeper(api)
+    check(k.tick() == "raised" and api.raised == [10] and
+          api.wins[0]["hwnd"] == 10,
+          f"boot: BEYOND over the rack screen: raised: {api.raised}")
+    check(any("BEYOND" in x and "covered" in x for x in logs),
+          f"logged with why: {logs[-1:]}")
+    check(k.tick() == "none", "in front now: nothing more")
+    check(not [h for h in api.raised if h == 31],
+          "MadMapper's output window is never moved")
+    # A window on the other display, not over the rack screen: nothing.
+    api = _FakeWins([dict(_BEYOND, rect=(2000, 0, 3000, 800)), _RACK])
+    check(keeper(api).tick() == "none" and not api.raised,
+          "a window on the other display: left alone")
+    # After the boot settle: an old BEYOND window a person put in front
+    # stays; a NEW one (BEYOND restarted) is undone.
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    t[0] += SW.BOOT_SETTLE_S + 1
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    check(k.tick() == "none" and not api.raised,
+          "after the settle, an old BEYOND window in front: left")
+    api.wins.insert(0, dict(_BEYOND, hwnd=21))
+    api.fg = 21
+    t[0] += 1
+    check(k.tick() == "raised" and api.raised == [10],
+          "a BEYOND window that just appeared: raised over")
+    # A person brought BEYOND forward: a touch since it came forward.
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 0.0
+    t[0] += 3
+    check(k.tick() == "none" and not api.raised and 20 in k.chosen,
+          "a person's choice (touched since it came forward): left")
+    check(any("person's choice" in x for x in logs), "said in the log")
+    # Open BEYOND pressed just before BEYOND came forward.
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api, opened=lambda: wall[0] - 1.0)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 600.0
+    check(k.tick() == "none" and not api.raised,
+          "Open BEYOND: BEYOND left in front")
+    # The sign-in typing long before BEYOND came up is not a choice.
+    api = _FakeWins([_RACK])
+    k = keeper(api, opened=lambda: wall[0] - 3600)
+    k.tick()
+    api.wins.insert(0, dict(_BEYOND))
+    api.fg = 20
+    api.input_age = 30.0
+    t[0] += 2
+    check(k.tick() == "raised", "BEYOND popping up by itself: raised over")
+    # MadMapper's output on the rack screen's own display: never covered.
+    api = _FakeWins([_BEYOND, dict(_MM_OUT, rect=(0, 0, 1920, 1080)),
+                     _RACK])
+    check(keeper(api).tick() == "left" and not api.raised,
+          "the projection on the rack display always wins")
+    # Minimized: restored during the boot settle, left after it.
+    api = _FakeWins([_BEYOND, dict(_RACK, minimized=True)])
+    k = keeper(api)
+    check(k.tick() == "restored" and api.raised == [10],
+          "minimized during start up: restored")
+    api = _FakeWins([_BEYOND, dict(_RACK, minimized=True)])
+    k = keeper(api)
+    t[0] += SW.BOOT_SETTLE_S + 1
+    check(k.tick() == "none" and not api.raised,
+          "minimized by a person later: left minimized")
+    # A window that stays on top: a few tries, then said and left.
+    api = _FakeWins([_BEYOND, _RACK])
+    api.bring_to_front = lambda h, th: api.raised.append(h) or False
+    k = keeper(api)
+    for _ in range(SW.MAX_RAISES + 3):
+        k.tick()
+    check(len(api.raised) == SW.MAX_RAISES and
+          any("still over the rack screen" in x for x in logs),
+          f"at most {SW.MAX_RAISES} tries: {len(api.raised)}")
+    # No rack screen window: nothing; an Explorer window over it: nothing.
+    check(keeper(_FakeWins([_BEYOND])).tick() == "none", "no rack screen")
+    api = _FakeWins([{"hwnd": 40, "image": "explorer.exe", "title": "Shows",
+                      "rect": (0, 0, 800, 600)}, _RACK])
+    check(keeper(api).tick() == "none" and not api.raised,
+          "a folder window a person opened is never covered")
+    # The rack screen found by the Edge process the supervisor started.
+    check(SW.is_rack(dict(_RACK, title="Something else", pid=77), pid=77)
+          and not SW.is_rack(dict(_RACK, title="Something else")) and
+          SW.is_rack(dict(_RACK, title="Show remote 2.0")) and
+          not SW.is_rack(dict(_BEYOND, title="Show remote")),
+          "the rack screen: its title, or the Edge the supervisor opened")
+    bad = _FakeWins([_RACK])
+    bad.fail = True
+    check(keeper(bad).tick() == "none", "an unreadable list: nothing")
+    _no_dashes(" ".join(logs), "the keeper's log lines")
+    print("  ok")
+
+
+def test_supervisor_watches_madmapper_output_after_it_starts():
+    section("the supervisor's MadMapper output watch: once MadMapper runs it "
+            "gets a bounded settle to come on; still OFF then: logged with "
+            "what to do and one video alert (sent again until the engine "
+            "takes it); on: logged; off again later: one more alert; "
+            "showpc.json switches both watches off; logged at start")
+    from ltcplay import showwindows as SW
+    t = [0.0]
+    logs, alerts = [], []
+    took = [False]
+
+    def alert(text):
+        alerts.append(text)
+        return took[0]
+    api = _FakeWins([])
+    w = SW.OutputWatch(api, log=logs.append, alert=alert,
+                       clock=lambda: t[0], settle_s=120, debounce_s=10)
+    check(w.tick() == "not running", "MadMapper not running")
+    api.wins = [dict(_MM_UI)]
+    check(w.tick() == "waiting" and not alerts, "started: waiting")
+    t[0] = 119
+    check(w.tick() == "waiting" and not alerts, "inside the settle: waiting")
+    t[0] = 121
+    check(w.tick() == "off" and len(alerts) == 1 and
+          "Fullscreen" in alerts[0] and "Windows desktop" in alerts[0],
+          f"after the settle, still OFF: one alert with what to do: "
+          f"{alerts}")
+    _no_dashes(alerts[0], "the output alert")
+    t[0] = 123
+    w.tick()
+    check(len(alerts) == 2, "the engine did not take it: sent again")
+    took[0] = True
+    t[0] = 125
+    w.tick()
+    t[0] = 127
+    w.tick()
+    check(len(alerts) == 3, "once taken: not again")
+    check(any("OFF" in x and "Output menu" in x for x in logs),
+          "logged loudly with the click path")
+    api.wins.append(dict(_MM_OUT))
+    t[0] = 130
+    check(w.tick() == "on" and any("MadMapper output: on" in x
+                                   for x in logs), "on: logged")
+    api.wins = [dict(_MM_UI)]
+    t[0] = 135
+    check(w.tick() == "waiting", "off again: debounced")
+    t[0] = 146
+    check(w.tick() == "off" and len(alerts) == 4, "off again: one more alert")
+    bad = _FakeWins([])
+    bad.fail = True
+    check(SW.OutputWatch(bad, log=logs.append).tick() == "unknown",
+          "an unreadable list: not known, no alert")
+    # The supervisor reads showpc.json for both, and says it.
+    _w, sup, done = _winpkg()
+    try:
+        said = []
+        was = sup.log
+        sup.log = said.append
+        try:
+            ws = sup.start_window_watch({"page_monitor": 2}, 7878,
+                                        api=_FakeWins([]))
+            check(isinstance(ws[1], sup.showwindows.RackKeeper) and
+                  ws[1].monitor == 2 and
+                  isinstance(ws[2], sup.showwindows.OutputWatch),
+                  f"on by default, on the page's display: {ws}")
+            ws = sup.start_window_watch(
+                {"rack_screen_keep_in_front": False,
+                 "madmapper_output_check": False}, 7878, api=_FakeWins([]))
+            check(ws[1] is None and ws[2] is None and
+                  any("keeper: OFF" in x for x in said) and
+                  any("watch: OFF" in x for x in said),
+                  f"the off switches: {said[-2:]}")
+        finally:
+            sup.log = was
+        check(sup.load_settings.__doc__ is not None and
+              "rack_screen_keep_in_front" in open(
+                  sup.__file__, encoding="utf-8").read(),
+              "the switches are in showpc.json's defaults")
+        _no_dashes(" ".join(said), "the supervisor's window watch lines")
+        lines = list(sup.showwindows.self_test())
+        check(lines and "MadMapper output" in lines[0],
+              "the supervisor's --self-check runs the window rules")
+    finally:
+        done()
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _ui2_pages():
@@ -88155,6 +88583,10 @@ if __name__ == "__main__":
         test_preroll_a_pass_clears_the_failure_and_keeps_the_hold,
         test_preroll_a_pass_never_clears_a_newer_or_other_failure,
         test_preroll_failure_cleared_on_both_screens,
+        test_madmapper_output_window_is_read_from_windows,
+        test_preroll_madmapper_output_check_and_lamp,
+        test_rack_screen_keeper_raises_over_beyond_and_madmapper_only,
+        test_supervisor_watches_madmapper_output_after_it_starts,
         test_alert_booth_never_waits_behind_the_delayed,
         test_alert_hold_an_old_hold_never_clears_a_newer_one,
         test_alert_hold_resume_covers_only_its_own_show,

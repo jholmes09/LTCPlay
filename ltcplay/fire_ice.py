@@ -64,7 +64,8 @@ KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
                   "madmapper", "beyond", "flamesafe_config",
                   "flame_controller", "notes", "show_name", "venue",
                   "beyond_blank", "beyond_black_hour", "beyond_timecode_ip",
-                  "soak_only", "preroll_s", "preroll_video_unconfirmed_ok"))
+                  "soak_only", "preroll_s", "preroll_video_unconfirmed_ok",
+                  "madmapper_output_check", "madmapper_output_monitor"))
 
 # "auto_start": the ONE setting that decides whether the scheduler, once it
 # performs, starts a scheduled show by itself (an open question for Jeff,
@@ -109,7 +110,8 @@ class FireIceConfig:
                  flame_controller=None, show_name=None, venue=None,
                  beyond_blank=BEYOND_BLANK_DEFAULT, beyond_black_hour=23,
                  beyond_timecode_ip=None, soak_only=False, preroll_s=None,
-                 preroll_video_unconfirmed_ok=False):
+                 preroll_video_unconfirmed_ok=False,
+                 madmapper_output_check=True, madmapper_output_monitor=0):
         # How the lasers are kept dark (beyondtc.py): "osc" (beyond.py's
         # brightness 0/100, the default since Jeff 2026-10-07), "timecode"
         # (BEYOND's own timecode to the black zone) or "both".
@@ -143,6 +145,15 @@ class FireIceConfig:
         # True: a MadMapper with no heartbeat track passes the video check
         # as NOT confirmed instead of failing it. Off unless set.
         self.preroll_video_unconfirmed_ok = preroll_video_unconfirmed_ok
+        # MadMapper's video output (showwindows.py, Jeff's field report
+        # 2026-10-29: after a reboot it was off and the projectors showed
+        # the Windows desktop): checked by the rig check and shown on the
+        # rack screen whenever MadMapper runs on this Windows PC. false
+        # turns it off (an output that is not a full-screen window).
+        # madmapper_output_monitor: 0 any display, n only display n (1
+        # the main one, as showpc.json's page_monitor counts).
+        self.madmapper_output_check = madmapper_output_check
+        self.madmapper_output_monitor = madmapper_output_monitor
 
     @classmethod
     def parse(cls, doc, where=CONFIG_FILE):
@@ -244,9 +255,25 @@ class FireIceConfig:
             raise FireIceConfigError(
                 f"{where}: 'preroll_video_unconfirmed_ok' has to be true or "
                 f"false, not {vok!r}.")
+        moc = doc.get("madmapper_output_check", True)
+        if moc is not True and moc is not False:
+            raise FireIceConfigError(
+                f"{where}: 'madmapper_output_check' has to be true or false "
+                f"(whether the rig check and the rack screen look for "
+                f"MadMapper's full-screen output), not {moc!r}.")
+        mom = doc.get("madmapper_output_monitor", 0)
+        if isinstance(mom, bool) or not isinstance(mom, int) or \
+                not 0 <= mom <= 8:
+            raise FireIceConfigError(
+                f"{where}: 'madmapper_output_monitor' is the display "
+                f"MadMapper's output must fill, 1 the main one, 2 the next, "
+                f"or 0 for any display (a whole number from 0 to 8), not "
+                f"{mom!r}.")
         titles.update(beyond_blank=blank, beyond_black_hour=hour,
                       beyond_timecode_ip=tip, soak_only=soak_only,
-                      preroll_s=pre, preroll_video_unconfirmed_ok=vok)
+                      preroll_s=pre, preroll_video_unconfirmed_ok=vok,
+                      madmapper_output_check=moc,
+                      madmapper_output_monitor=mom)
         mm = bey = None
         if "madmapper" in doc:
             from . import madmapper as madmapper_mod

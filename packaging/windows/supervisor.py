@@ -84,6 +84,15 @@ import housekeeping
 import ltcwin
 import updater
 
+try:
+    # ltcplay/showwindows.py, carried as a module of its own like audit.py
+    # (this program does not bundle the ltcplay package).
+    import showwindows
+except ImportError:
+    sys.path.append(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
+    import showwindows
+
 # Global\, not the session's own namespace (locked decision 21): a second
 # supervisor started in another Windows session (a second sign-in, Remote
 # Desktop, a task running as another user) must see the first one too, or two
@@ -169,6 +178,17 @@ def load_settings():
         # for a window that still reaches under the taskbar (0: none; the
         # page also measures it by itself, 2026-10-26).
         "page_bottom_pad": 0,
+        # Jeff's field report, 2026-10-29 (showwindows.py): after a reboot
+        # BEYOND came up over the rack screen and MadMapper's video output
+        # was off. The rack screen is raised again when a BEYOND or
+        # MadMapper window covers it (false: never), and MadMapper's output
+        # window is watched after MadMapper starts, with a video alert when
+        # it stays off (false: not watched). madmapper_output_monitor: the
+        # display the output must fill (0 any, 1 the main one, as
+        # page_monitor counts).
+        "rack_screen_keep_in_front": True,
+        "madmapper_output_check": True,
+        "madmapper_output_monitor": 0,
         "show_mode": "fire_ice",
         "schedule": os.path.join(appdata_dir(), "ltcplay_schedule.json"),
     }
@@ -1342,6 +1362,66 @@ def show_refusal_page(page):
         os.startfile(page)
 
 
+WINDOWS_EVERY_S = 2.0
+
+
+def post_alert(port, kind, text):
+    """The engine's alert of `kind` raised with `text` (its alert API, from
+    this machine). True once the engine took it."""
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/remote/alert",
+            data=json.dumps({"raise": kind, "text": text}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
+def start_window_watch(settings, port, api=None):
+    """[True, RackKeeper or None, OutputWatch or None] (showwindows.py),
+    as showpc.json says, each said in the log. Windows only; never
+    raises."""
+    out = [True, None, None]
+    if not ltcwin.WINDOWS and api is None:
+        return out
+    try:
+        api = api or showwindows.Win32()
+    except Exception as e:
+        log(f"the show PC's windows cannot be read ({type(e).__name__}: "
+            f"{e}): the rack screen keeper and the MadMapper output watch "
+            f"are off")
+        return out
+    if settings.get("rack_screen_keep_in_front", True) is not False:
+        out[1] = showwindows.RackKeeper(
+            api, monitor=settings.get("page_monitor", 1), log=log,
+            opened=lambda: showwindows.opened_at(appdata_dir()))
+        log(f"rack screen keeper: ON (display "
+            f"{settings.get('page_monitor', 1)}): the rack screen is raised "
+            f"again when a BEYOND or MadMapper window covers it (any, for "
+            f"{showwindows.BOOT_SETTLE_S:g} s after start; then only one "
+            f"that appeared in the last {showwindows.APP_SETTLE_S:g} s), "
+            f"never over MadMapper's output or a window a person brought "
+            f"forward (showpc.json \"rack_screen_keep_in_front\": false "
+            f"turns it off)")
+    else:
+        log("rack screen keeper: OFF (showpc.json "
+            "\"rack_screen_keep_in_front\": false)")
+    if settings.get("madmapper_output_check", True) is not False:
+        mon = settings.get("madmapper_output_monitor", 0)
+        out[2] = showwindows.OutputWatch(
+            api, monitor=mon if isinstance(mon, int) else 0, log=log,
+            alert=lambda text: post_alert(port, "video", text))
+        log("MadMapper output watch: ON (showpc.json "
+            "\"madmapper_output_check\": false turns it off). Read from "
+            "the window list only; nothing is sent to MadMapper.")
+    else:
+        log("MadMapper output watch: OFF (showpc.json "
+            "\"madmapper_output_check\": false)")
+    return out
+
+
 def run_loop(open_page=False):
     if not take_mutex():
         log("another LTC Player supervisor is already running; leaving it")
@@ -1368,6 +1448,8 @@ def run_loop(open_page=False):
     next_contain = 0.0
     mm_priority = start_madmapper_priority(settings)
     next_mm = 0.0
+    windows = None
+    next_windows = 0.0
     mm_failed = ""
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
@@ -1537,6 +1619,15 @@ def run_loop(open_page=False):
         if not page_opened and engine_answers(port):
             page_opened = True
             open_page_now(port)
+        if now >= next_windows:
+            next_windows = now + WINDOWS_EVERY_S
+            windows = windows or start_window_watch(settings, port)
+            for w in windows[1:]:
+                if w is not None:
+                    if isinstance(w, showwindows.RackKeeper) and \
+                            RACK_WINDOW[0] is not None:
+                        w.rack_pid = getattr(RACK_WINDOW[0], "pid", None)
+                    w.tick()
         time.sleep(POLL_S)
 
 
@@ -2243,6 +2334,8 @@ def self_check():
         raise RuntimeError("the rack screen's fallbacks are wrong")
     yield ("the page opens as the rack screen (/remote), an ordinary app "
            "window maximized on the show monitor, never a kiosk")
+    for line in showwindows.self_test():
+        yield line
     for line in housekeeping.self_test():
         yield line
     for line in diagnostics.self_test():

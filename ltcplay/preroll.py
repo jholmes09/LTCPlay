@@ -87,7 +87,8 @@ CONTINUE_MAX_AGE_S = 600.0
 # "lasers" (the laser gate says no: blanked, no output enable) and
 # "flames" (the flame cues are never released: zero frames only). Audio
 # is never faked: a show does not start without its sound (clock.play).
-OFF_FOR = {"Video": "video", "Lasers": "lasers", "Flame link": "flames"}
+OFF_FOR = {"Video": "video", "MadMapper output": "video",
+           "Lasers": "lasers", "Flame link": "flames"}
 OFF_WORDS = {"MadMapper": "video", "BEYOND": "lasers",
              "flame node": "flames"}
 
@@ -130,7 +131,7 @@ def standin(why, journal=None, alert=None, clear_alert=None,
 
 # The checks, in the order the rack screen lists them.
 NAMES = ("Audio", "Announcements", "Booth speaker", "Timecode", "Video",
-         "Flame link", "Lasers", "Network")
+         "MadMapper output", "Flame link", "Lasers", "Network")
 
 
 def budget_s(window_s):
@@ -924,6 +925,31 @@ def check_video(p, link, watchdog, clk, conductor, running=None,
                            f"real time, so the heartbeat track or the show "
                            f"bank is wrong")
     return True, "the show bank plays; the screens stay black until the show"
+
+
+def check_madmapper_output(p, look, why_not=""):
+    """MadMapper's video output is on: a full-screen MadMapper output
+    window on the projector display (showwindows.OutputLook.now, read from
+    Windows' window list; Jeff's field report, 2026-10-29: after a reboot
+    the output was off and the projectors showed the Windows desktop).
+    Off fails, with what to do; not known fails (unknown is failure).
+    `look` None: not checked here, said why (`why_not`). Reads windows
+    only: nothing is sent to MadMapper."""
+    if look is None:
+        if str(why_not).startswith("not known"):
+            # The check could not be set up: unknown is failure.
+            return False, why_not
+        return None, why_not or "not checked here"
+    try:
+        state, why = look()
+    except Exception as e:                       # noqa: BLE001
+        return False, f"not known: {type(e).__name__}: {e}"
+    if state == "on":
+        return True, why
+    if state == "off":
+        return False, (f"{why}. Turn it on in MadMapper: Output menu, "
+                       f"Fullscreen")
+    return False, why or "not known"
 
 
 def check_timecode(p, out, gate=None):

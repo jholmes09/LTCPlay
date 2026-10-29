@@ -1509,6 +1509,10 @@ class Remote:
         # the call that brings its window forward (a fake in the selftest).
         self.beyond_host = None
         self.open_beyond_fn = None
+        # MadMapper's video output (showwindows.OutputLook), or None with
+        # the reason it is not checked (web._attach_mm_output).
+        self.mm_output = None
+        self.mm_output_why = ""
         # The last show seen ended ({"night", "ended"}), kept so a night
         # that closes at its 02:00 reset before the sign-out is due still
         # gets it (review of PR #125, P2-8).
@@ -4735,6 +4739,11 @@ class Remote:
             # (review of PR #125, P2-2).
             from . import windowfront
             fn = windowfront.OPENER
+            # The supervisor's rack screen keeper leaves BEYOND in front
+            # after this press (showwindows.RackKeeper).
+            from . import appdata, showwindows
+            if appdata.WINDOWS:
+                showwindows.stamp_opened(appdata.folder())
         try:
             ok, text = fn(self.beyond_host)
         except Exception as e:                   # noqa: BLE001
@@ -6838,6 +6847,18 @@ class Remote:
                 add("Laser arm", "bad", "not known")
         link = self.beyond_link()
         self._video_lamp(add, out, cond, snap, cs)
+        mo = getattr(self, "mm_output", None)
+        if mo is not None:
+            # MadMapper's video output (showwindows.py, Jeff's field
+            # report 2026-10-29): its full-screen window on the projector
+            # display, read from Windows. Display only.
+            try:
+                st, why = mo.state()
+            except Exception as e:               # noqa: BLE001
+                st, why = "unknown", f"not known: {type(e).__name__}"
+            add("MadMapper output", {"on": "ok", "off": "bad"}.get(
+                st, "warn"), {"on": "on", "off": "OFF"}.get(st, "not known"))
+            out[-1]["title"] = why
         for name, key in (("Lasers", "lasers"),):
             v = applied.get(key)
             if key == "lasers" and laser_fault:

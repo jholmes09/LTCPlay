@@ -1985,6 +1985,52 @@ def _preroll_hosts(httpd, fire_ice):
     return out
 
 
+def _attach_mm_output(httpd, fire_ice, mm_cfg, windows=None):
+    """MadMapper's video output, on or OFF (showwindows.py; Jeff's field
+    report, 2026-10-29): read from this PC's window list on a thread of its
+    own, for the rack screen's lamp and the rig check. Only with MadMapper
+    on this Windows PC and madmapper_output_check on; otherwise the reason
+    it is not checked. Never raises."""
+    remote = httpd.remote
+    try:
+        import sys
+        from . import madmapperwatch as mmw
+        from . import showwindows
+        if windows is None:
+            windows = sys.platform == "win32"
+        host = getattr(mm_cfg, "host", None)
+        why = ""
+        if not getattr(fire_ice, "madmapper_output_check", True):
+            why = ("not checked: madmapper_output_check is false in "
+                   "ltcplay_fire_ice.json")
+        elif not mmw.on_this_pc(host):
+            why = (f"not checked: MadMapper is on another machine ({host}), "
+                   f"so its output window cannot be seen from here")
+        elif not windows:
+            why = "not checked: this is not the Windows show PC"
+        remote.mm_output_why = why
+        if why:
+            remote.mm_output = None
+            return None
+        look = showwindows.OutputLook(
+            monitor=getattr(fire_ice, "madmapper_output_monitor", 0)).start()
+        remote.mm_output = look
+        before = httpd.server_close
+
+        def _close():
+            try:
+                look.stop()
+            finally:
+                before()
+        httpd.server_close = _close
+        return look
+    except Exception as e:                           # noqa: BLE001
+        remote.mm_output = None
+        remote.mm_output_why = (f"not known: the output check could not "
+                                f"start ({type(e).__name__}: {e})")
+        return None
+
+
 def _attach_preroll(httpd, fire_ice, fstatus):
     """The pre-roll (preroll.py, Jeff 2026-10-28): the rig checked before
     every show the scheduler starts and before Start now, on the schedule
@@ -2045,6 +2091,10 @@ def _attach_preroll(httpd, fire_ice, fstatus):
                 mm[1] if mm and hb is not None else None, clk(),
                 wiring.conductor, mm_running,
                 fire_ice.preroll_video_unconfirmed_ok)),
+            ("MadMapper output", True, lambda p: P.check_madmapper_output(
+                p, getattr(getattr(remote, "mm_output", None), "now", None),
+                getattr(remote, "mm_output_why", "") or
+                "no MadMapper in this show")),
             ("Flame link", True, lambda p: P.check_flame_link(
                 p, fstatus, wiring.flame_link, remote.deck_chip
                 if fstatus is not None else None)),
@@ -2827,6 +2877,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 httpd.remote.madmapper_heartbeat = httpd.madmapper[1]
             httpd.remote.madmapper_heartbeat_cfg = getattr(
                 _mm_cfg, "heartbeat", None)
+            _attach_mm_output(httpd, fire_ice, _mm_cfg)
             _close_before_mw = httpd.server_close
 
             def _close_mw():
