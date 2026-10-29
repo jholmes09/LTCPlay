@@ -1405,31 +1405,31 @@ def post_alert(port, kind, text=None):
 
 
 def output_settings(settings):
-    """(check, monitor) for MadMapper's output watch, from
+    """(check, monitor, why_no_alert) for MadMapper's output watch, from
     ltcplay_fire_ice.json beside the schedule (madmapper_output_check,
     madmapper_output_monitor): the same file and keys the engine's rig
-    check reads. Missing or wrong: (True, 0), said in the log."""
+    check reads. Missing or wrong: (True, 0, ""), said in the log.
+    why_no_alert is a sentence when the show's MadMapper is not on this PC
+    (no madmapper block, or another host, review B round 2 of #176): the
+    watch then reads and logs, and never raises an alert nothing would
+    clear."""
     try:
         fi = os.path.join(os.path.dirname(settings["schedule"]),
                           "ltcplay_fire_ice.json")
         with open(fi, encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except Exception:
-        return True, 0
+        return True, 0, ""
     if not isinstance(doc, dict):
-        return True, 0
-    # Only for a show whose MadMapper runs on this PC, as the engine's
-    # rig check (review B round 2 of #176): a stray MadMapper here never
-    # raises an alert nothing would clear.
+        return True, 0, ""
     mm = doc.get("madmapper")
+    quiet = ""
     if not isinstance(mm, dict):
-        log("MadMapper output watch: the show has no MadMapper "
-            "(no madmapper block in ltcplay_fire_ice.json)")
-        return False, 0
-    if not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):
-        log(f"MadMapper output watch: the show's MadMapper is on another "
-            f"machine ({mm.get('host')}), so its output is not watched here")
-        return False, 0
+        quiet = ("the show has no MadMapper (no madmapper block in "
+                 "ltcplay_fire_ice.json)")
+    elif not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):
+        quiet = (f"the show's MadMapper is on another machine "
+                 f"({mm.get('host')})")
     chk = doc.get("madmapper_output_check", True)
     mon = doc.get("madmapper_output_monitor", 0)
     if chk is not True and chk is not False:
@@ -1441,7 +1441,7 @@ def output_settings(settings):
         log(f"ltcplay_fire_ice.json madmapper_output_monitor is {mon!r}, "
             f"not 0 to 8: any display but the rack screen's counts")
         mon = 0
-    return chk, mon
+    return chk, mon, quiet
 
 
 def soak_kit(settings):
@@ -1496,13 +1496,19 @@ def start_window_watch(settings, port, api=None):
     else:
         log("rack screen keeper: OFF (showpc.json "
             "\"rack_screen_keep_in_front\": false)")
-    chk, mon = output_settings(settings)
+    chk, mon, quiet = output_settings(settings)
     if chk:
         page = settings.get("page_monitor", 1)
+
+        def alert(text):
+            if quiet:
+                log(f"MadMapper output: no alert raised, {quiet}")
+                return True
+            return output_alert(settings, port, text)
         out[2] = showwindows.OutputWatch(
             api, monitor=mon, log=log, rack=page if isinstance(page, int)
             else 1,
-            alert=lambda text: output_alert(settings, port, text),
+            alert=alert,
             clear=lambda: post_alert(port, "output"),
             epoch=lambda: ENGINE_STARTS[0])
         try:
@@ -1517,7 +1523,8 @@ def start_window_watch(settings, port, api=None):
             + (f"display {mon}" if mon else "any display but the rack "
                "screen's") + " (ltcplay_fire_ice.json "
             "\"madmapper_output_check\": false turns it off). Read from "
-            "the window list only; nothing is sent to MadMapper.")
+            "the window list only; nothing is sent to MadMapper."
+            + (f" It raises no alert: {quiet}." if quiet else ""))
     else:
         log("MadMapper output watch: OFF (ltcplay_fire_ice.json "
             "\"madmapper_output_check\": false)")

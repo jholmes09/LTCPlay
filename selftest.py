@@ -87567,7 +87567,7 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                 json.dump({"madmapper_output_monitor": "two",
                            "madmapper": {"host": "127.0.0.1"}}, fh)
             check(sup.output_settings({"schedule": os.path.join(
-                dd, "s.json")}) == (True, 0), "a wrong value: the default")
+                dd, "s.json")}) == (True, 0, ""), "a wrong value: the default")
             # Review B round 2: only for a show whose MadMapper is here.
             for doc, why in (({}, "no MadMapper in the show"),
                              ({"madmapper": {"host": "10.0.0.9"}},
@@ -87575,9 +87575,27 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
                 with open(os.path.join(dd, "ltcplay_fire_ice.json"),
                           "w") as fh:
                     json.dump(doc, fh)
-                check(sup.output_settings({"schedule": os.path.join(
-                    dd, "s.json")}) == (False, 0),
-                      f"{why}: a stray MadMapper here is not watched")
+                got = sup.output_settings({"schedule": os.path.join(
+                    dd, "s.json")})
+                check(got[0] is True and got[2],
+                      f"{why}: watched and logged, but quiet: {got}")
+                posted = []
+                was_post = sup.post_alert
+                sup.post_alert = lambda *a: posted.append(a) or True
+                try:
+                    ws = sup.start_window_watch(
+                        {"schedule": os.path.join(dd, "s.json")}, 7878,
+                        api=_FakeWins([dict(_MM_UI)]))
+                    check(any("watch: ON" in x and "raises no alert" in x
+                              for x in said),
+                          f"{why}: the log says ON, and why no alert")
+                    ok = ws[2].alert("MadMapper's video output is OFF")
+                    check(ok and not [a for a in posted if a[1] == "output"
+                                      and len(a) > 2],
+                          f"{why}: a stray MadMapper here never raises the "
+                          f"alert nothing would clear")
+                finally:
+                    sup.post_alert = was_post
             import socket as _so
             _sk = _so.socket()
             _sk.bind(("127.0.0.1", 0))

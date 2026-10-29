@@ -18071,8 +18071,8 @@ def build():
   '                 and w["hwnd"] not in outs\n'),
 
  ('supervisor: the output watch reads showpc.json, not the engine file', 'packaging/windows/supervisor.py',
-  '    chk, mon = output_settings(settings)',
-  '    chk, mon = True, 0'),
+  '    chk, mon, quiet = output_settings(settings)',
+  '    chk, mon, quiet = True, 0, ""'),
 
  ('rack keeper: takes the keyboard from a person typing', 'ltcplay/showwindows.py',
   '        if age is None or age < INPUT_QUIET_S:',
@@ -18123,12 +18123,12 @@ def build():
   '        c = covered_by(wins, w)\n        if True:'),
 
  ("supervisor: watches a MadMapper that is not the show's", 'packaging/windows/supervisor.py',
-  '    if not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):',
-  '    if False:'),
+  '    elif not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):',
+  '    elif False:'),
 
  ('supervisor: watches with no MadMapper in the show', 'packaging/windows/supervisor.py',
-  '    if not isinstance(mm, dict):\n        log("MadMapper output watch: the show has no',
-  '    if False:\n        log("MadMapper output watch: the show has no'),
+  '    if not isinstance(mm, dict):\n        quiet = (',
+  '    if False:\n        quiet = ('),
 
  ('supervisor: an alert that never reached the engine counts as sent', 'packaging/windows/supervisor.py',
   '            f"did not reach the engine ({e.reason})")\n        return False',
