@@ -17672,6 +17672,26 @@ def build():
   "    p.timer = setTimeout(() => armBeat(h, p), 100);",
   "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
 
+ ("ui2 day: Space fires the purge on any DAY step", "ltcplay/web/remote2.html",
+  "  if(TAB !== \"day\" || DAY_STEP !== \"purge\") return;",
+  "  if(TAB !== \"day\") return;"),
+
+ ("ui2 day: letting go of the cleaning hold keeps it going", "ltcplay/web/remote2.html",
+  "      $(\"wc-hold\").addEventListener(ev, () => { if(WC_HOLD) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")",
+  "      $(\"wc-hold\").addEventListener(ev, () => { if(false) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")"),
+
+ ("ui2 day: leaving DAY keeps this screen's purge selection", "ltcplay/web/remote2.html",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n    if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me)\n      post(\"/api/remote/purge-clear\", moActor({})).catch(() => {});\n  }\n  if(on && !FU_OPEN)",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n  }\n  if(on && !FU_OPEN)"),
+
+ ("ui2 day: the copied purge fire beats faster than 1.0's", "ltcplay/web/remote2.html",
+  "    f.timer = setTimeout(() => fireBeat(f), 100);",
+  "    f.timer = setTimeout(() => fireBeat(f), 50);"),
+
+ ("ui2 day: a tick goes in without a name", "ltcplay/web/remote2.html",
+  "      if(!dayWho(MO.checklists)){ $(\"mo-cmsg\").textContent = \"Pick who is ticking first.\"; return; }",
+  "      dayWho(MO.checklists);"),
+
  ("ui2: 2.0 is served without 1.0's rules written in", "ltcplay/web.py",
   "    if logic is not None and LOGIC_TAG in page:\n",
   "    if False:\n"),
