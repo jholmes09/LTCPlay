@@ -9,8 +9,14 @@ name: nightly mutate
 #
 # Run it by hand from the Actions tab (Run workflow) before a tech build or
 # whenever a full proof is wanted, choosing the OS. Each shard takes 3.5 to
-# 4.5 hours; the account runs about 20 jobs at once, so a sweep takes 4 to
-# 6 hours of wall time. A failure here is a NOT CAUGHT mutation (the suite
+# 4.5 hours. The account runs at most 20 jobs at once, shared with every
+# PR's selftest and installer, so the sweep runs at most 8 shards at a time
+# (max-parallel below) and leaves 12 slots for PRs: every one of the 32
+# shards still runs, in about 4 waves, so a ubuntu sweep takes 15 to 19
+# hours of wall time (both OSes, about twice that). Starting the workflow
+# again while a sweep runs cancels the older sweep, on any branch: a new
+# start means the old one's result is no longer wanted, and two sweeps at
+# once would take 16 slots. A failure here is a NOT CAUGHT mutation (the suite
 # stayed green with that line broken: strengthen the test), an UNEXPECTED
 # MISS or NOW CAUGHT against mutate_expected_misses.txt, a SETUP FAIL (the
 # mutation's text no longer matches the code: refresh it), or a shard that
@@ -30,9 +36,18 @@ on:
 permissions:
   contents: read
 
+# One sweep at a time for the whole repository (not per branch), so the
+# sweep can never hold more than 8 job slots. A newer start cancels the
+# running one; scheduled starts (only ever on the default branch) do the
+# same, so a sweep that overruns a day gives way to the next night's.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       oses: ${{ steps.pick.outputs.oses }}
     steps:
@@ -50,6 +65,9 @@ jobs:
     needs: plan
     strategy:
       fail-fast: false
+      # 8 of the account's 20 job slots at most, whatever the OS choice:
+      # max-parallel counts every combination of the matrix.
+      max-parallel: 8
       matrix:
         os: ${{ fromJSON(needs.plan.outputs.oses) }}
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
@@ -141,6 +159,7 @@ jobs:
     needs: sweep
     if: always() && needs.sweep.result != 'skipped' && needs.sweep.result != 'cancelled'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: read
     steps:
