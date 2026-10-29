@@ -1181,7 +1181,8 @@ RENDER_END_TOLERANCE_FRAMES = 2
 LOOK_IN_SHOW_FAULT_S = 1.5
 LOOK_IN_SHOW = ("the pixel output is on {look}, not the show, while the "
                 "show is playing, so the pixels and the flame cues are "
-                "dark. Tell Jeff; Stop and Run again clears it")
+                "dark. On the Programming screen press Auto; in a scheduled "
+                "show tell Jeff")
 
 RENDER_OLDER_THAN_LAYOUT = (
     "the show's render is older than xlights_networks.xml: the layout was "

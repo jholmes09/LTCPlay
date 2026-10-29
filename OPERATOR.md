@@ -956,7 +956,8 @@ first show frame went out on the pixels 0.21 s after the start was sent."
 Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
 Deck show it as a flame cues fault: "the pixel output is on blackout, not
 the show, while the show is playing, so the pixels and the flame cues are
-dark. Tell Jeff; Stop and Run again clears it". It is display only.
+dark. On the Programming screen press Auto; in a scheduled show tell
+Jeff". It is display only.
 
 ## The rig check before each show (pre-roll)
 
