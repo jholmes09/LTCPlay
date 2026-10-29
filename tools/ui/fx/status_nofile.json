@@ -1,0 +1,125 @@
+{
+ "served_at": 0,
+ "fresh_s": 2.0,
+ "version": "bench test",
+ "schedule": {
+  "attached": true,
+  "ok": true,
+  "state": "STANDBY",
+  "running": null,
+  "held": false,
+  "aborted": false,
+  "conductor": true,
+  "trouble": null,
+  "next": null,
+  "delayed": null,
+  "slots": []
+ },
+ "show": {
+  "running": false,
+  "timecode": null
+ },
+ "transport": {
+  "programming": false
+ },
+ "flames": {
+  "connected": true,
+  "stale": false,
+  "age_ms": 120,
+  "fault": "",
+  "cues_fault": "the timecode is past the end of the show's render",
+  "groups": [
+   {
+    "name": "front row",
+    "armed": "disarmed"
+   },
+   {
+    "name": "cat-walk",
+    "armed": "disarmed"
+   },
+   {
+    "name": "wave flamer",
+    "armed": "disarmed"
+   }
+  ]
+ },
+ "deck": {
+  "text": "Stream Deck: not plugged in. This engine looked for an Elgato Stream Deck on USB and found none. Plug it in; the keys come up by themselves within 5 s. Until then use the buttons on this screen.",
+  "heard": false
+ },
+ "disarm_connected": true,
+ "arming": {
+  "enabled": true,
+  "needs_s": 2.0,
+  "fresh_s": 1.0,
+  "holds": []
+ },
+ "alerts": [],
+ "subsystems": [
+  {
+   "name": "Show",
+   "state": "ok",
+   "word": "ready"
+  },
+  {
+   "name": "Timecode",
+   "state": "bad",
+   "word": "fault"
+  },
+  {
+   "name": "flamesafe",
+   "state": "ok",
+   "word": "live"
+  },
+  {
+   "name": "Stream Deck",
+   "state": "bad",
+   "word": "missing"
+  },
+  {
+   "name": "Lasers",
+   "state": "ok",
+   "word": "dark"
+  },
+  {
+   "name": "Audio",
+   "state": "ok",
+   "word": "ready"
+  }
+ ],
+ "laser_arm": {
+  "lasers": [
+   {
+    "id": "L1",
+    "name": "Laser 1",
+    "armed": false
+   },
+   {
+    "id": "L2",
+    "name": "Laser 2",
+    "armed": false
+   }
+  ],
+  "groups": {
+   "All": [
+    "L1",
+    "L2"
+   ]
+  }
+ },
+ "laser_fault": "",
+ "artnet_note": "",
+ "setup": {
+  "ready": false,
+  "show_files": 0,
+  "show_folder": "C:\\Users\\show\\Documents\\LTC Shows",
+  "show_folder_exists": true,
+  "schedule_ok": true,
+  "schedule_exists": true,
+  "schedule_path": "C:\\ProgramData\\ltcplay\\ltcplay_schedule.json",
+  "example_schedule": false,
+  "flamesafe_connected": true,
+  "deck_heard": true,
+  "settings_folder": "C:\\ProgramData\\ltcplay"
+ }
+}

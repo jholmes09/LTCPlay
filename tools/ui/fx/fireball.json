@@ -1,0 +1,51 @@
+{
+ "available": true,
+ "problem": "",
+ "on": [],
+ "owner": null,
+ "mine": false,
+ "last_cut": "",
+ "on_value": 255,
+ "beat_stale_ms": 250,
+ "group": {
+  "name": "fireball",
+  "index": 3,
+  "safety": 77
+ },
+ "controls": [
+  {
+   "key": "fuel",
+   "label": "Fuel Charge",
+   "kind": "toggle",
+   "slot": 55
+  },
+  {
+   "key": "air",
+   "label": "Air Charge",
+   "kind": "toggle",
+   "slot": 56
+  },
+  {
+   "key": "valve",
+   "label": "Valve Open",
+   "kind": "momentary",
+   "slot": 57
+  },
+  {
+   "key": "igniter",
+   "label": "Igniter",
+   "kind": "momentary",
+   "slot": 58
+  },
+  {
+   "key": "purge",
+   "label": "Purge",
+   "kind": "toggle",
+   "slot": 59
+  }
+ ],
+ "armed": "armed",
+ "armed_why": "",
+ "blocked": "",
+ "served_at": 0
+}

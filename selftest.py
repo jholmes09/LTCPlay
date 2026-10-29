@@ -84665,6 +84665,1030 @@ def test_preroll_wiring_in_the_engine():
     rig.baseline = None
     check("10.0.1.2" in [ip for _l, ip in W._preroll_hosts(h, cfg)],
           "before the first sweep: every pixel controller")
+# ------------------------------------------- interface 2.0 (the SHOW tab) --
+
+def _ui2_pages():
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "web", "remote.html"),
+              encoding="utf-8") as fh:
+        one = fh.read()
+    with open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+              encoding="utf-8") as fh:
+        two = fh.read()
+    return one, two
+
+
+def _js_function(src, name):
+    """The whole text of `function name(...){...}` in `src` (an async one
+    too), or None: braces counted, strings, templates and comments left
+    alone."""
+    i = src.find("function " + name + "(")
+    if i < 0:
+        return None
+    if src[max(0, i - 6):i] == "async ":
+        i -= 6
+    j = src.find("{", src.find(")", i))
+    depth, k, q = 0, j, None
+    while k < len(src):
+        c = src[k]
+        if q:
+            if c == "\\":
+                k += 2
+                continue
+            if c == q:
+                q = None
+        elif src.startswith("//", k):
+            k = src.find("\n", k)
+            if k < 0:
+                return None
+            continue
+        elif src.startswith("/*", k):
+            k = src.find("*/", k) + 2
+            if k < 2:
+                return None
+            continue
+        elif c in "\"'`":
+            q = c
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return src[i:k + 1]
+        k += 1
+    return None
+
+
+def _js_same(text):
+    """A function's text without its comments and with its spacing evened
+    out, to compare a copy with the original."""
+    lines = [ln.split("//")[0] if ln.strip().startswith("//") else ln
+             for ln in str(text or "").splitlines()]
+    return re.sub(r"\s+", " ", "\n".join(lines)).strip()
+
+
+def test_ui2_pages_served_and_switched():
+    section("interface 2.0 (Jeff, 2026-10-28): /remote is still 1.0 byte "
+            "for byte unless this screen chose 2.0 (its own cookie, one "
+            "tap each way) or the show machine's default says 2.0; "
+            "/remote1 and /remote2 are always that page; /remote-logic.js "
+            "is 1.0's own rules; the same network, Host, proxy and other-"
+            "site rules; the default is set on the show machine only, with "
+            "Settings, and changes nothing on the rig")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import web as web_mod
+    from ltcplay import remote as remote_mod
+    from ltcplay import users as users_mod
+    one, two = _ui2_pages()
+    check(one != two and "<title>Show remote</title>" in one and
+          "<title>Show remote 2.0</title>" in two,
+          "remote.html is 1.0 and remote2.html is 2.0")
+    # 2.0 is served with 1.0's rules written into it (safety review of
+    # #166, B1): one answer, no second request its Abort or rules wait on.
+    lo1 = one[one.find('<script id="remote-logic">'):]
+    lo1 = lo1[:lo1.find("</script>") + len("</script>")]
+    check(two.count('<script src="/remote-logic.js"></script>') == 1,
+          "remote2.html names 1.0's rules once, where they go")
+    two_s = two.replace('<script src="/remote-logic.js"></script>', lo1, 1)
+    check('<script src="/remote-logic.js">' not in two_s and
+          two_s.count("function abortTapStep(") == 1,
+          "the page served carries 1.0's rules inline")
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        def page(path, **kw):
+            st, h, out = R.ask("GET", path, **kw)
+            return st, h, out if isinstance(out, str) else None
+
+        n0 = len(R.svc.journal)
+        # Nobody chose: 1.0, from the network and on the machine itself.
+        for path in ("/remote", "/"):
+            st, h, out = page(path)
+            check(st == 200 and out == one,
+                  f"GET {path} from the network with no choice is 1.0, "
+                  f"the file byte for byte: {st}")
+        st, _h, out = page("/remote", client=loop)
+        check(st == 200 and out == one, f"and on the show machine: {st}")
+        for path, want in (("/remote1", one), ("/remote2", two_s)):
+            for c in (("10.20.0.44", 50000), loop):
+                st, h, out = page(path, client=c)
+                check(st == 200 and out == want and
+                      h.get("content-type") == ["text/html; charset=utf-8"],
+                      f"GET {path} from {c[0]} is always that page: {st}")
+        # A screen's own choice: its cookie, and only its own.
+        for cookie, want, why in (
+                ("ltcplay_ui=2", two_s, "chose 2.0"),
+                ("ltcplay_user=abcdefghijklmnop0123; ltcplay_ui=2", two_s,
+                 "chose 2.0, beside a sign-in cookie"),
+                ("ltcplay_ui=1", one, "chose 1.0"),
+                ("ltcplay_ui=3", one, "a choice that is not 1 or 2"),
+                ("ltcplay_ui=2x", one, "a damaged choice"),
+                ("xltcplay_ui=2", one, "another cookie's name")):
+            st, _h, out = page("/remote", headers={"Cookie": cookie})
+            check(st == 200 and out == want,
+                  f"/remote for a screen that {why} ({cookie}): "
+                  f"{'2.0' if out == two_s else '1.0' if out == one else st}")
+        st, _h, out = page("/", headers={"Cookie": "ltcplay_ui=2"})
+        check(st == 200 and out == two_s,
+              "the iPad's / follows its choice too")
+        st, _h, out = page("/remote1", headers={"Cookie": "ltcplay_ui=2"})
+        check(st == 200 and out == one, "/remote1 is 1.0 whatever the choice")
+        # The switch: one link each way, a cookie in that browser only.
+        for v in ("2", "1"):
+            st, h, _out = R.ask("GET", f"/ui?v={v}")
+            ck = (h.get("set-cookie") or [""])[0]
+            check(st == 302 and h.get("location") == ["/remote"] and
+                  ck.startswith(f"ltcplay_ui={v};") and
+                  "SameSite=Strict" in ck and "Path=/" in ck and
+                  "Max-Age=" in ck,
+                  f"/ui?v={v}: back to /remote with that choice "
+                  f"remembered on this screen: {st} {h}")
+            for sfs in ("same-origin", "none"):
+                st, _h, _o = R.ask("GET", f"/ui?v={v}",
+                                   headers={"Sec-Fetch-Site": sfs})
+                check(st == 302, f"/ui?v={v} from this site ({sfs}): {st}")
+        for q in ("/ui", "/ui?v=3", "/ui?v=", "/ui?v=2.0", "/ui?v=default"):
+            st, h, _o = R.ask("GET", q)
+            check(st == 400 and not h.get("set-cookie"),
+                  f"GET {q} is refused and sets nothing: {st}")
+        for sfs in ("cross-site", "same-site"):
+            st, h, _o = R.ask("GET", "/ui?v=2",
+                              headers={"Sec-Fetch-Site": sfs})
+            check(st == 403 and not h.get("set-cookie"),
+                  f"a link to /ui?v=2 followed from another site's page "
+                  f"({sfs}) is refused and sets nothing: {st}")
+        check(len(R.svc.journal) == n0,
+              "choosing a page journals nothing and presses nothing")
+        # The same posture as /remote: Host, proxies, the network list.
+        for path in ("/remote2", "/remote1", "/remote-logic.js", "/ui?v=2"):
+            st, _h, _o = R.ask("GET", path, host="evil.example:7878")
+            check(st == 403, f"GET {path} under another host name is "
+                             f"refused: {st}")
+            st, _h, _o = R.ask("GET", path,
+                               headers={"X-Forwarded-For": "1.2.3.4"})
+            check(st == 403, f"GET {path} through a proxy is refused: {st}")
+        check(all(web_mod.network_may_reach(p) for p in
+                  ("/remote1", "/remote2", "/remote-logic.js", "/ui")) and
+              not any(web_mod.network_may_reach(p) for p in
+                      ("/remote3", "/ui/x", "/remote2/x", "/remote-logic",
+                       "/remote.html", "/remote2.html")),
+              "network_may_reach gained the four 2.0 addresses and nothing "
+              "else")
+        for path in ("/remote3", "/remote2.html", "/web/remote2.html"):
+            st, _h, _o = R.ask("GET", path)
+            check(st in (403, 404), f"GET {path} from the network: {st}")
+        # 1.0's own rules, cut out of remote.html at each request.
+        a = one.find('<script id="remote-logic">')
+        b = one.find("</script>", a)
+        want = one[a + len('<script id="remote-logic">'):b]
+        st, h, out = R.ask("GET", "/remote-logic.js")
+        check(st == 200 and out == want and
+              h.get("content-type") == ["application/javascript; "
+                                        "charset=utf-8"] and
+              "// LOGIC BEGIN" in out and "// LOGIC END" in out and
+              "function abortTapStep(" in out and
+              "function armState(" in out and "<script" not in out,
+              f"/remote-logic.js is remote.html's remote-logic block, "
+              f"whole: {st} {h.get('content-type')}")
+        # The default: the show machine only, Settings, 1 or 2.
+        st, _h, out = R.ask("GET", "/api/remote/ui-default")
+        check(st == 403, f"the default is not read from the network: {st}")
+        st, _h, out = R.ask("GET", "/api/remote/ui-default", client=loop)
+        check(st == 200 and out == {"default": 1},
+              f"the default starts at 1: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/ui-default",
+                            {"default": 2})
+        check(st == 403 and
+              remote_mod.load_settings(R.work)["ui_default"] == 1,
+              f"the default is not set from the network: {st} {out}")
+        for bad in ("2", True, 3, 2.0, None, [2], 0):
+            st, _h, out = R.ask("POST", "/api/remote/ui-default",
+                                {"default": bad}, client=loop)
+            check(st == 400 and
+                  remote_mod.load_settings(R.work)["ui_default"] == 1,
+                  f"default {bad!r} is refused and nothing is written: "
+                  f"{st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/ui-default",
+                            {"default": 2}, client=loop)
+        check(st == 200 and out.get("default") == 2 and
+              remote_mod.load_settings(R.work)["ui_default"] == 2 and
+              R.remote.ui_default() == 2,
+              f"on the show machine the default is set to 2: {st} {out}")
+        check(any(r.get("action") == "interface default"
+                  for r in list(R.svc.journal)[n0:]),
+              "and the change is journaled")
+        st, _h, out = page("/remote")
+        check(out == two_s, "a screen that has not chosen now gets 2.0")
+        st, _h, out = page("/remote", client=loop)
+        check(out == two_s, "the rack screen too, at the same /remote")
+        st, _h, out = page("/remote", headers={"Cookie": "ltcplay_ui=1"})
+        check(out == one, "a screen that chose 1.0 keeps 1.0")
+        st, _h, out = R.ask("GET", "/api/remote/ui-default", client=loop)
+        check(out == {"default": 2}, f"the default reads back: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/ui-default",
+                            {"default": 1}, client=loop)
+        check(st == 200 and page("/remote")[2] == one,
+              f"and back to 1: {st} {out}")
+        # A preference never breaks the settings file, and a broken file
+        # never breaks the page.
+        path = os.path.join(R.work, remote_mod.SETTINGS_FILE)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"ui_default": "2", "screen_arming": True}, fh)
+        s = remote_mod.load_settings(R.work)
+        check(s["ui_default"] == 1 and s["screen_arming"] is True,
+              f"a hand-written ui_default that is not 1 or 2 reads as 1 "
+              f"and the other settings still read: {s}")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        check(R.remote.ui_default() == 1 and page("/remote")[2] == one,
+              "a settings file that cannot be read serves 1.0")
+        os.remove(path)
+        # The role matrix: Settings, admin by default; never a safety press.
+        check(users_mod.classify("/api/remote/ui-default",
+                                 {"default": 2}) == "settings" and
+              users_mod.REMOTE_ROUTES.get("ui-default") == "settings" and
+              users_mod.DEFAULT_MATRIX["operator"]["settings"] is False and
+              users_mod.DEFAULT_MATRIX["admin"]["settings"] is True,
+              "setting the default needs Settings (admins by default)")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_ui2_page_makes_only_1_0_presses():
+    section("interface 2.0's SHOW tab presses exactly what 1.0 presses: "
+            "the same routes and bodies (Settings' default interface the "
+            "one new route), 1.0's rules served, never copied, and the "
+            "hold to arm, Arm all, Abort's double tap, Stop and the laser "
+            "refusals the same code as 1.0's; no dashes, nothing from off "
+            "the show network, Abort never dimmed or covered")
+    one, two = _ui2_pages()
+    head2 = two.split("</head>")[0]
+    for tag in ('<link rel="icon" href="/favicon.ico"',
+                '<link rel="apple-touch-icon" href="/apple-touch-icon.png"',
+                '<link rel="manifest" href="/manifest.webmanifest"'):
+        check(tag in head2, f"2.0 names its icon in <head>: {tag}")
+    check(not re.search(r"(?:src|href)=\"(?:https?:)?//", two) and
+          "http://" not in two and "https://" not in two,
+          "2.0 loads nothing from off the show network")
+    check("\u2013" not in two and "\u2014" not in two,
+          "2.0 has no em or en dashes")
+    # The rules are 1.0's, served; not one of them is defined here.
+    a = two.find('<script src="/remote-logic.js"></script>')
+    core = two[two.find('<script id="abort-core">'):]
+    core = core[:core.find("</script>")]
+    check(a > 0 and a < two.find('"use strict";\nconst esc') and
+          0 < two.find('<script id="abort-core">') < a,
+          "2.0 loads its Abort first, then 1.0's rules, then its own script")
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    rules = re.findall(r"^function (\w+)\(", lo, re.M)
+    check(len(rules) > 30, f"the rules are read: {len(rules)}")
+    dup = [n for n in rules if re.search(r"\bfunction " + n + r"\(", two)]
+    check(not dup, f"2.0 defines none of 1.0's rules itself: {dup}")
+    for n in ("isStale", "armState", "armButtonMode", "clickAction",
+              "allButtonMode", "armAllPlan", "armAllRefusal",
+              "pressDecision", "stopWords",
+              "refusedWords", "announceLook", "laserPill", "wxBlock",
+              "countdownAnchor", "rearmLeftMs", "holdRefusalWords",
+              "bottomPad", "mayRow", "lampClass"):
+        check(n in rules and re.search(r"\b" + n + r"\(", two),
+              f"2.0 uses 1.0's {n}")
+    # The copies: the same code as 1.0's, Arm all's button id the one change.
+    # ABORT needs nothing shared (safety review of #166, B1): its double
+    # tap is 1.0's abortTapStep and abortTapKind, renamed, its window
+    # 1.0's ABORT_TAP_MS, and anything else it touches is asked for first.
+    for n1, n2 in (("abortTapStep", "abortTapStep2"),
+                   ("abortTapKind", "abortTapKind2")):
+        f1, f2 = _js_function(one, n1), _js_function(core, n2)
+        check(f1 and f2 and _js_same(f1.replace(n1 + "(", n2 + "(")
+                                     .replace("ABORT_TAP_MS", "ABORT_TAP_MS2"))
+              == _js_same(f2), f"2.0's {n2} is 1.0's {n1}: {f2!r}")
+    m1 = re.search(r"const ABORT_TAP_MS = (\d+);", one)
+    m2 = re.search(r"const ABORT_TAP_MS2 = (\d+);", core)
+    check(m1 and m2 and m1.group(1) == m2.group(1),
+          f"2.0's Abort window is 1.0's: {m1 and m1.group(1)} "
+          f"{m2 and m2.group(1)}")
+    leaned = [n for n in rules if re.search(r"\b" + n + r"\(", core) and
+              f'typeof {n} === "function"' not in core]
+    check(not leaned, f"2.0's Abort calls none of 1.0's rules: {leaned}")
+    for n in ("getJSON", "post", "actor", "rearmWaitFor", "holding",
+              "holdLapsed", "holdFill", "groupNames", "armStart",
+              "armAllStart", "armBeat", "armAllProgress", "armAllSettle",
+              "armStop", "lzArmRefusal", "abortTapDone"):
+        f1, f2 = _js_function(one, n), _js_function(two, n)
+        if n == "abortTapDone":
+            f1 = (f1 or "").replace("ABORT_TAP_MS", "ABORT_TAP_MS2")
+            # 2.0's sign keeps its size: only the word changes back.
+            f1 = (f1 or "").replace(
+                '$("b-abort").querySelector(".w").textContent',
+                '$("abort-w").textContent')
+        check(f1 and f2 and _js_same(f1.replace('$("b-disarm")',
+                                                '$("b-armall")')) ==
+              _js_same(f2),
+              f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
+    # Every route 2.0 posts to, 1.0 posts to, but the default's.
+    def routes(src):
+        out = set(re.findall(r'"(/api/(?:remote/)?[a-z-]+)"', src))
+        out |= {"/api/remote/" + r for r in re.findall(
+            r'\b(?:press|annPress)\("([a-z-]+)"', src)}
+        return out
+    r1, r2 = routes(one), routes(two)
+    check(r2 - r1 == {"/api/remote/ui-default"},
+          f"2.0 adds one route, the default interface: {sorted(r2 - r1)}")
+    # The presses, body for body.
+    for press in ('press("start-now", {confirmed:true})',
+                  'press("disarm-all")', 'press("group-disarm", {group:i})',
+                  'press("hold")', 'press("resume")', 'press("reset")',
+                  'annPress("announce-play", {id: b.dataset.ann})',
+                  'annPress("announce-stop")', '{all:true, on:false}',
+                  'lzPress({lasers:ids, on:true, confirmed:true})',
+                  'post("/api/remote/live-flame", {on: false})',
+                  'post("/api/remote/scrub-flames", {on: false})',
+                  'action:"acknowledge"})',
+                  'fetch("/api/remote/stop", {method:"POST", '
+                  'credentials:"same-origin", cache:"no-store",',
+                  'body:JSON.stringify(actor({}))});',
+                  'const r = await post("/api/remote/signin", body);',
+                  'post("/api/remote/signout", {})',
+                  'post("/api/remote/preroll-continue", '
+                  'actor({phase:"begin", token:token}))',
+                  'post("/api/remote/preroll-continue", '
+                  'actor({phase:"done", token:token}))',
+                  '}, PR_HOLD_MS + 100);',
+                  'const token = String(Date.now()) + "-" + '
+                  'String(Math.random()).slice(2, 10);',
+                  'post("/api/remote/preroll-check", actor({}))',
+                  'post("/api/remote/cleaning-stop", actor({}))'):
+        check(press in one and press in two,
+              f"1.0 and 2.0 both press: {press}")
+    # Continue anyway is a hold in both, never a tap: let go early and
+    # nothing more is sent.
+    for page, what in ((one, "1.0"), (two, "2.0")):
+        check(re.search(r'\["pointerup", "pointerleave", "pointercancel"\]'
+                        r'\.forEach\(t => \$\("(?:pr-continue|al-act)"\)'
+                        r'\.addEventListener\(t, \(\) => \{\s*if\(PR_HOLD\)'
+                        r'\{ prHoldEnd\(\);', page),
+              f"{what}: letting go of Continue anyway ends the hold")
+    check('if(it.act === "pr-continue") return;' in two,
+          "2.0: a tap on Continue anyway does nothing")
+    check('post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
+          '{timeline:f})' in one and
+          'post("/api/start", {timeline:f})' in two,
+          "Run is 1.0's Run in Show: the same route and body")
+    check(re.search(r'press\("abort", \{confirmed:true\}\)', one) and
+          'fetch("/api/remote/abort", {method:"POST", credentials:'
+          '"same-origin", cache:"no-store",\n      headers:{"Content-Type":'
+          '"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.'
+          'stringify({confirmed:true, seen:seen})});' in core and
+          'const seen = (typeof ST !== "undefined" && ST) ? ST.served_at '
+          ': null;' in core,
+          "Abort's body is 1.0's (actor's): confirmed, and the status it "
+          "saw; 1.0's post headers")
+    # Abort: 1.0's double tap, never disabled, never dimmed, never covered.
+    for need in ("abortTapStep2(ABORT_TAP, monoNow(), kind, "
+                 "$(\"abortbar\").classList.contains(\"tap1\"))",
+                 "ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS2);",
+                 'if(e.repeat && (e.key === "Enter" || e.key === " ")) '
+                 'e.preventDefault();',
+                 'if(kind !== "key") $("b-abort").blur();',
+                 "abortTapDone();\n  try{ if(typeof armStop === \"function\") "
+                 "armStop(\"Abort\"); }catch(e1){}"):
+        check(need in core, f"2.0's Abort keeps 1.0's double tap: {need}")
+    check('<div id="broken" hidden role="alert">' in two and
+          "Page not fully loaded" in two,
+          "a page whose rules did not load says so")
+    check('$("b-abort").disabled' not in two and
+          "abortbar\").classList.toggle(\"idle\"" not in two,
+          "2.0 never disables or dims Abort")
+    rules2 = _css_rules(two)
+    bar = _css_rule(rules2, "#abortbar") or {}
+    sh = _css_rule(rules2, "#sheet") or {}
+    co = _css_rule(rules2, "#coach") or {}
+    check(bar.get("position") == "fixed" and
+          int(bar.get("z-index", "0")) > int(sh.get("z-index", "0")) and
+          int(bar.get("z-index", "0")) > int(co.get("z-index", "0")),
+          f"Abort is over every sheet and the tour: {bar} {sh} {co}")
+    check(co.get("pointer-events") == "none",
+          "the tour never stands in front of a control's press")
+    check("var(--abort)" in ((_css_rule(rules2, "footer") or {})
+                             .get("padding", "")),
+          "the footer keeps Abort's corner clear")
+    # The tour shows itself only while nothing is live or armed.
+    tour = _js_function(two, "coachMaybe") or ""
+    check("isLive(ST)" in tour and '"armed"' in tour and "stale()" in tour,
+          f"the tour never starts over a live show: {tour[:200]!r}")
+    # 1.0: one tap to 2.0, nothing else of it changed.
+    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1,
+          "Try 2.0 on 1.0 and Back to 1.0 on 2.0, once each")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not here; 2.0's words were checked by "
+              "reading only")
+        print("  ok")
+        return
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "goLook",
+        "nextStep", "pillLook", "alertItems"))
+    # alertItems' words and the page's own state it reads.
+    for c in ("ALERT_WHAT", "ALERT_DO"):
+        m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
+        fns += "\n" + (m.group(0) if m else "")
+    fns += ("\nlet ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null;")
+    js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const base = () => ({schedule:{attached:true, state:"STANDBY", next:{show:4, start:"19:30", in_s:900}},
+  show:{running:true}, flames:{connected:true, groups:[{name:"a", armed:"disarmed"}]}, arming:{enabled:true}, me:{may:{show:true, arm:true}}});
+let s = base(); s.schedule.aborted = true;
+t(goLook(s, false, true).mode === "reset", "aborted: the next step is Reset");
+s = base(); s.schedule.held = true;
+t(goLook(s, false, true).mode === "resume", "held: Resume");
+s = base(); s.alert_hold = {held:true};
+t(goLook(s, false, true).mode === "resume", "held at showtime by an alert: Resume");
+s = base(); s.announce = {playing:{held_schedule:true}};
+t(goLook(s, false, true).mode === "resume", "held for an announcement: Resume");
+s = base(); s.schedule.state = "SHOW";
+t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show live: nothing to start");
+s = base(); s.show.running = false;
+t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
+t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
+s = base(); s.schedule.start_blocked = {text:"Run has not been pressed yet."};
+t(goLook(s, false, true).mode === "run", "the engine saying Run is off: Run show");
+s = base();
+t(goLook(s, false, true).mode === "start" && !goLook(s, false, true).off, "between shows: Start now");
+t(goLook(s, true, true).off, "no contact: nothing that starts");
+s = base(); s.schedule.held = true;
+t(goLook(s, true, true).off, "held, no contact: Resume is off");
+s = base(); s.schedule.aborted = true;
+t(goLook(s, true, true).off, "aborted, no contact: Reset is off");
+s = base(); s.show.running = false;
+t(goLook(s, true, true).off, "Run off, no contact: Run is off");
+s = base(); s.me = {may:{show:false}};
+t(goLook(s, false, true).off, "signed out: view only");
+s = base(); s.schedule.start_blocked = {text:"The show audio is missing."};
+t(goLook(s, false, true).blocked === "The show audio is missing.", "a start the engine would refuse says why");
+s = base(); s.preroll = {state:"checking", label:"Show 4"};
+t(goLook(s, false, true).mode === "checking" && goLook(s, false, true).off, "the rig being checked: nothing to start (1.0's Checking)");
+t(goLook(s, false, true).mode === startLook(s, false, false).label.toLowerCase(), "the rig check: 1.0 says Checking too");
+t(/Checking the rig/.test(nextStep(s, false, true, []).text) && pillLook(s, false).text === "CHECKING RIG", "the rig check is said");
+s = base(); s.preroll = {state:"failed", label:"Show 4", age_s:5, show_check:{label:"Show 4", items:[{name:"Video", ok:false, text:"no"}], off:["video"]}};
+t(/Rig check failed/.test(nextStep(s, false, true, []).text), "a failed rig check: the next step says so");
+s.schedule.aborted = true;
+t(/Aborted/.test(nextStep(s, false, true, []).text), "an Abort is said before a failed rig check");
+const words = [];
+const states = [null, base()];
+for(const f of [x => x.schedule.aborted = true, x => x.schedule.held = true, x => x.alert_hold = {held:true}, x => x.me.view_only = true,
+                x => x.show.running = false, x => { x.schedule.state = "SHOW"; x.schedule.running = 4; }, x => x.schedule.start_waiting = true,
+                x => x.schedule.next = null, x => x.schedule.next = {show:5, start:"19:50", in_s:120}, x => { x.schedule.next = null; x.schedule.delayed = {show:3}; }]){
+  const x = base(); f(x); states.push(x);
+}
+for(const x of states) for(const st of [false, true]) for(const local of [true, false]){
+  const n = nextStep(x, st, local, []), p = pillLook(x, st);
+  words.push(n.text, p.text);
+  t(n.text.split(/\s+/).length <= 8, "the next step is 8 words or fewer: " + n.text);
+  t(!/flamesafe|beats|seq|engine/i.test(n.text + " " + p.text), "no engine words on the SHOW tab: " + n.text);
+}
+t(/Abort, Hold, Stop/.test(nextStep(base(), true, true, []).text), "no contact says Abort, Hold and Stop still work");
+t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
+// A live mode is pinned, said first and never READY (safety review B2).
+for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLEANING"], [x => x.cleaning = {state:"unknown"}, "CLEANING"],
+                        [x => x.live_flame = {on:true}, "LIVE FLAME"], [x => x.scrub_flames = {on:true}, "FLAMES LIVE"]]){
+  s = base(); f(s);
+  const n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
+  t(n.tone === "bad" && p.text === word && p.cls === "bad", "a live mode is the next step and the state: " + n.text + " / " + p.text);
+  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "sf"].includes(i.key)), "a live mode is pinned, never paged");
+  t(n.text.split(/\s+/).length <= 8, "pinned words are 8 or fewer: " + n.text);
+}
+s = base(); s.cleaning = {state:"phase1"};
+t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
+s.schedule.state = "SHOW";
+t(/Cleaning/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning is said over a running show");
+// Never READY with a fault (READY overclaim).
+for(const f of [x => x.flames.connected = false, x => x.disarm_connected = false, x => x.flames.stale = true]){
+  s = base(); s.disarm_connected = true; f(s);
+  const it = alertItems(s), p = pillLook(s, false, it), n = nextStep(s, false, true, it);
+  t(p.text === "NOT READY" && p.cls === "bad", "a fault is never READY: " + p.text);
+  t(!/Acknowledge/.test(n.text) && /See the alert/.test(n.text), "a fault with no Acknowledge never says Acknowledge: " + n.text);
+}
+s = base(); s.disarm_connected = true;
+t(pillLook(s, false, alertItems(s)).text === "READY", "all well: READY");
+// A rehearsal: the scheduler starts nothing, so nothing says a show starts.
+s = base(); s.disarm_connected = true; s.transport = {programming:true};
+t(pillLook(s, false, alertItems(s)).text === "REHEARSAL" && !/Show \d+ starts/.test(nextStep(s, false, true, alertItems(s)).text) &&
+  goLook(s, false, true).off && goLook(s, false, true).label === "Rehearsal", "a rehearsal: REHEARSAL, no show starts, nothing to start");
+// A Disarm that failed, or Abort/Stop that did not disarm: the e-stop.
+s = base(); s.disarm_connected = true;
+DISARM_FAIL = {what:"Disarm NOT done.", text:"refused"};
+t(/e-stop/.test(nextStep(s, false, true, alertItems(s)).text) && alertItems(s)[0].key === "dis-fail" && alertItems(s)[0].act === "seen", "a failed Disarm stays, worst first, until Seen, and says e-stop");
+DISARM_FAIL = null; STOP_SAID = "Stopped, but the flame disarm FAILED";
+t(nextStep(s, false, true, alertItems(s)).text === "Flames NOT disarmed. Use the e-stop.", "a failed Stop disarm: Abort's e-stop words");
+STOP_SAID = null;
+// Every fault the slot can show: the next step stays 8 words or fewer.
+s = base(); Object.assign(s, {disarm_connected:false, laser_fault:"x", disk:{text:"x"}, show_folder:{problem:"x"},
+  beyond_link:{link:"lost"}, morning:{lock_error:"x", config_error:"x"}, deck:{text:"x", heard:false}});
+s.flames = {connected:false, groups:[]}; s.schedule.error = "x"; s.schedule.trouble = "x"; s.schedule.conductor = false;
+s.alerts = Object.keys(ALERT_WHAT).map((k, i) => ({id:i, kind:k, severity:"fault", text:"x"}));
+const all = alertItems(s);
+for(const it of all){
+  const n = nextStep(s, false, true, [Object.assign({}, it, {tone:"bad"})]);
+  t(n.text.split(/\s+/).length <= 8, "the next step is 8 words or fewer: " + n.text);
+  t(String(it.what).split(/\s+/).length <= 8 && String(it.do).split(/\s+/).length <= 8, "an alert is 8 words or fewer: " + it.what + " " + it.do);
+}
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"2.0's next step and big button, in node: {r.stdout[-900:]!r} "
+          f"{r.stderr[-600:]!r}")
+    print("  ok")
+
+
+_UI2_MEASURE_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
+  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  if(window.__fail && o && o.method === "POST" && window.__fail.test(String(u)))
+    return Promise.resolve(new Response(JSON.stringify({error:"Refused for the test."}), {status:409, headers:{"Content-Type":"application/json"}}));
+  return realFetch.apply(this, arguments);
+};
+function shown(el){
+  if(!el || !el.getClientRects().length) return false;
+  for(let p = el; p; p = p.parentElement){ if(p.hidden) return false; }
+  const cs = getComputedStyle(el);
+  return cs.visibility !== "hidden" && cs.display !== "none";
+}
+function measure(){
+  const out = {vw:innerWidth, vh:innerHeight, problems:[]};
+  const main = document.querySelector("main");
+  out.main_excess = main.scrollHeight - main.clientHeight;
+  out.doc_excess = document.scrollingElement.scrollHeight - innerHeight;
+  const ab = document.getElementById("b-abort"), A = ab.getBoundingClientRect();
+  out.abort = {w:Math.round(A.width), h:Math.round(A.height), right:Math.round(innerWidth - A.right), bottom:Math.round(innerHeight - A.bottom)};
+  const at = document.elementFromPoint(A.left + A.width / 2, A.top + A.height / 2);
+  if(!at || !ab.contains(at)) out.problems.push("Abort is covered by " + (at ? at.id || at.className || at.tagName : "nothing"));
+  let op = 1; for(let p = ab; p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
+  const oc = getComputedStyle(ab.querySelector(".oct")).backgroundColor;
+  if(op < 1 || oc !== "rgb(230, 30, 24)") out.problems.push("Abort is dimmed: opacity " + op + ", " + oc);
+  const show = document.getElementById("t-show");
+  // What of a control can be seen: cut by the window and the pane.
+  function vis(el){
+    const r = el.getBoundingClientRect();
+    let L = Math.max(r.left, 0), T = Math.max(r.top, 0), R = Math.min(r.right, innerWidth), B = Math.min(r.bottom, innerHeight);
+    for(let p = el.parentElement; p && p !== document.body; p = p.parentElement){
+      const cs = getComputedStyle(p);
+      if(cs.overflowX !== "visible" || cs.overflowY !== "visible"){ const q = p.getBoundingClientRect(); L = Math.max(L, q.left); T = Math.max(T, q.top); R = Math.min(R, q.right); B = Math.min(B, q.bottom); }
+    }
+    return {left:L, top:T, right:R, bottom:B, width:Math.max(0, R - L), height:Math.max(0, B - T)};
+  }
+  const ctl = [...document.querySelectorAll("#t-show button, #next button, #mini button, footer button, header button, header a")].filter(shown);
+  const rs = ctl.map(el => [el, el.getBoundingClientRect(), vis(el)]);
+  for(const [el, r, v] of rs){
+    const name = el.id || el.dataset.arm && ("arm " + el.dataset.arm) || el.dataset.ann || el.textContent.trim().slice(0, 20);
+    const min = el.closest("header") ? 44 : 56;
+    if(r.width < min - 0.5 || r.height < min - 0.5) out.problems.push(name + ": " + Math.round(r.width) + "x" + Math.round(r.height) + ", under " + min);
+    if(v.width && v.height && v.left < A.right - 0.5 && A.left < v.right - 0.5 && v.top < A.bottom - 0.5 && A.top < v.bottom - 0.5) out.problems.push(name + ": under Abort");
+    if(r.right > innerWidth + 0.5 || r.left < -0.5) out.problems.push(name + ": off the side");
+  }
+  for(let i = 0; i < rs.length; i++) for(let j = i + 1; j < rs.length; j++){
+    const [e1, _a, a] = rs[i], [e2, _b, b] = rs[j];
+    if(e1.contains(e2) || e2.contains(e1) || !a.width || !b.width || !a.height || !b.height) continue;
+    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+      out.problems.push("overlap: " + (e1.id || e1.textContent.trim().slice(0, 20)) + " and " + (e2.id || e2.textContent.trim().slice(0, 20)));
+  }
+  // Every text on the SHOW tab 20 px or more, none of it cut, none of it
+  // under anything else.
+  for(const el of [...show.querySelectorAll("*"), ...document.querySelectorAll("footer *")]){
+    if(!shown(el)) continue;
+    const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+    const cs = getComputedStyle(el);
+    if(own){
+      const q = el.getBoundingClientRect(), x = q.left + q.width / 2, y = q.top + q.height / 2;
+      const top = (y >= 0 && y <= innerHeight && x >= 0 && x <= innerWidth) ? document.elementFromPoint(x, y) : el;
+      const m = main.getBoundingClientRect();
+      const inPane = !show.contains(el) || (y >= m.top && y <= m.bottom);
+      if(inPane && top && !(top === el || el.contains(top) || top.contains(el))) out.problems.push("text under " + (top.id || top.className || top.tagName) + ": " + el.textContent.trim().slice(0, 30));
+    }
+    if(own && parseFloat(cs.fontSize) < 19.5) out.problems.push("small text " + cs.fontSize + ": " + el.textContent.trim().slice(0, 30));
+    if(el.textContent.trim() && (cs.overflowX !== "visible" || cs.overflowY !== "visible") &&
+       (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) && el.tagName !== "MAIN")
+      out.problems.push("text cut: " + (el.id || el.className) + " '" + el.textContent.trim().slice(0, 30) + "'");
+  }
+  out.next = document.getElementById("next-t").textContent;
+  out.go = document.getElementById("go-l").textContent;
+  // The spare height: the SHOW pane with the flame tiles at their least,
+  // against the room it has (the margin for wider fonts).
+  const rh = s => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().height) : 0; };
+  out.rows = {header:rh("header"), next:rh("#next"), state:rh(".state"), tr:rh(".tr"), alert:rh("#alert"), flames:rh(".flames"), footer:rh("footer")};
+  const fl = document.querySelector(".flames");
+  const rows = getComputedStyle(show).gridTemplateRows.split(" ");
+  if(rows.length >= 4){
+    const keep = [fl.style.gridAutoRows, show.style.gridTemplateRows, show.style.flex];
+    fl.style.gridAutoRows = "min-content";
+    show.style.gridTemplateRows = rows.slice(0, 3).join(" ") + " min-content";
+    show.style.flex = "0 0 auto";
+    out.spare = Math.round(main.clientHeight - show.getBoundingClientRect().height);
+    [fl.style.gridAutoRows, show.style.gridTemplateRows, show.style.flex] = keep;
+  }
+  return out;
+}
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const n = (route) => posts.filter(p => p.u === route).length;
+async function presses(){
+  const res = {};
+  posts.length = 0;
+  const ab = document.getElementById("b-abort");
+  ab.click(); await wait(300);
+  res.abort_after_one = n("/api/remote/abort");
+  ab.click(); await wait(300);
+  res.abort_after_two = n("/api/remote/abort");
+  const p = posts.find(x => x.u === "/api/remote/abort");
+  res.abort_body = p ? JSON.parse(p.b) : null;
+  await wait(2500);
+  document.getElementById("b-hold").click(); await wait(300);
+  res.hold = n("/api/remote/hold");
+  document.getElementById("b-stop").click(); await wait(300);
+  res.stop_before_yes = n("/api/remote/stop");
+  res.sheet = !document.getElementById("sheet").hidden;
+  const yes = document.querySelector('#sh-row [data-i="1"]');
+  if(yes) yes.click();
+  await wait(400);
+  res.stop_after_yes = n("/api/remote/stop");
+  const arm = document.querySelector('[data-arm="0"]');
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
+  arm.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
+  res.arm_beats = n("/api/remote/arm-hold");
+  res.arm_released_while_held = n("/api/remote/arm-release");
+  arm.dispatchEvent(new PointerEvent("pointerup", o)); await wait(300);
+  res.arm_released = n("/api/remote/arm-release");
+  res.arm_beats_after = n("/api/remote/arm-hold");
+  await wait(400);
+  res.arm_beats_later = n("/api/remote/arm-hold");
+  document.getElementById("b-disall").click(); await wait(300);
+  res.disarm_all = n("/api/remote/disarm-all");
+  // No contact: the status stops coming.
+  window.__dead = true; await wait(2800);
+  const q = id => document.getElementById(id);
+  res.stale = {next:q("next-t").textContent, go_off:q("b-go").disabled, slot:q("al-what").textContent,
+    arms:[...document.querySelectorAll("[data-arm]")].map(b => b.dataset.mode + (b.disabled ? ":off" : ":on")),
+    armall_off:q("b-armall").disabled, hold_off:q("b-hold").disabled, stop_off:q("b-stop").disabled,
+    disall_off:q("b-disall").disabled, abort_off:q("b-abort").disabled};
+  res.routes = [...new Set(posts.map(x => x.u))];
+  return res;
+}
+// A failed rig check: Continue anyway is held (1.0's begin, then done once
+// filled), and a tap or an early let go sends nothing more. Then the
+// cleaning's Stop, the slot's next alert.
+async function prPresses(){
+  const res = {};
+  posts.length = 0;
+  const b = document.getElementById("al-act");
+  res.act = b.dataset.act; res.label = document.getElementById("al-act-l").textContent;
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:2};
+  b.click(); await wait(200);
+  res.after_tap = posts.filter(p => /preroll-continue/.test(p.u)).length;
+  b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(300);
+  res.label_held = document.getElementById("al-act-l").textContent;
+  b.dispatchEvent(new PointerEvent("pointerup", o)); await wait(1500);
+  res.early = posts.filter(p => /preroll-continue/.test(p.u)).map(p => JSON.parse(p.b).phase);
+  posts.length = 0;
+  b.dispatchEvent(new PointerEvent("pointerdown", o));
+  const t0 = performance.now(); let done = null;
+  while(performance.now() - t0 < 2500 && done === null){ await wait(25); if(posts.some(p => /preroll-continue/.test(p.u) && JSON.parse(p.b).phase === "done")) done = performance.now() - t0; }
+  b.dispatchEvent(new PointerEvent("pointerup", o));
+  res.full = posts.filter(p => /preroll-continue/.test(p.u)).map(p => JSON.parse(p.b).phase);
+  res.done_ms = done;
+  res.tokens = [...new Set(posts.filter(p => /preroll-continue/.test(p.u)).map(p => JSON.parse(p.b).token))].length;
+  posts.length = 0;
+  // The cleaning is pinned in the next-step bar with its own Stop.
+  const pin = document.querySelector('#pins [data-pin="wc"]');
+  res.wc_label = pin ? pin.textContent.trim() : "";
+  res.wc_next = document.getElementById("next-t").textContent;
+  res.wc_pill = document.getElementById("pill-t").textContent;
+  res.wc_in_slot = ALERTS.some(i => i.key === "wc");
+  if(pin) pin.click();
+  await wait(300);
+  res.routes = posts.map(p => p.u);
+  return res;
+}
+// The slot's button acts on the alert shown at finger-down: swapped under
+// the finger, nothing is sent. Then off the SHOW tab, the safe presses.
+async function fdPresses(){
+  const res = {}, q = id => document.getElementById(id), b = q("al-act");
+  const toAck = async () => { for(let i = 0; i < 14 && b.dataset.act !== "ack"; i++){ q("al-next").click(); await wait(60); } };
+  await toAck();
+  res.act = b.dataset.act; res.n = ALERTS.length;
+  posts.length = 0;
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:3};
+  b.dispatchEvent(new PointerEvent("pointerdown", o));
+  alertStep(1); await wait(50);
+  b.dispatchEvent(new PointerEvent("pointerup", o));
+  b.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1})); await wait(300);
+  res.swapped = posts.filter(p => p.u === "/api/remote/alert").length;
+  res.msg = q("msg-t").textContent;
+  await toAck();
+  b.dispatchEvent(new PointerEvent("pointerdown", o)); b.dispatchEvent(new PointerEvent("pointerup", o));
+  b.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1})); await wait(300);
+  res.same = posts.filter(p => p.u === "/api/remote/alert").length;
+  q("tabs").querySelector('[data-tab="day"]').click(); await wait(300);
+  res.mini = ["m-hold", "m-stop", "m-disf"].map(id => shown(q(id)));
+  res.next_shown = shown(q("next")) && shown(q("b-abort"));
+  posts.length = 0;
+  q("m-hold").click(); await wait(200); q("m-disf").click(); await wait(200);
+  res.mini_routes = posts.map(p => p.u);
+  // A refused Disarm stays in the slot, first, until Seen.
+  q("tabs").querySelector('[data-tab="show"]').click(); await wait(200);
+  window.__fail = /disarm-all/;
+  q("b-disall").click(); await wait(400);
+  window.__fail = null;
+  await wait(1200);
+  res.fail_slot = q("al-what").textContent; res.fail_act = q("al-act-l").textContent;
+  res.fail_next = q("next-t").textContent;
+  return res;
+}
+async function go(){
+  if(!document.querySelector("#groups .tile") || document.getElementById("next-t").textContent === "Connecting to the show PC") return setTimeout(go, 100);
+  await wait(600);
+  const res = {layout:measure()};
+  if(/presses=1/.test(location.search)) res.presses = await presses();
+  if(/prhold=1/.test(location.search)) res.pr = await prPresses();
+  if(/fd=1/.test(location.search)) res.fd = await fdPresses();
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def _ui2_status_running():
+    st = _rack_status_pico(many=False)
+    st["alerts"] = []
+    st["deck"] = {"text": "", "heard": True}
+    st["flames"]["cues_fault"] = ""
+    st["flames"]["groups"] = [{"name": n, "armed": "armed"} for n in
+                              ("front row", "cat-walk", "wave flamer",
+                               "fireball")]
+    st["schedule"].update({"state": "SHOW", "running": 4,
+                           "next": {"show": 5, "start": "19:50",
+                                    "in_s": 1500}})
+    st["show"] = {"running": True, "timecode": "01:03:12:08"}
+    st["countdown"] = {"kind": "left", "label": "Time left", "s": 312,
+                       "running": True}
+    st["laser_arm"]["lasers"][0]["armed"] = True
+    st["announce"] = {"configured": True, "ok": True, "device": "MOTU M4",
+                      "device_set": True, "device_available": True,
+                      "over_show": True, "playing": None, "items": [
+                          {"id": "delayed", "name": "Delayed",
+                           "available": True, "length_s": 12},
+                          {"id": "cancellation", "name": "Cancellation",
+                           "available": True, "length_s": 9},
+                          {"id": "cannot_continue",
+                           "name": "Cannot continue", "available": True,
+                           "length_s": 14}]}
+    return st
+
+
+_UI2_BROKEN_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function go(){
+  await wait(2500);
+  const q = id => document.getElementById(id), ab = q("b-abort");
+  const res = {broken:!q("broken").hidden, text:q("broken-t").textContent};
+  ab.click(); await wait(300);
+  res.after_one = posts.filter(p => p.u === "/api/remote/abort").length;
+  res.word = q("abort-w").textContent;
+  ab.click(); await wait(800);
+  const p = posts.filter(p => p.u === "/api/remote/abort");
+  res.after_two = p.length; res.body = p.length ? JSON.parse(p[0].b) : null;
+  const A = ab.getBoundingClientRect(), at = document.elementFromPoint(A.left + A.width / 2, A.top + A.height / 2);
+  res.on_top = !!at && ab.contains(at);
+  res.size = [Math.round(A.width), Math.round(A.height)];
+  res.after = q("broken-t").textContent;
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def _ui2_status_rigcheck():
+    """Between shows, the rig check before show 4 failed (preroll.py's
+    view), and the wave flamer cleaning running."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None,
+                           "next": {"show": 4, "start": "19:30",
+                                    "in_s": 0}})
+    st["countdown"] = {"kind": "next", "label": "Next show", "s": 0,
+                       "running": True}
+    st["preroll"] = {"state": "failed", "label": "show 4", "age_s": 20.0,
+                     "manual": False, "continue_hold_s": 1.0, "items": [],
+                     "text": "", "show_check": {
+                         "label": "show 4", "off": ["video"], "items": [
+                             {"name": "Video", "ok": False,
+                              "required": True,
+                              "text": "MadMapper did not move"}]}}
+    st["cleaning"] = {"available": True, "state": "phase1",
+                      "text": "Phase 1 of 2: firing the wave flamers"}
+    return st
+
+
+# The SHOW tab must fit these windows whole; a phone may scroll its pane.
+UI2_NO_SCROLL = ((1920, 1080), (1366, 768), (1280, 800), (1024, 768),
+                 (820, 1180), (768, 1024))
+UI2_SPARE = {(1024, 768): 24, (768, 1024): 40}
+
+
+def test_ui2_show_tab_in_a_browser():
+    section("interface 2.0's SHOW tab drawn in a real browser: no scroll at "
+            "1920x1080, 1366x768, 1280x800, 1024x768, 820x1180 and "
+            "768x1024; Abort 96 px in the corner, never covered or dimmed, "
+            "nothing under it; controls 56 px (the header 44), text "
+            "20 px, nothing cut or overlapping (a 390x844 phone too, whose "
+            "pane may scroll); and pressed: Abort fires on "
+            "the second tap only, Stop only after its Yes, a hold to arm "
+            "beats while held and lets go on release")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    check(page != two, "the test page carries 1.0's rules inline")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium, Chrome or Edge here, so 2.0 was not "
+              "drawn (set LTCPLAY_CHROME to one)")
+        print("  ok")
+        return
+    # (A window size: the browser's own frame takes 87 px of its height
+    # here, about what the Windows app's frame and an iPad's Safari take.)
+    # The phone too: its pane may scroll, but nothing is cut, covered or
+    # small there either (the audit's seven windows).
+    sizes = UI2_NO_SCROLL + ((390, 844),)
+    runs = [("alerts open", _rack_status_pico(), sizes, ""),
+            ("a show running", _ui2_status_running(), sizes, ""),
+            ("pressed", _rack_status_pico(many=False), ((1366, 768),),
+             "?presses=1&tour=0"),
+            ("a failed rig check", _ui2_status_rigcheck(), sizes, ""),
+            ("rig check pressed", _ui2_status_rigcheck(), ((1024, 768),),
+             "?prhold=1&tour=0"),
+            ("finger down", _rack_status_pico(), ((1366, 768),),
+             "?fd=1&tour=0")]
+    for what, status, sz, frag in runs:
+        if not frag:
+            frag = "?tour=0"
+        got = _rack_screen_in_chromium(chrome, page, status, sz,
+                                       measure_js=_UI2_MEASURE_JS,
+                                       frag=frag, budget_ms=15000)
+        for (w, h), res in got.items():
+            where = f"2.0, {what}, {w}x{h}"
+            if not check(isinstance(res, dict) and "layout" in res,
+                         f"{where}: drawn and measured: {res!r}"):
+                continue
+            m = res["layout"]
+            check(not m["problems"], f"{where}: {m['problems'][:12]}")
+            if (w, h) in UI2_NO_SCROLL:
+                check(m["main_excess"] <= 1 and m["doc_excess"] <= 1,
+                      f"{where}: the SHOW tab fits with no scroll: "
+                      f"{m['main_excess']} {m['doc_excess']} "
+                      f"{m.get('rows')}")
+                # Room to spare for a wider font (the Windows and Ubuntu
+                # runners differ): 24 px at 1024x768, 40 at 768x1024.
+                need = UI2_SPARE.get((w, h), 0)
+                check(isinstance(m.get("spare"), int) and m["spare"] >= need,
+                      f"{where}: {need} px or more to spare: "
+                      f"{m.get('spare')} {m.get('rows')}")
+            ab = m["abort"]
+            check(ab["w"] == 96 and ab["h"] == 96 and
+                  ab["right"] <= 24 and ab["bottom"] <= 24,
+                  f"{where}: Abort is 96 px in the bottom right corner: "
+                  f"{ab}")
+            pr = res.get("pr")
+            if frag.startswith("?prhold"):
+                check(pr and pr["act"] == "pr-continue" and
+                      pr["label"] == "Hold: continue anyway" and
+                      pr["after_tap"] == 0,
+                      f"{where}: a failed rig check offers 1.0's Continue "
+                      f"anyway as a hold; a tap sends nothing: {pr}")
+                check(pr and pr["label_held"] == "Keep holding..." and
+                      pr["early"] == ["begin"],
+                      f"{where}: let go early, only the begin was sent: "
+                      f"{pr}")
+                check(pr and pr["full"] == ["begin", "done"] and
+                      pr["tokens"] == 1 and pr["done_ms"] is not None and
+                      1050 <= pr["done_ms"] <= 1800,
+                      f"{where}: held, done follows after 1.0's hold "
+                      f"(continue_hold_s + 100 ms), one token: {pr}")
+                check(pr and pr["wc_label"] == "Stop cleaning" and
+                      pr["routes"] == ["/api/remote/cleaning-stop"],
+                      f"{where}: the cleaning's Stop is 1.0's: {pr}")
+                check(pr and pr["wc_next"] ==
+                      "Cleaning running. Stop when done." and
+                      pr["wc_pill"] == "CLEANING" and not pr["wc_in_slot"],
+                      f"{where}: a running cleaning is pinned with its "
+                      f"Stop, never paged, and never READY: {pr}")
+            fd = res.get("fd")
+            if frag.startswith("?fd"):
+                check(fd and fd["act"] == "ack" and fd["n"] >= 2 and
+                      fd["swapped"] == 0 and
+                      fd["msg"].startswith("Nothing done") and
+                      fd["same"] == 1,
+                      f"{where}: the slot's button acts only on the alert "
+                      f"shown at finger-down: {fd}")
+                check(fd and all(fd["mini"]) and fd["next_shown"] and
+                      fd["mini_routes"] == ["/api/remote/hold",
+                                            "/api/remote/disarm-all"],
+                      f"{where}: off the SHOW tab, Hold, Stop show and "
+                      f"Disarm flames are one tap, with Abort: {fd}")
+                check(fd and fd["fail_slot"] == "Disarm NOT done." and
+                      fd["fail_act"] == "Seen" and "e-stop" in fd["fail_next"],
+                      f"{where}: a refused Disarm stays in the slot until "
+                      f"Seen and the next step says e-stop: {fd}")
+            p = res.get("presses")
+            if frag.startswith("?presses"):
+                check(p and p["abort_after_one"] == 0 and
+                      p["abort_after_two"] == 1 and
+                      (p["abort_body"] or {}).get("confirmed") is True,
+                      f"{where}: Abort's first tap sends nothing, its "
+                      f"second sends 1.0's Abort: {p}")
+                check(p and p["hold"] == 1, f"{where}: Hold is one tap")
+                check(p and p["sheet"] and p["stop_before_yes"] == 0 and
+                      p["stop_after_yes"] == 1,
+                      f"{where}: Stop asks first, then sends: {p}")
+                check(p and p["arm_beats"] >= 2 and
+                      p["arm_released_while_held"] == 0 and
+                      p["arm_released"] >= 1 and
+                      p["arm_beats_later"] == p["arm_beats_after"],
+                      f"{where}: a hold to arm beats while held and lets "
+                      f"go on release, with no beat after: {p}")
+                check(p and p["disarm_all"] == 1,
+                      f"{where}: Disarm all is one tap")
+                sl = (p or {}).get("stale") or {}
+                check(sl.get("slot") == "Connection lost.",
+                      f"{where}: with no contact the alert slot says "
+                      f"Connection lost, never an old No alerts: {sl}")
+                check(sl.get("next", "").startswith("No contact") and
+                      sl.get("go_off") is True and sl.get("arms") and
+                      all(x == "disarm:on" for x in sl["arms"]) and
+                      sl.get("armall_off") is True and
+                      not any(sl.get(k) for k in ("hold_off", "stop_off",
+                                                  "disall_off",
+                                                  "abort_off")),
+                      f"{where}: with no contact nothing that acts on the "
+                      f"screen's state can be pressed, every group's button "
+                      f"is Disarm, and Hold, Stop, Disarm all and Abort "
+                      f"still work: {sl}")
+                check(p and set(p["routes"]) <= {
+                    "/api/remote/abort", "/api/remote/hold",
+                    "/api/remote/stop", "/api/remote/arm-hold",
+                    "/api/remote/arm-release", "/api/remote/disarm-all"},
+                      f"{where}: nothing else was posted: {p}")
+    # The rules' request fails (safety review of #166, B1): the page says
+    # so over everything but Abort, and Abort still sends 1.0's Abort on
+    # its second tap, with nothing from the rules.
+    got = _rack_screen_in_chromium(chrome, two, _rack_status_pico(),
+                                   ((1024, 768),), measure_js=_UI2_BROKEN_JS,
+                                   frag="?tour=0", budget_ms=8000)
+    for (w, h), res in got.items():
+        where = f"2.0 with its rules missing, {w}x{h}"
+        check(isinstance(res, dict) and res.get("broken") and
+              "not fully loaded" in res.get("text", ""),
+              f"{where}: the page says it did not load whole: {res!r}")
+        check(isinstance(res, dict) and res.get("after_one") == 0 and
+              res.get("word") == "TAP AGAIN" and res.get("after_two") == 1 and
+              list((res.get("body") or {}).keys()) == ["confirmed", "seen"]
+              and res["body"]["confirmed"] is True and
+              res.get("on_top") and res.get("size") == [96, 96],
+              f"{where}: Abort still works: nothing on the first tap, "
+              f"1.0's Abort on the second, never covered: {res!r}")
     print("  ok")
 
 
@@ -85418,6 +86442,9 @@ if __name__ == "__main__":
         test_config_watch_names_the_file_and_who_is_behind,
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
+        test_ui2_pages_served_and_switched,
+        test_ui2_page_makes_only_1_0_presses,
+        test_ui2_show_tab_in_a_browser,
         test_config_watch_supervisor_and_rack_screen_note,
     ]
     _stopped = _run_tests(TESTS)

@@ -1410,6 +1410,51 @@ blanked from here.
 After the press, the engine's answer stays on the screen as a banner until
 it is seen, never only as a one-line note.
 
+## Interface 2.0 (being tried, 1.0 stays)
+
+The page above is interface 1.0. Interface 2.0 is a new SHOW screen beside
+it; the Day, Schedule and Settings tabs of 2.0 open the 1.0 page for now
+("Open in 1.0"). Nothing else changes: every 2.0 button sends exactly what
+the same 1.0 button sends, with the same holds, confirms and refusals.
+
+- Try it: "Try 2.0" in the 1.0 header. Back: "Back to 1.0" in the 2.0
+  header. One tap each way, and it is this screen only (a cookie in that
+  browser): the rack screen, each iPad and each laptop choose for
+  themselves. The rack window's address stays `/remote`.
+- `/remote1` is always 1.0 and `/remote2` is always 2.0, for comparing.
+- Which one a screen that has not chosen gets: 2.0 Settings, "Default
+  interface", on the show PC itself, by someone with Settings (admins).
+  It starts at 1.0 and stays there until Jeff changes it. It is
+  `ui_default` (1 or 2) in `ltcplay_remote.json`; anything else reads as 1.
+- The 2.0 SHOW screen, top to bottom: one line that says what to do next;
+  the show state, the timecode and the time left; the big button for the
+  next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
+  alert at a time with Acknowledge (tap the words for the details); a tile
+  per flame group and one for the lasers, with Hold: arm flames and Disarm
+  flames (flames only; the lasers' tile has its own Disarm lasers); the
+  announcements and the wind along the bottom, left of Abort in its
+  corner, 96 px, tap twice. Tap "Announce" for what the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
+- Anything live that has to be stopped by hand (the wave flamer cleaning,
+  live flame programming, flames while scrubbing) sits in the next-step
+  line with its own red Stop, on every tab, never behind another alert,
+  and the state never reads READY while it runs, or while a fault is open.
+  A rehearsal reads REHEARSAL and never counts down to a show.
+- Off the SHOW tab, Hold, Stop show, Disarm flames, Disarm lasers and Stop
+  sound stay one tap away under the next-step line, and a new alert brings
+  the screen back to SHOW.
+- A Disarm that is refused stays in the alert slot until Seen, and the
+  next step says to use the Deck or the e-stop. With no contact the slot
+  says Connection lost.
+- Abort does not depend on the rest of the page: if the page did not load
+  whole it says "Page not fully loaded. Reload it." across the top, and
+  Abort still works.
+- The rig check before a show: the big button says Checking rig while it
+  runs. When it fails, the alert slot says so and its button is 1.0's
+  "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
+  alert's details have Check again.
+- Help (header): the tour again, and a quick card to print. Each "?" says
+  what the buttons near it do, in one sentence each.
+
 ## The show file, and making one
 
 The show file is the playlist: a small `.json` file that says which

@@ -185,6 +185,9 @@ REMOTE_ROUTES = {
     "preroll-continue": "show",
     # The announcement output picker (remote.announce_output).
     "announce-output": "settings", "announce-test-tone": "settings",
+    # The default interface (interface 2.0, 2026-10-28): which page a
+    # screen that has not chosen gets. Setup, admin by default.
+    "ui-default": "settings",
     "live-flame": "settings", "scrub-flames": "settings",
     "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",

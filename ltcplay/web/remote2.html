@@ -1,0 +1,1925 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="LTC Player">
+<title>Show remote 2.0</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/png" href="/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#070605">
+<style>
+/* INTERFACE 2.0 (Jeff, 2026-10-28). The SHOW screen only; the other tabs
+   open the 1.0 page for now. 1.0 (remote.html) is unchanged and one tap
+   away. Every press here is a press 1.0 already makes: the same route, the
+   same body, the same hold. The pure rules (stale, arming, the Abort double
+   tap, Start and Stop) are 1.0's own, served from remote.html by
+   /remote-logic.js, never copied. selftest.py checks both.
+   Rules: no scrolling on SHOW; text 20 px and up on SHOW; targets 56 px and
+   up on SHOW; one colour per meaning (green live or armed, amber held or
+   waiting, red fault or danger, grey off or safe, blue information); an
+   icon and a word on every control; fixed regions, so nothing moves when
+   the state changes. */
+@font-face{font-family:"Inter";font-weight:400;font-style:normal;
+  font-display:swap;src:url(/brand/Inter-400.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:700;font-style:normal;
+  font-display:swap;src:url(/brand/Inter-700.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:800;font-style:normal;
+  font-display:swap;src:url(/brand/Inter-800.woff2) format("woff2")}
+:root{
+  --bg:#070605; --panel:#15110d; --panel2:#1f1a14; --line:#4a3f2e;
+  --cream:#EFE3C6; --muted:#C2AE86; --gold:#D4A84A;
+  --green:#28BE5A; --green-ink:#04150a; --amber:#F5A01E; --amber-ink:#1e1000;
+  --red:#E61E18; --red-hi:#FF5A50; --red-deep:#9E1016; --grey:#A79C88; --blue:#5AAEFF;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
+  /* sizes, the 1024x768 iPad first */
+  --fs:20px; --gap:8px; --pad:12px;
+  --hdr-btn:48px; --next-h:64px; --next-fs:24px; --state-h:64px; --tc-fs:36px;
+  --tr-h:72px; --al-h:76px; --tile-btn:64px; --ann-h:64px;
+  --abort:96px;
+}
+@media (min-width:1600px) and (min-height:950px){
+  :root{--fs:22px; --gap:10px; --pad:16px; --hdr-btn:52px; --next-h:68px; --next-fs:30px;
+    --state-h:84px; --tc-fs:52px; --tr-h:96px; --al-h:84px; --tile-btn:80px; --ann-h:76px}
+}
+/* A short window (the rack window under its frame, an iPad's Safari): the
+   same regions, tighter. Targets stay 56 px on SHOW. */
+@media (max-height:800px) and (min-width:601px){
+  :root{--gap:4px; --pad:10px; --hdr-btn:44px; --next-h:60px; --next-fs:22px; --state-h:56px; --tc-fs:32px;
+    --tr-h:64px; --al-h:64px; --tile-btn:56px; --ann-h:56px}
+}
+@media (max-height:700px) and (min-width:601px){
+  :root{--gap:4px; --pad:8px; --hdr-btn:44px; --next-h:60px; --next-fs:21px; --state-h:50px; --tc-fs:28px; --tr-h:56px; --al-h:60px}
+  header{padding-top:4px;padding-bottom:4px}
+}
+/* ABORT's corner (safety review of #166): the footer is always the sign
+   plus 16 px, never less, and nothing but the footer is under the sign, so
+   no control can ever sit under it; the pane reflows or, on a phone,
+   scrolls above it. */
+:root{--foot-h:calc(var(--abort) + 16px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);height:100%}
+body{color:var(--cream);font:400 var(--fs)/1.25 var(--sans);-webkit-font-smoothing:antialiased;
+  -webkit-user-select:none;user-select:none;overflow:hidden}
+button,a.b{font:inherit;color:inherit}
+svg.i{width:1.15em;height:1.15em;flex:0 0 auto;fill:currentColor}
+[hidden]{display:none !important}
+
+/* ---- the frame: header, the tab, the footer with Abort ---- */
+#app{height:calc(100vh - var(--pad-bottom, 0px));height:calc(100dvh - var(--pad-bottom, 0px));
+  display:grid;grid-template-rows:auto calc(var(--next-h) + var(--gap)) minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr)}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);padding:var(--gap) var(--pad);
+  border-bottom:1px solid var(--line)}
+#tabs{display:flex;gap:6px;flex:0 1 auto}
+.tab{display:inline-flex;align-items:center;gap:8px;min-height:var(--hdr-btn);padding:0 14px;
+  border:2px solid transparent;border-radius:10px;background:transparent;font-weight:700;cursor:pointer;color:var(--muted)}
+.tab.on{color:var(--cream);border-color:var(--gold);background:var(--panel2)}
+.hright{display:flex;gap:6px;align-items:center;margin-left:auto;flex:0 1 auto}
+.hb{display:inline-flex;align-items:center;gap:8px;min-height:var(--hdr-btn);padding:0 12px;
+  border:2px solid var(--line);border-radius:10px;background:var(--panel);font-weight:700;cursor:pointer;
+  text-decoration:none;white-space:nowrap}
+a.b{text-decoration:none}
+#sys.ok{border-color:var(--green)} #sys.ok svg{color:var(--green)}
+#sys.warn{border-color:var(--amber)} #sys.warn svg{color:var(--amber)}
+#sys.bad{border-color:var(--red);background:#2a0a08} #sys.bad svg{color:var(--red-hi)}
+#user.in{border-color:var(--green)} #user.out{border-color:var(--amber)}
+main{min-height:0;position:relative;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
+.pane{flex:1 0 auto;padding:var(--gap) var(--pad);min-height:0}
+footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(var(--abort) + 32px) var(--gap) var(--pad);
+  border-top:1px solid var(--line);min-width:0;min-height:var(--foot-h)}
+#foot-l{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:var(--gap)}
+#foot-l > .ann{height:var(--ann-h)}
+.frow{display:flex;align-items:center;gap:var(--gap);min-width:0}
+
+/* ---- buttons: one look per meaning ---- */
+.b{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:56px;min-width:56px;
+  padding:0 16px;border:2px solid var(--line);border-radius:12px;background:var(--panel2);
+  font-weight:800;line-height:1.1;text-align:center;cursor:pointer;position:relative;overflow:hidden}
+.b small{display:block;font-weight:400;font-size:var(--fs);color:inherit}
+.b.green{background:var(--green);border-color:#7BEA9C;color:var(--green-ink)}
+.b.amber{background:var(--amber);border-color:#FFD08A;color:var(--amber-ink)}
+.b.red{background:var(--red);border-color:var(--red-hi);color:#fff}
+.b.redline{background:#200806;border-color:var(--red);color:#FFD2CC}
+.b.blue{background:#0d2742;border-color:var(--blue);color:#E3F1FF}
+.b.safe{background:#2b2723;border-color:#8b8170;color:var(--cream)}
+.b.hold{border-style:solid;border-width:3px}
+.b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E}
+.b .fill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(255,255,255,.28);pointer-events:none;transition:width .1s linear}
+.q{width:56px;height:56px;min-width:56px;border-radius:50%;border:2px solid var(--blue);background:#0d1d30;
+  color:#E3F1FF;font-weight:800;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex:0 0 auto}
+
+/* ---- SHOW ---- */
+#t-show{display:grid;gap:var(--gap);
+  grid-template-rows:var(--state-h) var(--tr-h) var(--al-h) minmax(min-content,1fr);
+  grid-template-columns:minmax(0,1fr)}
+#t-show > *{min-width:0;min-height:0}
+#next{display:flex;align-items:center;gap:12px;padding:0 12px;margin:var(--gap) var(--pad) 0;border-radius:12px;border:2px solid var(--line);
+  background:var(--panel);font-size:var(--next-fs);font-weight:800;min-width:0;min-height:0}
+#next .t{flex:1 1 auto;min-width:0;line-height:1.1}
+#pins{display:flex;gap:var(--gap);flex:0 0 auto}
+#pins .b{min-height:56px;font-size:var(--fs)}
+#pins:empty{display:none}
+/* Two or three live modes on a narrow screen: their Stops are the words. */
+@media (max-width:1300px) and (min-width:601px){ #next.many .t{display:none} #next.many #pins{flex:1 1 auto} #next.many #pins .b{flex:1 1 0;min-width:0;padding:0 8px} }
+#mini{display:flex;flex-wrap:wrap;gap:var(--gap);padding:var(--gap) var(--pad) 0}
+#mini .b{flex:1 1 9em;min-height:56px}
+#next.ok{border-color:var(--green)} #next.ok > svg{color:var(--green)}
+#next.warn{border-color:var(--amber);background:#241703} #next.warn > svg{color:var(--amber)}
+#next.bad{border-color:var(--red);background:#2a0a08} #next.bad > svg{color:var(--red-hi)}
+.state{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.2fr);gap:var(--gap)}
+.state > div{display:flex;flex-direction:column;justify-content:center;padding:0 12px;border-radius:12px;background:var(--panel);border:2px solid var(--line);min-width:0}
+.state small{color:var(--muted);font-size:var(--fs);line-height:1.1}
+#pill{flex-direction:row !important;align-items:center;justify-content:flex-start !important;gap:10px;font-weight:800}
+#pill.ok{border-color:var(--green);color:#9BF5B7} #pill.warn{border-color:var(--amber);color:#FFD08A}
+#pill.bad{border-color:var(--red);color:#FFB3AB;background:#2a0a08} #pill.off{color:var(--grey)}
+#st-tc{font:800 var(--tc-fs)/1 var(--sans);font-variant-numeric:tabular-nums;white-space:nowrap}
+#cd-v{font-weight:800;font-size:calc(var(--fs) + 6px);white-space:nowrap}
+.tr{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:var(--gap);align-items:stretch}
+.tr .b{min-height:0;height:100%;font-size:calc(var(--fs) + 2px)}
+#b-go{font-size:calc(var(--fs) + 6px)}
+#b-go .lbl{display:flex;flex-direction:column;align-items:flex-start;text-align:left}
+.tr .q{align-self:center}
+#alert{display:flex;align-items:center;gap:var(--gap);padding:0 10px;border-radius:12px;border:2px solid var(--line);background:var(--panel)}
+#alert > svg{width:32px;height:32px}
+#alert .at{flex:1 1 auto;min-width:0;min-height:56px;align-self:stretch;display:flex;align-items:center;gap:8px;padding:0;border:0;background:transparent;
+  text-align:left;cursor:pointer;color:inherit}
+#alert .at .tt{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;justify-content:center;line-height:1.2}
+#alert .at b{font-weight:800}
+#alert .at:disabled{cursor:default}
+#alert .at:disabled .more{display:none}
+#alert .more{display:inline-flex;align-items:center;gap:6px;color:#9CCBFF;font-weight:700;white-space:nowrap;flex:0 0 auto}
+#alert.none{color:var(--grey)} #alert.none > svg{color:var(--green)}
+#alert.bad{border-color:var(--red);background:#2a0a08} #alert.bad > svg{color:var(--red-hi)}
+#alert.warn{border-color:var(--amber);background:#241703} #alert.warn > svg{color:var(--amber)}
+#alert.ok{border-color:var(--green)} #alert.ok > svg{color:var(--green)}
+#al-next,#al-act{white-space:nowrap;flex:0 0 auto}
+/* One grid: a tile per flame group, the lasers' tile, then Arm all and
+   Disarm flames; as many columns as fit (layoutGroups). A row is never
+   shorter than its tile, so nothing is ever drawn over anything. */
+.flames{display:grid;gap:var(--gap);grid-auto-rows:minmax(min-content,1fr);min-height:0}
+#groups{display:contents}
+.tile{display:grid;grid-template-rows:auto 1fr var(--tile-btn);gap:4px;padding:6px 8px;
+  border-radius:12px;border:2px solid var(--line);background:var(--panel);min-width:0;min-height:0}
+.tile .tn{font-weight:800;text-transform:uppercase;letter-spacing:.03em;overflow-wrap:anywhere;line-height:1.1}
+.tile .ts{display:flex;align-items:center;gap:8px;font-weight:800}
+.tile .ts .lk{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-weight:700}
+.tile .b{min-height:0;height:var(--tile-btn);width:100%;padding:0 6px;gap:6px}
+.tile.armed{border-color:var(--green);background:#0b2414} .tile.armed .ts{color:#9BF5B7}
+.tile.held{border-color:var(--amber)} .tile.held .ts{color:#FFD08A}
+.tile.unknown .ts{color:var(--grey)} .tile.unknown{border-style:dashed}
+.tile.disarmed .ts{color:var(--grey)}
+.tile.lz{border-color:#6f63c9} .tile.lz.armed{border-color:#A898FF;background:#1a153a} .tile.lz.armed .ts{color:#D9D2FF}
+.allcol{display:grid;grid-template-rows:minmax(56px,1fr) minmax(56px,1fr);gap:var(--gap);min-width:0}
+.allcol .b{min-height:56px;height:100%;padding:0 6px;gap:6px}
+.ann{display:flex;align-items:center;gap:var(--gap);min-width:0}
+.ann .head{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;min-width:0;flex:0 1 auto;max-width:20%;
+  height:100%;min-height:56px;padding:2px 8px;border:2px solid var(--line);border-radius:12px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.ann .head .qm{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;border:2px solid var(--blue);color:#E3F1FF;font-weight:800;margin-left:2px}
+.ann .head b{display:flex;align-items:center;gap:8px;font-weight:800;white-space:nowrap}
+.ann .head span{color:var(--muted);line-height:1.1}
+.ann .head span.bad{color:#FFB3AB}
+#ann-btns{display:flex;gap:var(--gap);flex:1 1 auto;min-width:0;height:100%}
+#ann-btns .b,#ann-stop{height:100%;min-height:0;flex:1 1 0;padding:0 4px;gap:4px}
+#ann-stop{max-width:7em;white-space:normal;line-height:1.05}
+#ann-btns .b.on{border-color:var(--amber);background:#3a2604}
+#ann-btns .b svg.i{width:18px;height:18px}
+#ann-stop{flex:0 0 auto}
+/* the footer: wind, the last message, then the room Abort keeps */
+#wx{flex:0 1 auto;min-width:0;justify-content:flex-start;text-align:left;font-weight:700}
+#wx.ok svg{color:var(--green)} #wx.stale svg,#wx.alert svg{color:var(--amber)} #wx.none{border-color:var(--red)} #wx.none svg{color:var(--red-hi)}
+#msg{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:var(--gap)}
+#msg-t{min-width:0;line-height:1.15}
+#msg.bad #msg-t{color:#FFB3AB} #msg.ok #msg-t{color:#9BF5B7} #msg.warn #msg-t{color:#FFD08A}
+
+/* ---- ABORT: always there, bottom right, 96 px, never dimmed ---- */
+#abortbar{position:fixed;z-index:100;right:calc(16px + env(safe-area-inset-right));
+  bottom:calc(8px + env(safe-area-inset-bottom) + var(--pad-bottom, 0px))}
+#b-abort{position:relative;display:flex;align-items:center;justify-content:center;width:var(--abort);height:var(--abort);
+  padding:0;border:0;background:transparent;color:#fff;cursor:pointer;filter:drop-shadow(0 0 10px rgba(230,30,24,.45))}
+#b-abort .oct,#b-abort .oct i{position:absolute;inset:0;
+  clip-path:polygon(29.3% 0,70.7% 0,100% 29.3%,100% 70.7%,70.7% 100%,29.3% 100%,0 70.7%,0 29.3%)}
+#b-abort .oct{background:var(--red)}
+#b-abort .oct i{inset:4px;background:var(--red-deep)}
+#b-abort .w{position:relative;font:800 20px/1.05 var(--sans);text-align:center;width:90%}
+#b-abort:focus-visible{outline:3px solid var(--cream);outline-offset:3px}
+#abortbar.tap1 .oct{animation:abortpulse .5s steps(1,end) infinite}
+#abortbar.tap1 #b-abort{filter:drop-shadow(0 0 20px rgba(255,80,70,.95))}
+@keyframes abortpulse{50%{background:#FF6A5E}}
+@media (prefers-reduced-motion:reduce){#abortbar.tap1 .oct{animation:none}}
+
+/* ---- a page that did not load whole: loud, over everything but Abort ---- */
+#broken{position:fixed;left:0;right:0;top:0;z-index:90;display:flex;align-items:center;gap:12px;padding:12px 16px;
+  background:var(--red-deep);border-bottom:4px solid var(--red-hi);color:#fff;font-size:calc(var(--fs) + 6px);font-weight:800}
+#broken > svg{width:40px;height:40px}
+#broken span{flex:1 1 auto;min-width:0}
+
+/* ---- the other tabs (1.0 for now) ---- */
+.cards{display:flex;flex-direction:column;gap:var(--gap);max-width:900px}
+.card{display:flex;align-items:center;gap:var(--gap);padding:12px;border-radius:12px;border:2px solid var(--line);background:var(--panel)}
+.card .t{flex:1 1 auto;min-width:0}
+.card .t b{display:block}
+.card .t span{color:var(--muted)}
+.seg{display:flex;gap:6px}
+.seg .b.on{border-color:var(--gold);background:#3a2c10}
+
+/* ---- sheets (confirm, details, help, sign in) over everything but Abort ---- */
+#sheet{position:fixed;inset:0;z-index:60;background:rgba(7,6,5,.86);display:flex;align-items:flex-start;justify-content:center;
+  padding:max(12px,4vh) 12px calc(var(--foot-h) + 12px)}
+#sheet .box{width:min(680px,100%);max-height:100%;overflow:auto;background:var(--panel);border:2px solid var(--gold);
+  border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px}
+#sheet h2{margin:0;font-size:calc(var(--fs) + 6px);font-weight:800}
+#sh-body{line-height:1.35}
+#sh-body ul{margin:0;padding-left:1.1em}
+#sh-body li{margin:6px 0}
+#sh-body .full{white-space:pre-wrap;color:var(--cream)}
+#sh-body .dim{color:var(--muted)}
+#sh-row{display:flex;gap:var(--gap);flex-wrap:wrap;justify-content:flex-end}
+#sh-row.flip{flex-direction:row-reverse;justify-content:flex-start}
+#sh-row .b{flex:0 1 auto;min-width:140px}
+.names{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.names .b.on{border-color:var(--gold);background:#3a2c10}
+input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10px;border:2px solid var(--line);
+  background:#0e0b08;color:var(--cream);-webkit-user-select:text;user-select:text}
+
+/* ---- coach marks: never in front of a control's press ---- */
+#coach{position:fixed;inset:0;z-index:80;pointer-events:none}
+#coach .hole{position:fixed;border:3px solid var(--blue);border-radius:12px;box-shadow:0 0 0 9999px rgba(0,0,0,.55);transition:all .15s}
+#coach .card{position:fixed;pointer-events:auto;max-width:min(520px,calc(100vw - 24px));border-color:var(--blue);flex-wrap:wrap}
+#coach .card .t b{font-size:calc(var(--fs) + 4px)}
+
+/* ---- the quick card, printable ---- */
+#qcard{display:none}
+.qc h3{margin:12px 0 4px;font-size:calc(var(--fs) + 2px)}
+.qc dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 14px}
+.qc dt{font-weight:800}
+.qc dd{margin:0}
+@media print{
+  body{overflow:visible;background:#fff;color:#000}
+  body > *{display:none !important}
+  #qcard{display:block !important;color:#000;font:14pt/1.35 var(--sans);padding:12mm}
+  #qcard h2{font-size:20pt;margin:0 0 6mm}
+}
+
+/* ---- narrower screens: iPad portrait, small laptops ---- */
+@media (max-width:1100px){
+  .tab{padding:0 8px;gap:6px} .hb{padding:0 8px;gap:6px} #tabs{gap:2px} .hright{gap:4px}
+  header{row-gap:4px}
+  #alert .more .w{display:none}
+}
+@media (max-width:900px){
+  :root{--next-h:60px; --next-fs:22px; --state-h:68px; --tc-fs:30px; --al-h:76px; --hdr-btn:44px}
+  header{row-gap:4px;padding-top:4px;padding-bottom:4px}
+  #foot-l > .ann{height:auto}
+  .ann{flex-wrap:wrap}
+  /* Narrow: the heading and Stop sound share the first line, the
+     announcements have the whole second line to themselves. */
+  .ann .head{max-width:none;flex:1 1 0;flex-direction:row;gap:12px;align-items:center;justify-content:flex-start;order:0;height:var(--ann-h)}
+  #ann-stop{order:1;flex:0 0 auto;max-width:none;height:var(--ann-h)}
+  #ann-btns{order:2;flex:1 1 100%;min-width:0;height:var(--ann-h)}
+  #ann-btns .b{min-width:0;height:var(--ann-h);padding:0 6px;gap:6px;white-space:normal;line-height:1.05;flex:1 1 0}
+}
+@media (max-width:900px) and (min-width:601px) and (max-height:960px){
+  :root{--gap:4px; --pad:10px; --state-h:60px; --tr-h:56px; --al-h:60px; --ann-h:56px}
+}
+/* A phone: the SHOW pane scrolls between the header and the footer, so
+   nothing ever goes under Abort. */
+@media (max-width:600px){
+  :root{--fs:20px; --pad:8px; --gap:6px; --next-h:auto; --state-h:auto; --tr-h:auto; --al-h:auto; --tile-btn:60px; --tc-fs:30px}
+  #tabs,.hright{flex-wrap:wrap;margin-left:0}
+  main{overflow-y:auto}
+  #t-show{grid-template-rows:none;height:auto}
+  #app{grid-template-rows:auto auto minmax(0,1fr) auto}
+  #next{min-height:64px;padding:8px 12px;flex-wrap:wrap}
+  #mini .b{flex:1 1 40%}
+  #pins{flex:1 1 100%;flex-wrap:wrap}
+  #pins .b{flex:1 1 40%;min-height:56px}
+  .state{grid-template-columns:1fr}
+  .state > div{min-height:60px;padding:6px 12px}
+  .tr{grid-template-columns:1fr 1fr 56px}
+  .tr .b{min-height:64px}
+  #b-go{grid-column:1 / -1;min-height:72px}
+  #alert{flex-wrap:wrap;padding:8px}
+  #alert .at{flex:1 1 calc(100% - 48px)}
+  #ann-btns{flex:1 1 100%;flex-wrap:wrap;height:auto}
+  #ann-btns .b{flex:1 1 40%;min-height:56px}
+  #ann-stop{flex:1 1 100%;min-height:56px}
+  .tile{grid-template-rows:auto auto var(--tile-btn)}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 4.5h4.5v15H6zM13.5 4.5H18v15h-4.5z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><path d="M5.5 5.5h13v13h-13z"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 1-7.7 10.2l1.9-.6A6 6 0 1 0 12 6c-1.9 0-3.5.9-4.6 2.2L10 11H3V4l2.9 2.9A8 8 0 0 1 12 4z"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M11 2.5h2v9.5h-2zM6.3 5.6l1.4 1.5a6.5 6.5 0 1 0 8.6 0l1.4-1.5a8.5 8.5 0 1 1-11.4 0z"/></symbol>
+  <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12.5 2c.7 4.2-3.5 5.4-3.5 9.5a3 3 0 0 0 6 0c0-1.1-.4-2-1-3 2.4 1.2 4.5 3.6 4.5 6.5a6.5 6.5 0 0 1-13 0c0-5.6 6-7.5 7-13z"/></symbol>
+  <symbol id="i-laser" viewBox="0 0 24 24"><path d="M2 11h12v2H2zM14 6.5l8.5 5.5-8.5 5.5z"/></symbol>
+  <symbol id="i-mega" viewBox="0 0 24 24"><path d="M3 9.5v5h3.5l7 4.5v-14l-7 4.5zM16 8.2a5 5 0 0 1 0 7.6l-1.3-1.5a3 3 0 0 0 0-4.6z"/></symbol>
+  <symbol id="i-wind" viewBox="0 0 24 24"><path d="M3 8h11a2.5 2.5 0 1 0-2.5-2.5h-2A4.5 4.5 0 1 1 14 10H3zM3 12h15a3.5 3.5 0 1 1-3.5 3.5h2A1.5 1.5 0 1 0 18 14H3zM3 16h7v2H3z"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm-8.5 9a8.5 8.5 0 0 1 17 0z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15.5h-2v-2h2zm2.2-7.7l-.9 1a3.2 3.2 0 0 0-1.3 2.7h-2V13a4.4 4.4 0 0 1 1.3-3.1l1.2-1.2A1.9 1.9 0 1 0 10.1 7.4h-2a3.9 3.9 0 1 1 7.1 2.4z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2 1 21h22zm1 16h-2v-2h2zm0-4h-2V9h2z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M6 10V8a6 6 0 1 1 12 0v2h1.5v12h-15V10zm2.5 0h7V8a3.5 3.5 0 1 0-7 0z"/></symbol>
+  <symbol id="i-ring" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2.5a7.5 7.5 0 1 1 0 15 7.5 7.5 0 0 1 0-15zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4 5.2v6c0 5 3.4 9.6 8 10.8 4.6-1.2 8-5.8 8-10.8v-6z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 5.5h16v2.5H4zm0 5.3h16v2.5H4zm0 5.2h16v2.5H4z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM11 1h2v3.5h-2zm0 18.5h2V23h-2zM1 11h3.5v2H1zm18.5 0H23v2h-3.5z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M10.5 2h3l.5 2.7 1.8.8 2.3-1.6 2.1 2.1-1.6 2.3.8 1.8 2.6.4v3l-2.6.5-.8 1.8 1.6 2.3-2.1 2.1-2.3-1.6-1.8.8-.5 2.6h-3l-.5-2.6-1.8-.8-2.3 1.6-2.1-2.1 1.6-2.3-.8-1.8L2 13.5v-3l2.6-.4.8-1.8-1.6-2.3 2.1-2.1 2.3 1.6 1.8-.8zM12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M9.5 4.5 3 11l6.5 6.5V13h5a3.5 3.5 0 0 1 0 7H13v2h1.5a5.5 5.5 0 0 0 0-11h-5z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2zm0-8h-2V7h2z"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M15.4 5 8.4 12l7 7 1.5-1.5L11.4 12l5.5-5.5z"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M8.6 5 7.1 6.5 12.6 12l-5.5 5.5L8.6 19l7-7z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 4.5v5l4 2.3-1 1.8-5-2.9V6.5z"/></symbol>
+  <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 2.5h12v5H6zM3 9h18v8h-3v4.5H6V17H3zm5 5v5.5h8V14z"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 3h7v7h-2V6.4l-8.3 8.3-1.4-1.4L17.6 5H14zM5 5h6v2H7v10h10v-4h2v6H5z"/></symbol>
+</svg>
+<div id="app">
+<header>
+  <nav id="tabs" role="tablist" aria-label="Screens">
+    <button class="tab on" data-tab="show" role="tab"><svg class="i"><use href="#i-play"/></svg>Show</button>
+    <button class="tab" data-tab="day" role="tab"><svg class="i"><use href="#i-sun"/></svg>Day</button>
+    <button class="tab" data-tab="schedule" role="tab"><svg class="i"><use href="#i-list"/></svg>Schedule</button>
+    <button class="tab" data-tab="settings" role="tab" hidden><svg class="i"><use href="#i-gear"/></svg>Settings</button>
+  </nav>
+  <div class="hright">
+    <button class="hb" id="sys"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span></button>
+    <button class="hb" id="user"><svg class="i"><use href="#i-user"/></svg><span>Sign in</span></button>
+    <button class="hb" id="help"><svg class="i"><use href="#i-help"/></svg><span>Help</span></button>
+    <a class="hb" id="to1" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg><span>Back to 1.0</span></a>
+  </div>
+</header>
+<!-- What to do next, on every tab; a live hazard (cleaning, live flame,
+     flames in rehearsal) pinned here with its own Stop, never paged. -->
+<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
+<main>
+  <!-- Off the SHOW tab: the presses that make things safe, always here. -->
+  <div id="mini" hidden>
+    <button class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
+    <button class="b red" id="m-stop"><svg class="i"><use href="#i-stop"/></svg>Stop show</button>
+    <button class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
+    <button class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
+    <button class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
+  </div>
+  <!-- SHOW: top to bottom, what to do next, where the show is, the
+       transport that applies now, one alert, flames and lasers,
+       announcements. Wind and the last message are in the footer, Abort
+       in the corner. Nothing here scrolls. -->
+  <section class="pane" id="t-show">
+    <div class="state">
+      <div id="pill" class="off"><svg class="i" id="pill-i"><use href="#i-clock"/></svg><span id="pill-t">Waiting</span></div>
+      <div><small>Timecode</small><span id="st-tc">--:--:--:--</span></div>
+      <div><small id="cd-l">Next show</small><span id="cd-v"></span></div>
+    </div>
+    <div class="tr">
+      <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
+      <button class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
+      <button class="b redline" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
+      <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
+    </div>
+    <div id="alert" class="none">
+      <svg class="i" id="al-i"><use href="#i-check"/></svg>
+      <button class="at" id="al-text" disabled><span class="tt"><b id="al-what">No alerts</b><span id="al-do"></span></span><span class="more" id="al-more"><svg class="i"><use href="#i-info"/></svg><span class="w">Details</span></span></button>
+      <button class="b" id="al-next" hidden><span id="al-n"></span><svg class="i"><use href="#i-right"/></svg></button>
+      <button class="b blue" id="al-act" hidden><div class="fill"></div><svg class="i"><use href="#i-check"/></svg><span id="al-act-l">Acknowledge</span></button>
+      <button class="q" data-q="alert" aria-label="Help: alerts">?</button>
+    </div>
+    <div class="flames">
+      <div id="groups" aria-label="Flame groups and lasers"></div>
+      <div class="allcol">
+        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span>Hold: arm flames</span></button>
+        <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- The other tabs: 1.0 does these for now (later PRs bring them here). -->
+  <section class="pane" id="t-day" hidden>
+    <div class="cards">
+      <div class="card"><div class="t"><b>Startup and shutdown</b><span>Checklists, purge, laser test, lock.</span></div><a class="b blue" href="/remote1#morning"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <div class="card" id="day-fuel"><div class="t"><b>Fuel</b><span>Tanks and refills.</span></div><a class="b blue" href="/remote1#fuel"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <div class="card" id="day-fb"><div class="t"><b>Fireball</b><span>Manual test.</span></div><a class="b blue" href="/remote1#fireball"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+    </div>
+  </section>
+  <section class="pane" id="t-schedule" hidden>
+    <div class="cards">
+      <div class="card"><div class="t"><b>Tonight's shows</b><span>Times and notes.</span></div><a class="b blue" href="/remote1#tonight"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+    </div>
+  </section>
+  <section class="pane" id="t-settings" hidden>
+    <div class="cards">
+      <div class="card" id="set-ui"><div class="t"><b>Default interface</b><span id="set-ui-t">For screens that have not chosen.</span></div>
+        <div class="seg"><button class="b" id="set-ui-1" data-v="1">1.0</button><button class="b" id="set-ui-2" data-v="2">2.0</button></div></div>
+      <div class="card"><div class="t"><b>Programming</b><span>Show file, rehearsal, schedule rules.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <div class="card"><div class="t"><b>Users</b><span>People, roles, audit log.</span></div><a class="b blue" href="/remote1#users"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+    </div>
+  </section>
+</main>
+<!-- The footer: the announcements, then the wind and the last message, all
+     left of Abort's corner (the footer keeps the sign's width and height
+     for it, so nothing is ever under it). On a phone the announcements go
+     into the SHOW pane instead (placeAnn). -->
+<footer>
+  <div id="foot-l">
+    <div class="ann" id="ann">
+      <!-- The heading is the announcements' "?": a tap says what they do. -->
+      <button class="head" data-q="announce" aria-label="Announcements: what they do"><b id="ann-w"><svg class="i"><use href="#i-mega"/></svg><span id="ann-word">Announce</span><span class="qm" aria-hidden="true">?</span></b><span id="ann-note"></span></button>
+      <div id="ann-btns"></div>
+      <button class="b redline" id="ann-stop"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
+    </div>
+    <div class="frow">
+      <button class="b" id="wx"><svg class="i"><use href="#i-wind"/></svg><span id="wx-t">Wind: waiting</span></button>
+      <div id="msg"><span id="msg-t"></span><button class="b blue" id="msg-more" hidden><svg class="i"><use href="#i-info"/></svg>Details</button></div>
+    </div>
+  </div>
+</footer>
+</div>
+
+<div id="abortbar"><button id="b-abort" aria-label="Abort. Tap twice to abort."><span class="oct" aria-hidden="true"><i></i></span><span class="w" id="abort-w">ABORT</span></button></div>
+
+<div id="sheet" hidden role="dialog" aria-modal="true">
+  <div class="box">
+    <h2 id="sh-h"></h2>
+    <div id="sh-body"></div>
+    <div id="sh-row"></div>
+  </div>
+</div>
+
+<div id="coach" hidden><div class="hole"></div><div class="card"><div class="t"><b id="co-t"></b><span id="co-n"></span></div><button class="b" id="co-skip">Skip</button><button class="b blue" id="co-next">Next</button></div></div>
+
+<!-- The quick card (Help, Quick card): what to print and keep by the rack. -->
+<div id="qcard" class="qc">
+  <h2>LTC Player: quick card</h2>
+  <h3>The four big ones</h3>
+  <dl>
+    <dt>ABORT</dt><dd>Emergency stop. Tap twice. Then Reset.</dd>
+    <dt>HOLD</dt><dd>Pauses the schedule. Resume carries on.</dd>
+    <dt>STOP SHOW</dt><dd>Ends everything. Rig goes dark. Run again.</dd>
+    <dt>RESET</dt><dd>Clears an Abort. Then arm again.</dd>
+  </dl>
+  <h3>Five common fixes</h3>
+  <dl>
+    <dt>Run is off</dt><dd>Press Run show. Shows then start on time.</dd>
+    <dt>Group says WAIT</dt><dd>Wait for it, then hold to arm.</dd>
+    <dt>Group says ARM AGAIN</dt><dd>Tap Disarm, then hold to arm.</dd>
+    <dt>An alert</dt><dd>Read it, fix it, tap Acknowledge.</dd>
+    <dt>No contact</dt><dd>Abort, Hold, Stop and Disarm still work.</dd>
+  </dl>
+  <h3>Words</h3>
+  <dl>
+    <dt>Hold to arm</dt><dd>Press and keep your finger down.</dd>
+    <dt>Disarm</dt><dd>One tap. Always works.</dd>
+    <dt>Disarm flames</dt><dd>Every flame group. Lasers have their own.</dd>
+    <dt>Red Stop at the top</dt><dd>Stops cleaning, live flame or rehearsal flames.</dd>
+    <dt>Wind</dt><dd>Advisory only. The on-site wind check decides.</dd>
+  </dl>
+</div>
+
+<!-- ABORT first, on its own (safety review of #166, B1): this script needs
+     nothing from 1.0's rules or from the page's own script, so a page whose
+     rules did not load, or whose script broke, still aborts. 1.0's double
+     tap (abortTapStep2 and abortTapKind2 are 1.0's abortTapStep and
+     abortTapKind, renamed; selftest.py checks they stay the same), 1.0's
+     body ({confirmed:true} and the status it saw), 1.0's headers. -->
+<div id="broken" hidden role="alert"><svg class="i"><use href="#i-warn"/></svg><span id="broken-t">Page not fully loaded. Reload it.</span><button class="b red" id="broken-go"><svg class="i"><use href="#i-reset"/></svg>Reload</button></div>
+<script id="abort-core">
+"use strict";
+const $ = (id) => document.getElementById(id);
+const monoNow = () => performance.now();
+const WINDOW_ID = "w-" + Math.random().toString(36).slice(2, 8);
+const ABORT_TAP_MS2 = 2000;                 // 1.0's ABORT_TAP_MS
+let UI2_READY = false;                      // the page's own script ran to its end
+function abortTapStep2(prev, nowMs, kind, enlarged){
+  if(prev && prev.kind === kind && nowMs >= prev.at){
+    if(nowMs - prev.at <= ABORT_TAP_MS2 || enlarged) return {fire:true, next:null};
+  }
+  return {fire:false, next:{at:nowMs, kind:kind}};
+}
+function abortTapKind2(e){
+  if(e && e.pointerType) return e.pointerType;
+  return e && e.detail === 0 ? "key" : "mouse";
+}
+let ABORT_TAP = null, ABORT_TIMER = null;
+function abortTapDone(){
+  ABORT_TAP = null; clearTimeout(ABORT_TIMER);
+  $("abortbar").classList.remove("tap1");
+  $("abort-w").textContent = "ABORT";
+}
+$("b-abort").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });
+$("b-abort").addEventListener("click", async e => {
+  const kind = abortTapKind2(e);
+  if(kind !== "key") $("b-abort").blur();
+  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $("abortbar").classList.contains("tap1"));
+  if(!step.fire){
+    ABORT_TAP = step.next;
+    clearTimeout(ABORT_TIMER);
+    $("abortbar").classList.add("tap1");
+    $("abort-w").textContent = "TAP AGAIN";
+    ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS2);
+    return;
+  }
+  abortTapDone();
+  try{ if(typeof armStop === "function") armStop("Abort"); }catch(e1){}
+  let j = null, err = "";
+  try{
+    const seen = (typeof ST !== "undefined" && ST) ? ST.served_at : null;
+    const r = await fetch("/api/remote/abort", {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify({confirmed:true, seen:seen})});
+    j = await r.json().catch(() => ({}));
+    if(!r.ok){ err = (typeof refusedWords === "function") ? refusedWords(j, r.statusText) : String(j.error || r.statusText); j = null; }
+  }catch(e2){ err = (e2 && e2.message) || String(e2); }
+  try{ abortAnswered(j, err); }
+  catch(e3){
+    $("broken").hidden = false;
+    $("broken-t").textContent = j ? (j.disarmed === true ? "ABORT done. Page broken: reload." : "ABORT sent, flames NOT disarmed. Use e-stop.") : "ABORT NOT confirmed. Use the e-stop.";
+  }
+});
+$("broken-go").addEventListener("click", () => location.reload());
+// A page whose rules or own script did not load says so, loudly; Abort
+// above still works.
+function ui2Whole(){
+  return typeof isStale === "function" && typeof armState === "function" && typeof announceLook === "function" &&
+    typeof prerollChoice === "function" && UI2_READY;
+}
+window.addEventListener("load", () => { if(!ui2Whole()) $("broken").hidden = false; });
+setInterval(() => { if(!ui2Whole()) $("broken").hidden = false; }, 1000);
+</script>
+<!-- The pure rules, 1.0's own (remote.html's remote-logic block), served
+     by web.py. Never copied here. -->
+<script src="/remote-logic.js"></script>
+<script>
+"use strict";
+const esc = (t) => String(t == null ? "" : t)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+let ME = null, ST = null, LAST_OK = null, FRESH_S = 2.0, POLLING = false;
+let DRAW_ERR = "";
+let CD = null;
+// The page and the engine talk through getJSON and post, and nothing else:
+// the hook a practice mode (a later PR) swaps for an in-page stub.
+// COPIED FROM 1.0 (selftest.py checks they stay the same): getJSON, post,
+// actor.
+async function getJSON(p, ms){
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms || 1500);
+  try{
+    const r = await fetch(p, {cache:"no-store", credentials:"same-origin", signal:ctl.signal});
+    const j = await r.json().catch(() => ({}));
+    if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
+    return j;
+  } finally { clearTimeout(t); }
+}
+async function post(p, body){
+  const r = await fetch(p, {method:"POST", credentials:"same-origin", cache:"no-store",
+    headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {})});
+  const j = await r.json().catch(() => ({}));
+  if(!r.ok){ const e = new Error(refusedWords(j, r.statusText)); e.status = r.status; e.code = j.code || ""; throw e; }
+  return j;
+}
+function actor(extra){
+  const b = Object.assign({}, extra || {});
+  b.seen = ST ? ST.served_at : null;
+  return b;
+}
+const icon = (n) => `<svg class="i"><use href="#i-${n}"/></svg>`;
+function setIcon(svg, n){ const u = svg && svg.querySelector("use"); if(u && u.getAttribute("href") !== "#i-" + n) u.setAttribute("href", "#i-" + n); }
+function setText(el, t){ if(el && el.textContent !== t) el.textContent = t; }
+function stale(){ return isStale(Date.now(), LAST_OK, FRESH_S); }
+
+// The room under the Abort sign (1.0's bottomPad): a window that reaches
+// under the taskbar keeps its bottom edge, and the sign, above it.
+const PAD_MIN = Number(new URLSearchParams(location.search).get("pad_bottom")) || 0;
+let PAD_NOW = -1;
+function applyBottomPad(){
+  let p = 0;
+  try{ p = bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
+  if(p !== PAD_NOW){ PAD_NOW = p; document.documentElement.style.setProperty("--pad-bottom", p + "px"); }
+}
+applyBottomPad();
+window.addEventListener("resize", applyBottomPad);
+setInterval(applyBottomPad, 1000);
+
+// ---- the last message, in a few words; the engine's own words behind Details
+let MSG_FULL = "", MSG_TIMER = null;
+function say(short, full, level){
+  setText($("msg-t"), short || "");
+  $("msg").className = level || "";
+  MSG_FULL = (full && full !== short) ? String(full) : "";
+  $("msg-more").hidden = !MSG_FULL;
+  clearTimeout(MSG_TIMER);
+  MSG_TIMER = setTimeout(() => { setText($("msg-t"), ""); $("msg-more").hidden = true; MSG_FULL = ""; }, 30000);
+}
+// A sentence from the engine, cut to a few words for the footer: the whole
+// sentence stays one tap away (Details).
+function short8(text, fallback){
+  const t = String(text || "").trim();
+  if(!t) return fallback || "";
+  const first = t.split(/(?<=[.!?])\s/)[0];
+  return first.split(/\s+/).length <= 8 ? first : (fallback || "Done. Tap Details.");
+}
+$("msg-more").addEventListener("click", () => sheet("Details", `<div class="full">${esc(MSG_FULL)}</div>`, [{label:"Close", cls:"blue"}]));
+
+// ---- sheets: confirm, details, help, sign in. Never over Abort.
+let SHEET_DONE = null;
+function sheet(title, html, buttons, flip){
+  return new Promise(res => {
+    if(SHEET_DONE) SHEET_DONE(null);
+    $("sh-h").textContent = title;
+    $("sh-body").innerHTML = html || "";
+    const row = $("sh-row");
+    row.className = flip ? "flip" : "";
+    row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}" data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
+    $("sheet").hidden = false;
+    const done = (v) => { if(SHEET_DONE !== done) return; SHEET_DONE = null; $("sheet").hidden = true; res(v); };
+    SHEET_DONE = done;
+    row.querySelectorAll("button").forEach(b => b.addEventListener("click", () => done((buttons || [])[Number(b.dataset.i)] ? (buttons[Number(b.dataset.i)].value !== undefined ? buttons[Number(b.dataset.i)].value : null) : null)));
+  });
+}
+$("sheet").addEventListener("click", e => { if(e.target === $("sheet") && SHEET_DONE) SHEET_DONE(null); });
+document.addEventListener("keydown", e => { if(e.key === "Escape" && SHEET_DONE) SHEET_DONE(null); });
+// A confirm: Yes only on the button that says it. `flip` puts Yes on the
+// other side (Start's confirm, as in 1.0, so a Stop's Yes is never where
+// a Start's was).
+async function confirmBox(q, detail, yes, cls, flip){
+  const v = await sheet(q, `<div>${esc(detail || "")}</div>`,
+    [{label:"Cancel", value:false}, {label:yes, value:true, cls:cls || "green"}], flip);
+  return v === true;
+}
+
+// ---- tabs ----
+const TABS = ["show", "day", "schedule", "settings"];
+let TAB = "show", LAST_TOUCH = Date.now();
+function showTab(t){
+  if(!TABS.includes(t)) t = "show";
+  TAB = t;
+  TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
+  document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
+  if(t === "settings") loadUiDefault();
+  if(t === "show") layoutGroups();
+  $("mini").hidden = t === "show";
+}
+document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
+  const t = b.dataset.tab;
+  if(t === "show") history.replaceState(null, "", location.pathname + location.search); else location.hash = t;
+  showTab(t);
+}));
+window.addEventListener("hashchange", () => showTab((location.hash || "").replace("#", "")));
+document.addEventListener("pointerdown", () => { LAST_TOUCH = Date.now(); }, true);
+// Back to SHOW by itself a minute after the last touch on another tab
+// while a show is live or due within two minutes.
+setInterval(() => {
+  if(TAB === "show" || !ST || Date.now() - LAST_TOUCH < 60000) return;
+  const sch = ST.schedule || {};
+  const due = sch.next && typeof sch.next.in_s === "number" && sch.next.in_s <= 120;
+  if(isLive(ST) || due){ history.replaceState(null, "", location.pathname + location.search); showTab("show"); }
+}, 5000);
+
+// ---- the engine's state, four times a second (1.0's loop) ----
+async function whoami(){
+  ME = await getJSON("/api/remote/whoami", 3000);
+  FRESH_S = ME.fresh_s || 2.0;
+  startPolling();
+}
+function startPolling(){
+  if(POLLING) return;
+  POLLING = true;
+  const loop = async () => {
+    let got = null;
+    try{ got = await getJSON("/api/remote/status", 1500); }catch(e){}
+    if(got){
+      const before = LAST_OK;
+      ST = got;
+      LAST_OK = Date.now();
+      try{
+        CD = countdownAnchor(CD, ST && ST.countdown, monoNow());
+        render();
+        renderUser();
+        DRAW_ERR = "";
+      }catch(e){
+        LAST_OK = before;
+        DRAW_ERR = (e && e.message) || String(e);
+        try{ renderStale(); }catch(e2){}
+      }
+    }
+    if(POLLING) setTimeout(loop, 250);
+  };
+  loop();
+}
+
+// ---- what the state is, in the operator's words (pure, from the status)
+// Held: the schedule on Hold or Paused, held at showtime by an alert, or
+// held for an announcement. Then the next step is Resume.
+function isHeld(st){
+  const s = st || {}, sch = s.schedule || {}, an = s.announce || {};
+  return !!(sch.held || sch.state === "PAUSED" || (s.alert_hold && s.alert_hold.held === true) ||
+    (an.playing && an.playing.held_schedule) || an.held_failed);
+}
+// A show live: 1.0's startLook rule, word for word.
+function isLive(st){
+  const sch = (st && st.schedule) || {}, show = (st && st.show) || {};
+  return sch.state === "SHOW" || sch.state === "PAUSED" || (!sch.attached && !!(show.running || show.starting));
+}
+// Run in force (or on its way in): nothing reaches the rig until it is.
+function runIsOn(st){
+  const show = (st && st.show) || {}, b = ((st && st.schedule) || {}).start_blocked;
+  if(b && b.text && /^Run has not been pressed/.test(String(b.text))) return false;
+  return !!(show.running || show.starting);
+}
+// A rehearsal (1.0's Programming run): the scheduler starts no show.
+function isRehearsal(st){ return modeLook(st).cls === "prog"; }
+// What is live and must be stopped by hand, pinned in the next-step bar
+// with its own Stop and never paged behind an alert (safety review of
+// #166, B2): the wave flamer cleaning (its phase 2 fires until Stop), live
+// flame programming, flames while scrubbing. Each button is 1.0's press.
+function pinItems(st){
+  const s = st || {}, out = [];
+  const wc = s.cleaning;
+  if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
+    pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
+  const lf = s.live_flame || {}, sf = s.scrub_flames || {};
+  if(lf.on === true) out.push({key:"lf", text:"Live flame on. Armed groups can fire.", pill:"LIVE FLAME", btn:"Live flame off",
+    full:"Live flame programming: xLights drives the flames. Only an armed group fires. Never use xLights' test tools while a group is armed. Turned on by " + (lf.who || "someone") + "."});
+  if(sf.on === true) out.push({key:"sf", text:"Rehearsal flames on. Armed groups fire.", pill:"FLAMES LIVE", btn:"Flames off",
+    full:"Fire flames while scrubbing is on. Only an armed group fires. Turned on by " + (sf.who || "someone") + "."});
+  return out;
+}
+// The big button: the next step, one of Reset, Resume, Run show, Start
+// now. Each press is 1.0's own press.
+function goLook(st, isStaleNow, local, waiting){
+  if(!st) return {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"Waiting"};
+  const sch = st.schedule || {};
+  const fresh = !isStaleNow;
+  let L;
+  if(sch.attached && sch.aborted) L = {mode:"reset", label:"Reset", icon:"reset", tone:"amber", off:!fresh, why:fresh ? "Clears the Abort" : "No contact"};
+  else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};
+  else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:"Hold pauses it"};
+  // A rehearsal: the scheduler starts nothing, so nothing to start here.
+  else if(isRehearsal(st)) L = {mode:"none", label:"Rehearsal", icon:"info", tone:"green", off:true, why:"No shows start"};
+  // The rig check before a show (1.0's startLook: Checking, nothing to press).
+  else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:"Hold or Stop cancels"};
+  else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:"Starts when ready"};
+  else if(!sch.attached) L = {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"No schedule here"};
+  else if(!runIsOn(st)) L = local ? {mode:"run", label:"Run show", icon:"power", tone:"green", off:!fresh, why:fresh ? "Turns tonight on" : "No contact"}
+                                  : {mode:"run", label:"Run show", icon:"power", tone:"green", off:true, why:"Press Run on show PC"};
+  else {
+    const b = sch.start_blocked;
+    if(b && b.text && !b.loading) L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:"Not ready: tap", blocked:String(b.text)};
+    else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "Starts the next show" : "No contact"};
+  }
+  // Signed out is view only: none of these is a safety press.
+  if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = "Sign in first"; }
+  return L;
+}
+// The line at the top: what to do next, in eight words or fewer.
+function nextStep(st, isStaleNow, local, items){
+  if(!st) return {tone:"warn", icon:"clock", text:"Connecting to the show PC"};
+  if(isStaleNow) return {tone:"bad", icon:"x", text:"No contact. Abort, Hold, Stop still work."};
+  const sch = st.schedule || {};
+  const bad = (items || []).filter(i => i.tone === "bad");
+  if(sch.attached && sch.aborted && !bad.some(i => i.key === "abort" || i.key === "stop" || i.key === "dis-fail"))
+    return {tone:"bad", icon:"x", text:"Aborted. Press Reset when it is safe."};
+  // A flame disarm that did not happen: Abort's own words (the e-stop).
+  if(bad.some(i => i.key === "abort" || i.key === "stop")) return {tone:"bad", icon:"warn", text:"Flames NOT disarmed. Use the e-stop."};
+  if(bad.some(i => i.key === "dis-fail")) return {tone:"bad", icon:"warn", text:"Disarm NOT done. Use Deck or e-stop."};
+  const pins = pinItems(st);
+  if(pins.length) return {tone:"bad", icon:"flame", text: pins.length > 1 ? pins.length + " live modes on. Stop when done." : pins[0].text};
+  const pch = prerollChoice(st.preroll, sch);
+  if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
+  if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
+  if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Sign in to use the controls."};
+  if(isHeld(st)) return {tone:"warn", icon:"pause", text:"Held. Press Resume to carry on."};
+  if(sch.attached && !isLive(st) && prerollLook(st.preroll).checking) return {tone:"warn", icon:"clock", text:"Checking the rig before the show."};
+  // A fault: what it is, and what the slot's button does (only an alert
+  // with Acknowledge says Acknowledge).
+  if(bad.length) return {tone:"bad", icon:"warn", text:bad[0].what + (bad[0].act === "ack" ? " Fix, then Acknowledge." : " See the alert.")};
+  if(isRehearsal(st) && !isLive(st)) return {tone:"warn", icon:"info", text:"Rehearsal: the schedule starts no show."};
+  if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Press Run show to start tonight." : "Run is off. Press Run on show PC."};
+  const c = countdownRead(CD, monoNow());
+  if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (c && c.kind === "left" ? " " + clockText(c.s) + " left." : "")};
+  if(sch.start_waiting) return {tone:"ok", icon:"clock", text:"Starting when the show audio loads."};
+  const nx = sch.next;
+  if(nx){
+    const s = c && c.kind === "next" ? c.s : (typeof nx.in_s === "number" ? nx.in_s : null);
+    const fl = st.flames || {}, armedAny = (fl.groups || []).some(g => g.armed === "armed");
+    const when = s === null ? "at " + nx.start : "in " + clockText(s);
+    if(s !== null && s <= 300 && !armedAny && st.arming && st.arming.enabled && mayRow(st, "arm"))
+      return {tone:"warn", icon:"flame", text:"Show " + nx.show + " " + when + ". Hold to arm flames."};
+    return {tone:"ok", icon:"clock", text:"Show " + nx.show + " starts " + when + "."};
+  }
+  if(sch.delayed) return {tone:"warn", icon:"clock", text:"Show " + sch.delayed.show + " delayed. Press Start now."};
+  if(sch.attached) return {tone:"ok", icon:"check", text:"No more shows tonight."};
+  return {tone:"ok", icon:"info", text:"No schedule on this show PC."};
+}
+// The state pill: an icon and a word, coloured by the one grammar. Never
+// READY with a fault open or a live mode on.
+function pillLook(st, isStaleNow, items){
+  if(!st || isStaleNow) return {cls:"bad", icon:"x", text:"No contact"};
+  const sch = st.schedule || {};
+  if(sch.attached && sch.aborted) return {cls:"bad", icon:"x", text:"ABORTED"};
+  const pins = pinItems(st);
+  if(pins.length) return {cls:"bad", icon:"flame", text:pins[0].pill};
+  if(st.alert_hold && st.alert_hold.held === true) return {cls:"warn", icon:"pause", text:"HELD: ALERT"};
+  if(sch.state === "PAUSED") return {cls:"warn", icon:"pause", text:"SHOW " + (sch.running || "") + " HELD"};
+  if(sch.state === "SHOW") return {cls:"ok", icon:"play", text:"SHOW " + (sch.running || "") + " RUNNING"};
+  if(isRehearsal(st)) return {cls:"warn", icon:"info", text:"REHEARSAL"};
+  if(isHeld(st)) return {cls:"warn", icon:"pause", text:"SCHEDULE HELD"};
+  if(sch.attached && prerollLook(st.preroll).checking) return {cls:"warn", icon:"clock", text:"CHECKING RIG"};
+  if((items || []).some(i => i.tone === "bad")) return {cls:"bad", icon:"warn", text:"NOT READY"};
+  if(!sch.attached) return {cls:"off", icon:"info", text:"NO SCHEDULE"};
+  if(!runIsOn(st)) return {cls:"off", icon:"power", text:"RUN IS OFF"};
+  return {cls:"ok", icon:"check", text:"READY"};
+}
+
+// ---- alerts: one fixed slot, the worst first, one button
+// What is wrong and what to do, per alert kind; the engine's whole
+// sentence is behind Details.
+const ALERT_WHAT = {deck:"Stream Deck problem.", audio:"Show audio problem.", video:"Video problem.",
+  start:"Show did not start.", flames:"Flame problem.", link:"Flame link problem.", timecode:"Timecode problem.",
+  lasers:"Laser problem.", users:"Sign-in file problem.", aim:"Wave aim does not match.", follow:"Video not following.",
+  gate:"Check before the show.", preroll:"Rig check failed."};
+const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", video:"Check the video PC.",
+  timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm."};
+let ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null, ALERT_KEY = null, FAULTS_SEEN = null, KEYS_SEEN = null;
+function alertItems(st){
+  const s = st || {}, items = [];
+  if(ABORT_SAID) items.push({key:"abort", tone:ABORT_SAID.ok ? "ok" : "bad",
+    what:ABORT_SAID.ok ? "Abort pressed." : "Flames NOT disarmed.",
+    do:ABORT_SAID.ok ? "Reset when it is safe." : "Use the Deck or e-stop.", full:ABORT_SAID.text, act:"seen"});
+  if(STOP_SAID) items.push({key:"stop", tone:"bad", what:"Flame disarm FAILED.", do:"Use the Deck or e-stop.", full:STOP_SAID, act:"seen"});
+  // A Disarm (or a live mode's Stop) refused or lost: stays until Seen.
+  if(DISARM_FAIL) items.push({key:"dis-fail", tone:"bad", what:DISARM_FAIL.what, do:"Use the Deck or e-stop.", full:DISARM_FAIL.text, act:"seen"});
+  // The rig check before a show (1.0's pr-box): what failed, and 1.0's
+  // Hold to continue anyway as the slot's one button.
+  const pch = prerollChoice(s.preroll, s.schedule || {});
+  if(pch && pch.continued) items.push({key:"pr-cont", tone:"warn", what:"Continued anyway.", do:"Some outputs are off.", full:pch.text});
+  else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
+  else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
+  (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
+    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.text, act:"ack", id:a.id}));
+  const fl = s.flames || {};
+  if(!fl.connected) items.push({key:"fl-off", tone:"bad", what:"Flame state not known.", do:"Disarm and Abort work.", full:fl.why || "flamesafe is not connected."});
+  else if(fl.stale) items.push({key:"fl-stale", tone:"bad", what:"Flame state not live.", do:"Disarm and Abort work.", full:"flamesafe has not reported for " + (fl.age_ms == null ? "ever" : (fl.age_ms / 1000).toFixed(1) + " s") + "."});
+  else if(fl.fault) items.push({key:"fl-fault", tone:"bad", what:"Flame controller fault.", do:"Tap here for details.", full:"flamesafe fault: " + fl.fault});
+  if(st && !s.disarm_connected) items.push({key:"nolink", tone:"bad", what:"No flame link here.", do:"Use the Deck or e-stop.", full:"No flame link is connected in this engine, so Disarm cannot reach flamesafe from here."});
+  if(fl.cues_fault) items.push({key:"cues", tone:"bad", what:"Flame cues are off.", do:"Tap here. Call Jeff.", full:fl.cues_fault});
+  const dk = s.deck || {};
+  if(dk.text && !dk.heard && !(s.alerts || []).some(a => a.kind === "deck")) items.push({key:"deck", tone:"bad", what:"Stream Deck not heard.", do:"Use this screen.", full:dk.text});
+  const mo = s.morning;
+  if(mo && mo.lock_error) items.push({key:"lock", tone:"bad", what:"Lockout not trusted.", do:"Startup fires nothing.", full:"LOCKOUT NOT TRUSTED: " + mo.lock_error + ". Nothing fires from the Startup page."});
+  else if(mo && mo.flamesafe_confirmed === false && ((mo.locked_machines || []).length)) items.push({key:"lockc", tone:"warn", what:"Lock not confirmed yet.", do:"Tap here for details.", full:"flamesafe has NOT yet confirmed the flame lock: check its lockout_file setting."});
+  if(mo && mo.config_error) items.push({key:"mocfg", tone:"warn", what:"Startup settings problem.", do:"Tap here for details.", full:"Startup page settings: " + mo.config_error});
+  if(s.laser_fault) items.push({key:"lzf", tone:"bad", what:"Lasers cannot blank here.", do:"Blank them at BEYOND.", full:s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND."});
+  const bl = s.beyond_link;
+  if(bl && bl.link === "lost") items.push({key:"bl", tone:"bad", what:"Laser link lost.", do:"Lasers get nothing.", full:"BEYOND LINK LOST: " + (bl.why || "")});
+  const sch = s.schedule || {};
+  if(sch.error) items.push({key:"sch", tone:"bad", what:"Schedule problem.", do:"Tap here for details.", full:sch.error});
+  if(sch.trouble) items.push({key:"tr", tone:"warn", what:"Show PC trouble.", do:"Tap here for details.", full:sch.trouble});
+  if(sch.conductor === false && sch.attached) items.push({key:"nocond", tone:"warn", what:"No show conductor here.", do:"Tap here for details.", full:"No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only."});
+  if(s.disk && s.disk.text) items.push({key:"disk", tone:"warn", what:"Show PC disk filling up.", do:"Tell Jeff.", full:s.disk.text});
+  if(s.show_folder && s.show_folder.problem) items.push({key:"folder", tone:"warn", what:"Show folder problem.", do:"Tap here for details.", full:s.show_folder.problem});
+  const rank = {bad:0, warn:1, ok:2};
+  // The worst first; of those, the ones with a button first.
+  return items.map((it, i) => Object.assign(it, {i})).sort((a, b) => (rank[a.tone] - rank[b.tone]) || ((a.act ? 0 : 1) - (b.act ? 0 : 1)) || (a.i - b.i));
+}
+let ALERTS = [];
+function renderAlertSlot(){
+  const items = ALERTS;
+  const keys = items.filter(i => i.tone === "bad").map(i => i.key);
+  // A new fault brings the slot back to the worst (never under a finger
+  // holding an arm).
+  const fresh = FAULTS_SEEN && keys.find(k => !FAULTS_SEEN.has(k));
+  FAULTS_SEEN = new Set(keys);
+  // Never moved under a finger: a hold, or a press on the slot's button.
+  if(fresh && !HOLD && !PR_HOLD && !alDownFresh() && items.length) ALERT_KEY = items[0].key;
+  // Any new alert brings the screen back to SHOW.
+  const all = items.map(i => i.key);
+  if(KEYS_SEEN && all.some(k => !KEYS_SEEN.has(k)) && TAB !== "show"){ history.replaceState(null, "", location.pathname + location.search); showTab("show"); }
+  KEYS_SEEN = new Set(all);
+  let idx = items.findIndex(i => i.key === ALERT_KEY);
+  if(idx < 0){ idx = 0; ALERT_KEY = items.length ? items[0].key : null; }
+  const it = items[idx];
+  const box = $("alert");
+  // A Continue anyway hold ends the moment its alert is not the one shown.
+  if(PR_HOLD && !(it && it.act === "pr-continue")){ prHoldEnd(); say("Let go: nothing was done.", "The rig check's alert changed during the hold: nothing was done.", "warn"); }
+  if(!it){
+    box.className = "none"; setIcon($("al-i"), "check");
+    setText($("al-what"), "No alerts"); setText($("al-do"), ""); setText($("al-n"), "");
+    $("al-text").disabled = true;
+    ["al-next", "al-act"].forEach(id => { $(id).hidden = true; });
+    return;
+  }
+  box.className = it.tone; setIcon($("al-i"), it.tone === "ok" ? "check" : "warn");
+  setText($("al-what"), it.what); setText($("al-do"), it.do || "");
+  setText($("al-n"), (idx + 1) + " of " + items.length);
+  $("al-next").hidden = items.length < 2;
+  $("al-text").disabled = !it.full;
+  const act = {ack:"Acknowledge", seen:"Seen", "pr-continue":"Hold: continue anyway"}[it.act];
+  const ab = $("al-act");
+  ab.hidden = !act;
+  ab.dataset.act = it.act || "";
+  // Continue anyway is a hold, as 1.0's: drawn as a hold button.
+  ab.className = "b " + (it.act === "pr-continue" ? "amber hold" : "blue");
+  setIcon(ab.querySelector("svg"), it.act === "pr-continue" ? "ring" : "check");
+  setText($("al-act-l"), it.act === "pr-continue" && PR_HOLD ? "Keep holding..." : (act || ""));
+  // Continue anyway is the run permission's (1.0's engine rule); never
+  // turned off under a finger that holds it.
+  if(!PR_HOLD) ab.disabled = it.act === "pr-continue" && !mayRow(ST, "show");
+  if(it.act === "pr-continue" && it.holdMs) PR_HOLD_MS = it.holdMs;
+}
+// No contact: the slot never shows an old "No alerts"; it says the
+// connection is lost, the loudest thing on it.
+function drawSlotStale(){
+  const box = $("alert");
+  if(box.className === "bad stale") return;
+  box.className = "bad stale"; setIcon($("al-i"), "x");
+  setText($("al-what"), "Connection lost."); setText($("al-do"), "Abort, Hold, Stop, Disarm still work.");
+  $("al-text").disabled = true;
+  ["al-next", "al-act"].forEach(id => { $(id).hidden = true; });
+  if(PR_HOLD){ prHoldEnd(); say("Let go: nothing was done.", "Contact was lost during the hold: nothing was done.", "warn"); }
+}
+function alertStep(d){
+  const n = ALERTS.length; if(!n) return;
+  let idx = ALERTS.findIndex(i => i.key === ALERT_KEY); if(idx < 0) idx = 0;
+  ALERT_KEY = ALERTS[(idx + d + n) % n].key; renderAlertSlot();
+}
+$("al-next").addEventListener("click", () => alertStep(1));
+$("al-text").addEventListener("click", async () => {
+  const it = ALERTS.find(i => i.key === ALERT_KEY); if(!it) return;
+  // A failed rig check: 1.0's Check the rig again, on the show PC only.
+  const again = it.recheck && ME && ME.local;
+  const v = await sheet(it.what, `<div class="full">${esc(it.full)}</div><div class="dim">${esc(it.do || "")}</div>`,
+    again ? [{label:"Close", value:null}, {label:"Check again", value:"recheck", cls:"blue", icon:"reset"}] : [{label:"Close", cls:"blue"}]);
+  if(v === "recheck"){
+    try{ const j = await post("/api/remote/preroll-check", actor({})); say(short8(j.text, "Checking the rig."), String(j.text || ""), "ok"); }
+    catch(e){ say("Check refused.", e.message, "bad"); }
+  }
+});
+// The alert's one button: 1.0's own presses. Acknowledge is 1.0's body
+// exactly; Turn off is 1.0's live flame and scrub Off.
+// The slot's button acts on the alert that was showing when the finger
+// went down (1.0's pressDecision idea): if the slot changed under the
+// finger, nothing is done and it says so.
+let AL_DOWN = null;
+function alDownFresh(){ return !!AL_DOWN && Date.now() - AL_DOWN.at < 10000; }
+$("al-act").addEventListener("pointerdown", () => { AL_DOWN = {key:ALERT_KEY, act:$("al-act").dataset.act, at:Date.now()}; }, true);
+$("al-act").addEventListener("pointercancel", () => { AL_DOWN = null; });
+$("al-act").addEventListener("click", async (e) => {
+  const down = alDownFresh() ? AL_DOWN : null;
+  AL_DOWN = null;
+  if(down && (down.key !== ALERT_KEY || down.act !== $("al-act").dataset.act)){
+    say("Nothing done. Look, then press again.", "The alert changed under your finger, so nothing was done.", "warn");
+    return;
+  }
+  const it = ALERTS.find(i => i.key === (down ? down.key : ALERT_KEY)); if(!it) return;
+  if(it.act === "pr-continue") return;      // a hold, never a tap (below)
+  if(it.act === "ack"){
+    try{ await post("/api/remote/alert", actor({id:it.id, action:"acknowledge"})); say("Acknowledged.", "", "ok"); }
+    catch(e){ say("Not acknowledged.", e.message, "bad"); }
+  } else if(it.act === "seen"){
+    if(it.key === "abort") ABORT_SAID = null; else if(it.key === "stop") STOP_SAID = null; else if(it.key === "dis-fail") DISARM_FAIL = null;
+    ALERTS = alertItems(ST); renderAlertSlot();
+  }
+});
+// A Disarm, or a live mode's Stop, that was refused or did not arrive:
+// said in the slot until Seen, never only in the footer.
+function disarmFailed(what, text){
+  DISARM_FAIL = {what:what, text:String(text || "")};
+  ALERT_KEY = "dis-fail";
+  ALERTS = alertItems(ST); renderAlertSlot();
+}
+
+// ---- off the SHOW tab: Hold, Stop show, Disarm flames, Disarm lasers,
+// Stop sound, always one tap (1.0's banners keep these on every view).
+// Each is the SHOW tab's own press.
+function renderMini(isSt){
+  if($("mini").hidden) return;
+  const L = announceLook((ST || {}).announce, (ST || {}).booth);
+  $("m-snd").hidden = !L.show;
+  $("m-snd").disabled = L.stopOff || ANN_BUSY;
+  $("m-disl").hidden = !$("lz");
+  $("m-stop").disabled = HALT_BUSY;
+}
+$("m-hold").addEventListener("click", () => press("hold"));
+$("m-stop").addEventListener("click", () => pressStop());
+$("m-disf").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
+$("m-disl").addEventListener("click", () => lzDisarmAll());
+$("m-snd").addEventListener("click", () => annPress("announce-stop"));
+
+// ---- the pinned live modes: each its own Stop, 1.0's presses ----
+let PIN_SIG = "";
+function renderPins(){
+  const pins = pinItems(ST);
+  const sig = pins.map(p => p.key).join(",");
+  if(sig === PIN_SIG) return;
+  PIN_SIG = sig;
+  $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
+}
+$("pins").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-pin]"); if(!b) return;
+  const k = b.dataset.pin;
+  if(k === "wc"){
+    // 1.0's wcStopPress: the cleaning's Stop, always pressable.
+    try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
+    catch(e2){ say("Cleaning NOT stopped.", e2.message, "bad"); disarmFailed("Cleaning NOT stopped.", e2.message); }
+  } else if(k === "lf"){
+    try{ const j = await post("/api/remote/live-flame", {on: false}); say("Live flame programming off.", j.text, "ok"); }
+    catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Live flame NOT off.", e2.message); }
+  } else if(k === "sf"){
+    try{ const j = await post("/api/remote/scrub-flames", {on: false}); say("Flames in rehearsal off.", j.text, "ok"); }
+    catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Rehearsal flames NOT off.", e2.message); }
+  }
+});
+
+// Continue anyway after a failed rig check: 1.0's hold, the same two
+// presses (begin, then done once it has filled; the engine times the hold
+// itself). Letting go early sends nothing more and nothing happens.
+let PR_HOLD_MS = 1000, PR_HOLD = null;
+function prHoldEnd(){
+  if(!PR_HOLD) return;
+  clearTimeout(PR_HOLD.timer); PR_HOLD = null;
+  const f = $("al-act").querySelector(".fill"); if(f){ f.style.transition = "none"; f.style.width = "0"; }
+  setText($("al-act-l"), "Hold: continue anyway");
+}
+$("al-act").addEventListener("pointerdown", async (ev) => {
+  if($("al-act").dataset.act !== "pr-continue" || $("al-act").disabled) return;
+  ev.preventDefault();
+  if(PR_HOLD) return;
+  const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
+  const it = ALERTS.find(i => i.key === ALERT_KEY);
+  say("Keep holding...", it ? it.full : "", "warn");
+  setText($("al-act-l"), "Keep holding...");
+  const f = $("al-act").querySelector(".fill");
+  if(f){ f.style.transition = "none"; f.style.width = "0"; void f.offsetWidth; f.style.transition = "width " + (PR_HOLD_MS + 100) + "ms linear"; f.style.width = "100%"; }
+  const mine = PR_HOLD = {token:token, timer:null};
+  try{ await post("/api/remote/preroll-continue", actor({phase:"begin", token:token})); }
+  catch(e){ prHoldEnd(); say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); return; }
+  if(PR_HOLD !== mine) return;
+  mine.timer = setTimeout(async () => {
+    if(PR_HOLD !== mine) return;
+    prHoldEnd();
+    try{ const j = await post("/api/remote/preroll-continue", actor({phase:"done", token:token})); say("Continuing anyway.", String(j.text || ""), "ok"); }
+    catch(e){ say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); }
+  }, PR_HOLD_MS + 100);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(t => $("al-act").addEventListener(t, () => {
+  if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done.", "Let go too early: nothing was done.", "warn"); }
+}));
+$("al-act").addEventListener("contextmenu", e => e.preventDefault());
+
+// ---- render: every status ----
+function render(){
+  const s = ST || {};
+  const sch = s.schedule || {}, show = s.show || {};
+  setText($("st-tc"), show.timecode || "--:--:--:--");
+  ALERTS = alertItems(s);
+  renderAlertSlot();
+  renderGroups(s.flames || {});
+  renderAnnounce();
+  renderSys();
+  document.querySelector('.tab[data-tab="settings"]').hidden = !(ME && ME.local && mayRow(s, "settings"));
+  $("day-fuel").hidden = !s.fuel;
+  $("day-fb").hidden = !(s.fireball && s.fireball.available);
+  // A show that has just ended locks the big button a moment (1.0's flip
+  // lock after Stop turned back into Start).
+  const live = isLive(s);
+  if(WAS_LIVE && !live) FLIPPED.go = Date.now();
+  WAS_LIVE = live;
+  // Abort's report goes once the Abort it reported is Reset (1.0's rule).
+  if(ABORT_SAID){
+    if(sch.aborted === true) ABORT_SAID.latched = true;
+    if(sch.aborted === false && ABORT_SAID.latched){ ABORT_SAID = null; }
+  }
+  renderStale();
+}
+let WAS_LIVE = false;
+
+// Every 250 ms, stale or not (1.0's renderStale): what may be pressed now.
+function renderStale(){
+  const isSt = stale();
+  const s = ST || {};
+  document.body.classList.toggle("stale", isSt);
+  const local = !!(ME && ME.local);
+  // the next step and the state
+  const ns = nextStep(ST, isSt, local, ALERTS);
+  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); setText($("next-t"), ns.text);
+  const pl = pillLook(ST, isSt, ALERTS);
+  $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
+  renderPins();
+  if(isSt) drawSlotStale(); else if($("alert").classList.contains("stale")){ $("alert").className = ""; renderAlertSlot(); }
+  renderMini(isSt);
+  if(isSt){
+    setText($("st-tc"), "--:--:--:--");
+    setText($("cd-l"), "Countdown"); setText($("cd-v"), "not known");
+  } else {
+    const c = countdownRead(CD, monoNow());
+    const sch = s.schedule || {};
+    if(c && c.kind === "left"){ setText($("cd-l"), "Time left"); setText($("cd-v"), clockText(c.s)); }
+    else if(isRehearsal(ST) && !isLive(ST)){ setText($("cd-l"), "Rehearsal"); setText($("cd-v"), "No shows start"); }
+    else if(sch.next){ setText($("cd-l"), "Show " + sch.next.show + " at " + sch.next.start); setText($("cd-v"), c && c.kind === "next" ? "in " + clockText(c.s) : ""); }
+    else if(sch.delayed){ setText($("cd-l"), "Show " + sch.delayed.show); setText($("cd-v"), "delayed"); }
+    else { setText($("cd-l"), "Next show"); setText($("cd-v"), sch.attached ? "None tonight" : "No schedule"); }
+  }
+  drawTransport(isSt);
+  // Arming needs live state: a hold under way stops the moment it is not
+  // (1.0's renderStale, the same rules).
+  const hp = holdLapsed();
+  if(hp) armStop(hp);
+  const armOn = !!(ST && ST.arming && ST.arming.enabled);
+  document.querySelectorAll("[data-arm]").forEach(el => {
+    const i = Number(el.dataset.arm);
+    if(isSt) setArmMode(el, armOn ? "disarm" : "lamp", "unknown");
+    if(el.dataset.mode === "disarm"){ el.disabled = false; return; }
+    if(!holding(i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
+    if(!holding(i) && rearmWaitFor(i) > 0) el.disabled = true;
+  });
+  if(isSt) document.querySelectorAll(".tile[data-lamp]").forEach(t => {
+    t.className = "tile unknown"; setIcon(t.querySelector(".ts svg"), "x");
+    setText(t.querySelector(".word"), "UNKNOWN");
+  });
+  renderAllButtons(isSt);
+  renderLasers(isSt);
+  renderWxLine();
+}
+setInterval(renderStale, 250);
+
+// ---- the transport: the next step, Hold, Stop. Fixed places.
+const FLIPPED = {}, DOWN_MODE = {};
+let HALT_BUSY = false, START_WAITING = false;
+function drawTransport(isSt){
+  const b = $("b-go");
+  const lk = goLook(ST, isSt, !!(ME && ME.local), START_WAITING);
+  if(b.dataset.mode !== lk.mode) b.dataset.mode = lk.mode;
+  b.className = "b " + lk.tone;
+  setIcon(b.querySelector("svg"), lk.icon);
+  setText($("go-l"), HALT_BUSY ? "Stopping" : lk.label);
+  setText($("go-why"), HALT_BUSY ? "wait" : (lk.why || ""));
+  b.disabled = HALT_BUSY || (lk.off && !lk.blocked) || (lk.mode !== "reset" && lk.mode !== "resume" && !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS);
+  // Hold: never held back (1.0: controlStates hold true). Lit while a show
+  // is live or the schedule runs.
+  const live = isLive(ST);
+  $("b-hold").className = "b " + (live || runIsOn(ST) ? "amber" : "safe");
+  $("b-hold").disabled = false;
+  // Stop: never held back (one Stop at a time). Red while something runs.
+  const st = $("b-stop");
+  st.className = "b " + (live || runIsOn(ST) ? "red" : "redline");
+  setText($("stop-l"), HALT_BUSY ? "Stopping" : "Stop show");
+  st.disabled = HALT_BUSY;
+}
+$("b-go").addEventListener("pointerdown", () => { DOWN_MODE.go = $("b-go").dataset.mode; });
+// What the press means: decided from the mode seen at touch-down (1.0's
+// pressDecision): a press whose meaning changed under the finger, or just
+// after a show ended, does nothing and says so.
+$("b-go").addEventListener("click", async () => {
+  const lk = goLook(ST, stale(), !!(ME && ME.local), START_WAITING);
+  const seen = DOWN_MODE.go || $("b-go").dataset.mode;
+  DOWN_MODE.go = null;
+  const d = pressDecision(seen, lk.mode, (lk.mode === "reset" || lk.mode === "resume") ? null : FLIPPED.go, Date.now(), HALT_BUSY);
+  if(d.act === "none"){ say("Nothing done. Look, then press again.", d.say, "warn"); return; }
+  if(lk.blocked){ say("Start now would be refused.", "Start now would be refused: " + lk.blocked.replace(/\.$/, "") + ".", "warn"); return; }
+  if(lk.off) return;
+  if(d.act === "reset") return press("reset");
+  if(d.act === "resume") return press("resume");
+  if(d.act === "run") return runShow();
+  if(d.act === "start") return startNow();
+});
+async function startNow(){
+  // 1.0's Start now: its confirm (Yes on the other side from Stop's), its
+  // body, its wait for the show audio.
+  if(!(await confirmBox("Start the next show now?", "It starts now, or an extra show.", "Yes, start now", "green", true))) return;
+  if(HALT_BUSY || goLook(ST, false, !!(ME && ME.local), START_WAITING).mode !== "start"){ say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return; }
+  const loading = !!(ST && ST.schedule && ST.schedule.start_blocked && ST.schedule.start_blocked.loading);
+  START_WAITING = loading;
+  if(loading) say("Starting when the show audio loads.", "Waiting for the show audio to load; the show starts when it is ready. Hold or Stop cancels it.", "ok");
+  try{ drawTransport(false); }catch(e){}
+  try{ await press("start-now", {confirmed:true}); }
+  finally{ START_WAITING = false; try{ drawTransport(false); }catch(e){} }
+}
+// Run: 1.0's Run in Show mode, on the show machine only: the show file
+// 1.0's picker would hold (the engine's selection, else the first), the
+// same confirm and the same body.
+async function runFile(){
+  const j = await getJSON("/api/timelines", 3000);
+  const ok = (j.timelines || []).filter(t => !t.error).map(t => t.file);
+  const sel = ST && ST.selected_show;
+  return sel && ok.includes(sel) ? sel : (ok[0] || "");
+}
+async function runShow(){
+  let f = "";
+  try{ f = await runFile(); }catch(e){ say("Show files not readable.", e.message, "bad"); return; }
+  if(!f){ say("No show file found.", "No show file in the show folder.", "bad"); return; }
+  if(!(await confirmBox("Run the show?", "Runs " + f + ". Shows then start on time.", "Yes, run", "green"))) return;
+  try{ const j = await post("/api/start", {timeline:f}); say("Running. Shows start on time.", j.banner || "Running.", "ok"); }
+  catch(e){ say("Run was refused.", e.message, "bad"); }
+}
+$("b-hold").addEventListener("click", () => press("hold"));
+// Stop: the engine's complete halt (1.0's pressStop): the confirm, the same
+// body, the same answer read the same way.
+async function pressStop(){
+  if(!(await confirmBox("Stop the show?", "Flames and lasers disarm. Rig goes dark.", "Yes, stop", "red"))) return;
+  if(HALT_BUSY) return;
+  HALT_BUSY = true;
+  say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
+  try{ drawTransport(false); }catch(e){}
+  let r = null, j = {};
+  try{
+    r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
+    j = await r.json().catch(() => ({}));
+    if(r.ok || (j && j.failed)){
+      const w = stopWords(j);
+      if(w === STOP_DISARM_FAILED){ STOP_SAID = w; say("Flame disarm FAILED. Use the e-stop.", w, "bad"); }
+      else if(/did NOT work/.test(w)) say("Stopped, but some parts failed.", w, "bad");
+      else say("Stopped. Press Run show next.", w, "ok");
+    } else say("Stop was refused. Press Abort.", "Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Press Abort to stop the show anyway.", "bad");
+  }catch(e){
+    say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or Abort.", "bad");
+  }finally{
+    HALT_BUSY = false;
+    FLIPPED.go = Date.now();
+    try{ drawTransport(false); }catch(e){}
+  }
+}
+$("b-stop").addEventListener("click", () => pressStop());
+// A press: 1.0's press(), the answer in a few words.
+const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "reset":"Reset. Now arm again.", "start-now":"Starting.",
+  "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed.", "abort":"Abort sent."};
+async function press(route, extra){
+  let j = null;
+  try{
+    j = await post("/api/remote/" + route, actor(extra));
+    say(short8(j.text, PRESS_SAID[route] || "Done."), j.text || "", "ok");
+  }catch(e){
+    say(short8(e.message, "Refused. Tap Details."), e.message, "bad");
+    if(route === "disarm-all" || route === "group-disarm") disarmFailed("Disarm NOT done.", e.message);
+  }
+  return j;
+}
+
+// ---- flame groups: 1.0's hold to arm, one button per group ----
+// COPIED FROM 1.0 (selftest.py checks they stay the same, with the Arm all
+// button's id the one difference): rearmWaitFor, holding, holdLapsed,
+// holdFill, groupNames, armStart, armAllStart, armBeat, armAllProgress,
+// armAllSettle, armStop.
+let HOLD = null;
+const REARM_SEEN = {}, REARM_REFUSED_AT = {};
+function rearmWaitFor(i){
+  const fl = (ST && ST.flames) || {};
+  return rearmLeftMs((fl.groups || [])[i], LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms);
+}
+function holding(i){ return !!HOLD && HOLD.parts.some(p => p.group === i && !p.end); }
+function holdLapsed(){
+  if(!HOLD) return "";
+  if(HOLD.all){ const no = armAllRefusal(ST); if(no) return no; }
+  const gs = ((ST && ST.flames) || {}).groups || [];
+  for(const p of HOLD.parts){
+    if(p.end) continue;
+    const as = armState(ST, Date.now(), LAST_OK, p.group);
+    if(as.ok) continue;
+    const g = gs[p.group];
+    if(HOLD.all && g && (g.armed === "armed" || g.wanted) && as.why === "Already armed or asked for.") continue;
+    return as.why;
+  }
+  return "";
+}
+function holdFill(i, w){
+  const fill = document.querySelector(`[data-arm="${i}"] .fill`);
+  if(fill) fill.style.width = w;
+}
+function groupNames(){ return (((ST && ST.flames) || {}).groups || []).map(g => g.name); }
+function armStart(i){
+  armStop("a new hold");
+  delete REARM_REFUSED_AT[i];
+  const as = armState(ST, Date.now(), LAST_OK, i);
+  if(!as.ok){ armSay("Not armed: " + as.why, 2); return; }
+  HOLD = {all:false, parts:[{group:i, id:null}]};
+  armBeat(HOLD, HOLD.parts[0]);
+}
+function armAllStart(){
+  armStop("a new hold");
+  const gs = ((ST && ST.flames) || {}).groups || [];
+  const waits = {};
+  gs.forEach((_g, i) => { waits[i] = rearmWaitFor(i); });
+  const plan = armAllPlan(ST, Date.now(), LAST_OK, waits);
+  if(!plan.go.length){
+    armSay("Not armed: " + plan.why.replace(/[.\s]+$/, "") + "." + (plan.out.length ? " " + armAllWords([], plan.out, groupNames()).replace(/^Arm all: nothing was armed\. /, "") : ""), 2);
+    return;
+  }
+  plan.go.forEach(i => { delete REARM_REFUSED_AT[i]; });
+  HOLD = {all:true, parts:plan.go.map(i => ({group:i, id:null})), out:plan.out};
+  armSay("Keep holding: arming " + plan.go.map(i => groupNames()[i]).join(", ") + "...", 0);
+  HOLD.parts.forEach(p => armBeat(HOLD, p));
+}
+async function armBeat(h, p){
+  if(HOLD !== h || p.end) return;
+  if(!h.all){
+    const as = armState(ST, Date.now(), LAST_OK, p.group);
+    if(!as.ok){ armStop(as.why); return; }
+  } else {
+    const why = holdLapsed();
+    if(why){ armStop(why); return; }
+  }
+  try{
+    const j = await post("/api/remote/arm-hold", {group:p.group, seen: ST ? ST.served_at : null, hold_id:p.id});
+    if(HOLD !== h || p.end) return;
+    p.id = j.hold_id;
+    if(j.armed){
+      // The Stream Deck took the hold: the engine says so and the hold is
+      // over. Said as a success, never as "Hold stopped".
+      holdFill(p.group, "0");
+      if(!h.all){
+        HOLD = null;
+        armSay(j.text || "Armed.", 1);
+        return;
+      }
+      p.end = "armed";
+      armAllSettle(h);
+      return;
+    }
+    p.held = j.held_s; p.needs = j.needs_s || 1;
+    holdFill(p.group, Math.min(100, 100 * j.held_s / (j.needs_s || 1)) + "%");
+    if(!h.all) armSay(j.held_s >= j.needs_s ? "Keep holding: the Stream Deck arms it in a moment, and says so here." : "Keep holding...", 0);
+    else armAllProgress(h);
+    p.timer = setTimeout(() => armBeat(h, p), 100);
+  }catch(e){
+    if(HOLD !== h || p.end) return;
+    // The Stream Deck's re-arm refractory window refused it (its own
+    // code), or the hold ended while a re-arm wait was still running:
+    // said plainly (Jeff, 2026-10-26).
+    const fl = (ST && ST.flames) || {};
+    const g = (fl.groups || [])[p.group];
+    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms),
+      !!(ST && ST.schedule && ST.schedule.aborted));
+    if(said) REARM_REFUSED_AT[p.group] = {at:Date.now(), text:said};
+    if(!h.all){
+      if(said){
+        armStop("");
+        armSay(said, 2);
+        return;
+      }
+      armStop(e.message);
+      return;
+    }
+    // Arm all: this group stays out, named; the others carry on.
+    p.end = "out"; p.why = said || e.message;
+    clearTimeout(p.timer);
+    holdFill(p.group, "0");
+    post("/api/remote/arm-release", {group:p.group}).catch(() => {});
+    armAllSettle(h);
+  }
+}
+function armAllProgress(h){
+  const live = h.parts.filter(p => !p.end);
+  const f = $("b-armall").querySelector(".fill");
+  if(f) f.style.width = live.length ? Math.min(100, Math.min(...live.map(p => 100 * (p.held || 0) / (p.needs || 1)))) + "%" : "0";
+  armSay("Keep holding: arming " + live.map(p => groupNames()[p.group]).join(", ") + "...", 0);
+}
+function armAllSettle(h){
+  if(HOLD !== h || h.parts.some(p => !p.end)) return;
+  HOLD = null;
+  const f = $("b-armall").querySelector(".fill");
+  if(f) f.style.width = "0";
+  armSay(armAllWords(h.parts, h.out, groupNames()), h.out.length || h.parts.some(p => p.end !== "armed") ? 2 : 1);
+}
+function armStop(why){
+  const h = HOLD;
+  HOLD = null;
+  if(!h) return;
+  for(const p of h.parts){
+    clearTimeout(p.timer);
+    holdFill(p.group, "0");
+    if(p.end) continue;
+    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }
+    post("/api/remote/arm-release", {group:p.group}).catch(() => {});
+  }
+  if(h.all){
+    const f = $("b-armall").querySelector(".fill");
+    if(f) f.style.width = "0";
+    if(why) armSay(armAllWords(h.parts, h.out, groupNames()), why === "let go" && !h.out.length ? 0 : 2);
+    return;
+  }
+  if(why) armSay("Hold stopped: " + why, why === "let go" ? 0 : 2);
+}
+// END OF THE COPY.
+// What a hold says, in the operator's words; the engine's whole sentence is
+// behind Details.
+function armShort(text){
+  const t = String(text || "");
+  if(/^Keep holding/.test(t)) return "Keep holding...";
+  if(/^Arm all: nothing was armed/.test(t)) return "Nothing armed. Tap Details.";
+  if(/^Arm all: /.test(t)) return /Not armed:/.test(t) ? "Some groups not armed. Tap Details." : "Arming. Watch the groups.";
+  if(t.indexOf(SIGN_IN_WORDS) >= 0) return "Sign in first.";
+  if(t.indexOf(ARMING_OFF) >= 0) return "Arming from screens is off.";
+  if(/no contact/i.test(t)) return "Not armed: no contact.";
+  if(/real state is not known/.test(t)) return "Not armed: flame state unknown.";
+  if(/Already armed/.test(t)) return "Already armed.";
+  if(/re-arm wait/.test(t)) return "Wait, then hold again.";
+  if(/Abort is standing/.test(t)) return "Press Reset first.";
+  if(/^Hold stopped: let go/.test(t)) return "Let go: not armed.";
+  if(/^Hold stopped/.test(t)) return "Hold stopped. Tap Details.";
+  if(/^Armed/i.test(t)) return "Armed.";
+  return short8(t, "Tap Details.");
+}
+function armSay(text, level){ say(armShort(text), text, level >= 2 ? "bad" : (level === 1 ? "ok" : "")); }
+document.addEventListener("visibilitychange", () => { if(document.hidden) armStop("the page was hidden"); });
+window.addEventListener("pagehide", () => armStop("the page closed"));
+window.addEventListener("blur", () => armStop("the page lost focus"));
+
+// What a group's tile says: an icon, a word, a short line.
+const LAMP_SHORT = {"dirty edge":"DIRTY EDGE", "chatter":"CHATTER", "arm input stale":"NO SIGNAL",
+  "arm input has never asserted":"NEVER ARMED", "safety program fault":"FAULT"};
+function tileLook(g, c, leftMs, aborted){
+  const r = String(g.reason || "");
+  const lost = /^Show program/.test(r);
+  if(c === "unknown") return {cls:"unknown", icon:"x", word:"UNKNOWN"};
+  if(c === "armed") return {cls:"armed", icon:"flame", word:"ARMED"};
+  if(c === "disarmed") return lost ? {cls:"held", icon:"warn", word:"SHOW LOST"} : {cls:"disarmed", icon:"shield", word:"OFF"};
+  if(lost) return {cls:"held", icon:"warn", word:"SHOW LOST"};
+  if(aborted) return {cls:"held", icon:"x", word:"ABORTED"};
+  if(leftMs > 0 || Number(g.dwell_s) > 0) return {cls:"held", icon:"clock", word:"WAIT " + Math.max(1, Math.ceil(Math.max(leftMs, (Number(g.dwell_s) || 0) * 1000) / 1000))};
+  if(/cycle/i.test(r)) return {cls:"held", icon:"reset", word:"ARM AGAIN"};
+  return {cls:"held", icon:"warn", word:LAMP_SHORT[r] || "HELD BACK"};
+}
+// The button's words: what one press (or hold) does now.
+function armLabel(mode, c, leftMs, aborted, as){
+  if(mode === "disarm") return {icon:"shield", text:"Disarm", cls:"safe"};
+  if(mode === "lamp") return {icon:"lock", text:"Arming off", cls:""};
+  if(aborted) return {icon:"reset", text:"Press Reset", cls:""};
+  if(leftMs > 0) return {icon:"clock", text:"Wait " + (Math.ceil(leftMs / 100) / 10).toFixed(1) + " s", cls:""};
+  if(as && as.signin) return {icon:"user", text:"Sign in", cls:""};
+  return {icon:"ring", text:"Hold to arm", cls:"green hold"};
+}
+function setArmMode(el, mode, c){
+  el.dataset.mode = mode;
+  if(mode === "lamp"){ el.className = "b armb"; setIcon(el.querySelector("svg"), "lock"); setText(el.querySelector(".act"), "Arming off"); }
+  if(mode !== "disarm") return;
+  el.disabled = false;
+  el.className = "b safe armb";
+  setIcon(el.querySelector("svg"), "shield");
+  setText(el.querySelector(".act"), "Disarm");
+}
+let LAMP_KEY = "";
+// As few rows as fit, each as full as the others: the tiles and the Arm
+// all column, 150 px and up each.
+function layoutGroups(){
+  const box = document.querySelector(".flames");
+  const n = ($("groups").querySelectorAll(".tile").length || 1) + 1;
+  const fit = Math.max(1, Math.floor((box.clientWidth + 8) / (150 + 8)));
+  const rows = Math.ceil(n / Math.min(n, fit));
+  box.style.gridTemplateColumns = "repeat(" + Math.ceil(n / rows) + ", minmax(0,1fr))";
+}
+window.addEventListener("resize", layoutGroups);
+function renderGroups(fl){
+  const groups = fl.groups || [];
+  const la = ST && ST.laser_arm;
+  const hasLz = !!(la && (la.error || (la.lasers || []).length));
+  const key = groups.map(g => g.name).join("\n") + "|" + hasLz;
+  const box = $("groups");
+  if(key !== LAMP_KEY){
+    armStop("the group list changed");
+    LAMP_KEY = key;
+    box.innerHTML = groups.map((g, i) =>
+      `<div class="tile unknown" data-lamp="${i}"><div class="tn"></div><div class="ts">${icon("x")}<span class="word"></span><span class="lk" hidden>${icon("lock")}<span></span></span></div>` +
+      `<button class="b armb" data-arm="${i}" data-mode="hold"><div class="fill"></div>${icon("ring")}<span class="act"></span></button></div>`).join("") +
+      (hasLz ? `<div class="tile lz" id="lz"><div class="tn">Lasers</div><div class="ts">${icon("laser")}<span class="word" id="lz-w"></span><span class="lk" id="lz-lk" hidden>${icon("lock")}<span></span></span></div>` +
+        `<button class="b" id="lz-b">${icon("laser")}<span id="lz-bl">Arm lasers</span></button></div>` : "");
+    // One button per group, 1.0's: its mode when the finger went down
+    // decides (clickAction). Hold to arm starts on the press and stops on
+    // the release; Disarm goes on the click.
+    box.querySelectorAll("[data-arm]").forEach(b => {
+      const i = Number(b.dataset.arm);
+      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold") armStart(i); });
+      ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
+        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));
+      b.addEventListener("click", e => {
+        const down = b.dataset.down || ""; delete b.dataset.down;
+        if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ armStop("disarm"); press("group-disarm", {group:i}); }
+        else if(e.detail === 0 && b.dataset.mode === "hold") armSay(KEY_HOLD_WORDS, 2);
+      });
+      b.addEventListener("contextmenu", e => e.preventDefault());
+    });
+    if(hasLz) $("lz-b").addEventListener("click", lzTileClick);
+    layoutGroups();
+  }
+  const on = !!(ST && ST.arming && ST.arming.enabled);
+  const aborted = !!(ST && ST.schedule && ST.schedule.aborted);
+  const gm = (ST && ST.morning && ST.morning.group_machines) || {};
+  groups.forEach((g, i) => {
+    const el = box.querySelector(`[data-lamp="${i}"]`);
+    if(!el) return;
+    const c = lampClass(g, fl);
+    const left = rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms);
+    const look = tileLook(g, c, left, aborted && c !== "armed");
+    el.className = "tile " + look.cls;
+    setText(el.querySelector(".tn"), g.name + (g.deck_key === false ? " (no Deck key)" : ""));
+    setIcon(el.querySelector(".ts svg"), look.icon);
+    setText(el.querySelector(".word"), look.word);
+    // Machines locked out for the night: a lock and a number.
+    const x = gm[g.name], k = x ? Math.max(0, Number(x.locked) || 0) : 0;
+    el.querySelector(".lk").hidden = !k;
+    setText(el.querySelector(".lk span"), k ? String(k) : "");
+    const as = armState(ST, Date.now(), LAST_OK, i);
+    const ab = el.querySelector("[data-arm]");
+    const mode = armButtonMode(g, c, on);
+    if(mode === "disarm"){ setArmMode(ab, mode, c); return; }
+    ab.dataset.mode = mode;
+    const lab = armLabel(mode, c, left, aborted, as);
+    ab.className = "b armb " + lab.cls;
+    setIcon(ab.querySelector("svg"), lab.icon);
+    setText(ab.querySelector(".act"), lab.text);
+    if(!holding(i)) ab.disabled = !as.ok;
+    if(on && c !== "armed" && c !== "unknown" && left > 0 && !aborted && !holding(i)) ab.disabled = true;
+    const ref = REARM_REFUSED_AT[i];
+  });
+}
+// Arm all (Hold: arm flames) and Disarm all (Disarm flames): two fixed
+// buttons (1.0 had one that changed). Flames only, as 1.0's; the lasers
+// have their own Disarm lasers on their tile.
+// Arm all is 1.0's Arm all hold, allowed exactly when 1.0 offers it; Disarm
+// all is 1.0's, one press, never held back.
+function renderAllButtons(isSt){
+  const b = $("b-armall");
+  // Lit only when 1.0 offers Arm all and its hold would not be refused at
+  // once (an Abort standing, live flame programming one group at a time).
+  const can = (HOLD && HOLD.all) || (allButtonMode(ST, isSt) === "arm" && !armAllRefusal(ST));
+  if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
+  $("b-disall").disabled = false;
+}
+const ARMALL = $("b-armall");
+ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled) armAllStart(); });
+["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
+  ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
+ARMALL.addEventListener("contextmenu", e => e.preventDefault());
+ARMALL.addEventListener("click", e => { if(e.detail === 0) armSay(KEY_HOLD_WORDS, 2); });
+$("b-disall").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
+
+// ---- lasers: one tile. Disarm is one press and never held back; Arm is
+// 1.0's laser arm for every laser, with its confirm.
+let LZ = null, LZ_STALE = true;
+// COPIED FROM 1.0: lzArmRefusal.
+function lzArmRefusal(la, ls, stale){
+  if(stale) return "no contact with the engine, so the lasers' state is not known";
+  if(!ls.length) return "no laser was named";
+  if(la && la.arm_here) return la.arm_here;
+  const locked = ls.filter(x => x.locked).map(x => x.name);
+  if(locked.length) return locked.join(", ") + (locked.length === 1 ? " is" : " are") + " locked out; unlock on the Startup page first";
+  return "";
+}
+async function lzPress(extra){
+  try{
+    const j = await post("/api/remote/laser-arm", actor(extra));
+    say(extra.on ? "Lasers armed." : "Lasers disarmed.", j.text || "Done.", "ok");
+    return j;
+  }catch(e){
+    say(extra.on ? "Lasers not armed." : "Lasers NOT disarmed.", e.message, "bad");
+    if(!extra.on) disarmFailed("Lasers NOT disarmed.", e.message);
+    return null;
+  }
+}
+function lzDisarmAll(){
+  return lzPress({all:true, on:false});
+}
+function renderLasers(isSt){
+  const la = ST && ST.laser_arm;
+  LZ = la || null; LZ_STALE = !!isSt;
+  const t = $("lz");
+  if(!t) return;
+  const ls = (la && la.lasers) || [];
+  const armed = ls.filter(x => x.armed);
+  const locked = ls.filter(x => x.locked).length;
+  let cls = "tile lz", word, btn;
+  if(isSt || !la || la.error){ cls += " unknown"; word = "UNKNOWN"; btn = "disarm"; }
+  else if(!armed.length){ word = "OFF"; btn = "arm"; }
+  // BEYOND's output comes on only once every laser is armed.
+  else if(armed.length === ls.length){ cls += la.output_permitted ? " armed" : " held"; word = la.output_permitted ? "ARMED" : "ARMED, DARK"; btn = "disarm"; }
+  else { cls += " held"; word = armed.length + " OF " + ls.length; btn = "disarm"; }
+  t.className = cls;
+  setText($("lz-w"), word);
+  $("lz-lk").hidden = !locked || isSt; setText($("lz-lk").querySelector("span"), locked ? String(locked) : "");
+  const b = $("lz-b");
+  b.dataset.mode = btn;
+  if(btn === "disarm"){ b.className = "b safe"; setIcon(b.querySelector("svg"), "shield"); setText($("lz-bl"), "Disarm lasers"); b.disabled = false; }
+  else {
+    const why = lzArmRefusal(la, ls, isSt);
+    b.className = "b " + (why ? "" : "green");
+    setIcon(b.querySelector("svg"), "laser"); setText($("lz-bl"), why ? (locked ? "Laser locked" : "Arming off") : "Arm lasers");
+    b.disabled = !!why || !mayRow(ST, "arm");
+  }
+}
+async function lzTileClick(){
+  const b = $("lz-b");
+  if(b.dataset.mode === "disarm") return lzDisarmAll();
+  const la = LZ || {};
+  const ls = la.lasers || [];
+  const ids = ls.map(x => x.id);
+  const why = lzArmRefusal(la, ls, LZ_STALE);
+  if(why){ say("Lasers not armed.", "Not armed: " + why + ". Nothing was armed.", "bad"); return null; }
+  if(!(await confirmBox("Arm all " + ls.length + " lasers?", "Output starts when all are armed.", "Arm", "green"))) return null;
+  return lzPress({lasers:ids, on:true, confirmed:true});
+}
+
+// ---- announcements: one press plays (1.0's), Stop sound ends the sound
+let ANN_SIG = "", ANN_BUSY = false;
+function renderAnnounce(){
+  const s = ST || {};
+  const L = announceLook(s.announce, s.booth);
+  $("ann").hidden = !L.show;
+  if(!L.show) return;
+  const an = s.announce || {};
+  const playing = an.playing;
+  // 1.0's announceLook decides; these are its words, shorter. "Playing"
+  // only once the sound has reached the output (1.0's "starting").
+  const starting = !!(playing && playing.heard === false);
+  setText($("ann-word"), playing ? (starting ? "Starting" : "Playing") : (an.held_failed ? "Failed" : "Announce"));
+  $("ann-w").style.color = (playing || an.held_failed) ? "var(--amber)" : "";
+  let note = "";
+  if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : "");
+  else if(an.ok === false) note = "Cannot play now";
+  else if(L.devBad) note = "No sound output";
+  else note = an.over_show ? "Plays over the show" : "Holds the schedule";
+  setText($("ann-note"), note);
+  $("ann-note").className = (L.devBad || an.ok === false) ? "bad" : "";
+  const sig = JSON.stringify([L.buttons, ANN_BUSY, mayRow(s, "show")]);
+  if(sig !== ANN_SIG){
+    ANN_SIG = sig;
+    const may = mayRow(s, "show");
+    $("ann-btns").innerHTML = L.buttons.map(b =>
+      `<button class="b ${b.on ? "on" : ""}" data-ann="${esc(b.id)}"${b.off || ANN_BUSY || !may ? " disabled" : ""}>${icon("mega")}<span>${esc(b.label)}${b.missing ? "<small>Missing</small>" : ""}</span></button>`).join("");
+  }
+  $("ann-stop").disabled = L.stopOff || ANN_BUSY;
+}
+async function annPress(route, extra){
+  if(ANN_BUSY) return;            // one press, one announcement
+  ANN_BUSY = true; renderAnnounce();
+  try{
+    const j = await post("/api/remote/" + route, actor(extra));
+    say(route === "announce-stop" ? "Sound stopped." : "Playing.", j.text || "", "ok");
+    if(j.announce && ST) ST.announce = j.announce;
+  }catch(e){ say(route === "announce-stop" ? "Sound not stopped." : "Not played.", e.message, "bad"); }
+  ANN_BUSY = false; renderAnnounce();
+}
+$("ann-btns").addEventListener("click", e => {
+  const b = e.target.closest("button[data-ann]");
+  if(!b || b.disabled) return;
+  annPress("announce-play", {id: b.dataset.ann});
+});
+$("ann-stop").addEventListener("click", () => annPress("announce-stop"));
+
+// ---- ABORT's answer (the press itself is the abort-core script above,
+// which needs nothing from here): said in the alert slot until Seen.
+function abortAnswered(j, err){
+  if(j){
+    const ok = j.disarmed === true && !!j.ok;
+    ABORT_SAID = {ok:ok, text:"ABORT pressed. " + (j.text || "Done.") + (j.disarmed === true ? "" : " FLAMES WERE NOT DISARMED FROM THIS SCREEN: use the Stream Deck's group keys or the hardware e-stop.")};
+    say(ok ? "Abort done." : "Abort: flames NOT disarmed.", ABORT_SAID.text, ok ? "ok" : "bad");
+  } else {
+    ABORT_SAID = {ok:false, text:"ABORT pressed, and the engine answered: " + err};
+    say("Abort: check the answer.", ABORT_SAID.text, "bad");
+  }
+  ALERT_KEY = "abort";
+  ALERTS = alertItems(ST); renderAlertSlot();
+}
+
+// ---- the header: systems, who is signed in, help, back to 1.0 ----
+const SYS_NAMES = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Laser arm":"Lasers", "Lasers":"Lasers"};
+function renderSys(){
+  const isSt = stale();
+  const subs = laserPill((ST && ST.subsystems) || [], ST && ST.laser_arm, ST && ST.beyond_link);
+  const bad = subs.filter(x => x.state === "bad").length, warn = subs.filter(x => x.state === "warn").length;
+  const b = $("sys");
+  let cls, ic, t;
+  if(isSt){ cls = "warn"; ic = "x"; t = "No contact"; }
+  else if(bad){ cls = "bad"; ic = "warn"; t = bad + (bad === 1 ? " fault" : " faults"); }
+  else if(warn){ cls = "warn"; ic = "warn"; t = warn + " to check"; }
+  else { cls = "ok"; ic = "check"; t = "All OK"; }
+  b.className = "hb " + cls; setIcon(b.querySelector("svg"), ic); setText(b.querySelector("span"), t);
+}
+setInterval(renderSys, 1000);
+$("sys").addEventListener("click", () => {
+  const subs = laserPill((ST && ST.subsystems) || [], ST && ST.laser_arm, ST && ST.beyond_link);
+  const word = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off"};
+  const rows = subs.map(x => `<li><b>${esc(SYS_NAMES[x.name] || x.name)}</b>: ${esc(word[x.state] || "Not known")}. <span class="dim">${esc(x.word || "")}</span></li>`).join("");
+  sheet("Systems", stale() ? "<div>No contact with the show PC: not known.</div>" : `<ul>${rows || "<li>Not known yet.</li>"}</ul><div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
+});
+function renderUser(){
+  const me = (ST && ST.me) || ME || {};
+  const b = $("user");
+  if(me.users_active === undefined && !("user" in me)){ b.hidden = true; return; }
+  b.hidden = false;
+  if(me.view_only && HOLD) armStop("Signed out: this screen is view only");
+  b.className = "hb " + (me.user ? "in" : (me.view_only ? "out" : ""));
+  setText(b.querySelector("span"), me.user ? me.user : "Sign in");
+}
+setInterval(renderUser, 1000);
+// Sign in: a sheet over this screen, 1.0's routes and bodies.
+let SIGN_NAME = "", SIGN_NEED = false;
+async function openSignIn(){
+  const me = (ST && ST.me) || ME || {};
+  if(me.user){
+    const v = await sheet("Signed in", `<div><b>${esc(me.user)}</b> (${esc(me.role || "")})</div><div class="dim">Abort, Hold, Stop and every disarm work for everyone, signed in or not.</div>`,
+      [{label:"Users in 1.0", value:"users", cls:"blue", icon:"open"}, {label:"Close", value:null}, {label:"Sign out", value:"out", cls:"redline", icon:"user"}]);
+    if(v === "users") location.href = "/remote1#users";
+    if(v === "out"){
+      if(HOLD) armStop("Signed out");
+      try{ const r = await post("/api/remote/signout", {}); say("Signed out.", r.text, "ok"); }catch(e){ say("Not signed out.", e.message, "bad"); }
+      if(ST && ST.me && ST.me.users_active){
+        const no = {}; Object.keys(ST.me.may || {}).forEach(k => { no[k] = false; });
+        ST.me = Object.assign({}, ST.me, {user:null, role:null, view_only:true, may:no});
+      }
+      renderUser();
+    }
+    return;
+  }
+  let names = [];
+  try{ const u = await getJSON("/api/remote/users", 3000); names = u.names || []; }catch(e){ say("Names not readable.", e.message, "bad"); }
+  SIGN_NEED = false;
+  drawSignIn(names);
+}
+function drawSignIn(names){
+  const html = `<div class="dim">Abort, Hold, Stop and every disarm work for everyone, signed in or not.</div>` +
+    `<div class="names">${names.map(n => `<button class="b ${n === SIGN_NAME ? "on" : ""}" data-name="${esc(n)}">${icon("user")}${esc(n)}</button>`).join("")}</div>` +
+    `<input class="f" id="si-pw" type="password" autocomplete="current-password" placeholder="Password">` +
+    `<input class="f" id="si-new" type="password" autocomplete="new-password" placeholder="Choose a new password"${SIGN_NEED ? "" : " hidden"}>` +
+    `<div id="si-msg" class="dim"></div>`;
+  sheet("Sign in", html, [{label:"Cancel", value:null}, {label:"Sign in", value:"go", cls:"green", icon:"user"}]).then(async v => {
+    if(v !== "go"){ return; }
+  });
+  $("sh-body").querySelectorAll("[data-name]").forEach(b => b.addEventListener("click", () => {
+    SIGN_NAME = b.dataset.name;
+    $("sh-body").querySelectorAll("[data-name]").forEach(x => x.classList.toggle("on", x === b));
+    $("si-pw").focus();
+  }));
+  $("si-pw").addEventListener("keydown", e => { if(e.key === "Enter") signInGo(names); });
+  // Sign in keeps the sheet open on a refusal, so the words stay with it.
+  const go = $("sh-row").querySelector('[data-i="1"]');
+  const fresh = go.cloneNode(true); go.replaceWith(fresh);
+  fresh.addEventListener("click", () => signInGo(names));
+}
+async function signInGo(names){
+  const body = {name:SIGN_NAME, password:$("si-pw").value};
+  if(SIGN_NEED) body.new_password = $("si-new").value;
+  if(!body.name){ $("si-msg").textContent = "Tap your name first."; return; }
+  try{
+    const r = await post("/api/remote/signin", body);
+    SIGN_NEED = false;
+    if(SHEET_DONE) SHEET_DONE(null);
+    say("Signed in as " + SIGN_NAME + ".", r.text, "ok");
+  }catch(e){
+    let need = false;
+    try{ need = /choose/i.test(e.message); }catch(_){ }
+    $("si-pw").value = ""; if($("si-new")) $("si-new").value = "";
+    if(need && !SIGN_NEED){ SIGN_NEED = true; $("si-new").hidden = false; }
+    $("si-msg").textContent = e.message;
+  }
+}
+$("user").addEventListener("click", openSignIn);
+
+// ---- weather: one line, the rest a tap away (1.0's wxBlock) ----
+let WX = null, WX_AT = null;
+function wxLine(w, ago){
+  const v = wxBlock(w, ago);
+  if(v.cls === "off") return {cls:"off", text:"", v};
+  if(!w || ago === null || ago === undefined) return {cls:"none", text:"Wind: waiting", v};
+  if(ago > ((w && Number(w.page_dead_s)) || 60)) return {cls:"none", text:"NO CURRENT DATA, use on-site wind check", v};
+  if(w.state === "error") return {cls:"none", text:"Wind: weather is off", v};
+  const m = (w.lines || []).find(l => typeof l.speed_mph === "number");
+  let t = m ? "Wind " + Math.round(m.speed_mph) + " mph" + (m.level === "stale" ? ", stale" : "") : "Wind: no reading";
+  if((w.banner || []).length) return {cls:"alert", text:t + ". NWS alert. Advisory only.", v};
+  return {cls:v.cls === "ok" ? "ok" : "stale", text:t + ". Advisory only.", v};
+}
+function renderWxLine(){
+  const L = wxLine(WX, WX_AT === null ? null : (monoNow() - WX_AT) / 1000);
+  $("wx").hidden = L.cls === "off";
+  $("wx").className = "b " + L.cls;
+  setText($("wx-t"), L.text);
+}
+async function wxPoll(){
+  try{ WX = await getJSON("/api/remote/weather", 4000); WX_AT = monoNow(); }
+  catch(e){ /* greyed by wxBlock once page_dead_s has passed */ }
+  renderWxLine();
+}
+wxPoll();
+setInterval(wxPoll, 15000);
+$("wx").addEventListener("click", () => {
+  const v = wxBlock(WX, WX_AT === null ? null : (monoNow() - WX_AT) / 1000);
+  sheet("Wind", `<div class="dim">${esc((WX && WX.where) || "")}</div><ul>${v.lines.map(l => `<li>${esc(l.text)}</li>`).join("")}</ul><div><b>${esc(v.foot)}</b></div>`, [{label:"Close", cls:"blue"}]);
+});
+
+// ---- "?" : one plain sentence per control ----
+const QHELP = {
+  next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame, rehearsal flames."]]],
+  transport: ["Show controls", [["Run show", "Turns tonight's show on. Shows start on time."], ["Start now", "Starts the next show early."],
+    ["Resume", "Carries on after a Hold."], ["Reset", "Clears an Abort. Then arm again."],
+    ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Ends everything. Rig goes dark."],
+    ["ABORT", "Emergency stop. Tap twice. Then Reset."]]],
+  alert: ["Alerts", [["The box", "What is wrong, and what to do."], ["Details", "The full message from the show PC."],
+    ["Acknowledge", "Clears the alert. Changes nothing on the rig."], ["Arrows", "The other alerts."],
+    ["Hold: continue anyway", "After a failed rig check: starts late, failed parts off."], ["Stop cleaning", "Stops the wave flamer cleaning."]]],
+  flames: ["Flames and lasers", [["Hold to arm", "Press and keep holding until it says ARMED."], ["Disarm", "One tap makes it safe. Always works."],
+    ["Hold: arm flames", "Press and hold to arm every flame group. Not the lasers."], ["Disarm flames", "One tap makes every flame group safe. Not the lasers."],
+    ["Arm lasers", "Arms every laser, after you confirm."], ["Disarm lasers", "One tap makes every laser safe."]]],
+  announce: ["Announcements", [["A button", "Plays it now. Between shows it holds the schedule."], ["Stop sound", "Stops the sound only. Resume carries on."]]],
+};
+function qOpen(k){
+  const q = QHELP[k]; if(!q) return;
+  sheet(q[0], `<ul>${q[1].map(r => `<li><b>${esc(r[0])}:</b> ${esc(r[1])}</li>`).join("")}</ul>`, [{label:"Close", cls:"blue"}]);
+}
+document.querySelectorAll("[data-q]").forEach(b => b.addEventListener("click", () => qOpen(b.dataset.q)));
+// The flames' "?" lives on the Arm all column's long press-free twin: the
+// Help sheet lists it, so no tile carries an extra button.
+
+// ---- Help: the tour again, the quick card ----
+$("help").addEventListener("click", async () => {
+  const v = await sheet("Help", `<ul><li><b>Tour:</b> the screen in eight steps.</li><li><b>Quick card:</b> print it, keep it by the rack.</li><li><b>Flames:</b> what each flame button does.</li></ul>`,
+    [{label:"Close", value:null}, {label:"Flames", value:"flames", cls:"blue", icon:"flame"}, {label:"Quick card", value:"card", cls:"blue", icon:"print"}, {label:"Tour", value:"tour", cls:"green", icon:"play"}]);
+  if(v === "tour") coachStart();
+  if(v === "card") quickCard();
+  if(v === "flames") qOpen("flames");
+});
+async function quickCard(){
+  const v = await sheet("Quick card", '<div class="qc">' + $("qcard").innerHTML.replace(/<h2>[^<]*<\/h2>/, "") + "</div>", [{label:"Close", value:null}, {label:"Print", value:"print", cls:"blue", icon:"print"}]);
+  if(v === "print") window.print();
+}
+
+// ---- first-run coach marks: eight, never in front of a control's press
+const COACH = [
+  ["next", "What to do next. Live modes, with Stop."],
+  ["pill", "Show state, timecode and time left."],
+  ["b-go", "The big button is the next step."],
+  ["b-hold", "Hold pauses the schedule. Resume carries on."],
+  ["b-stop", "Stop ends everything. The rig goes dark."],
+  ["alert", "Problems show here. Fix, then Acknowledge."],
+  ["groups", "Hold to arm. One tap disarms."],
+  ["b-abort", "ABORT: tap twice. Emergency stop."]];
+let COACH_I = -1;
+function coachStart(){ if(TAB !== "show") showTab("show"); COACH_I = 0; coachDraw(); }
+function coachEnd(){
+  COACH_I = -1; $("coach").hidden = true;
+  try{ localStorage.setItem("ltc_ui2_tour", "1"); }catch(e){}
+}
+function coachDraw(){
+  const step = COACH[COACH_I];
+  if(!step){ coachEnd(); return; }
+  const el = $(step[0]);
+  if(!el){ COACH_I++; coachDraw(); return; }
+  $("coach").hidden = false;
+  const r = el.getBoundingClientRect();
+  const hole = $("coach").querySelector(".hole");
+  Object.assign(hole.style, {left:(r.left - 6) + "px", top:(r.top - 6) + "px", width:(r.width + 12) + "px", height:(r.height + 12) + "px"});
+  $("co-t").textContent = step[1];
+  $("co-n").textContent = (COACH_I + 1) + " of " + COACH.length;
+  $("co-next").textContent = COACH_I === COACH.length - 1 ? "Done" : "Next";
+  const card = $("coach").querySelector(".card");
+  const below = r.bottom + 16 + 140 < innerHeight;
+  card.style.left = Math.max(12, Math.min(r.left, innerWidth - card.offsetWidth - 140)) + "px";
+  card.style.top = (below ? r.bottom + 16 : Math.max(12, r.top - card.offsetHeight - 16)) + "px";
+}
+$("co-next").addEventListener("click", () => { COACH_I++; coachDraw(); });
+$("co-skip").addEventListener("click", coachEnd);
+window.addEventListener("resize", () => { if(COACH_I >= 0) coachDraw(); });
+// Shown by itself once per screen, and only while nothing is live: never
+// over a show.
+function coachMaybe(){
+  let seen = true;
+  try{ seen = localStorage.getItem("ltc_ui2_tour") === "1"; }catch(e){}
+  if(seen || new URLSearchParams(location.search).get("tour") === "0") return;
+  if(!ST || stale() || isLive(ST) || (ST.flames && (ST.flames.groups || []).some(g => g.armed === "armed"))) return;
+  coachStart();
+}
+
+// ---- Settings: the default interface (admin, the show PC only) ----
+async function loadUiDefault(){
+  try{
+    const j = await getJSON("/api/remote/ui-default", 3000);
+    ["1", "2"].forEach(v => $("set-ui-" + v).classList.toggle("on", String(j.default) === v));
+    setText($("set-ui-t"), "Screens that have not chosen get " + (j.default === 2 ? "2.0" : "1.0") + ".");
+  }catch(e){ setText($("set-ui-t"), short8(e.message, "Not readable here.")); }
+}
+["set-ui-1", "set-ui-2"].forEach(id => $(id).addEventListener("click", async () => {
+  const v = Number($(id).dataset.v);
+  try{ const j = await post("/api/remote/ui-default", {default:v}); say("Default is now " + v + ".0.", j.text, "ok"); }
+  catch(e){ say("Not changed.", e.message, "bad"); }
+  loadUiDefault();
+}));
+
+// The announcements: in the footer beside Abort, or on a phone in the
+// SHOW pane (which scrolls there), so the footer stays the sign's height.
+function placeAnn(){
+  const want = innerWidth <= 600 ? $("t-show") : $("foot-l");
+  if($("ann").parentElement !== want) want.insertBefore($("ann"), want === $("foot-l") ? want.firstChild : null);
+}
+placeAnn();
+window.addEventListener("resize", placeAnn);
+showTab((location.hash || "").replace("#", ""));
+UI2_READY = true;
+whoami().then(() => setTimeout(coachMaybe, 1500)).catch(e => { say("Cannot reach the show PC.", e.message, "bad"); startPolling(); });
+</script>
+</body>
+</html>
