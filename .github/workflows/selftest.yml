@@ -5,15 +5,24 @@ name: selftest
 #
 #   selftest   every PR, every push to main, every tag: the whole suite on
 #              ubuntu and windows, about 5 minutes each
-#   mutate     32 shards, the required checks. On a PR and on a push to main
-#              each shard runs only the mutations the diff can have changed
-#              the result of (mutate.py --changed: the mutations of the files
+#   changes    works out which mutations the diff can have changed the
+#              result of (mutate.py --changed: the mutations of the files
 #              the diff touches, every flamesafe, conductor and flame link
 #              mutation when a safety file is touched, new or edited
-#              mutations, and whatever a deleted test guarded). A shard with
-#              nothing to run returns in seconds. A release tag runs the
-#              whole list on ubuntu and windows. The whole list also runs
-#              every night on main (nightly-mutate.yml), and on demand.
+#              mutations, and whatever a deleted test guarded) and how many
+#              shards that needs: none for a doc, a launcher, the packaging
+#              or this workflow; about 25 mutations a shard otherwise, 32 at
+#              most; 32 for a release tag or a change with no base.
+#   mutate     those shards, ubuntu (a release tag: ubuntu and windows). No
+#              shard job is started at all when there is nothing to run.
+#              They start only once both selftest jobs are green (a red
+#              suite makes every mutation look caught, so the shards would
+#              measure nothing), and at most 10 run at once, so a PR never
+#              takes the whole account's 20 job slots. On a PR into
+#              bench-build they are not required to merge: the required
+#              checks are selftest (ubuntu-latest), selftest
+#              (windows-latest), changes and installer (windows-app.yml).
+#              The whole list also runs on demand (nightly-mutate.yml).
 #
 # A PR runs once, as a pull_request. Pushes run only for main and for release
 # tags, so a PR branch is not tested twice. ready_for_review is listed with
@@ -30,8 +39,10 @@ permissions:
   contents: read
 
 # A newer push to the same PR makes the older run pointless, so it is
-# cancelled. Every push to main and every tag gets a group of its own: they
-# are never cancelled, and never queue behind mutate.py either.
+# cancelled, shards and all (the group is the workflow and the PR's ref,
+# refs/pull/N/merge, so it never touches another PR). Every push to main and
+# every tag gets a group of its own: they are never cancelled, and never
+# queue behind mutate.py either.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -80,8 +91,11 @@ jobs:
   #                  (the rules are in mutate.py, select_affected(), and
   #                  TESTING.md), so the list of files to watch can never
   #                  drift from the list of files mutate.py breaks
+  #                  The shard count follows the selection: about 25
+  #                  mutations a shard (about 75 minutes on ubuntu with
+  #                  --jobs 3), 32 at most
   #   mode=none      that selection is empty (a doc, a launcher, the brand,
-  #                  this workflow): the shards report success at once
+  #                  this workflow): no shard job is started at all
   # A push with no usable base (a first push, a rewritten one) runs
   # everything rather than guess.
   changes:
@@ -90,6 +104,9 @@ jobs:
       mode: ${{ steps.decide.outputs.mode }}
       base: ${{ steps.decide.outputs.base }}
       oses: ${{ steps.decide.outputs.oses }}
+      shards: ${{ steps.decide.outputs.shards }}
+      nshards: ${{ steps.decide.outputs.nshards }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -103,17 +120,21 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           set -u
+          shards_json() {    # 0..N-1 as a JSON list
+            python3 -c "import json,sys; print(json.dumps(list(range(int(sys.argv[1])))))" "$1"
+          }
           say() {
             echo "$1"
-            { echo "mode=$2"; echo "base=$3"; echo "oses=$4"; } >> "$GITHUB_OUTPUT"
+            { echo "mode=$2"; echo "base=$3"; echo "oses=$4"; echo "nshards=$5";
+              echo "shards=$(shards_json "$5")"; } >> "$GITHUB_OUTPUT"
             exit 0
           }
           if [[ "$REF" == refs/tags/* ]]; then
-            say "release tag: every mutation, ubuntu and windows" full "" '["ubuntu-latest","windows-latest"]'
+            say "release tag: every mutation, ubuntu and windows, 32 shards each" full "" '["ubuntu-latest","windows-latest"]' 32
           fi
           if [[ "$EVENT" == pull_request ]]; then base="$PR_BASE"; else base="$BEFORE"; fi
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            say "no base to compare against: every mutation, ubuntu" full "" '["ubuntu-latest"]'
+            say "no base to compare against: every mutation, ubuntu, 32 shards" full "" '["ubuntu-latest"]' 32
           fi
           # mutate.py --list needs no numpy: it stops before the baseline.
           # Exit 0 with "nothing to run" means the selection is empty.
@@ -124,26 +145,43 @@ jobs:
             exit 1
           fi
           grep -v '^  would run' "$out" || true
-          echo "$(grep -c '^  would run' "$out" || true) mutations would run"
+          n=$(grep -c '^  would run' "$out" || true)
+          echo "$n mutations would run"
           if grep -q 'nothing to run' "$out"; then
-            say "nothing this change can have broken is mutated: the shards return at once" none "$base" '["ubuntu-latest"]'
+            say "nothing this change can have broken is mutated: no shard runs" none "$base" '["ubuntu-latest"]' 1
           fi
-          say "the affected mutations, ubuntu" affected "$base" '["ubuntu-latest"]'
+          # About 25 mutations a shard: on ubuntu with --jobs 3 a mutation
+          # costs about 3 minutes of a shard (81 took 221 to 280 minutes in
+          # nightly run 40469889985), so about 75 minutes plus the baseline.
+          # The shards split the full list by index (mutate.py --shard I/N
+          # keeps index % N == I), so 0..N-1 always cover every selected one.
+          k=$(( (n + 24) / 25 )); if (( k < 1 )); then k=1; fi; if (( k > 32 )); then k=32; fi
+          say "the $n affected mutations, ubuntu, $k shard(s)" affected "$base" '["ubuntu-latest"]' "$k"
 
-  # The 32 shard names are the required checks on main, so there are always
-  # 32 of them, whatever there is to do. Thirty-two shards of a full sweep on
-  # every push to a draft PR is real money spent on a diff that is still
-  # being written: the mutate jobs are skipped while the PR is a draft and
-  # run for the first time when it is marked ready for review; selftest
-  # itself still runs on every push, drafts included.
+  # The account runs at most 20 jobs at once, shared by every workflow and
+  # every PR. So the shards (2026-10-29, the congestion of 10-26 to 10-28):
+  #   - start only for a change that has something to mutate (no job at
+  #     all for mode none, not 32 empty ones), as many as the selection
+  #     needs (the changes job), never more than 32;
+  #   - start only after both selftest jobs are green. On a PR into
+  #     bench-build that is the fast lane: the required checks (selftest
+  #     on ubuntu and windows, changes, installer) finish first and are
+  #     never queued behind shards; the shards follow and are not
+  #     required to merge;
+  #   - run at most 10 at once (max-parallel), leaving the other 10 slots
+  #     for other PRs' selftest and installer jobs;
+  #   - are skipped while the PR is a draft and run for the first time
+  #     when it is marked ready for review; selftest itself still runs on
+  #     every push, drafts included.
   mutate:
-    needs: changes
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: [changes, selftest]
+    if: needs.changes.outputs.mode != 'none' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     strategy:
       fail-fast: false
+      max-parallel: 10
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.oses) }}
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     runs-on: ${{ matrix.os }}
     # Sized for a full sweep: about 2600 mutations in 32 shards, 81 a
     # shard. With fail fast, catcher hints and --jobs 3 a shard took 221 to
@@ -156,13 +194,11 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
-        if: needs.changes.outputs.mode != 'none'
         with:
           # --changed reads the base revision's mutate.py, selftest.py and
           # expected-miss list out of git.
           fetch-depth: 0
       - uses: actions/setup-python@v6
-        if: needs.changes.outputs.mode != 'none'
         with:
           python-version: "3.12"
           cache: pip
@@ -174,7 +210,6 @@ jobs:
       # #49, shards 14 and 15). selftest.py now fails in CI when Pillow is
       # missing, so this line cannot drift from the one above again.
       - run: python -m pip install numpy zstandard tzdata pillow
-        if: needs.changes.outputs.mode != 'none'
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
       # SETUP FAIL fails the job. Each mutated run stops after its first
@@ -187,18 +222,16 @@ jobs:
       # after it still runs and can say so. pipefail (bash's default in
       # Actions) keeps mutate.py's exit code through tee.
       - id: sweep
-        if: needs.changes.outputs.mode != 'none'
         shell: bash
         timeout-minutes: 340
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           BASE: ${{ needs.changes.outputs.base }}
+          N: ${{ needs.changes.outputs.nshards }}
         run: |
           narrow=()
           if [[ "$MODE" == affected ]]; then narrow=(--changed "$BASE"); fi
-          python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} "${narrow[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
-      - run: echo "nothing this change can have broken is mutated; nothing to run in this shard"
-        if: needs.changes.outputs.mode == 'none'
+          python -u mutate.py --shard ${{ matrix.shard }}/$N --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} "${narrow[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
       # Tells a shard that ran out of time apart from a missed mutation. A
       # miss prints NOT CAUGHT or UNEXPECTED MISS and the sweep reaches its
       # "caught N, missed M" line. A shard that ran out of time never reaches
@@ -206,16 +239,17 @@ jobs:
       # result in the log. The mutation being run when the clock stopped is
       # one of them: its result is unknown, not "caught".
       - name: Report a shard that ran out of time
-        if: always() && needs.changes.outputs.mode != 'none' && steps.sweep.outcome != 'success' && steps.sweep.outcome != 'skipped'
+        if: always() && steps.sweep.outcome != 'success' && steps.sweep.outcome != 'skipped'
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}
+          N: ${{ needs.changes.outputs.nshards }}
           LOG: ${{ runner.temp }}/mutate.log
         run: |
           python - <<'PY'
           import ast, os
 
-          shard, total = int(os.environ["SHARD"]), 32
+          shard, total = int(os.environ["SHARD"]), int(os.environ["N"])
           log = []
           try:
               with open(os.environ["LOG"], encoding="utf-8", errors="replace") as fh:
@@ -275,7 +309,7 @@ jobs:
       # The whole shard log, kept a week, for the run page's Artifacts
       # list; the job log cannot always be fetched from a cloud session.
       - uses: actions/upload-artifact@v4
-        if: always() && needs.changes.outputs.mode != 'none'
+        if: always()
         with:
           name: mutate-log-${{ matrix.os }}-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/mutate.log
@@ -283,7 +317,7 @@ jobs:
           if-no-files-found: ignore
 
   # One place that says which shards are red, with a link to each, in the
-  # run's summary, so nobody opens 32 jobs to find the one that failed.
+  # run's summary, so nobody opens the jobs one by one to find the one that failed.
   # Each red shard's own summary says why (the kind of failure and the
   # mutation), its annotations carry the same, and its log is the artifact
   # named after it. Nothing is posted to the PR, and this job is green
