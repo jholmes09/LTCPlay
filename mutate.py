@@ -18084,6 +18084,11 @@ def build():
   "            if not s > 0 or not math.isfinite(s):",
   "            if not s > 0 or s != s:"),
 
+ ("timed purge: a broken sign-in check reads as a role refusal",
+  "ltcplay/web.py",
+  "            if fault is not None:\n                raise fault",
+  "            pass"),
+
  ("timed purge: the link replaces a stale timed frame it has not yet sent",
   "ltcplay/flamelink.py",
   "            if until is not None and p is not None and \\\n                    (now - p[1] > PURGE_HOLD_S or now < p[1]):",

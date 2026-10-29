@@ -1100,11 +1100,14 @@ class Handler(BaseHTTPRequestHandler):
             return False
         try:
             who = self._acting_user(body)
+            fault = None
             role = who.get("role") if who else None
             if users.may(role, perm):
                 return False
-        except Exception:                        # noqa: BLE001
-            who = None
+        except Exception as e:                   # noqa: BLE001
+            # The check could not be made: refused (fail closed), and said
+            # so below.
+            who, fault = None, e
         ended = False
         try:
             # A purge press while a timed purge runs is a second press: it
@@ -1122,8 +1125,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:                        # noqa: BLE001
             pass
         try:
-            who = self._acting_user(body)
-            role = who.get("role") if who else None
+            if fault is not None:
+                raise fault
             name = (who or {}).get("name")
             why = (f"{name} ({role}) may not do this: "
                    if name else "Nobody is signed in on this screen, and "

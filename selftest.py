@@ -66373,6 +66373,39 @@ def test_timed_purge_every_end_cause():
             us.sign_out(tok, "rack", local=False)
             _tp_step(R, 0.1)
             check_end(m)
+        # The sign-in check itself broken while one runs: a purge press is
+        # refused (fail closed, said as a check that could not be made)
+        # and still ends it; nothing new fires.
+        ok, why, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop, headers=hdr)
+        st, out, _r = _tp_hold(R, 5, headers=hdr)
+        if check(st == 200 and out.get("started"),
+                 f"setup: Ollie's third timed purge: {out}"):
+            m = ended("a purge press with the sign-in check broken",
+                      "second purge press")
+            real_may = us.may
+
+            def boom(*_a, **_k):
+                raise RuntimeError("broken")
+            us.may = boom
+            try:
+                n0 = len(link.frames)
+                st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                    {"on": True, "seen": R.seen()},
+                                    client=loop, headers=hdr)
+            finally:
+                us.may = real_may
+            check(st == 403 and out.get("role_refused") and
+                  "could not be made" in out.get("error", "") and
+                  out.get("ended") is True and len(link.frames) == n0 and
+                  R.m.purge.fire is None,
+                  f"a broken sign-in check: refused, said why, the timed "
+                  f"purge ended, nothing fired: {st} {out}")
+            check_end(m)
         R.remote.users = None
     finally:
         R.close()

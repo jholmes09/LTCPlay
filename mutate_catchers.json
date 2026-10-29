@@ -2503,6 +2503,7 @@
 "timed purge: Stop purge does not say it ended a timed purge": "test_timed_purge_every_end_cause",
 "timed purge: Stop purge from another screen is refused": "test_timed_purge_every_end_cause",
 "timed purge: a Hold standing does not end it": "test_timed_purge_every_end_cause",
+"timed purge: a broken sign-in check reads as a role refusal": "test_safety_presses_pass_signed_out_and_are_logged_unsigned",
 "timed purge: a disarm of one of its groups does not end it at once": "test_timed_purge_every_end_cause",
 "timed purge: a duration over the show machine's longest is taken": "test_timed_purge_at_the_engine",
 "timed purge: a fire press let past the switches to end it fires when it ended meanwhile": "test_timed_purge_every_end_cause",
