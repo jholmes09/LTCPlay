@@ -3853,6 +3853,17 @@ class Remote:
             "missing": {i["id"]: bool(i.get("missing"))
                         for i in av.get("items") or []},
             "playing": (av.get("playing") or {}).get("id")}
+        # The hazers (hazers.py), for the deck's page 3 keys (display only).
+        hz = self.hazers
+        if hz is not None:
+            try:
+                names = hz.names()
+                if names:
+                    out["hazers"] = {"names": names,
+                                     "on": sorted(hz.on()),
+                                     "down": hz.down()}
+            except Exception:                    # noqa: BLE001
+                pass
         # Who is signed in on this machine (users.py): the deck shows it
         # and acts as them.
         uv = self.user_view_for_deck()

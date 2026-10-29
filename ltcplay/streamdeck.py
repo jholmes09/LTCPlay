@@ -16,6 +16,18 @@ blank and does nothing):
   key 0  START / STOP   key 1  DELAYED      key 2  CANCEL
   key 3  CANNOT CONT.   key 4  STOP ANNC.   key 5  BACK
 
+PAGE 3, THE HAZERS (Jeff, 2026-10-29; hazers.py): page 1 has no free key,
+so the hazers have a page of their own. Key 5 opens it while no
+announcements are set up; with announcements, page 2's key 5 reads HAZERS
+(instead of BACK) and opens it. Page 2's other rules are unchanged:
+
+  key 0  START / STOP   key 1  HAZER 1      key 2  HAZER 2
+  key 3  HAZER 3        key 4  HAZERS OFF   key 5  BACK
+
+A plain tap toggles a hazer (ON in green, OFF); ON needs what arming a
+group needs at the deck, OFF never. It gives way to page 1 exactly as
+page 2 does. Nothing on it arms, disarms or fires a flame.
+
 One press plays (no double tap), through the engine's
 /api/remote/announce-play, on this process's press thread. Between shows
 the engine Holds the schedule first; during a show the announcement plays
@@ -390,6 +402,18 @@ PAGE2_FACE = {"delayed": ["DELAYED"], "cancellation": ["CANCEL"],
 PAGE2_STOP = 4
 PAGE2_BACK = SPARE_KEY
 PAGE2_IDLE_S = 10.0     # no key pressed this long on page 2: back to page 1
+# Page 3, the hazers (Jeff, 2026-10-29; hazers.py). Page 1 has no free key
+# (keys 1 to 4 arm, key 5 opens the announcements), so the hazers get a
+# page of their own with page 2's rules (it gives way by itself, exactly as
+# page 2 does). It opens from key 5: on page 1 when no announcements are
+# set up, else from page 2, whose key 5 then reads HAZERS instead of BACK.
+# Keys 1 to 3 toggle the hazers in flamesafe's order (a plain tap: a hazer
+# is not a flame; ON needs what arming needs at the deck, OFF nothing), key
+# 4 is HAZERS OFF, key 5 BACK. Key 0 stays START / STOP.
+HAZER_PAGE = 3
+PAGE3_HAZER = {1: 0, 2: 1, 3: 2}
+PAGE3_OFF = 4
+PAGE3_BACK = SPARE_KEY
 # ... but only on a fresh answer that nothing plays. With no fresh answer
 # at all for this long, page 2 gives way anyway: the arm keys come back.
 PAGE2_STALE_CLOSE_S = 60.0
@@ -1042,6 +1066,13 @@ def deck_key_name(k, names, latched=False, morning=False, ack=False,
             return "announce stop"
         if k == PAGE2_BACK:
             return "announce back"
+    if page == HAZER_PAGE:
+        if k in PAGE3_HAZER:
+            return f"hazer key {PAGE3_HAZER[k] + 1}"
+        if k == PAGE3_OFF:
+            return "hazers off"
+        if k == PAGE3_BACK:
+            return "hazers back"
     if k in GROUP_KEYS and k - GROUP_KEYS[0] < len(names):
         return f"arm key {names[k - GROUP_KEYS[0]]}"
     if k == SPARE_KEY:
@@ -1479,6 +1510,17 @@ class EngineConductor:
     def announce_stop(self, who="", screen="Stream Deck"):
         """Page 2's STOP ANNC.: the announcement's sound only."""
         return self._press("announce-stop", who, screen)
+
+    def hazer(self, name, on, who="", screen="Stream Deck"):
+        """Page 3's hazer key: POST /api/remote/hazer on the press thread.
+        The engine decides (the role matrix for ON, an Abort standing,
+        flamesafe's status) and journals it."""
+        return self._press("hazer", who, screen, hazer=str(name),
+                           on=on is True)
+
+    def hazers_off(self, who="", screen="Stream Deck"):
+        """Page 3's HAZERS OFF: every hazer OFF, never refused."""
+        return self._press("hazers-off", who, screen)
 
     def _press(self, name, who, screen, path=None, **extra):
         body = {"who": who, "screen": screen or "Stream Deck",
@@ -2124,6 +2166,17 @@ class ScreenKeys:
             return None
         a = last[0].get("announce")
         return a if isinstance(a, dict) else None
+
+    def hazers(self):
+        """The engine's hazers, as its last fresh deck-input answer carried
+        them ({"names", "on", "down"}), or None when stale or not there.
+        Display only: page 3's faces. The engine decides every press."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        h = last[0].get("hazers")
+        return h if isinstance(h, dict) and h.get("names") else None
 
     def user(self):
         """Who is signed in on this machine, as the engine's last answer
@@ -3791,10 +3844,13 @@ class Controller:
         if pending and edges(self._prev_keys, down):
             self._do_acknowledge(pending)
         self._masked -= set(releases(self._prev_keys, down))
-        if self.page == 2:
+        if self.page in (2, HAZER_PAGE):
             why = self._page2_must_close(latched, pending)
             if why:
                 self._to_page1(why, down)
+            elif self.page == HAZER_PAGE:
+                self._page3_run(down, now)
+                return
             else:
                 self._page2_run(down, now)
                 return
@@ -3888,6 +3944,10 @@ class Controller:
                 # Only while the engine says announcements are running:
                 # otherwise key 5 stays the blank key that does nothing.
                 self._open_page2(down, now, latched, morning)
+            elif k == ANNOUNCE_KEY and not pending and self.hazers_view():
+                # No announcements, but hazers: key 5 opens their page.
+                self._open_page2(down, now, latched, morning,
+                                 page=HAZER_PAGE)
         self._prev_keys = list(down)
 
     # -- page 2, the announcements (module docstring) ------------------------
@@ -3904,6 +3964,11 @@ class Controller:
         if self.morning_open():
             return "the Morning page opened"
         if now is None or self._page2_at is None:
+            return ""
+        if self.page == HAZER_PAGE:
+            # The hazers page: idle is idle (nothing on it plays).
+            if now - self._page2_at >= PAGE2_IDLE_S:
+                return f"no key was pressed for {PAGE2_IDLE_S:g} s"
             return ""
         av = self.announce_view()
         if isinstance(av, dict) and not av.get("stale") and \
@@ -3928,10 +3993,11 @@ class Controller:
         return (isinstance(av, dict) and not av.get("stale") and
                 av.get("ok") is not False and not av.get("playing"))
 
-    def _open_page2(self, down, now, latched, morning):
+    def _open_page2(self, down, now, latched, morning, page=2):
         """Key 5 pressed on page 1. Opened only with nothing else going
         on: no latch, no alert, no Morning page, no spoof alarm, no other
-        key down, no arm hold filling, no Stop hold filling."""
+        key down, no arm hold filling, no Stop hold filling. `page` is
+        HAZER_PAGE for the hazers page (no announcements set up)."""
         why = ""
         if latched or morning or self._spoof_alarm:
             why = "the deck is busy with something more important"
@@ -3940,14 +4006,15 @@ class Controller:
         elif any(h.fraction(now) > 0 for h in self._arm_holds) or \
                 self._stop_hold.fraction(now) > 0:
             why = "a hold is filling"
+        what = "hazers" if page == HAZER_PAGE else "announcements"
         if why:
-            self._log(f"Stream Deck: the announcements page was not "
+            self._log(f"Stream Deck: the {what} page was not "
                       f"opened: {why}.", action="page")
             return
-        self.page, self._page2_at = 2, now
+        self.page, self._page2_at = page, now
         self._ann_fresh_at = None
         self._masked = {k for k in range(len(down)) if down[k]}
-        self._log("Stream Deck: announcements page open. The arm keys are "
+        self._log(f"Stream Deck: {what} page open. The arm keys are "
                   "back on BACK, or by themselves after "
                   f"{PAGE2_IDLE_S:g} s.", action="page")
 
@@ -4015,9 +4082,90 @@ class Controller:
                 self._announce_press(PAGE2_PLAY[k])
             elif k == PAGE2_STOP:
                 self._announce_stop()
+            elif k == PAGE2_BACK and self.hazers_view():
+                # Hazers set up: key 5 here is HAZERS (page 3), whose own
+                # key 5 is BACK. Page 2 still gives way by itself.
+                self.page = HAZER_PAGE
+                self._masked = {j for j in range(len(down)) if down[j]}
+                self._log("Stream Deck: hazers page open.", action="page")
             elif k == PAGE2_BACK:
                 self._to_page1("BACK pressed", down)
         self._prev_keys = list(down)
+
+    def _page3_run(self, down, now):
+        """run_once on page 3, the hazers. Key 0 is START / STOP; keys 1
+        to 3 toggle a hazer (a plain tap), key 4 is HAZERS OFF, key 5 BACK.
+        No group key exists on this page: nothing here arms a flame."""
+        for k in releases(self._prev_keys, down):
+            if k == TOP_START:
+                self._fire_release("the key came up")
+                self._stop_hold.release()
+        for k in edges(self._prev_keys, down):
+            if k in self._masked:
+                continue
+            self._page2_at = now
+            if k == TOP_START:
+                self._do_start_or_stop(now)
+            elif k in PAGE3_HAZER:
+                self._hazer_press(PAGE3_HAZER[k])
+            elif k == PAGE3_OFF:
+                self._hazers_off_press()
+            elif k == PAGE3_BACK:
+                self._to_page1("BACK pressed", down)
+        self._prev_keys = list(down)
+
+    def hazers_view(self):
+        """The engine's hazers for page 3 (ScreenKeys.hazers), or None."""
+        s = self.screen
+        fn = getattr(s, "hazers", None) if s is not None else None
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    def _hazer_press(self, i):
+        """A hazer key: ON if the engine says it is OFF, else OFF. ON needs
+        what arming a group needs at the deck (a chosen operator, the role
+        matrix's arm row); OFF is never gated. While the engine's word is
+        not fresh the key reads NO STATUS and a press does nothing (HAZERS
+        OFF, Stop and Abort still switch every hazer off)."""
+        hv = self.hazers_view()
+        names = list((hv or {}).get("names") or [])
+        if i >= len(names):
+            return
+        name = names[i]
+        on = hv is not None and name not in (hv.get("on") or [])
+        who = self._who()
+        if on:
+            refusal = operator_gate(who, "arm") or role_gate(self._user(),
+                                                            "arm")
+            if refusal:
+                self._log(f"Stream Deck: {name} ON refused: {refusal}",
+                          action="hazer")
+                return
+        fn = getattr(self.conductor, "hazer", None)
+        if fn is None:
+            self._log(f"Stream Deck {name} pressed: no engine is connected "
+                      f"in this build. Nothing was changed.", fault=True,
+                      action="hazer")
+            return
+        r = fn(name, on, who=who, screen="Stream Deck")
+        self._log(f"Stream Deck {name} {'ON' if on else 'OFF'}: "
+                  f"{r.sentence}", fault=not r.ok, action="hazer", who=who,
+                  screen="Stream Deck")
+
+    def _hazers_off_press(self):
+        who = self._who()
+        fn = getattr(self.conductor, "hazers_off", None)
+        if fn is None:
+            self._log("Stream Deck HAZERS OFF pressed: no engine is "
+                      "connected in this build.", fault=True, action="hazer")
+            return
+        r = fn(who=who, screen="Stream Deck")
+        self._log(f"Stream Deck Hazers off: {r.sentence}", fault=not r.ok,
+                  action="hazer", who=who, screen="Stream Deck")
 
     def _announce_press(self, ann_id):
         """One press, one announcement (no double tap, no hold). Not behind
@@ -4086,7 +4234,7 @@ class Controller:
         on CHANGE rather than continuously."""
         now = self._clock()
         latched = self._latched_now()
-        if self.page == 2:
+        if self.page in (2, HAZER_PAGE):
             why = self._page2_must_close(latched, self.alert_pending(), now)
             if why:
                 self._to_page1(why)
@@ -4399,8 +4547,8 @@ class Controller:
         # Stop's hold fills its own ring, latched or not (Stop stays
         # reachable while aborted, as on the Rack screen).
         stop_frac = self._stop_hold.fraction(now)
-        if self.page == 2:
-            # No arm key on page 2: only Stop's ring can fill.
+        if self.page != 1:
+            # No arm key on page 2 or 3: only Stop's ring can fill.
             arm_fills = {}
         if stop_frac > 0:
             arm_fills[TOP_START] = stop_frac
@@ -4551,6 +4699,9 @@ class Controller:
         if self.page == 2:
             self._draw_page2(fonts, d, blink_on)
             return canvas
+        if self.page == HAZER_PAGE:
+            self._draw_page3(fonts, d)
+            return canvas
         if self._guard is not None and self._guard_frame is None:
             self._guard_frame = self.frame_id
             self._guard_frame_at = now
@@ -4559,6 +4710,9 @@ class Controller:
         av = self.announce_view()
         if av and av.get("configured") and not latched:
             fonts.show_key(d, face_box(ANNOUNCE_KEY), ["ANNOUNCE"],
+                           CHAMPAGNE, bg=BRONZE, kind="sans", max_size=14)
+        elif self.hazers_view() and not latched:
+            fonts.show_key(d, face_box(ANNOUNCE_KEY), ["HAZERS"],
                            CHAMPAGNE, bg=BRONZE, kind="sans", max_size=14)
         fault, _confirmed = self._top_fault_confirmed()
         # Only the groups with a key are drawn, in key order, each under
@@ -4697,7 +4851,34 @@ class Controller:
                            CHAMPAGNE if live else DIM_TEXT,
                            bg=BRONZE if live else None, kind="sans",
                            max_size=16)
-        fonts.show_key(d, face_box(PAGE2_BACK), ["BACK"], CHAMPAGNE,
+        fonts.show_key(d, face_box(PAGE2_BACK),
+                       ["HAZERS"] if self.hazers_view() else ["BACK"],
+                       CHAMPAGNE, kind="sans", max_size=16)
+
+    def _draw_page3(self, fonts, d):
+        """Page 3's faces (keys 1 to 5; key 0 is drawn as on page 1): each
+        hazer's name and ON (green) or OFF, NO STATUS while the engine's
+        word is stale; HAZERS OFF; BACK. Display only."""
+        hv = self.hazers_view()
+        names = list((hv or {}).get("names") or [])
+        on = set((hv or {}).get("on") or [])
+        for k, i in PAGE3_HAZER.items():
+            box = face_box(k)
+            if i >= len(names):
+                continue
+            line = _fit_name(names[i]).upper()
+            if hv is None:
+                fonts.show_key(d, box, [line, "NO STATUS"], AMBER,
+                               kind="sans", max_size=12)
+            elif names[i] in on:
+                fonts.show_key(d, box, [line, "ON"], BLACK, bg=GREEN,
+                               kind="sans", max_size=16)
+            else:
+                fonts.show_key(d, box, [line, "OFF"], CHAMPAGNE, bg=BRONZE,
+                               kind="sans", max_size=16)
+        fonts.show_key(d, face_box(PAGE3_OFF), ["HAZERS", "OFF"], CHAMPAGNE,
+                       kind="sans", max_size=16)
+        fonts.show_key(d, face_box(PAGE3_BACK), ["BACK"], CHAMPAGNE,
                        kind="sans", max_size=16)
 
     def user_toast(self, now):

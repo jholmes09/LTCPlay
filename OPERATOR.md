@@ -780,6 +780,32 @@ restarted. Within about 5 seconds of the edit, the rack screen shows a note
   with an older copy of `flamesafe.json`, its log says which programs were
   left behind and when each started.
 
+## The hazers
+
+Jeff, 2026-10-29. The three haze machines share the flame universe; their
+data is in the show's FSEQ beside the flames. They have no arm, so each
+has an ON and OFF instead:
+
+- **Where.** On the show screen, a Hazers row under the flame groups:
+  Hazer 1, Hazer 2 and Hazer 3, each reading ON (green) or OFF, and
+  **Hazers off**. On the Stream Deck, the hazers page: key 5 (HAZERS)
+  opens it, or, with announcements set up, key 5 on the announcements
+  page. Keys 1 to 3 are the hazers, key 4 HAZERS OFF, key 5 BACK.
+- **A tap.** One tap switches a hazer on, the next switches it off. No
+  hold: a hazer is not a flame. Switching one on needs the same sign-in as
+  arming (the arm row of the role matrix), and from an iPad needs arming
+  from a screen switched on. Off works for everyone, always.
+- **What ON does.** While a hazer is on, its two channels carry the show's
+  haze values: in the show, in Programming (scrubbing or playing, with or
+  without fire flames while scrubbing), and from xLights in live flame
+  programming. Off, they are zero.
+- **What turns them off.** Abort, Stop, Hazers off, a restart, and
+  flamesafe not answering for a second. Hold and the end of a show leave
+  them as they are. After an Abort or a Stop, switch each one on again
+  (wait a second after a Stop).
+- **If a tile says flamesafe holds it at zero,** flamesafe needs to see it
+  switched off and on: tap it off, then on.
+
 ## Stop, Hold and Reset on the rack screen
 
 Jeff, 2026-10-28. Each screen has one Stop, where the button that started

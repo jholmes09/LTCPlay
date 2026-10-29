@@ -2553,6 +2553,82 @@ MUTATIONS = [
   "    if False:"),
 
  # aim slots (2026-10-28): the wave flamer's angle is not a flame
+ # the hazers at the engine (2026-10-29)
+ ("hazers: an OFF hazer's slots carry the show's values",
+  "ltcplay/flamelink.py",
+  "        for c in self._hazer_chans:\n            out[c] = 0\n",
+  "        for c in ():\n            out[c] = 0\n"),
+
+ ("hazers: the flame frame never says which hazers are ON",
+  "ltcplay/flamelink.py",
+  "        \"hazers_on\": sorted(str(h) for h in hazers_on),",
+  "        \"hazers_on\": [],"),
+
+ ("hazers: the flame link's Abort leaves the hazers ON",
+  "ltcplay/flamelink.py",
+  "                self._hazers_on = frozenset()\n                self._purge = None",
+  "                pass\n                self._purge = None"),
+
+ ("hazers: ON is taken while an Abort is being repeated",
+  "ltcplay/flamelink.py",
+  "            if self.abort_repeating():\n                want &= self._hazers_on",
+  "            if False:\n                want &= self._hazers_on"),
+
+ ("hazers: the fuel tracker and the firing flag are told haze values",
+  "ltcplay/flamelink.py",
+  "            values = self._with_haze(values, None)\n            self.last_values_nonzero",
+  "            self.last_values_nonzero"),
+
+ ("hazers: ON while an Abort is standing",
+  "ltcplay/hazers.py",
+  "            if self._abort_standing():",
+  "            if False:"),
+
+ ("hazers: ON with flamesafe's status stale",
+  "ltcplay/hazers.py",
+  "        if fl.get(\"stale\") or age is None or age > STATUS_FRESH_S * 1000:",
+  "        if False:"),
+
+ ("hazers: ON with flamesafe's hazers not the engine's",
+  "ltcplay/hazers.py",
+  "        if sorted(theirs) != sorted(mine):",
+  "        if False:"),
+
+ ("hazers: the watch never switches them OFF",
+  "ltcplay/hazers.py",
+  "        if why:\n            return self.all_off(why)\n        return False",
+  "        if False:\n            return self.all_off(why)\n        return False"),
+
+ ("hazers: ON from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if on and not self.may_act_from(ctx.local):",
+  "        if False:"),
+
+ ("hazers: an Abort press leaves the hazers ON",
+  "ltcplay/remote.py",
+  "            self.hazers_cut(f\"{who or 'someone'} pressed Abort on the \"",
+  "            (f\"{who or 'someone'} pressed Abort on the \""),
+
+ ("hazers: Stop leaves the hazers ON",
+  "ltcplay/remote.py",
+  "            self.hazers_cut(why, who, screen)",
+  "            pass"),
+
+ ("hazers: a hazer ON needs no permission",
+  "ltcplay/users.py",
+  "    \"hazers-off\": \"safety\", \"hazer\": \"arm\",",
+  "    \"hazers-off\": \"safety\", \"hazer\": None,"),
+
+ ("hazers: a hazer OFF needs the arm permission",
+  "ltcplay/users.py",
+  "        if name == \"hazer\" and body.get(\"on\") is not True:",
+  "        if False:"),
+
+ ("deck: a hazer ON needs no operator or arm permission",
+  "ltcplay/streamdeck.py",
+  "        if on:\n            refusal = operator_gate(who, \"arm\")",
+  "        if False:\n            refusal = operator_gate(who, \"arm\")"),
+
  # passthrough (2026-10-29): the hazers
  ("flamesafe: passthrough: a hazer passes without being switched on",
   "flamesafe/composer.py",

@@ -59524,6 +59524,12 @@ def test_hazers_at_the_engine():
         check(st == 200 and link.hazers_on == {"Hazer 1"} and
               out["text"] == "Hazer 1 is ON.",
               f"a tap on the rack screen: ON: {st} {out}")
+        di = R.remote.deck_input()
+        check(di.get("hazers") == {"names": ["Hazer 1", "Hazer 2",
+                                             "Hazer 3"],
+                                   "on": ["Hazer 1"], "down": ""},
+              f"the Stream Deck reads them on deck-input: "
+              f"{di.get('hazers')}")
         R.feed()
         RM.save_settings(R.work, screen_arming=False)
         st, _h, out = tap("Hazer 2", True, client=ipad)
@@ -59788,6 +59794,197 @@ def test_hazers_end_to_end_against_the_real_flamesafe():
         status_rx.close()
         import shutil
         shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_streamdeck_hazers_page():
+    section("Stream Deck hazers page (Jeff, 2026-10-29): no room on page 1, "
+            "so page 3: key 5 opens it with no announcements, else page 2's "
+            "key 5 reads HAZERS; keys 1 to 3 toggle a hazer with a plain "
+            "tap, key 4 HAZERS OFF, key 5 BACK; ON needs what arming needs "
+            "at the deck, OFF nothing; nothing on it arms a flame; it gives "
+            "way by itself as page 2 does")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer", "fireball"]
+    arm = _FakeArmSocket(4)
+    status = _FakeStatusSocket()
+    lines = []
+    t = [100.0]
+    hz = ["Hazer 1", "Hazer 2", "Hazer 3"]
+
+    class _Screen:
+        a = None
+        h = None
+        al = ()
+        mo = None
+        u = None
+
+        def announce(self):
+            return self.a
+
+        def hazers(self):
+            return self.h
+
+        def alerts(self):
+            return self.al
+
+        def morning(self):
+            return self.mo
+
+        def user(self):
+            return self.u
+
+    class _Eng:
+        latched = False
+
+        def __init__(self):
+            self.calls = []
+
+        def snapshot(self):
+            return {"latched": self.latched}
+
+        def hazer(self, name, on, who="", screen=""):
+            self.calls.append(("hazer", name, on, who))
+            return sd.EngineResult(True, "sent")
+
+        def hazers_off(self, who="", screen=""):
+            self.calls.append(("off", who))
+            return sd.EngineResult(True, "sent")
+
+        def announce(self, aid, who="", screen=""):
+            self.calls.append(("play", aid))
+            return sd.EngineResult(True, "sent")
+
+        def stop_run(self, who="", screen=""):
+            self.calls.append(("halt", who))
+            return sd.EngineResult(True, "halted")
+    scr, eng = _Screen(), _Eng()
+    op = ["Andy"]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: op[0],
+                      show_running_provider=lambda: False, conductor=eng,
+                      journal=lambda x, **kw: lines.append((x, kw)),
+                      clock=lambda: t[0], screen=scr)
+    down = [False] * 6
+
+    def key(k, on):
+        nonlocal down
+        d2 = list(down)
+        d2[k] = on
+        c.run_once(d2)
+        down = d2
+
+    def tap(k):
+        key(k, True)
+        key(k, False)
+    check(sd.HAZER_PAGE == 3 and sd.PAGE3_HAZER == {1: 0, 2: 1, 3: 2} and
+          sd.PAGE3_OFF == 4 and sd.PAGE3_BACK == 5 and
+          sd.GROUP_KEYS == (1, 2, 3, 4) and sd.ANNOUNCE_KEY == 5,
+          "the hazers page's keys; page 1's keys are where they were")
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 1, "no announcements and no hazers: key 5 does nothing")
+    scr.h = {"names": hz, "on": [], "down": ""}
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == sd.HAZER_PAGE, "hazers and no announcements: key 5 "
+                                   "opens the hazers page")
+    wanted0 = list(arm.wanted)
+    tap(1)
+    check(eng.calls == [("hazer", "Hazer 1", True, "Andy")],
+          f"a tap on key 1: Hazer 1 ON, at the press, no hold: {eng.calls}")
+    scr.h = {"names": hz, "on": ["Hazer 1"], "down": ""}
+    tap(1)
+    check(eng.calls[-1] == ("hazer", "Hazer 1", False, "Andy"),
+          f"Hazer 1 ON: the next tap is OFF: {eng.calls[-1]}")
+    key(2, True)
+    t[0] += sd.ARM_HOLD_S + 1
+    c.tick()
+    key(2, False)
+    check(arm.wanted == wanted0 and all(
+        h.fraction(t[0]) == 0 for h in c._arm_holds),
+        "a long press on the hazers page arms no flame")
+    tap(sd.PAGE3_OFF)
+    check(eng.calls[-1] == ("off", "Andy"), "key 4: Hazers off")
+    # ON needs what arming needs at the deck; OFF never.
+    op[0] = None
+    scr.h = {"names": hz, "on": ["Hazer 1"], "down": ""}
+    n = len(eng.calls)
+    tap(2)
+    check(len(eng.calls) == n, "no operator chosen: an ON is refused")
+    tap(1)
+    check(eng.calls[-1][:3] == ("hazer", "Hazer 1", False),
+          "but an OFF is sent")
+    op[0] = "Andy"
+    scr.u = {"name": "Vic", "role": "viewer", "active": True,
+             "may": {"arm": False}}
+    n = len(eng.calls)
+    tap(3)
+    check(len(eng.calls) == n, "the role matrix's arm row: refused")
+    scr.u = None
+    scr.h = None
+    n = len(eng.calls)
+    tap(2)
+    check(len(eng.calls) == n,
+          "the engine's word not fresh: a press switches nothing on")
+    scr.h = {"names": hz, "on": [], "down": ""}
+    tap(sd.PAGE3_BACK)
+    check(c.page == 1, "BACK returns to the arm keys")
+    # It gives way by itself, like page 2.
+    tap(sd.ANNOUNCE_KEY)
+    t[0] += sd.PAGE2_IDLE_S + 0.1
+    c.tick()
+    check(c.page == 1, "idle: back by itself")
+    for what in ("latch", "alert", "spoof", "morning"):
+        tap(sd.ANNOUNCE_KEY)
+        check(c.page == sd.HAZER_PAGE, f"setup {what}: hazers page")
+        if what == "latch":
+            eng.latched = True
+        elif what == "alert":
+            scr.al = ({"id": 1, "kind": "deck"},)
+        elif what == "spoof":
+            c._spoof_alarm = "test"
+        else:
+            scr.mo = {"open": True}
+        c.tick()
+        check(c.page == 1, f"{what}: back to the arm keys at once")
+        eng.latched, scr.al, scr.mo = False, (), None
+        c._spoof_alarm = ""
+    # With announcements too: page 2's key 5 is HAZERS.
+    scr.a = {"configured": True, "device_ok": True, "ready": {},
+             "missing": {}, "playing": None}
+    tap(sd.ANNOUNCE_KEY)
+    check(c.page == 2, "with announcements key 5 opens page 2 as before")
+    tap(sd.PAGE2_BACK)
+    check(c.page == sd.HAZER_PAGE, "page 2's key 5 opens the hazers page")
+    check(sd.deck_key_name(1, names, page=sd.HAZER_PAGE) == "hazer key 1" and
+          sd.deck_key_name(4, names, page=sd.HAZER_PAGE) == "hazers off",
+          "the audit names the hazers page's keys")
+    for text, kw in lines:
+        _no_dashes(text, "deck hazers line")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  ok")
+        return
+    try:
+        scr.h = {"names": hz, "on": ["Hazer 2"], "down": ""}
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[1][0] == ["HAZER 1", "OFF"] and
+              faces[2][0] == ["HAZER 2", "ON"] and faces[2][2] == sd.GREEN and
+              faces[3][0] == ["HAZER 3", "OFF"] and
+              faces[4][0] == ["HAZERS", "OFF"] and faces[5][0] == ["BACK"],
+              f"the hazers page's faces, ON in green: {faces}")
+        tap(sd.PAGE3_BACK)
+        tap(sd.ANNOUNCE_KEY)
+        c.draw(fonts, blink_on=True, chase=0)
+        check(c.page == 2 and faces[5][0] == ["HAZERS"],
+              f"page 2's key 5 reads HAZERS: {faces.get(5)}")
+        tap(sd.PAGE2_BACK)
+        tap(sd.PAGE3_BACK)
+        scr.a = None
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[5][0] == ["HAZERS"] and faces[1][0] == "front row",
+              f"page 1 without announcements: key 5 reads HAZERS: "
+              f"{faces.get(5)}")
+    finally:
+        restore()
     print("  ok")
 
 
@@ -86952,6 +87149,7 @@ if __name__ == "__main__":
         test_hazers_at_the_engine,
         test_hazers_end_to_end_against_the_real_flamesafe,
         test_hazers_on_the_rack_screens,
+        test_streamdeck_hazers_page,
         test_aim_slots_are_seen_on_the_rack_screen,
         test_morning_multi_safety_machines_pair_by_layout,
         test_morning_layout_error_names_the_flamesafe_file,
