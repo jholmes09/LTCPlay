@@ -1507,6 +1507,10 @@ class FlameCues:
             cuts[path] = cut
         for cut in cuts.values():
             cut.ensure(0, cut.frames(CUT_START_S))
+        # And the playing cue at its timecode now, so a render found in
+        # _by_path is ready where the show is; from here on the cutting
+        # thread keeps ahead of it.
+        self._cut_ahead(s, cuts)
         self._cuts = cuts
         self._by_path = by
 

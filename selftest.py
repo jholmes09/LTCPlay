@@ -42210,9 +42210,11 @@ def test_fire_ice_flame_cut_guards():
             ok.append(bool(got) and sp.fault == "")
         check(all(ok), f"12 cues of 2000 frames: every cue's start ready "
                        f"after one pass ({took:.2f} s): {ok}")
-        check(all(len(c.blocks) <= 4 for c in sp._cuts.values()),
-              f"and only their start is cut, not whole renders: "
-              f"{[len(c.blocks) for c in sp._cuts.values()]}")
+        nb = [len(sp._cuts[p].blocks) for p in paths]
+        check(all(n <= 4 for n in nb[1:]) and nb[0] < len(
+            sp._cuts[paths[0]].firsts),
+              f"only each cue's start is cut (the playing one ahead of its "
+              f"timecode), never whole renders: {nb}")
         sp.close()
         # A block that cannot be cut: the frames before it as they are, then
         # a CUES FAULT with the render's own error, the block tried once.
