@@ -352,7 +352,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 }
 
 /* ---- narrower screens: iPad portrait, small laptops ---- */
+#to1 .short{display:none}
 @media (max-width:1100px){
+  #to1 .long{display:none} #to1 .short{display:inline}
   #d-steps .st{padding:0 8px;gap:6px;font-size:18px}
   .tab{padding:0 8px;gap:6px} .hb{padding:0 8px;gap:6px} #tabs{gap:2px} .hright{gap:4px}
   header{row-gap:4px}
@@ -442,7 +444,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <button class="hb" id="sys" aria-label="Systems: tap for what to check"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span><svg class="i chev" aria-hidden="true"><use href="#i-right"/></svg></button>
     <button class="hb" id="user"><svg class="i"><use href="#i-user"/></svg><span>Sign in</span></button>
     <button class="hb" id="help"><svg class="i"><use href="#i-help"/></svg><span>Help</span></button>
-    <a class="hb" id="to1" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg><span>Back to 1.0</span></a>
+    <a class="hb" id="to1" href="/ui?v=1" aria-label="Back to 1.0"><svg class="i"><use href="#i-back"/></svg><span class="long">Back to 1.0</span><span class="short">1.0</span></a>
   </div>
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
@@ -1937,6 +1939,8 @@ function abortAnswered(j, err){
 // lasers fully armed are a state, not a problem. Pure.
 const SYS_LABEL = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Show audio":"Show audio", "Announcements":"Announcements",
   "Disk":"Disk", "Audit":"Audit log", "Laser arm":"Laser arm", "Lasers":"Laser output", "Video":"Video", "Pixels":"Pixels", "Timecode":"Timecode"};
+// The badge's own short names (the sheet says the whole name).
+const SYS_SHORT = {"Stream Deck":"Deck", "Show audio":"Audio", "Announcements":"Announce", "Audit log":"Audit", "Laser output":"Lasers"};
 const SYS_OFF = /^(none|none set up|not set up|pick an output|stopped|not connected|disarmed)$/i;
 const SYS_SAY = [
   [/^deck$/, /not heard|missing/, "Not heard. Check its USB cable."],
@@ -1984,7 +1988,7 @@ function sysLook(subs, isStaleNow){
   const probs = items.filter(i => i.state === "bad" || i.state === "warn").sort((a, b) => rank[a.state] - rank[b.state]);
   if(!probs.length) return {cls:"ok", icon:"check", text:"All OK", items:items, first:""};
   const worst = probs[0];
-  const text = probs.length === 1 ? worst.label + (worst.state === "bad" ? ": fault" : ": check") : probs.length + " to check";
+  const text = probs.length === 1 ? (SYS_SHORT[worst.label] || worst.label) + (worst.state === "bad" ? ": fault" : ": check") : probs.length + " to check";
   return {cls: probs.some(i => i.state === "bad") ? "bad" : "warn", icon:"warn", text:text, items:items,
     first:"First: " + worst.label + ". " + worst.say};
 }

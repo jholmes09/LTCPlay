@@ -86182,7 +86182,8 @@ def test_ui2_page_makes_only_1_0_presses():
     check("isLive(ST)" in tour and '"armed"' in tour and "stale()" in tour,
           f"the tour never starts over a live show: {tour[:200]!r}")
     # 1.0: one tap to 2.0, nothing else of it changed.
-    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1,
+    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1 and
+          'aria-label="Back to 1.0"' in two,
           "Try 2.0 on 1.0 and Back to 1.0 on 2.0, once each")
     import shutil
     node = shutil.which("node")
@@ -86201,7 +86202,7 @@ def test_ui2_page_makes_only_1_0_presses():
         fns += "\n" + (m.group(0) if m else "")
     fns += ("\nlet ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null;")
     # The systems badge's words.
-    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY"):
+    for c in ("SYS_LABEL", "SYS_SHORT", "SYS_OFF", "SYS_SAY"):
         m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
         fns += "\n" + (m.group(0) if m else "")
     fns += "\n" + "\n".join(_js_function(two, n) or "" for n in (
@@ -86265,9 +86266,9 @@ t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says pres
 // The systems badge names what to check (Jeff, 2026-10-29).
 const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
 let L = sysLook(okSubs.concat([{name:"Deck", state:"warn", word:"USB slow 0.9 s"}]).slice(1), false);
-t(L.text === "Stream Deck: check" && /^First: Stream Deck\. /.test(L.first), "one to check is named: " + L.text + " / " + L.first);
+t(L.text === "Deck: check" && /^First: Stream Deck\. /.test(L.first), "one to check is named: " + L.text + " / " + L.first);
 L = sysLook([{name:"Lasers", state:"bad", word:"LINK LOST"}], false);
-t(L.text === "Laser output: fault" && /BEYOND not answering/.test(L.first) && L.cls === "bad", "one fault is named, with what to do: " + L.first);
+t(L.text === "Lasers: fault" && /BEYOND not answering/.test(L.first) && L.cls === "bad", "one fault is named, with what to do: " + L.first);
 L = sysLook([{name:"Deck", state:"warn", word:"late 1.2 s"}, {name:"Pixels", state:"bad", word:"not sending"}], false);
 t(L.text === "2 to check" && /^First: Pixels\./.test(L.first), "several: the count, and the worst first: " + L.first);
 L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:"Laser arm", state:"warn", word:"ARMED"}, {name:"Deck", state:"off", word:"not heard"}], false);
