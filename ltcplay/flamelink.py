@@ -1221,7 +1221,7 @@ class FlameLink:
         show state once, outside the lock, and never the cues."""
         try:
             tc = self.show_state()[0]
-            if not (isinstance(tc, str) and _TC.fullmatch(tc)):
+            if not isinstance(tc, str) or not _TC.fullmatch(tc):
                 tc = None
         except Exception:
             tc = None

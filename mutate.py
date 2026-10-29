@@ -6890,8 +6890,8 @@ def build():
 
  ("flamelink: cues go out after the conductor zeroed them",
   "ltcplay/flamelink.py",
-  "        if self.zeroed or tc is None:",
-  "        if tc is None:"),
+  "        if self.zeroed or tc is None or land:",
+  "        if tc is None or land:"),
 
  ("flamelink: a provider's wrong-sized or out-of-range answer goes out",
   "ltcplay/flamelink.py",
@@ -10145,8 +10145,8 @@ def build():
 
  ("announcements: a Hold for an announcement leaves live flame programming on",
   "ltcplay/remote.py",
-  "                    self.live_flame_cut(why, who, screen)\n                    self.scrub_flames_cut(why, who, screen)",
-  "                    pass"),
+  "                    self.live_flame_cut(why, who, screen)\n                    self._lasers_disarm_now(who, screen, \"announcement\")",
+  "                    self._lasers_disarm_now(who, screen, \"announcement\")"),
 
  ("announcements: a stale snapshot still reads as fact",
   "ltcplay/remote.py",
@@ -10378,7 +10378,7 @@ def build():
 
  ("Stop: live flame programming carries on through a Stop",
   "ltcplay/web.py",
-  "        for name in (\"live_flame_cut\", \"scrub_flames_end\"):",
+  "        for name in (\"live_flame_cut\",):",
   "        for name in ():"),
 
  ("deck: a latched press with an alert open only acknowledges again (review of #130, 9)",
@@ -11035,10 +11035,10 @@ def build():
 
  ("flamelink: a purge frame goes out while a show is live and its cues are zeroed (T1)",
   "ltcplay/flamelink.py",
-  '''        if self.zeroed or tc is None:
+  '''        if self.zeroed or tc is None or land:
             self._cue_episode("", "")
             return tc, zeros''',
-  '''        if self.zeroed or tc is None:
+  '''        if self.zeroed or tc is None or land:
             self._cue_episode("", "")
             return tc, self._purge_values(now)'''),
 
@@ -13448,7 +13448,6 @@ def build():
   '    "cycle the arm": "ARM AGAIN",',
   '    "cycle the arm": "CYCLE ARM",'),
  # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): one
- # mutation per guard.
  ("live flame: the show's cues go out while it is on",
   'ltcplay/flamelink.py',
   "        if self._program_on:\n            # Live flame programming is on: the show's own cues are held",
@@ -14452,359 +14451,8 @@ def build():
   "                    return self._zero(\n"
   "                        f\"the show's render has ended (the timecode is \""),
 
- # Fire flames while scrubbing (scrubflames.py, Jeff 2026-10-26): one
- # mutation per guard.
- ("scrub flames: the scrub fires while the show clock has a cue",
-  "ltcplay/flamelink.py",
-  "        if live is True or show_tc is not None:\n"
-  "            self._cue_episode(\n"
-  "                \"rehearse_show\"",
-  "        if False:\n"
-  "            self._cue_episode(\n"
-  "                \"rehearse_show\""),
-
- ("scrub flames: the scrub fires while live flame programming is on",
-  "ltcplay/flamelink.py",
-  "        if self._program_on:\n            return None, zeros\n"
-  "        r = self._rehearse",
-  "        r = self._rehearse"),
-
- ("scrub flames: the seek guard is skipped",
-  "ltcplay/flamelink.py",
-  "        settled = self._seek_guard(tc, now)\n        if tc is None:",
-  "        settled = True\n        if tc is None:"),
-
- ("scrub flames: a cue under way at the landing fires",
-  "ltcplay/flamelink.py",
-  "        for i in blocked:\n            vals[i] = 0\n"
-  "        out = self._unlocked(bytes(vals))",
-  "        out = self._unlocked(bytes(vals))"),
-
- ("scrub flames: a Pause then Continue is not a landing",
-  "ltcplay/flamelink.py",
-  "            # has ended.\n            self._seek_reset()\n",
-  "            # has ended.\n"),
-
- ("scrub flames: the lockout is not applied to the scrub",
-  "ltcplay/flamelink.py",
-  "        out = self._unlocked(bytes(vals))\n        if any(out):",
-  "        out = bytes(vals)\n        if any(out):"),
-
- ("scrub flames: zero() leaves it on at the link",
-  "ltcplay/flamelink.py",
-  "            if self._rehearse_on:\n                self._seek_reset()\n"
-  "            self._rehearse_on = False\n            self._rehearse = None\n"
-  "            self._program = None",
-  "            if self._rehearse_on:\n                self._seek_reset()\n"
-  "            self._rehearse = None\n"
-  "            self._program = None"),
-
- ("scrub flames: an Abort leaves it on at the link",
-  "ltcplay/flamelink.py",
-  "                if self._rehearse_on:\n"
-  "                    self._seek_reset()\n"
-  "                self._rehearse_on = False\n",
-  "                if self._rehearse_on:\n"
-  "                    self._seek_reset()\n"),
-
- ("scrub flames: the link takes it while live flame programming is on",
-  "ltcplay/flamelink.py",
-  "            if self._program_on:\n                return None\n"
-  "            self._rehearse = (state, cues)",
-  "            self._rehearse = (state, cues)"),
-
- ("scrub flames: a frame read before it ended goes out with its values",
-  "ltcplay/flamelink.py",
-  "            if not was:\n                return False\n"
-  "            self._zero_gen += 1\n",
-  "            if not was:\n                return False\n"),
-
- ("scrub flames: the render is read while paused",
-  "ltcplay/fire_ice.py",
-  "        if getattr(p, \"freerun_epoch\", None) is None or \\\n"
-  "                getattr(p, \"freerun_paused_at\", None) is not None:\n"
-  "            return self._scrub_zero()",
-  "        if getattr(p, \"freerun_epoch\", None) is None:\n"
-  "            return self._scrub_zero()"),
-
- ("scrub flames: the render is read under a Blackout or Preshow",
-  "ltcplay/fire_ice.py",
-  "        if p is None or getattr(p, \"override\", None) is not None:\n"
-  "            return self._scrub_zero()",
-  "        if p is None:\n            return self._scrub_zero()"),
-
- ("scrub flames: the render is read with the show clock playing",
-  "ltcplay/fire_ice.py",
-  "        if clk is not None and getattr(clk, \"playing\", False):\n"
-  "            return self._scrub_zero()",
-  "        if False:\n            return self._scrub_zero()"),
-
- ("scrub flames: any position is read, not the player's own",
-  "ltcplay/fire_ice.py",
-  "        if here is None or here < 0 or abs(here - at) > 0.5:",
-  "        if here is None or here < 0:"),
-
- ("scrub flames: a render older than the layout is read",
-  "ltcplay/fire_ice.py",
-  "        if made is not None and laid is not None and made < laid:\n"
-  "            return self._scrub_zero(RENDER_OLDER_THAN_LAYOUT, fault=True)",
-  "        if False:\n"
-  "            return self._scrub_zero(RENDER_OLDER_THAN_LAYOUT, fault=True)"),
-
- ("scrub flames: a render of the wrong size is read",
-  "ltcplay/fire_ice.py",
-  "        if total is None or (have != total if whole else have > total):\n"
-  "            return self._scrub_zero(",
-  "        if total is None:\n            return self._scrub_zero("),
-
- ("scrub flames: the render is read after Stop",
-  "ltcplay/fire_ice.py",
-  "        if s is None or not getattr(s, \"running\", False):\n"
-  "            return self._scrub_zero()",
-  "        if s is None:\n            return self._scrub_zero()"),
-
- ("scrub flames: a paused transport has a position",
-  "ltcplay/scrubflames.py",
-  "            if getattr(p, \"freerun_epoch\", None) is None or \\\n"
-  "                    getattr(p, \"freerun_paused_at\", None) is not None:\n"
-  "                return None",
-  "            if getattr(p, \"freerun_epoch\", None) is None:\n"
-  "                return None"),
-
- ("scrub flames: another session's transport has a position",
-  "ltcplay/scrubflames.py",
-  "            if s is None or s is not self._session or \\\n"
-  "                    not getattr(s, \"running\", False):\n"
-  "                return None",
-  "            if s is None or not getattr(s, \"running\", False):\n"
-  "                return None"),
-
- ("scrub flames: a zero at the link does not end the mode",
-  "ltcplay/scrubflames.py",
-  "        if link is None or not getattr(link, \"rehearse_on\", False) or \\",
-  "        if link is None or \\"),
-
- ("scrub flames: Stop or Run does not end the mode",
-  "ltcplay/scrubflames.py",
-  "            return \"the show file stopped (Stop or Run)\"",
-  "            pass"),
-
- ("scrub flames: turning it off leaves the link's slot open",
-  "ltcplay/scrubflames.py",
-  "            self._session = None\n            self._thread = None\n"
-  "        link = self.link()\n        if link is not None:\n"
-  "            try:\n                link.rehearse_end()",
-  "            self._session = None\n            self._thread = None\n"
-  "        link = None\n        if link is not None:\n"
-  "            try:\n                link.rehearse_end()"),
-
- ("scrub flames: an Abort, Hold or Start now press leaves it on",
-  "ltcplay/remote.py",
-  "            self.scrub_flames_cut(f\"{who or 'someone'} pressed {name} on \"",
-  "            (f\"{who or 'someone'} pressed {name} on \""),
-
- ("scrub flames: an Abort standing is not a blocker",
-  "ltcplay/remote.py",
-  "            return \"the show is aborted; press Reset first.\"",
-  "            pass"),
-
- ("scrub flames: a Hold standing is not a blocker",
-  "ltcplay/remote.py",
-  "            return \"a Hold is standing; Resume or Reset first.\"",
-  "            pass"),
-
- ("scrub flames: the show clock playing is not a blocker",
-  "ltcplay/remote.py",
-  "            return (\"the show clock is playing a cue (a show is live or \"",
-  "            pass\n            (\"the show clock is playing a cue (a show is live or \""),
-
- ("scrub flames: live flame programming on is not a blocker",
-  "ltcplay/remote.py",
-  "            return (\"live flame programming is on. Turn it off first: only \"",
-  "            pass\n            (\"live flame programming is on. Turn it off first: only \""),
-
- ("scrub flames: live flame programming starts while it is on",
-  "ltcplay/remote.py",
-  "            return (\"fire flames while scrubbing is on. Turn it off first \"",
-  "            pass\n            (\"fire flames while scrubbing is on. Turn it off first \""),
-
- ("scrub flames: the Morning page fires while it is on",
-  "ltcplay/remote.py",
-  "            return (\"fire flames while scrubbing is on; nothing fires from \"",
-  "            pass\n            (\"fire flames while scrubbing is on; nothing fires from \""),
-
- ("scrub flames: a purge selection is not a blocker",
-  "ltcplay/remote.py",
-  "        if pg is not None and bool(pg.selected):",
-  "        if False:"),
-
- ("scrub flames: turned on from the network",
-  "ltcplay/remote.py",
-  "        if not ctx.local:\n            self._journal(who or ctx.device, ctx.device, \"scrub flames\",",
-  "        if False:\n            self._journal(who or ctx.device, ctx.device, \"scrub flames\","),
-
- ("scrub flames: turned on unconfirmed",
-  "ltcplay/remote.py",
-  "            return 400, {\"error\": \"Confirm it on the page first. Nothing \"\n"
-  "                                  \"was changed.\"}\n"
-  "        # A confirm box left open",
-  "            pass\n"
-  "        # A confirm box left open"),
-
- ("scrub flames: ON needs no Settings permission",
-  "ltcplay/users.py",
-  "\"scrub-flames\": \"settings\",",
-  "\"scrub-flames\": \"show\","),
-
- ("scrub flames: Run leaves it on",
-  "ltcplay/web.py",
-  "                if _rm is not None and hasattr(_rm, \"scrub_flames_end\"):",
-  "                if False:"),
-
- ("scrub flames: Turn on is offered on an iPad",
-  "ltcplay/web/remote.html",
-  "  $(\"sf-on\").hidden = !(ME && ME.local);",
-  "  $(\"sf-on\").hidden = false;"),
-
  # Review of #117 (cold safety review): one mutation per new guard and
  # per guard it found untested.
- ("scrub flames: a transport command under the jump threshold is no landing",
-  "ltcplay/flamelink.py",
-  "            if a is None or tok != a[2] or \\\n",
-  "            if a is None or \\\n"),
-
- ("scrub flames: a slow drag is no landing",
-  "ltcplay/flamelink.py",
-  "                    abs((secs - a[0]) - (now - a[1])) > REHEARSE_DRIFT_S:",
-  "                    False:"),
-
- ("scrub flames: zero() leaves the scrub's seek state for the next show",
-  "ltcplay/flamelink.py",
-  "            if self._rehearse_on:\n                self._seek_reset()\n"
-  "            self._rehearse_on = False\n            self._rehearse = None\n"
-  "            self._program = None",
-  "            self._rehearse_on = False\n            self._rehearse = None\n"
-  "            self._program = None"),
-
- ("scrub flames: disarm_all() leaves the scrub's seek state for the next show",
-  "ltcplay/flamelink.py",
-  "                if self._rehearse_on:\n"
-  "                    self._seek_reset()\n"
-  "                self._rehearse_on = False\n",
-  "                self._rehearse_on = False\n"),
-
- ("scrub flames: rehearse_end leaves the scrub's seek state for the next show",
-  "ltcplay/flamelink.py",
-  "            self._zero_gen += 1\n            self._seek_reset()\n"
-  "            self._send_zero_frame()\n            return True",
-  "            self._zero_gen += 1\n"
-  "            self._send_zero_frame()\n            return True"),
-
- ("scrub flames: a new session is no landing",
-  "ltcplay/flamelink.py",
-  "            self._rehearse_session += 1\n            self._seek_reset()\n",
-  "            self._rehearse_session += 1\n"),
-
- ("scrub flames: the show live alone does not zero the scrub",
-  "ltcplay/flamelink.py",
-  "        if live is True or show_tc is not None:",
-  "        if show_tc is not None:"),
-
- ("scrub flames: an Abort during turn-on does not win",
-  "ltcplay/scrubflames.py",
-  "            elif self._cut_epoch != epoch:",
-  "            elif False:"),
-
- ("scrub flames: on before its watch is running",
-  "ltcplay/scrubflames.py",
-  "                try:\n                    if self._threaded:",
-  "                self.on = True\n                try:\n"
-  "                    if self._threaded:"),
-
- ("scrub flames: a lost feed's free run is a position",
-  "ltcplay/scrubflames.py",
-  "            if getattr(p, \"freerun_by\", None) != \"operator\":\n"
-  "                return None\n",
-  ""),
-
- ("scrub flames: the position carries no move count",
-  "ltcplay/scrubflames.py",
-  "            return tc, (moves, getattr(c, \"scrub_render_gen\", 0))",
-  "            return tc, (0, getattr(c, \"scrub_render_gen\", 0))"),
-
- ("scrub flames: the position carries no re-render count",
-  "ltcplay/scrubflames.py",
-  "            return tc, (moves, getattr(c, \"scrub_render_gen\", 0))",
-  "            return tc, (moves, 0)"),
-
- ("scrub flames: a move the tick has not caught up with is a position",
-  "ltcplay/scrubflames.py",
-  "            if not at or at[1] != moves:",
-  "            if not at:"),
-
- ("scrub flames: the landing frame clears channels",
-  "ltcplay/flamelink.py",
-  "        if not landing:\n",
-  "        if True:\n"),
-
- ("scrub flames: a re-render under the playhead is no landing",
-  "ltcplay/fire_ice.py",
-  "        if was is not None and was != ident:",
-  "        if False:"),
-
- ("scrub flames: the loop off and the marks go from a signed-out iPad",
-  "ltcplay/remote.py",
-  "    SCRUB_MOVES = (\"play-from\", \"jump\", \"continue\", \"loop\", \"mark-a\",\n"
-  "                   \"mark-b\")",
-  "    SCRUB_MOVES = (\"play-from\", \"jump\", \"continue\")"),
-
- ("scrub flames: a lost feed's free run is not marked",
-  "ltcplay/player.py",
-  "                self.freerun_by = \"lost\"\n",
-  ""),
-
- ("scrub flames: GO is not marked as the operator's",
-  "ltcplay/player.py",
-  "        self.freerun_by = \"operator\"\n",
-  ""),
-
- ("scrub flames: a Jump is not a move",
-  "ltcplay/player.py",
-  "            self.freerun_paused_at = at\n        self._move_mark()\n",
-  "            self.freerun_paused_at = at\n"),
-
- ("scrub flames: at_transport reads a render checked at another channel",
-  "ltcplay/fire_ice.py",
-  "        if checked_at is not None and checked_at != span[0]:\n"
-  "            return self._scrub_zero(",
-  "        if False:\n            return self._scrub_zero("),
-
- ("scrub flames: at_transport ignores the reader's render age check",
-  "ltcplay/fire_ice.py",
-  "            if stale_s is s and path in stale:",
-  "            if False:"),
-
- ("scrub flames: closing the engine leaves it on",
-  "ltcplay/web.py",
-  "            remote.scrub_flames_end(\"the engine is closing\")",
-  "            pass"),
-
- ("scrub flames: moves from a signed-out iPad go while it is on",
-  "ltcplay/remote.py",
-  "        if not moves or getattr(ctx, \"local\", False):",
-  "        if True:"),
-
- ("scrub flames: moves need only the Show permission while it is on",
-  "ltcplay/remote.py",
-  "                    users_mod.allowed(u.matrix(), role, \"settings\"):",
-  "                    users_mod.allowed(u.matrix(), role, \"show\"):"),
-
- ("scrub flames: a stale page turns it on",
-  "ltcplay/remote.py",
-  "        stale = self._stale(body)\n        if stale:\n"
-  "            return 409, {\"error\": stale, \"stale\": True}\n",
-  ""),
-
  # The fuel tracker (fuel.py, FUEL.md, Jeff 2026-10-26).
  ("fuel: the flame link's observer is told before the frame went",
   "ltcplay/flamelink.py",
@@ -15213,46 +14861,6 @@ def build():
   "ltcplay/web/remote.html",
   "  $(\"nav-fuel\").classList.toggle(\"soon\", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));",
   ""),
-
- # Third review of #117: the move count is a seqlock.
- ("scrub flames: GO writes the position before it marks the move",
-  "ltcplay/player.py",
-  "        self._move_mark()\n        self.freerun_epoch = _now() - tc_seconds",
-  "        self.freerun_epoch = _now() - tc_seconds"),
-
- ("scrub flames: a Jump writes the position before it marks the move",
-  "ltcplay/player.py",
-  "        self._move_mark()\n        at = max(0.0, here + float(seconds))",
-  "        at = max(0.0, here + float(seconds))"),
-
- ("scrub flames: a cue skip writes the position before it marks the move",
-  "ltcplay/player.py",
-  "        self._move_mark()\n        self.freerun_epoch = _now() - target.tc_seconds",
-  "        self.freerun_epoch = _now() - target.tc_seconds"),
-
- ("scrub flames: a tick in the middle of a move writes a pair",
-  "ltcplay/player.py",
-  "                                 if after == moves and moves % 2 == 0",
-  "                                 if after == moves"),
-
- ("scrub flames: a tick a move overtook writes a pair",
-  "ltcplay/player.py",
-  "                                 if after == moves and moves % 2 == 0",
-  "                                 if moves % 2 == 0"),
-
- ("scrub flames: the pair takes the count at write time",
-  "ltcplay/player.py",
-  "            self.transport_at = ((self.tc_seconds, moves)",
-  "            self.transport_at = ((self.tc_seconds, self.transport_moves)"),
-
- ("scrub flames: a loop wrap is not marked as a move",
-  "ltcplay/player.py",
-  "                    self._move_mark()\n"
-  "                    self.freerun_epoch = now - loop[0]\n"
-  "                    self.tc_seconds = loop[0]\n"
-  "                    self._move_mark()\n",
-  "                    self.freerun_epoch = now - loop[0]\n"
-  "                    self.tc_seconds = loop[0]\n"),
 
  # The Weather block (weather.py, WEATHER.md; 2026-10-26). Display only;
  # each is a way the wind readout could mislead an operator.
@@ -15851,11 +15459,6 @@ def build():
   "        reason = f\"{who or 'Someone'} pressed Stop on the {screen}\"\n",
   "        reason = f\"{who or 'Someone'} pressed Stop on the {screen}\"\n        _s = getattr(self.server, \"schedule\", None)\n        if _s is not None:\n            _s.operator_press(\"abort\", who, screen, confirmed=True)\n"),
 
- ("Stop: fire while scrubbing is not ended by Stop",
-  "ltcplay/web.py",
-  "        for name in (\"live_flame_cut\", \"scrub_flames_end\"):",
-  "        for name in (\"live_flame_cut\",):"),
-
  ("Stop: a refused live-show Stop sends its flame half first",
   "ltcplay/web.py",
   "        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live() and \\\n                not (route == \"/api/stop\" and self._halt_asked()):\n",
@@ -16022,11 +15625,6 @@ def build():
   "ltcplay/remote.py",
   "                if not b_ok:\n                    out[\"failed\"].append(\"laser blank\")",
   "                if False:\n                    out[\"failed\"].append(\"laser blank\")"),
-
- ("halt: fire while scrubbing is ended, not cut as an Abort does",
-  "ltcplay/remote.py",
-  "            for name in (\"live_flame_cut\", \"scrub_flames_cut\"):",
-  "            for name in (\"live_flame_cut\", \"scrub_flames_end\"):"),
 
  ("deck: the alert face hides HOLD TO STOP (second review of #130, 1)",
   "ltcplay/streamdeck.py",
@@ -17615,11 +17213,6 @@ def build():
  ("Reload engine: offered with live flame programming on",
   "ltcplay/remote.py",
   "        if lf is not None and lf.on:\n            return \"Live flame programming is on. Turn it off first.\"\n",
-  ""),
-
- ("Reload engine: offered with fire flames while scrubbing on",
-  "ltcplay/remote.py",
-  "        if sf is not None and sf.on:\n            return \"Fire flames while scrubbing is on. Turn it off first.\"\n",
   ""),
 
  ("Reload engine: offered with the Fireball page in use",
