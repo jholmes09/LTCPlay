@@ -483,8 +483,8 @@ group armed mid-movement is held by the rising-edge check, as before.
   window (zero would swing the head to its end stop for those ticks).
   Every other fire slot of the group keeps both rules exactly as before.
 - ltcplay reads the same lists from this file and leaves aim slots out of
-  its zero-first hold, in show playback, rehearse and live flame
-  programming.
+  its zero-first hold, in show playback (Programming playback included)
+  and live flame programming.
 - Seeing them (2026-10-28). flamesafe journals one start line, `aim slots:
   wave flamer 1, 7, 13 (...), read from <full path of its config>` (or
   `aim slots: none in <path>`), and every status frame carries each
