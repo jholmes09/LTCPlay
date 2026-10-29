@@ -2716,8 +2716,13 @@ MUTATIONS = [
 
  ("ui 2.0: arming a hazer is not greyed for a role that may not arm",
   "ltcplay/web/remote2.html",
-  "    b.disabled = !look.armed && !mayArm;",
-  "    b.disabled = false;"),
+  " !mayArm ? \"Sign in to arm\" :",
+  " false ? \"Sign in to arm\" :"),
+
+ ("ui 2.0: arming a hazer from an iPad is live while arming from screens is off",
+  "ltcplay/web/remote2.html",
+  "      !(ME && ME.local) && !(s.arming && s.arming.enabled) ? \"Arming off here\" : \"\";",
+  "      false ? \"Arming off here\" : \"\";"),
 
  ("ui: a hazer on Hold reads plain ARMED",
   "ltcplay/web/remote.html",

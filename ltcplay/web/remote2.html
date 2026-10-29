@@ -109,7 +109,15 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 .b.blue{background:#0d2742;border-color:var(--blue);color:#E3F1FF}
 .b.safe{background:#2b2723;border-color:#8b8170;color:var(--cream)}
 .b.hold{border-style:solid;border-width:3px}
-.b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E}
+.b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E;pointer-events:none}
+.b:disabled .fill{display:none}
+/* The quiet tone: signed out, no contact or the show not running. Only
+   what is not an emergency control is quieter (less colour, the same
+   lightness, so text keeps its contrast); Abort, Hold, Stop, every Disarm
+   and the live modes' Stops keep their full colour. Nothing moves. */
+body.inactive .state, body.inactive #b-go, body.inactive #b-armall, body.inactive #ann .head, body.inactive #ann-btns,
+body.inactive .tile:not(.armed) .tn, body.inactive .tile:not(.armed) .ts, body.inactive #hazers [data-hzb]:not(.on),
+body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
 .b .fill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(255,255,255,.28);pointer-events:none;transition:width .1s linear}
 .q{width:56px;height:56px;min-width:56px;border-radius:50%;border:2px solid var(--blue);background:#0d1d30;
   color:#E3F1FF;font-weight:800;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex:0 0 auto}
@@ -420,7 +428,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="flames">
       <div id="groups" aria-label="Flame groups and lasers"></div>
       <div class="allcol">
-        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span>Hold: arm flames</span></button>
+        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span class="lbl">Hold: arm flames<small id="armall-why"></small></span></button>
         <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
       <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
@@ -821,14 +829,14 @@ function nextStep(st, isStaleNow, local, items){
   const pch = prerollChoice(st.preroll, sch);
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
   if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
-  if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Sign in to use the controls."};
+  if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Signed out: view only. Sign in to control."};
   if(isHeld(st)) return {tone:"warn", icon:"pause", text:"Held. Press Resume to carry on."};
   if(sch.attached && !isLive(st) && prerollLook(st.preroll).checking) return {tone:"warn", icon:"clock", text:"Checking the rig before the show."};
   // A fault: what it is, and what the slot's button does (only an alert
   // with Acknowledge says Acknowledge).
   if(bad.length) return {tone:"bad", icon:"warn", text:bad[0].what + (bad[0].act === "ack" ? " Fix, then Acknowledge." : " See the alert.")};
   if(isRehearsal(st) && !isLive(st)) return {tone:"warn", icon:"info", text:"Rehearsal: the schedule starts no show."};
-  if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Press Run show to start tonight." : "Run is off. Press Run on show PC."};
+  if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show not running. Press Run show." : "Show not running. Press Run on show PC."};
   const c = countdownRead(CD, monoNow());
   if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (c && c.kind === "left" ? " " + clockText(c.s) + " left." : "")};
   if(sch.start_waiting) return {tone:"ok", icon:"clock", text:"Starting when the show audio loads."};
@@ -844,6 +852,14 @@ function nextStep(st, isStaleNow, local, items){
   if(sch.delayed) return {tone:"warn", icon:"clock", text:"Show " + sch.delayed.show + " delayed. Press Start now."};
   if(sch.attached) return {tone:"ok", icon:"check", text:"No more shows tonight."};
   return {tone:"ok", icon:"info", text:"No schedule on this show PC."};
+}
+// Signed out (view only), no contact, nothing heard yet, or the show not
+// running: the page's quiet tone. From the engine's status only. Pure.
+function inactiveNow(st, isStaleNow){
+  if(!st || isStaleNow) return true;
+  if(st.me && st.me.view_only) return true;
+  const sch = st.schedule || {};
+  return !!(sch.attached && !runIsOn(st) && !isLive(st));
 }
 // The state pill: an icon and a word, coloured by the one grammar. Never
 // READY with a fault open or a live mode on.
@@ -861,7 +877,7 @@ function pillLook(st, isStaleNow, items){
   if(sch.attached && prerollLook(st.preroll).checking) return {cls:"warn", icon:"clock", text:"CHECKING RIG"};
   if((items || []).some(i => i.tone === "bad")) return {cls:"bad", icon:"warn", text:"NOT READY"};
   if(!sch.attached) return {cls:"off", icon:"info", text:"NO SCHEDULE"};
-  if(!runIsOn(st)) return {cls:"off", icon:"power", text:"RUN IS OFF"};
+  if(!runIsOn(st)) return {cls:"off", icon:"power", text:"NOT RUNNING"};
   return {cls:"ok", icon:"check", text:"READY"};
 }
 
@@ -960,6 +976,7 @@ function renderAlertSlot(){
   // Continue anyway is the run permission's (1.0's engine rule); never
   // turned off under a finger that holds it.
   if(!PR_HOLD) ab.disabled = it.act === "pr-continue" && !mayRow(ST, "show");
+  if(!PR_HOLD && ab.disabled) setText($("al-act-l"), "Sign in first");
   if(it.act === "pr-continue" && it.holdMs) PR_HOLD_MS = it.holdMs;
 }
 // No contact: the slot never shows an old "No alerts"; it says the
@@ -1031,7 +1048,7 @@ function renderMini(isSt){
   if($("mini").hidden) return;
   const L = announceLook((ST || {}).announce, (ST || {}).booth);
   $("m-snd").hidden = !L.show;
-  $("m-snd").disabled = L.stopOff || ANN_BUSY;
+  $("m-snd").disabled = L.stopOff || ANN_BUSY || !!annStopWhy(ST, !!(ME && ME.local));
   $("m-disl").hidden = !$("lz");
   $("m-stop").disabled = HALT_BUSY;
 }
@@ -1142,6 +1159,10 @@ function renderStale(){
   const pl = pillLook(ST, isSt, ALERTS);
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
+  try{ renderAnnounce(); }catch(e){}
+  // The calm tone (Jeff, 2026-10-29): signed out, no contact or the show
+  // not running, everything that is not an emergency control is quieter.
+  document.body.classList.toggle("inactive", inactiveNow(ST, isSt));
   if(isSt) drawSlotStale(); else if($("alert").classList.contains("stale")){ $("alert").className = ""; renderAlertSlot(); }
   renderMini(isSt);
   if(isSt){
@@ -1571,7 +1592,12 @@ function renderHazers(s){
     setText(b.querySelector(".hw"), look.state);
     // Arming greyed for a role that may not arm (reviewer B, 6); a disarm
     // never.
-    b.disabled = !look.armed && !mayArm;
+    // Arming needs the arm permission, a live page and, from the show
+    // network, arming from a screen (remote.hazer_post); a disarm never.
+    const hzWhy = look.armed ? "" : stale() ? "No contact" : !mayArm ? "Sign in to arm" :
+      !(ME && ME.local) && !(s.arming && s.arming.enabled) ? "Arming off here" : "";
+    b.disabled = !!hzWhy;
+    if(hzWhy) setText(b.querySelector(".hw"), hzWhy);
     b.title = look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
     b.setAttribute("aria-label", look.label + ". " + look.act);
   });
@@ -1723,6 +1749,10 @@ function renderAllButtons(isSt){
   // once (an Abort standing, live flame programming one group at a time).
   const can = (HOLD && HOLD.all) || (allButtonMode(ST, isSt) === "arm" && !armAllRefusal(ST));
   if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
+  // Why it is off, in a few words.
+  const ar = armAllRefusal(ST);
+  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? "Sign in to use" :
+    ar ? short8(ar, "Not now") : allButtonMode(ST, isSt) === "arm" ? "Not now" : "Already armed");
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
@@ -1782,8 +1812,9 @@ function renderLasers(isSt){
   else {
     const why = lzArmRefusal(la, ls, isSt);
     b.className = "b " + (why ? "" : "green");
-    setIcon(b.querySelector("svg"), "laser"); setText($("lz-bl"), why ? (locked ? "Laser locked" : "Arming off") : "Arm lasers");
-    b.disabled = !!why || !mayRow(ST, "arm");
+    const may = mayRow(ST, "arm");
+    setIcon(b.querySelector("svg"), "laser"); setText($("lz-bl"), why ? (locked ? "Laser locked" : "Arming off") : !may ? "Sign in to arm" : "Arm lasers");
+    b.disabled = !!why || !may;
   }
 }
 async function lzTileClick(){
@@ -1800,9 +1831,26 @@ async function lzTileClick(){
 
 // ---- announcements: one press plays (1.0's), Stop sound ends the sound
 let ANN_SIG = "", ANN_BUSY = false;
+// What stops an announcement press right now, in a few words, from the
+// engine's own rules (remote.announce_post): the show PC only, a fresh
+// page for a Play, the run permission, and announceLook's own reasons. ""
+// when a Play can go. Pure.
+function annWhy(st, isStaleNow, local){
+  if(!st || isStaleNow) return "No contact with the show PC";
+  if(!local) return "Plays from the show PC only";
+  if(!mayRow(st, "show")) return "Sign in to use";
+  const an = st.announce || {};
+  if(an.ok === false) return "Cannot play now";
+  if(!(an.route || {}).ok) return "No sound output";
+  return "";
+}
+// Stop sound: never refused on the show PC (a stale page included); the
+// engine refuses it from anywhere else.
+function annStopWhy(st, local){ return local ? "" : "Show PC only"; }
 function renderAnnounce(){
   const s = ST || {};
   const L = announceLook(s.announce, s.booth);
+  const local = !!(ME && ME.local), why = annWhy(ST, stale(), local), stopWhy = annStopWhy(ST, local);
   $("ann").hidden = !L.show;
   if(!L.show) return;
   const an = s.announce || {};
@@ -1814,19 +1862,19 @@ function renderAnnounce(){
   $("ann-w").style.color = (playing || an.held_failed) ? "var(--amber)" : "";
   let note = "";
   if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : "");
-  else if(an.ok === false) note = "Cannot play now";
-  else if(L.devBad) note = "No sound output";
+  else if(why) note = why;
   else note = an.over_show ? "Plays over the show" : "Holds the schedule";
   setText($("ann-note"), note);
-  $("ann-note").className = (L.devBad || an.ok === false) ? "bad" : "";
-  const sig = JSON.stringify([L.buttons, ANN_BUSY, mayRow(s, "show")]);
+  $("ann-note").className = why && !playing ? "bad" : "";
+  const sig = JSON.stringify([L.buttons, ANN_BUSY, why]);
   if(sig !== ANN_SIG){
     ANN_SIG = sig;
-    const may = mayRow(s, "show");
+    // Truly off when it cannot act: the disabled attribute, no pressed
+    // look, and the reason beside it.
     $("ann-btns").innerHTML = L.buttons.map(b =>
-      `<button class="b ${b.on ? "on" : ""}" data-ann="${esc(b.id)}"${b.off || ANN_BUSY || !may ? " disabled" : ""}>${icon("mega")}<span>${esc(b.label)}${b.missing ? "<small>Missing</small>" : ""}</span></button>`).join("");
+      `<button class="b ${b.on ? "on" : ""}" data-ann="${esc(b.id)}"${b.off || ANN_BUSY || why ? " disabled" : ""}>${icon("mega")}<span>${esc(b.label)}${b.missing ? "<small>Missing</small>" : ""}</span></button>`).join("");
   }
-  $("ann-stop").disabled = L.stopOff || ANN_BUSY;
+  $("ann-stop").disabled = L.stopOff || ANN_BUSY || !!stopWhy;
 }
 async function annPress(route, extra){
   if(ANN_BUSY) return;            // one press, one announcement

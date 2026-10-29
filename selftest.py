@@ -60319,7 +60319,10 @@ def test_hazers_on_the_rack_screens():
               "/api/remote/hazer-level" in p and "hazerStep(" in p and
               "Same for all" in p,
               f"{name}: the row, its taps, Hazers off and the levels")
-        check("b.disabled = !look.armed && !mayArm;" in p and
+        check(("b.disabled = !look.armed && !mayArm;" in p or
+               ('const hzWhy = look.armed ? "" :' in p and
+                '!mayArm ? "Sign in to arm" :' in p and
+                "b.disabled = !!hzWhy;" in p)) and
               'mayRow(s, "arm")' in p,
               f"{name}: arming greyed for a role that may not arm, a "
               f"disarm never (reviewer B, 6)")
