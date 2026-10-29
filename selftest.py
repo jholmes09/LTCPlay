@@ -42604,6 +42604,395 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
     print("  ok")
 
 
+def _one_show_work(S, shows=1):
+    """A work folder whose rule has `shows` scheduled shows on Saturday
+    from 18:00, 20 minutes apart, so the last one closes the night."""
+    import tempfile
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    end = {1: "18:10", 2: "18:30"}[shows]
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": end}}, exceptions={}))
+    return work
+
+
+def _px_ends_on_its_own(n):
+    """The running show's cue confirms, then finishes by itself; the runner
+    reports both and sees what the night does next (a closing, if any)."""
+    clk = n.sess.clock
+    n.sess.player.first_frame()
+    clk._last_frame = 30
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    clk.playing = False
+    clk.last_ended = "Show finished"
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    n.w.runner.poll()           # CLOSING, when it closes the night
+    _settle(n.svc, n.c)
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+
+
+def _px_cues_why(n):
+    """What the show's flame cues say right now, through the real
+    FlameCues, with the fake show audio playing its cue."""
+    F = n.F
+    clk = n.sess.clock
+    clk._cue, clk.paused = {"label": "Show"}, False
+    cues = F.FlameCues(n.control, "flames")
+    cues(None)
+    return cues._why
+
+
+def _px_start_line(n, what):
+    return [t for t, _f in n.lines
+            if t.startswith(what) and "is cleared for the show" in t]
+
+
+def test_every_show_start_clears_the_pixels():
+    section("pixels: every show start (Start now, a scheduled start, the "
+            "Programming screen's Play) clears whatever dark the last show "
+            "left (the closing black after a show that ended on its own, a "
+            "stale record of it, Stop, Abort and Reset), with the same "
+            "journal line; a Start now show ends on the idle look; a look "
+            "on the pixels during a show is a CUES FAULT (Jeff's report, "
+            "2026-10-29)")
+    import types
+    S = _sched()
+    if S is None:
+        return
+    # A: the night's last scheduled show ends on its own: the closing
+    # blacks the pixels, outside the conductor.
+    n = _fi_night(work=_one_show_work(S))
+    n.svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          _px_start_line(n, "Show 1 start"),
+          f"setup: show 1 started on schedule with the start's pixel "
+          f"line: {n.svc.machine.state}")
+    n.now[0] = _den(S, 18, 8)
+    _px_ends_on_its_own(n)
+    check(n.svc.machine.state in (S.CLOSING, S.OFF) and
+          n.sess.player.override == "blackout" and n.w.show._pix_ours,
+          f"setup: the last scheduled show ended on its own and the "
+          f"closing blacked the pixels: {n.svc.machine.state} "
+          f"{n.sess.player.override!r}")
+    # Start now: the black is taken off by the start itself, held until
+    # the first show frame, then the show; the flame cues are never
+    # refused for it.
+    n.now[0] = _den(S, 18, 20)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    m = n.svc.machine
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(m.state == S.SHOW and held == "blackout" and
+          n.sess.player.override is None and not n.w.show._pix_ours,
+          f"Start now after a show that ended on its own: the closing "
+          f"black stays only until the first show frame, then the show "
+          f"(Jeff's shows 4 and 6): {m.state} {held!r} "
+          f"{n.sess.player.override!r}")
+    line = _px_start_line(n, f"Show {m.running} start")
+    check(line and "the show conductor's black" in line[-1],
+          f"the start's own journal line says what it cleared: {line}")
+    n.w.runner.poll()
+    check(any("first show frame went out" in t for t, _f in n.lines),
+          "the journal says when the first show frame went out")
+    check("blackout" not in _px_cues_why(n),
+          "the flame cues are not refused for a blackout after the start")
+    n.sess.clock._cue = None
+    # C: that Start now show ends on its own: the night closes again, but
+    # the pixels stay on the idle look, like a scheduled show's end.
+    del n.lines[:]
+    _px_ends_on_its_own(n)
+    check(n.svc.machine.state in (S.CLOSING, S.OFF) and
+          n.sess.player.override is None and not n.w.show._pix_ours and
+          any("stay on the idle look" in t for t, _f in n.lines),
+          f"a Start now show that ends on its own ends on the idle look, "
+          f"not on black: {n.svc.machine.state} "
+          f"{n.sess.player.override!r}")
+    # D: and Start now again starts with pixels, with the same line.
+    n.now[0] = _den(S, 18, 40)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    m = n.svc.machine
+    check(m.state == S.SHOW and n.sess.player.override is None and
+          _px_start_line(n, f"Show {m.running} start"),
+          f"Start now again after a Start now show ended: pixels on the "
+          f"show, the same line: {m.state} {n.sess.player.override!r}")
+    # Stop: the show conductor's black; Start now clears it.
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout",
+          f"setup: Stop blacked the pixels: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 18, 50)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.svc.machine.state == S.SHOW and n.sess.player.override is None,
+          f"Start now after Stop: the show plays as rendered: "
+          f"{n.sess.player.override!r}")
+    # Abort, Reset, Start now.
+    n.svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(n.svc, n.c)
+    n.svc.reset_conductor("Andy", "Rack screen")
+    _settle(n.svc, n.c)
+    check(not n.c.latched and not n.svc.machine.abort_latched,
+          "setup: the Abort was Reset")
+    n.now[0] = _den(S, 19, 0)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.svc.machine.state == S.SHOW and n.sess.player.override is None,
+          f"Start now after Abort and Reset: the show plays as rendered: "
+          f"{n.svc.machine.state} {n.sess.player.override!r}")
+    # A Hold before the first show frame, then Resume: the show comes
+    # back, never the black held at the start.
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    n.now[0] = _den(S, 19, 10)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.w.show.pixels_fade_out(0.25)          # a Hold's black, mid start
+    n.sess.player.first_frame()             # no hand-over: Hold stands
+    held = n.sess.player.override
+    n.w.show.pixels_restore(0.25)           # Resume
+    check(held == "blackout" and n.sess.player.override is None,
+          f"a Hold before the first show frame holds, and Resume gives "
+          f"back the show, not the start's held black: {held!r} "
+          f"{n.sess.player.override!r}")
+    n.c.close()
+    n.link.close()
+    # The stale record (Jeff's show 5): the conductor's black on record,
+    # the idle look on the output: nothing is put to black at the start.
+    n = _fi_night()
+    n.svc.tick()
+    n.w.show._pix_ours, n.w.show._pix_prev = True, None
+    del n.calls[:]
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(("pixels", ("blackout",)) not in [(k, a) for k, a, _t in n.calls]
+          and not n.w.show._pix_ours,
+          f"a stale record of the conductor's black never blacks the idle "
+          f"look at the start: {[c for c in n.calls if c[0] == 'pixels']}")
+    line = _px_start_line(n, "Show 1 start")
+    check(line and "stale record" in line[-1] and
+          "The idle look stays up until the first show frame" in line[-1],
+          f"its journal line: {line}")
+    # Manual, ended on its own, then the scheduled start.
+    n.c.close()
+    n.link.close()
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.now[0] = _den(S, 17, 48)
+    _px_ends_on_its_own(n)
+    check(n.sess.player.override is None,
+          f"setup: a Start now show with shows to come ends on the idle "
+          f"look: {n.svc.machine.state} {n.sess.player.override!r}")
+    n.w.show._pix_ours = True              # however it got there
+    n.sess.player.override = "blackout"
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    m = n.svc.machine
+    check(m.state == S.SHOW and n.sess.player.override is None and
+          _px_start_line(n, f"Show {m.running} start"),
+          f"the scheduled start after a Start now show clears the black: "
+          f"{m.state} {n.sess.player.override!r}")
+    # Programming Play after the closing black.
+    from ltcplay.playhead import ShowAudioPlayhead
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    n.svc.machine = types.SimpleNamespace(state="OFF")
+    clk = n.sess.clock
+    n.sess.playhead_clock = lambda: clk
+    n.sess.clock_play_from = lambda s, check_only=False: (
+        (types.SimpleNamespace(name="Show"), s) if check_only else
+        (clk.play("Show"), (types.SimpleNamespace(name="Show"), s))[1])
+    n.sess.clock_here = lambda: 0.0
+    ph = ShowAudioPlayhead(n.control, n.svc)
+    n.w.show.pixels_fade_out(1.0)           # the closing's black
+    ph.play_from(3600.0, "Andy", "iPad")
+    n.c.run_pending()
+    n.sess.player.first_frame()
+    check(n.sess.player.override is None and
+          _px_start_line(n, "Play from on the Programming screen"),
+          f"Programming Play after the closing black: the show plays as "
+          f"rendered, with the start's line: {n.sess.player.override!r}")
+    # On the Programming screen the page's own look stays.
+    n.sess.player.override = "preshow"
+    ph.play_from(3600.0, "Andy", "iPad")
+    n.c.run_pending()
+    check(n.sess.player.override == "preshow",
+          "Programming Play keeps a look the operator put on the page")
+    n.c.close()
+    n.link.close()
+    # The pre-roll never puts a look on the pixel output.
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "preroll.py")) as fh:
+        pre = fh.read()
+    check(".override" not in pre and "pixels_fade_out" not in pre,
+          "the pre-roll blacks MadMapper's surfaces, never the pixels")
+    # 4: a look on the pixels while the show plays is a CUES FAULT once it
+    # lasts, never during a Hold's or an Abort's own fade or a start's
+    # hand-over.
+    F = _fi_mod()
+    t = [0.0]
+    clk = types.SimpleNamespace(source="audio_master", _cue={"label": "S"},
+                                paused=False, _halting=False,
+                                _pause_req=False, last_sent=None)
+    p = types.SimpleNamespace(override="blackout", show_handoff=None,
+                              freerun_epoch=None)
+    sess = types.SimpleNamespace(running=True, clock=clk, player=p)
+    lines = []
+    cues = F.FlameCues(types.SimpleNamespace(session=sess), "flames",
+                       journal=lambda text, **f: lines.append((text, f)))
+    cues._mono = lambda: t[0]
+    cues(None)
+    check(cues.fault == "", "a look over a playing show is not a fault at "
+                            "once")
+    t[0] = F.LOOK_IN_SHOW_FAULT_S + 0.1
+    cues(None)
+    check("while the show is playing" in cues.faults_now() and
+          lines and lines[-1][1].get("fault"),
+          f"once it lasts it is a CUES FAULT on the screens and in the "
+          f"journal: {cues.fault!r}")
+    clk._halting = True
+    cues(None)
+    check(cues.fault == "", "an Abort's own fade is no CUES FAULT")
+    clk._halting, p.show_handoff = False, ("blackout", 0)
+    t[0] = 10.0
+    cues(None)
+    t[0] = 20.0
+    cues(None)
+    check(cues.fault == "", "a start's hand-over is no CUES FAULT")
+    print("  ok")
+
+
+class _LitFSEQ(FakeFSEQ):
+    """A FakeFSEQ whose every frame is lit (FakeFSEQ's frame 0 is all
+    zeros, which would hide a dark frame)."""
+
+    def __init__(self, base, **kw):
+        FakeFSEQ.__init__(self, **kw)
+        self.base = base
+
+    def frame(self, i):
+        FakeFSEQ.frame(self, i)
+        return bytes([self.base + i % 50]) * self.channel_count
+
+
+def test_the_show_takes_over_the_pixels_on_its_first_frame():
+    section("pixels: a show start keeps the look that is up (the idle "
+            "look, a black) until the first frame of the show's timecode "
+            "and switches on that very tick: no dark frame between the "
+            "idle look and the show (Jeff's show 5, 2026-10-29)")
+    import types
+    F = _fi_mod()
+    idle = _LitFSEQ(100, frames=40, channels=64)
+    show = _LitFSEQ(10, frames=400, channels=64)
+    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
+
+    def player():
+        p = Player(tl, FakeNetmap(), CountingSender())
+        p.on_lost = "hold"
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq",
+                                  "preshow loop")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        p.idle_cue._gaps = None
+        return p
+
+    def frames(p, k):
+        return [bytes(p._alert_mix(p._tick()) or b"") for _ in range(k)]
+
+    def lit(f):
+        return len(f) > 0 and any(f)
+    base = tcmod.parse_tc("01:00:00:00", 30)
+    first_show = bytes(show.frame(0))
+    # The idle look under a stale record of the conductor's black (Jeff's
+    # show 5): through the real FireIceShow start.
+    p = player()
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    fis._pix_ours = True
+    out = frames(p, 3)
+    text = fis.pixels_for_show("Show 5 start")
+    out += frames(p, 3)
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    out += frames(p, 3)
+    check(all(lit(f) for f in out),
+          f"no dark frame from the idle look into the show: "
+          f"{[f[:1] for f in out]}")
+    check(out[5][:1] == bytes([100 + 0])[:1] or out[5][0] >= 100,
+          "the idle look stays up until the show's timecode arrives")
+    check(out[6] == first_show and p.override is None and
+          p.show_handoff_done is not None and
+          p.show_handoff_done[0] is None,
+          f"the show's first frame goes out on the first tick after its "
+          f"timecode: {out[6][:1]!r}")
+    check("stale record" in text, f"the start's line: {text}")
+    # The closing black: black frames, then the show's first frame, with
+    # no idle look flashed between.
+    p = player()
+    p.override = "blackout"
+    out = frames(p, 2)
+    p.hold_until_show()
+    out += frames(p, 2)
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    out += frames(p, 2)
+    check(out[:4] == [b""] * 4 and out[4] == first_show,
+          f"from black straight to the show on its first frame: "
+          f"{[f[:1] for f in out]}")
+    # A clock left from an earlier cue is not the new show's first frame.
+    p = player()
+    p.feed_timecode(base + 50.0, _now(), False, "01:00:50:00")
+    p.override = "blackout"
+    p.hold_until_show()
+    out = frames(p, 2)
+    check(out == [b"", b""] and p.override == "blackout",
+          "the held look waits for a frame that came after the start")
+    # Someone else's look since the start (a Hold's black) stands.
+    p = player()
+    p.hold_until_show()
+    p.cancel_show_handoff()
+    p.override = "blackout"
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "blackout", "a Hold's black during the hand-over "
+                                    "is never lifted by it")
+    p = player()
+    p.hold_until_show()
+    p.override = "preshow"          # the page's look, set straight on it
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "preshow" and p.show_handoff is None,
+          "a look put on the pixels after the start stands: the hand-over "
+          "lifts only the look it held")
+    # The runner says when the first show frame went out.
+    lines = []
+    r = types.SimpleNamespace(_note=lambda text, **f: lines.append(text))
+    cue = {"show": 5, "pix": types.SimpleNamespace(
+        show_handoff_done=(None, 10.2)), "sent": 10.0}
+    F.ShowRunner._first_frame(r, cue)
+    F.ShowRunner._first_frame(r, cue)
+    check(len(lines) == 1 and "first show frame went out" in lines[0] and
+          "0.20 s" in lines[0],
+          f"the journal says when the first show frame went out: {lines}")
+    print("  ok")
+
+
 def test_fire_ice_review_hand_mutations():
     section("fire & ice: the runner starts the show it was told, confirms "
             "only the cue it started, closes the night for real; a release "
@@ -88089,6 +88478,8 @@ if __name__ == "__main__":
         test_fire_ice_auto_start_off_and_start_now,
         test_fire_ice_start_rules_on_the_ordered_line,
         test_fire_ice_review_hand_mutations,
+        test_every_show_start_clears_the_pixels,
+        test_the_show_takes_over_the_pixels_on_its_first_frame,
         test_fire_ice_show_log_is_written_off_the_logging_threads,
         test_fire_ice_abort_and_hold_before_the_show_is_confirmed,
         test_fire_ice_show_end_burst_never_holds_up_the_flame_link,

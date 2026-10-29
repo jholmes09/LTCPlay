@@ -8684,10 +8684,69 @@ def build():
   '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
   '        text = " ".join(le.text for le in out.log if le.text)'),
 
+ ("pixels: a show start never takes the closing black off (Jeff's dark "
+  "shows, 2026-10-29)",
+  'ltcplay/fire_ice.py',
+  '                hold = getattr(p, "hold_until_show", None)\n',
+  '                hold = (lambda: p.override)\n'),
+
+ ("pixels: a show start leaves the conductor's black on record for the "
+  "confirmation again",
+  'ltcplay/fire_ice.py',
+  '            self._pix_ours, self._pix_prev = False, None\n            look = p.override\n',
+  '            look = p.override\n'),
+
+ ("pixels: a show start puts the idle look to black until the show is "
+  "confirmed (the blink)",
+  'ltcplay/fire_ice.py',
+  '                if hold is not None:\n                    held = hold()\n',
+  '                if hold is not None:\n                    p.override = "blackout"\n                    held = hold()\n'),
+
+ ("pixels: the held look never hands over to the show",
+  'ltcplay/player.py',
+  '        if hand is not None:\n            self._take_handoff(hand, epoch, fed, now)\n',
+  '        if False:\n            self._take_handoff(hand, epoch, fed, now)\n'),
+
+ ("pixels: a clock left from an earlier cue counts as the show's first frame",
+  'ltcplay/player.py',
+  '            if epoch is None or fed == armed:\n',
+  '            if epoch is None:\n'),
+
+ ("pixels: the hand-over lifts a look set after the start",
+  'ltcplay/player.py',
+  '            if self.override != look:\n                # A look set since the start: theirs stands.\n',
+  '            if False:\n'),
+
+ ("pixels: a Hold before the first show frame restores the start's held "
+  "look on Resume",
+  'ltcplay/fire_ice.py',
+  '                self._pix_prev = None if waiting else p.override\n',
+  '                self._pix_prev = p.override\n'),
+
+ ("pixels: a Start now show that ends on its own closes on black again",
+  'ltcplay/fire_ice.py',
+  '            extra = self._operator_show_ended() if after_show else None\n',
+  '            extra = None\n'),
+
+ ("pixels: Programming Play leaves the closing black for show_starting",
+  'ltcplay/playhead.py',
+  '            clear("Play from on the Programming screen", programming=True)\n',
+  '            pass\n'),
+
+ ("pixels: a look over a playing show is a quiet zero, not a CUES FAULT",
+  'ltcplay/fire_ice.py',
+  '            return self._zero(LOOK_IN_SHOW.format(look=look), fault=True)\n',
+  '            return self._zero(plain)\n'),
+
+ ("pixels: the journal never says when the first show frame went out",
+  'ltcplay/fire_ice.py',
+  '        self._first_frame(cue)\n        clk = cue["clock"]\n',
+  '        clk = cue["clock"]\n'),
+
  ('fix round 2: a look chosen before the show stays on',
   'ltcplay/fire_ice.py',
-  '        self._clear_look(s, n)\n',
-  ''),
+  '        pix = self._clear_look(s, n)\n',
+  '        pix = None\n'),
 
  ("R2-H1 the page's Blackout/Preshow (override) is not refused during a live show",
   'ltcplay/web.py',

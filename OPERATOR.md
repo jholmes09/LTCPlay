@@ -909,6 +909,55 @@ While a Stop is still disarming and fading to dark, Start now and Run on
 any screen are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
+## The pixels at the end of a show, and at the next start
+
+Jeff's report, 2026-10-29: after a show that finished by itself, the next
+show had no pixels, a show started with Start now ended on black, and the
+pixels blinked dark just before a show began. Now:
+
+What each end leaves on the pixels:
+
+| How the show ended | The pixels after it |
+| --- | --- |
+| A scheduled show ends by itself, more shows to come | the idle look (intermission) |
+| The night's last scheduled show ends by itself | black (the closing) |
+| A Start now show ends by itself | the idle look, even with nothing else tonight |
+| Programming's Play reaches the end of the cue | the idle look |
+| Stop | black, and Run is off |
+| Abort | black, latched until Reset; dark after Reset until a show starts |
+| A show that failed to start | black |
+
+**Every start clears it.** Start now, a scheduled start and Programming's
+Play from all clear the pixels for the show in the same one place,
+whatever ended the show before:
+
+- the show conductor's black (the closing, a stopped or failed show, an
+  Abort since Reset), and a stale record of it;
+- on Start now and a scheduled start, also a Blackout or Preshow pressed
+  on the page before the start (the page is locked during a show, so it
+  could not be taken off later). On the Programming screen, which is not
+  locked, a look you pressed yourself stays; press Auto to give the
+  pixels to the show.
+
+Nothing goes dark for it: the look that is up (the idle look, a Preshow,
+the closing black) stays until the show's first frame, and the show takes
+over on that very frame. A Hold, an Abort or a Blackout pressed after the
+start is not touched and holds. The pre-roll blacks MadMapper's surfaces,
+never the pixels.
+
+The journal says it at every start, in the same words, for example "Show 4
+start: the pixel output is cleared for the show (the show conductor's
+black from between shows). The black stays up until the first show frame
+goes out, and the show takes over on that frame. A Hold, an Abort or a
+Blackout pressed after this start still holds." and then "Show 4: the
+first show frame went out on the pixels 0.21 s after the start was sent."
+
+**If the pixels are ever on a look while a show plays** (anything but a
+Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
+Deck show it as a flame cues fault: "the pixel output is on blackout, not
+the show, while the show is playing, so the pixels and the flame cues are
+dark. Tell Jeff; Stop and Run again clears it". It is display only.
+
 ## The rig check before each show (pre-roll)
 
 Jeff, 2026-10-28: "the show starts with an immediate announcement so if
