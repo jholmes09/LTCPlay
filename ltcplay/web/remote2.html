@@ -353,6 +353,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 
 /* ---- narrower screens: iPad portrait, small laptops ---- */
 @media (max-width:1100px){
+  #d-steps .st{padding:0 8px;gap:6px;font-size:18px}
   .tab{padding:0 8px;gap:6px} .hb{padding:0 8px;gap:6px} #tabs{gap:2px} .hright{gap:4px}
   header{row-gap:4px}
   #alert .more .w{display:none}
@@ -2423,11 +2424,11 @@ function daySteps(part, s){
     out.push({key:"signin", title:"Sign in", icon:"user", state:"todo", why:"Sign in to tick, purge and lock."});
   if(part !== "shut" && mo && (mo.checks || []).length){
     const bad = mo.checks.filter(c => c.level === "bad").length, warn = mo.checks.filter(c => c.level === "warn").length;
-    out.push({key:"checks", title:"Rig checks", icon:"check", state: bad ? "blocked" : warn ? "todo" : "done",
+    out.push({key:"checks", title:"Checks", icon:"check", state: bad ? "blocked" : warn ? "todo" : "done",
       why: bad ? bad + (bad === 1 ? " problem. Tap to read." : " problems. Tap to read.") : warn ? warn + " to look at." : "All checks OK."});
   }
   const list = dayList(part, mo);
-  if(list && list.total) out.push({key: part === "shut" ? "shutlist" : "startlist", title: part === "shut" ? "Shutdown list" : "Startup list", icon:"list",
+  if(list && list.total) out.push({key: part === "shut" ? "shutlist" : "startlist", title:"Checklist", icon:"list",
     state: list.done >= list.total ? "done" : "todo", why: list.done + " of " + list.total + " ticked."});
   if(part !== "shut" && fu && (fu.units || []).length){
     const soon = fu.units.filter(u => u.refill_soon).length;
@@ -2441,7 +2442,7 @@ function daySteps(part, s){
   }
   if(part !== "shut" && mo && (mo.lasers || []).length){
     const on = mo.lasers.filter(l => l.on).length;
-    out.push({key:"lasers", title:"Laser test", icon:"laser", state: on ? "live" : (seen("lasers") ? "done" : "todo"),
+    out.push({key:"lasers", title:"Lasers", icon:"laser", state: on ? "live" : (seen("lasers") ? "done" : "todo"),
       why: on ? on + " test grid on." : "Test grid on, check, then off."});
   }
   // Hazers (#168): their levels and arming are the SHOW tab's own sheet.
@@ -2453,7 +2454,7 @@ function daySteps(part, s){
   }
   if(part === "shut" && wc && typeof wc.available === "boolean"){
     const run = wc.state && wc.state !== "idle";
-    out.push({key:"clean", title:"Wave cleaning", icon:"flame", state: !wc.available ? "blocked" : run ? "live" : (seen("clean") ? "done" : "todo"),
+    out.push({key:"clean", title:"Cleaning", icon:"flame", state: !wc.available ? "blocked" : run ? "live" : (seen("clean") ? "done" : "todo"),
       why: !wc.available ? short8(wc.problem, "Not available here.") : wc.state === "paused" ? "Waiting: hold for the bursts." : run ? "Running. Stop when done." : "Two holds, then Stop."});
   }
   if(mo && ((mo.machines || []).length || (mo.lasers || []).length)){
