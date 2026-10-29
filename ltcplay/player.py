@@ -533,10 +533,15 @@ class Player:
             self.show_handoff_done = None
             return self.override
 
-    def cancel_show_handoff(self):
+    def cancel_show_handoff(self, hand=None):
         """Someone else set the look (a Hold's or an Abort's black): no
-        hand-over to the show. Returns True if one was waiting."""
+        hand-over to the show. Returns True if one was waiting. `hand`,
+        when given, is the hand-over the caller means (show_handoff as its
+        start armed it): a newer start's is never cancelled for an older
+        one (review of PR #171)."""
         with self._lock:
+            if hand is not None and self.show_handoff is not hand:
+                return False
             had = self.show_handoff is not None
             self.show_handoff = None
         return had

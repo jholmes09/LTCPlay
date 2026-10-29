@@ -571,7 +571,8 @@ class FireIceShow(C.ShowOutputs):
         if keep is not None:
             rest = (f" The page's {self.LOOK_NAMES.get(keep, keep)} look "
                     f"stays: on the Programming screen it is the operator's; "
-                    f"press Stop, then Run, to give the pixels to the "
+                    f"press Stop on the Show file card (1.0, on the show "
+                    f"machine), then Run, to give the pixels to the "
                     f"show.")
         else:
             first = {None: "The idle look", "blackout": "The black",
@@ -1185,13 +1186,16 @@ RENDER_END_TOLERANCE_FRAMES = 2
 # Hold's or an Abort's own fade (the music is pausing or stopping then),
 # nor the look a start holds until the first show frame.
 LOOK_IN_SHOW_FAULT_S = 1.5
-# Rack screen words, no line over eight words. The Fire & Ice screens have
-# no look buttons (no Black, no Preshow, no Follow timecode: that page is
-# the GPL path's): what clears a look in Programming is the Run card's Stop
-# (it sends black and turns Run off), then Run (a new player, no look).
+# Rack screen words: short as a whole (1.0 shows it as one message, 2.0
+# in a sheet behind "Flame cues are off"), no sentence over eight words.
+# The Fire & Ice screens have no Black or Preshow button (those are the
+# GPL page's). In 1.0 what clears a look in Programming is Stop on the
+# "Show file, on this machine" card (it ends Run and sends black), then
+# Run (a new player, no look); that card is on the show machine only.
+# 2.0 has no Show file card: it sends you to 1.0 ("Open in 1.0").
 LOOK_IN_SHOW = ("CUES FAULT: pixels show {look}, not the show. "
-                "Pixels and flame cues are dark. "
-                "Programming: press Stop, then Run. "
+                "Programming: Show file card, Stop, then Run. "
+                "On 2.0, Open in 1.0 first. "
                 "Scheduled show: tell Jeff.")
 # The look in plain words.
 LOOK_BUTTONS = {"blackout": "black", "preshow": "preshow"}
@@ -2214,6 +2218,9 @@ class ShowRunner:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
         pix = self._clear_look(s, n)
+        # This start's own hand-over (one slot on the player): what poll()
+        # may later cancel, never a newer start's.
+        hand = getattr(pix, "show_handoff", None)
         if pix is None and self.conductor.latched:
             # An Abort landed just before the hand-over: its black stands
             # and nothing goes out.
@@ -2260,7 +2267,8 @@ class ShowRunner:
         with self._lock:
             self._cue = {"show": n, "clock": clk,
                          "played": clk.cues_played, "confirmed": False,
-                         "failed": None, "pix": pix, "sent": sent}
+                         "failed": None, "pix": pix, "sent": sent,
+                         "hand": hand}
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
 
     def _degraded_over(self, off_seq):
@@ -2410,10 +2418,13 @@ class ShowRunner:
         timecode (review B of PR #171: a show that never confirmed and
         ended late, then an Abort refused as "nothing is playing", left it
         armed). Never raises."""
+        hand = cue.get("hand")
         cancel = getattr(cue.get("pix"), "cancel_show_handoff", None)
-        if cancel is not None:
+        if cancel is not None and hand is not None:
             try:
-                cancel()
+                # Only this start's own hand-over: a new start may have
+                # armed the player's one slot since poll() read this cue.
+                cancel(hand)
             except Exception:                    # noqa: BLE001
                 pass
 

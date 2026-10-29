@@ -8801,7 +8801,7 @@ def build():
  ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
   "screens do not have",
   'ltcplay/fire_ice.py',
-  '                "Programming: press Stop, then Run. "\n',
+  '                "Programming: Show file card, Stop, then Run. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
 
  ("pixels: a look set through the engine during a start's hand-over is "
@@ -8809,6 +8809,16 @@ def build():
   'ltcplay/web.py',
   '        if cancel is not None:\n            cancel()\n        s.player.override = None if what',
   '        s.player.override = None if what'),
+
+ ("pixels: an older show's end cancels a newer start's hand-over",
+  'ltcplay/fire_ice.py',
+  '                cancel(hand)\n',
+  '                cancel()\n'),
+
+ ("pixels: cancel_show_handoff ends whatever hand-over is waiting",
+  'ltcplay/player.py',
+  '            if hand is not None and self.show_handoff is not hand:\n                return False\n',
+  ''),
 
  ("pixels: a show that ended unconfirmed leaves its start's hand-over armed",
   'ltcplay/fire_ice.py',

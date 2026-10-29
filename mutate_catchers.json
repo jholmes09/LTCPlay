@@ -1751,6 +1751,8 @@
 "pixels: a start refused by an Abort just before the hand-over plays the music anyway": "test_hold_abort_stop_black_the_pixels_after_a_start",
 "pixels: a start the clock refused leaves its hand-over armed": "test_hold_abort_stop_black_the_pixels_after_a_start",
 "pixels: an Abort while the cue was starting leaves the hand-over armed": "test_hold_abort_stop_black_the_pixels_after_a_start",
+"pixels: an older show's end cancels a newer start's hand-over": "test_hold_abort_stop_black_the_pixels_after_a_start",
+"pixels: cancel_show_handoff ends whatever hand-over is waiting": "test_the_show_takes_over_the_pixels_on_its_first_frame",
 "pixels: the hand-over lifts a look set after the start": "test_the_show_takes_over_the_pixels_on_its_first_frame",
 "pixels: the held look never hands over to the show": "test_the_show_takes_over_the_pixels_on_its_first_frame",
 "pixels: the journal never says when the first show frame went out": "test_every_show_start_clears_the_pixels",

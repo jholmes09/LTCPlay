@@ -38152,7 +38152,9 @@ class _FiPlayer:
         self.show_handoff_done = None
         return self._override
 
-    def cancel_show_handoff(self):
+    def cancel_show_handoff(self, hand=None):
+        if hand is not None and self.show_handoff is not hand:
+            return False
         had = self.show_handoff is not None
         self.show_handoff = None
         return had
@@ -42878,19 +42880,26 @@ def test_every_show_start_clears_the_pixels():
           lines and lines[-1][1].get("fault"),
           f"once it lasts it is a CUES FAULT on the screens and in the "
           f"journal: {cues.fault!r}")
-    # The rack screen's words (review B of PR #171): only buttons the
-    # Fire & Ice screens have (the Run card's Stop, then Run), never the
-    # GPL page's Follow timecode, Black or Auto, nor the Programming
-    # card's "Stop the show audio"; no line over eight words; "black",
-    # never "blackout".
+    # The rack screen's words (reviews of PR #171): only buttons the Fire
+    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0:
+    # Open in 1.0), never the GPL page's Black, Preshow or Auto, nor the
+    # Programming card's "Follow timecode again" / "Stop the show audio";
+    # short as a whole, no sentence over eight words; "black", never
+    # "blackout".
     said = cues.faults_now()
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ltcplay", "web", "remote.html"),
               encoding="utf-8") as fh:
         rack = fh.read()
-    check("Programming: press Stop, then Run." in said and
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote2.html"),
+              encoding="utf-8") as fh:
+        rack2 = fh.read()
+    check("Programming: Show file card, Stop, then Run." in said and
+          "Open in 1.0" in said and len(said.split()) <= 30 and
           'label:"Stop"' in rack and 'label:"Run"' in rack and
-          "Follow timecode" not in said and "Auto" not in said and
+          "Show file, on this machine" in rack and "Open in 1.0" in rack2
+          and "Follow timecode" not in said and "Auto" not in said and
           "Black" not in said and "blackout" not in said and
           "show audio" not in said and
           all(len(x.split()) <= 8 for x in said.split(". ")),
@@ -42921,6 +42930,44 @@ def test_every_show_start_clears_the_pixels():
     t[0] = 20.0
     cues(None)
     check(cues.fault == "", "a start's hand-over is no CUES FAULT")
+    print("  ok")
+
+
+def test_closed_night_abort_and_stop_say_what_they_did():
+    section("pixels: in a closed night (after a Start now show) Abort still "
+            "disarms the flames and blanks the lasers, stops no show and "
+            "latches nothing; Stop is a complete halt that ends no show; "
+            "both say so truthfully (OPERATOR.md, review of PR #171)")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S, at=_den(S, 23, 30))
+    try:
+        check(R.svc.machine.state == S.OFF, f"setup: the night is closed: "
+                                            f"{R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        text = str(out.get("text") or "")
+        check(st == 200 and out.get("disarmed") and
+              out.get("lasers_blanked") and not out.get("stopped") and
+              "No show was stopped" in text and
+              not R.svc.machine.abort_latched and not R.c.latched,
+              f"Abort with no show: flames disarmed, lasers blanked, no "
+              f"show stopped, nothing latched: {st} {out}")
+        before = len(list(R.svc.journal))
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        rows = R.lines_for("stop")
+        new = list(R.svc.journal)[before:]
+        check(rows and ": a complete halt." in rows[-1]["text"] and
+              "show" not in out and
+              not any("No show is running" in str(r.get("text"))
+                      for r in new),
+              f"Stop with no show is journaled as a complete halt and ends "
+              f"no show (no 'No show is running' line): {out} "
+              f"{rows[-1:]}")
+    finally:
+        R.close()
     print("  ok")
 
 
@@ -43178,6 +43225,25 @@ def test_hold_abort_stop_black_the_pixels_after_a_start():
           f"hand-over: {n.sess.player.show_handoff!r}")
     n.c.close()
     n.link.close()
+    # The race: a new start arms the player's one hand-over slot after
+    # poll() read the old cue. The old show's end never cancels the new
+    # start's hand-over.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.sess.player.override = "blackout"
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.clock.playing = False
+    n.sess.clock.last_ended = "Show stopped"
+    n.sess.player.hold_until_show()          # the newer start's
+    newer = n.sess.player.show_handoff
+    n.w.runner.poll()
+    check(n.sess.player.show_handoff is newer and newer is not None,
+          f"an older show's end leaves a newer start's hand-over armed: "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
     print("  ok")
 
 
@@ -43255,6 +43321,17 @@ def test_the_show_takes_over_the_pixels_on_its_first_frame():
     frames(p, 2)
     check(p.override == "blackout" and p.show_handoff is None,
           "the show clock stopping ends a waiting hand-over")
+    # A cancel names the hand-over it means: a newer one is never ended
+    # for an older one.
+    p = player()
+    p.hold_until_show()
+    older = p.show_handoff
+    p.hold_until_show()
+    check(p.cancel_show_handoff(older) is False and
+          p.show_handoff is not None and
+          p.cancel_show_handoff(p.show_handoff) is True and
+          p.show_handoff is None,
+          "cancel_show_handoff(hand) ends only that hand-over")
     # The closing black: black frames, then the show's first frame, with
     # no idle look flashed between.
     p = player()
@@ -88793,6 +88870,7 @@ if __name__ == "__main__":
         test_every_show_start_clears_the_pixels,
         test_the_show_takes_over_the_pixels_on_its_first_frame,
         test_hold_abort_stop_black_the_pixels_after_a_start,
+        test_closed_night_abort_and_stop_say_what_they_did,
         test_fire_ice_show_log_is_written_off_the_logging_threads,
         test_fire_ice_abort_and_hold_before_the_show_is_confirmed,
         test_fire_ice_show_end_burst_never_holds_up_the_flame_link,
