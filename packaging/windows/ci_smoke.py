@@ -605,6 +605,14 @@ def soak_check():
         check(need in text, f"the soak report has no '{need}' item")
     check("[NOT TESTED] Flame frame intervals" not in text,
           "the soak counted no flame frame interval in a show")
+    # The runner's own flame frame timing, on the run's page every time,
+    # so the CI limit above can be checked against what runners do.
+    for i, ln in enumerate(lines):
+        if "Flame frame intervals in shows" in ln:
+            got = next((x.strip() for x in lines[i + 1:i + 4]
+                        if x.strip()), "")
+            print(f"::notice title=Flame frame intervals in shows (CI "
+                  f"runner)::{ln.split(']')[0][1:]}: {got}"[:900], flush=True)
     check(wait(all_running, 90), "LTC Player did not come back after the "
                                  "soak test")
     body = "%0A".join(x.replace("%", "%25") for x in lines[:60])
