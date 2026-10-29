@@ -2591,8 +2591,8 @@ class Remote:
 
     def _booth_work(self):
         """The booth note again for alerts still open. Never raises."""
-        self._follow_work()
         self._frame_timing_work()
+        self._follow_work()
         try:
             self.alerts.tick()
         except Exception:                        # noqa: BLE001

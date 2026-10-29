@@ -44495,7 +44495,7 @@ def test_flame_link_frame_timing_counts_and_journals():
                              f"{t3.p99_ms()}")
     s = t.sentence("this hour")
     check("worst 178 ms" in s and "over 100 ms: 2" in s and
-          "–" not in s and "—" not in s,
+          "\u2013" not in s and "\u2014" not in s,
           f"one plain line, no dashes: {s}")
     check(fl.FrameTiming().view()["p99_ms"] == 0 and
           fl.FrameTiming().view()["mean_ms"] == 0.0, "empty: zeros")
@@ -44644,6 +44644,43 @@ def test_flame_link_sender_not_held_by_other_threads():
     print("  ok")
 
 
+def test_flame_link_encode_is_byte_for_byte_the_same():
+    section("flame link timing (2026-10-29): a flame frame built from parts, "
+            "its values' text kept from the frame before, is byte for byte "
+            "what json.dumps of the whole frame gives")
+    import json
+    import random
+    from ltcplay import flamelink as fl
+
+    def ref(seq, tc, mono, universe, values, key, hazers_on=None):
+        obj = {"v": fl.CONTRACT_VERSION, "k": key, "t": "flame",
+               "seq": int(seq), "tc": tc, "mono": float(mono),
+               "universe": int(universe),
+               "values": [int(v) for v in values]}
+        if hazers_on is not None:
+            obj["hazers_on"] = sorted(str(h) for h in hazers_on)
+        return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    r = random.Random(20261029)
+    bad = []
+    prev = bytes(512)
+    for i in range(1500):
+        # Runs of the same values (the cache), new ones, lists and bytes.
+        if i % 5 == 0:
+            prev = bytes(r.randrange(256) for _ in range(512))
+        vals = prev if i % 7 else bytearray(prev)
+        v = vals if i % 2 else list(vals)
+        hz = [None, [], ["Hazer 2", "Hazer 1"], {"a\"b", "\u00e9"}][i % 4]
+        tc = [None, "00:01:02:03"][i % 2]
+        key = "".join(chr(r.randrange(0x21, 0x7f))
+                      for _ in range(r.randrange(16, 40)))
+        a = (r.randrange(10 ** 12), tc, r.random() * 1e5,
+             r.randrange(1, 64000), v, key, hz)
+        if fl.encode_flame(*a) != ref(*a):
+            bad.append(a[:4])
+    check(not bad, f"every frame byte for byte the same: {bad[:2]}")
+    print("  ok")
+
+
 def test_flame_frame_timing_alert_and_systems_line():
     section("flame link timing (2026-10-29): frames over 100 ms in the last "
             "hour raise a display only 'timing' alert in plain words (again "
@@ -44689,7 +44726,7 @@ def test_flame_frame_timing_alert_and_systems_line():
           al[0].text.startswith("Flame frames late: 1 in the last hour, "
                                 "worst 178 ms") and
           "nothing was changed" in al[0].text and
-          "–" not in al[0].text and "—" not in al[0].text,
+          "\u2013" not in al[0].text and "\u2014" not in al[0].text,
           f"a frame 178 ms late: the alert, in plain words: "
           f"{[a.text for a in al]}")
     check(r and r["state"] == "warn" and
@@ -44708,6 +44745,46 @@ def test_flame_frame_timing_alert_and_systems_line():
     check(len(al) == 1 and al[0].text.startswith(
         "Flame frames late: 2 in the last hour, worst 178 ms"),
           f"a new late frame raises it again: {[a.text for a in al]}")
+    print("  ok")
+
+
+def test_flame_serve_keeps_frames_on_time():
+    section("flame link timing (2026-10-29): `ltc serve` with a flame link "
+            "sets a 1 ms switch interval and sets the start up objects "
+            "aside from the garbage collector, says so, and never raises")
+    import types
+    F = _fi_mod()
+    calls = []
+    fsys = types.SimpleNamespace(
+        getswitchinterval=lambda: 0.005,
+        setswitchinterval=lambda v: calls.append(("switch", v)))
+    fgc = types.SimpleNamespace(
+        collect=lambda: calls.append(("collect",)),
+        freeze=lambda: calls.append(("freeze",)),
+        get_freeze_count=lambda: 123456)
+    line = F.keep_flame_frames_on_time(fsys, fgc)
+    check(calls == [("switch", 0.001), ("collect",), ("freeze",)],
+          f"switch interval 1 ms, one collection, then freeze: {calls}")
+    check("every 1 ms (was 5 ms)" in line and "123456 objects" in line
+          and "\u2013" not in line and "\u2014" not in line,
+          f"one plain line: {line}")
+
+    def boom(*a):
+        raise RuntimeError("no")
+    line = F.keep_flame_frames_on_time(
+        types.SimpleNamespace(getswitchinterval=boom, setswitchinterval=boom),
+        types.SimpleNamespace(collect=boom, freeze=boom,
+                              get_freeze_count=boom))
+    check("could not be set" in line and "could not be set aside" in line,
+          f"failures are said, never raised: {line}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "cli.py"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    i = src.find("keep_flame_frames_on_time()")
+    check(i > 0 and src.rfind("if _link is not None:", 0, i) > 0 and
+          src.find("httpd.serve_forever", i) > i,
+          "cli serve calls it with a flame link only, before it serves")
     print("  ok")
 
 
@@ -69913,7 +69990,15 @@ def test_flame_cues_refused_while_the_reader_is_mid_pass():
         try:
             cues.start()
             check(read_once.wait(10), "setup: the reader read the render")
-            check(cues("00:00:02:15") == [50] * 512,
+            # The flame channels are cut from it right after (2026-10-29,
+            # FlameCues._tables): zero until that is done too.
+            first = None
+            for _ in range(250):
+                first = cues("00:00:02:15")
+                if first:
+                    break
+                time.sleep(0.02)
+            check(first == [50] * 512,
                   "setup: the flames from the render in memory")
             r = os.stat(rig.render).st_mtime_ns
             os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
@@ -88506,7 +88591,9 @@ if __name__ == "__main__":
         test_flame_link_schedule_absolute_deadlines_no_burst,
         test_flame_link_frame_timing_counts_and_journals,
         test_flame_link_sender_not_held_by_other_threads,
+        test_flame_link_encode_is_byte_for_byte_the_same,
         test_flame_frame_timing_alert_and_systems_line,
+        test_flame_serve_keeps_frames_on_time,
         test_flame_link_end_to_end_against_the_real_flamesafe,
         test_the_gpl_path_never_loads_the_flame_link,
         test_remote_no_sign_in_over_the_network,

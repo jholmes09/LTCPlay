@@ -636,14 +636,38 @@ def encode_flame(seq, tc, mono, universe, values, key, hazers_on=None):
     hazers; None (no hazers configured) leaves the field out, so the frame
     is exactly the one before hazers existed (CONTRACT.md: left out or
     empty is every hazer off)."""
-    obj = {
+    # Byte for byte what json.dumps of the whole object gives (the selftest
+    # compares the two), built from parts so that the 512 values, which
+    # are the same frame after frame, are turned into text once and not
+    # on every frame (2026-10-29: the sender's own time per frame is time
+    # another thread can take the interpreter from it).
+    head = json.dumps({
         "v": CONTRACT_VERSION, "k": key, "t": "flame", "seq": int(seq),
         "tc": tc, "mono": float(mono), "universe": int(universe),
-        "values": [int(v) for v in values],
-    }
-    if hazers_on is not None:
-        obj["hazers_on"] = sorted(str(h) for h in hazers_on)
-    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    }, separators=(",", ":"))
+    tail = "" if hazers_on is None else ',"hazers_on":' + json.dumps(
+        sorted(str(h) for h in hazers_on), separators=(",", ":"))
+    return (head[:-1] + ',"values":' + _values_json(values) + tail
+            + "}").encode("utf-8")
+
+
+_VALUES_TEXT = (None, None)     # (the last values as bytes, their JSON)
+
+
+def _values_json(values):
+    """The values as JSON text, "[0,0,...]", the same as json.dumps of
+    [int(v) for v in values]. The last bytes seen are remembered (one
+    tuple, swapped whole, so two threads can never mix a key and a text)."""
+    global _VALUES_TEXT
+    if isinstance(values, (bytes, bytearray)):
+        b = bytes(values)
+        last = _VALUES_TEXT
+        if last[0] == b:
+            return last[1]
+        text = json.dumps(list(b), separators=(",", ":"))
+        _VALUES_TEXT = (b, text)
+        return text
+    return json.dumps([int(v) for v in values], separators=(",", ":"))
 
 
 def encode_disarm_all(seq, mono, abort_id, reason, key):

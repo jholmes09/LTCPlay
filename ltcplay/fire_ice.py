@@ -1859,6 +1859,53 @@ class BackgroundShowLog(showlog_mod.ShowLog):
             w.start()
 
 
+# The interpreter's switch interval while a flame link sends (2026-10-29).
+# Python hands its lock (the GIL) to a waiting thread only after the
+# running one has held it this long; the default is 5 ms. Every flame frame
+# needs the lock two or three times (waking from its sleep, after each
+# send), so with a few busy threads (status requests, the pixel output) the
+# sender waited 5 ms a time, again and again: in the timing harness four
+# busy threads made 99 in 100 frames within 190 ms at 5 ms and within
+# 102 ms at 1 ms. Only `ltc serve` with a flame link sets it.
+FLAME_SWITCH_INTERVAL_S = 0.001
+
+
+def keep_flame_frames_on_time(sys_mod=None, gc_mod=None):
+    """`ltc serve` with a flame link, once everything is built and before
+    it serves (cli._cmd_serve): the switch interval to
+    FLAME_SWITCH_INTERVAL_S, then one full garbage collection and
+    gc.freeze(), so the objects made at start (modules, the show, the
+    engine) are never walked again by the collector. A full collection
+    holds the GIL from start to end: 24 to 97 ms each, every 20 s or so,
+    in the harness's engine, and no flame frame goes out meanwhile. After
+    this a pass walks only what was made since. Nothing about what is
+    sent changes. Returns one sentence for the log. Never raises."""
+    import gc as _gc
+    import sys as _sys
+    sys_mod = sys_mod or _sys
+    gc_mod = gc_mod or _gc
+    out = []
+    try:
+        was = sys_mod.getswitchinterval()
+        sys_mod.setswitchinterval(FLAME_SWITCH_INTERVAL_S)
+        out.append(f"the interpreter lock changes hands every "
+                   f"{FLAME_SWITCH_INTERVAL_S * 1000:g} ms (was "
+                   f"{was * 1000:g} ms)")
+    except Exception as e:                       # noqa: BLE001
+        out.append(f"the switch interval could not be set "
+                   f"({type(e).__name__})")
+    try:
+        gc_mod.collect()
+        gc_mod.freeze()
+        out.append(f"{gc_mod.get_freeze_count()} objects made at start are "
+                   f"left out of every garbage collection from now on")
+    except Exception as e:                       # noqa: BLE001
+        out.append(f"the start up objects could not be set aside "
+                   f"({type(e).__name__})")
+    return ("Flame link timing: " + "; ".join(out) + ", so neither can hold "
+            "up a flame frame for long.")
+
+
 def flame_link_config(cfg):
     """The FlameLinkConfig read from flamesafe's own config, or None when
     the Fire & Ice config names none. `ltc serve` calls this before it

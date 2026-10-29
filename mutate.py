@@ -7087,8 +7087,99 @@ def build():
 
  ("fix1 H13: a late sender bursts to catch up",
   "ltcplay/flamelink.py",
-  "                        next_at = now + period",
+  "        return now + period",
+  "        return now"),
+
+ # -- flame frame timing (2026-10-29, Jeff's Pico: frames 78 to 178 ms late)
+ ("flame timing: the deadline drifts with every late wake",
+  "ltcplay/flamelink.py",
+  "    nxt = next_at + period",
+  "    nxt = now + period"),
+
+ ("flame timing: a late wake squeezes the next frame in after it",
+  "ltcplay/flamelink.py",
+  "    if nxt - now < period / 2.0:",
+  "    if nxt - now < 0:"),
+
+ ("flame timing: an interval over a limit is not counted over it",
+  "ltcplay/flamelink.py",
+  "                    if ms > lim:",
+  "                    if ms > lim + 100:"),
+
+ ("flame timing: the sender counts no interval",
+  "ltcplay/flamelink.py",
+  "                        self._timing_add(start - last_start, start)",
   "                        pass"),
+
+ ("flame timing: the show window never closes",
+  "ltcplay/flamelink.py",
+  "            elif show is not None and self._frame_tc is None:",
+  "            elif False:"),
+
+ ("flame timing: a late frame is not kept for the last hour",
+  "ltcplay/flamelink.py",
+  "                self._timing_late.append((now, gap * 1000.0))",
+  "                pass"),
+
+ ("flame timing: a finished show or hour is never journaled",
+  "ltcplay/flamelink.py",
+  "            while self._timing_done:",
+  "            while False:"),
+
+ ("flame timing: shows are not added up for the soak",
+  "ltcplay/flamelink.py",
+  "                self._timing_shows.add(gap)",
+  "                pass"),
+
+ ("flame timing: the values' text of another frame is sent",
+  "ltcplay/flamelink.py",
+  "        if last[0] == b:",
+  "        if last[0] is not None:"),
+
+ ("flame timing: no alert for frames late in the last hour",
+  "ltcplay/remote.py",
+  "            if n > self._timing_said:",
+  "            if False:"),
+
+ ("flame timing: the timing alert holds the show and sounds the booth",
+  "ltcplay/alerts.py",
+  'DISPLAY_ONLY = DISPLAY_ONLY | {"timing"}',
+  'DISPLAY_ONLY = DISPLAY_ONLY'),
+
+ ("flame timing: serve keeps the 5 ms switch interval",
+  "ltcplay/fire_ice.py",
+  "        sys_mod.setswitchinterval(FLAME_SWITCH_INTERVAL_S)",
+  "        pass"),
+
+ ("flame timing: serve never sets the start up objects aside",
+  "ltcplay/fire_ice.py",
+  "        gc_mod.freeze()",
+  "        pass"),
+
+ ("flame cues: the sender decompresses the render again",
+  "ltcplay/fire_ice.py",
+  "            if self._bg:\n                # Memory only on the sender",
+  "            if False:\n                # Memory only on the sender"),
+
+ ("flame cues: a table cut for another span is used",
+  "ltcplay/fire_ice.py",
+  "                if tab is None or tab[0] is not f or tab[1] != span:",
+  "                if tab is None:"),
+
+ ("flame cues: the cut-ahead table is one channel off",
+  "ltcplay/fire_ice.py",
+  "                row[lo - first:hi - first] = data[src + lo - dst:\n"
+  "                                                  src + hi - dst]",
+  "                row[lo - first:hi - first] = data[src + lo - dst + 1:\n"
+  "                                                  src + hi - dst + 1]"),
+
+ ("flame timing: the sender's clock read takes the show's lock",
+  "ltcplay/fire_ice.py",
+  "        (PR #43 review, item 9: it used to take this object's lock).\"\"\"\n"
+  "        s = getattr(self.control, \"session\", None)\n",
+  "        (PR #43 review, item 9: it used to take this object's lock).\"\"\"\n"
+  "        with self._lock:\n"
+  "            s = getattr(self.control, \"session\", None)\n"),
 
  ("fix1: ltcplay takes a timecode with a trailing newline",
   "ltcplay/flamelink.py",
