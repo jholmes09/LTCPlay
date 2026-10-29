@@ -20,6 +20,24 @@ on:
     # BENCH BRANCH ONLY: this throwaway branch builds a pre-release marked
     # "BENCH ONLY, not for shows" on every push. Never merge this branch.
     branches: [bench-build]
+    # A push that changes nothing the installer is built from (only docs,
+    # the mutation sweep's files or the other workflows) builds nothing:
+    # its installer would be the last one with a new name. The last
+    # matching pattern wins, so the lines after the "!" ones put back what
+    # the installer ships: everything under packaging/ (INSTALL.md, the
+    # booth notes) and USERS.md. Anything else, ltcplay/, flamesafe/,
+    # selftest.py, a launcher, still builds. GitHub never applies paths to
+    # a tag push, so every gpl-* tag still builds and attaches.
+    paths:
+      - "**"
+      - "!**.md"
+      - "!mutate.py"
+      - "!mutate_expected_misses.txt"
+      - "!mutate_catchers.json"
+      - "!.github/workflows/selftest.yml"
+      - "!.github/workflows/nightly-mutate.yml"
+      - "packaging/**"
+      - "USERS.md"
   pull_request:
     paths:
       - "packaging/windows/**"
@@ -34,6 +52,12 @@ on:
 permissions:
   contents: write     # creating the Release and attaching the installer
 
+# One group per workflow and branch, PR or tag. A newer push to a PR
+# cancels the older run. A bench-build push is a pre-release of its own
+# commit, so the one building is never cancelled; GitHub keeps at most one
+# waiting run per group, so when several merges land while one builds, only
+# the newest waits and the superseded ones in between are cancelled before
+# they take a Windows runner. Each tag is its own group and always builds.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

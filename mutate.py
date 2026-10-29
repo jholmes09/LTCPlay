@@ -13564,9 +13564,9 @@ def build():
 
  ("the soak's Fire & Ice settings are not marked soak_only",
   "packaging/windows/soak.py",
-  '"notes": "BENCH ONLY, written by the soak test",\n'
+  '              "preroll_s": 0,\n'
   '              "soak_only": True}',
-  '"notes": "BENCH ONLY, written by the soak test",\n'
+  '              "preroll_s": 0,\n'
   '              "soak_only": False}'),
 
  # -- the rack screen's banners never squeeze the flame controls (Jeff,
