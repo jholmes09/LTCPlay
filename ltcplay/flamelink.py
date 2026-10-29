@@ -526,16 +526,20 @@ def audio_master_state(get_clock):
 
 # -- the wire ----------------------------------------------------------------
 
-def encode_flame(seq, tc, mono, universe, values, key, hazers_on=()):
-    """A flame frame. `hazers_on`: the names of the hazers switched ON
-    (2026-10-29), always sent, [] for none (CONTRACT.md: left out or empty
-    is every hazer off)."""
-    return json.dumps({
+def encode_flame(seq, tc, mono, universe, values, key, hazers_on=None):
+    """A flame frame. `hazers_on` (2026-10-29): the names of the hazers
+    switched ON, [] for none, sent whenever flamesafe's config lists any
+    hazers; None (no hazers configured) leaves the field out, so the frame
+    is exactly the one before hazers existed (CONTRACT.md: left out or
+    empty is every hazer off)."""
+    obj = {
         "v": CONTRACT_VERSION, "k": key, "t": "flame", "seq": int(seq),
         "tc": tc, "mono": float(mono), "universe": int(universe),
         "values": [int(v) for v in values],
-        "hazers_on": sorted(str(h) for h in hazers_on),
-    }, separators=(",", ":")).encode("utf-8")
+    }
+    if hazers_on is not None:
+        obj["hazers_on"] = sorted(str(h) for h in hazers_on)
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
 def encode_disarm_all(seq, mono, abort_id, reason, key):
@@ -1404,6 +1408,11 @@ class FlameLink:
             self._hazers_on = want
             return self._hazers_on
 
+    def _hazers_said(self):
+        """The frame's hazers_on: the names ON, or None (the field left
+        out) when flamesafe's config lists no hazers."""
+        return self._hazers_on if self._hazers else None
+
     def _with_haze(self, values, src):
         """`values` with every hazer channel replaced: the source frame's
         value for a hazer ON, zero for every other. Under self._lock."""
@@ -1587,7 +1596,7 @@ class FlameLink:
             seq, mono = self._next()
             ok = self._send(encode_flame(seq, tc, mono, self.cfg.universe,
                                          wire, self.cfg.key,
-                                         self._hazers_on))
+                                         self._hazers_said()))
             self._last_frame_at = self._clock()
             self._repeat_abort()
             late = self._abort_overdue()
@@ -1609,7 +1618,7 @@ class FlameLink:
         self.last_values_nonzero = False
         return self._send(encode_flame(seq, None, mono, self.cfg.universe,
                                        bytes(UNIVERSE_SIZE), self.cfg.key,
-                                       self._hazers_on))
+                                       self._hazers_said()))
 
     def _abort_overdue(self):
         """The pending Abort's id the first time it is overdue (sent more

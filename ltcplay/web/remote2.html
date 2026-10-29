@@ -181,8 +181,12 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
    its name and ON or OFF, then Hazers off. */
 .hzrow{grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap);min-width:0}
 .hzrow[hidden]{display:none}
-.hzrow .b{min-height:56px;height:100%;padding:0 8px;gap:8px;justify-content:center}
-.hzrow .b .hn{font-weight:800;text-transform:uppercase;letter-spacing:.03em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* Where the flame grid leaves two cells free in its last row, the hazers
+   sit there as a 2 by 2 block instead of a row of their own
+   (layoutGroups). */
+.hzrow.inset{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(56px,1fr)}
+.hzrow .b{min-height:56px;height:100%;padding:2px 6px;gap:0;justify-content:center;flex-direction:column;line-height:1.1}
+.hzrow .b .hn{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .hzrow .b .hw{font-weight:800}
 .hzrow .b.on{background:#0b2414;border-color:var(--green);color:#9BF5B7}
 .hzrow .b.off{background:var(--panel);border-color:var(--line);color:var(--cream)}
@@ -1489,7 +1493,19 @@ function layoutGroups(){
   const n = ($("groups").querySelectorAll(".tile").length || 1) + 1;
   const fit = Math.max(1, Math.floor((box.clientWidth + 8) / (150 + 8)));
   const rows = Math.ceil(n / Math.min(n, fit));
-  box.style.gridTemplateColumns = "repeat(" + Math.ceil(n / rows) + ", minmax(0,1fr))";
+  let cols = Math.ceil(n / rows);
+  // The hazers (2026-10-29): in two free cells of the last row when one
+  // more column fits without another row, else a row of their own.
+  const hz = $("hazers");
+  let inset = 0;
+  if(hz && !hz.hidden){
+    if(rows * cols - n >= 2) inset = rows * cols - n;
+    else if(rows > 1 && cols + 1 <= fit && Math.ceil(n / (cols + 1)) === rows && rows * (cols + 1) - n >= 2){ cols += 1; inset = rows * cols - n; }
+    hz.classList.toggle("inset", inset > 0);
+    hz.style.gridColumn = inset ? (cols - inset + 1) + " / span " + inset : "1 / -1";
+    hz.style.gridRow = inset ? String(rows) : "auto";
+  }
+  box.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0,1fr))";
 }
 window.addEventListener("resize", layoutGroups);
 // The hazers (hazers.py): one button per hazer, a plain tap; and Hazers
@@ -1497,16 +1513,20 @@ window.addEventListener("resize", layoutGroups);
 let HZ_KEY = "";
 function renderHazers(s){
   const v = s && s.hazers, row = $("hazers");
-  if(!v || !v.available || !(v.hazers || []).length){ row.hidden = true; HZ_KEY = ""; return; }
+  if(!v || !v.available || !(v.hazers || []).length){
+    if(!row.hidden){ row.hidden = true; HZ_KEY = ""; layoutGroups(); }
+    return;
+  }
   row.hidden = false;
   const key = v.hazers.map(h => h.name).join("\n");
   if(key !== HZ_KEY){
     HZ_KEY = key;
     row.innerHTML = v.hazers.map((h, i) =>
-      `<button class="b off" data-hzb="${i}">${icon("ring")}<span class="hn"></span><span class="hw"></span></button>`).join("") +
-      `<button class="b safe" id="hz-off">${icon("shield")}<span>Hazers off</span></button>`;
+      `<button class="b off" data-hzb="${i}"><span class="hn"></span><span class="hw"></span></button>`).join("") +
+      `<button class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>`;
     row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
     $("hz-off").addEventListener("click", hazersOff);
+    layoutGroups();
   }
   const fl = s.flames || {};
   const st = stale() || !fl.connected || !!fl.stale;

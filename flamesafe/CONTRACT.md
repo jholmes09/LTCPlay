@@ -204,7 +204,7 @@ reason.
 | `mono` | number | the sender's own `time.perf_counter()` at the frame, seconds; must not go backwards while the link is live |
 | `universe` | integer | must equal flamesafe's configured flame universe |
 | `values` | list of exactly 512 integers, each 0 to 255 | the whole flame universe, slot 1 first |
-| `hazers_on` | optional list of strings | the passthrough entries (the hazers) the show program has switched ON, by name: at most 16, distinct, each 1 to 64 characters. Left out is the empty list: every hazer off. Added 2026-10-29; see "Passthrough: the hazers" |
+| `hazers_on` | optional list of strings | the passthrough entries (the hazers) the show program has switched ON, by name: at most 16, distinct, each 1 to 64 characters. Left out is the empty list: every hazer off. ltcplay sends it (`[]` for none ON) only while flamesafe's config lists hazers; with none, its frame is exactly the frame before this field existed. Added 2026-10-29; see "Passthrough: the hazers" |
 
 **ltcplay's side: when values may be non-zero.** ltcplay sends non-zero
 values only while a show is released, live, and its timecode is moving

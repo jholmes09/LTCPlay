@@ -2561,8 +2561,8 @@ MUTATIONS = [
 
  ("hazers: the flame frame never says which hazers are ON",
   "ltcplay/flamelink.py",
-  "        \"hazers_on\": sorted(str(h) for h in hazers_on),",
-  "        \"hazers_on\": [],"),
+  "        obj[\"hazers_on\"] = sorted(str(h) for h in hazers_on)",
+  "        obj[\"hazers_on\"] = []"),
 
  ("hazers: the flame link's Abort leaves the hazers ON",
   "ltcplay/flamelink.py",

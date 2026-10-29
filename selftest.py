@@ -43275,6 +43275,11 @@ def test_flame_link_unit():
           and len(f["values"]) == 512 and f["tc"] == "00:00:10:00"
           and isinstance(f["mono"], float),
           f"a flame frame is exactly CONTRACT.md's: {sorted(f)}")
+    check(json.loads(fl.encode_flame(1, None, 1.0, 1, [0] * 512, key,
+                                     hazers_on=["Hazer 1"]))["hazers_on"]
+          == ["Hazer 1"],
+          "with hazers in flamesafe's config the frame also carries "
+          "hazers_on (CONTRACT.md, optional); without any, it is left out")
     check(sock.sent[-1][1] == ("127.0.0.1", 5571), "sent to flamesafe")
     check(not any(f["values"]), "zeroed: all zeros though the cue has fire")
     check(link.release() is True, "release() answers True with the link open")
