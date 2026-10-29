@@ -224,8 +224,11 @@ body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
 .hzl .st span{min-width:3.2em;text-align:center;font-weight:800}
 .hzl .st .b{min-width:56px;min-height:56px;padding:0 10px}
 .hzrow .b{min-height:56px;height:100%;padding:2px 6px;gap:0;justify-content:center;flex-direction:column;line-height:1.1}
-.hzrow .b .hn{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
-.hzrow .b .hw{font-weight:800}
+/* Each line box holds the fallback fonts' full height (Segoe UI on Windows
+   is about 1.33 em), so neither the name's overflow:hidden nor the button
+   cuts a word; the row is as tall as this (layoutGroups). */
+.hzrow .b .hn{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;line-height:1.35}
+.hzrow .b .hw{font-weight:800;line-height:1.35}
 .hzrow .b.on{background:#0b2414;border-color:var(--green);color:#9BF5B7}
 .hzrow .b.off{background:var(--panel);border-color:var(--line);color:var(--cream)}
 .hzrow .b.unk{border-style:dashed;color:var(--grey)}
