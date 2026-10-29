@@ -7087,8 +7087,8 @@ def build():
 
  ("fix1 H13: a late sender bursts to catch up",
   "ltcplay/flamelink.py",
-  "        return now + period",
-  "        return now"),
+  "    return nxt + math.ceil((now + gap - nxt) / period) * period",
+  "    return nxt"),
 
  # -- flame frame timing (2026-10-29, Jeff's Pico: frames 78 to 178 ms late)
  ("flame timing: the deadline drifts with every late wake",
@@ -7098,8 +7098,8 @@ def build():
 
  ("flame timing: a late wake squeezes the next frame in after it",
   "ltcplay/flamelink.py",
-  "    if nxt - now < period / 2.0:",
-  "    if nxt - now < 0:"),
+  "    if nxt - now >= gap:",
+  "    if nxt - now >= 0:"),
 
  ("flame timing: an interval over a limit is not counted over it",
   "ltcplay/flamelink.py",

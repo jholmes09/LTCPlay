@@ -44376,25 +44376,30 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
 def test_flame_link_schedule_absolute_deadlines_no_burst():
     section("flame link timing (2026-10-29): absolute deadlines on a fake "
             "clock, no drift from late wakes, and after a stall the latest "
-            "frame once and then the cadence, never a burst")
+            "frame once and then the next grid point, never a burst")
     import json
     from ltcplay import flamelink as fl
     P = 0.025
     nd = fl.next_deadline
-    # Waking a little late is made up on the next sleep: the deadlines stay
-    # on the grid (no drift builds up).
+    G = P * fl.MIN_GAP_SHARE                 # 5 ms at 40 a second
+    # Waking late is made up on the next sleep: the deadlines stay on the
+    # grid of the first frame (no drift builds up, the rate stays 40).
     check(abs(nd(1.000, 1.003, P) - 1.025) < 1e-9 and
-          abs(nd(1.025, 1.0374, P) - 1.050) < 1e-9,
-          "a wake up to half a period late keeps the grid")
-    # Behind by half a period or more: the frame just sent was the overdue
-    # one, the next is a whole period from now; never closer than half.
-    check(abs(nd(1.000, 1.013, P) - 1.038) < 1e-9 and
-          abs(nd(1.000, 1.200, P) - 1.225) < 1e-9,
-          "behind: the next frame is one period from now")
-    for now in (1.0, 1.001, 1.0124, 1.0126, 1.02, 1.03, 1.3, 5.0):
+          abs(nd(1.025, 1.0374, P) - 1.050) < 1e-9 and
+          abs(nd(1.000, 1.019, P) - 1.025) < 1e-9,
+          "a late wake keeps the grid")
+    # The next grid point too close (or gone): skipped, never sent late.
+    check(abs(nd(1.000, 1.022, P) - 1.050) < 1e-9 and
+          abs(nd(1.000, 1.200, P) - 1.225) < 1e-9 and
+          abs(nd(1.000, 1.2051, P) - 1.225) < 1e-9 and
+          abs(nd(1.000, 1.2210, P) - 1.250) < 1e-9,
+          "behind: the next grid point at least 5 ms away")
+    for now in (1.0, 1.001, 1.0124, 1.0126, 1.02, 1.0201, 1.0249, 1.03,
+                1.3, 5.0, 5.0123):
         got = nd(1.0, now, P)
-        check(got - now >= P / 2 - 1e-9,
-              f"never a frame sooner than half a period: {now} -> {got}")
+        steps = (got - 1.0) / P
+        check(got - now >= G - 1e-9 and abs(steps - round(steps)) < 1e-6,
+              f"on the grid and never sooner than 5 ms: {now} -> {got}")
 
     cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
                                     "key": _fl_key(), "send_hz": 40,
@@ -44442,27 +44447,33 @@ def test_flame_link_schedule_absolute_deadlines_no_burst():
     check(all(abs(((m - mono[0]) / P) - round((m - mono[0]) / P)) * P
               <= 0.0031 for m in mono),
           "and each frame within 3 ms of its own grid point: no drift")
-    # One 200 ms stall: one long gap, then the next frame one period after
-    # the overdue one, and the cadence again. Never two frames closer
-    # together than half a period, so never a burst to catch up.
-    lk, gaps, mono = run({60: 0.2})
+    # One 210 ms stall: one long gap, the overdue frame once, then the
+    # next grid point (never the missed ones, so never a burst), and the
+    # cadence again.
+    lk, gaps, mono = run({60: 0.21})
     long_ = [g for g in gaps if g > P * 1.5]
-    check(len(long_) == 1 and abs(long_[0] - (P + 0.2)) < 1e-6,
+    check(len(long_) == 1 and abs(long_[0] - (P + 0.21)) < 1e-6,
           f"the stall shows once: {sorted(set(gaps))[-3:]}")
     i = gaps.index(long_[0])
-    check(all(abs(g - P) < 1e-6 for g in gaps[i + 1:]),
-          f"after the stall the cadence carries on at once: "
+    check(abs(gaps[i + 1] - 0.015) < 1e-6 and
+          all(abs(g - P) < 1e-6 for g in gaps[i + 2:]),
+          f"after the stall the next grid point, then the cadence: "
           f"{gaps[i + 1:i + 5]}")
-    check(min(gaps) >= P / 2 - 1e-6, f"no burst: shortest gap {min(gaps)}")
-    # A wake 20 ms late (less than a period, more than half): the late frame
-    # goes, the next one a period after it, not 5 ms after.
-    lk, gaps, mono = run({60: 0.020})
-    check(min(gaps) >= P / 2 - 1e-6 and max(gaps) <= P + 0.020 + 1e-6,
-          f"a 20 ms late wake: no frame squeezed in after it: "
+    check(len(mono) == 200 and min(gaps) >= G - 1e-6,
+          f"no burst: one frame a wake, shortest gap {min(gaps)}")
+    span = mono[-1] - mono[0]
+    check(abs(round(span / P) * P - span) < 1e-6,
+          "and every frame still on the grid of the first")
+    # A wake 22 ms late: the late frame goes; the grid point 3 ms after it
+    # is skipped, the next one after that is not.
+    lk, gaps, mono = run({60: 0.022})
+    check(min(gaps) >= G - 1e-6 and max(gaps) <= P + 0.022 + 1e-6 and
+          any(abs(g - 0.028) < 1e-6 for g in gaps),
+          f"a 22 ms late wake: no frame squeezed in 3 ms after it: "
           f"{sorted(set(gaps))}")
     # The timing counters saw the same intervals the frames carry.
     v = lk.timing_view()["since_start"]
-    check(v["intervals"] == len(gaps) and abs(v["worst_ms"] - 45.0) < 0.01,
+    check(v["intervals"] == len(gaps) and abs(v["worst_ms"] - 47.0) < 0.01,
           f"the sender counted every interval and the worst: {v}")
     print("  ok")
 

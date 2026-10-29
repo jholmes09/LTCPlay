@@ -505,6 +505,9 @@ TIMING_LIMITS_MS = (50, 75, 100, 150)
 # it and never changed by it.
 TIMING_ALERT_MS = 100
 TIMING_HOUR_S = 3600.0
+# next_deadline: no two frames closer together than this share of a period
+# (5 ms at 40 a second).
+MIN_GAP_SHARE = 0.2
 _TIMING_BINS = 301              # 0 to 299 ms by the millisecond, then more
 
 
@@ -577,19 +580,20 @@ class FrameTiming:
 
 
 def next_deadline(next_at, now, period):
-    """When the sender sends next: one period after the last deadline
-    (absolute deadlines: a sleep that wakes a little late is made up on the
-    next one, so no drift builds up), unless that is less than half a
-    period away. Then the sender is behind (a stall: the OS woke it late,
-    or something held the interpreter) and the frame it just sent was the
-    overdue one: the next is one whole period from now. So after a stall
-    the latest frame goes once and the cadence carries on from there; no
-    two frames ever go closer together than half a period, and a missed
-    tick is never sent late in a burst to catch up."""
+    """When the sender sends next: always on the grid of its first frame,
+    one period apart (absolute deadlines: a sleep that wakes late is made
+    up on the next one, so no drift ever builds up and the rate stays 40 a
+    second). The next grid point is skipped while it is less than
+    MIN_GAP_SHARE of a period away (or already gone): after a stall the
+    frame just sent was the overdue one, it went once, and the cadence
+    carries on at the next grid point. A missed tick is never sent late,
+    so there is never a burst to catch up, and no two frames ever go
+    closer together than MIN_GAP_SHARE of a period."""
     nxt = next_at + period
-    if nxt - now < period / 2.0:
-        return now + period
-    return nxt
+    gap = period * MIN_GAP_SHARE
+    if nxt - now >= gap:
+        return nxt
+    return nxt + math.ceil((now + gap - nxt) / period) * period
 
 
 # -- the two inputs ----------------------------------------------------------
