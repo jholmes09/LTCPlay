@@ -2887,6 +2887,9 @@ def test_service_over_loopback():
         for k in range(2, 2 + int(0.6 / cfg.tick_period_s)):
             send(k, {})
             tick()
+        # Read what came meanwhile: undrained, a socket's receive buffer
+        # fills and the newest status frames are the ones dropped.
+        _drain(ltc_status)
         # arm group 0 with consent, clean edge: the counter must be seen
         # advancing, then a down edge on a live counter, then the request
         tick()
@@ -5850,7 +5853,9 @@ def test_passthrough_config():
             "load; Jeff's live group layout plus the hazers loads; every "
             "overlap, bad slot and bad name is refused")
     cfg = make_config()
-    check([(p.name, p.slots) for p in cfg.passthrough] == HAZERS,
+    check([(p.name, p.slots) for p in cfg.passthrough] == HAZERS and
+          [(p.haze, p.fan) for p in cfg.passthrough] == [(80, 81), (82, 83),
+                                                        (84, 85)],
           f"the example lists the three hazers at 80 to 85: "
           f"{cfg.passthrough}")
     d = example_dict()
@@ -5875,33 +5880,42 @@ def test_passthrough_config():
             return check(want in str(e), f"{pt!r} refused for {want!r}: {e}")
         return check(False, f"passthrough {pt!r} was accepted")
 
-    one = lambda slots, name="Hazer 1": [{"name": name, "slots": slots}]
-    refused(one([401]), "a safety slot of front row")
-    refused(one([411]), "a fire slot of front row")
-    refused(one([1]), "an aim slot of wave flamer")
-    refused(one([12]), "a safety slot of wave flamer")
-    refused(one([2]), "a fire slot of wave flamer")
-    refused(one([461, 80]), "a fire slot of spare")
-    refused([{"name": "Hazer 1", "slots": [80, 81]},
-             {"name": "Hazer 2", "slots": [81, 82]}], "already a slot of")
-    refused(one([80, 80]), "already a slot of")
-    refused(one([0]), "not a slot between 1 and 512")
-    refused(one([513]), "not a slot between 1 and 512")
-    refused(one([True]), "not a slot between 1 and 512")
-    refused(one(["80"]), "not a slot between 1 and 512")
-    refused(one([]), "at least one slot")
-    refused(one(80), "at least one slot")
-    refused(one([80], name=""), "has no name")
-    refused(one([80], name="x" * 65), "longer than")
-    refused(one([80], name="front row"), "already used")
-    refused([{"name": "Hazer 1", "slots": [80]},
-             {"name": "Hazer 1", "slots": [81]}], "already used")
-    refused([{"name": "Hazer 1", "slots": [80], "arm": 1}],
+    one = lambda haze, fan=81, name="Hazer 1": [{"name": name, "haze": haze,
+                                                "fan": fan}]
+    refused(one(401), "a safety slot of front row")
+    refused(one(411), "a fire slot of front row")
+    refused(one(1), "an aim slot of wave flamer")
+    refused(one(12), "a safety slot of wave flamer")
+    refused(one(80, fan=2), "a fire slot of wave flamer")
+    refused(one(80, fan=461), "a fire slot of spare")
+    refused([{"name": "Hazer 1", "haze": 80, "fan": 81},
+             {"name": "Hazer 2", "haze": 81, "fan": 82}], "already a slot of")
+    refused(one(80, fan=80), "already a slot of")
+    refused(one(0), "not a slot between 1 and 512")
+    refused(one(80, fan=513), "not a slot between 1 and 512")
+    refused(one(True), "not a slot between 1 and 512")
+    refused(one("80"), "not a slot between 1 and 512")
+    refused(one(None), "not a slot between 1 and 512")
+    refused([{"name": "Hazer 1", "haze": 80}], "fan is missing")
+    refused([{"name": "Hazer 1", "fan": 81}], "haze is missing")
+    refused([{"name": "Hazer 1", "slots": [80, 81]}],
+            "a key this program does not know")
+    refused(one(80, name=""), "has no name")
+    refused(one(80, name="x" * 65), "longer than")
+    refused(one(80, name="front row"), "already used")
+    refused([{"name": "Hazer 1", "haze": 80, "fan": 81},
+             {"name": "Hazer 1", "haze": 82, "fan": 83}], "already used")
+    refused([{"name": "Hazer 1", "haze": 80, "fan": 81, "arm": 1}],
             "a key this program does not know")
     refused(["Hazer 1"], "is not an object")
-    refused({"name": "Hazer 1", "slots": [80]}, "must be a list")
-    refused([{"name": f"H{i}", "slots": [100 + i]} for i in range(17)],
-            "at most 16")
+    refused({"name": "Hazer 1", "haze": 80, "fan": 81}, "must be a list")
+    refused([{"name": f"H{i}", "haze": 100 + 2 * i, "fan": 101 + 2 * i}
+             for i in range(17)], "at most 16")
+    swapped = example_dict()
+    swapped["passthrough"][0] = {"name": "Hazer 1", "haze": 81, "fan": 80}
+    p0 = config.from_dict(swapped).passthrough[0]
+    check(p0.haze == 81 and p0.fan == 80 and p0.slots == [81, 80],
+          "the roles are whatever the config says: swapped, they swap")
     for bad in (dict(groups=copy.deepcopy(JEFF_GROUPS) + [
             {"name": "spare", "safety": 80, "fire": [90]}]),
                 dict(groups=copy.deepcopy(JEFF_GROUPS) + [
@@ -6019,6 +6033,25 @@ def test_passthrough_passes_only_while_on_and_fresh():
     check(_haze(r)[:2] == [0, 120],
           f"a slot in the lockout file is zero whatever else holds: "
           f"{_haze(r)}")
+    check(_pt(r)["locked"] == [True, False] and
+          _pt(r)["why"] == composer.PT_LOCKED,
+          f"and the status says so (reviewer A, 2): {_pt(r)}")
+    r.c.note_locked_slots(set())
+    # An overrun (a panic tick): all zeros, and every hazer off until the
+    # show program says it off and on again (reviewer A, 3).
+    r.run(1, cue)
+    check(_haze(r)[:2] == [200, 120], "setup: Hazer 1 passing")
+    r.step(dt=(r.cfg.overrun_ms + 50) / 1000.0)
+    check(_haze(r) == [0] * 6 and r.out.universe == bytes(512),
+          "an overrun tick is all zeros")
+    r.run(3, cue)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_FAULT,
+          f"after it, still zero though asked: {_pt(r)}")
+    r.hazers = ()
+    r.run(1, cue)
+    r.hazers = ("Hazer 1",)
+    r.run(1, cue)
+    check(_haze(r)[:2] == [200, 120], "off then on: passing again")
 
 
 def test_passthrough_abort_and_senders():
@@ -6079,6 +6112,31 @@ def test_passthrough_abort_and_senders():
           f"a different sender taking the link asking ON is zero: {_pt(r)}")
 
 
+def test_passthrough_is_refused_on_a_group_slot_and_written_first():
+    section("passthrough (reviewer A of #168, 1): a Composer refuses a "
+            "passthrough slot that is a group slot however its Config was "
+            "built, and the hazer block is written before the groups, so "
+            "even a hazer forced onto a group slot never changes it")
+    cfg = make_config()
+    cfg.passthrough = [config.Passthrough("x", 411, 412)]
+    try:
+        Composer(cfg)
+        check(False, "a Composer took a passthrough on front row's fire slots")
+    except ValueError as e:
+        check("411" in str(e), f"refused: {e}")
+    r = Rig()
+    r.c.pt = [config.Passthrough("x", 411, 412)]
+    r.c._pt_asked, r.c._pt_on = [False], [False]
+    r.c._pt_block = [composer.PT_START]
+    r.run(2, {411: 200, 412: 201})
+    r.hazers = ("x",)
+    r.run(3, {411: 200, 412: 201})
+    check(r.c._pt_on == [True] and r.out.universe[410] == 0 and
+          r.out.universe[411] == 0 and r.group(0)["armed"] == "disarmed",
+          f"forced onto a disarmed group's fire slots, the group's zero "
+          f"wins: {r.out.universe[410:412]}")
+
+
 def test_passthrough_never_touches_a_group():
     section("passthrough (2026-10-29): hazers switched on and off, and an "
             "Abort's hazer reset, change no group's arming, edges or "
@@ -6126,8 +6184,9 @@ def test_passthrough_status_and_start_line():
     pt = r.out.status["passthrough"]
     check([(p["name"], p["slots"]) for p in pt] == HAZERS,
           f"one status entry per hazer: {pt}")
-    check(all(set(p) == {"name", "slots", "asked", "enabled", "passing",
-                         "sent", "why"} for p in pt), f"its fields: {pt[0]}")
+    check(all(set(p) == {"name", "slots", "haze", "fan", "asked", "enabled",
+                         "passing", "locked", "sent", "why"} for p in pt) and
+          (pt[0]["haze"], pt[0]["fan"]) == (80, 81), f"its fields: {pt[0]}")
     check(json.loads(link.encode_status(r.out.status, KEY).decode())
           ["passthrough"] == pt, "it survives the wire")
     d = example_dict()
@@ -6137,8 +6196,8 @@ def test_passthrough_status_and_start_line():
     check(r2.c.tick().status["passthrough"] == [],
           "a config without passthrough reports an empty list")
     line = fsmain.passthrough_line(r.cfg.passthrough, "some/flamesafe.json")
-    check(line.startswith("passthrough: Hazer 1 80, 81; Hazer 2 82, 83; "
-                          "Hazer 3 84, 85 ")
+    check(line.startswith("passthrough: Hazer 1 haze 80, fan 81; Hazer 2 "
+                          "haze 82, fan 83; Hazer 3 haze 84, fan 85 ")
           and os.path.abspath("some/flamesafe.json") in line,
           f"the start line: {line}")
     check(fsmain.passthrough_line([], "x.json").startswith(
@@ -6385,6 +6444,7 @@ if __name__ == "__main__":
     test_passthrough_link_decoding()
     test_passthrough_passes_only_while_on_and_fresh()
     test_passthrough_abort_and_senders()
+    test_passthrough_is_refused_on_a_group_slot_and_written_first()
     test_passthrough_never_touches_a_group()
     test_passthrough_status_and_start_line()
     test_the_wall_from_this_side()

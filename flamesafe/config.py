@@ -35,7 +35,7 @@ GROUP_KEYS = {"name", "safety", "fire", "arm_value", "safety_profile",
 PROFILE_KEYS = ("arm_value", "enable_lo", "enable_hi", "fire_at")
 # A passthrough entry (Jeff, 2026-10-29, the hazers): a device on the flame
 # universe that is not a flame.  Nothing else is allowed in one.
-PASSTHROUGH_KEYS = {"name", "slots"}
+PASSTHROUGH_KEYS = {"name", "haze", "fan"}
 # At most this many passthrough entries (the flame frame's hazers_on list
 # is refused longer than this, link.HAZERS_MAX).
 PASSTHROUGH_MAX = 16
@@ -203,14 +203,21 @@ class Passthrough:
     no Abort has stood since; else zero.  It never arms, never fires and
     never touches a group's slots: the config refuses any overlap."""
 
-    __slots__ = ("name", "slots")
+    __slots__ = ("name", "haze", "fan", "slots")
 
-    def __init__(self, name, slots):
+    def __init__(self, name, haze, fan):
         self.name = str(name)
-        self.slots = [int(s) for s in slots]
+        # The hazer's two channels by role (Jeff, 2026-10-29: the haze
+        # output and the fan). flamesafe treats them alike; the role is
+        # for the engine and the screens. Swap them in the config if a
+        # fixture is the other way round.
+        self.haze = int(haze)
+        self.fan = int(fan)
+        self.slots = [self.haze, self.fan]
 
     def __repr__(self):
-        return f"<Passthrough {self.name!r} slots={self.slots}>"
+        return (f"<Passthrough {self.name!r} haze={self.haze} "
+                f"fan={self.fan}>")
 
 
 class Config:
@@ -701,15 +708,16 @@ def from_dict(d, source="config"):
 
 def _passthrough(d, groups):
     """The "passthrough" list (Jeff, 2026-10-29, the hazers): optional, one
-    entry per device, each {"name": text, "slots": [1..512, ...]}.  Refused
-    unless every slot is a slot of no group (safety, fire or aim) and of no
-    other entry, every entry has at least one slot, and every name is its
-    own (no other entry and no group has it).  Left out, there is none and
-    every slot that belongs to no group is zero, as before."""
+    entry per hazer, each {"name": text, "haze": slot, "fan": slot}, slots
+    1..512.  Refused unless both slots are given, are different, and are
+    slots of no group (safety, fire or aim) and of no other entry, and
+    every name is its own (no other entry and no group has it).  Left out,
+    there is none and every slot that belongs to no group is zero, as
+    before."""
     raw = d.get("passthrough", [])
     if not isinstance(raw, list):
         raise ConfigError("passthrough must be a list of {\"name\", "
-                          "\"slots\"} entries, one per hazer.")
+                          "\"haze\", \"fan\"} entries, one per hazer.")
     if len(raw) > PASSTHROUGH_MAX:
         raise ConfigError(f"passthrough has {len(raw)} entries; at most "
                           f"{PASSTHROUGH_MAX}.")
@@ -738,10 +746,11 @@ def _passthrough(d, groups):
                               f"used by a group or another passthrough "
                               f"entry.")
         names.add(name)
-        slots = e.get("slots")
-        if not isinstance(slots, list) or not slots:
-            raise ConfigError(f"passthrough {name!r}: slots must be a list "
-                              f"of at least one slot.")
+        for role in ("haze", "fan"):
+            if role not in e:
+                raise ConfigError(f"passthrough {name!r}: {role} is missing; "
+                                  f"give the {role} channel's slot.")
+        slots = [e.get("haze"), e.get("fan")]
         for s in slots:
             if isinstance(s, bool) or not isinstance(s, int) \
                     or not (1 <= s <= rules.UNIVERSE_SIZE):
@@ -756,7 +765,7 @@ def _passthrough(d, groups):
                 raise ConfigError(f"passthrough {name!r}: slot {s} is "
                                   f"already a slot of {owner[s]!r}.")
             owner[s] = name
-        out.append(Passthrough(name, slots))
+        out.append(Passthrough(name, slots[0], slots[1]))
     return out
 
 

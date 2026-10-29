@@ -63,8 +63,7 @@ def passthrough_line(entries, path):
     if not entries:
         return (f"passthrough: none in {where}. Every slot that belongs to "
                 f"no group is zero.")
-    parts = [f"{p.name} {', '.join(str(s) for s in p.slots)}"
-             for p in entries]
+    parts = [f"{p.name} haze {p.haze}, fan {p.fan}" for p in entries]
     return (f"passthrough: {'; '.join(parts)} (the show's values only while "
             f"the show program has it switched on, the link is fresh and no "
             f"Abort has stood since; else zero; off at start), read from "

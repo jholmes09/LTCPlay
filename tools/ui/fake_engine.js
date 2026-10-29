@@ -67,10 +67,10 @@ function baseStatus(){
   s.transport = {programming: false, why: "Nothing is playing. To scrub, on the show machine choose Programming on the Show file card and press Run.", freerun: false, paused: false, loop: null, marks: {}};
   s.live_flame = {available: true, on: false, why: ""};
   s.scrub_flames = {available: true, on: false, why: ""};
-  // The hazers (hazers.py, 2026-10-29): Jeff's three, all off.
-  s.hazers = {available: true, down: "", last_off: null, agree: true,
-    hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, slots: [78 + 2 * n, 79 + 2 * n], on: false,
-      label: "Hazer " + n + " OFF", passing: false, why: "switched off in the show program"}))};
+  // The hazers (hazers.py, 2026-10-29): Jeff's three, all disarmed.
+  s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
+    hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
+      label: "Hazer " + n + " DISARMED", state: "disarmed", haze: 102, fan: 153, haze_pct: 40, fan_pct: 60, why: null}))};
   return s;
 }
 
@@ -121,7 +121,8 @@ const SCENARIOS = {
   rig_continued: s => { SCENARIOS.running(s); s.preroll = {state: "failed", label: "show 4", continued: {by: "Dallen", off: ["video"], failed: "Video"}}; },
   all_live: s => { s.me = me("Jeff", "admin"); s.cleaning = {available: true, state: "phase2", text: "Phase 2 of 2: purge bursts"};
     s.live_flame = {available: true, on: true, who: "Jeff"}; s.scrub_flames = {available: true, on: true, who: "Jeff"}; },
-  hazers_on: s => { SCENARIOS.running(s); s.hazers.hazers.forEach((h, i) => { h.on = i !== 1; h.passing = h.on; h.why = h.on ? "" : h.why; }); },
+  hazers_on: s => { SCENARIOS.running(s); s.hazers.show = "playing"; s.hazers.hazers.forEach((h, i) => { h.armed = i !== 1; h.state = h.armed ? "running" : "disarmed"; }); },
+  hazers_held: s => { SCENARIOS.held(s); s.hazers.show = "held"; s.hazers.hazers.forEach(h => { h.armed = true; h.state = "held"; }); },
   flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
@@ -194,8 +195,10 @@ class FakeEngine {
         s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Stopped.");
       case "/api/remote/disarm-all": s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Disarmed.");
       case "/api/remote/hazer": { const h = s.hazers.hazers.find(x => x.name === body.hazer);
-        if(h){ h.on = body.on === true; h.passing = h.on; } return ok((body.hazer || "Hazer") + (body.on === true ? " is ON." : " is OFF.")); }
-      case "/api/remote/hazers-off": s.hazers.hazers.forEach(h => { h.on = false; h.passing = false; }); return ok("Every hazer is OFF.");
+        if(h){ h.armed = body.on === true; h.state = h.armed ? "standby" : "disarmed"; } return ok((body.hazer || "Hazer") + (body.on === true ? " is ARMED." : " is DISARMED.")); }
+      case "/api/remote/hazers-off": s.hazers.hazers.forEach(h => { h.armed = false; h.state = "disarmed"; }); return ok("Every hazer is DISARMED.");
+      case "/api/remote/hazer-level": s.hazers.hazers.forEach(h => { if(body.hazer === "all" || h.name === body.hazer){
+        if(typeof body.haze === "number") h.haze_pct = body.haze; if(typeof body.fan === "number") h.fan_pct = body.fan; } }); return ok("Set.");
       case "/api/remote/group-disarm": if(s.flames.groups[body.group]) s.flames.groups[body.group].armed = "disarmed"; return ok("Disarmed.");
       case "/api/remote/arm-hold": {
         const g = s.flames.groups[body.group];

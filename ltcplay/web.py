@@ -2198,11 +2198,10 @@ def _attach_scrub_flames(httpd):
 def _attach_hazers(httpd):
     """The hazers (hazers.py, Jeff 2026-10-29): built for the Fire & Ice
     engine with a flame link whose flamesafe config lists any. Every hazer
-    OFF at start. The Programming transport's position feeds them between
-    shows (flamelink.hazer_scrub). A failure leaves them unavailable (every
-    hazer stays OFF) and is said once; the show is never held back."""
+    DISARMED at start, its levels read from the settings folder. A failure
+    leaves them unavailable (every hazer DISARMED, its slots zero) and is
+    said once; the show is never held back."""
     from . import hazers as hazers_mod
-    from . import scrubflames
     remote = httpd.remote
     link = getattr(httpd.fire_ice, "flame_link", None)
     if link is None or not link.hazer_names():
@@ -2216,23 +2215,19 @@ def _attach_hazers(httpd):
             link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
             flames_get=lambda: fs.view() if fs is not None else None,
             abort_standing=remote._abort_standing,
+            show_state=remote.hazer_show_state,
+            blocker=remote.hazer_blocker, folder=remote.folder,
             journal=_journal, audit=getattr(remote, "audit", None))
-        cues = remote.flame_cues
-        if hasattr(cues, "at_transport"):
-            control = remote.control
-            link.hazer_scrub = lambda: cues.at_transport(
-                scrubflames.transport_tc(control))
     except Exception as e:                       # noqa: BLE001
         print(f"The hazers could not be set up: {type(e).__name__}: {e}")
         return
     say = getattr(link, "journal_line", None)
     if say is not None:
         say("Flame link: hazers " + "; ".join(
-            f"{n} {', '.join(str(x) for x in sl)}"
-            for n, sl in link.cfg.hazers)
+            f"{n} haze {sl[0]}, fan {sl[1]}" for n, sl in link.cfg.hazers)
             + f" read from {getattr(link, 'flamesafe_path', '')}. Every "
-              f"hazer is OFF until switched on.", action="flame_link",
-            outcome="hazers")
+              f"hazer is DISARMED until armed; it runs at its levels only "
+              f"while a show plays.", action="flame_link", outcome="hazers")
 
 
 def _attach_fuel(httpd):

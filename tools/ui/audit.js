@@ -30,7 +30,7 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["admin", "show"],
   ["running", "show", "stop_confirm"], ["running", "show", "abort_first_tap"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
   ["rig_checking", "show"], ["rig_failed", "show"], ["rig_continued", "show"], ["cleaning", "show"],
-  ["all_live", "show"], ["hazers_on", "show"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
+  ["all_live", "show"], ["hazers_on", "show"], ["hazers_held", "show"], ["hazers_on", "show", "hazer_sheet"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
   ["idle_operator", "day"], ["idle_operator", "schedule"], ["admin", "settings"], ["signed_out", "show", "signin"],
 ];
 const CASES_1 = [
@@ -263,6 +263,7 @@ async function act(page, extra){
   if(extra === "info") await page.click("#nav-info");
   if(extra === "stop_confirm"){ await page.click("#b-stop"); }
   if(extra === "abort_first_tap"){ await page.click("#b-abort"); }
+  if(extra === "hazer_sheet"){ await page.click("#hz-open"); }
   await page.waitForTimeout(500);
 }
 

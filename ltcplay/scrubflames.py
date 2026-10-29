@@ -74,34 +74,6 @@ def tc_text(seconds):
     return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
 
 
-def transport_tc(control):
-    """The Programming screen's transport position as the flame link's
-    timecode text, or None: nothing running, no player, a Blackout,
-    Preshow or look, not a free run the operator started, paused, or the
-    tick not caught up with a move. The same reads as ScrubFlames.state,
-    WITHOUT needing fire flames while scrubbing on: the hazers follow the
-    playhead whether or not it is (Jeff, 2026-10-29; flamelink.hazer_scrub).
-    Never raises, never waits (plain reads only)."""
-    try:
-        s = getattr(control, "session", None)
-        if s is None or not getattr(s, "running", False):
-            return None
-        p = getattr(s, "player", None)
-        if p is None or getattr(p, "override", None) is not None:
-            return None
-        if getattr(p, "freerun_epoch", None) is None or \
-                getattr(p, "freerun_paused_at", None) is not None:
-            return None
-        if getattr(p, "freerun_by", None) != "operator":
-            return None
-        at = getattr(p, "transport_at", None)
-        if not at or at[1] != getattr(p, "transport_moves", 0):
-            return None
-        return tc_text(at[0])
-    except Exception:
-        return None
-
-
 class ScrubFlames:
     """The mode: on and off, its per frame position, and its watch.
 

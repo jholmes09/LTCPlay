@@ -95,6 +95,9 @@ PT_ABORT = ("zeroed by the show's Abort: switch it off and on again in the "
             "show program")
 PT_NEW_SENDER = ("the show program link changed hands: switch it off and on "
                  "again in the show program")
+PT_FAULT = ("the safety program faulted (an overrun or a compose fault): "
+            "switch it off and on again in the show program")
+PT_LOCKED = "a slot of it is in the lockout file: held at zero"
 _FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
                   "not a JSON object", "wrong contract version",
                   "wrong key", "wrong message type", "seq is not",
@@ -244,6 +247,14 @@ class Composer:
         # (_pt_block[i] empty): this program's start, a lost link, a change
         # of sender, an Abort.  It never reads or writes any group state.
         self.pt = list(getattr(config, "passthrough", None) or [])
+        # The config loader refuses this already; refused again here, so a
+        # Config built any other way can never put a hazer on a group's
+        # slot (reviewer A of #168, 1).
+        overlap = sorted({s for p in self.pt for s in p.slots}
+                         & set(config.all_slots()))
+        if overlap:
+            raise ValueError(f"passthrough slots {overlap} are flame group "
+                             f"slots")
         self._pt_asked = [False] * len(self.pt)
         self._pt_on = [False] * len(self.pt)
         self._pt_block = [PT_START] * len(self.pt)
@@ -1262,6 +1273,9 @@ class Composer:
         """All zeros, every latch cleared, every established arm forgotten
         so the next tick sees a rising edge and checks it."""
         try:
+            # Every hazer off too, and off until switched off and on again
+            # (reviewer A of #168, 3), as every group needs a fresh cycle.
+            self._pt_reset(PT_FAULT)
             self._last_sent = [DISARM] * self.n
             self._edge_quiet = [0] * self.n
             self._raised = [frozenset()] * self.n
@@ -1307,7 +1321,10 @@ class Composer:
         out = []
         for i, p in enumerate(self.pt):
             ok = bool(passing[i]) if passing else False
-            if ok:
+            locked = [sl in self._locked for sl in p.slots]
+            if ok and any(locked):
+                why = PT_LOCKED
+            elif ok:
                 why = ""
             elif not frame_fresh:
                 why = PT_LINK
@@ -1318,9 +1335,11 @@ class Composer:
             else:
                 why = "safety program fault"
             out.append({"name": p.name, "slots": list(p.slots),
+                        "haze": p.haze, "fan": p.fan,
                         "asked": self._pt_asked[i],
                         "enabled": self._pt_on[i],
                         "passing": ok,
+                        "locked": locked,
                         "sent": [buf[sl - 1] if buf is not None else 0
                                  for sl in p.slots],
                         "why": why})

@@ -108,7 +108,7 @@ PERMS = (
              "scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
             "keys, a purge, the Fireball page's channels, the wave flamer "
-            "cleaning, arming a laser, switching a hazer on"),
+            "cleaning, arming a laser, arming a hazer, the hazer levels"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -126,7 +126,7 @@ SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
                "letting go of a hold, stopping or clearing a purge, "
                "locking a machine, a laser test off, live flame "
                "programming off, fire flames while scrubbing off, "
-               "a hazer off, Hazers off, Acknowledge, signing "
+               "a hazer disarm, Hazers off, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
 # The defaults (Jeff decides; USERS.md). Signed out is view only (Jeff's
@@ -217,7 +217,7 @@ REMOTE_ROUTES = {
     "cleaning-stop": "safety",
     # The hazers (hazers.py): Hazers off only takes something away; a
     # hazer ON is an arm press, OFF safety (classify).
-    "hazers-off": "safety", "hazer": "arm",
+    "hazers-off": "safety", "hazer": "arm", "hazer-level": "arm",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
@@ -285,8 +285,8 @@ def classify(route, body=None):
         if name == "laser-test" and body.get("on") is not True:
             return "safety"
         if name == "hazer" and body.get("on") is not True:
-            # A hazer OFF (anything but the JSON word true is off at the
-            # engine, remote.hazer_post) only takes something away.
+            # A hazer disarm (anything but the JSON word true disarms at
+            # the engine, remote.hazer_post) only takes something away.
             return "safety"
         if name == "screen-arming" and body.get("on") is False:
             # Switching arming from a screen OFF only takes risk away.

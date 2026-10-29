@@ -782,29 +782,42 @@ restarted. Within about 5 seconds of the edit, the rack screen shows a note
 
 ## The hazers
 
-Jeff, 2026-10-29. The three haze machines share the flame universe; their
-data is in the show's FSEQ beside the flames. They have no arm, so each
-has an ON and OFF instead:
+Jeff, 2026-10-29. The three haze machines share the flame universe, but
+LTC Player runs them, not the show file: whatever the FSEQ or xLights has
+on their channels is ignored. Each hazer has a **haze** and a **fan**
+channel, and is either ARMED or DISARMED.
 
-- **Where.** On the show screen, a Hazers row under the flame groups:
-  Hazer 1, Hazer 2 and Hazer 3, each reading ON (green) or OFF, and
-  **Hazers off**. On the Stream Deck, the hazers page: key 5 (HAZERS)
-  opens it, or, with announcements set up, key 5 on the announcements
-  page. Keys 1 to 3 are the hazers, key 4 HAZERS OFF, key 5 BACK.
-- **A tap.** One tap switches a hazer on, the next switches it off. No
-  hold: a hazer is not a flame. Switching one on needs the same sign-in as
-  arming (the arm row of the role matrix), and from an iPad needs arming
-  from a screen switched on. Off works for everyone, always.
-- **What ON does.** While a hazer is on, its two channels carry the show's
-  haze values: in the show, in Programming (scrubbing or playing, with or
-  without fire flames while scrubbing), and from xLights in live flame
-  programming. Off, they are zero.
-- **What turns them off.** Abort, Stop, Hazers off, a restart, and
-  flamesafe not answering for a second. Hold and the end of a show leave
-  them as they are. After an Abort or a Stop, switch each one on again
-  (wait a second after a Stop).
-- **If a tile says flamesafe holds it at zero,** flamesafe needs to see it
-  switched off and on: tap it off, then on.
+- **Arming.** On the show screen, the Hazers row under the flame groups:
+  Hazer 1, Hazer 2 and Hazer 3, each reading ARMED (green) or DISARMED.
+  One tap arms, the next disarms. No hold: a hazer is not a flame. On
+  Interface 2.0 on a narrow screen the row is one Hazers tile; its Hazers
+  button opens the hazers, with each one's arm button. On the Stream
+  Deck: the hazers page, keys 1 to 3 arm and disarm, key 4 is HAZERS OFF,
+  key 5 BACK. Open it with key 5 on the arm keys page: a tap if no
+  announcements are set up; with announcements, a tap is still
+  ANNOUNCE, and a hold (0.7 s, the ring fills) is the hazers. The
+  announcements page's key 5 is always BACK.
+- **Levels.** Levels on the show screen (Hazers on 2.0's tile): each
+  hazer's Haze and Fan, 0 to 100 percent, 5 a tap. **Same for all
+  hazers** sets every hazer at once. They take effect at once, during a
+  show too, and are kept on the show PC (ltcplay_hazers.json in the
+  settings folder) for the next night. They start at 0. The Stream Deck
+  does not set levels.
+- **When they run.** An armed hazer runs at its levels for the whole time
+  a show is playing, from its start to its end. Not during the rig check
+  before it, not between shows, not in Programming. During a **Hold** its
+  haze stops and the tile reads ARMED, paused by Hold; it starts again on
+  Resume. Arming stays from one show to the next: arm once a night.
+- **Who.** Arming and levels need the same sign-in as arming a flame
+  group (the arm row of the role matrix), and from an iPad need arming
+  from a screen switched on. Disarming and Hazers off work for everyone,
+  always.
+- **What disarms them.** Abort, Stop, Hazers off, a restart, flamesafe not
+  answering for a second, and live flame programming ending (a hazer
+  cannot be armed while live flame programming is on). After an Abort or
+  a Stop, arm each one again (wait a second after a Stop).
+- **If a tile says Waiting for flamesafe,** flamesafe has not taken the
+  arm yet; if it stays that way, disarm it and arm it again.
 
 ## Stop, Hold and Reset on the rack screen
 

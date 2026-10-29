@@ -191,10 +191,11 @@ FIREBALL_POST_ROUTES = ("fireball-beat", "fireball-off")
 # beat that runs it is an arm press (users.classify), Stop never.
 CLEANING_GET_ROUTES = ("cleaning",)
 CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
-# The hazers (hazers.py, Jeff 2026-10-29): read by anyone in the status; a
-# hazer ON is an arm press (users.classify) and from the show network needs
-# screen_arming; OFF and All off never.
-HAZER_POST_ROUTES = ("hazer", "hazers-off")
+# The hazers (hazers.py, Jeff 2026-10-29): read by anyone in the status;
+# arming a hazer and setting its levels are arm presses (users.classify)
+# and from the show network need screen_arming; a disarm and Hazers off
+# never.
+HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
@@ -3861,7 +3862,8 @@ class Remote:
                 if names:
                     out["hazers"] = {"names": names,
                                      "on": sorted(hz.on()),
-                                     "down": hz.down()}
+                                     "down": hz.down(),
+                                     "paused": hz.show() == "held"}
             except Exception:                    # noqa: BLE001
                 pass
         # Who is signed in on this machine (users.py): the deck shows it
@@ -4236,20 +4238,24 @@ class Remote:
         if hz is None:
             return False
         try:
-            hz.cut()
+            # Which were armed, read before the cut clears them, so the
+            # journal line and last_off name them (reviewer B, 1).
+            was = hz.cut()
             threading.Thread(target=hz.all_off, args=(reason,),
                              kwargs={"who": who, "screen": screen,
-                                     "system": not who},
+                                     "system": not who, "was": was},
                              daemon=True, name="ltcplay-hazers-off").start()
             return True
         except Exception:                        # noqa: BLE001
             return False
 
     def hazer_post(self, name, body, ctx):
-        """POST hazer {"hazer": name, "on": true|false} and hazers-off.
-        ON is an arm press (users.classify, checked by web.py first) and,
-        from the show network, needs screen_arming (may_act_from); OFF and
-        All off are never refused. (code, body)."""
+        """POST hazer {"hazer": name, "on": true|false} (arm or disarm),
+        hazers-off, and hazer-level {"hazer": name or "all", "haze": 0 to
+        100, "fan": 0 to 100}. Arming and levels are arm presses
+        (users.classify, checked by web.py first) and, from the show
+        network, need screen_arming (may_act_from); a disarm and Hazers off
+        are never refused. (code, body)."""
         hz = self.hazers
         if hz is None:
             return 404, {"error": "There are no hazers in this engine."}
@@ -4257,25 +4263,35 @@ class Remote:
         if name == "hazers-off":
             hz.all_off(f"{who or 'someone'} pressed Hazers off on the "
                        f"{device}", who=who, screen=device, system=False)
-            return 200, {"ok": True, "text": "Every hazer is OFF."}
+            return 200, {"ok": True, "text": "Every hazer is DISARMED."}
         hname = body.get("hazer")
         names = hz.names()
         if isinstance(hname, int) and not isinstance(hname, bool) and \
                 0 <= hname < len(names):
             hname = names[hname]
-        if not isinstance(hname, str) or hname not in names:
+        if not isinstance(hname, str) or (
+                hname not in names and
+                not (name == "hazer-level" and hname == "all")):
             return 400, {"error": "That is not a hazer in flamesafe's "
                                   "config. Nothing was changed."}
-        on = body.get("on") is True
+        on = body.get("on") is True or name == "hazer-level"
         if on and not self.may_act_from(ctx.local):
-            why = ("Switching a hazer on from a device on the show network "
-                   "needs screen_arming (on the show machine itself: "
-                   "Programming, Arming from a screen, Turn on). Nothing "
-                   "was changed.")
-            self._journal(who, device, "hazer on", "refused",
-                          f"{who or 'Someone'}'s {hname} on from the "
+            what = ("Setting hazer levels" if name == "hazer-level"
+                    else "Arming a hazer")
+            why = (f"{what} from a device on the show network needs "
+                   f"screen_arming (on the show machine itself: "
+                   f"Programming, Arming from a screen, Turn on). Nothing "
+                   f"was changed.")
+            self._journal(who, device, name, "refused",
+                          f"{who or 'Someone'}'s {name} for {hname} from the "
                           f"{device} was refused. {why}")
             return 403, {"error": why}
+        if name == "hazer-level":
+            ok, text = hz.set_levels(hname, body.get("haze"),
+                                     body.get("fan"), who=who, screen=device)
+            if not ok:
+                return 400, {"error": text}
+            return 200, {"ok": True, "text": text}
         ok, text = hz.set(hname, on, who=who, screen=device)
         if not ok:
             return 409, {"error": text}
@@ -4302,6 +4318,32 @@ class Remote:
         except Exception:                        # noqa: BLE001
             pass
         return v
+
+    def hazer_show_state(self):
+        """The hazers' gate (hazers.Hazers show_state): "playing" while the
+        scheduled show is in SHOW, "held" on Hold (HOLD or PAUSED), else
+        "idle" (between shows, the rig check, Programming). Never
+        raises."""
+        try:
+            m = getattr(self.schedule, "machine", None)
+            st = getattr(m, "state", None)
+        except Exception:                        # noqa: BLE001
+            return "idle"
+        if st == "SHOW":
+            return "playing"
+        if st in ("HOLD", "PAUSED"):
+            return "held"
+        return "idle"
+
+    def hazer_blocker(self):
+        """Why no hazer may be armed now beyond hazers.py's own checks, or
+        "": live flame programming on (its end sends the Abort's disarm to
+        flamesafe, which disarms every hazer; reviewer B, 3)."""
+        lf = getattr(self, "live_flame", None)
+        if lf is not None and getattr(lf, "on", False):
+            return ("live flame programming is on, and turning it off "
+                    "disarms every hazer. Turn it off first.")
+        return ""
 
     @staticmethod
     def hazers_mismatch_text(mine, theirs, path):

@@ -17,16 +17,19 @@ blank and does nothing):
   key 3  CANNOT CONT.   key 4  STOP ANNC.   key 5  BACK
 
 PAGE 3, THE HAZERS (Jeff, 2026-10-29; hazers.py): page 1 has no free key,
-so the hazers have a page of their own. Key 5 opens it while no
-announcements are set up; with announcements, page 2's key 5 reads HAZERS
-(instead of BACK) and opens it. Page 2's other rules are unchanged:
+so the hazers have a page of their own, opened from page 1's key 5: a tap
+while no announcements are set up; with announcements set up the key reads
+ANNOUNCE with HOLD: HAZERS under it, a tap opens page 2 as before (on the
+release) and a hold of HAZER_HOLD_S (0.7 s, its ring fills) opens page 3.
+Page 2 is unchanged: its key 5 is BACK in every configuration.
 
   key 0  START / STOP   key 1  HAZER 1      key 2  HAZER 2
   key 3  HAZER 3        key 4  HAZERS OFF   key 5  BACK
 
-A plain tap toggles a hazer (ON in green, OFF); ON needs what arming a
-group needs at the deck, OFF never. It gives way to page 1 exactly as
-page 2 does. Nothing on it arms, disarms or fires a flame.
+A plain tap arms or disarms a hazer (ARMED in green, DISARMED); arming
+needs what arming a group needs at the deck, disarming never. Its Haze and
+Fan levels are set on the screens, not here. It gives way to page 1
+exactly as page 2 does. Nothing on it arms, disarms or fires a flame.
 
 One press plays (no double tap), through the engine's
 /api/remote/announce-play, on this process's press thread. Between shows
@@ -405,12 +408,16 @@ PAGE2_IDLE_S = 10.0     # no key pressed this long on page 2: back to page 1
 # Page 3, the hazers (Jeff, 2026-10-29; hazers.py). Page 1 has no free key
 # (keys 1 to 4 arm, key 5 opens the announcements), so the hazers get a
 # page of their own with page 2's rules (it gives way by itself, exactly as
-# page 2 does). It opens from key 5: on page 1 when no announcements are
-# set up, else from page 2, whose key 5 then reads HAZERS instead of BACK.
-# Keys 1 to 3 toggle the hazers in flamesafe's order (a plain tap: a hazer
-# is not a flame; ON needs what arming needs at the deck, OFF nothing), key
-# 4 is HAZERS OFF, key 5 BACK. Key 0 stays START / STOP.
+# page 2 does). It opens from page 1's key 5: a plain tap when no
+# announcements are set up; with announcements, a tap still opens page 2
+# and a HOLD of HAZER_HOLD_S (its ring fills; let go early and it is the
+# tap) opens page 3. Page 2's key 5 is BACK in every configuration (Jeff,
+# 2026-10-29: one press back, under stress). Keys 1 to 3 toggle the
+# hazers in flamesafe's order (a plain tap: a hazer is not a flame; ON
+# needs what arming needs at the deck, OFF nothing), key 4 is HAZERS OFF,
+# key 5 BACK. Key 0 stays START / STOP.
 HAZER_PAGE = 3
+HAZER_HOLD_S = 0.7
 PAGE3_HAZER = {1: 0, 2: 1, 3: 2}
 PAGE3_OFF = 4
 PAGE3_BACK = SPARE_KEY
@@ -2993,6 +3000,9 @@ class Controller:
         # 2026-10-26: the Rack screen asks for a confirm, and a stray tap
         # must never end a run); letting go early sends nothing.
         self._stop_hold = AbortHold(hold_s=STOP_HOLD_S)
+        # Page 1's key 5 held (announcements and hazers both set up): the
+        # hazers page once it completes; let go early is the tap (page 2).
+        self._key5_hold = AbortHold(hold_s=HAZER_HOLD_S)
         # The latch as tick() last saw it (an Abort or Reset from a screen
         # starts every group's re-arm refractory window).
         self._was_latched = False
@@ -3227,6 +3237,7 @@ class Controller:
             h.release()
         self._stop_hold.release()
         self._vholds.clear()
+        self._key5_hold.release()
         self.page, self._page2_at = 1, None
         self._masked = set()
         self._guard = None
@@ -3893,6 +3904,7 @@ class Controller:
                         self._do_disarm(i)
             for h in self._arm_holds:
                 h.release()
+            self._key5_hold.release()
             self._fire_release("the rig is aborted")
             self._prev_keys = list(down)
             return
@@ -3943,11 +3955,23 @@ class Controller:
                     (self.announce_view() or {}).get("configured"):
                 # Only while the engine says announcements are running:
                 # otherwise key 5 stays the blank key that does nothing.
-                self._open_page2(down, now, latched, morning)
+                if self.hazers_view():
+                    # Hazers too: a hold opens their page (tick), a tap
+                    # (let go early) opens page 2, below.
+                    self._key5_hold.press(now)
+                else:
+                    self._open_page2(down, now, latched, morning)
             elif k == ANNOUNCE_KEY and not pending and self.hazers_view():
                 # No announcements, but hazers: key 5 opens their page.
                 self._open_page2(down, now, latched, morning,
                                  page=HAZER_PAGE)
+        if ANNOUNCE_KEY in releases(self._prev_keys, down) and \
+                self._key5_hold._down_at is not None:
+            # Let go before HAZER_HOLD_S: the tap, page 2, with page 2's
+            # own checks at the release.
+            self._key5_hold.release()
+            if not pending:
+                self._open_page2(down, now, latched, morning)
         self._prev_keys = list(down)
 
     # -- page 2, the announcements (module docstring) ------------------------
@@ -4082,12 +4106,6 @@ class Controller:
                 self._announce_press(PAGE2_PLAY[k])
             elif k == PAGE2_STOP:
                 self._announce_stop()
-            elif k == PAGE2_BACK and self.hazers_view():
-                # Hazers set up: key 5 here is HAZERS (page 3), whose own
-                # key 5 is BACK. Page 2 still gives way by itself.
-                self.page = HAZER_PAGE
-                self._masked = {j for j in range(len(down)) if down[j]}
-                self._log("Stream Deck: hazers page open.", action="page")
             elif k == PAGE2_BACK:
                 self._to_page1("BACK pressed", down)
         self._prev_keys = list(down)
@@ -4126,9 +4144,9 @@ class Controller:
             return None
 
     def _hazer_press(self, i):
-        """A hazer key: ON if the engine says it is OFF, else OFF. ON needs
-        what arming a group needs at the deck (a chosen operator, the role
-        matrix's arm row); OFF is never gated. While the engine's word is
+        """A hazer key: ARM if the engine says it is disarmed, else DISARM.
+        Arming needs what arming a group needs at the deck (a chosen
+        operator, the role matrix's arm row); a disarm is never gated. While the engine's word is
         not fresh the key reads NO STATUS and a press does nothing (HAZERS
         OFF, Stop and Abort still switch every hazer off)."""
         hv = self.hazers_view()
@@ -4142,7 +4160,7 @@ class Controller:
             refusal = operator_gate(who, "arm") or role_gate(self._user(),
                                                             "arm")
             if refusal:
-                self._log(f"Stream Deck: {name} ON refused: {refusal}",
+                self._log(f"Stream Deck: {name} arm refused: {refusal}",
                           action="hazer")
                 return
         fn = getattr(self.conductor, "hazer", None)
@@ -4152,7 +4170,7 @@ class Controller:
                       action="hazer")
             return
         r = fn(name, on, who=who, screen="Stream Deck")
-        self._log(f"Stream Deck {name} {'ON' if on else 'OFF'}: "
+        self._log(f"Stream Deck {name} {'arm' if on else 'disarm'}: "
                   f"{r.sentence}", fault=not r.ok, action="hazer", who=who,
                   screen="Stream Deck")
 
@@ -4238,6 +4256,16 @@ class Controller:
             why = self._page2_must_close(latched, self.alert_pending(), now)
             if why:
                 self._to_page1(why)
+        if self.page == 1 and self._prev_keys[ANNOUNCE_KEY] and \
+                self._key5_hold.fired(now):
+            # Page 1's key 5 held HAZER_HOLD_S: the hazers page, with every
+            # check page 2 has when it opens (and no open alert).
+            if self.alert_pending():
+                self._log("Stream Deck: the hazers page was not opened: an "
+                          "alert is open.", action="page")
+            else:
+                self._open_page2(self._prev_keys, now, latched,
+                                 self.morning_open(), page=HAZER_PAGE)
         if latched != self._was_latched:
             # An Abort or a Reset from a screen (the deck has neither key
             # since 2026-10-26): every group's re-arm refractory window
@@ -4550,6 +4578,8 @@ class Controller:
         if self.page != 1:
             # No arm key on page 2 or 3: only Stop's ring can fill.
             arm_fills = {}
+        elif self._key5_hold.fraction(now) > 0:
+            arm_fills[ANNOUNCE_KEY] = self._key5_hold.fraction(now)
         if stop_frac > 0:
             arm_fills[TOP_START] = stop_frac
         draw_marquee(d, chase, abort_frac, arm_fills)
@@ -4708,7 +4738,13 @@ class Controller:
         # Key 5 opens the announcements page (module docstring), drawn only
         # when the engine says announcements are running.
         av = self.announce_view()
-        if av and av.get("configured") and not latched:
+        if av and av.get("configured") and not latched and \
+                self.hazers_view():
+            # Both: a tap is the announcements, a hold the hazers.
+            fonts.show_key(d, face_box(ANNOUNCE_KEY),
+                           ["ANNOUNCE", "HOLD:", "HAZERS"], CHAMPAGNE,
+                           bg=BRONZE, kind="sans", max_size=12)
+        elif av and av.get("configured") and not latched:
             fonts.show_key(d, face_box(ANNOUNCE_KEY), ["ANNOUNCE"],
                            CHAMPAGNE, bg=BRONZE, kind="sans", max_size=14)
         elif self.hazers_view() and not latched:
@@ -4851,14 +4887,14 @@ class Controller:
                            CHAMPAGNE if live else DIM_TEXT,
                            bg=BRONZE if live else None, kind="sans",
                            max_size=16)
-        fonts.show_key(d, face_box(PAGE2_BACK),
-                       ["HAZERS"] if self.hazers_view() else ["BACK"],
-                       CHAMPAGNE, kind="sans", max_size=16)
+        fonts.show_key(d, face_box(PAGE2_BACK), ["BACK"], CHAMPAGNE,
+                       kind="sans", max_size=16)
 
     def _draw_page3(self, fonts, d):
         """Page 3's faces (keys 1 to 5; key 0 is drawn as on page 1): each
-        hazer's name and ON (green) or OFF, NO STATUS while the engine's
-        word is stale; HAZERS OFF; BACK. Display only."""
+        hazer's name and ARMED (green; PAUSED on a Hold) or DISARMED, NO
+        STATUS while the engine's word is stale; HAZERS OFF; BACK. Display
+        only. The levels are set on the screens, never here."""
         hv = self.hazers_view()
         names = list((hv or {}).get("names") or [])
         on = set((hv or {}).get("on") or [])
@@ -4870,12 +4906,16 @@ class Controller:
             if hv is None:
                 fonts.show_key(d, box, [line, "NO STATUS"], AMBER,
                                kind="sans", max_size=12)
+            elif names[i] in on and hv.get("paused"):
+                # A Hold: still armed, its haze stopped until Resume.
+                fonts.show_key(d, box, [line, "ARMED", "PAUSED"], BLACK,
+                               bg=GREEN, kind="sans", max_size=12)
             elif names[i] in on:
-                fonts.show_key(d, box, [line, "ON"], BLACK, bg=GREEN,
-                               kind="sans", max_size=16)
+                fonts.show_key(d, box, [line, "ARMED"], BLACK, bg=GREEN,
+                               kind="sans", max_size=14)
             else:
-                fonts.show_key(d, box, [line, "OFF"], CHAMPAGNE, bg=BRONZE,
-                               kind="sans", max_size=16)
+                fonts.show_key(d, box, [line, "DISARMED"], CHAMPAGNE,
+                               bg=BRONZE, kind="sans", max_size=14)
         fonts.show_key(d, face_box(PAGE3_OFF), ["HAZERS", "OFF"], CHAMPAGNE,
                        kind="sans", max_size=16)
         fonts.show_key(d, face_box(PAGE3_BACK), ["BACK"], CHAMPAGNE,
