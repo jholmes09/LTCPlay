@@ -18787,8 +18787,8 @@ def build():
  # -- the fireball's charge state (fireball_charge.py, Jeff 2026-10-30) ----
  ("fireball charge: zeros (Stop, Hold, a show's end) empty the tanks",
   "ltcplay/fireball_charge.py",
-  "            if rel is not None and not (valve or purge):\n                self._release = None\n                self._released(rel, now_w)",
-  "            if rel is not None and not (valve or purge):\n                self._release = None\n                self._released(rel, now_w)\n            elif rel is None and not any(lv.values()):\n                self._released({\"kind\": \"shot\", \"certain\": True, \"during\": {}}, now_w)"),
+  "                self._release = None\n                self._ending = (rel, now)",
+  "                self._release = None\n                self._ending = (rel, now)\n            elif rel is None and self._ending is None and not any(lv.values()):\n                self._released({\"kind\": \"shot\", \"certain\": True, \"during\": {}}, now_w)"),
 
  ("fireball charge: the Igniter counts as the shot",
   "ltcplay/fireball_charge.py",
@@ -18834,6 +18834,11 @@ def build():
   "ltcplay/fireball_charge.py",
   "            if during is not None:\n                self._set(k, during,",
   "            if False:\n                self._set(k, during,"),
+
+ ("fireball charge: a release flamesafe never reported sending empties the tanks",
+  "ltcplay/fireball_charge.py",
+  "            confirmed = seen is not None and seen >= rel.get(\"at\", 0) - 0.1",
+  "            confirmed = True"),
 
  ("fireball charge: the fuel tracker is no longer told of each frame",
   "ltcplay/web.py",
