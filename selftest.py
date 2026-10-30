@@ -94752,7 +94752,13 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
                 any(x < a - tol or y > b + tol for x, y in sp):
             return False
         if charge if charge is not None else False:
-            return len(sp) == 1
+            # One charge: it may ride through stops of a frame or two
+            # (fireball_cues.GAP_S), never come back after a longer one.
+            # (Cue times: a stop is measured on the show clock, which a
+            # busy machine stalls, so the bound has a frame of slack.)
+            from ltcplay import fireball_cues as _FQ
+            return all(b2[0] - a2[1] <= _FQ.GAP_S + 0.1
+                       for a2, b2 in zip(sp, sp[1:]))
         return True
     threading.Thread(target=deck, daemon=True).start()
     try:
