@@ -121,7 +121,7 @@ a_sup = Analysis(
     # audit: ltcplay/audit.py as a module of its own (stdlib only), for
     # the supervisor's audit day files; the ltcplay package stays out.
     hiddenimports=["ltcwin", "contain", "housekeeping", "diagnostics",
-                   "updater", "audit", "showwindows"],
+                   "updater", "audit", "showwindows", "thispc"],
     **dict(common, pathex=[ROOT, HERE, os.path.join(ROOT, "ltcplay")],
            excludes=EXCLUDES + ["ltcplay", "flamesafe", "numpy",
                                         "sounddevice", "PIL", "hid",

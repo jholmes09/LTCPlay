@@ -466,12 +466,42 @@ Three buttons under the lasers on the Startup page:
   another machine (it looks on the machine named by the `beyond` block's
   host).
 
+### Is BEYOND (or MadMapper) on this PC?
+
+ltcplay reads BEYOND as on this PC when the `host` of the `beyond` block
+in `ltcplay_fire_ice.json` is `localhost`, any 127.x.x.x loopback address
+(127.0.0.2 on the show PC, bench B8.0), or any other address of this PC
+itself: a network card's address, or the address of a Windows loopback
+adapter such as "Microsoft KM-TEST Loopback Adapter" (often 10.x,
+169.254.x or 192.168.x). MadMapper's `madmapper` block is read the same
+way (`thispc.py`, one rule for both). Any address that is not this PC's is
+another machine, and `0.0.0.0` is never a host. On Windows this PC's
+addresses are every adapter's, the list `ipconfig` prints; they are read
+again at most every 30 seconds, and if they cannot be read, only
+127.x.x.x and localhost count. Only
+then does Open BEYOND bring its window forward, the BEYOND and MadMapper
+watches look for the program in Windows' process list, and the pre-roll's
+Lasers check look for BEYOND (the Network check pings only a BEYOND or
+MadMapper that is NOT on this PC).
+
+To see which address ltcplay uses: it is the `host` in the `beyond` (or
+`madmapper`) block of `ltcplay_fire_ice.json`. When ltcplay reads it as
+another machine, it names both that address and this PC's own addresses:
+in the Open BEYOND refusal, in the pre-roll's Lasers line, and in the
+Video chip's tooltip on the rack screen. If BEYOND is on this PC and the
+address is not in that list, set the host to one that is (127.0.0.2, or
+the loopback adapter's address as `ipconfig` shows it), make BEYOND
+receive there, and restart the engine.
+
 ### How to set up the laser calibration cue
 
 BEYOND's commands for the calibration cue are not known yet (coming
-soon). Until they are, every laser says "not set up yet" and nothing is
-sent. When Jeff or Andy knows them, each laser in `ltcplay_morning.json`
-gets them under `lasers`: `"mechanism": "osc"`, BEYOND's address
+soon). Until they are, every laser says on the Startup page, armed or
+not, "Calibration cue not set up yet", what is needed (BEYOND's OSC
+messages that put that laser's grid up and take it down) and where (the
+`lasers` block of `ltcplay_morning.json`), and nothing is sent. When Jeff
+or Andy knows them, each laser in `ltcplay_morning.json` gets them under
+`lasers`: `"mechanism": "osc"`, BEYOND's address
 (`host` and `port`; left out, the `beyond` block of `ltcplay_fire_ice.json`
 is used), and two lists of OSC messages, each one an address and a value:
 `on` puts the grid up, `off` takes it down. For example (the addresses and
@@ -490,6 +520,42 @@ Each message is sent three times. BEYOND's BlackOut, MasterPause,
 brightness and laser output switch can never be used here. Restart the
 engine after changing the file. The laser still has to be armed for its
 test to go on.
+
+**How to find the address, step by step.** No bench or document in this
+repo has found or verified BEYOND's OSC messages for starting or stopping
+a grid cue, so this program names none. What the repo does establish
+(the bench report of 2026-09-25, B8): BEYOND receives OSC only once
+**Settings > OSC > OSC Settings** has "Enable receiving OSC messages" on
+(default off) and an Incoming port (8100 on the bench; 8000, the default,
+clashes with MadMapper); and **Settings > OSC > OSC Monitor** lists every
+OSC message BEYOND receives. The bench used the OSC Monitor to confirm
+each message ltcplay sent; BEYOND itself never sent anything back.
+
+1. In BEYOND, open Settings > OSC > OSC Settings. Check that "Enable
+   receiving OSC messages" is on and note the Incoming port. That port is
+   the laser's `port` (or the `beyond` block's).
+2. The `host` is the address BEYOND receives on, as ltcplay reads it
+   ("Is BEYOND (or MadMapper) on this PC?", above): 127.0.0.2 on the show
+   PC, as the bench used.
+3. Find the candidate address and value in Pangolin's own OSC command
+   list (wiki.pangolin.com, beyond:osc_commands; the list the bench
+   used). Which command starts and stops one cue, and what value names
+   the grid cue, is NOT verified here: Andy, who built the cue, is the one
+   to say which cue it is. The `/beyond/general/startcue` lines in the
+   example above are only an example.
+4. Open Settings > OSC > OSC Monitor in BEYOND and leave it open.
+5. Put the candidate `on` and `off` messages in `ltcplay_morning.json`
+   for one laser, with `"mechanism": "osc"`, and restart the engine.
+6. With Andy there and the laser armed, press that laser's test on the
+   Startup page. In the OSC Monitor, check that the message arrived (the
+   address and the value as written), and in BEYOND (or on the wall)
+   that the grid came up at low power. Press it again and check the `off`
+   message arrived and the grid went down.
+7. If nothing arrived in the OSC Monitor, the host or port is wrong (step
+   1 and 2). If it arrived but the grid did not change, the address or
+   value is wrong (step 3). Whether BEYOND's OSC Monitor also shows a
+   message when a cue is clicked in BEYOND itself is not known (the bench
+   never tried it); do not rely on it.
 
 ### Checklists: append-only, hash-chained, exported
 

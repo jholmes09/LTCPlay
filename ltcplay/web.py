@@ -1970,7 +1970,7 @@ def _startup_lasers_dark(wiring):
 def _preroll_hosts(httpd, fire_ice):
     """(label, address) of every device on the network the show uses, for
     the pre-roll's Network check: MadMapper and BEYOND when not on this
-    PC, the timecode receivers, the flame node flamesafe sends to, and the
+    PC (thispc.on_this_pc), the timecode receivers, the flame node flamesafe sends to, and the
     pixel controllers. Loopback and broadcast are left out (the program
     checks cover this PC). Never raises."""
     import ipaddress
@@ -1986,11 +1986,14 @@ def _preroll_hosts(httpd, fire_ice):
             return
         out.append((label, str(ip)))
     try:
+        # MadMapper and BEYOND on this PC, a loopback adapter's address
+        # included (thispc.py), are the program checks', not the network's.
+        from . import thispc
         mm = getattr(fire_ice, "madmapper", None)
-        if mm is not None:
+        if mm is not None and not thispc.on_this_pc(mm.host):
             add("MadMapper", mm.host)
         bey = getattr(fire_ice, "beyond", None)
-        if bey is not None:
+        if bey is not None and not thispc.on_this_pc(bey.host):
             add("BEYOND", bey.host)
         gate = getattr(getattr(getattr(httpd, "fire_ice", None), "devices",
                                None), "beyond", None)
@@ -2148,6 +2151,11 @@ def _attach_preroll(httpd, fire_ice, fstatus):
         def bey_running():
             w = getattr(remote, "beyond_watch", None)
             return w.check_once() if w is not None else None
+
+        def bey_why():
+            from . import beyondwatch
+            return beyondwatch.unknown_why(
+                getattr(getattr(fire_ice, "beyond", None), "host", None))
         blanking = getattr(wiring.devices, "beyond", None) \
             if getattr(fire_ice, "beyond", None) is not None else None
         checks = [
@@ -2176,7 +2184,7 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             ("Lasers", True, lambda p: P.check_lasers(
                 p, blanking, wiring.laser_arm, wiring.conductor,
                 bey_running if getattr(remote, "beyond_watch", None)
-                else None)),
+                else None, bey_why)),
             ("Network", True, lambda p: P.check_network(
                 p, _preroll_hosts(httpd, fire_ice),
                 lambda ip: rigwatch.ping(ip, 1.0))),

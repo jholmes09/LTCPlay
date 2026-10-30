@@ -110,6 +110,13 @@ a.b{text-decoration:none}
 #sys.warn{border-color:var(--amber)} #sys.warn svg{color:var(--amber)}
 #sys.bad{border-color:var(--red);background:#2a0a08} #sys.bad svg{color:var(--red-hi)}
 #user.in{border-color:var(--green)} #user.out{border-color:var(--amber)}
+#sys .chev{width:18px;height:18px;margin-left:-4px;opacity:.85}
+#sh-body ul.sys{list-style:none;padding:0}
+#sh-body ul.sys li{display:flex;gap:8px;align-items:flex-start}
+#sh-body ul.sys li svg{flex:0 0 auto;margin-top:2px}
+#sh-body ul.sys li.sys-bad svg{color:var(--red-hi)} #sh-body ul.sys li.sys-warn svg{color:var(--amber)}
+#sh-body ul.sys li.sys-ok svg,#sh-body ul.sys li.sys-on svg{color:var(--green)} #sh-body ul.sys li.sys-off svg{color:var(--grey)}
+#sh-body .first{font-weight:800;color:#FFD08A}
 main{min-height:0;position:relative;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .pane{flex:1 0 auto;padding:var(--gap) var(--pad);min-height:0}
 footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(var(--abort) + 32px) var(--gap) var(--pad);
@@ -141,6 +148,11 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 body.inactive .state > div:not(#pill), body.inactive #b-go, body.inactive #b-armall, body.inactive #ann .head, body.inactive #ann-btns,
 body.inactive .tile:not(.armed) .tn, body.inactive .tile:not(.armed) .ts, body.inactive #hazers [data-hzb]:not(.on):not(.unk),
 body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
+/* DAY, when this screen cannot act (signed out, no contact; Run off is
+   DAY's normal state, so not then): the steps and their controls go quiet,
+   never a Stop, a Disarm, Hazers off or Hold. */
+body.noact #d-steps .st, body.noact #d-next, body.noact #d-seg .b,
+body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mode="disarm"]){filter:saturate(.3)}
 .b .fill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(255,255,255,.28);pointer-events:none;transition:width .1s linear}
 .q{width:56px;height:56px;min-width:56px;border-radius:50%;border:2px solid var(--blue);background:#0d1d30;
   color:#E3F1FF;font-weight:800;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex:0 0 auto}
@@ -158,8 +170,9 @@ body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
 #pins:empty{display:none}
 /* Two or three live modes on a narrow screen: their Stops are the words. */
 @media (max-width:1300px) and (min-width:601px){ #next.many .t{display:none} #next.many #pins{flex:1 1 auto} #next.many #pins .b{flex:1 1 0;min-width:0;padding:0 8px} }
-#mini{display:flex;flex-wrap:wrap;gap:var(--gap);padding:var(--gap) var(--pad) 0}
-#mini .b{flex:1 1 9em;min-height:56px}
+#mini{display:flex;flex-wrap:wrap;gap:var(--gap);min-width:0}
+#mini .b{flex:1 1 0;min-width:0;min-height:56px;white-space:normal;line-height:1.05;padding:0 8px;gap:6px}
+main > #mini{padding:var(--gap) var(--pad) 0}
 #next.ok{border-color:var(--green)} #next.ok > svg{color:var(--green)}
 #next.warn{border-color:var(--amber);background:#241703} #next.warn > svg{color:var(--amber)}
 #next.bad{border-color:var(--red);background:#2a0a08} #next.bad > svg{color:var(--red-hi)}
@@ -276,6 +289,60 @@ body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
 #broken > svg{width:40px;height:40px}
 #broken span{flex:1 1 auto;min-width:0}
 
+/* ---- DAY: steps as chips, the step's panel, one big Next ---- */
+.day{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:var(--gap);height:100%;min-height:0}
+.dhead{display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;min-width:0}
+.dhead .seg .b{min-height:56px}
+.dhead .seg .b.on{border-color:var(--gold);background:#3a2c10}
+#d-prog{color:var(--muted);font-weight:700;flex:1 1 auto;min-width:0}
+#d-next{min-height:64px;font-size:calc(var(--fs) + 4px);padding:0 22px;margin-left:auto}
+#d-next.done{background:#2b2723;border-color:#8b8170;color:var(--cream)}
+#d-steps{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+#d-steps .st{display:inline-flex;align-items:center;gap:8px;min-height:56px;padding:0 12px;border-radius:12px;border:2px solid var(--line);
+  background:var(--panel);font-weight:700;cursor:pointer;flex:1 1 auto;justify-content:flex-start}
+#d-steps .st.done{border-color:#2e6b40} #d-steps .st.done svg{color:var(--green)}
+#d-steps .st.todo svg{color:var(--amber)}
+#d-steps .st.blocked{border-color:var(--red)} #d-steps .st.blocked svg{color:var(--red-hi)}
+#d-steps .st.live{border-color:var(--red);background:#2a0a08} #d-steps .st.live svg{color:var(--red-hi)}
+#d-steps .st.on{outline:3px solid var(--gold);outline-offset:-1px;background:var(--panel2)}
+.dpanel{display:flex;flex-direction:column;gap:var(--gap);padding:10px 12px;border-radius:12px;border:2px solid var(--line);background:var(--panel);min-height:0;min-width:0}
+.dtitle{display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap}
+.dtitle b{font-size:calc(var(--fs) + 4px)}
+.dtitle span{color:var(--muted);flex:1 1 auto;min-width:0}
+.dtitle span.bad{color:#FFB3AB} .dtitle span.ok{color:#9BF5B7}
+.dtitle > svg{width:28px;height:28px}
+#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 1 auto}
+.drow{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center;min-width:0}
+.drow .b{min-height:64px;padding:0 20px}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--gap);min-width:0}
+.dgrid .b{min-height:64px;justify-content:flex-start;text-align:left;padding:4px 12px}
+#wc-hold,#wc-stop{min-height:clamp(64px,10vh,96px);font-size:calc(var(--fs) + 4px)}
+#wc-hold{flex:1 1 14em;touch-action:none}
+#mo-groups .b{min-height:clamp(64px,10vh,96px)}
+.dgrid .b .tt{display:flex;flex-direction:column;min-width:0;line-height:1.1}
+.dgrid .b .tt small{font-weight:400;font-size:16px;color:var(--muted)}
+.dgrid .b.on{border-color:var(--green);background:#0b2414}
+.dgrid .b.part{border-color:var(--amber);background:#241703}
+.dgrid .b.bad{border-color:var(--red);background:#2a0a08}
+.dgrid .b.locked{border-color:var(--amber)}
+.dbig{font-size:calc(var(--fs) + 4px);font-weight:800;line-height:1.2}
+.key{display:inline-flex;align-items:center;gap:8px;min-height:56px;padding:0 14px;border-radius:12px;border:2px dashed var(--line);font-weight:800}
+.key.ready{border-style:solid;border-color:var(--amber);color:#FFD08A}
+.key.firing{border-style:solid;border-color:var(--red);background:var(--red-deep);color:#fff}
+#d-msg{display:flex;align-items:center;gap:var(--gap);min-height:28px;font-size:18px;line-height:1.2;color:var(--cream);flex-wrap:wrap}
+#mo-lkundo{display:inline-flex;align-items:center;gap:8px}
+/* Off the SHOW tab the footer is only the wind and Abort's corner; Stop
+   sound is in the strip above the tab. */
+body:not([data-tab="show"]) #foot-l > .ann{display:none}
+@media (max-width:900px){
+  #mini .b{padding:0 4px;gap:4px}
+  #mini .b svg.i{width:18px;height:18px}
+  #d-prog{display:none}
+  .dgrid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  .dgrid .b{min-height:56px}
+  #d-next{padding:0 16px}
+}
+
 /* ---- the other tabs (1.0 for now) ---- */
 .cards{display:flex;flex-direction:column;gap:var(--gap);max-width:900px}
 .card{display:flex;align-items:center;gap:var(--gap);padding:12px;border-radius:12px;border:2px solid var(--line);background:var(--panel)}
@@ -330,7 +397,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 }
 
 /* ---- narrower screens: iPad portrait, small laptops ---- */
+#to1 .short{display:none}
 @media (max-width:1100px){
+  #to1 .long{display:none} #to1 .short{display:inline}
+  #d-steps .st{padding:0 8px;gap:6px;font-size:18px}
   .tab{padding:0 8px;gap:6px} .hb{padding:0 8px;gap:6px} #tabs{gap:2px} .hright{gap:4px}
   header{row-gap:4px}
   #alert .more .w{display:none}
@@ -427,10 +497,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <button class="tab" data-tab="settings" role="tab" hidden><svg class="i"><use href="#i-gear"/></svg>Settings</button>
   </nav>
   <div class="hright">
-    <button class="hb" id="sys"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span></button>
+    <button class="hb" id="sys" aria-label="Systems: tap for what to check"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span><svg class="i chev" aria-hidden="true"><use href="#i-right"/></svg></button>
     <button class="hb" id="user"><svg class="i"><use href="#i-user"/></svg><span>Sign in</span></button>
     <button class="hb" id="help"><svg class="i"><use href="#i-help"/></svg><span>Help</span></button>
-    <a class="hb" id="to1" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg><span>Back to 1.0</span></a>
+    <a class="hb" id="to1" href="/ui?v=1" aria-label="Back to 1.0"><svg class="i"><use href="#i-back"/></svg><span class="long">Back to 1.0</span><span class="short">1.0</span></a>
   </div>
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
@@ -481,11 +551,27 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   </section>
 
   <!-- The other tabs: 1.0 does these for now (later PRs bring them here). -->
+  <!-- DAY: the operator's day as steps. Startup or Shutdown, the steps
+       that apply now as chips with a mark each, the chosen step's panel,
+       and one big Next. Every press is 1.0's Startup page's own (the same
+       route, body and gesture; the copies are checked by selftest.py). -->
   <section class="pane" id="t-day" hidden>
-    <div class="cards">
-      <div class="card"><div class="t"><b>Startup and shutdown</b><span>Checklists, purge, laser test, lock.</span></div><a class="b blue" href="/remote1#morning"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
-      <div class="card" id="day-fuel"><div class="t"><b>Fuel</b><span>Tanks and refills.</span></div><a class="b blue" href="/remote1#fuel"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
-      <div class="card" id="day-fb"><div class="t"><b>Fireball</b><span>Manual test.</span></div><a class="b blue" href="/remote1#fireball"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+    <div class="day">
+      <div class="dhead">
+        <div class="seg" id="d-seg" role="tablist"><button class="b" data-part="start"><svg class="i"><use href="#i-sun"/></svg>Startup</button><button class="b" data-part="shut"><svg class="i"><use href="#i-power"/></svg>Shutdown</button></div>
+        <span id="d-prog"></span>
+        <a class="b" id="d-more" href="/remote1#morning"><svg class="i"><use href="#i-open"/></svg>Map in 1.0</a>
+        <button class="q" id="d-q" aria-label="Help: this step">?</button>
+        <button class="b green" id="d-next"><span id="d-next-l">Next step</span><svg class="i"><use href="#i-right"/></svg></button>
+      </div>
+      <div id="d-steps" role="tablist" aria-label="Steps"></div>
+      <div class="dpanel" id="d-panel">
+        <div class="dtitle"><svg class="i" id="d-ti"><use href="#i-info"/></svg><b id="d-t"></b><span id="d-s"></span></div>
+        <div id="d-ctl"></div>
+        <!-- The message lines 1.0's presses write to, one shown per step. -->
+        <div id="d-msg"><span id="mo-msg"></span><span id="mo-lmsg" hidden></span><span id="mo-cmsg" hidden></span><span id="wc-msg" hidden></span><span id="fu-msg" hidden></span>
+          <span id="mo-lkundo" hidden><span></span><button class="b" id="mo-lkundo-go"><svg class="i"><use href="#i-back"/></svg>Undo</button></span></div>
+      </div>
     </div>
   </section>
   <section class="pane" id="t-schedule" hidden>
@@ -782,6 +868,8 @@ let TAB = "show", LAST_TOUCH = Date.now();
 function showTab(t){
   if(!TABS.includes(t)) t = "show";
   TAB = t;
+  document.body.dataset.tab = t;
+  try{ dayView(t === "day"); }catch(e){}
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings") loadUiDefault();
@@ -967,9 +1055,10 @@ function inactiveNow(st, isStaleNow){
   // looks calm, whoever is signed in, and least of all with no contact
   // (review of #175: the last status still says it is live).
   if(st && pinItems(st).length) return false;
+  // A show playing is never calm, signed out or not, nor once contact is
+  // lost while the last status said it was playing.
+  if(st && isLive(st)) return false;
   if(!st || isStaleNow) return true;
-  // A show playing is never calm, signed out or not.
-  if(isLive(st)) return false;
   if(st.me && st.me.view_only) return true;
   const sch = st.schedule || {};
   return !!(sch.attached && !runIsOn(st) && !isLive(st));
@@ -1253,8 +1342,6 @@ function render(){
   renderAnnounce();
   renderSys();
   document.querySelector('.tab[data-tab="settings"]').hidden = !(ME && ME.local && mayRow(s, "settings"));
-  $("day-fuel").hidden = !s.fuel;
-  $("day-fb").hidden = !(s.fireball && s.fireball.available);
   // A show that has just ended locks the big button a moment (1.0's flip
   // lock after Stop turned back into Start).
   const live = isLive(s);
@@ -1286,7 +1373,9 @@ function renderStale(){
   if(ST) try{ renderHazers(ST); }catch(e){}
   // The calm tone (Jeff, 2026-10-29): signed out, no contact or the show
   // not running, everything that is not an emergency control is quieter.
-  document.body.classList.toggle("inactive", inactiveNow(ST, isSt));
+  const calm = inactiveNow(ST, isSt);
+  document.body.classList.toggle("inactive", calm);
+  document.body.classList.toggle("noact", calm && (!ST || isSt || !!(ST.me && ST.me.view_only)));
   try{ fitNextBrand(); }catch(e){}
   if(isSt) drawSlotStale(); else if($("alert").classList.contains("stale")){ $("alert").className = ""; renderAlertSlot(); }
   renderMini(isSt);
@@ -1639,7 +1728,9 @@ function armLabel(mode, c, leftMs, aborted, as){
   if(mode === "lamp") return {icon:"lock", text:"Arming off", cls:""};
   if(aborted) return {icon:"reset", text:"Press Reset", cls:""};
   if(leftMs > 0) return {icon:"clock", text:"Wait " + (Math.ceil(leftMs / 100) / 10).toFixed(1) + " s", cls:""};
-  if(as && as.signin) return {icon:"user", text:"Sign in", cls:""};
+  // Signed out: Sign in; signed in without the right: says so (review of
+  // #175).
+  if(as && as.signin) return {icon:"user", text:signWhy(typeof ST !== "undefined" ? ST : null, "arm", true), cls:""};
   return {icon:"ring", text:"Hold to arm", cls:"green hold"};
 }
 function setArmMode(el, mode, c){
@@ -2044,25 +2135,84 @@ function abortAnswered(j, err){
 }
 
 // ---- the header: systems, who is signed in, help, back to 1.0 ----
-const SYS_NAMES = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Laser arm":"Lasers", "Lasers":"Lasers"};
+// The systems badge (Jeff, 2026-10-29: "1 to check" said nothing of what):
+// each subsystem the engine lists, with its name, its state and what is
+// wrong and what to do in 8 words or fewer. Something not set up here
+// (the engine says "none", "not set up") reads Off, and
+// lasers fully armed are a state, not a problem. Pure.
+const SYS_LABEL = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Show audio":"Show audio", "Announcements":"Announcements",
+  "Disk":"Disk", "Audit":"Audit log", "Laser arm":"Laser arm", "Lasers":"Laser output", "Video":"Video", "Pixels":"Pixels", "Timecode":"Timecode"};
+// The badge's own short names (the sheet says the whole name).
+const SYS_SHORT = {"Stream Deck":"Deck", "Show audio":"Audio", "Announcements":"Announce", "Audit log":"Audit", "Laser output":"Lasers"};
+// "pick an output" is not here: the announcements are set up and cannot
+// play until one is picked (review of #169).
+const SYS_OFF = /^(none|none set up|not set up|stopped|not connected|disarmed)$/i;
+const SYS_SAY = [
+  [/^deck$/, /not heard|missing/, "Not heard. Check its USB cable."],
+  [/^deck$/, /late|usb slow/, "Slow. Check its USB cable."],
+  [/^deck$/, /default keys/, "Key layout file not used. Tell Jeff."],
+  [/^deck$/, /failed/, "Keys may be stale. Replug its USB."],
+  [/^deck$/, /not known/, "Not known yet. Wait a moment."],
+  [/^flamesafe$/, /no status/, "Silent. Disarm with the Deck or e-stop."],
+  [/^flamesafe$/, /fault/, "Fault. Disarm, then tell Jeff."],
+  [/^show audio$/, /not attached/, "Interface missing. Check its USB."],
+  [/^show audio$/, /lost|fault/, "Lost. Check the audio interface."],
+  [/^announcements$/, /show audio not open/, "Cannot play: show audio not open."],
+  [/^announcements$/, /output/, "No output. Pick one in Settings."],
+  [/^announcements$/, /./, "Cannot play. Tell Jeff."],
+  [/^disk$/, /critical/, "Nearly full. Tell Jeff now."],
+  [/^disk$/, /./, "Filling up. Tell Jeff."],
+  [/^audit$/, /./, "Audit log not writing. Tell Jeff."],
+  [/^laser arm$/, /not known/, "Not known. Check the laser PC."],
+  [/^laser arm$/, / of /, "Some armed, output dark. Arm all or disarm."],
+  [/^lasers$/, /link lost/, "BEYOND not answering. Check laser PC."],
+  [/^lasers$/, /blanking/, "Cannot blank. Set BEYOND's OSC address."],
+  [/^lasers$/, /restarted/, "BEYOND restarted. Dark until the next show."],
+  [/^lasers$/, /link unknown|not known/, "Link unknown. Check the laser PC."],
+  [/^pixels$/, /not sending/, "Not sending. Check the pixel network."],
+  [/^pixels$/, /not known/, "Not known yet. Wait a moment."],
+  [/^video$/, /./, "Check the video PC."],
+  [/^timecode$/, /./, "Timecode problem. Call Jeff."]];
+function sysItem(x){
+  const name = String((x && x.name) || ""), w = String((x && x.word) || ""), lc = name.toLowerCase();
+  const label = SYS_LABEL[name] || name;
+  let state = (x && x.state) || "warn";
+  if(state !== "bad" && SYS_OFF.test(w.trim())) state = "off";
+  if(name === "Laser arm" && /^armed$/i.test(w.trim())) state = "on";
+  let say = state === "ok" ? "OK." : state === "off" ? "Off: not in use here." : state === "on" ? "All armed." : "";
+  if(!say){
+    const hit = SYS_SAY.find(([n, r]) => n.test(lc) && r.test(w.toLowerCase()));
+    say = hit ? hit[2] : short8(w ? w.charAt(0).toUpperCase() + w.slice(1) + "." : "", "Tap a row for its words.");
+  }
+  return {name:name, label:label, state:state, say:say, word:w};
+}
+function sysLook(subs, isStaleNow){
+  if(isStaleNow) return {cls:"bad", icon:"x", text:"No contact", items:[], first:"No contact with the show PC."};
+  const items = (subs || []).map(sysItem);
+  const rank = {bad:0, warn:1};
+  const probs = items.filter(i => i.state === "bad" || i.state === "warn").sort((a, b) => rank[a.state] - rank[b.state]);
+  if(!probs.length) return {cls:"ok", icon:"check", text:"All OK", items:items, first:""};
+  const worst = probs[0];
+  const text = probs.length === 1 ? (SYS_SHORT[worst.label] || worst.label) + (worst.state === "bad" ? ": fault" : ": check") : probs.length + " to check";
+  return {cls: probs.some(i => i.state === "bad") ? "bad" : "warn", icon:"warn", text:text, items:items,
+    first:"First: " + worst.label + ". " + worst.say};
+}
 function renderSys(){
-  const isSt = stale();
-  const subs = laserPill((ST && ST.subsystems) || [], ST && ST.laser_arm, ST && ST.beyond_link);
-  const bad = subs.filter(x => x.state === "bad").length, warn = subs.filter(x => x.state === "warn").length;
+  const L = sysLook((ST && ST.subsystems) || [], stale());
   const b = $("sys");
-  let cls, ic, t;
-  if(isSt){ cls = "warn"; ic = "x"; t = "No contact"; }
-  else if(bad){ cls = "bad"; ic = "warn"; t = bad + (bad === 1 ? " fault" : " faults"); }
-  else if(warn){ cls = "warn"; ic = "warn"; t = warn + " to check"; }
-  else { cls = "ok"; ic = "check"; t = "All OK"; }
-  b.className = "hb " + cls; setIcon(b.querySelector("svg"), ic); setText(b.querySelector("span"), t);
+  b.className = "hb " + L.cls; setIcon(b.querySelector("svg"), L.icon); setText(b.querySelector("span"), L.text);
 }
 setInterval(renderSys, 1000);
+// One tap opens the sheet: what to do first, then every system with what
+// is wrong and what to do.
 $("sys").addEventListener("click", () => {
-  const subs = laserPill((ST && ST.subsystems) || [], ST && ST.laser_arm, ST && ST.beyond_link);
-  const word = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off"};
-  const rows = subs.map(x => `<li><b>${esc(SYS_NAMES[x.name] || x.name)}</b>: ${esc(word[x.state] || "Not known")}. <span class="dim">${esc(x.word || "")}</span></li>`).join("");
-  sheet("Systems", stale() ? "<div>No contact with the show PC: not known.</div>" : `<ul>${rows || "<li>Not known yet.</li>"}</ul><div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
+  const L = sysLook((ST && ST.subsystems) || [], stale());
+  const word = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"On"};
+  const ic = {ok:"check", warn:"warn", bad:"warn", off:"power", on:"check"};
+  const rows = L.items.map(x => `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<b>${esc(x.label)}: ${esc(word[x.state] || "Check")}.</b> ${esc(x.say)}</li>`).join("");
+  sheet("Systems", (L.first ? `<div class="first">${esc(L.first)}</div>` : "") +
+    (L.items.length ? `<ul class="sys">${rows}</ul>` : `<div>${esc(L.first || "Not known yet.")}</div>`) +
+    `<div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
 });
 function renderUser(){
   const me = (ST && ST.me) || ME || {};
@@ -2250,6 +2400,720 @@ function coachMaybe(){
   coachStart();
 }
 
+// COPIED FROM 1.0 (selftest.py checks they stay the same): the Startup
+// page's purge, open beats, lock and unlock, the fire key's heartbeats and
+// the wave flamer cleaning's holds. Nothing in them is changed.
+let MO = null, MO_OPEN = false, MO_TIMER = null, FIRE = null;
+let MO_TAB = null, MO_NAME = "", MO_KEY = "";
+const LOCK_UNDO_MS = 5000, LOCK_QUIET_MS = 1000;
+let LOCK_UNDO = null;
+const LOCK_BUSY = {};
+const BEAT_INST = Math.random().toString(36).slice(2) + Date.now().toString(36);
+let BEAT_SEQ = 0;
+const KEY_REPEAT_GRACE_MS = 2500, KEY_REPEAT_GAP_MS = 1000;
+let WC = null, WC_OPEN = false, WC_TIMER = null, WC_BEAT = null, WC_RUN = null, WC_SEQ = 0, WC_RUNS = 0, WC_HOLD = false;
+function moActor(extra){ return actor(extra); }
+function openBeatBody(leaving){ return actor(Object.assign({arranging: ARRANGE, inst: BEAT_INST, seq: ++BEAT_SEQ}, leaving ? {leaving: true} : {})); }
+function groupAnySelected(ids, purge){
+  const sel = (purge && purge.selected) || [];
+  return ids.some(id => sel.includes(id));
+}
+function groupButtonDisabled(ids, any, mo, arrange, st){
+  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));
+}
+function groupClick(g){
+  const ids = (MO.groups || {})[g] || [];
+  const any = groupAnySelected(ids, MO.purge_state || {});
+  moPress("purge-select", {machines: ids, group: g, on: !any});
+}
+async function moPress(route, extra, msgEl){
+  const el = $(msgEl || "mo-msg");
+  // Every press on this page goes through here: in Arrange mode the ones
+  // that arm, fire, lock or unlock never leave the page (Jeff, 2026-10-19).
+  if(arrangeBlocked(route, extra)) return;
+  try{
+    const j = await post("/api/remote/" + route, moActor(extra));
+    el.textContent = j.text || "Done.";
+    try{ MO = await getJSON("/api/remote/morning", 1500); renderMorning(); }catch(e2){}
+    return j;
+  }catch(e){ el.textContent = e.message; return null; }
+}
+async function lockClick(kind, id, name, want){
+  if(arrangeBlocked("lock", {})) return;        // before anything is sent
+  const key = kind + ":" + id;
+  // Undo names what it wants and is never held back by the quiet second
+  // (review of #122, second review, P2-1); a tap is.
+  if(LOCK_BUSY[key] && want === undefined) return;
+  const msg = kind === "machine" ? "mo-msg" : "mo-lmsg";
+  // What the operator SAW when they tapped decides what they want (second
+  // review, P1-A): a lock tap on a machine shown unlocked asks for a lock,
+  // even if another screen locked it a moment ago.
+  const isLocked = v => !!(v && v.lockout && (kind === "machine" ? (v.lockout.machines || {})[id] : (v.lockout.lasers || {})[id]));
+  if(want === undefined && !(MO && MO.lockout)){ $(msg).textContent = "The lockout is not shown yet, so nothing was changed. Tap again."; return; }
+  const on = want === undefined ? !isLocked(MO) : want;
+  LOCK_BUSY[key] = true;
+  try{
+    let fresh = null;
+    try{ fresh = await getJSON("/api/remote/morning", 1500); }catch(e){ fresh = null; }
+    if(!fresh || !fresh.lockout){ $(msg).textContent = "The engine's lockout could not be read, so nothing was changed. Tap again."; return; }
+    // Already as wanted (another screen did it, or an answer was lost):
+    // said, and nothing is sent.
+    if(on === isLocked(fresh)){ $(msg).textContent = name + (on ? " is already locked out." : " is already unlocked."); $(msg).title = $(msg).textContent; return; }
+    if(!on && kind === "machine"){
+      const why = unlockRefusal((fresh.machines || []).find(m => m.id === id) || {name:name}, ST && ST.flames);
+      if(why){ $(msg).textContent = why; $(msg).title = why; return; }
+    }
+    const j = await moPress("lock", lockBody(kind, id, on), msg);
+    if(j) lockUndoOffer(kind, id, name, on);
+  } finally {
+    setTimeout(() => { delete LOCK_BUSY[key]; }, LOCK_QUIET_MS);
+  }
+}
+function lockBody(kind, id, on){ return on ? {kind:kind, id:id, on:true} : {kind:kind, id:id, on:false, confirmed:true}; }
+function lockUndoOffer(kind, id, name, on){
+  const bar = $("mo-lkundo");
+  if(!bar) return;
+  clearTimeout(LOCK_UNDO && LOCK_UNDO.timer);
+  LOCK_UNDO = {kind:kind, id:id, name:name, on:on};
+  bar.querySelector("span").textContent = name + (on ? " locked out." : " unlocked.");
+  // Beside the message line of what was locked (review of #122, P2-5).
+  const at = $(kind === "machine" ? "mo-msg" : "mo-lmsg");
+  if(at && bar.previousElementSibling !== at) at.insertAdjacentElement("afterend", bar);
+  bar.hidden = false;
+  LOCK_UNDO.timer = setTimeout(lockUndoGone, LOCK_UNDO_MS);
+}
+function lockUndoGone(){
+  const bar = $("mo-lkundo");
+  if(LOCK_UNDO) clearTimeout(LOCK_UNDO.timer);
+  LOCK_UNDO = null;
+  if(bar) bar.hidden = true;
+}
+async function lockUndo(){
+  const u = LOCK_UNDO;
+  lockUndoGone();
+  if(!u) return;
+  await lockClick(u.kind, u.id, u.name, !u.on);
+}
+function fireStart(){
+  if(FIRE) return;
+  if(arrangeBlocked("purge-fire", {})) return;        // the Space bar, while arranging
+  if(!MO || !((MO.purge_state || {}).selected || []).length){ $("mo-msg").textContent = "Nothing is armed for a purge. Click a machine first."; return; }
+  FIRE = {id:null, startAt:Date.now(), repeatAt:0};
+  fireBeat(FIRE);
+}
+async function fireBeat(f){
+  if(FIRE !== f) return;
+  if(isStale(Date.now(), LAST_OK, 1.0)){ fireStop("the page's status is not live"); return; }
+  const now = Date.now();
+  if(fireKeyLapsed(now, f.startAt, f.repeatAt, KEY_REPEAT_GRACE_MS, KEY_REPEAT_GAP_MS)){
+    fireStop("no key repeat seen for 1 s: keep the Space bar down, and the OS key repeat must be on (or use the Stream Deck's FIRE key)"); return;
+  }
+  try{
+    const j = await post("/api/remote/purge-fire", moActor({fire_id:f.id, on:true}));   // on:true or the engine only stops
+    if(FIRE !== f) return;
+    f.id = j.fire_id;
+    $("mo-msg").textContent = "FIRING " + (j.firing || []).join(", ") + ((j.waiting || []).length ? ". Waiting: " + j.waiting.join("; ") : "");
+    $("mo-key").className = "key firing"; $("mo-key").textContent = "FIRING";
+    f.timer = setTimeout(() => fireBeat(f), 100);
+  }catch(e){ if(FIRE === f) fireStop(e.message); }
+}
+function fireStop(why){
+  const f = FIRE; FIRE = null;
+  if(!f) return;
+  clearTimeout(f.timer);
+  $("mo-msg").textContent = "Fire stopped: " + why;
+  post("/api/remote/purge-stop", moActor({})).catch(() => {});
+}
+async function morningPoll(){
+  if(!MO_OPEN) return;
+  try{
+    if(!document.hidden){
+      // Both every 500 ms while the view is open: the engine clears the
+      // purge selection and un-maps the deck 2 s after the last open beat.
+      // The beat says whether this screen is arranging: the engine then
+      // refuses to arm, fire, lock or unlock for it (Jeff, 2026-10-19).
+      await post("/api/remote/morning-open", openBeatBody());
+      MO = await getJSON("/api/remote/morning", 1500);
+      renderMorning();
+    }
+  }catch(e){ $("mo-msg").textContent = e.message; }
+  MO_TIMER = setTimeout(morningPoll, 500);
+}
+function cleaningView(on){
+  if(on && !WC_OPEN){ WC_OPEN = true; wcPoll(); }
+  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); wcLetGo("the page was left"); }
+}
+async function wcPoll(){
+  if(!WC_OPEN) return;
+  try{
+    if(!document.hidden && !WC_HOLD) WC = await getJSON("/api/remote/cleaning", 1500);
+  }catch(e){ if(e.status === 404) WC = null; else $("wc-msg").textContent = e.message; }
+  renderCleaning();
+  WC_TIMER = setTimeout(wcPoll, 500);
+}
+function wcNow(){
+  return cleaningState(WC, WC_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+}
+function wcLetGo(why){
+  const had = WC_HOLD, run = WC_RUN;
+  WC_HOLD = false; WC_RUN = null; clearTimeout(WC_BEAT); WC_BEAT = null;
+  if(run !== null) post("/api/remote/cleaning-beat", actor(cleaningBody(false, run, ++WC_SEQ, true))).catch(() => {});
+  if(had && why) $("wc-msg").textContent = "Hold ended: " + why + ". Nothing new started.";
+  renderCleaning();
+}
+function wcStart(){
+  if(WC_HOLD) return;
+  const st = wcNow();
+  if(!st.ok){ $("wc-msg").textContent = st.block; return; }
+  WC_HOLD = true;
+  WC_RUN = WINDOW_ID + "-c" + (++WC_RUNS) + "-" + Date.now().toString(36);
+  $("wc-msg").textContent = "Keep holding, as for a Hold to arm.";
+  renderCleaning();
+  wcBeat(true);
+}
+async function wcBeat(change){
+  clearTimeout(WC_BEAT); WC_BEAT = null;
+  if(!WC_HOLD || WC_RUN === null) return;
+  const st = wcNow();
+  if(st.cut){ wcLetGo(st.cut.replace(/[.\s]+$/, "")); return; }
+  const run = WC_RUN, seq = ++WC_SEQ;
+  WC_BEAT = setTimeout(() => wcBeat(false), 100);
+  try{
+    const j = await post("/api/remote/cleaning-beat", actor(cleaningBody(true, run, seq, change)));
+    if(run !== WC_RUN || j.overtaken) return;
+    WC = j;
+    if(j.state === "phase1" || j.state === "phase2"){
+      // The hold is complete: the routine runs on its own now.
+      WC_HOLD = false; WC_RUN = null; clearTimeout(WC_BEAT); WC_BEAT = null;
+      $("wc-msg").textContent = j.state === "phase1" ? "Phase 1 is running on its own. You can let go." :
+        "The purge bursts are starting. You can let go; press Stop to end them.";
+    } else if(!j.mine){ wcLetGo(j.last_note || j.last_cut || "the engine ended it"); return; }
+    renderCleaning();
+  }catch(e){ if(run === WC_RUN) wcLetGo(e.message.replace(/[.\s]+$/, "")); }
+}
+async function wcStopPress(){
+  wcLetGo("Stop pressed");
+  try{ const j = await post("/api/remote/cleaning-stop", actor({})); $("wc-msg").textContent = j.text || "Stopped."; }
+  catch(e){ $("wc-msg").textContent = e.message; }
+}
+// END OF THE COPY.
+
+// ---- DAY: the operator's day as steps (Jeff, 2026-10-29) ----------------
+// Startup or Shutdown; only the steps that apply now; each a chip with a
+// mark; the chosen step's panel; one big Next. The engine owns every
+// decision (morning.py, fuel.py, cleaning.py): every press here is a press
+// 1.0's Startup, Fuel and Shutdown pages make, the same route, body and
+// gesture. Purge fires as in 1.0 only: the Stream Deck's FIRE key, or Space
+// held on this page (no touch fire). There is no Arrange mode in 2.0 (the
+// map is 1.0's, one tap away), so nothing here is ever arranging.
+const ARRANGE = false;
+function arrangeBlocked(){ return false; }
+let DAY_PART = null, DAY_STEP = null, DAY_SEEN = {}, DAY_KEY = "", DAY_CTL = "";
+try{ DAY_SEEN = JSON.parse(localStorage.getItem("ltc_ui2_day") || "{}") || {}; }catch(e){ DAY_SEEN = {}; }
+function daySeenKey(k){ const d = (MO && MO.checklists && MO.checklists.show_date) || new Date().toDateString(); return d + ":" + k; }
+function daySeen(k){ return !!DAY_SEEN[daySeenKey(k)]; }
+function dayMarkSeen(k){
+  DAY_SEEN[daySeenKey(k)] = true;
+  try{ localStorage.setItem("ltc_ui2_day", JSON.stringify(DAY_SEEN)); }catch(e){}
+}
+// The checklists: the startup one (1.0's "morning", shown as Startup) and
+// the shutdown one.
+function dayList(part, mo){
+  const lists = (mo && mo.checklists && mo.checklists.checklists) || [];
+  if(part === "shut") return lists.find(l => l.id === "shutdown") || null;
+  return lists.find(l => l.id === "morning") || lists.find(l => l.id === "startup") || lists.find(l => l.id !== "shutdown") || null;
+}
+// The steps that apply now, each {key, title, icon, state, why}: state is
+// done, todo, blocked or live; why is 8 words or fewer. Pure.
+function daySteps(part, s){
+  const st = s.st || {}, me = st.me || s.me || {}, mo = s.mo, fu = s.fu, wc = s.wc, seen = s.seen || (() => false);
+  const out = [];
+  const signedIn = !!me.user;
+  if(part !== "shut" && me.users_active && !signedIn)
+    out.push({key:"signin", title:"Sign in", icon:"user", state:"todo", why:"Sign in to tick, purge and lock."});
+  if(part !== "shut" && mo && (mo.checks || []).length){
+    const bad = mo.checks.filter(c => c.level === "bad").length, warn = mo.checks.filter(c => c.level === "warn").length;
+    out.push({key:"checks", title:"Checks", icon:"check", state: bad ? "blocked" : warn ? "todo" : "done",
+      why: bad ? bad + (bad === 1 ? " problem. Tap to read." : " problems. Tap to read.") : warn ? warn + " to look at." : "All checks OK."});
+  }
+  const list = dayList(part, mo);
+  if(list && list.total) out.push({key: part === "shut" ? "shutlist" : "startlist", title:"Checklist", icon:"list",
+    state: list.done >= list.total ? "done" : "todo", why: list.done + " of " + list.total + " ticked."});
+  if(part !== "shut" && fu && (fu.units || []).length){
+    const soon = fu.units.filter(u => u.refill_soon).length;
+    out.push({key:"fuel", title:"Fuel", icon:"flame", state: fu.fault || fu.config_error ? "blocked" : soon ? "todo" : (seen("fuel") ? "done" : "todo"),
+      why: fu.fault || fu.config_error ? "Fuel record problem. Tap to read." : soon ? soon + (soon === 1 ? " tank needs a refill." : " tanks need a refill.") : "Tanks OK. Refill any you filled."});
+  }
+  if(part !== "shut" && mo && Object.keys(mo.groups || {}).length){
+    const p = mo.purge_state || {}, n = (p.selected || []).length;
+    out.push({key:"purge", title:"Purge", icon:"flame", state: p.firing || p.timed ? "live" : n ? "todo" : (seen("purge") ? "done" : "todo"),
+      why: p.timed ? "Timed purge: " + timedLeft((mo.timed || {}).left_s) + " left. Stop purge ends it." : p.firing ? "FIRING." : !mo.purge_enabled ? "Purge is off for this screen." : mo.live_refusal ? "Not now: " + short8(mo.live_refusal, "a show is live.") : n ? n + " armed. Deck FIRE or hold Space." : "Pick a group, then fire."});
+  }
+  if(part !== "shut" && mo && (mo.lasers || []).length){
+    const on = mo.lasers.filter(l => l.on).length;
+    out.push({key:"lasers", title:"Lasers", icon:"laser", state: on ? "live" : (seen("lasers") ? "done" : "todo"),
+      why: on ? on + " test grid on." : "Test grid on, check, then off."});
+  }
+  // Hazers (#168): their levels and arming are the SHOW tab's own sheet.
+  const hz = st.hazers;
+  if(part !== "shut" && hz && hz.available && (hz.hazers || []).length){
+    const n = hz.hazers.filter(h => h.armed).length;
+    out.push({key:"hazers", title:"Hazers", icon:"wind", state: seen("hazers") ? "done" : "todo",
+      why: n ? n + " of " + hz.hazers.length + " armed." : "Set levels, then arm for the show."});
+  }
+  if(part === "shut" && wc && typeof wc.available === "boolean"){
+    const run = wc.state && wc.state !== "idle";
+    out.push({key:"clean", title:"Cleaning", icon:"flame", state: !wc.available ? "blocked" : run ? "live" : (seen("clean") ? "done" : "todo"),
+      why: !wc.available ? short8(wc.problem, "Not available here.") : wc.state === "paused" ? "Waiting: hold for the bursts." : run ? "Running. Stop when done." : "Two holds, then Stop."});
+  }
+  if(mo && ((mo.machines || []).length || (mo.lasers || []).length)){
+    const lo = mo.lockout || {}, n = Object.keys(lo.machines || {}).length + Object.keys(lo.lasers || {}).length;
+    const k = part === "shut" ? "locks-shut" : "locks";
+    out.push({key:k, title:"Locks", icon:"lock", state: lo.problem ? "blocked" : (seen(k) ? "done" : "todo"),
+      why: lo.problem ? "Lockout problem. Tap to read." : n ? n + " locked out." : "Nothing locked out."});
+  }
+  if(part === "shut" && me.users_active && signedIn)
+    out.push({key:"signout", title:"Sign out", icon:"user", state:"todo", why:"Last: sign out of this screen."});
+  return out;
+}
+function dayIcon(state, icon){ return state === "done" ? "check" : state === "blocked" ? "warn" : state === "live" ? "flame" : icon; }
+// Startup until the night's shows are over and the startup list is done.
+function dayDefaultPart(st, mo){
+  const sch = (st && st.schedule) || {};
+  const list = dayList("start", mo);
+  const over = !sch.next && !sch.delayed && !isLive(st);
+  return over && list && list.total && list.done >= list.total ? "shut" : "start";
+}
+let FU = null, FU_OPEN = false, FU_TIMER = null;
+async function fuelPoll2(){
+  if(!FU_OPEN) return;
+  try{ if(!document.hidden) FU = await getJSON("/api/remote/fuel", 2000); }catch(e){}
+  renderMorning();
+  FU_TIMER = setTimeout(fuelPoll2, 2000);
+}
+// Opening and leaving DAY (1.0's morningView, fuelView and cleaningView):
+// the open beats and the polls run only while it shows; leaving it stops
+// a fire, drops this screen's own purge selection at once, and lets go of
+// a cleaning hold.
+function dayView(on){
+  if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
+  if(!on && MO_OPEN){
+    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left");
+    purgeDrop();
+  }
+  if(on && !FU_OPEN){ FU_OPEN = true; fuelPoll2(); }
+  if(!on && FU_OPEN){ FU_OPEN = false; clearTimeout(FU_TIMER); }
+  cleaningView(on);
+}
+// This screen's own purge selection goes when its Purge step does (review
+// of #169, 1): leaving the step, switching Startup and Shutdown, or
+// leaving the page. 1.0's route and body; only this screen's own.
+function purgeDrop(){
+  // A timed purge carries on (1.0's morningView, #172): it ends on the
+  // engine's clock, and the engine clears the selection once it has.
+  if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me && !MO.purge_state.timed)
+    post("/api/remote/purge-clear", moActor({})).catch(() => {});
+}
+function dayStepsNow(){
+  if(!DAY_PART) DAY_PART = dayDefaultPart(ST, MO);
+  return daySteps(DAY_PART, {st:ST, me:ME, mo:MO, fu:FU, wc:WC, seen:daySeen});
+}
+function dayGo(k){
+  if(DAY_STEP === k) return;
+  if(DAY_STEP === "purge"){ fireStop("another step was chosen"); purgeDrop(); }
+  if(DAY_STEP === "clean" && WC_HOLD) wcLetGo("another step was chosen");
+  DAY_STEP = k; DAY_CTL = ""; renderMorning();
+}
+// The one big button: marks a step that only a look can finish (fuel,
+// purge, laser test, locks, cleaning) as seen, then goes to the next step
+// that is not done.
+$("d-next").addEventListener("click", () => {
+  const steps = dayStepsNow();
+  const i = steps.findIndex(x => x.key === DAY_STEP);
+  const cur = steps[i];
+  // Purge, hazers and cleaning are never done by a look (review of #169):
+  // Next moves on and leaves them to do.
+  if(cur && ["fuel", "lasers", "locks", "locks-shut"].includes(cur.key) && cur.state === "todo") dayMarkSeen(cur.key);
+  const after = dayStepsNow();
+  const j = after.findIndex(x => x.key === DAY_STEP);
+  const nx = after.slice(j + 1).concat(after.slice(0, Math.max(0, j))).find(x => x.state !== "done");
+  if(nx) dayGo(nx.key); else renderMorning();
+});
+$("d-seg").addEventListener("click", e => {
+  const b = e.target.closest("[data-part]"); if(!b) return;
+  if(DAY_PART === b.dataset.part) return;
+  DAY_PART = b.dataset.part; dayGo(null);
+});
+$("d-steps").addEventListener("click", e => { const b = e.target.closest("[data-step]"); if(b) dayGo(b.dataset.step); });
+const DAY_HELP = {
+  signin:"Sign in once: your name goes on every tick.", checks:"The show PC checks itself. Red needs fixing.",
+  startlist:"Tick each step when it is done. Note adds a remark.", shutlist:"Tick each step when it is done.",
+  fuel:"Tap a tank you filled. Refill all only if all were.",
+  purge:"Pick a group. Fire with the Deck's FIRE key or hold Space. Let go to stop.",
+  lasers:"Test grid on, check the aim, then off.",
+  hazers:"Levels sets each hazer's haze and fan, and arms it.",
+  locks:"Tap a machine to lock it out for tonight, or unlock it.", "locks-shut":"Tap a machine to lock it out, or unlock it.",
+  clean:"Hold until phase 1 starts. Later hold again for the bursts. Stop ends it.",
+  signout:"Signs this screen out. Abort, Hold, Stop still work."};
+$("d-q").addEventListener("click", () => {
+  const k = DAY_STEP;
+  let extra = "";
+  if(k === "clean" && WC && WC.settings) extra = cleaningNote(WC);
+  sheet(($("d-t").textContent || "Step"), `<div>${esc(DAY_HELP[k] || "")}</div>${extra ? `<div class="dim">${esc(extra)}</div>` : ""}`, [{label:"Close", cls:"blue"}]);
+});
+function cleaningNote(v){
+  const s = v.settings || {};
+  return (s.cycles ? "Phase 1: armed " + s.armed_s + " s, disarmed " + s.disarmed_s + " s, " + s.cycles + " times, no fire. Then bursts " + s.burst_on_s + " s on, " + s.burst_off_s + " s off until Stop (at most " + s.max_burst_min + " min). " : "") +
+    "Let go too soon and nothing starts." + (v.locked_note ? " " + v.locked_note : "") + (v.config_error ? " " + v.config_error : "");
+}
+// Which message line shows: the one 1.0's press for this step writes to.
+const DAY_MSG = {purge:"mo-msg", locks:"mo-msg", "locks-shut":"mo-msg", checks:"mo-msg", signin:"mo-msg", signout:"mo-msg",
+  lasers:"mo-lmsg", startlist:"mo-cmsg", shutlist:"mo-cmsg", clean:"wc-msg", fuel:"fu-msg"};
+// The checklist: who ticks is the person signed in (1.0's picker when the
+// name is not on the list), one step at a time.
+let DAY_CK = {list:null, i:0};
+let DAY_TICK_BUSY = false, DAY_TICK_AT = -1e9;
+const DAY_TICK_QUIET_MS = 1000;
+function dayWho(c){
+  const me = (ST && ST.me) || ME || {};
+  if(me.user && (c.names || []).includes(me.user)) MO_NAME = me.user;
+  return MO_NAME;
+}
+// ---- the render: every 500 ms with the morning poll, and on each status
+function renderMorning(){
+  if(TAB !== "day") return;
+  // Nothing is chosen until the Startup page's view has arrived.
+  if(!MO){
+    setText($("d-prog"), "Reading the show PC"); setText($("d-t"), "Reading"); setText($("d-s"), "");
+    return;
+  }
+  const steps = dayStepsNow();
+  // the part, the progress, the chips
+  $("d-seg").querySelectorAll("[data-part]").forEach(b => { b.classList.toggle("on", b.dataset.part === DAY_PART); b.setAttribute("aria-selected", b.dataset.part === DAY_PART ? "true" : "false"); });
+  const done = steps.filter(x => x.state === "done").length;
+  setText($("d-prog"), done + " of " + steps.length + " done");
+  if(!steps.some(x => x.key === DAY_STEP)){
+    // A step that drops out of the list on a redraw goes as if left: the
+    // Purge step's fire and this screen's selection with it.
+    if(DAY_STEP === "purge"){ fireStop("the Purge step went"); purgeDrop(); }
+    DAY_STEP = (steps.find(x => x.state !== "done") || steps[0] || {}).key || null;
+  }
+  const key = JSON.stringify(steps.map(x => [x.key, x.state, x.title]));
+  if(key !== DAY_KEY){
+    DAY_KEY = key;
+    $("d-steps").innerHTML = steps.map(x => `<button class="st ${x.state}" data-step="${esc(x.key)}" role="tab">${icon(dayIcon(x.state, x.icon))}<span>${esc(x.title)}</span></button>`).join("");
+  }
+  $("d-steps").querySelectorAll("[data-step]").forEach(b => { b.classList.toggle("on", b.dataset.step === DAY_STEP); b.setAttribute("aria-selected", b.dataset.step === DAY_STEP ? "true" : "false"); });
+  const cur = steps.find(x => x.key === DAY_STEP);
+  const left = steps.filter(x => x.state !== "done" && x.key !== DAY_STEP).length;
+  $("d-next").classList.toggle("done", !left && (!cur || cur.state === "done"));
+  setText($("d-next-l"), !left && (!cur || cur.state === "done") ? "All done" : "Next step");
+  // the panel
+  if(!cur){
+    setText($("d-t"), MO ? "Nothing to do" : "Reading"); setText($("d-s"), MO ? "No steps apply now." : "");
+    if(DAY_CTL !== "none"){ DAY_CTL = "none"; $("d-ctl").innerHTML = ""; }
+    return;
+  }
+  setIcon($("d-ti"), dayIcon(cur.state, cur.icon));
+  setText($("d-t"), cur.title); setText($("d-s"), cur.why);
+  $("d-s").className = cur.state === "blocked" || cur.state === "live" ? "bad" : cur.state === "done" ? "ok" : "";
+  const msgId = DAY_MSG[cur.key] || "mo-msg";
+  ["mo-msg", "mo-lmsg", "mo-cmsg", "wc-msg", "fu-msg"].forEach(id => { $(id).hidden = id !== msgId; });
+  // The message line takes room only when it has something to say.
+  $("d-msg").hidden = !($(msgId).textContent.trim() || !$("mo-lkundo").hidden);
+  if(DAY_CTL !== cur.key){ DAY_CTL = cur.key; dayBuild(cur.key); }
+  dayUpdate(cur.key);
+}
+// A step's controls: built when the step is chosen, updated on each render.
+function dayBuild(k){
+  const box = $("d-ctl");
+  if(k === "signin") box.innerHTML = `<div class="drow"><button class="b green" id="d-signin">${icon("user")}Sign in</button></div>`;
+  else if(k === "signout") box.innerHTML = `<div class="drow"><button class="b redline" id="d-signout">${icon("user")}Sign out</button></div>`;
+  else if(k === "checks") box.innerHTML = `<div class="dgrid" id="d-checks"></div>`;
+  else if(k === "startlist" || k === "shutlist") box.innerHTML =
+    `<div class="dbig" id="d-ck-t"></div><div class="drow" id="d-ck-who"></div>` +
+    `<div class="drow"><button class="b green" id="d-tick">${icon("check")}<span id="d-tick-l">Tick</span></button><button class="b" id="d-note">${icon("list")}Note</button>` +
+    `<button class="b" id="d-ck-prev">${icon("left")}Back</button><button class="b" id="d-ck-next">${icon("right")}Skip</button></div>`;
+  else if(k === "fuel") box.innerHTML = `<div class="dgrid" id="d-fuel"></div><div class="drow"><button class="b" id="fu-all">${icon("flame")}Refill all</button><span id="fu-why" class="dim"></span></div>`;
+  else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><span class="key" id="mo-key"></span></div>`;
+  else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
+  else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
+  else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open">${icon("wind")}Levels</button><button data-safe class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
+  else if(k === "clean") box.innerHTML = `<div class="drow"><span class="dbig" id="wc-armed"></span></div>` +
+    `<div class="drow"><button class="b green hold" id="wc-hold">${icon("ring")}<span id="wc-hold-l">Hold to start</span></button><button data-safe class="b red" id="wc-stop">${icon("stop")}Stop</button></div>` +
+    `<div id="wc-prog" class="dbig"></div><div id="wc-block" class="dim"></div>`;
+  else box.innerHTML = "";
+  dayWire(k);
+}
+function dayWire(k){
+  if(k === "signin") $("d-signin").addEventListener("click", openSignIn);
+  if(k === "signout") $("d-signout").addEventListener("click", openSignIn);
+  if(k === "checks") $("d-checks").addEventListener("click", e => {
+    const b = e.target.closest("[data-ck]"); if(!b) return;
+    const c = ((MO && MO.checks) || [])[Number(b.dataset.ck)]; if(!c) return;
+    sheet(c.title, `<div class="full">${esc(checkLook(c.level).word)}. ${esc(c.text)}</div>`, [{label:"Close", cls:"blue"}]);
+  });
+  if(k === "startlist" || k === "shutlist"){
+    // A tick is for the step drawn on the screen (review of #169, 2): its
+    // id is on the button, a tap in the first second a step is shown or
+    // while a tick is on its way is ignored, so a double tap never ticks
+    // the next step unread.
+    $("d-tick").addEventListener("click", async () => {
+      if(DAY_TICK_BUSY || monoNow() - DAY_TICK_AT < DAY_TICK_QUIET_MS) return;
+      const l = dayList(DAY_PART, MO); if(!l) return;
+      const id = $("d-tick").dataset.step;
+      const s = (l.steps || []).find(x => String(x.id) === id); if(!s) return;
+      if(!dayWho(MO.checklists)){ $("mo-cmsg").textContent = "Pick who is ticking first."; return; }
+      DAY_TICK_BUSY = true;
+      try{ await moPress("checklist-tick", {checklist:l.id, step:s.id, done: !s.done, who:MO_NAME}, "mo-cmsg"); }
+      finally{ DAY_TICK_BUSY = false; DAY_TICK_AT = monoNow(); }
+    });
+    $("d-note").addEventListener("click", async () => {
+      const l = dayList(DAY_PART, MO); if(!l) return;
+      const s = l.steps[DAY_CK.i]; if(!s) return;
+      if(!dayWho(MO.checklists)){ $("mo-cmsg").textContent = "Pick who is noting first."; return; }
+      DAY_NOTE = "";
+      const v = await sheet("Note", `<div class="dim">${esc(s.text)}</div><input class="f" id="d-note-in" placeholder="Recorded for audit">`, [{label:"Cancel", value:null}, {label:"Save note", value:"go", cls:"green", icon:"check"}]);
+      const note = v === "go" ? (DAY_NOTE || "") : "";
+      if(note && note.trim()) moPress("checklist-note", {checklist:l.id, step:s.id, who:MO_NAME, note:note.trim()}, "mo-cmsg");
+    });
+    $("d-ck-prev").addEventListener("click", () => { DAY_CK.i = Math.max(0, DAY_CK.i - 1); DAY_CK.pin = true; renderMorning(); });
+    $("d-ck-next").addEventListener("click", () => { const l = dayList(DAY_PART, MO); DAY_CK.i = Math.min(((l && l.steps) || []).length - 1, DAY_CK.i + 1); DAY_CK.pin = true; renderMorning(); });
+    $("d-ck-who").addEventListener("click", e => { const b = e.target.closest("[data-who]"); if(b){ MO_NAME = b.dataset.who; renderMorning(); } });
+  }
+  if(k === "fuel"){
+    $("d-fuel").addEventListener("click", async ev => {
+      const b = ev.target.closest("[data-refill]"); if(!b || b.disabled) return;
+      const u = ((FU && FU.units) || []).find(x => x.id === b.dataset.refill); if(!u) return;
+      if(await confirmBox(`${u.name} refilled?`, "Log that its tank is full now. The count of shows and flame starts again from here.", "Yes, refilled", "green"))
+        fuPress("fuel-refill", {unit:u.id});
+    });
+    $("fu-all").addEventListener("click", async () => {
+      const n = ((FU && FU.units) || []).length;
+      if(await confirmBox(`Refill all ${n} units?`, "Log a full tank for every G-Flame and Showven at once. Only if every tank really was filled.", "Yes, refill all", "green"))
+        fuPress("fuel-refill", {all:true, confirm:true, units:(FU && FU.unit_ids) || []});
+    });
+  }
+  if(k === "purge"){
+    $("mo-groups").addEventListener("click", e => { const b = e.target.closest("[data-grp]"); if(b && !b.disabled) groupClick(b.dataset.grp); });
+    $("mo-clear").addEventListener("click", () => moPress("purge-clear", {}));
+    $("d-mach").addEventListener("click", dayMachines);
+  }
+  if(k === "lasers"){
+    $("mo-lasers").addEventListener("click", e => {
+      const b = e.target.closest("[data-laser]"); if(!b) return;
+      const l = (MO.lasers || []).find(x => x.id === b.dataset.laser);
+      moPress("laser-test", {laser:b.dataset.laser, on: !(l && l.on)}, "mo-lmsg");
+    });
+    $("mo-cal-on").addEventListener("click", () => moPress("laser-test", {all:true, on:true}, "mo-lmsg"));
+    $("mo-cal-off").addEventListener("click", () => moPress("laser-test", {all:true, on:false}, "mo-lmsg"));
+    $("mo-beyond").addEventListener("click", () => moPress("open-beyond", {}, "mo-lmsg"));
+  }
+  // #168's own presses: the Levels sheet and Hazers off.
+  if(k === "hazers"){ $("d-hz-open").addEventListener("click", openHazerSheet); $("d-hz-off").addEventListener("click", hazersOff); }
+  if(k === "locks" || k === "locks-shut") $("d-locks").addEventListener("click", e => {
+    const b = e.target.closest("[data-lock]"); if(!b) return;
+    lockClick(b.dataset.kind, b.dataset.lock, b.dataset.name);
+  });
+  if(k === "clean"){
+    // Never the disabled attribute on the hold button (1.0's rule): a
+    // held button that turned disabled could lose its lift.
+    $("wc-hold").addEventListener("pointerdown", e => {
+      e.preventDefault();
+      try{ $("wc-hold").setPointerCapture(e.pointerId); }catch(err){}
+      wcStart();
+    });
+    for(const ev of ["pointerup", "pointercancel", "lostpointercapture"]){
+      $("wc-hold").addEventListener(ev, () => { if(WC_HOLD) wcLetGo("you let go before the hold was complete"); });
+    }
+    $("wc-hold").addEventListener("contextmenu", e => e.preventDefault());
+    $("wc-stop").addEventListener("click", wcStopPress);
+  }
+}
+let DAY_NOTE = "";
+document.addEventListener("input", e => { if(e.target && e.target.id === "d-note-in") DAY_NOTE = e.target.value; });
+function dayUpdate(k){
+  const mo = MO || {};
+  const may = mayRow(ST, "arm");
+  if(k === "checks"){
+    const box = $("d-checks"), list = mo.checks || [];
+    const sig = JSON.stringify(list.map(c => [c.title, c.level]));
+    if(box.dataset.sig !== sig){
+      box.dataset.sig = sig;
+      box.innerHTML = list.map((c, i) => { const lk = checkLook(c.level);
+        return `<button class="b ${c.level === "bad" ? "bad" : c.level === "warn" ? "part" : "on"}" data-ck="${i}">${icon(c.level === "ok" ? "check" : "warn")}<span class="tt">${esc(c.title)}<small>${esc(lk.word)}</small></span></button>`; }).join("");
+    }
+  }
+  if(k === "startlist" || k === "shutlist"){
+    const l = dayList(DAY_PART, mo), c = mo.checklists || {};
+    const steps = (l && l.steps) || [];
+    if(DAY_CK.list !== (l && l.id)){ DAY_CK = {list:l && l.id, i:0, pin:false}; }
+    // The first step not done, unless Back or Skip chose one.
+    if(!DAY_CK.pin){ const f = steps.findIndex(x => !x.done); DAY_CK.i = f < 0 ? Math.max(0, steps.length - 1) : f; }
+    DAY_CK.i = Math.max(0, Math.min(steps.length - 1, DAY_CK.i));
+    const s = steps[DAY_CK.i];
+    setText($("d-ck-t"), s ? (DAY_CK.i + 1) + ". " + s.text : "No steps in this list.");
+    setText($("d-tick-l"), s && s.done ? "Untick" : "Tick");
+    $("d-tick").className = "b " + (s && s.done ? "" : "green");
+    $("d-tick").disabled = !s; $("d-note").disabled = !s;
+    const sid = s ? String(s.id) : "";
+    if($("d-tick").dataset.step !== sid){ $("d-tick").dataset.step = sid; DAY_TICK_AT = monoNow(); }
+    $("d-ck-prev").disabled = DAY_CK.i <= 0; $("d-ck-next").disabled = DAY_CK.i >= steps.length - 1;
+    const who = dayWho(c);
+    const sig = JSON.stringify([c.names, who, s && s.done, s && s.who, s && s.note]);
+    const wb = $("d-ck-who");
+    if(wb.dataset.sig !== sig){
+      wb.dataset.sig = sig;
+      wb.innerHTML = s && s.done ? `<span class="dim">Ticked by ${esc(s.who)} at ${esc(s.at)}${s.note ? ". Note: " + esc(s.note) : ""}</span>` :
+        who ? `<span class="dim">Ticking as ${esc(who)}${s && s.note ? ". Note: " + esc(s.note) : ""}</span>` :
+        (c.names || []).map(n => `<button class="b" data-who="${esc(n)}">${icon("user")}${esc(n)}</button>`).join("");
+    }
+  }
+  if(k === "fuel"){
+    const f = FU || {}, units = f.units || [];
+    const box = $("d-fuel");
+    const sig = JSON.stringify([units.map(u => [u.id, u.shows_left, u.percent, u.refill_soon, u.color, u.locked]), f.may_refill]);
+    if(box.dataset.sig !== sig){
+      box.dataset.sig = sig;
+      box.innerHTML = units.map(u => {
+        const big = u.shows_left != null ? `${u.shows_left} show${u.shows_left === 1 ? "" : "s"} left` : u.percent != null ? `${u.percent}% left` : u.status === "never" ? "No refill logged" : "Learning";
+        return `<button class="b ${u.refill_soon ? "part" : ""}" data-refill="${esc(u.id)}" ${f.may_refill ? "" : "disabled"}>${icon(u.locked ? "lock" : "flame")}<span class="tt">${esc(u.name)}<small>${esc(big)}</small></span></button>`;
+      }).join("");
+    }
+    $("fu-all").disabled = !f.may_refill || !units.length;
+    setText($("fu-why"), f.may_refill ? "" : short8(f.refill_why, "Sign in to log a refill."));
+  }
+  if(k === "purge"){
+    const gb = $("mo-groups"), purge = mo.purge_state || {};
+    const gkey = JSON.stringify(Object.keys(mo.groups || {}));
+    if(gb.dataset.key !== gkey){
+      gb.dataset.key = gkey;
+      gb.innerHTML = Object.keys(mo.groups || {}).map(g => `<button class="b" data-grp="${esc(g)}">${icon("flame")}<span class="tt">${esc(g)}<small class="gd">\u00a0</small></span></button>`).join("");
+    }
+    gb.querySelectorAll("[data-grp]").forEach(b => {
+      const ids = (mo.groups || {})[b.dataset.grp] || [];
+      const gs = (mo.group_state || {})[b.dataset.grp] || {};
+      const any = groupAnySelected(ids, purge);
+      b.classList.toggle("on", gs.state === "on");
+      b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));
+      b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);
+      setText(b.querySelector(".gd"), any ? "Tap: off" : short8(gs.text, "Tap: arm for purge"));
+    });
+    // 1.0's fire key words, shorter: what fires the purge now.
+    if(!FIRE){
+      const kk = $("mo-key"), anySel = (purge.selected || []).length > 0;
+      kk.className = "key" + (purge.firing || purge.timed ? " firing" : anySel ? " ready" : "");
+      kk.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? "FIRING" : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anySel ? "Deck FIRE, or hold Space" : "Pick a group first";
+    }
+  }
+  if(k === "lasers"){
+    const lb = $("mo-lasers");
+    const lkey = (mo.lasers || []).map(l => l.id).join("\n");
+    if(lb.dataset.key !== lkey){ lb.dataset.key = lkey;
+      lb.innerHTML = (mo.lasers || []).map(l => `<button class="b" data-laser="${esc(l.id)}">${icon("laser")}<span class="tt">${esc(l.name)}<small></small></span></button>`).join(""); }
+    const la = mo.laser_arm || {lasers:[]};
+    (mo.lasers || []).forEach(l => {
+      const el = lb.querySelector(`[data-laser="${l.id}"]`); if(!el) return;
+      const a = (la.lasers || []).find(x => x.id === l.id) || {};
+      el.className = "b " + (l.locked ? "locked" : l.on ? "bad" : "");
+      setText(el.querySelector("small"), l.locked ? "Locked out" : l.on ? "TEST ON" : !a.armed ? "Arm it first" : l.configured ? "Off: tap for grid" : "Not set up");
+    });
+    $("mo-beyond").hidden = !(ME && ME.local);
+  }
+  if(k === "locks" || k === "locks-shut"){
+    const box = $("d-locks"), lo = mo.lockout || {};
+    const items = (mo.machines || []).map(m => ({kind:"machine", id:m.id, name:m.name, on:!!(lo.machines || {})[m.id]}))
+      .concat((mo.lasers || []).map(l => ({kind:"laser", id:l.id, name:l.name, on:!!(lo.lasers || {})[l.id]})));
+    const sig = JSON.stringify(items);
+    if(box.dataset.sig !== sig){
+      box.dataset.sig = sig;
+      box.innerHTML = items.map(x => `<button class="b ${x.on ? "locked" : ""}" data-lock="${esc(x.id)}" data-kind="${x.kind}" data-name="${esc(x.name)}">${icon(x.on ? "lock" : x.kind === "laser" ? "laser" : "flame")}<span class="tt">${esc(x.name)}<small>${x.on ? "LOCKED: tap to unlock" : "Tap to lock"}</small></span></button>`).join("");
+    }
+  }
+  if(k === "clean") renderCleaning();
+  if(k === "hazers") $("d-hz-open").disabled = !mayRow(ST, "arm");
+}
+// Machines for the purge, one by one (1.0's tap on a machine on the map).
+function dayMachines(){
+  const mo = MO || {}, sel = ((mo.purge_state || {}).selected) || [];
+  const fl = (ST && ST.flames) || {};
+  const html = `<div class="dgrid">` + (mo.machines || []).map(m => { const look = machineLook(m, mo, fl, mo.purge_state || {});
+    return `<button class="b ${sel.includes(m.id) ? "on" : ""}" data-m="${esc(m.id)}">${icon("flame")}<span class="tt">${esc(m.name)}<small>${esc(look.word)}</small></span></button>`; }).join("") + `</div>`;
+  sheet("Machines", html, [{label:"Done", cls:"blue"}]);
+  $("sh-body").querySelectorAll("[data-m]").forEach(b => b.addEventListener("click", async () => {
+    const s2 = (((MO || {}).purge_state || {}).selected) || [];
+    await moPress("purge-select", {machine:b.dataset.m, on: !s2.includes(b.dataset.m)});
+    const now = (((MO || {}).purge_state || {}).selected) || [];
+    b.classList.toggle("on", now.includes(b.dataset.m));
+  }));
+}
+// 1.0's fuPress: the same route and body (no actor), then a fresh read.
+async function fuPress(route, body){
+  try{ const j = await post("/api/remote/" + route, body); $("fu-msg").textContent = j.text || "Done."; }
+  catch(e){ $("fu-msg").textContent = e.message; }
+  if(FU_OPEN){ clearTimeout(FU_TIMER); fuelPoll2(); }
+}
+// The cleaning's panel (1.0's renderCleaning, drawn for DAY).
+function renderCleaning(){
+  if(TAB !== "day" || DAY_STEP !== "clean" || !$("wc-hold")) return;
+  const v = WC;
+  if(!v || typeof v.available !== "boolean") return;
+  const st = wcNow();
+  if(st.cut && WC_HOLD){ wcLetGo(st.cut.replace(/[.\s]+$/, "")); return; }
+  setText($("wc-armed"), !v.available ? "Not available" : v.armed === "armed" ? "Wave flamer: ARMED" :
+    v.armed === "disarmed" ? "Wave flamer: disarmed" : v.armed === "unknown" ? "Wave flamer: not known" : "Wave flamer: being armed");
+  const hb = $("wc-hold");
+  hb.classList.toggle("on", WC_HOLD);
+  hb.className = "b hold " + (st.na ? "" : "green");
+  hb.setAttribute("aria-pressed", WC_HOLD ? "true" : "false");
+  hb.setAttribute("aria-disabled", st.na ? "true" : "false");
+  setText($("wc-hold-l"), WC_HOLD ? "Keep holding..." : (v.state === "paused" || v.state === "acking") ? "Hold for bursts" : (v.state === "phase1" || v.state === "phase2") ? "Running" : "Hold to start");
+  setText($("wc-prog"), v.running ? short8(cleaningWords(v.progress), "Running.") : "");
+  const blk = WC_HOLD ? "" : st.block;
+  setText($("wc-block"), blk ? short8(blk, "Not now. Tap ? for why.") : "");
+}
+// Space fires the purge as in 1.0, on the DAY tab's Purge step only.
+// Never over an emergency or safety button with the focus (third review
+// of #169): Space on a focused Abort, Hold, Stop, Disarm, Hazers off or a
+// pinned Stop presses that button and never fires.
+const FIRE_KEY_NEVER = "#b-abort, #b-hold, #b-stop, #b-disall, #m-hold, #m-stop, #m-disf, #m-disl, #m-snd, #ann-stop, " +
+  "#pins button, #wc-stop, #hz-off, #d-hz-off, #broken-go, [data-arm][data-mode=\"disarm\"], #lz-b[data-mode=\"disarm\"], .b.red, .b.redline, .b.safe, .b.amber";
+function fireKeyNotOurs(e){
+  if(SHEET_DONE || !$("sheet").hidden) return true;
+  const t = e.target;
+  if(t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return true;
+  return !!(t && t.closest && t.closest(FIRE_KEY_NEVER));
+}
+document.addEventListener("keydown", e => {
+  if(e.code !== "Space") return;
+  if(TAB !== "day" || DAY_STEP !== "purge") return;
+  // An open sheet takes Space as itself (review of #169, 3): it presses
+  // the sheet's button and never fires; a field takes it as typing. A
+  // focused group button or step does not (second review of #169, 1: a
+  // tap focuses it): Space fires, and its default is stopped on the way
+  // down and up so the browser never presses the focused button.
+  // Just after the window came forward with no touch in it, whatever has
+  // the focus, Space never starts a purge fire (rack screen key guard,
+  // reviews A and B round 4 of #176).
+  if(keyFresh() || keySafe(e.target)) return;
+  if(fireKeyNotOurs(e)) return;
+  e.preventDefault();
+  if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }
+  fireStart();
+});
+document.addEventListener("keyup", e => {
+  if(e.code !== "Space") return;
+  if(TAB === "day" && DAY_STEP === "purge" && !fireKeyNotOurs(e)) e.preventDefault();
+  fireStop("the key came up");
+});
+window.addEventListener("blur", () => fireStop("the page lost focus"));
+document.addEventListener("visibilitychange", () => { if(document.hidden) fireStop("the page was hidden"); });
+window.addEventListener("pagehide", () => fireStop("the page closed"));
+window.addEventListener("blur", () => { if(WC_HOLD) wcLetGo("the page lost focus"); });
+document.addEventListener("visibilitychange", () => { if(document.hidden && WC_HOLD) wcLetGo("the page was hidden"); });
+window.addEventListener("pagehide", () => wcLetGo("the page closed"));
+$("mo-lkundo-go").addEventListener("click", lockUndo);
+
 // ---- Settings: the default interface (admin, the show PC only) ----
 async function loadUiDefault(){
   try{
@@ -2277,7 +3141,8 @@ async function loadBrand(){
     SHOW_NAME = str(b.show) || str(b.product);
     setText($("brand-show"), title);
     document.querySelectorAll("#qcard .qs").forEach(e => setText(e, title));
-    document.title = title + " remote";
+    // 1.0's "<show> remote"; with no show named, just "Show remote".
+    document.title = SHOW_NAME ? SHOW_NAME + " remote" : "Show remote";
     $("brand").title = title;
   }catch(e){ /* the credit is not worth failing the page over */ }
   fitBrand();
@@ -2330,6 +3195,10 @@ loadBrand();
 function placeAnn(){
   const want = innerWidth <= 600 ? $("t-show") : $("foot-l");
   if($("ann").parentElement !== want) want.insertBefore($("ann"), want === $("foot-l") ? want.firstChild : null);
+  // Off the SHOW tab the safety strip takes the announcements' place in
+  // the footer, beside Abort (on a phone, the top of the scrolling pane).
+  const m = $("mini"), mw = innerWidth <= 600 ? document.querySelector("main") : $("foot-l");
+  if(m.parentElement !== mw) mw.insertBefore(m, mw.firstChild);
 }
 placeAnn();
 window.addEventListener("resize", placeAnn);

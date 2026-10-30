@@ -258,16 +258,15 @@ def output_state(wins, mons, monitor=0, rack=None):
 
 
 def on_this_pc(host):
-    """madmapperwatch.on_this_pc, here for the supervisor (which carries no
-    ltcplay package): MadMapper's OSC host is this PC's loopback."""
-    import ipaddress
-    h = str(host or "").strip().lower()
-    if h == "localhost":
-        return True
+    """thispc.on_this_pc, the one answer the engine's watches use (#178:
+    this PC's own interface addresses count, not only 127.x), so the
+    supervisor and the engine can never disagree. thispc.py is stdlib
+    only: the supervisor carries it as a module of its own."""
     try:
-        return ipaddress.IPv4Address(h).is_loopback
-    except (ipaddress.AddressValueError, ValueError):
-        return False
+        from . import thispc as _thispc
+    except ImportError:
+        import thispc as _thispc
+    return _thispc.on_this_pc(host)
 
 
 class Win32:

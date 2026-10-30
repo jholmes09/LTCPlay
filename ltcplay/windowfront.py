@@ -266,9 +266,14 @@ def open_beyond(host=None, windows=None, api=None, probe=None):
         return False, ("Open BEYOND works only on the Windows show PC, "
                        "where BEYOND runs. Nothing was done.")
     if host is not None and not beyondwatch.on_this_pc(host):
-        return False, (f"BEYOND is set up on another machine ({host}), so "
-                       f"its window cannot be brought forward from this PC. "
-                       f"Open it on that machine. Nothing was done.")
+        from . import thispc
+        return False, (f"BEYOND is set up on another machine: its OSC host "
+                       f"in ltcplay_fire_ice.json is {host}, "
+                       f"{thispc.not_mine()}. So its window cannot be "
+                       f"brought forward from this PC. Open it on that "
+                       f"machine, or, if BEYOND is on this PC, set the "
+                       f"beyond block's host to one of this PC's addresses "
+                       f"and restart the engine. Nothing was done.")
     if api is None:
         try:
             api = Win32()

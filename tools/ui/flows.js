@@ -42,6 +42,10 @@ class Op {
     await this.page.mouse.move(r.x + r.width / 2, r.y + r.height / 2); await this.page.mouse.down();
     await this.page.waitForTimeout(ms); await this.page.mouse.up(); this.holds++; await this.after(`hold ${what || sel} ${ms} ms`);
   }
+  async keyHold(key, ms, what){
+    await this.page.keyboard.down(key); await this.page.waitForTimeout(ms); await this.page.keyboard.up(key);
+    this.holds++; this.notes.push("keyboard hold: " + (what || key)); await this.after(`hold key ${key} ${ms} ms`);
+  }
   async yes(what){ if(await this.page.isVisible("#sheet")){ this.modals++; await this.tap('#sh-row [data-i="1"]', "confirm: " + (await this.page.innerText('#sh-row [data-i="1"]'))); } else this.notes.push("no confirm for " + what); }
   async shot(n){ await this.page.screenshot({path: path.join(OUT, "screenshots", "flow2_" + n + ".png")}); }
   result(){ return {task: this.name, taps: this.taps, holds: this.holds, typed: this.typed, confirms: this.modals, screens: [...this.screens], popup_words: this.read, steps: this.log, notes: this.notes}; }
@@ -54,9 +58,17 @@ const TASKS = [
     await o.tap('#sh-row [data-i="1"]', "Sign in"); }],
   ["2 Start the night (Run)", "idle_operator", async o => {
     await o.shot("2_before"); await o.tap("#b-go", "Run show"); await o.yes("run"); await o.shot("2_after"); }],
-  ["3 Startup checklist incl. purge", "idle_operator", async o => {
+  ["3 Startup checklist incl. purge", "day_jeff", async o => {
     await o.tap('.tab[data-tab="day"]', "Day"); await o.shot("3_day");
-    o.notes.push("then 'Open in 1.0' on Startup and 1.0's own checklist and purge (unchanged in this PR)"); }],
+    await o.tap("#d-next", "Next step (to the startup list)");
+    for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
+    await o.tap("#d-next", "Next step (fuel)"); await o.tap("#d-next", "Next step (purge)");
+    for(const g of ["front row", "cat-walk", "wave flamer"]){
+      await o.tap(`#mo-groups [data-grp="${g}"]`, "group " + g);
+      await o.keyHold("Space", 1500, "Space (or the Deck's FIRE key): purge " + g);
+      await o.tap(`#mo-groups [data-grp="${g}"]`, "group " + g + " off");
+    }
+    await o.shot("3_purged"); }],
   ["4 Arm everything before a show", "ready", async o => {
     await o.hold("#b-armall", 3000, "Hold: arm flames"); await o.tap("#lz-b", "Arm lasers"); await o.yes("arm lasers"); await o.shot("4_armed"); }],
   ["5 Pause and resume", "running", async o => {
@@ -76,9 +88,16 @@ const TASKS = [
   ["9 Stop and get ready for the next show", "running", async o => {
     await o.tap("#b-stop", "Stop show"); await o.shot("9_stop_confirm"); await o.yes("stop");
     await o.tap("#b-go", "Run show"); await o.yes("run"); await o.shot("9_ready"); }],
-  ["10 End of night", "idle_operator", async o => {
+  ["10 End of night", "day_shut_jeff", async o => {
     await o.tap('.tab[data-tab="day"]', "Day");
-    o.notes.push("then 'Open in 1.0' on Startup and shutdown: 1.0's own Shutdown checklist, locks and sign out (unchanged in this PR)"); }],
+    for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
+    await o.tap("#d-next", "Next step (cleaning)");
+    await o.hold("#wc-hold", 1500, "Hold to start (phase 1)");
+    await o.tap("#d-next", "Next step (locks)");
+    for(const m of ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]) await o.tap(`#d-locks [data-lock="${m}"]`, "lock " + m);
+    await o.tap("#d-next", "Next step (sign out)");
+    await o.tap("#d-signout", "Sign out"); await o.tap('#sh-row [data-i="2"]', "Sign out (sheet)");
+    await o.shot("10_done"); }],
   // A group's Disarm the Stream Deck does not act on (2026-10-29): the
   // engine forces the Abort's disarm and the page says so in amber.
   ["11 Disarm a group the deck does not answer", "deck_not_answering", async o => {
