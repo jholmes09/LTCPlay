@@ -85001,6 +85001,46 @@ def test_fireball_at_the_engine():
             R.svc.machine = real_m
         check(st == 409 and "aborted" in out["error"] and link.cur is None,
               f"an Abort standing holds it off: {st} {out}")
+        # The conductor's own latch, its held look (a Programming Hold or
+        # an announcement, whatever the schedule's state), flamesafe not
+        # confirming the locks, an unreadable Morning config: each holds
+        # it off (review of #193).
+        cond = R.svc.conductor
+        for what, on_, off_, word in (
+                ("the conductor latched",
+                 lambda: setattr(cond, "_latched", True),
+                 lambda: setattr(cond, "_latched", False), "aborted"),
+                ("the schedule PAUSED, the conductor not holding",
+                 lambda: (setattr(R.svc, "machine", _dc.replace(
+                     real_m, state="PAUSED")), setattr(cond, "_look",
+                                                        "PLAYING")),
+                 None, "Hold"),
+                ("the conductor HELD",
+                 lambda: setattr(cond, "_look", "HELD"), None, "Hold"),
+                ("the conductor DARK",
+                 lambda: setattr(cond, "_look", "DARK"), None, "Hold"),
+                ("locks not confirmed",
+                 lambda: setattr(R.m, "_locks_confirmed",
+                                 lambda: "flamesafe has not taken the "
+                                         "locks yet"), None,
+                 "not taken the locks"),
+                ("the Morning config unreadable",
+                 lambda: setattr(R.m, "config_error", "bad json"), None,
+                 "could not be read")):
+            saved = (cond._latched, cond._look, R.m.config_error,
+                     R.m.__dict__.get("_locks_confirmed"))
+            on_()
+            try:
+                st, out = beat({"fuel"}, "a12-" + what, 1)
+            finally:
+                cond._latched, cond._look, R.m.config_error = saved[:3]
+                if saved[3] is None:
+                    R.m.__dict__.pop("_locks_confirmed", None)
+                else:
+                    R.m._locks_confirmed = saved[3]
+            R.svc.machine = real_m
+            check(st == 409 and word in out["error"] and link.cur is None,
+                  f"{what}: holds it off: {st} {out}")
         _fb_armed(R, False)      # flamesafe took the disarm
         st, out = beat({"fuel"}, "a13", 1)
         check(st == 409 and "not armed" in out["error"] and
@@ -85679,6 +85719,14 @@ h.ev(pad("valve"), "pointerup");
 await h.sleep(350);
 out.lift = since(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
 out.lift_cls = pad("valve").className;
+// A held pad whose capture failed: the pointer leaving it lets go.
+n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(250);
+pad("valve").dispatchEvent(new PointerEvent("pointerout", {bubbles:true, relatedTarget:document.body}));
+await h.sleep(300);
+const lv = since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body));
+out.leave = {cls:pad("valve").className, first:lv[0] || "", last:lv.length ? lv[lv.length - 1] : "x"};
 // Fuel Charge: a toggle.
 n = mark();
 h.ev(pad("fuel"), "click");
@@ -85772,6 +85820,11 @@ out.buttons = since(n).map(p => p.route + (p.body.group ? ":" + p.body.group : "
           len(m["lift"]) == 1 and "on" not in m["lift_cls"].split(),
           f"the lift: one beat with everything off, then nothing: "
           f"{m['lift']}")
+    lv = m.get("leave") or {}
+    check(lv.get("first") == "valve" and lv.get("last") == "" and
+          "on" not in lv.get("cls", "on").split(),
+          f"a held pad whose pointer leaves it (capture failed) lets go: "
+          f"{lv}")
     check(len(m["fuel"]) >= 3 and all(x == "fuel" for x in m["fuel"]),
           f"Fuel Charge stays on, beating: {m['fuel']}")
     check(m["blur"]["fuel"] and not m["blur"]["ign"] and
@@ -94430,6 +94483,122 @@ def test_fireball_manual_merged_on_the_flame_link():
     print("  ok")
 
 
+def test_fireball_page_beats_race_the_sender():
+    section("the Fireball page's beat against the flame link's sender "
+            "(review of #193): the charge state knows who holds a charge "
+            "before the frame can go out, so Andy's charge is his and his "
+            "top-off is never a double charge; a Stop, Hold or Abort that "
+            "lands after the beat's checks, or while its frame is set, "
+            "means nothing goes out; a frame of the wrong size is refused")
+    import types
+    from ltcplay import fireball as FB
+    from ltcplay import fireball_charge as FC
+    R = _fbm_link(live=False)
+    real = R.link
+    real.set_manual_slots([55, 56, 57, 58, 59])
+    lines = []
+    tr = FC.ChargeTracker(
+        None, flames_get=lambda: {"connected": True, "stale": False,
+                                  "age_ms": 10, "groups": [
+                                      {"name": "fireball",
+                                       "armed": "armed"}]},
+        journal=lambda who, screen, outcome, text, fault=False:
+        lines.append((who, outcome, text, fault)),
+        clock=lambda: R.clk[0], threaded=False)
+    sent = []
+
+    class Sender:
+        """The real link; the sender sends at the worst moment: right
+        after the frame is set (and, with `zero_first`, a Stop lands just
+        before it is set)."""
+        zero_first = False
+
+        def __getattr__(self, k):
+            return getattr(real, k)
+
+        def manual_set(self, values, gen=None):
+            if self.zero_first:
+                real.zero()
+            took = real.manual_set(values, gen)
+            tc, v = real.values_now()
+            tr._read_armed()
+            tr.observe(tc, v, True)
+            sent.append(bytes(v))
+            return took
+    link = Sender()
+    group, _w = FB.find_group([{"name": "fireball", "safeties": [77],
+                                "fire": [55, 56, 57, 58, 59]}])
+    fl = {"connected": True, "stale": False, "age_ms": 10,
+          "groups": [{"name": "fireball", "armed": "armed"}]}
+    P = FB.FireballPanel(group, link_get=lambda: link,
+                         flames_get=lambda: fl, threaded=False,
+                         clock=lambda: R.clk[0])
+    P.on_controls = lambda on, who, screen: tr.note_manual(on, who, screen)
+    owner = ("Rack screen", "w1")
+    seq = [0]
+
+    def beat(on, run):
+        seq[0] += 1
+        R.clk[0] += 0.1
+        return P.beat({"controls": {k: True for k in on}, "run": run,
+                       "seq": seq[0]}, owner, who="Andy",
+                      screen="Rack screen")
+    try:
+        code, _o = beat({"fuel"}, "r1")
+        tr.pump()
+        check(code == 200 and sent and sent[-1][54] == 255 and
+              tr.state("fuel") == "charged" and
+              tr.tanks["fuel"]["by"] == "Andy",
+              f"Andy's first charge, sent the moment it was set, is "
+              f"Andy's: {tr.tanks['fuel']}")
+        beat(set(), "r1")
+        R.clk[0] += 0.05
+        tc, v = real.values_now()
+        tr.observe(tc, v, True)
+        code, _o = beat({"fuel"}, "r2")
+        tr.pump()
+        check(code == 200 and tr.tanks["fuel"]["topoffs"] == 1 and
+              any(o == "topoff" and w == "Andy" for w, o, _t, _f in lines)
+              and not any(o == "double_charge" for _w, o, _t, _f in lines),
+              f"Andy's Fuel again on the charged tank: a top-off by Andy, "
+              f"never a double charge: {[l[:2] for l in lines]}")
+        beat(set(), "r2")
+        # A Stop landing while the frame is set: refused at the link, so
+        # nothing goes out, and the page says so.
+        n = len(sent)
+        link.zero_first = True
+        code, out = beat({"valve"}, "r3")
+        link.zero_first = False
+        check(code == 409 and sent[n:] and
+              all(s[56] == 0 for s in sent[n:]) and not P.active(),
+              f"a Stop while the frame is set: nothing out, cut: {code} "
+              f"{out} {[s[56] for s in sent[n:]]}")
+        # A Hold landing after the beat's checks, before its run starts.
+        n = len(sent)
+        orig = P.refusal
+
+        def refusal_then_hold(check_armed=True):
+            why = orig(check_armed)
+            real.zero()
+            return why
+        P.refusal = refusal_then_hold
+        try:
+            code, out = beat({"igniter"}, "r4")
+        finally:
+            P.refusal = orig
+        check(code == 409 and all(s[57] == 0 for s in sent[n:]) and
+              not P.active(),
+              f"a Hold just after the checks: nothing out: {code} {out} "
+              f"{[s[57] for s in sent[n:]]}")
+        # A frame of the wrong size is refused.
+        check(real.manual_set(bytes(513)) is False and
+              real.manual_set(bytes(511)) is False,
+              "a frame that is not 512 values is refused")
+    finally:
+        tr.close()
+    print("  ok")
+
+
 def test_fireball_manual_and_timeline_never_double_charge():
     section("the Fireball page and the timeline together on a real flame "
             "link and charge state: Andy's Fuel charges an EMPTY tank; the "
@@ -95696,6 +95865,7 @@ if __name__ == "__main__":
         test_fireball_timeline_end_to_end_real_flamesafe,
         test_fireball_manual_merged_on_the_flame_link,
         test_fireball_manual_and_timeline_never_double_charge,
+        test_fireball_page_beats_race_the_sender,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

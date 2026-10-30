@@ -18916,6 +18916,51 @@ def build():
   "                pass\n"),
 
  # -- the Fireball page's frame merged on the flame link (2026-10-30) -------
+ ("fireball manual: the charge state is not told before the frame can go out",
+  "ltcplay/fireball.py",
+  "                self._tell(on, who, screen)\n                # Refused by the link",
+  "                pass\n                # Refused by the link"),
+
+ ("fireball manual: the beat's zero count is read after its checks",
+  "ltcplay/fireball.py",
+  "                gen = gen0 if link is link0 else None",
+  "                gen = self._gen(link)"),
+
+ ("fireball manual: the page sets its frame without the zero count",
+  "ltcplay/fireball.py",
+  "                took = link.manual_set(vals, r[\"gen\"])",
+  "                took = link.manual_set(vals)"),
+
+ ("fireball manual: the conductor's Abort latch does not hold the page off",
+  "ltcplay/fireball.py",
+  "    if getattr(mach, \"abort_latched\", False) or \\\n            getattr(cond, \"latched\", False):\n        return \"the show is aborted",
+  "    if getattr(mach, \"abort_latched\", False):\n        return \"the show is aborted"),
+
+ ("fireball manual: the conductor holding does not hold the page off",
+  "ltcplay/fireball.py",
+  "    if getattr(cond, \"_look\", None) in (\"HELD\", \"DARK\"):",
+  "    if False:"),
+
+ ("fireball manual: flamesafe not confirming the locks does not hold the page off",
+  "ltcplay/fireball.py",
+  "        why = m._locks_confirmed()\n        if why:",
+  "        why = \"\"\n        if why:"),
+
+ ("fireball manual: an unreadable Morning config does not hold the page off during a show",
+  "ltcplay/fireball.py",
+  "    if m.config_error:\n        return (f\"ltcplay_morning.json could not be read \"",
+  "    if False:\n        return (f\"ltcplay_morning.json could not be read \""),
+
+ ("fireball manual: a frame of the wrong size is taken",
+  "ltcplay/flamelink.py",
+  "            vals = bytes(values)\n            if len(vals) != UNIVERSE_SIZE:\n                return False\n            keep",
+  "            vals = bytes(values)[:UNIVERSE_SIZE].ljust(UNIVERSE_SIZE, b\"\\0\")\n            keep"),
+
+ ("fireball: a held pad whose pointer leaves it stays on",
+  "ltcplay/web/remote.html",
+  "$(\"fb-pads\").addEventListener(\"pointerout\", e => {",
+  "$(\"fb-pads\").addEventListener(\"x-pointerout\", e => {"),
+
  ("fireball manual: the page's frame is not limited to the fireball's slots",
   "ltcplay/flamelink.py",
   "            keep = bytearray(UNIVERSE_SIZE)\n"

@@ -3415,9 +3415,11 @@ class Remote:
         fb = self.fireball
         if ph is not None and name in ("play-from", "loop") and \
                 fb is not None and fb.active():
-            # One source of fire values at a time: the Fireball page has a
-            # channel on (it cuts itself once Run is pressed; this covers
-            # the moment between).
+            # A Programming Play from or Loop never starts while the
+            # Fireball page has a channel on (a landing under a held
+            # Fireball channel). The page itself works during Programming
+            # playback once it plays (fireball.py, Jeff 2026-10-30): start
+            # playback first, then press.
             why = ("A Fireball channel is on. Turn the Fireball page off "
                    "first. Nothing was played.")
             self._journal(who, screen, name, "refused",

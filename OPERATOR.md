@@ -563,7 +563,8 @@ comes back on by itself: press again.
 
 **During a show too** (Jeff, 2026-10-30: Andy may start any phase by hand
 at any time). The page works while a show plays, while Run is pressed and
-during Programming playback. On each Fireball channel the higher of the
+during Programming playback. (Programming's Play from and Loop are refused
+while a Fireball channel is on: start playback first, then press.) On each Fireball channel the higher of the
 show's value (its FSEQ, or its fireball timeline) and this page's goes
 out, so the page can add a channel the show has off, and can never turn
 off one the show has on. The page shows the fuel and air charge record
