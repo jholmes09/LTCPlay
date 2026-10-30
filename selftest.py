@@ -10411,10 +10411,11 @@ def test_schedule_state_machine_every_state_every_event():
          {SH: (SB, STOPPED), P: (SB, STOPPED)}),
         # Stop during a show (the Stream Deck's Stop held; Jeff,
         # 2026-10-26): faded like an Abort, and the latch is the service's
-        # (only an Abort's conductor call sets it), never Stop's.
+        # (only an Abort's conductor call sets it), never Stop's. Stop
+        # also holds (Jeff, 2026-10-30): with a show still to come, HOLD.
         (E(S.STOP_SHOW, "operator"), {}),              # not confirmed
         (E(S.STOP_SHOW, "operator", confirmed=True),
-         {SH: (SB, STOPPED), P: (SB, STOPPED)}),
+         {SH: (H, STOPPED), P: (H, STOPPED)}),
         (E(S.END_NIGHT, "operator"), {}),              # not confirmed
         (E(S.END_NIGHT, "operator", confirmed=True),
          {k: (C, CLOSE) for k in (I, SB, H, HD, SD)}),
@@ -40351,11 +40352,11 @@ def test_reset_from_hold_ends_it_and_starts_nothing():
         st, _h, out = R.ask("POST", "/api/remote/stop", {})
         R.settle()
         m = R.svc.machine
-        check(st in (200, 500) and m.state == S.STANDBY and
+        check(st in (200, 500) and m.state == S.HOLD and
               not m.running and not m.abort_latched and
               (out.get("show") or {}).get("ok") is True,
-              f"Stop from the iPad ends the show, nothing latched: {st} "
-              f"{out} {m.state}")
+              f"Stop from the iPad ends the show and holds the schedule, "
+              f"nothing latched: {st} {out} {m.state}")
         rows = [x for x in R.svc.journal if x.get("action") == "stop"]
         check(rows and "complete halt" in rows[-1]["text"] and
               rows[-1].get("screen") == "iPad",
@@ -56648,14 +56649,15 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         real_stop = R.httpd.control.stop
         R.httpd.control.stop = lambda: (order.append("stop"),
                                         real_stop())[1]
-        # The conductor's own show_stopped (dark, no latch) must be asked,
-        # and its fade begun, BEFORE playback stops (review of #130, 5).
-        # A slow conductor (0.3 s to take the request): the halt still
-        # waits for it, so playback never stops first.
-        real_ss = R.c.show_stopped
-        R.c.show_stopped = lambda *a, **kw: (time.sleep(0.3),
-                                             order.append("show_stopped"),
-                                             real_ss(*a, **kw))[2]
+        # The conductor's own Stop (Abort's sequence, no latch; Jeff,
+        # 2026-10-30) must be asked, and its fade begun, before the halt
+        # answers (review of #130, 5). A slow conductor (0.3 s to take the
+        # request): the halt still waits for it. Playback is never stopped
+        # by a Stop now: Run stays on (Jeff, 2026-10-30).
+        real_ss = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.3),
+                                     order.append("conductor_stop"),
+                                     real_ss(*a, **kw))[2]
         real_abort = R.c.abort
         R.c.abort = lambda *a, **kw: (order.append("ABORT"),
                                       real_abort(*a, **kw))[1]
@@ -56670,11 +56672,13 @@ def test_stop_disarms_every_flame_group_without_the_latch():
                             "halt": True}, client=("127.0.0.1", 50000))
         kinds = [o if isinstance(o, str) else o[0] for o in order]
         check(st == 200 and kinds == ["disarm", "cut", "lasers",
-                                      "show", "show_stopped", "stop"],
+                                      "show", "conductor_stop"],
               f"the deck's halt during a show: the flames first (as an "
               f"Abort), then live flames, the lasers, the show, the "
-              f"conductor's show_stopped, and only then playback: {st} "
-              f"{out} {order}")
+              f"conductor's Stop, and playback NOT stopped (Run stays on): "
+              f"{st} {out} {order}")
+        check(out.get("run_on") is True and out.get("stopped") is True,
+              f"the answer says Run is still on: {out}")
         check("ABORT" not in kinds, "the conductor is never asked to Abort")
         from ltcplay import schedule_service as _SV
         check(dropped == [_SV._ConductorCalls.STOP_DROPS],
@@ -56691,11 +56695,13 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         m = R.svc.machine
         slot = [x for x in m.slots if x.n == 1][0] if hasattr(m, "slots") \
             else m.slot(1)
-        check(m.state == S.STANDBY and m.running == 0 and
+        check(m.state == S.HOLD and m.held_from == S.STANDBY and m.dark
+              and m.running == 0 and
               slot.reason == "STOPPED (operator Stop)" and
               not m.abort_latched,
-              f"the show ended, the scheduler is in STANDBY, nothing "
-              f"latched: {m.state} {slot.status} {slot.reason} "
+              f"the show ended, the scheduler is on HOLD (dark, Resume "
+              f"goes back to STANDBY), nothing latched: {m.state} "
+              f"{m.held_from} {m.dark} {slot.status} {slot.reason} "
               f"{m.abort_latched}")
         check(R.c is None or not R.c.snapshot().get("latched"),
               "and the conductor is not latched: no Reset is needed")
@@ -56714,11 +56720,26 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               "lasers" in [o if isinstance(o, str) else o[0]
                            for o in order],
               f"a halt between shows disarms the lasers too: {out} {order}")
-        # The playback stop raises after the halt ran: a 500 that still
-        # carries every step, for the deck to say (third review of #130, 4).
+        # With a scheduler the deck's Stop never stops playback (Jeff,
+        # 2026-10-30: Stop leaves Run on): a playback stop that would
+        # raise is never even called.
         def _boom():
             raise RuntimeError("the audio device is wedged")
         R.httpd.control.stop = _boom
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 200 and out.get("stopped") is True and
+              out.get("run_on") is True and
+              "playback stop" not in out.get("failed", []),
+              f"with a scheduler, the deck's Stop leaves playback alone: "
+              f"{st} {out}")
+        # An engine with no scheduler (Run is the show itself): the halt,
+        # then playback stops. The playback stop raises after the halt
+        # ran: a 500 that still carries every step, for the deck to say
+        # (third review of #130, 4).
+        _sched_was = R.httpd.schedule
+        R.httpd.schedule = None
         st, _h, out = _ask(R.httpd, "POST", "/api/stop",
                            {"screen": "Stream Deck", "halt": True},
                            client=("127.0.0.1", 50000))
@@ -56745,6 +56766,7 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               f"the halt's error and the playback stop's, both kept: "
               f"{out}")
         R.remote.halt = real_halt
+        R.httpd.schedule = _sched_was
     finally:
         R.close()
     print("  ok")
@@ -57000,7 +57022,12 @@ def test_stop_halt_review_of_130():
     del calls[:]
 
     class _Svc2(_Svc):
-        def operator_press(self, what, who, screen, confirmed=False):
+        def operator_press(self, what, who, screen, confirmed=False,
+                           detail=""):
+            if what == "stop-hold":
+                # Stop holds between shows (Jeff, 2026-10-30).
+                self.machine.state = "HOLD"
+                return {"ok": True, "text": "On Hold."}
             self.machine.state = "STANDBY"
             return {"ok": False, "text": "No show is running."}
     svc2 = _Svc2()
@@ -57008,9 +57035,11 @@ def test_stop_halt_review_of_130():
     rm.schedule = svc2
     rm.morning = None
     out = rm.halt("", "Stream Deck")
-    check(out["failed"] == [] and out["show"]["ok"] and
-          not out["show_ended"] and "already ended" in out["show"]["text"],
-          f"a show that ended by itself meanwhile: no failure: {out}")
+    check(out["failed"] == [] and out["show"] is None and
+          not out["show_ended"] and out["hold"]["ok"] and
+          svc2.machine.state == "HOLD",
+          f"a show that ended by itself meanwhile: no failure, and the "
+          f"Stop holds the schedule instead (Jeff, 2026-10-30): {out}")
     # The loopback check on "halt" is the engine's own (_halt_asked).
     from ltcplay import web as web_mod
 
@@ -57598,15 +57627,18 @@ def test_stop_halt_second_review_of_130():
     q.put(mk[4])
     gate.set()
     q.flush(3)
-    check([g.method for g in gone] == ["start_show", "show_starting"] and
-          ran == ["intermission", "hold", "start_show", "show_stopped"] and
+    check([g.method for g in gone] == ["start_show", "show_starting",
+                                       "hold"] and
+          ran == ["intermission", "start_show", "show_stopped"] and
           all(g.done.is_set() and g.ok is False for g in gone),
-          f"Stop drops only the show starts decided before it and still "
-          f"waiting (a start decided after it stays): {ran} "
+          f"Stop drops the show starts and the Hold decided before it "
+          f"and still waiting (a start decided after it stays): {ran} "
           f"{[g.method for g in gone]}")
     check(set(SV._ConductorCalls.STOP_DROPS) ==
-          {"start_show", "show_starting"},
-          "never a Reset, Hold or Resume: Stop is not an Abort")
+          {"start_show", "show_starting", "hold", "resume"},
+          "a Stop supersedes a waiting Hold, Resume and show start, as an "
+          "Abort does (Jeff, 2026-10-30), but never a Reset: Stop latches "
+          "nothing")
     print("  ok")
 
 
@@ -67747,6 +67779,12 @@ def test_timed_purge_every_end_cause():
             R.ask("POST", "/api/remote/stop", {"seen": R.seen()},
                   client=loop)
             check_end(m)
+            # Stop holds the schedule (Jeff, 2026-10-30), and a Hold
+            # refuses a timed purge, so Resume, as after a Hold below.
+            check(R.svc.machine.state == "HOLD",
+                  f"Stop left the schedule on Hold: {R.svc.machine.state}")
+            R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
+                  client=loop)
         # Abort.
         if start():
             m = ended("Abort", "pressed Abort")

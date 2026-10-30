@@ -568,6 +568,11 @@ class _ConductorCall:
         self.done = threading.Event()
 
 
+# The start of the Hold's detail when a Stop between shows holds the
+# schedule (Remote.halt, "stop-hold"): the journal then reads as the Stop.
+STOP_HOLD_DETAIL = "pressed Stop"
+
+
 class _ConductorCalls:
     """Every show conductor request, in the order the scheduler decided
     them, made on ONE thread of its own, never with the scheduler's lock
@@ -1780,7 +1785,9 @@ class Service:
             # refused under this lock before it can start a show over the
             # Hold (re-review of #144, N1).
             self.cancel_start_wait(
-                "the schedule was put on Hold" if ev.kind == sch.HOLD_ON
+                "Stop was pressed" if ev.kind == sch.HOLD_ON and
+                str(ev.detail or "").startswith(STOP_HOLD_DETAIL)
+                else "the schedule was put on Hold" if ev.kind == sch.HOLD_ON
                 else "the show was aborted" if ev.kind == sch.ABORT
                 else "Stop was pressed")
         self.machine = out.machine
