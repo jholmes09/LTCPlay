@@ -74,12 +74,14 @@ import collections
 import threading
 import time
 
-from .flamelink import PUMP_HOLD_S
 
 NAME = "Fuel pump"
 STATUS_FRESH_S = 1.0        # flamesafe's status, as for the hazers
 SEND_S = 0.1                # the timer's pass; the link drops it at PUMP_HOLD_S
-BEAT_STALE_S = PUMP_HOLD_S
+# flamelink.PUMP_HOLD_S, the same number (the selftest holds them equal):
+# not imported, so the remote's routes never load the flame link on an
+# engine without one.
+BEAT_STALE_S = 0.5
 DEFAULT_S = 300             # Jeff: "auto-stop after 5 minutes"
 MIN_S = 1
 MAX_DEFAULT_S = 3600        # pump_max_s unless an admin sets it

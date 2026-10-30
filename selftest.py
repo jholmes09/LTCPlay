@@ -61786,6 +61786,10 @@ def test_pump_flame_link():
               "ON is refused while the Stop or Abort is being repeated")
         link._abort_repeat = None
         check(_pm_on(link) is True, "after it: ON again")
+        check(link.pump_beat(gen) is False and not link.pump_on,
+              "a late beat from the run before the Stop (its old count) "
+              "ends the new run too: an old timer never keeps it on")
+        check(_pm_on(link) is True, "ON again")
         check(link.pump_set("true") is not True and not link.pump_on,
               "anything but True through pump_set is OFF")
         _pm_on(link)
@@ -61911,6 +61915,9 @@ def test_pump_at_the_engine():
           "the role matrix: ON is an arm press, anything else safety")
     check("turning the fuel pump on" in dict(U.PERMS)["arm"] and
           "the fuel pump off" in U.SAFETY_ROWS, "the matrix rows say so")
+    from ltcplay import flamelink as FL
+    check(FP.BEAT_STALE_S == FL.PUMP_HOLD_S,
+          "the engine's stall and the link's beat are the same 0.5 s")
     check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 3600 and
           FP.clock_text(300) == "5:00" and FP.clock_text(252) == "4:12" and
           FP.clock_text(3725) == "62:05",
@@ -62038,6 +62045,16 @@ def test_pump_at_the_engine():
         check("stalled" in pm.pump_send() and not link.pump_on,
               "the timer stalled between passes: OFF, never relit")
         R.mono[0] -= FP.BEAT_STALE_S + 0.05
+        R.feed()
+        # A stall that outlasts the run is said as a stall, not as its
+        # time being up: the gap is judged first.
+        off()
+        tap(True, seconds=1)
+        R.mono[0] += 1.2
+        why = pm.pump_send()
+        check("stalled" in why and not link.pump_on,
+              f"a stall past the end is said as a stall: {why}")
+        R.mono[0] -= 1.2
         R.feed()
         # A stall inside a pass: the clock jumps during the checks.
         off()
