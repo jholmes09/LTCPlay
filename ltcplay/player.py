@@ -68,9 +68,10 @@ PULSE_PERIOD_S = 1.0
 # clock (clock.AudioMaster, "audio_master") runs its timecode to the end of
 # the lights file ROUNDED UP to the next timecode frame (30 a second), then
 # hands the pixels to the idle look (drop_clock). In between, up to one
-# timecode frame, the tick was past the last cue with no cue after it and
-# sent the gap look: one black pixel frame (25 ms at 40 frames a second)
-# between the show's last frame and the idle look. With that clock the
+# timecode frame, the tick was past the end of the cue and sent the gap
+# look: one black pixel frame (25 ms at 40 frames a second) between the
+# show's last frame and the idle look, whatever cue comes after it (the
+# show file's Intermission an hour later included). With that clock the
 # show's last frame is held instead, for at most this long past the end of
 # the lights file: that one rounding frame, and one more for the clock's
 # thread waking a little late. Past it the gap look goes out as before, so
@@ -942,7 +943,7 @@ class Player:
             if (nxt is not None and self.bridge_s > 0 and
                     0 < nxt.tc_seconds - tc <= self.bridge_s and
                     tc - ended_at <= self.bridge_s) or \
-                    self._show_clock_ending(nxt, tc, ended_at):
+                    self._show_clock_ending(tc, ended_at):
                 self.current_cue = cue
                 self.current_frame = cue.fseq.frame_count - 1
                 out = self._render(cue, self.current_frame)
@@ -976,15 +977,20 @@ class Player:
         self._note_change(prev_state, prev_cue, prev_source)
         return out
 
-    def _show_clock_ending(self, nxt, tc, ended_at):
+    def _show_clock_ending(self, tc, ended_at):
         """True while the show audio clock is in its last timecode frame,
-        just past the end of the lights file of the show's last cue: the
+        just past the end of the lights file of the cue it plays: the
         tick holds that cue's last frame until the clock hands the pixels
         to the idle look (SHOW_END_HOLD_S says why). False on any other
-        clock, with a cue still to come, or once SHOW_END_HOLD_S is
-        past."""
+        clock, or once SHOW_END_HOLD_S is past.
+
+        A cue after it (the Intermission an hour later, in the show
+        file) does not stop it: this clock plays one cue and stops at that
+        cue's end, so its timecode never runs on into the gap before the
+        next one (review of #179, B1). A free run (GO) past the last cue
+        gets the same short hold, then the gap look."""
         clk = getattr(self, "clock", None)
-        if getattr(clk, "source", None) != "audio_master" or nxt is not None:
+        if getattr(clk, "source", None) != "audio_master":
             return False
         return 0.0 <= tc - ended_at < SHOW_END_HOLD_S
 

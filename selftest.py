@@ -43638,57 +43638,82 @@ def test_no_dark_frame_between_the_show_and_the_idle_look():
     section("pixels: at a show's end the show audio clock runs its "
             "timecode to the end of the lights file rounded up to the next "
             "timecode frame; the show's last frame is held through that "
-            "frame, then the idle look, with no dark frame between (Jeff, "
-            "2026-10-30: \"a little blip of black ... vice versa\"); a "
-            "longer tail is still dark, and a show chased off a timecode "
-            "feed is unchanged")
-    import math
+            "frame, then the idle look, with no dark frame between, with "
+            "the show file's Intermission cue after it or not (Jeff, "
+            "2026-10-30: \"a little blip of black ... vice versa\"; review "
+            "of #179, B1); a longer tail is still dark, gaps idle makes it "
+            "the idle look, and a show chased off a timecode feed is "
+            "unchanged")
     import types
     import ltcplay.player as plmod
     idle = _LitFSEQ(100, frames=40, channels=64)
-    base = tcmod.parse_tc("01:00:00:00", 30)
 
-    def show_end(frames, audio_s, source="audio_master", gaps=None):
-        """The real Player, ticked every 25 ms, fed the way AudioMaster
-        feeds it (one timecode frame every 1/30 s, from the cue's start),
-        ended the way AudioMaster ends a cue: drop_clock once the frame
-        reaches the longest of the audio and the lights file, rounded up
-        to a whole timecode frame (clock._end_frames). Returns the looks
-        that went out from 2 s before the end of the lights file."""
-        show = _LitFSEQ(10, frames=frames, channels=64)
-        tl = _timeline([("01:00:00:00", "Show", show)],
-                       idle="/tmp/idle.fseq", gaps=gaps)
+    def show_end(lights_frames, audio_s, phase, intermission=True,
+                 gaps=None, chased=False, hold_at=None):
+        """The real Player, ticked every 25 ms (from `phase`), fed and
+        ended by the real AudioMaster (_am_rig: its local audio engine on
+        the test's clock): its sink is Player.feed_timecode, its on_stop
+        Player.drop_clock, its on_pause/on_resume the hard park, as
+        session.py wires them. The show file has the Show at 01:00:00:00
+        and, with `intermission`, the Intermission at 02:00:00:00. With
+        `hold_at`, the clock is paused that many seconds into the show
+        for 1 s, then resumed. Returns the looks that went out from 0.5 s
+        before the end of the lights file to 0.3 s after the clock
+        ended the cue."""
+        lights_s = lights_frames * 0.025
+        r = _am_rig(seconds=audio_s, lengths={"Show": lights_s})
+        am, sim, vc, tl = r["am"], r["sim"], r["vc"], r["tl"]
+        for c in tl.cues:
+            c.fseq = _LitFSEQ(10, frames=(lights_frames if c.name == "Show"
+                                          else 40), channels=64)
+            c.duration = c.fseq.duration_ms / 1000.0
+            c._spans = [(0, 0, 64)]
+            c._gaps = None
+        if not intermission:
+            tl.cues = [c for c in tl.cues if c.name == "Show"]
         p = Player(tl, FakeNetmap(), CountingSender(), gaps=gaps)
         p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq",
                                   "preshow loop")
         p.idle_cue.fseq = idle
         p.idle_cue._spans = [(0, 0, 64)]
         p.idle_cue._gaps = None
-        p.clock = types.SimpleNamespace(source=source)
+        p.clock = (types.SimpleNamespace(source="ltc_audio_slave")
+                   if chased else am)
+        stopped = []
+        am.sink = p.feed_timecode
+        am.on_stop = lambda: (stopped.append(vc()), p.drop_clock())
+        am.on_pause = lambda: p.set_hard_park(True)
+        am.on_resume = lambda: p.set_hard_park(False)
         st = _Stepped(p, step_ms=25)
         looks = []
         try:
-            lights_s = show.duration_ms / 1000.0
-            end = max(int(math.ceil(audio_s * 30 - 1e-9)),
-                      int(math.ceil(lights_s * 30 - 1e-9)))
-            k = int((lights_s - 2.0) * 30)
-            epoch = st.t - k / 30.0
-            ended = False
-            for _ in range(int((audio_s - lights_s + 2.5) / 0.025)):
-                st.t += 0.025
-                while not ended and epoch + k / 30.0 <= st.t + 1e-9:
-                    if k >= end:
-                        p.drop_clock()
-                        ended = True
-                    else:
-                        p.feed_timecode(base + k / 30.0, epoch + k / 30.0,
-                                        False, "fed")
-                        k += 1
+            am.play(3600.0, None, "Show")
+            t0 = vc()
+            k = 0
+            held = None
+            while not stopped or vc() < stopped[0] + 0.3:
+                t = t0 + phase + k * 0.025
+                k += 1
+                if hold_at is not None and held is None and \
+                        t - t0 >= hold_at:
+                    held = t
+                    am.pause(fade_ms=0)
+                if held is not None and held > 0 and t - held >= 1.0:
+                    held = -1.0
+                    am.resume(fade_ms=0)
+                sim.run(t)
+                st.t = vc()
                 f = bytes(p._alert_mix(p._tick()) or b"")
-                looks.append("black" if not any(f) else
-                             "idle" if f[0] >= 100 else "show")
+                if p.last_ltc_seconds is not None and \
+                        p.last_ltc_seconds - 3600.0 >= lights_s - 0.5 or \
+                        stopped:
+                    looks.append("black" if not any(f) else
+                                 "idle" if f[0] >= 100 else "show")
+                if k > 4000:
+                    break
         finally:
             st.close()
+            am.stop()
         return looks
 
     def runs(looks):
@@ -43698,65 +43723,80 @@ def test_no_dark_frame_between_the_show_and_the_idle_look():
                 out.append([x, 0])
             out[-1][1] += 1
         return [(x, n) for x, n in out]
+    phases = [i * 0.0025 for i in range(10)]
     # Jeff's show: a lights file that ends between two timecode frames
-    # (18167 frames of 25 ms, 454.175 s; the timecode ends at 454.200 s).
-    looks = show_end(18167, 454.17)
-    got = runs(looks)
-    check([x for x, _n in got] == ["show", "idle"],
-          f"the show's last frame, then the idle look, no dark frame "
-          f"between: {got}")
+    # (241 frames of 25 ms, 6.025 s; the timecode ends at 6.033 s), the
+    # audio a little shorter, then 0.005 s longer (inside the held frame).
+    for audio_s in (6.0, 6.03):
+        for inter in (True, False):
+            bad = []
+            for ph in phases:
+                got = runs(show_end(241, audio_s, ph, intermission=inter))
+                if [x for x, _n in got] != ["show", "idle"]:
+                    bad.append((ph, got))
+            check(not bad,
+                  f"audio {audio_s} s, Intermission cue {inter}: the "
+                  f"show's last frame, then the idle look, with no dark "
+                  f"frame between, at every tick phase: {bad[:3]}")
     check(plmod.SHOW_END_HOLD_S <= 0.07,
           f"the show's last frame is held at most two timecode frames: "
           f"{plmod.SHOW_END_HOLD_S}")
-    # The same show chased off a timecode feed (GPL's way): unchanged.
-    got = runs(show_end(18167, 454.17, source="ltc_audio_slave"))
-    check(got[-2:] == [("black", 1), ("idle", got[-1][1])],
-          f"a show chased off a timecode feed is unchanged: {got}")
-    # Audio 1.8 s longer than the lights file: the tail past the lights
-    # file is dark as before ("Past the end of the lights file the lights
-    # ... are dark"), with only the rounding frame held.
-    got = runs(show_end(18167, 456.0))
-    check([x for x, _n in got] == ["show", "black", "idle"] and
-          got[1][1] >= 68,
-          f"a tail longer than a timecode frame is still dark: {got}")
-    # ... and with "gaps": "idle" that tail is the idle look.
-    got = runs(show_end(18167, 456.0, gaps="idle"))
-    check([x for x, _n in got] == ["show", "idle"],
-          f"with gaps idle the tail is the idle look: {got}")
-    # A Hold's or an Abort's black in that last frame still wins.
+    # A Hold across the end, then Resume: the same.
+    bad = []
+    for ph in phases[:4]:
+        got = runs(show_end(241, 6.0, ph, hold_at=5.9))
+        if [x for x, _n in got] != ["show", "idle"]:
+            bad.append((ph, got))
+    check(not bad, f"a Hold just before the end, then Resume: no dark "
+                   f"frame between the show and the idle look: {bad[:3]}")
+    # The same show chased off a timecode feed (GPL's way): unchanged, the
+    # rounding frame still goes out black at some tick phases.
+    blacks = [runs(show_end(241, 6.0, ph, chased=True)) for ph in phases]
+    check(any("black" in [x for x, _n in g] for g in blacks),
+          f"a show chased off a timecode feed is unchanged: {blacks[:3]}")
+    # Audio 1 s longer than the lights file: the tail past the lights
+    # file is dark as before, with only the rounding frame held; with
+    # "gaps": "idle" that tail is the idle look. With and without the
+    # Intermission cue.
+    for inter in (True, False):
+        got = runs(show_end(241, 7.0, 0.0, intermission=inter))
+        check([x for x, _n in got] == ["show", "black", "idle"] and
+              got[1][1] >= 36,
+              f"Intermission cue {inter}: a tail longer than a timecode "
+              f"frame is still dark: {got}")
+        got = runs(show_end(241, 7.0, 0.0, intermission=inter,
+                            gaps="idle"))
+        check([x for x, _n in got] == ["show", "idle"],
+              f"Intermission cue {inter}: with gaps idle the tail is the "
+              f"idle look: {got}")
+    # By hand: a Hold's or an Abort's black over the held frame wins; the
+    # hold ends after SHOW_END_HOLD_S whatever comes after the cue.
+    base = tcmod.parse_tc("01:00:00:00", 30)
     show = _LitFSEQ(10, frames=400, channels=64)
-    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
-    p = Player(tl, FakeNetmap(), CountingSender())
-    p.clock = types.SimpleNamespace(source="audio_master")
-    st = _Stepped(p, step_ms=25)
-    try:
-        st.feed(base + 9.99)
-        st.t += 0.02
-        held = bytes(p._tick() or b"")
-        p.override = "blackout"
-        dark = p._tick()
-    finally:
-        st.close()
-    check(any(held) and not dark,
-          f"the held last frame, and a blackout over it: {held[:1]!r} "
-          f"{dark!r}")
-    # A cue still to come: the gap between two cues is the gap look as
-    # before (bridge_ms rules it), never this hold.
-    tl = _timeline([("01:00:00:00", "Show", show),
-                    ("01:00:30:00", "Later", _LitFSEQ(10, frames=400,
-                                                      channels=64))],
-                   idle="/tmp/idle.fseq")
-    p = Player(tl, FakeNetmap(), CountingSender())
-    p.clock = types.SimpleNamespace(source="audio_master")
-    st = _Stepped(p, step_ms=25)
-    try:
-        st.feed(base + 9.99)
-        st.t += 0.02
-        gap = p._tick()
-    finally:
-        st.close()
-    check(not gap, f"with a cue still to come the gap look goes out: "
-                   f"{gap!r}")
+    for cues in ([("01:00:00:00", "Show", show)],
+                 [("01:00:00:00", "Show", show),
+                  ("02:00:00:00", "Intermission",
+                   _LitFSEQ(10, frames=40, channels=64))]):
+        tl = _timeline(cues, idle="/tmp/idle.fseq")
+        p = Player(tl, FakeNetmap(), CountingSender())
+        p.clock = types.SimpleNamespace(source="audio_master")
+        st = _Stepped(p, step_ms=25)
+        try:
+            st.feed(base + 9.99)
+            st.t += 0.02
+            held = bytes(p._tick() or b"")
+            st.t += 0.1
+            late = p._tick()
+            p.override = "blackout"
+            st.t -= 0.1
+            dark = p._tick()
+        finally:
+            st.close()
+        check(any(held) and not late and not dark,
+              f"{len(cues)} cue(s): the last frame held in the rounding "
+              f"frame, the gap look once SHOW_END_HOLD_S is past, and a "
+              f"blackout over the held frame: {held[:1]!r} {late!r} "
+              f"{dark!r}")
     print("  ok")
 
 

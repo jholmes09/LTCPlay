@@ -1482,8 +1482,8 @@ MUTATIONS = [
   "        if len(shared) > 1:", "        if False:"),
 
  ("the one-frame bridge between cues is removed", "ltcplay/player.py",
-  "            if nxt is not None and self.bridge_s > 0 and \\",
-  "            if False and nxt is not None and self.bridge_s > 0 and \\"),
+  "            if (nxt is not None and self.bridge_s > 0 and\n",
+  "            if (False and nxt is not None and self.bridge_s > 0 and\n"),
 
  ("the bridge holds the first frame instead of the last", "ltcplay/player.py",
   "                self.current_frame = cue.fseq.frame_count - 1\n"
@@ -1495,8 +1495,8 @@ MUTATIONS = [
 
  ("the bridge swallows a real gap as well as a rounding one",
   "ltcplay/player.py",
-  "                    0 < nxt.tc_seconds - tc <= self.bridge_s and \\",
-  "                    0 < nxt.tc_seconds - tc and \\"),
+  "                    0 < nxt.tc_seconds - tc <= self.bridge_s and\n",
+  "                    0 < nxt.tc_seconds - tc and\n"),
 
  ("bridge_ms is ignored and always takes the default", "ltcplay/player.py",
   "        if bridge_ms is None:\n"
@@ -1621,8 +1621,8 @@ MUTATIONS = [
   "                if True:"),
 
  ("the bridge resurrects a cue that ended long ago", "ltcplay/player.py",
-  "                    tc - ended_at <= self.bridge_s:",
-  "                    True:"),
+  "                    tc - ended_at <= self.bridge_s) or \\\n",
+  "                    True) or \\\n"),
 
  ("a read hiccup sticks on HOLD for the rest of the set",
   "ltcplay/player.py",
@@ -8927,18 +8927,18 @@ def build():
 
  ("pixels: the show's last frame is not held through the show clock's last timecode frame",
   'ltcplay/player.py',
-  '                    self._show_clock_ending(nxt, tc, ended_at):\n',
+  '                    self._show_clock_ending(tc, ended_at):\n',
   '                    False:\n'),
 
  ("pixels: the show-end hold also holds a show chased off a timecode feed",
   'ltcplay/player.py',
-  '        if getattr(clk, "source", None) != "audio_master" or nxt is not None:\n',
-  '        if nxt is not None:\n'),
+  '        if getattr(clk, "source", None) != "audio_master":\n            return False\n        return 0.0 <= tc - ended_at',
+  '        if False:\n            return False\n        return 0.0 <= tc - ended_at'),
 
- ("pixels: the show-end hold also holds the last frame before a cue still to come",
+ ("pixels: the show-end hold stops before the cue after it (the Intermission an hour later)",
   'ltcplay/player.py',
-  '        if getattr(clk, "source", None) != "audio_master" or nxt is not None:\n',
-  '        if getattr(clk, "source", None) != "audio_master":\n'),
+  '                    self._show_clock_ending(tc, ended_at):\n',
+  '                    (nxt is None and self._show_clock_ending(tc, ended_at)):\n'),
 
  ("pixels: the show-end hold never ends, so a long tail holds the last frame",
   'ltcplay/player.py',
