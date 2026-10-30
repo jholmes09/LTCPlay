@@ -77,6 +77,15 @@ function baseStatus(){
 const SCENARIOS = {
   idle_operator: s => s,
   signed_out: s => { s.me = me(null, null); },
+  // The brand at its worst: a 40 character show name (admin, so the
+  // header has its most tabs; signed out, so the top line carries it), and
+  // a missing logo.
+  long_name: s => { s.me = me("Jeff", "admin"); },
+  long_name_out: s => { s.me = me(null, null); },
+  no_logo: s => s,
+  // An operator on an iPad (not the show PC), screen arming off: the
+  // announcements and a hazer's arm are refused there, so they say why.
+  ipad: s => { s.me.local = false; s.me.device = "iPad"; s.arming = Object.assign({}, s.arming || {}, {enabled: false}); },
   admin: s => { s.me = me("Jeff", "admin"); },
   show_pending: s => { s.show = Object.assign({}, s.show, {running: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
     s.flames.groups.forEach(g => g.armed = "armed"); s.subsystems[3].word = "armed"; },
@@ -126,10 +135,45 @@ const SCENARIOS = {
   flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
+  // The systems badge: one to check, several, and only things not set up.
+  sys_one: s => { s.subsystems[0] = {name: "Deck", state: "warn", word: "USB slow 1.4 s"}; },
+  sys_many: s => { s.subsystems[0] = {name: "Deck", state: "warn", word: "late 1.2 s"}; s.subsystems.push({name: "Lasers", state: "bad", word: "LINK LOST"}, {name: "Disk", state: "warn", word: "low"}); },
+  sys_offonly: s => { s.subsystems[3] = {name: "Laser arm", state: "warn", word: "ARMED"}; s.subsystems.push({name: "Announcements", state: "warn", word: "pick an output"}); },
+  // DAY: the end of the night (no more shows, the startup list done).
+  day_shut: s => { s.schedule.next = null; s.countdown = null; },
+  day_shut_jeff: s => { s.schedule.next = null; s.countdown = null; s.me = me("Jeff", "admin"); },
+  day_jeff: s => { s.me = me("Jeff", "admin"); },
+  day_firing: s => s,
+  day_locked: s => s,
+  day_clean_paused: s => { s.schedule.next = null; s.countdown = null; s.cleaning = {available: true, state: "paused", text: "Waiting: hold for the purge bursts"}; },
+  // A timed purge running (morning.py, 2026-10-29): the engine's countdown.
+  timed_purge: s => { s.morning.timed = {left_s: 17.4, seconds: 30, elapsed_s: 12.6, machines: ["front row 1", "front row 2", "front row 3", "cat-walk 1"],
+    device: "iPad at 10.20.0.44", who: "Dallen"}; s.flames.groups[0].armed = "armed"; s.flames.groups[1].armed = "armed"; },
   // The Stream Deck program reads the engine but does not act on a group's
   // Disarm: the engine forces the flame link's disarm_all (2026-10-29).
   deck_not_answering: s => { s.flames.groups[0].armed = "armed"; s.flames.groups[0].wanted = true; },
 };
+// The DAY tab's own state, per scenario: the morning view, fuel, cleaning.
+function dayState(name, st){
+  const mo = name === "locked" || name === "day_locked" ? (() => { const m = FX("morning"); m.lockout = {machines: {m8: {by: "Andy", at: 0}}, lasers: {}}; return m; })()
+           : name === "purge" || name === "day_firing" ? FX("morning_firing") : FX("morning");
+  mo.group_state = mo.group_state || {};
+  mo.purge_state = mo.purge_state || {selected: [], owner: null, firing: false};
+  const lists = mo.checklists.checklists;
+  const sh = lists.find(l => l.id === "shutdown");
+  sh.steps = [{id: "d0", text: "Fuel valves closed at every tank", done: false, who: "", at: "", note: ""},
+              {id: "d1", text: "Wave flamer cleaning done", done: false, who: "", at: "", note: ""},
+              {id: "d2", text: "Field walked: nothing left burning", done: false, who: "", at: "", note: ""}];
+  sh.total = 3; sh.done = 0;
+  if(/^day_shut|^day_clean/.test(name)){ const su = lists.find(l => l.id !== "shutdown"); su.steps.forEach(x => { x.done = true; }); su.done = su.total; }
+  const fu = FX("fuel");
+  if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
+  else if(st.me.role !== "admin") fu.may_undo = false;
+  const wc = {available: true, problem: "", state: "idle", running: false, holder: null, mine: false, run: null, armed: "disarmed",
+    settings: {armed_s: 2, disarmed_s: 3, cycles: 5, burst_on_s: 0.5, burst_off_s: 1.5, max_burst_min: 5}, progress: null};
+  if(name === "day_clean_paused") Object.assign(wc, {state: "paused", running: true, progress: {phase: 1, text: "waiting for the go-ahead hold", left_s: null, elapsed_s: 42}});
+  return {mo, fu, wc};
+}
 
 // What the other GET routes answer, per scenario.
 function routesFor(name, st){
@@ -138,11 +182,14 @@ function routesFor(name, st){
   r["/api/remote/setup"] = FX("real_setup");
   const mo = name === "locked" ? (() => { const m = FX("morning"); m.lockout = {machines: {m8: {by: "Andy", at: 0}}, lasers: {}}; return m; })()
            : name === "purge" ? FX("morning_firing") : FX("morning");
+  // The timed purge's numbers, as the engine sends them (2026-10-29), and
+  // one running in the timed_purge scenario.
+  mo.timed_settings = {presets: [2, 5, 10, 20, 30], default_s: 5, max_s: 30, min_s: 1, limit_s: 120, hold_s: 1.0, error: ""};
+  const tm = st.morning && st.morning.timed;
+  mo.timed = Object.assign({running: !!tm, left_s: null, seconds: null, elapsed_s: null, machines: [], firing: [], waiting: [], device: null,
+    who: "", holding: false, holder: null, mine: false, held_s: null, hold_s: 1.0, last: ""}, tm ? Object.assign({running: true}, tm) : {});
+  if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
-  const fu = FX("fuel");
-  if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
-  else if(st.me.role !== "admin") fu.may_undo = false;
-  r["/api/remote/fuel"] = fu;
   r["/api/remote/fireball"] = FX("fireball");
   const wx = FX("weather");
   r["/api/remote/weather"] = wx;
@@ -154,7 +201,7 @@ function routesFor(name, st){
   r["/api/timelines"] = {folder: "C:\\Users\\show\\Documents\\LTC Shows", timelines: [{file: "fireice_timeline.json"}, {file: "fireice_rehearsal.json"}]};
   r["/api/remote/network"] = {address: "10.20.0.5", choices: ["10.20.0.5", "192.168.1.20"]};
   r["/api/schedule/operator"] = {current: "Dallen", operators: ["Andy", "Dallen", "Dave", "Jared", "Jeff"]};
-  r["/api/brand"] = {};
+  r["/api/brand"] = /^long_name/.test(name) ? {show: "The Grand Winter Fire and Ice Spectacle"} : {show: "Fire and Ice"};
   return r;
 }
 
@@ -165,6 +212,7 @@ class FakeEngine {
     (SCENARIOS[name] || (s => s))(this.st);
     this.posts = [];
     this.dead = false;
+    Object.assign(this, dayState(name, this.st));
     this.html = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote.html"), "utf8");
     this.html2 = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote2.html"), "utf8");
     const a = this.html.indexOf('<script id="remote-logic">'), b = this.html.indexOf("</script>", a);
@@ -251,6 +299,31 @@ class FakeEngine {
         if(sch.state !== "SHOW") sch.held = true; return ok("Playing."); }
       case "/api/remote/preroll-continue": if(body.phase === "done"){ s.preroll.continued = {by: s.me.user, off: ["video"], failed: "Video"}; delete s.preroll.show_check; s.alert_hold = {held: false}; s.alerts = []; } return ok("Continuing.");
       case "/api/remote/cleaning-stop": s.cleaning = {available: true, state: "idle", text: ""}; return ok("Stopped.");
+      case "/api/remote/morning-open": return ok();
+      case "/api/remote/purge-select": { const p = this.mo.purge_state; const ids = body.machines || [body.machine];
+        p.selected = body.on ? Array.from(new Set(p.selected.concat(ids))) : p.selected.filter(x => !ids.includes(x)); p.owner = p.selected.length ? this.mo.me : null;
+        Object.keys(this.mo.groups).forEach(g => { const gi = this.mo.groups[g]; const n = gi.filter(x => p.selected.includes(x)).length;
+          this.mo.group_state[g] = n === gi.length ? {state: "on", text: "Armed for the purge"} : n ? {state: "part", text: n + " of " + gi.length + " armed"} : {state: "off", text: ""}; });
+        return ok(body.on ? "Armed for the purge." : "Taken off the purge."); }
+      case "/api/remote/purge-clear": this.mo.purge_state = {selected: [], owner: null, firing: false}; this.mo.group_state = {}; return ok("Cleared.");
+      case "/api/remote/purge-fire": this.mo.purge_state.firing = true; return {code: 200, body: {ok: true, fire_id: 1, firing: this.mo.purge_state.selected, waiting: []}};
+      case "/api/remote/purge-stop": this.mo.purge_state.firing = false; if(s.morning) s.morning.timed = null;
+        return ok(s.morning && "timed" in s.morning ? "Timed purge stopped: everything it fired is back to zero." : "Stopped.");
+      case "/api/remote/lock": { const lo = this.mo.lockout; const t = body.kind === "laser" ? (lo.lasers = lo.lasers || {}) : (lo.machines = lo.machines || {});
+        if(body.on) t[body.id] = {by: s.me.user || "unsigned", at: 0}; else delete t[body.id]; return ok(body.on ? "Locked out." : "Unlocked."); }
+      case "/api/remote/laser-test": (this.mo.lasers || []).forEach(l => { if(body.all || l.id === body.laser) l.on = !!body.on; }); return ok(body.on ? "Test grid on." : "Test grid off.");
+      case "/api/remote/open-beyond": return ok("BEYOND is in front.");
+      case "/api/remote/checklist-tick": { const l = this.mo.checklists.checklists.find(x => x.id === body.checklist); const st2 = l && l.steps.find(x => x.id === body.step);
+        if(st2){ st2.done = !!body.done; st2.who = body.who; st2.at = "18:00"; l.done = l.steps.filter(x => x.done).length; } return ok("Ticked."); }
+      case "/api/remote/checklist-note": return ok("Noted.");
+      case "/api/remote/fuel-refill": (this.fu.units || []).forEach(u => { if(body.all || u.id === body.unit){ u.refill_soon = false; u.shows_left = 12; u.percent = 100; } }); return ok("Refill logged.");
+      case "/api/remote/cleaning-beat": { const w = this.wc; this.wcBeats = (this.wcBeats || 0) + 1;
+        if(body.hold && this.wcBeats >= 8){ w.state = w.state === "paused" ? "phase2" : "phase1"; w.running = true; w.progress = {phase: w.state === "phase2" ? 2 : 1, text: "running", left_s: 20, elapsed_s: 1}; this.wcBeats = 0; }
+        else if(body.hold){ w.state = w.state === "paused" ? "acking" : "starting"; w.mine = true; }
+        else { this.wcBeats = 0; if(w.state === "starting") w.state = "idle"; if(w.state === "acking") w.state = "paused"; }
+        s.cleaning = {available: true, state: w.state, text: "Cleaning: " + w.state};
+        return {code: 200, body: Object.assign({}, w)}; }
+      case "/api/remote/cleaning-stop": Object.assign(this.wc, {state: "idle", running: false, progress: null}); s.cleaning = {available: true, state: "idle", text: ""}; return ok("Cleaning stopped.");
       case "/api/remote/announce-stop": s.announce.playing = null; return ok("Stopped.");
       case "/api/remote/laser-arm": (s.laser_arm.lasers || []).forEach(l => { if(body.all || (body.lasers || []).includes(l.id)) l.armed = !!body.on; }); return ok("Done.");
       default: return ok();
@@ -272,6 +345,7 @@ class FakeEngine {
       if(p === "/remote-logic.js") return route.fulfill({status: 200, contentType: "application/javascript; charset=utf-8", body: this.logic});
       if(p === "/api/remote/ui-default") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({default: this.uiDefault})});
       if(p.startsWith("/brand/") && process.env.NOFONT) return route.fulfill({status: 404, body: "{}"});
+      if(p.startsWith("/brand/logo") && this.name === "no_logo") return route.fulfill({status: 404, body: "{}"});
       if(p.startsWith("/brand/")){
         const f = path.join(REPO, "ltcplay", "web", "brand", path.basename(p));
         if(fs.existsSync(f)) return route.fulfill({status: 200, body: fs.readFileSync(f),
@@ -285,6 +359,9 @@ class FakeEngine {
         st.served_at = Date.now();
         return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(st)});
       }
+      if(p === "/api/remote/morning") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(this.mo)});
+      if(p === "/api/remote/fuel") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(this.fu)});
+      if(p === "/api/remote/cleaning") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(this.wc)});
       const r = routesFor(this.name, this.st);
       if(p in r) return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(r[p])});
       return route.fulfill({status: 200, contentType: "application/json", body: "{}"});

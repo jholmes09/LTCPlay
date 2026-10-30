@@ -254,6 +254,84 @@ While this engine has any machine locked out, no purge goes until
 flamesafe's status reports exactly the slots asked for. A stop that lands
 while a beat's frame is being worked out wins: that beat sets nothing.
 
+### The timed purge (Jeff, 2026-10-29; morning.py `Purge.timed_beat`)
+
+Jeff's request: "In addition to momentary purges, we would like a
+designated time length purge option. This is to allow for longer spurts of
+testing in case there is a DMX issue." It is the momentary purge's own
+selection and its own purge frame on the flame link, held up by the
+engine's timer for a chosen number of seconds instead of by a held key.
+Nothing new reaches flamesafe and the wire does not change: flamesafe is
+still the only writer of the flame universe, arms nothing by itself, and
+fires a slot only for a group it reports ARMED.
+
+- **What it fires.** Exactly what the momentary purge fires for the same
+  selection (`Purge.frame`, a Waver's head first). It starts only when
+  every selected machine's group already reads ARMED at flamesafe; it never
+  waits for one.
+- **How long.** 2, 5, 10, 20 or 30 s, or Other (a whole number). The
+  longest is `purge_timed_max_s` in `ltcplay_remote.json`: 30 s unless an
+  admin sets it, never more than 120 s, never unlimited. A longer request
+  is refused in full (the page also keeps Other within it). The last
+  duration started on a show PC is its default (`purge_timed_s`).
+  The longest is read when a purge starts: lowering `purge_timed_max_s`
+  while one runs does not shorten it (it still ends at its own time, or
+  at any stop).
+- **How it starts.** A hold, timed by the engine from the page's beats
+  (every 100 ms, `TIMED_HOLD_S`, the Hold to arm buttons' 1 s): a tap, a
+  release, a gap of 0.25 s, a changed duration, a stale page (`seen`) or any
+  refusal fires nothing. Each hold names itself; a hold id that has ended
+  or started a purge, or a beat number not past every one that screen sent
+  before, never starts one (a replayed or late press). The button's words
+  name the machines and the seconds. Same permission as the purge (the arm
+  row), the same `purge_arming` and `screen_arming` switches, the same
+  Stream Deck must be reading, only the selection's own screen.
+- **Three ways it stops on time.** (1) The engine's timer sends every
+  100 ms and checks the deadline and every ending cause before each send,
+  and again under the lock just before it sets the frame. (2) The flame
+  link is given the hard end at the start (`FlameLink.purge_limit`, on its
+  own clock): past it every frame it sends carries zeros and `purge_set`
+  is refused until `purge_clear`, whatever keeps calling it. (3) The link
+  drops the frame 0.25 s after the last send (`PURGE_HOLD_S`), so a timer
+  that hangs or dies is a purge that stops; the watcher (10 a second) then
+  ends it in the engine too, and also checks the deadline itself. If the
+  whole engine stops, flamesafe zeroes by its own `frame_stale_ms`.
+  A stall never relights it: a send more than 0.25 s after the last one,
+  judged on a clock read just before the frame is set, ends the purge, and
+  the link itself refuses a timed frame once it has dropped one as stale,
+  or once a zero (Stop, Hold, Abort) landed after the count was read. The
+  hard end is given as the time left to the deadline, so a pause before it
+  never loosens it. A purge press while one runs ends it even from a
+  screen whose sign-in may not arm (it is refused for anything else), and
+  a Stream Deck FIRE the engine refuses posts Stop purge on its way out.
+  A group seen disarmed at flamesafe ends the purge on the next send, up
+  to 0.1 s later; meanwhile flamesafe itself sends nothing for a disarmed
+  group, so the link's value for it reaches no flame.
+- **What ends it at once.** Stop purge (from any screen, signed in or
+  not), Stop, Abort, Hold (and a Hold standing), Start now, Run (refused or
+  not), a show going live or the show clock playing, an Abort standing,
+  flamesafe's status over 1 s old, the flame link not sending or alarmed or
+  zeroed, a selected machine locked out or taken off, a disarm of one of
+  its groups (pressed, or seen at flamesafe), the starter signing out, any
+  screen in Arrange mode, the lock state not trusted, and any second purge
+  press (Space, the deck's FIRE, another hold from any screen). Each is a
+  journal line with why and the seconds it actually ran; the start line
+  says the machines, the seconds, who and where.
+- **One at a time.** No timed purge while Space or FIRE fires, and a
+  momentary press while one runs ends it. The Fireball page, the wave
+  flamer cleaning and live flame programming already refuse while a purge
+  is selected or firing, and a timed purge refuses while either of the
+  first two has the frame.
+- **The page can close.** It runs on the engine's clock: closing or
+  leaving the page, or an iPad going to sleep, does not end it (and does
+  not keep it going past its time). Meanwhile the engine keeps telling the
+  Stream Deck the group is wanted; once it has ended, the closed page's
+  selection is cleared and the deck lets go of the group as before.
+- **The countdown** is the engine's (`left_s` in the status and on
+  deck-input): the rack screen's Startup page, a banner on every 1.0
+  screen, 2.0's pinned line and pill, and the Stream Deck's key 0
+  (PURGING and the seconds).
+
 ### Lockout: one writer, enforced where the wire is written
 
 The engine (`ltc serve`) is the only writer of `ltcplay_lockout.json`,
@@ -388,12 +466,42 @@ Three buttons under the lasers on the Startup page:
   another machine (it looks on the machine named by the `beyond` block's
   host).
 
+### Is BEYOND (or MadMapper) on this PC?
+
+ltcplay reads BEYOND as on this PC when the `host` of the `beyond` block
+in `ltcplay_fire_ice.json` is `localhost`, any 127.x.x.x loopback address
+(127.0.0.2 on the show PC, bench B8.0), or any other address of this PC
+itself: a network card's address, or the address of a Windows loopback
+adapter such as "Microsoft KM-TEST Loopback Adapter" (often 10.x,
+169.254.x or 192.168.x). MadMapper's `madmapper` block is read the same
+way (`thispc.py`, one rule for both). Any address that is not this PC's is
+another machine, and `0.0.0.0` is never a host. On Windows this PC's
+addresses are every adapter's, the list `ipconfig` prints; they are read
+again at most every 30 seconds, and if they cannot be read, only
+127.x.x.x and localhost count. Only
+then does Open BEYOND bring its window forward, the BEYOND and MadMapper
+watches look for the program in Windows' process list, and the pre-roll's
+Lasers check look for BEYOND (the Network check pings only a BEYOND or
+MadMapper that is NOT on this PC).
+
+To see which address ltcplay uses: it is the `host` in the `beyond` (or
+`madmapper`) block of `ltcplay_fire_ice.json`. When ltcplay reads it as
+another machine, it names both that address and this PC's own addresses:
+in the Open BEYOND refusal, in the pre-roll's Lasers line, and in the
+Video chip's tooltip on the rack screen. If BEYOND is on this PC and the
+address is not in that list, set the host to one that is (127.0.0.2, or
+the loopback adapter's address as `ipconfig` shows it), make BEYOND
+receive there, and restart the engine.
+
 ### How to set up the laser calibration cue
 
 BEYOND's commands for the calibration cue are not known yet (coming
-soon). Until they are, every laser says "not set up yet" and nothing is
-sent. When Jeff or Andy knows them, each laser in `ltcplay_morning.json`
-gets them under `lasers`: `"mechanism": "osc"`, BEYOND's address
+soon). Until they are, every laser says on the Startup page, armed or
+not, "Calibration cue not set up yet", what is needed (BEYOND's OSC
+messages that put that laser's grid up and take it down) and where (the
+`lasers` block of `ltcplay_morning.json`), and nothing is sent. When Jeff
+or Andy knows them, each laser in `ltcplay_morning.json` gets them under
+`lasers`: `"mechanism": "osc"`, BEYOND's address
 (`host` and `port`; left out, the `beyond` block of `ltcplay_fire_ice.json`
 is used), and two lists of OSC messages, each one an address and a value:
 `on` puts the grid up, `off` takes it down. For example (the addresses and
@@ -412,6 +520,42 @@ Each message is sent three times. BEYOND's BlackOut, MasterPause,
 brightness and laser output switch can never be used here. Restart the
 engine after changing the file. The laser still has to be armed for its
 test to go on.
+
+**How to find the address, step by step.** No bench or document in this
+repo has found or verified BEYOND's OSC messages for starting or stopping
+a grid cue, so this program names none. What the repo does establish
+(the bench report of 2026-09-25, B8): BEYOND receives OSC only once
+**Settings > OSC > OSC Settings** has "Enable receiving OSC messages" on
+(default off) and an Incoming port (8100 on the bench; 8000, the default,
+clashes with MadMapper); and **Settings > OSC > OSC Monitor** lists every
+OSC message BEYOND receives. The bench used the OSC Monitor to confirm
+each message ltcplay sent; BEYOND itself never sent anything back.
+
+1. In BEYOND, open Settings > OSC > OSC Settings. Check that "Enable
+   receiving OSC messages" is on and note the Incoming port. That port is
+   the laser's `port` (or the `beyond` block's).
+2. The `host` is the address BEYOND receives on, as ltcplay reads it
+   ("Is BEYOND (or MadMapper) on this PC?", above): 127.0.0.2 on the show
+   PC, as the bench used.
+3. Find the candidate address and value in Pangolin's own OSC command
+   list (wiki.pangolin.com, beyond:osc_commands; the list the bench
+   used). Which command starts and stops one cue, and what value names
+   the grid cue, is NOT verified here: Andy, who built the cue, is the one
+   to say which cue it is. The `/beyond/general/startcue` lines in the
+   example above are only an example.
+4. Open Settings > OSC > OSC Monitor in BEYOND and leave it open.
+5. Put the candidate `on` and `off` messages in `ltcplay_morning.json`
+   for one laser, with `"mechanism": "osc"`, and restart the engine.
+6. With Andy there and the laser armed, press that laser's test on the
+   Startup page. In the OSC Monitor, check that the message arrived (the
+   address and the value as written), and in BEYOND (or on the wall)
+   that the grid came up at low power. Press it again and check the `off`
+   message arrived and the grid went down.
+7. If nothing arrived in the OSC Monitor, the host or port is wrong (step
+   1 and 2). If it arrived but the grid did not change, the address or
+   value is wrong (step 3). Whether BEYOND's OSC Monitor also shows a
+   message when a cue is clicked in BEYOND itself is not known (the bench
+   never tried it); do not rely on it.
 
 ### Checklists: append-only, hash-chained, exported
 

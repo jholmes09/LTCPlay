@@ -461,8 +461,11 @@ closing disarm every laser, and after Resume or Reset they stay dark until
 you arm them again; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
-how BEYOND is told is not set yet, so each button says so until Jeff fills
-in `lasers` in ltcplay_morning.json); Calibrate all lasers (the test on
+how BEYOND is told is not set yet, so each laser says "Calibration cue not
+set up yet", what is needed and where, until Jeff fills in `lasers` in
+ltcplay_morning.json: see How to set up the laser calibration cue in
+MORNING.md, which has a step by step way to find and check BEYOND's
+address with BEYOND's own OSC Monitor); Calibrate all lasers (the test on
 for every armed laser that is not locked out, one after another; it names
 any it skipped and why) and Calibration off (every test off, always
 works); Open BEYOND (on the show PC only: brings the BEYOND window to the
@@ -478,7 +481,7 @@ it skipped and why, such as one locked out; it is green when all of the
 group is armed, amber with the count and the reason when only part is,
 and while any of it is armed, clicking it again takes the whole group off;
 let go and it stops; nothing fires while a show is live or an Abort
-stands); lock out of any one machine or laser (the L button on it: one tap
+stands); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
 way; a line under the machine map, or under the lasers, says what was
 done, with Undo for 5 seconds; a tap does what the screen showed when you
@@ -499,6 +502,27 @@ While the page is open the Stream Deck's Start key is FIRE and reads
 PURGE ARMED on an armed group's key; it goes back to normal when you
 leave the page. MORNING.md says how it all works and where every setting
 lives.
+
+**The timed purge (Startup page, Jeff, 2026-10-29).** For a longer test,
+say to check a DMX problem, without holding Space. Select the machines
+exactly as for the purge and wait for their groups to read armed. Pick the
+seconds: 2, 5, 10, 20 or 30, or type Other (whole seconds; this show PC
+allows up to 30 unless an admin has set `purge_timed_max_s` in
+`ltcplay_remote.json`, never more than 120). Then hold the button that
+says "Hold to purge (the machines) for (the seconds)", the same as a Hold
+to arm: a tap does nothing, let go too soon and nothing fires. Once it
+says it started you can let go: the machines fire for those seconds and
+stop by themselves, even if the page or the iPad is closed. The rack
+screen, every screen's banner, 2.0's top line and the Stream Deck's key 0
+(PURGING and the seconds) count down. To end it early press Stop purge
+(on the Startup page or the banner, from any screen, signed in or
+not), or Stop, Hold or Abort; Start now, Run, a disarm of one of
+its groups, a lock, signing out and any other purge press (Space, the
+deck's FIRE, the button again) also end it at once. Only one purge at a
+time; the Fireball page, the cleaning and live flame programming wait for
+it. The journal says when it started (the machines, the seconds, who and
+where) and when and why it ended. The seconds you start are this show PC's
+default next time.
 
 **The Fireball page (Fire & Ice, when flamesafe's config has a group named
 fireball).** The header's Fireball button opens one big button per Fireball
@@ -908,6 +932,99 @@ While a Stop is still disarming and fading to dark, Start now and Run on
 any screen are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
+## The pixels at the end of a show, and at the next start
+
+Jeff's report, 2026-10-29: after a show that finished by itself, the next
+show had no pixels, a show started with Start now ended on black, and the
+pixels blinked dark just before a show began. Now:
+
+What each end leaves on the pixels:
+
+| How the show ended | The pixels after it |
+| --- | --- |
+| A scheduled show ends by itself, more shows to come | the idle look (intermission) |
+| The night's last scheduled show ends by itself | black (the closing) |
+| A Start now show ends by itself | the idle look, even with nothing else tonight |
+| Programming's Play reaches the end of the cue | the idle look |
+| Stop | black, and Run is off |
+| Abort during a show | black, latched until Reset; dark after Reset until a show starts |
+| Abort during Programming playback | the idle look; nothing latches |
+| A show that started and then failed | black |
+| A start refused before anything went out (Auto start off, an Abort standing, the show audio not ready) | left as they were |
+
+**No black frame between the show and the idle look** (Jeff's report,
+2026-10-30: "a little blip of black when we go from intermission to the
+show or vice versa"). The show's timecode runs 30 frames a second, so it
+ends on the next whole timecode frame after the lights file ends, up to
+1/30 s later. In that moment the pixels used to send one black frame
+(25 ms) before the idle look. Now the lights file's last frame stays up
+through it, at most 2/30 s, and the idle look follows on the next frame.
+That is the same with the show file's Intermission cue after the show or
+without it. A Hold, an Abort or a Stop in that moment still goes black at
+once. Show audio (or `clock.zones.show_len_s`) that ends up to one
+timecode frame (1/30 s) after the lights file is covered by the same
+hold: the last frame stays up, not black. If it runs on longer than that,
+the pixels are black for the rest (after the held frames), as below,
+unless the show file says `"gaps": "idle"`, which puts the idle look up
+there instead. A free run (GO) on the show audio clock gets the same hold
+at the end of every cue it passes, gaps between cues included: the cue's
+last frame stays up for at most 2/30 s, then the gap look. Only the Fire
+& Ice show audio clock does this; a show chased off a timecode feed (GPL)
+is unchanged.
+
+After a Start now show ends by itself with nothing else tonight, the
+night closes and the pixels stay on the idle look all through the closed
+night, until the next show starts. Abort then still disarms every flame
+group, blanks and disarms the lasers, turns the hazers off, lets go of
+any hold to arm and clears the purge selection and laser tests, but there
+is no show to stop: the screen says "No show was stopped", nothing
+latches, and the pixels stay on the idle look. Stop is a complete halt (the journal says "held
+Stop on the ...: a complete halt"); with no show running it ends no show,
+but it turns Run off, and turning Run off sends black to the pixels.
+
+**Every start clears it.** Start now, a scheduled start and Programming's
+Play from all clear the pixels for the show in the same one place,
+whatever ended the show before:
+
+- the show conductor's black (the closing, a stopped or failed show, an
+  Abort since Reset), and a stale record of it;
+- on Start now and a scheduled start, also a black or preshow look put
+  on the pixel output before the start. The Fire & Ice screens have no
+  Black or Preshow button; only the engine's override can set one. On
+  the Programming screen such a look stays through Play from. To clear
+  it in 1.0: press Stop on the "Show file, on this machine" card, then
+  Run (Run starts with no look on the pixels). That card is only on the
+  show machine's own screen. 2.0 has no Show file card: use Open in 1.0.
+  The Programming card's "Follow timecode again" button does not clear a
+  look, and while the show audio is the playhead it reads "Stop the show
+  audio" and stops playback.
+
+Nothing goes dark for it: the look that is up (the idle look, a Preshow,
+the closing black) stays until the show's first frame, and the show takes
+over on that very frame. A Hold, an Abort or a Stop after the start is
+not touched and holds, and so does a look set through the engine's
+override. That includes a Hold, an Abort, a Stop or
+a failed start before the show's first frame, or in the moment between
+that frame and the show being confirmed: the pixels go black, never the
+show, whatever ended the show before (a Stop, an Abort and Reset). The pre-roll blacks MadMapper's surfaces,
+never the pixels.
+
+The journal says it at every start, in the same words, for example "Show 4
+start: the pixel output is cleared for the show (the show conductor's
+black from between shows). The black stays up until the first show frame
+goes out, and the show takes over on that frame. A Hold, an Abort or a
+Stop after this start still holds." and then "Show 4: the
+first show frame went out on the pixels 0.21 s after the start was sent."
+
+**If the pixels are ever on a look while a show plays** (anything but a
+Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
+Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
+the show. Programming: Show file card, Stop, then Run. On 2.0, Open in
+1.0 first. Scheduled show: tell Jeff." That Stop is the one on the "Show
+file, on this machine" card (it ends playback and turns Run off), not
+"Stop the show audio". 2.0 shows it as "Flame cues are off" with the
+full text behind a tap. It is display only.
+
 ## The rig check before each show (pre-roll)
 
 Jeff, 2026-10-28: "the show starts with an immediate announcement so if
@@ -1213,7 +1330,14 @@ while BEYOND is not running: it reads LINK LOST first, in red, and if
 BEYOND was running and stops, an alert says so. BEYOND never answers back, so "lit, unconfirmed" means the
 lasers were sent lit and BEYOND is running; it cannot prove the beams are
 on. Off the show PC, or with BEYOND on another machine, the pill's details
-say "lit? link unknown".
+say "lit? link unknown". BEYOND is on this PC when the `host` in the
+`beyond` block of ltcplay_fire_ice.json is localhost, a 127.x.x.x address
+(127.0.0.2 on the show PC), or any other address of this PC, a Windows
+loopback adapter's (such as "Microsoft KM-TEST Loopback Adapter") included;
+any other address is another machine. Open BEYOND and the pre-roll's
+Lasers line name that host and this PC's own addresses when they read it
+as another machine, so you can see which address ltcplay uses (MORNING.md,
+"Is BEYOND (or MadMapper) on this PC?").
 
 The video chip says whether MadMapper is ready before any show plays. On
 the show PC it reads "MadMapper running" (green) while the MadMapper
@@ -1238,7 +1362,9 @@ heartbeat drift alarm is not switched on in this build, so there is no
 drift alert. Off
 the show PC, or with MadMapper on another machine, it cannot be told:
 the chip reads "not sent yet" (grey) until a show sends something, and
-its tooltip says why.
+its tooltip says why, naming MadMapper's host and this PC's own addresses
+(the same rule as BEYOND's, above: a loopback adapter's address on this PC
+is this PC).
 
 "Left in this show" counts down the show that is playing. On Hold it stands
 still, because the show's own clock is stopped. Between shows the next
@@ -1492,6 +1618,17 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   runs. When it fails, the alert slot says so and its button is 1.0's
   "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
+- DAY tab: the day as steps. Startup (sign in, rig checks, the startup
+  list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
+  wave flamer cleaning, locks, sign out); only the steps that apply now,
+  each with its mark, and one big Next. Every press is the 1.0 Startup,
+  Fuel and Shutdown pages' own: a purge fires only with the Stream Deck's
+  FIRE key or Space held, the cleaning starts only with its two holds,
+  and Lock is one tap per machine with Undo. "Map in 1.0" opens the
+  machine map, Arrange, the checklist PDF and the rest of 1.0's page.
+- The systems badge in the header names a single problem ("Stream Deck:
+  check"); one tap opens the list, which starts with what to do first.
+  Something not set up here reads Off.
 - Help (header): the tour again, and a quick card to print. Each "?" says
   what the buttons near it do, in one sentence each.
 

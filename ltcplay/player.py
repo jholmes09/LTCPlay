@@ -63,6 +63,25 @@ SHOW, IDLE, HOLD, BLACK = "show", "preshow", "hold", "black"
 # repeating, a 1 s cycle.
 PULSE_PERIOD_S = 1.0
 
+# Jeff's report, 2026-10-30: "a little blip of black when we go from
+# intermission to the show or vice versa". At a show's end the show audio
+# clock (clock.AudioMaster, "audio_master") runs its timecode to the end of
+# the lights file ROUNDED UP to the next timecode frame (30 a second), then
+# hands the pixels to the idle look (drop_clock). In between, up to one
+# timecode frame, the tick was past the end of the cue and sent the gap
+# look: one black pixel frame (25 ms at 40 frames a second) between the
+# show's last frame and the idle look, whatever cue comes after it (the
+# show file's Intermission an hour later included). With that clock the
+# show's last frame is held instead, for at most this long past the end of
+# the lights file: that one rounding frame, and one more for the clock's
+# thread waking a little late. Past it the gap look goes out as before, so
+# a show whose audio runs on after its lights file is still dark there.
+# Only that clock: a show chased off a timecode feed (GPL) never holds.
+# clock.ArtNetMaster ("artnet_master") rounds its end up the same way but
+# is left out on purpose: the Fire & Ice runner refuses any clock but
+# "audio_master", so no show night runs on it (review of #179).
+SHOW_END_HOLD_S = 2.0 / 30.0
+
 
 def pulse_level(elapsed):
     """0 to 255 and back over PULSE_PERIOD_S: a triangle, 0 at the start of
@@ -145,6 +164,18 @@ class Player:
         # button you want at 6pm when the generator is running timecode from
         # yesterday's rehearsal and you just need the preshow on the trees.
         self.override = None
+        # A show start's hand-over (fire_ice.FireIceShow.pixels_for_show;
+        # Jeff's report, 2026-10-29: a dark blink between the idle look and
+        # the show): (the look that was up at the start, ltc_frames_in then)
+        # while that look is held until the first frame of the new show's
+        # timecode. The tick that first has it drops the look and renders
+        # that show frame, so nothing goes out between the two. Anyone
+        # else's look (a Hold's or an Abort's black, the page) cancels it.
+        # None otherwise; nothing on the GPL path ever sets it.
+        self.show_handoff = None
+        # (the look it ended, _now()) once a hand-over is done, for the
+        # journal's "the first show frame went out" line.
+        self.show_handoff_done = None
         # The blue floor-pixel pulse for an open alert (alerts.py, Jeff
         # 2026-10-07): a flag the alert service sets, read on this
         # player's own tick (no extra thread), painted over the configured
@@ -511,6 +542,51 @@ class Player:
         with self._lock:
             self._hard_parked = bool(active)
 
+    def hold_until_show(self):
+        """A show is being started on the show clock: keep whatever look is
+        up now (the idle look, a Preshow, a black) until the first frame of
+        its timecode, then switch to the show on that same tick (see
+        show_handoff). Returns the look held (None: the idle look)."""
+        with self._lock:
+            self.show_handoff = (self.override, self.ltc_frames_in)
+            self.show_handoff_done = None
+            return self.override
+
+    def cancel_show_handoff(self, hand=None):
+        """Someone else set the look (a Hold's or an Abort's black): no
+        hand-over to the show. Returns True if one was waiting. `hand`,
+        when given, is the hand-over the caller means (show_handoff as its
+        start armed it): a newer start's is never cancelled for an older
+        one (review of PR #171)."""
+        with self._lock:
+            if hand is not None and self.show_handoff is not hand:
+                return False
+            had = self.show_handoff is not None
+            self.show_handoff = None
+        return had
+
+    def _take_handoff(self, hand, epoch, fed, now):
+        """The hand-over's one step, on the tick: once the new show's first
+        timecode frame is in, the look held at the start is dropped here,
+        before the tick reads the override, so this tick renders the show
+        frame. Until then the held look keeps going out."""
+        look, armed = hand
+        with self._lock:
+            if self.show_handoff is not hand:
+                return
+            if self.override != look:
+                # A look set since the start: theirs stands.
+                self.show_handoff = None
+                return
+            if epoch is None or fed == armed:
+                return
+            self.show_handoff = None
+            self.override = None
+            self.show_handoff_done = (look, now)
+        self._event("override", f"the show took over from "
+                                f"{look or 'the idle look'} on its first "
+                                f"frame")
+
     def drop_clock(self):
         """The show clock stopped on purpose: hand the rig to the idle look.
 
@@ -532,6 +608,9 @@ class Player:
             self.loop = None
             self.freerun_by = None
             self._move_mark()
+            # A show start's hand-over still waiting (a start that failed)
+            # never lifts its look on later timecode (review of PR #171).
+            self.show_handoff = None
         self._event("clock", "the show clock stopped; back to the idle look")
 
     def _now_tc(self):
@@ -703,6 +782,10 @@ class Player:
         with self._lock:
             epoch = self._epoch
             last = self._last_lock
+            hand = self.show_handoff
+            fed = self.ltc_frames_in
+        if hand is not None:
+            self._take_handoff(hand, epoch, fed, now)
 
         prev_state, prev_cue, prev_source = self.state, self.current_cue, self.source
 
@@ -860,9 +943,10 @@ class Player:
             nxt = self.next_cue
             ended_at = cue.tc_seconds + (cue.fseq.frame_count *
                                          cue.fseq.step_time_ms / 1000.0)
-            if nxt is not None and self.bridge_s > 0 and \
-                    0 < nxt.tc_seconds - tc <= self.bridge_s and \
-                    tc - ended_at <= self.bridge_s:
+            if (nxt is not None and self.bridge_s > 0 and
+                    0 < nxt.tc_seconds - tc <= self.bridge_s and
+                    tc - ended_at <= self.bridge_s) or \
+                    self._show_clock_ending(tc, ended_at):
                 self.current_cue = cue
                 self.current_frame = cue.fseq.frame_count - 1
                 out = self._render(cue, self.current_frame)
@@ -895,6 +979,23 @@ class Player:
             self.source = SHOW
         self._note_change(prev_state, prev_cue, prev_source)
         return out
+
+    def _show_clock_ending(self, tc, ended_at):
+        """True while the show audio clock is in its last timecode frame,
+        just past the end of the lights file of the cue it plays: the
+        tick holds that cue's last frame until the clock hands the pixels
+        to the idle look (SHOW_END_HOLD_S says why). False on any other
+        clock, or once SHOW_END_HOLD_S is past.
+
+        A cue after it (the Intermission an hour later, in the show
+        file) does not stop it: this clock plays one cue and stops at that
+        cue's end, so its timecode never runs on into the gap before the
+        next one (review of #179, B1). A free run (GO) past the last cue
+        gets the same short hold, then the gap look."""
+        clk = getattr(self, "clock", None)
+        if getattr(clk, "source", None) != "audio_master":
+            return False
+        return 0.0 <= tc - ended_at < SHOW_END_HOLD_S
 
     def _next_from_memory(self):
         """What comes next, judged from the last timecode actually seen.

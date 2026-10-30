@@ -38133,9 +38133,38 @@ class _FiClock:
 
 
 class _FiPlayer:
+    """Stands in for player.Player as FireIceShow uses it: the override,
+    and a show start's hand-over (hold_until_show), which the real tick
+    ends on the first show frame; here first_frame() is that tick."""
+
     def __init__(self, calls, T):
         self.calls, self.T = calls, T
         self._override = None
+        self.show_handoff = None
+        self.show_handoff_done = None
+
+    def hold_until_show(self):
+        self.show_handoff = (self._override, 0)
+        self.show_handoff_done = None
+        return self._override
+
+    def cancel_show_handoff(self, hand=None):
+        if hand is not None and self.show_handoff is not hand:
+            return False
+        had = self.show_handoff is not None
+        self.show_handoff = None
+        return had
+
+    def first_frame(self):
+        """The first frame of the show's timecode reaches the tick."""
+        hand = self.show_handoff
+        if hand is None:
+            return
+        self.show_handoff = None
+        if self._override == hand[0]:
+            if self._override is not None:
+                self.override = None
+            self.show_handoff_done = (hand[0], self.T.now())
 
     @property
     def override(self):
@@ -43653,6 +43682,971 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
     print("  ok")
 
 
+def _one_show_work(S, shows=1):
+    """A work folder whose rule has `shows` scheduled shows on Saturday
+    from 18:00, 20 minutes apart, so the last one closes the night."""
+    import tempfile
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    end = {1: "18:10", 2: "18:30"}[shows]
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": end}}, exceptions={}))
+    return work
+
+
+def _px_ends_on_its_own(n):
+    """The running show's cue confirms, then finishes by itself; the runner
+    reports both and sees what the night does next (a closing, if any)."""
+    clk = n.sess.clock
+    n.sess.player.first_frame()
+    clk._last_frame = 30
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    clk.playing = False
+    clk.last_ended = "Show finished"
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    n.w.runner.poll()           # CLOSING, when it closes the night
+    _settle(n.svc, n.c)
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+
+
+def _px_cues_why(n):
+    """What the show's flame cues say right now, through the real
+    FlameCues, with the fake show audio playing its cue."""
+    F = n.F
+    clk = n.sess.clock
+    clk._cue, clk.paused = {"label": "Show"}, False
+    cues = F.FlameCues(n.control, "flames")
+    cues(None)
+    return cues._why
+
+
+def _px_start_line(n, what):
+    return [t for t, _f in n.lines
+            if t.startswith(what) and "is cleared for the show" in t]
+
+
+def test_every_show_start_clears_the_pixels():
+    section("pixels: every show start (Start now, a scheduled start, the "
+            "Programming screen's Play) clears whatever dark the last show "
+            "left (the closing black after a show that ended on its own, a "
+            "stale record of it, Stop, Abort and Reset), with the same "
+            "journal line; a Start now show ends on the idle look; a look "
+            "on the pixels during a show is a CUES FAULT (Jeff's report, "
+            "2026-10-29)")
+    import types
+    S = _sched()
+    if S is None:
+        return
+    # A: the night's last scheduled show ends on its own: the closing
+    # blacks the pixels, outside the conductor.
+    n = _fi_night(work=_one_show_work(S))
+    n.svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          _px_start_line(n, "Show 1 start"),
+          f"setup: show 1 started on schedule with the start's pixel "
+          f"line: {n.svc.machine.state}")
+    n.now[0] = _den(S, 18, 8)
+    _px_ends_on_its_own(n)
+    check(n.svc.machine.state in (S.CLOSING, S.OFF) and
+          n.sess.player.override == "blackout" and n.w.show._pix_ours,
+          f"setup: the last scheduled show ended on its own and the "
+          f"closing blacked the pixels: {n.svc.machine.state} "
+          f"{n.sess.player.override!r}")
+    # Start now: the black is taken off by the start itself, held until
+    # the first show frame, then the show; the flame cues are never
+    # refused for it.
+    n.now[0] = _den(S, 18, 20)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    m = n.svc.machine
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(m.state == S.SHOW and held == "blackout" and
+          n.sess.player.override is None and not n.w.show._pix_ours,
+          f"Start now after a show that ended on its own: the closing "
+          f"black stays only until the first show frame, then the show "
+          f"(Jeff's shows 4 and 6): {m.state} {held!r} "
+          f"{n.sess.player.override!r}")
+    line = _px_start_line(n, f"Show {m.running} start")
+    check(line and "the show conductor's black" in line[-1],
+          f"the start's own journal line says what it cleared: {line}")
+    n.w.runner.poll()
+    check(any("first show frame went out" in t for t, _f in n.lines),
+          "the journal says when the first show frame went out")
+    check("blackout" not in _px_cues_why(n),
+          "the flame cues are not refused for a blackout after the start")
+    n.sess.clock._cue = None
+    # C: that Start now show ends on its own: the night closes again, but
+    # the pixels stay on the idle look, like a scheduled show's end.
+    del n.lines[:]
+    _px_ends_on_its_own(n)
+    check(n.svc.machine.state in (S.CLOSING, S.OFF) and
+          n.sess.player.override is None and not n.w.show._pix_ours and
+          any("stay on the idle look" in t for t, _f in n.lines),
+          f"a Start now show that ends on its own ends on the idle look, "
+          f"not on black: {n.svc.machine.state} "
+          f"{n.sess.player.override!r}")
+    # D: and Start now again starts with pixels, with the same line.
+    n.now[0] = _den(S, 18, 40)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    m = n.svc.machine
+    check(m.state == S.SHOW and n.sess.player.override is None and
+          _px_start_line(n, f"Show {m.running} start"),
+          f"Start now again after a Start now show ended: pixels on the "
+          f"show, the same line: {m.state} {n.sess.player.override!r}")
+    # Stop: the show conductor's black; Start now clears it.
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout",
+          f"setup: Stop blacked the pixels: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 18, 50)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.svc.machine.state == S.SHOW and n.sess.player.override is None,
+          f"Start now after Stop: the show plays as rendered: "
+          f"{n.sess.player.override!r}")
+    # Abort, Reset, Start now.
+    n.svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(n.svc, n.c)
+    n.svc.reset_conductor("Andy", "Rack screen")
+    _settle(n.svc, n.c)
+    check(not n.c.latched and not n.svc.machine.abort_latched,
+          "setup: the Abort was Reset")
+    n.now[0] = _den(S, 19, 0)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.svc.machine.state == S.SHOW and n.sess.player.override is None,
+          f"Start now after Abort and Reset: the show plays as rendered: "
+          f"{n.svc.machine.state} {n.sess.player.override!r}")
+    # A Hold before the first show frame, then Resume: the show comes
+    # back, never the black held at the start. The Stop really runs its
+    # fade (the start before it put the conductor's pixels record to
+    # UNKNOWN), so the look the start holds is black, not the idle look.
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout" and n.w.show._pix_ours,
+          f"setup: the Stop after a start ran its own black, not left to "
+          f"the record of the Abort before: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 19, 10)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.sess.player.show_handoff is not None and
+          n.sess.player.show_handoff[0] == "blackout",
+          f"setup: the start holds the Stop's black until its first frame: "
+          f"{n.sess.player.show_handoff!r}")
+    n.svc._apply(_op(S, S.HOLD))            # the real Hold, mid start
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()             # no hand-over: Hold stands
+    held = n.sess.player.override
+    n.svc._apply(_op(S, S.RESUME))
+    _settle(n.svc, n.c)
+    check(held == "blackout" and n.sess.player.override is None,
+          f"a Hold before the first show frame holds, and Resume gives "
+          f"back the show, not the start's held black: {held!r} "
+          f"{n.sess.player.override!r}")
+    n.c.close()
+    n.link.close()
+    # The stale record (Jeff's show 5): the conductor's black on record,
+    # the idle look on the output: nothing is put to black at the start.
+    n = _fi_night()
+    n.svc.tick()
+    n.w.show._pix_ours, n.w.show._pix_prev = True, None
+    del n.calls[:]
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(("pixels", ("blackout",)) not in [(k, a) for k, a, _t in n.calls]
+          and not n.w.show._pix_ours,
+          f"a stale record of the conductor's black never blacks the idle "
+          f"look at the start: {[c for c in n.calls if c[0] == 'pixels']}")
+    line = _px_start_line(n, "Show 1 start")
+    check(line and "stale record" in line[-1] and
+          "The idle look stays up until the first show frame" in line[-1],
+          f"its journal line: {line}")
+    # Manual, ended on its own, then the scheduled start.
+    n.c.close()
+    n.link.close()
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.now[0] = _den(S, 17, 48)
+    _px_ends_on_its_own(n)
+    check(n.sess.player.override is None,
+          f"setup: a Start now show with shows to come ends on the idle "
+          f"look: {n.svc.machine.state} {n.sess.player.override!r}")
+    n.w.show._pix_ours = True              # however it got there
+    n.sess.player.override = "blackout"
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    m = n.svc.machine
+    check(m.state == S.SHOW and n.sess.player.override is None and
+          _px_start_line(n, f"Show {m.running} start"),
+          f"the scheduled start after a Start now show clears the black: "
+          f"{m.state} {n.sess.player.override!r}")
+    # Programming Play after the closing black.
+    from ltcplay.playhead import ShowAudioPlayhead
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    n.svc.machine = types.SimpleNamespace(state="OFF")
+    clk = n.sess.clock
+    n.sess.playhead_clock = lambda: clk
+    n.sess.clock_play_from = lambda s, check_only=False: (
+        (types.SimpleNamespace(name="Show"), s) if check_only else
+        (clk.play("Show"), (types.SimpleNamespace(name="Show"), s))[1])
+    n.sess.clock_here = lambda: 0.0
+    ph = ShowAudioPlayhead(n.control, n.svc)
+    n.w.show.pixels_fade_out(1.0)           # the closing's black
+    ph.play_from(3600.0, "Andy", "iPad")
+    n.c.run_pending()
+    n.sess.player.first_frame()
+    check(n.sess.player.override is None and
+          _px_start_line(n, "Play from on the Programming screen"),
+          f"Programming Play after the closing black: the show plays as "
+          f"rendered, with the start's line: {n.sess.player.override!r}")
+    # On the Programming screen the page's own look stays.
+    n.sess.player.override = "preshow"
+    ph.play_from(3600.0, "Andy", "iPad")
+    n.c.run_pending()
+    check(n.sess.player.override == "preshow",
+          "Programming Play keeps a look the operator put on the page")
+    n.c.close()
+    n.link.close()
+    # The pre-roll never puts a look on the pixel output.
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "preroll.py")) as fh:
+        pre = fh.read()
+    check(".override" not in pre and "pixels_fade_out" not in pre,
+          "the pre-roll blacks MadMapper's surfaces, never the pixels")
+    # 4: a look on the pixels while the show plays is a CUES FAULT once it
+    # lasts, never during a Hold's or an Abort's own fade or a start's
+    # hand-over.
+    F = _fi_mod()
+    t = [0.0]
+    clk = types.SimpleNamespace(source="audio_master", _cue={"label": "S"},
+                                paused=False, _halting=False,
+                                _pause_req=False, last_sent=None)
+    p = types.SimpleNamespace(override="blackout", show_handoff=None,
+                              freerun_epoch=None)
+    sess = types.SimpleNamespace(running=True, clock=clk, player=p)
+    lines = []
+    cues = F.FlameCues(types.SimpleNamespace(session=sess), "flames",
+                       journal=lambda text, **f: lines.append((text, f)))
+    cues._mono = lambda: t[0]
+    cues(None)
+    check(cues.fault == "", "a look over a playing show is not a fault at "
+                            "once")
+    t[0] = F.LOOK_IN_SHOW_FAULT_S + 0.1
+    cues(None)
+    check(cues.faults_now() == F.LOOK_IN_SHOW.format(look="black") and
+          lines and lines[-1][1].get("fault"),
+          f"once it lasts it is a CUES FAULT on the screens and in the "
+          f"journal: {cues.fault!r}")
+    # The rack screen's words (reviews of PR #171): only buttons the Fire
+    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0:
+    # Open in 1.0), never the GPL page's Black, Preshow or Auto, nor the
+    # Programming card's "Follow timecode again" / "Stop the show audio";
+    # short as a whole, no sentence over eight words; "black", never
+    # "blackout".
+    said = cues.faults_now()
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote.html"),
+              encoding="utf-8") as fh:
+        rack = fh.read()
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote2.html"),
+              encoding="utf-8") as fh:
+        rack2 = fh.read()
+    check("Programming: Show file card, Stop, then Run." in said and
+          "Open in 1.0" in said and len(said.split()) <= 30 and
+          'label:"Stop"' in rack and 'label:"Run"' in rack and
+          "Show file, on this machine" in rack and "Open in 1.0" in rack2
+          and "Follow timecode" not in said and "Auto" not in said and
+          "Black" not in said and "blackout" not in said and
+          "show audio" not in said and
+          all(len(x.split()) <= 8 for x in said.split(". ")),
+          f"the CUES FAULT says what to press on the rack screen: "
+          f"{said!r}")
+    # A look over the LAST show never counts toward the next one: no show
+    # playing (between shows) starts the count again.
+    clk._cue = None
+    t[0] = 2.0
+    cues(None)
+    t[0] = 3.0
+    clk._cue = {"label": "S"}
+    cues(None)
+    check(cues.fault == "", "a look between shows is no CUES FAULT for "
+                            "the next show at once")
+    t[0] = 3.0 + F.LOOK_IN_SHOW_FAULT_S + 0.1
+    cues(None)
+    check(cues.fault != "", "it is, once it lasts into that show")
+    clk._cue = None
+    cues(None)
+    clk._cue = {"label": "S"}
+    clk._halting = True
+    cues(None)
+    check(cues.fault == "", "an Abort's own fade is no CUES FAULT")
+    clk._halting, p.show_handoff = False, ("blackout", 0)
+    t[0] = 10.0
+    cues(None)
+    t[0] = 20.0
+    cues(None)
+    check(cues.fault == "", "a start's hand-over is no CUES FAULT")
+    print("  ok")
+
+
+def test_closed_night_abort_and_stop_say_what_they_did():
+    section("pixels: in a closed night (after a Start now show) Abort still "
+            "disarms the flames and blanks the lasers, stops no show and "
+            "latches nothing; Stop is a complete halt that ends no show; "
+            "both say so truthfully (OPERATOR.md, review of PR #171)")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S, at=_den(S, 23, 30))
+    try:
+        check(R.svc.machine.state == S.OFF, f"setup: the night is closed: "
+                                            f"{R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        text = str(out.get("text") or "")
+        check(st == 200 and out.get("disarmed") and
+              out.get("lasers_blanked") and not out.get("stopped") and
+              "No show was stopped" in text and
+              not R.svc.machine.abort_latched and not R.c.latched,
+              f"Abort with no show: flames disarmed, lasers blanked, no "
+              f"show stopped, nothing latched: {st} {out}")
+        before = len(list(R.svc.journal))
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        rows = R.lines_for("stop")
+        new = list(R.svc.journal)[before:]
+        check(rows and ": a complete halt." in rows[-1]["text"] and
+              "show" not in out and
+              not any("No show is running" in str(r.get("text"))
+                      for r in new),
+              f"Stop with no show is journaled as a complete halt and ends "
+              f"no show (no 'No show is running' line): {out} "
+              f"{rows[-1:]}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def _px_after_stop(S, ff=False):
+    """A night with a Start now show, then Stop, then Start now again,
+    with nothing confirmed yet; `ff`: its first frame has gone out (the
+    0.1 to 0.3 s before SHOW_CONFIRMED)."""
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout",
+          f"setup: Stop blacked the pixels: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 17, 45)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          n.sess.player.show_handoff is not None,
+          f"setup: the start is waiting for its first frame: "
+          f"{n.svc.machine.state} {n.sess.player.show_handoff!r}")
+    if ff:
+        n.sess.player.first_frame()
+        check(n.sess.player.override is None,
+              "setup: the first show frame went out, not confirmed yet")
+    return n
+
+
+def test_hold_abort_stop_black_the_pixels_after_a_start():
+    section("pixels: after a Stop (or an Abort and Reset) and a new start, "
+            "a Hold, an Abort, a Stop or a failed start, before the first "
+            "show frame or before the show is confirmed, still puts the "
+            "pixels to black through the real show conductor (review of "
+            "PR #171)")
+    import types
+    from ltcplay import conductor as C
+    S = _sched()
+    if S is None:
+        return
+    for ff in (False, True):
+        when = ("between the first frame and the confirmation" if ff
+                else "before the first show frame")
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.c.latched and n.sess.player.override == "blackout" and
+              n.sess.player.show_handoff is None,
+              f"Abort {when}: the pixels are black under the latch, never "
+              f"the show: {n.sess.player.override!r}")
+        n.svc.reset_conductor("Andy", "Rack screen")
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.sess.player.override == "blackout",
+              f"and after Reset the pixels stay dark until a show starts: "
+              f"{n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.HOLD))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.svc.machine.state == S.PAUSED and
+              n.sess.player.override == "blackout",
+              f"Hold {when}: the pixels are black, never the show: "
+              f"{n.svc.machine.state} {n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.sess.player.override == "blackout" and
+              n.sess.player.show_handoff is None,
+              f"Stop {when}: the pixels are black, never the show: "
+              f"{n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+    # A failed start after a Stop ends on black, not on the idle look.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+
+    def no_audio(cue=None):
+        raise RuntimeError("the show audio is not there")
+    n.sess.clock_play = no_audio
+    n.now[0] = _den(S, 17, 45)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    for _ in range(3):
+        n.w.runner.poll()
+        _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"a failed start after a Stop ends on black, with no hand-over "
+          f"left: {n.svc.machine.state} {n.sess.player.override!r}")
+    # The start itself puts its hand-over back when the clock refuses it,
+    # before the conductor's failed start runs.
+    n.sess.player.override = None
+    n.w.show._pix_ours = False
+    n.sess.player.show_handoff = None
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"a start the clock refused ends its own hand-over on black: "
+          f"{n.sess.player.override!r} {n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # An Abort that lands while the cue is starting: the start puts the
+    # black back itself, before the Abort's own fade runs.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    real = n.sess.clock_play
+
+    def aborted_meanwhile(cue=None):
+        got = real(cue)
+        n.c.abort("Andy", "Rack screen")
+        return got
+    n.sess.clock_play = aborted_meanwhile
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and n.c.latched and
+          n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"an Abort while the cue was starting: black at once, no "
+          f"hand-over: {n.sess.player.override!r} "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # An Abort just before the hand-over: nothing goes out, the music
+    # never starts, the Abort keeps its black.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    to_show = n.c.pixels_to_show
+
+    def abort_first(clear):
+        n.sess.clock.playing = True         # an earlier cue still going
+        n.c.abort("Andy", "Rack screen")
+        n.c.run_pending()
+        return to_show(clear)
+    n.c.pixels_to_show = abort_first
+    del n.calls[:]
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and "music_play" not in [k for k, _a, _t in n.calls] and
+          n.sess.player.override == "blackout" and n.w.show._pix_ours and
+          n.sess.player.show_handoff is None,
+          f"an Abort just before the hand-over: refused, no music, its "
+          f"black stands: {r.sentence} {n.sess.player.override!r}")
+    del n.c.pixels_to_show
+    # And while it stands, nothing is handed over at all.
+    n.c.run_pending()
+    got = []
+    check(n.c.pixels_to_show(lambda: got.append(1) or "x") is None and
+          not got and n.w.show._pix_ours,
+          "under a latched Abort the conductor hands nothing to a show")
+    n.c.close()
+    n.link.close()
+    # The Programming screen: a refused show start (an Abort landed) ends
+    # on black; a Play the clock refused leaves no hand-over waiting; a
+    # look the operator keeps ends a stale hand-over.
+    from ltcplay.playhead import ShowAudioPlayhead, PlayheadError
+    n = _fi_night()
+    n.svc.tick()
+    n.svc.machine = types.SimpleNamespace(state="OFF")
+    clk = n.sess.clock
+    n.sess.playhead_clock = lambda: clk
+    n.sess.clock_play_from = lambda s, check_only=False: (
+        (types.SimpleNamespace(name="Show"), s) if check_only else
+        (clk.play("Show"), (types.SimpleNamespace(name="Show"), s))[1])
+    n.sess.clock_here = lambda: 0.0
+    n.sess.clock_halt = lambda: clk.halt()
+    ph = ShowAudioPlayhead(n.control, n.svc)
+    real_start = n.c.show_starting
+    n.c.show_starting = lambda *a, **k: C.failed("aborted meanwhile")
+    try:
+        ph.play_from(3600.0, "Andy", "iPad")
+    except PlayheadError:
+        pass
+    n.c.show_starting = real_start
+    n.sess.player.first_frame()
+    check(n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"Programming Play refused at the show start: black, never the "
+          f"show: {n.sess.player.override!r}")
+    n.sess.player.override = None
+    n.w.show._pix_ours = False
+
+    def refused(s, check_only=False):
+        if check_only:
+            return types.SimpleNamespace(name="Show"), s
+        raise RuntimeError("the clock refused it")
+    n.sess.clock_play_from = refused
+    try:
+        ph.play_from(3600.0, "Andy", "iPad")
+    except Exception:                            # noqa: BLE001
+        pass
+    check(n.sess.player.show_handoff is None,
+          f"a Play the clock refused leaves no hand-over waiting: "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    F = _fi_mod()
+    calls = []
+    p = _FiPlayer(calls, types.SimpleNamespace(now=lambda: 0.0))
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    p.hold_until_show()                  # an earlier start, still waiting
+    p.override = "preshow"               # the operator's look on the page
+    p.show_handoff = ("preshow", 0)
+    fis.pixels_for_show("Play from on the Programming screen",
+                        programming=True)
+    p.first_frame()
+    check(p.override == "preshow" and p.show_handoff is None,
+          f"a look the Programming screen keeps ends a stale hand-over, "
+          f"so later timecode never lifts it: {p.override!r}")
+    # A look set through the engine (/api/override) during a start's
+    # hand-over stands, even the same black the start held.
+    from ltcplay import web as web_mod
+    p = _FiPlayer(calls, types.SimpleNamespace(now=lambda: 0.0))
+    p.override = "blackout"
+    p.hold_until_show()
+    ctl = types.SimpleNamespace(session=types.SimpleNamespace(
+        running=True, player=p, log=None))
+    web_mod.Control.override(ctl, "blackout")
+    p.first_frame()
+    check(p.override == "blackout" and p.show_handoff is None,
+          f"a Black set during the hand-over is never lifted by the first "
+          f"show frame: {p.override!r}")
+    # A start whose show failed or ended unconfirmed ends its own
+    # hand-over, before anything the conductor does.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.sess.player.override = "blackout"
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.sess.player.show_handoff is not None,
+          "setup: the start is waiting for its first frame")
+    n.sess.clock.playing = False
+    n.sess.clock.last_ended = "Show stopped"
+    n.w.runner.poll()
+    check(n.sess.player.show_handoff is None,
+          f"a show that ended before it was confirmed ends its start's "
+          f"hand-over: {n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # The race: a new start arms the player's one hand-over slot after
+    # poll() read the old cue. The old show's end never cancels the new
+    # start's hand-over.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.sess.player.override = "blackout"
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.clock.playing = False
+    n.sess.clock.last_ended = "Show stopped"
+    n.sess.player.hold_until_show()          # the newer start's
+    newer = n.sess.player.show_handoff
+    n.w.runner.poll()
+    check(n.sess.player.show_handoff is newer and newer is not None,
+          f"an older show's end leaves a newer start's hand-over armed: "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+class _LitFSEQ(FakeFSEQ):
+    """A FakeFSEQ whose every frame is lit (FakeFSEQ's frame 0 is all
+    zeros, which would hide a dark frame)."""
+
+    def __init__(self, base, **kw):
+        FakeFSEQ.__init__(self, **kw)
+        self.base = base
+
+    def frame(self, i):
+        FakeFSEQ.frame(self, i)
+        return bytes([self.base + i % 50]) * self.channel_count
+
+
+def test_the_show_takes_over_the_pixels_on_its_first_frame():
+    section("pixels: a show start keeps the look that is up (the idle "
+            "look, a black) until the first frame of the show's timecode "
+            "and switches on that very tick: no dark frame between the "
+            "idle look and the show (Jeff's show 5, 2026-10-29)")
+    import types
+    F = _fi_mod()
+    idle = _LitFSEQ(100, frames=40, channels=64)
+    show = _LitFSEQ(10, frames=400, channels=64)
+    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
+
+    def player():
+        p = Player(tl, FakeNetmap(), CountingSender())
+        p.on_lost = "hold"
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq",
+                                  "preshow loop")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        p.idle_cue._gaps = None
+        return p
+
+    def frames(p, k):
+        return [bytes(p._alert_mix(p._tick()) or b"") for _ in range(k)]
+
+    def lit(f):
+        return len(f) > 0 and any(f)
+    base = tcmod.parse_tc("01:00:00:00", 30)
+    first_show = bytes(show.frame(0))
+    # The idle look under a stale record of the conductor's black (Jeff's
+    # show 5): through the real FireIceShow start.
+    p = player()
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    fis._pix_ours = True
+    out = frames(p, 3)
+    text = fis.pixels_for_show("Show 5 start")
+    out += frames(p, 3)
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    out += frames(p, 3)
+    check(all(lit(f) for f in out),
+          f"no dark frame from the idle look into the show: "
+          f"{[f[:1] for f in out]}")
+    check(out[5][:1] == bytes([100 + 0])[:1] or out[5][0] >= 100,
+          "the idle look stays up until the show's timecode arrives")
+    check(out[6] == first_show and p.override is None and
+          p.show_handoff_done is not None and
+          p.show_handoff_done[0] is None,
+          f"the show's first frame goes out on the first tick after its "
+          f"timecode: {out[6][:1]!r}")
+    check("stale record" in text, f"the start's line: {text}")
+    # A start that never played (the clock refused it, then stopped): no
+    # hand-over left to lift the look on later timecode.
+    p = player()
+    p.override = "blackout"
+    p.hold_until_show()
+    p.drop_clock()
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "blackout" and p.show_handoff is None,
+          "the show clock stopping ends a waiting hand-over")
+    # A cancel names the hand-over it means: a newer one is never ended
+    # for an older one.
+    p = player()
+    p.hold_until_show()
+    older = p.show_handoff
+    p.hold_until_show()
+    check(p.cancel_show_handoff(older) is False and
+          p.show_handoff is not None and
+          p.cancel_show_handoff(p.show_handoff) is True and
+          p.show_handoff is None,
+          "cancel_show_handoff(hand) ends only that hand-over")
+    # The closing black: black frames, then the show's first frame, with
+    # no idle look flashed between.
+    p = player()
+    p.override = "blackout"
+    out = frames(p, 2)
+    p.hold_until_show()
+    out += frames(p, 2)
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    out += frames(p, 2)
+    check(out[:4] == [b""] * 4 and out[4] == first_show,
+          f"from black straight to the show on its first frame: "
+          f"{[f[:1] for f in out]}")
+    # A clock left from an earlier cue is not the new show's first frame.
+    p = player()
+    p.feed_timecode(base + 50.0, _now(), False, "01:00:50:00")
+    p.override = "blackout"
+    p.hold_until_show()
+    out = frames(p, 2)
+    check(out == [b"", b""] and p.override == "blackout",
+          "the held look waits for a frame that came after the start")
+    # Someone else's look since the start (a Hold's black) stands.
+    p = player()
+    p.hold_until_show()
+    p.cancel_show_handoff()
+    p.override = "blackout"
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "blackout", "a Hold's black during the hand-over "
+                                    "is never lifted by it")
+    p = player()
+    p.hold_until_show()
+    p.override = "preshow"          # the page's look, set straight on it
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "preshow" and p.show_handoff is None,
+          "a look put on the pixels after the start stands: the hand-over "
+          "lifts only the look it held")
+    # The runner says when the first show frame went out.
+    lines = []
+    r = types.SimpleNamespace(_note=lambda text, **f: lines.append(text))
+    cue = {"show": 5, "pix": types.SimpleNamespace(
+        show_handoff_done=(None, 10.2)), "sent": 10.0}
+    F.ShowRunner._first_frame(r, cue)
+    F.ShowRunner._first_frame(r, cue)
+    check(len(lines) == 1 and "first show frame went out" in lines[0] and
+          "0.20 s" in lines[0],
+          f"the journal says when the first show frame went out: {lines}")
+    print("  ok")
+
+
+def test_no_dark_frame_between_the_show_and_the_idle_look():
+    section("pixels: at a show's end the show audio clock runs its "
+            "timecode to the end of the lights file rounded up to the next "
+            "timecode frame; the show's last frame is held through that "
+            "frame, then the idle look, with no dark frame between, with "
+            "the show file's Intermission cue after it or not (Jeff, "
+            "2026-10-30: \"a little blip of black ... vice versa\"; review "
+            "of #179, B1); a longer tail is still dark, gaps idle makes it "
+            "the idle look, and a show chased off a timecode feed is "
+            "unchanged")
+    import types
+    import ltcplay.player as plmod
+    idle = _LitFSEQ(100, frames=40, channels=64)
+
+    def show_end(lights_frames, audio_s, phase, intermission=True,
+                 gaps=None, chased=False, hold_at=None):
+        """The real Player, ticked every 25 ms (from `phase`), fed and
+        ended by the real AudioMaster (_am_rig: its local audio engine on
+        the test's clock): its sink is Player.feed_timecode, its on_stop
+        Player.drop_clock, its on_pause/on_resume the hard park, as
+        session.py wires them. The show file has the Show at 01:00:00:00
+        and, with `intermission`, the Intermission at 02:00:00:00. With
+        `hold_at`, the clock is paused that many seconds into the show
+        for 1 s, then resumed. Returns the looks that went out from 0.5 s
+        before the end of the lights file to 0.3 s after the clock
+        ended the cue."""
+        lights_s = lights_frames * 0.025
+        r = _am_rig(seconds=audio_s, lengths={"Show": lights_s})
+        am, sim, vc, tl = r["am"], r["sim"], r["vc"], r["tl"]
+        for c in tl.cues:
+            c.fseq = _LitFSEQ(10, frames=(lights_frames if c.name == "Show"
+                                          else 40), channels=64)
+            c.duration = c.fseq.duration_ms / 1000.0
+            c._spans = [(0, 0, 64)]
+            c._gaps = None
+        if not intermission:
+            tl.cues = [c for c in tl.cues if c.name == "Show"]
+        p = Player(tl, FakeNetmap(), CountingSender(), gaps=gaps)
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq",
+                                  "preshow loop")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        p.idle_cue._gaps = None
+        p.clock = (types.SimpleNamespace(source="ltc_audio_slave")
+                   if chased else am)
+        stopped = []
+        am.sink = p.feed_timecode
+        am.on_stop = lambda: (stopped.append(vc()), p.drop_clock())
+        am.on_pause = lambda: p.set_hard_park(True)
+        am.on_resume = lambda: p.set_hard_park(False)
+        st = _Stepped(p, step_ms=25)
+        looks = []
+        try:
+            am.play(3600.0, None, "Show")
+            t0 = vc()
+            k = 0
+            held = None
+            while not stopped or vc() < stopped[0] + 0.3:
+                t = t0 + phase + k * 0.025
+                k += 1
+                if hold_at is not None and held is None and \
+                        t - t0 >= hold_at:
+                    held = t
+                    am.pause(fade_ms=0)
+                if held is not None and held > 0 and t - held >= 1.0:
+                    held = -1.0
+                    am.resume(fade_ms=0)
+                sim.run(t)
+                st.t = vc()
+                f = bytes(p._alert_mix(p._tick()) or b"")
+                if p.last_ltc_seconds is not None and \
+                        p.last_ltc_seconds - 3600.0 >= lights_s - 0.5 or \
+                        stopped:
+                    looks.append("black" if not any(f) else
+                                 "idle" if f[0] >= 100 else "show")
+                if k > 4000:
+                    break
+        finally:
+            st.close()
+            am.stop()
+        return looks
+
+    def runs(looks):
+        out = []
+        for x in looks:
+            if not out or out[-1][0] != x:
+                out.append([x, 0])
+            out[-1][1] += 1
+        return [(x, n) for x, n in out]
+    phases = [i * 0.0025 for i in range(10)]
+    # Jeff's show: a lights file that ends between two timecode frames
+    # (241 frames of 25 ms, 6.025 s; the timecode ends at 6.033 s), the
+    # audio a little shorter, then 0.005 s longer (inside the held frame).
+    for audio_s in (6.0, 6.03):
+        for inter in (True, False):
+            bad = []
+            for ph in phases:
+                got = runs(show_end(241, audio_s, ph, intermission=inter))
+                if [x for x, _n in got] != ["show", "idle"]:
+                    bad.append((ph, got))
+            check(not bad,
+                  f"audio {audio_s} s, Intermission cue {inter}: the "
+                  f"show's last frame, then the idle look, with no dark "
+                  f"frame between, at every tick phase: {bad[:3]}")
+    check(plmod.SHOW_END_HOLD_S <= 0.07,
+          f"the show's last frame is held at most two timecode frames: "
+          f"{plmod.SHOW_END_HOLD_S}")
+    # A Hold across the end, then Resume: the same.
+    bad = []
+    for ph in phases:
+        got = runs(show_end(241, 6.0, ph, hold_at=5.9))
+        if [x for x, _n in got] != ["show", "idle"]:
+            bad.append((ph, got))
+    check(not bad, f"a Hold just before the end, then Resume: no dark "
+                   f"frame between the show and the idle look: {bad[:3]}")
+    # The same show chased off a timecode feed (GPL's way): unchanged, the
+    # rounding frame still goes out black at some tick phases.
+    blacks = [runs(show_end(241, 6.0, ph, chased=True)) for ph in phases]
+    check(any("black" in [x for x, _n in g] for g in blacks),
+          f"a show chased off a timecode feed is unchanged: {blacks[:3]}")
+    # Audio 1 s longer than the lights file: the tail past the lights
+    # file is dark as before, with only the rounding frame held; with
+    # "gaps": "idle" that tail is the idle look. With and without the
+    # Intermission cue.
+    for inter in (True, False):
+        got = runs(show_end(241, 7.0, 0.0, intermission=inter))
+        check([x for x, _n in got] == ["show", "black", "idle"] and
+              got[1][1] >= 36,
+              f"Intermission cue {inter}: a tail longer than a timecode "
+              f"frame is still dark: {got}")
+        got = runs(show_end(241, 7.0, 0.0, intermission=inter,
+                            gaps="idle"))
+        check([x for x, _n in got] == ["show", "idle"],
+              f"Intermission cue {inter}: with gaps idle the tail is the "
+              f"idle look: {got}")
+    # By hand: a Hold's or an Abort's black over the held frame wins; the
+    # hold ends after SHOW_END_HOLD_S whatever comes after the cue.
+    base = tcmod.parse_tc("01:00:00:00", 30)
+    show = _LitFSEQ(10, frames=400, channels=64)
+    for cues in ([("01:00:00:00", "Show", show)],
+                 [("01:00:00:00", "Show", show),
+                  ("02:00:00:00", "Intermission",
+                   _LitFSEQ(10, frames=40, channels=64))]):
+        tl = _timeline(cues, idle="/tmp/idle.fseq")
+        p = Player(tl, FakeNetmap(), CountingSender())
+        p.clock = types.SimpleNamespace(source="audio_master")
+        st = _Stepped(p, step_ms=25)
+        try:
+            st.feed(base + 9.99)
+            st.t += 0.02
+            held = bytes(p._tick() or b"")
+            st.t += 0.1
+            late = p._tick()
+        finally:
+            st.close()
+        check(any(held) and not late,
+              f"{len(cues)} cue(s): the last frame held in the rounding "
+              f"frame, the gap look once SHOW_END_HOLD_S is past: "
+              f"{held[:1]!r} {late!r}")
+    # A Hold's or an Abort's black in the rounding frame wins: through the
+    # real FireIceShow's black (pixels_fade_out), with the show audio
+    # clock still in its last frame, the output is black and the source
+    # says so; given back (pixels_restore), the held last frame again.
+    F = _fi_mod()
+    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender())
+    p.clock = types.SimpleNamespace(source="audio_master")
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    st = _Stepped(p, step_ms=25)
+    try:
+        st.feed(base + 9.99)
+        st.t += 0.02
+        before = bytes(p._tick() or b"")
+        fis.pixels_fade_out(0)
+        dark = bytes(p._tick() or b"")
+        dark_src = p.source
+        fis.pixels_restore(0)
+        back = bytes(p._tick() or b"")
+    finally:
+        st.close()
+    check(any(before) and not any(dark) and dark_src == plmod.BLACK and
+          back == before,
+          f"a Hold's black over the held last frame: {before[:1]!r} "
+          f"{dark[:1]!r} {dark_src!r} {back[:1]!r}")
+    print("  ok")
+
+
 def test_fire_ice_review_hand_mutations():
     section("fire & ice: the runner starts the show it was told, confirms "
             "only the cue it started, closes the night for real; a release "
@@ -43694,24 +44688,30 @@ def test_fire_ice_review_hand_mutations():
     n.svc.tick()
     n.sess.player.override = "preshow"
     r = n.w.runner.start_show(9, who="Andy")
-    check(r.ok and n.sess.player.override is None,
-          f"a look chosen before the show is cleared when it starts: "
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(r.ok and held == "preshow" and n.sess.player.override is None,
+          f"a look chosen before the show stays up until the first show "
+          f"frame, then is cleared on that frame: {held!r} "
           f"{n.sess.player.override!r} {r}")
     n.sess.player.override = None
     n.w.show._pix_ours, n.w.show._pix_prev = True, "preshow"
     n.sess.player.override = "blackout"
     n.w.runner.start_show(10, who="Andy")
-    check(n.sess.player.override == "blackout" and
-          n.w.show._pix_prev is None,
-          "the conductor's own black stays until the show is confirmed, "
-          "and what was under it is forgotten")
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(held == "blackout" and not n.w.show._pix_ours and
+          n.w.show._pix_prev is None and n.sess.player.override is None,
+          "the conductor's own black is cleared by the start itself (held "
+          "until the first show frame, never left for the confirmation), "
+          "and what was under it is forgotten (Jeff's report, 2026-10-29)")
+    n.w.show._pix_ours, n.w.show._pix_prev = True, None
     n.sess.player.override = "preshow"      # the page, over that black
     n.w.runner.start_show(11, who="Andy")
-    check(n.sess.player.override == "blackout" and
-          n.w.show._pix_prev is None,
-          f"a look the page put over the conductor's black goes back to "
-          f"that black, to be lifted on confirmation: "
-          f"{n.sess.player.override!r}")
+    n.sess.player.first_frame()
+    check(n.sess.player.override is None and not n.w.show._pix_ours,
+          f"a look the page put over the conductor's black is cleared with "
+          f"it: {n.sess.player.override!r}")
     # H12: closing zeroes the flames, blanks the lasers, blacks the pixels.
     n = _fi_night()
     n.svc.tick()
@@ -50525,7 +51525,8 @@ def _run_browser(cmd, limit, env):
 
 def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                              tries=None, measure_js=None, head_js="",
-                             frag="", routes=None, budget_ms=6000):
+                             frag="", routes=None, budget_ms=6000,
+                             posts=None):
     """Draw `page` (remote.html's text) in headless `chrome` (a path, or a
     command as a list) at each (width, height) in `sizes`, its engine a
     stub answering `status`, and return {(w, h): [measure, ...]} (see
@@ -50535,7 +51536,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
     script (it must leave <pre id="rack-measure"> with JSON in it),
     `head_js` runs before the page's own script (an emulated screen),
     `frag` is added to the URL ("?q=1#morning") and `routes` maps more GET
-    paths to the JSON they answer (/api/remote/morning)."""
+    paths to the JSON they answer (/api/remote/morning); `posts` maps POST
+    paths to their JSON answer (the rest answer {})."""
     import http.server
     import shutil
     import subprocess as _sp
@@ -50582,6 +51584,9 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             self.rfile.read(n)
+            p = self.path.split("?")[0]
+            if posts and p in posts:
+                return self._out(200, json.dumps(posts[p]))
             return self._out(200, "{}")
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -61835,7 +62840,10 @@ def test_hazers_on_the_rack_screens():
               "/api/remote/hazer-level" in p and "hazerStep(" in p and
               "Same for all" in p,
               f"{name}: the row, its taps, Hazers off and the levels")
-        check("b.disabled = !look.armed && !mayArm;" in p and
+        check(("b.disabled = !look.armed && !mayArm;" in p or
+               ('const hzWhy = look.armed ? "" :' in p and
+                '!mayArm ? signWhy(s, "arm") :' in p and
+                "b.disabled = !!hzWhy;" in p)) and
               'mayRow(s, "arm")' in p,
               f"{name}: arming greyed for a role that may not arm, a "
               f"disarm never (reviewer B, 6)")
@@ -66976,6 +67984,1976 @@ def test_purge_release_can_never_start_a_fire():
     finally:
         R.close()
         shutil.rmtree(udir, ignore_errors=True)
+
+
+# ----------------------------------------------------- the timed purge ----
+# Jeff, 2026-10-29: "In addition to momentary purges, we would like a
+# designated time length purge option. This is to allow for longer spurts
+# of testing in case there is a DMX issue." morning.Purge.timed_beat,
+# MORNING.md "The timed purge".
+
+class _FakeTimedLink(_FakePurgeLink):
+    """_FakePurgeLink with what a timed purge also asks of the flame link:
+    the zero count, the hard end (purge_limit), the sender's state and the
+    lock alarm. zero() bumps the count and clears, as the link does."""
+
+    def __init__(self):
+        super().__init__()
+        self._zero_gen = 0
+        self.limits = []
+        self.sender = "running"
+        self.lock_alarm = ""
+
+    def purge_limit(self, seconds, deadline=None, clock=None):
+        self.limits.append(seconds if deadline is None
+                           else min(seconds, deadline - clock()))
+        return True
+
+    def purge_set(self, values, gen=None):
+        # As the link: a frame read before a zero is refused under its lock.
+        if gen is not None and gen != self._zero_gen:
+            return False
+        return super().purge_set(values)
+
+    def sender_state(self):
+        return self.sender
+
+    def zero(self):
+        self._zero_gen += 1
+        self.purge_clear()
+
+
+def _tp_rig(S, link=None):
+    """The Morning rig with a timed-purge link, the engine's checks wired
+    as web.serve wires them, front row armed at flamesafe, and Ground 1
+    selected from the rack screen."""
+    R = _morning_rig(S, _MO_CONFIG, link=link or _FakeTimedLink())
+    R.m.timed_blockers = R.remote.timed_purge_blockers
+    R.groups[0]["armed"] = "armed"
+    R.groups[0]["wanted"] = True
+    R.feed()
+    R.loop = ("127.0.0.1", 5000)
+    R.ipad = ("10.20.0.44", 50000)
+    R.m.open_beat("Rack screen")
+    st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                        {"machine": "g1", "seen": R.seen()}, client=R.loop)
+    check(st == 200 and R.m.purge.selected == ["g1"],
+          f"setup: Ground 1 selected: {st} {out}")
+    R.tp_seq = [0]
+    R.tp_runs = [0]
+    return R
+
+
+def _tp_beat(R, run, seconds=5, hold=True, client=None, window="W1",
+             headers=None, seen=None):
+    R.tp_seq[0] += 1
+    h = {"X-LTC-Window": window}
+    h.update(headers or {})
+    return R.ask("POST", "/api/remote/purge-timed",
+                 {"hold": hold, "run": run, "seq": R.tp_seq[0],
+                  "seconds": seconds,
+                  "seen": R.seen() if seen is None else seen},
+                 client=client or R.loop, headers=h)
+
+
+def _tp_step(R, dt=0.1, beat_page=True):
+    """Time passes on every clock; flamesafe and the deck keep reporting;
+    the page beats while `beat_page`; the engine's timer sends once and the
+    watcher runs (threaded=False in the rig)."""
+    R.mono[0] += dt
+    R.wall[0] += dt
+    R.feed()
+    R.remote._deck_seen = R.mono[0]
+    if beat_page:
+        R.m.open_beat("Rack screen")
+    if R.m.purge.timed_running():
+        R.m.purge.timed_send()
+    R.m.tick()
+
+
+def _tp_hold(R, seconds=5, hold_s=None, client=None, window="W1",
+             headers=None):
+    """A whole hold from the page: a beat every 100 ms until the engine
+    says it started (or refuses). (code, out, run id)."""
+    from ltcplay import morning as MO
+    R.tp_runs[0] += 1
+    run = f"{window}-t{R.tp_runs[0]}"
+    # A whole hold: beats until the engine says it started (its own timing
+    # decides, never this loop's); or exactly `hold_s` of them.
+    n = int(round(hold_s / 0.1)) if hold_s is not None else \
+        int(round(MO.TIMED_HOLD_S / 0.1)) + 3
+    st, out = 0, {}
+    for i in range(n + 1):
+        st, _h, out = _tp_beat(R, run, seconds, client=client,
+                               window=window, headers=headers)
+        if st != 200 or out.get("started"):
+            break
+        if i < n:
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            R.remote._deck_seen = R.mono[0]
+            R.m.open_beat("Rack screen")
+    return st, out, run
+
+
+def _tp_lines(R, outcome):
+    return [r for r in R.svc.journal
+            if r.get("action") == "purge" and r.get("outcome") == outcome]
+
+
+def test_timed_purge_flame_link_hard_end():
+    section("timed purge, the flame link (Jeff, 2026-10-29): purge_limit "
+            "sets a hard end on the link's own clock; past it every frame "
+            "carries zeros and purge_set is refused, whatever keeps calling "
+            "it, until purge_clear; zero() and a stale frame still stop it "
+            "as before")
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    cfg = fl.FlameLinkConfig("127.0.0.1", 5571, 1, key, frame_stale_ms=500)
+    t = [100.0]
+    link = fl.FlameLink(cfg, cues=lambda tc: [0] * 512,
+                        show_state=lambda: (None, False),
+                        clock=lambda: t[0], seek_guard=False)
+    link._send = lambda data: True
+    frame = bytes([0] * 410 + [240] + [0] * 101)
+    check(link.purge_limit(0) is False and link.purge_limit(-1) is False and
+          link.purge_limit("x") is False and
+          link.purge_limit(float("nan")) is False,
+          "a hard end of 0, less, or not a number is refused")
+    check(link.purge_limit(1.0) is True, "a 1 s hard end is taken")
+    sent = []
+    for i in range(14):
+        t[0] = 100.0 + i * 0.1
+        link.purge_set(frame)
+        sent.append((round(i * 0.1, 2), link.values_now()[1][410]))
+    t[0] = 101.0
+    sent.append((1.0, link.values_now()[1][410]))
+    before = [v for at, v in sent if at < 0.95]
+    after = [v for at, v in sent if at >= 0.99]
+    check(before and all(v == 240 for v in before),
+          f"before the hard end the frame goes out: {sent[:3]}")
+    check(after and all(v == 0 for v in after),
+          f"from the hard end on, zeros on every frame though purge_set "
+          f"is still called every 100 ms: {sent[-4:]}")
+    check(link.purge_set(frame) is False and not link.purge_active(),
+          "past it purge_set is refused and the purge reads not active")
+    link.purge_clear()
+    check(link.purge_set(frame) is True and link.values_now()[1] == frame,
+          "purge_clear lifts it: the next purge (momentary) goes as before")
+    # The hard end on the frames themselves: a frame set just before it
+    # (still within its 0.25 s) is zeros from the hard end on.
+    link.purge_clear()
+    link.purge_limit(0.1)
+    link.purge_set(frame)
+    check(link.values_now()[1] == frame, "set just before its hard end")
+    t[0] += 0.12
+    check(link.values_now()[1] == bytes(512),
+          "0.12 s later, past the hard end but within the frame's 0.25 s: "
+          "zeros")
+    link.purge_clear()
+    link.purge_limit(5.0)
+    link.purge_set(frame)
+    t[0] += fl.PURGE_HOLD_S + 0.01
+    check(link.values_now()[1] == bytes(512),
+          "within the hard end, a frame not set again still drops after "
+          "0.25 s (a timer that stopped is a purge that stopped)")
+    link.purge_set(frame)
+    link.zero()
+    check(link.values_now()[1] == bytes(512) and not link.purge_active(),
+          "zero() still clears it")
+    check(link._purge_until is None and link.purge_set(frame) is True,
+          "zero() lifts the hard end too: no stale limit is left behind")
+    link.purge_limit(0.05)
+    link.disarm_all("selftest")
+    check(link._purge_until is None, "and so does disarm_all()")
+    check(link.purge_limit(float("inf")) is False and
+          link.purge_limit(float("-inf")) is False and
+          link._purge_until is None,
+          "an endless hard end is refused")
+    print("  ok")
+
+
+def test_timed_purge_at_the_engine():
+    section("timed purge at the engine (Jeff, 2026-10-29): the same "
+            "selection, a duration from 1 s to this show machine's longest "
+            "(30 s, purge_timed_max_s up to 120, never unlimited), a whole "
+            "hold timed by the engine (a tap, a gap, a release, a replay "
+            "fire nothing), every selected group armed first; the frame "
+            "for exactly that long, the countdown from the engine's clock, "
+            "then zero by itself with its page closed; journal lines for "
+            "the start and the end")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import morning as MO
+    from ltcplay import users as U
+    check(MO.TIMED_HOLD_S == RM.SCREEN_HOLD_S,
+          "the start hold is the Hold to arm buttons' dwell")
+    check(MO.TIMED_PRESETS_S == (2, 5, 10, 20, 30) and
+          MO.TIMED_DEFAULT_S == 5 and MO.TIMED_MAX_DEFAULT_S == 30 and
+          MO.TIMED_MAX_LIMIT_S == 120 and MO.TIMED_MIN_S == 1,
+          "presets 2, 5, 10, 20, 30 s, 5 s by default, 30 s at most unless "
+          "an admin sets up to 120 s")
+    check(MO.TIMED_SEND_S < MO.BEAT_STALE_S,
+          "the engine's timer sends well within the link's 0.25 s")
+    for v, ok in ((5, True), (30, True), (1, True), (5.0, True),
+                  (31, False), (0, False), (-2, False), (2.5, False),
+                  ("5", False), (True, False), (None, False),
+                  (float("inf"), False), (float("nan"), False)):
+        got, why = MO.timed_seconds(v, 30)
+        check((got is not None) == ok and (bool(why) != ok),
+              f"timed_seconds({v!r}): {got} {why!r}")
+    check("30 s" in MO.timed_seconds(31, 30)[1] and
+          "purge_timed_max_s" in MO.timed_seconds(31, 30)[1],
+          "a longer one is refused, naming the longest and the setting")
+    check(U.classify("/api/remote/purge-timed", {"hold": True}) == "arm" and
+          U.classify("/api/remote/purge-timed", {"hold": False}) ==
+          "safety" and
+          U.classify("/api/remote/purge-timed", {"hold": "true"}) ==
+          "safety" and U.classify("/api/remote/purge-timed", None) ==
+          "safety" and U.REMOTE_ROUTES["purge-timed"] == "arm",
+          "the role matrix: the purge's own row (arm); a release is safety")
+    R = _tp_rig(S)
+    loop = R.loop
+    link = R.link
+    try:
+        # The settings: the longest, the remembered default.
+        rs = RM.load_settings(R.work)
+        check(rs["purge_timed_max_s"] == 30 and rs["purge_timed_s"] == 5,
+              f"no setting: 30 s at most, 5 s by default: {rs}")
+        for bad in (121, 0, "30", True, 30.5, None):
+            try:
+                RM.save_settings(R.work, purge_timed_max_s=bad)
+                check(False, f"purge_timed_max_s {bad!r} was taken")
+            except ValueError as e:
+                check("120" in str(e), f"purge_timed_max_s {bad!r} refused: "
+                                       f"{e}")
+        check(RM.load_settings(R.work)["purge_timed_max_s"] == 30,
+              "and the file is unchanged by a refused value")
+        st, _h, mo = R.ask("GET", "/api/remote/morning", client=loop)
+        check(st == 200 and mo["timed_settings"]["presets"] ==
+              [2, 5, 10, 20, 30] and mo["timed_settings"]["max_s"] == 30 and
+              mo["timed_settings"]["default_s"] == 5 and
+              mo["timed_settings"]["hold_s"] == 1.0 and
+              mo["timed"]["running"] is False,
+              f"the page's view carries the numbers: {mo.get('timed_settings')}")
+        # A tap: one beat and a release. Nothing.
+        st, _h, out = _tp_beat(R, "tap-1", 5)
+        check(st == 200 and out["holding"] is True and not link.frames,
+              f"the first beat of a hold fires nothing: {st} {out}")
+        st, _h, out = _tp_beat(R, "tap-1", 5, hold=False)
+        check(st == 200 and out["holding"] is False and
+              R.m.purge.fire is None and not link.frames,
+              f"a tap fires nothing: {st} {out}")
+        check(_tp_lines(R, "timed_not_started"),
+              "journaled: the hold ended before it was complete")
+        # A hold let go at 0.9 s: nothing.
+        st, out, run = _tp_hold(R, 5, hold_s=0.9)
+        check(st == 200 and not out.get("started") and not link.frames,
+              f"0.9 s of holding starts nothing: {out}")
+        _tp_beat(R, run, 5, hold=False)
+        # A gap of 0.3 s in the beats: the hold is over.
+        st, _h, out = _tp_beat(R, "gap-1", 5)
+        for _ in range(4):
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            _tp_beat(R, "gap-1", 5)
+        R.mono[0] += 0.3
+        R.wall[0] += 0.3
+        R.feed()
+        st, _h, out = _tp_beat(R, "gap-1", 5)
+        check(st == 409 and "interrupted" in out["error"] and
+              not link.frames, f"a gap of 0.3 s ends the hold: {out}")
+        # The duration changes during the hold: refused.
+        st, _h, out = _tp_beat(R, "chg-1", 5)
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        R.feed()
+        st, _h, out = _tp_beat(R, "chg-1", 10)
+        check(st == 409 and "duration changed" in out["error"],
+              f"seconds changed mid hold: refused: {out}")
+        # Over the longest, and a broken number: refused in full.
+        st, out, _r = _tp_hold(R, 31)
+        check(st == 409 and "longer than the longest" in out["error"] and
+              "30 s" in out["error"] and not link.frames,
+              f"31 s with 30 s the longest: refused, said in full: {out}")
+        RM.save_settings(R.work, purge_timed_max_s=10)
+        st, out, _r = _tp_hold(R, 20)
+        check(st == 409 and "10 s" in out["error"],
+              f"an admin's longest of 10 s refuses 20 s: {out}")
+        st, _h, mo = R.ask("GET", "/api/remote/morning", client=loop)
+        check(mo["timed_settings"]["max_s"] == 10 and
+              mo["timed_settings"]["default_s"] == 5,
+              f"and the page is told the longest: {mo['timed_settings']}")
+        RM.save_settings(R.work, purge_timed_max_s=30)
+        st, out, _r = _tp_hold(R, 2.5)
+        check(st == 409 and "whole number" in out["error"],
+              f"2.5 s: a whole number of seconds: {out}")
+        # A selected group not armed yet: refused, named.
+        R.groups[0]["armed"] = "disarmed"
+        R.feed()
+        n_hold = len(_tp_lines(R, "timed_refused"))
+        st, _h, out = _tp_beat(R, "notarmed-1", 5)
+        check(st == 409 and "front row" in out["error"] and
+              "armed" in out["error"] and not link.frames and
+              len(_tp_lines(R, "timed_refused")) == n_hold + 1,
+              f"front row not armed: refused on the first beat, no hold "
+              f"begun, and why: {out}")
+        R.groups[0]["armed"] = "armed"
+        R.feed()
+        # Another screen does not own the selection.
+        st, out, _r = _tp_hold(R, 5, client=R.ipad)
+        check(st == 409 and not link.frames,
+              f"another device cannot start the owner's purge: {out}")
+        # A stale page: refused.
+        st, _h, out = _tp_beat(R, "stale-1", 5, seen=R.seen() - 1500)
+        check(st == 409 and "1 s old" in out["error"],
+              f"a page status 1.5 s old: {out}")
+        # The whole hold: it starts at 1 s of holding, not before.
+        n_start = len(_tp_lines(R, "timed_start"))
+        st, out, run = _tp_hold(R, 3)
+        check(st == 200 and out.get("started") is True and
+              "Ground 1" in out["text"] and "3 s" in out["text"],
+              f"a whole hold starts it, the machines and seconds said: "
+              f"{st} {out}")
+        t0 = R.mono[0]
+        check(link.frames and link.frames[-1][410] == 240 and
+              sum(link.frames[-1]) == 240 and
+              abs(link.limits[-1] - 3) < 0.01,
+              f"the first frame at once, 240 on slot 411 only, and the "
+              f"link's hard end 3 s: {link.limits}")
+        ln = _tp_lines(R, "timed_start")
+        check(len(ln) == n_start + 1 and "Ground 1" in ln[-1]["text"] and
+              "3 s" in ln[-1]["text"] and
+              "Rack screen" in ln[-1]["text"],
+              f"journaled: machines, seconds, where: {ln[-1:]}")
+        check(RM.load_settings(R.work)["purge_timed_s"] == 3,
+              "the duration started is this show PC's default next time")
+        st, _h, mo = R.ask("GET", "/api/remote/morning", client=loop)
+        check(mo["timed_settings"]["default_s"] == 3, "and the page says so")
+        # The finger still down: its beats change nothing.
+        st, _h, out = _tp_beat(R, run, 3)
+        check(st == 200 and out["running"] is True and
+              R.m.purge.timed_running(),
+              f"the starting hold's own beats carry nothing on, end nothing: "
+              f"{out}")
+        _tp_beat(R, run, 3, hold=False)
+        check(R.m.purge.timed_running(), "letting go after the start: it "
+                                          "runs on")
+        # The countdown is the engine's: the status, and deck-input.
+        st, _h, sv = R.ask("GET", "/api/remote/status", client=loop)
+        tm = sv["morning"]["timed"]
+        check(tm and tm["left_s"] == 3.0 and tm["seconds"] == 3 and
+              tm["machines"] == ["Ground 1"],
+              f"every screen's status carries it: {tm}")
+        # The page closes: no open beats at all from here on.
+        frames0 = len(link.frames)
+        for _ in range(10):
+            _tp_step(R, 0.1, beat_page=False)
+        st, _h, sv = R.ask("GET", "/api/remote/status", client=loop)
+        check(abs(sv["morning"]["timed"]["left_s"] - 2.0) < 0.05,
+              f"a second on the engine's clock: 2 s left: "
+              f"{sv['morning']['timed']}")
+        d = R.remote.deck_input()
+        check(d["morning"]["open"] is True and
+              d["morning"]["purge"]["wanted_groups"] == [0] and
+              abs(d["morning"]["purge"]["timed_left_s"] - 2.0) < 0.05,
+              f"page closed: the deck keeps the group wanted and is told the "
+              f"seconds left: {d['morning']}")
+        check(len(link.frames) - frames0 == 10 and
+              all(f[410] == 240 for f in link.frames[frames0:]),
+              "the engine's timer re-sends the frame every 100 ms, page "
+              "closed")
+        while R.mono[0] + 0.1 < t0 + 2.95:
+            _tp_step(R, 0.1, beat_page=False)
+        check(R.m.purge.timed_running() and link.frames[-1][410] == 240,
+              f"still firing just before 3 s ({R.mono[0] - t0:.2f} s)")
+        d = R.remote.deck_input()
+        check(not R.m.page_open() and d["morning"]["open"] is True and
+              d["morning"]["purge"]["wanted_groups"] == [0],
+              f"the page closed 2.9 s ago: the deck is still told the group "
+              f"is wanted until it ends: {d['morning']}")
+        cleared = link.cleared
+        _tp_step(R, t0 + 3.0 - R.mono[0], beat_page=False)
+        check(not R.m.purge.timed_running() and link.cleared > cleared,
+              f"at 3 s it ends by itself and the frame is cleared at once "
+              f"({R.mono[0] - t0:.2f} s)")
+        ln = _tp_lines(R, "timed_end")
+        check(ln and "3 s were up" in ln[-1]["text"] and
+              "after 3.0 s of 3 s" in ln[-1]["text"],
+              f"journaled: why and the actual seconds: {ln[-1:]}")
+        _tp_step(R, 0.1, beat_page=False)
+        check(R.m.purge.selected == [] and
+              R.remote.deck_input()["morning"]["open"] is False,
+              "once it has ended, the closed page's selection goes and the "
+              "deck lets go of the group")
+        # A replay of the hold that started it, and an old beat number.
+        R.m.open_beat("Rack screen")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()},
+                            client=loop)
+        frames0 = len(link.frames)
+        st, _h, out = R.ask("POST", "/api/remote/purge-timed",
+                            {"hold": True, "run": run, "seq": 999999,
+                             "seconds": 3, "seen": R.seen()}, client=loop,
+                            headers={"X-LTC-Window": "W1"})
+        check(st == 409 and "ended" in out["error"],
+              f"the hold that started it can never start one again: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-timed",
+                            {"hold": True, "run": "W1-new", "seq": 1,
+                             "seconds": 3, "seen": R.seen()}, client=loop,
+                            headers={"X-LTC-Window": "W1"})
+        check(st == 409 and len(link.frames) == frames0,
+              f"a new hold with a beat number already used (a replay) "
+              f"starts nothing: {out}")
+        # Made-up window names never wear out the replay table: a refused
+        # beat makes no record, and W1's stays (review of #172).
+        n_own = len(R.m.purge._timed_ended)
+        for i in range(MO.TIMED_OWNERS_KEPT + 20):
+            R.ask("POST", "/api/remote/purge-timed",
+                  {"hold": True, "run": f"x{i}", "seq": 1, "seconds": 3,
+                   "seen": R.seen()}, client=R.ipad,
+                  headers={"X-LTC-Window": f"F{i}"})
+        check(len(R.m.purge._timed_ended) == n_own and
+              ("Rack screen", "W1") in R.m.purge._timed_ended,
+              f"84 made-up windows: no record made, W1's kept "
+              f"({len(R.m.purge._timed_ended)} records)")
+        st, _h, out = R.ask("POST", "/api/remote/purge-timed",
+                            {"hold": True, "run": run, "seq": 10 ** 7,
+                             "seconds": 3, "seen": R.seen()}, client=loop,
+                            headers={"X-LTC-Window": "W1"})
+        check(st == 409 and "ended" in out["error"],
+              f"and the old hold id is still refused: {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_timed_purge_every_end_cause():
+    section("timed purge, every end (Jeff, 2026-10-29): Stop purge, Stop, "
+            "Abort, Hold, Start now, Run, a show going live, flamesafe "
+            "stale, the flame link not sending, a lockout, a disarm of a "
+            "selected group (pressed, or seen at flamesafe), sign-out of "
+            "the person who started it, a second purge press (Space, the "
+            "deck's FIRE, another hold), Arrange mode, the timer dying: "
+            "each ends it at once, the frame cleared, a journal line "
+            "saying why; one purge at a time; the Fireball page, the "
+            "cleaning and live flame programming refuse meanwhile")
+    S = _sched()
+    if S is None:
+        return
+    import dataclasses as _dc
+    import tempfile
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import fireball as FB
+    R = _tp_rig(S)
+    loop, link = R.loop, R.link
+
+    def start(seconds=30):
+        R.m.purge.clear("test reset")
+        R.remote._deck_seen = R.mono[0]
+        link.sender = "running"
+        R.groups[0]["armed"] = "armed"
+        R.groups[0]["wanted"] = True
+        R.groups[1]["armed"] = "armed"
+        R.feed()
+        R.m.open_beat("Rack screen")
+        st_, _h_, out_ = R.ask("POST", "/api/remote/purge-select",
+                               {"machine": "g1", "seen": R.seen()},
+                               client=loop)
+        st_, out_, _r = _tp_hold(R, seconds)
+        ok = check(st_ == 200 and out_.get("started") and
+                   R.m.purge.timed_running(),
+                   f"setup: a timed purge running: {st_} {out_}")
+        _tp_step(R, 0.1)
+        return ok
+
+    def ended(what, words):
+        cleared = link.cleared
+        n = len(_tp_lines(R, "timed_end"))
+        return cleared, n, what, words
+
+    def check_end(mark):
+        cleared, n, what, words = mark
+        ln = _tp_lines(R, "timed_end")
+        check(not R.m.purge.timed_running() and link.cleared > cleared and
+              len(ln) == n + 1 and words in ln[-1]["text"],
+              f"{what}: ended at once, frame cleared, journaled with why "
+              f"({words!r}): {ln[-1:] if len(ln) > n else 'no line'}")
+
+    try:
+        # Stop purge, from the rack screen.
+        if start():
+            m = ended("Stop purge", "pressed Stop purge")
+            st, _h, out = R.ask("POST", "/api/remote/purge-stop", {},
+                                client=loop)
+            check(st == 200 and "back to zero" in out.get("text", ""),
+                  f"Stop purge answers: {out}")
+            check_end(m)
+        # Stop purge from another device, signed out, purge arming off:
+        # stopping a timed purge is never refused (review of #172).
+        if start():
+            RM.save_settings(R.work, purge_arming=False)
+            m = ended("Stop purge from an iPad", "pressed Stop purge on the "
+                                                 "iPad")
+            st, _h, out = R.ask("POST", "/api/remote/purge-stop", {},
+                                client=R.ipad)
+            check(st == 200, f"another device's Stop purge is taken: {out}")
+            check_end(m)
+            RM.save_settings(R.work, purge_arming=True)
+        # A hold from an iPad with purge arming off while one runs: the
+        # second press still ends it (no switch holds back a stop).
+        if start():
+            RM.save_settings(R.work, purge_arming=False)
+            m = ended("an iPad's hold, purge arming off", "second purge press")
+            st, _h, out = _tp_beat(R, "ipad-stop", 5, client=R.ipad,
+                                   window="W8")
+            check(st == 409 and out.get("ended"),
+                  f"the iPad's hold ended it: {st} {out}")
+            check_end(m)
+            RM.save_settings(R.work, purge_arming=True)
+        # The race past the switches (re-review of #172): a press let past
+        # purge arming only to end a timed purge that ends in between is
+        # refused, never taken as a fresh press.
+        for route, body in (("purge-fire", {"on": True}),
+                            ("purge-timed", {"hold": True, "run": "race-1",
+                                             "seq": 10 ** 6, "seconds": 5})):
+            if not start():
+                continue
+            RM.save_settings(R.work, purge_arming=False)
+            real_tr = R.m.purge.timed_running
+            seen = {"n": 0}
+
+            def racing():
+                r = real_tr()
+                if seen["n"] == 0:
+                    seen["n"] = 1
+                    R.m.purge.stop("the timer ended it (test)")
+                return r
+            R.m.purge.timed_running = racing
+            try:
+                n0 = len(link.frames)
+                st, _h, out = R.ask("POST", "/api/remote/" + route,
+                                    dict(body, seen=R.seen()), client=loop,
+                                    headers={"X-LTC-Window": "W1"})
+            finally:
+                del R.m.purge.timed_running
+                RM.save_settings(R.work, purge_arming=True)
+            check(st == 409 and "already ended" in out.get("error", "") and
+                  len(link.frames) == n0 and R.m.purge.fire is None and
+                  R.m.purge.timed_hold is None,
+                  f"{route} let past purge arming to end a purge that ended "
+                  f"meanwhile: refused, nothing fired: {st} {out}")
+        # The engine stalls (a pause longer than the link's 0.25 s): the
+        # next send ends it, never sets the frame again (review of #172,
+        # B1).
+        if start(seconds=10):
+            m = ended("an engine stall", "timer stalled")
+            n0 = len(link.frames)
+            R.mono[0] += 0.6
+            R.wall[0] += 0.6
+            R.feed()
+            check("stalled" in R.m.purge._timed_end_reason(
+                R.m.purge.fire, R.mono[0]),
+                  "the send's first look sees the stall itself")
+            why = R.m.purge.timed_send()
+            check("stalled" in why and len(link.frames) == n0,
+                  f"after a 0.6 s stall the send ends it and sets no frame: "
+                  f"{why!r}")
+            check_end(m)
+        # Stop (the rack screen's Stop).
+        if start():
+            m = ended("Stop", "Stop")
+            R.ask("POST", "/api/remote/stop", {"seen": R.seen()},
+                  client=loop)
+            check_end(m)
+        # Abort.
+        if start():
+            m = ended("Abort", "pressed Abort")
+            R.ask("POST", "/api/remote/abort",
+                  {"confirmed": True, "seen": R.seen()}, client=loop)
+            check_end(m)
+            R.ask("POST", "/api/remote/reset",
+                  {"confirmed": True, "seen": R.seen()}, client=loop)
+        # Hold.
+        if start():
+            m = ended("Hold", "pressed Hold")
+            R.ask("POST", "/api/remote/hold", {"seen": R.seen()},
+                  client=loop)
+            check_end(m)
+            R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
+                  client=loop)
+        # Start now (even unconfirmed: it only takes risk away).
+        if start():
+            m = ended("Start now", "pressed Start now")
+            R.ask("POST", "/api/remote/start-now", {"seen": R.seen()},
+                  client=loop)
+            check_end(m)
+        # Run (refused or not).
+        if start():
+            m = ended("Run", "Run was pressed")
+            R.ask("POST", "/api/start", {"timeline": "nope.json"},
+                  client=loop)
+            check_end(m)
+        # A show going live.
+        if start():
+            m = ended("a show going live", "is live")
+            was = R.svc.machine
+            R.svc.machine = _dc.replace(was, state="SHOW")
+            try:
+                _tp_step(R, 0.1)
+            finally:
+                R.svc.machine = was
+            check_end(m)
+        # A Hold standing (seen on a send, the belt under the press).
+        if start():
+            m = ended("a Hold standing", "Hold is standing")
+            was = R.svc.machine
+            R.svc.machine = _dc.replace(was, state="HOLD")
+            try:
+                _tp_step(R, 0.1)
+            finally:
+                R.svc.machine = was
+            check_end(m)
+        # flamesafe stale: no status for 1.1 s.
+        if start():
+            m = ended("flamesafe stale", "flamesafe has not reported")
+            for _ in range(12):
+                R.mono[0] += 0.1
+                R.wall[0] += 0.1
+                R.remote._deck_seen = R.mono[0]
+                if R.m.purge.timed_send():
+                    break
+            check_end(m)
+        # The flame link not sending.
+        if start():
+            m = ended("flame link not sending", "not sending")
+            link.sender = "failing"
+            _tp_step(R, 0.1)
+            check_end(m)
+            link.sender = "running"
+        # The flame link zeroed (Stop, Hold, Abort at the link).
+        if start():
+            m = ended("link zeroed", "zeroed")
+            link.zero()
+            _tp_step(R, 0.1)
+            check_end(m)
+        # A lockout of a selected machine.
+        if start():
+            m = ended("a lockout", "Ground 1")
+            R.ask("POST", "/api/remote/lock",
+                  {"kind": "machine", "id": "g1", "on": True,
+                   "reason": "test"}, client=loop)
+            check_end(m)
+            R.m.lockout.set(R.m.cfg, "machine", "g1", False, "test",
+                            "Rack screen", confirmed=True)
+            R.m._lock_written_at = None
+        # A disarm of a selected group, pressed on a screen.
+        if start():
+            m = ended("Disarm front row", "Disarm front row")
+            R.ask("POST", "/api/remote/group-disarm",
+                  {"group": "front row", "seen": R.seen()}, client=loop)
+            check_end(m)
+        # A disarm of another group does not end it.
+        if start():
+            # The request waits for flamesafe's word on the disarm; the
+            # engine's timer thread keeps sending meanwhile (here, by hand).
+            pause = R.remote._pause
+
+            def pause_sending(seconds):
+                pause(seconds)
+                R.m.purge.timed_send()
+            R.remote._pause = pause_sending
+            try:
+                R.ask("POST", "/api/remote/group-disarm",
+                      {"group": "cat-walk", "seen": R.seen()}, client=loop)
+            finally:
+                R.remote._pause = pause
+            _tp_step(R, 0.1)
+            check(R.m.purge.timed_running(),
+                  "a disarm of a group it does not fire leaves it running")
+        # flamesafe reports a selected group disarmed (the deck's key).
+        if start():
+            m = ended("group seen disarmed", "no longer reports front row")
+            R.groups[0]["armed"] = "disarmed"
+            _tp_step(R, 0.1)
+            check_end(m)
+        # A second purge press: Space (a momentary fire heartbeat).
+        if start():
+            m = ended("Space", "second purge press")
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"on": True, "seen": R.seen()}, client=loop)
+            check(st == 409 and out.get("ended") and
+                  link.frames[-1][410] in (0, 240),
+                  f"Space while it runs: refused, nothing else fired: {out}")
+            check_end(m)
+        # A purge-fire release is a stop (Morning.post's purge-stop): it
+        # ends it too, and fires nothing.
+        if start():
+            m = ended("a purge-fire release", "Stop purge")
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"on": False, "seen": R.seen()},
+                                client=loop)
+            check_end(m)
+        # The deck's FIRE key.
+        if start():
+            m = ended("the deck's FIRE", "second purge press")
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"on": True, "seen": R.seen(),
+                                 "who": "Andy", "screen": "Stream Deck"},
+                                client=loop)
+            check_end(m)
+        # Another hold, from this screen or another.
+        if start():
+            m = ended("another hold", "second purge press")
+            st, _h, out = _tp_beat(R, "other-hold", 5, client=R.ipad,
+                                   window="W9")
+            check(st == 409 and out.get("ended"),
+                  f"a new hold from an iPad ends it: {out}")
+            check_end(m)
+        # Arrange mode on any screen.
+        if start():
+            m = ended("Arrange", "Arrange")
+            R.m.open_beat("iPad at 10.20.0.44", arranging=True, inst="A")
+            check_end(m)
+            R.m.open_beat("iPad at 10.20.0.44", arranging=False, inst="A")
+            R.m._arranging.clear()
+        # The engine's timer dies: the watcher ends it after 0.25 s, and
+        # the link has dropped the frame by itself meanwhile.
+        if start():
+            m = ended("the timer stopped", "timer stopped")
+            R.mono[0] += 0.3
+            R.wall[0] += 0.3
+            R.feed()
+            R.m.open_beat("Rack screen")
+            R.m.tick()
+            check_end(m)
+        # Each look at the deadline and at the flame link's zero count on
+        # its own (they back each other up, so each is proved alone).
+        if start(seconds=2):
+            f = R.m.purge.fire
+            dl = f["timed"]["deadline"]
+            f["beat"] = dl - 0.05          # the timer sending all along
+            check(R.m.purge._timed_end_reason(f, dl) == "its 2 s were up"
+                  and R.m.purge._timed_end_reason(f, dl - 0.01) == "",
+                  "every send asks the deadline first: up at 2 s, not before")
+            link.zero()
+            check("zeroed" in R.m.purge._timed_end_reason(f, R.mono[0]),
+                  "and the flame link's zero count")
+            R.m.purge.clear("test reset")
+        if start(seconds=2):
+            # The send's last look, under the lock, just before the frame:
+            # the deadline passed while the end causes were being read.
+            m = ended("the last look before the frame", "2 s were up")
+            R.m.purge._timed_end_reason = lambda f, now: ""
+            try:
+                n0 = len(link.frames)
+                R.mono[0] += 2.0
+                R.wall[0] += 2.0
+                R.feed()
+                R.m.purge.timed_send()
+            finally:
+                del R.m.purge._timed_end_reason
+            check(len(link.frames) == n0, "no frame set past the deadline")
+            check_end(m)
+        if start():
+            # A zero landing while the frame is being set: the count is
+            # read again after the set, and that ends it.
+            m = ended("a zero during the set", "zeroed")
+            real_set = link.purge_set
+
+            def set_then_zero(values, **kw):
+                real_set(values, **kw)
+                link.zero()
+                return True
+            link.purge_set = set_then_zero
+            try:
+                R.m.purge.timed_send()
+            finally:
+                del link.purge_set
+            check_end(m)
+        # The Stream Deck program stops reading the engine while it runs
+        # (review of #172, S1): it ends, said why.
+        if start():
+            m = ended("the deck stops reading", "Stream Deck program stopped")
+            for _ in range(30):
+                R.mono[0] += 0.1
+                R.wall[0] += 0.1
+                R.feed()
+                R.m.open_beat("Rack screen")
+                if R.m.purge.timed_send():
+                    break
+            check_end(m)
+        # An announcement's Hold ends it at once, as the operator's Hold.
+        if start():
+            m = ended("an announcement's Hold", "for an announcement")
+            hold = R.remote.announce_hold(R.svc)
+            refusal, _epoch = hold("Andy", "Rack screen")
+            check(not refusal, f"setup: the announcement held: {refusal}")
+            check_end(m)
+            R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
+                  client=loop)
+        # The start's own refusals, each on the first beat (no hold begun).
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(R.m.purge.selected == ["g1"], "setup: Ground 1 selected")
+        R.remote._deck_seen = R.mono[0] - 3.0
+        st, _h, out = _tp_beat(R, "nodeck-1", 5)
+        check(st == 409 and "Stream Deck program has not read" in
+              out.get("error", "") and R.m.purge.timed_hold is None,
+              f"no deck reading the engine: the start is refused: {out}")
+        R.remote._deck_seen = R.mono[0]
+        R.m.open_beat("iPad at 10.20.0.44", arranging=True, inst="B")
+        st, _h, out = _tp_beat(R, "arr-1", 5)
+        check(st == 409 and "Arrange mode" in out.get("error", "") and
+              R.m.purge.timed_hold is None,
+              f"a screen arranging: the start hold is refused: {out}")
+        R.m.open_beat("iPad at 10.20.0.44", arranging=False, inst="B")
+        R.m._arranging.clear()
+
+        class _NoLimitLink(_FakeTimedLink):
+            purge_limit = None
+        R.link = _NoLimitLink()
+        try:
+            st, _h, out = _tp_beat(R, "nolimit-1", 5)
+            check(st == 409 and "hard end" in out.get("error", "") and
+                  not R.link.frames and R.m.purge.timed_hold is None,
+                  f"a flame link that cannot take the hard end: refused: "
+                  f"{out}")
+        finally:
+            R.link = link
+        # The watcher's own deadline, whatever the timer does.
+        if start(seconds=2):
+            m = ended("the watcher's deadline", "2 s were up")
+            R.mono[0] += 2.0
+            R.wall[0] += 2.0
+            R.feed()
+            R.m.tick()
+            check_end(m)
+        # One purge at a time: a timed one refused while Space fires.
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"on": True, "seen": R.seen()}, client=loop)
+        check(st == 200, f"setup: Space is firing: {out}")
+        st, _h, out = _tp_beat(R, "while-space", 5)
+        check(st == 409 and "One purge at a time" in out["error"],
+              f"a timed purge while Space fires: refused: {out}")
+        R.m.purge.stop("test")
+        # And the other sources of the frame refuse while one runs, and it
+        # refuses while they hold it.
+        if start():
+            why = FB.engine_blockers(R.remote, None)
+            check("purge" in why, f"the Fireball page and the cleaning "
+                                  f"refuse: {why}")
+            why = R.remote.live_flame_blockers()
+            check("purge" in why, f"live flame programming refuses: {why}")
+            R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(R.m.purge.selected == ["g1"], "setup: Ground 1 selected")
+        R.m.purge_blocker = lambda: "the Fireball page has a channel on; " \
+                                    "turn it off there first."
+        try:
+            st, out, _r = _tp_hold(R, 5)
+            check(st == 409 and "Fireball page" in out.get("error", ""),
+                  f"a Fireball channel on: no timed purge: {out}")
+        finally:
+            R.m.purge_blocker = lambda: ""
+        # Not connected: the engine's checks missing fail closed.
+        R.m.timed_blockers = None
+        st, out, _r = _tp_hold(R, 5)
+        check(st == 409 and "not connected" in out.get("error", ""),
+              f"the engine's checks not wired: no timed purge: {out}")
+        R.m.timed_blockers = R.remote.timed_purge_blockers
+        # The switches: purge arming off; an iPad without screen_arming.
+        RM.save_settings(R.work, purge_arming=False)
+        st, _h, out = _tp_beat(R, "sw-1", 5)
+        check(st == 403 and "switched off" in out["error"],
+              f"purge_arming false: refused: {out}")
+        RM.save_settings(R.work, purge_arming=True)
+        # Sign-out of the person who started it.
+        udir = tempfile.mkdtemp()
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"),
+                 ("Vic", "viewer")])
+        R.remote.users = us
+        ok, why, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        ok, why, vtok, _n = us.sign_in("Vic", "", True, "rack",
+                                       new_password="Vic-pw-1234")
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop, headers=hdr)
+        st, out, _r = _tp_hold(R, 5, headers={"Cookie":
+                                              f"{U.COOKIE}={vtok}"})
+        check(st == 403 and not R.m.purge.timed_running(),
+              f"a viewer (no arm row) cannot start one: {st} {out}")
+        st, out, _r = _tp_hold(R, 5, headers={})
+        check(st == 403 and not R.m.purge.timed_running(),
+              f"signed out cannot start one: {st} {out}")
+        st, out, _r = _tp_hold(R, 5, headers=hdr)
+        check(st == 200 and out.get("started"),
+              f"Ollie (operator) starts one: {st} {out}")
+        ln = _tp_lines(R, "timed_start")
+        check(ln and ln[-1].get("who") == "Ollie",
+              f"journaled with who started it: {ln[-1:]}")
+        m = ended("sign-out", "Ollie signed out")
+        R.ask("POST", "/api/remote/signout", {}, client=loop, headers=hdr)
+        check_end(m)
+        # And the per-send check alone (the sign-in ended some other way).
+        ok, why, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop, headers=hdr)
+        st, out, _r = _tp_hold(R, 5, headers=hdr)
+        if check(st == 200 and out.get("started"),
+                 f"setup: Ollie's second timed purge: {out}"):
+            m = ended("session gone", "signed out")
+            us.sign_out(tok, "rack", local=False)
+            _tp_step(R, 0.1)
+            check_end(m)
+        # The sign-in check itself broken while one runs: a purge press is
+        # refused (fail closed, said as a check that could not be made)
+        # and still ends it; nothing new fires.
+        ok, why, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=loop, headers=hdr)
+        st, out, _r = _tp_hold(R, 5, headers=hdr)
+        if check(st == 200 and out.get("started"),
+                 f"setup: Ollie's third timed purge: {out}"):
+            m = ended("a purge press with the sign-in check broken",
+                      "second purge press")
+            real_may = us.may
+
+            def boom(*_a, **_k):
+                raise RuntimeError("broken")
+            us.may = boom
+            try:
+                n0 = len(link.frames)
+                st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                    {"on": True, "seen": R.seen()},
+                                    client=loop, headers=hdr)
+            finally:
+                us.may = real_may
+            check(st == 403 and out.get("role_refused") and
+                  "could not be made" in out.get("error", "") and
+                  out.get("ended") is True and len(link.frames) == n0 and
+                  R.m.purge.fire is None,
+                  f"a broken sign-in check: refused, said why, the timed "
+                  f"purge ended, nothing fired: {st} {out}")
+            check_end(m)
+        R.remote.users = None
+    finally:
+        R.close()
+    print("  ok")
+
+
+
+def test_timed_purge_end_to_end_real_flamesafe():
+    section("timed purge end to end (Jeff, 2026-10-29): the real "
+            "flamesafe, the real flame link and arm link, the engine's own "
+            "timer thread; Ground 1 (front row, slot 411) armed and held "
+            "for a 2 s timed purge: 240 at the node for 2 s, then zero by "
+            "itself with nothing pressed; the link's own hard end zeroes it "
+            "even if the engine's deadline is gone; a timer that hangs is "
+            "zero at the node within the link's 0.25 s; an Abort at the "
+            "link ends it at once; the engine dying (the link stops) is "
+            "zero at the node by flamesafe's own frame staleness")
+    import json as _j
+    import socket as _so
+    import subprocess
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    from ltcplay import streamdeck as sd
+    from ltcplay import morning as MO
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.01)
+    listen, statusp, armp = _lf_free_udps(3)
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    groups = [{"name": "front row", "safety": 401, "fire": [411]}]
+    names = [g["name"] for g in groups]
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "arm_port": armp, "key": key},
+        "gflame_range": "60-80%", "arm_value": 157,
+        "accept_unsourced_risk": True, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": groups}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    link = fl.FlameLink(fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+                        ).start()
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 1)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    stop = threading.Event()
+
+    def flames():
+        st, at = status.last, status.last_at
+        if st is None or at is None:
+            return None
+        return {"connected": True, "stale": False,
+                "age_ms": int((time.monotonic() - at) * 1000),
+                "groups": [{"name": g.get("name"), "armed": g.get("armed")}
+                           for g in st.get("groups") or []]}
+    mcfg = MO.MorningConfig.parse(
+        {"machines": [{"id": "g1", "name": "Ground 1", "kind": "gflame",
+                       "group": "front row", "fire": [411]}],
+         "groups": {"Ground G-Flames": ["g1"]},
+         "purge": {"gflame_fire": 240}}, "selftest",
+        groups=MO.load_flamesafe_groups(cfg_path))
+    lockout = MO.Lockout(os.path.join(work, MO.LOCKOUT_FILE))
+    lines = []
+    purge = MO.Purge(lambda: mcfg, lockout, lambda: link, flames,
+                     lambda: "", lambda: names,
+                     journal=lambda text, **f: lines.append((text, f)),
+                     timed_checks=lambda t: "", threaded=True)
+    me = ("Rack screen", "w-e2e")
+    seq = [0]
+
+    def deck():
+        while not stop.is_set():
+            arm.send(names)
+            status.poll()
+            time.sleep(0.02)
+
+    def wait_for(cond, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return cond()
+
+    def state():
+        st = status.last
+        return st["groups"][0] if st else {}
+
+    def arm_front():
+        ok = False
+        for _cycle in range(5):
+            arm.set_group(0, False)
+            time.sleep(1.2)
+            arm.set_group(0, True)
+            ok = wait_for(lambda: state().get("armed") == "armed", 4)
+            if ok:
+                break
+        return ok
+
+    def node_trace(seconds):
+        """(clock, slot 411, safety 401) of every universe frame for
+        `seconds`."""
+        out = []
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            v = fp.parse_e131(data).values
+            out.append((time.monotonic(), v[410], v[400]))
+        return out
+
+    def start(seconds, run):
+        """A whole hold, beats every 100 ms on the real clock, as the page
+        sends them. The start's clock, or None. A busy runner can leave a
+        gap of 0.25 s between two beats; the engine then ends the hold
+        (the guard), and the page's person would hold again: so does this,
+        with a new hold, up to three times."""
+        for attempt in range(3):
+            # flamesafe's armed state is waited for, never assumed (a
+            # loaded runner can be slow to report it, or need a cycle).
+            if not wait_for(lambda: state().get("armed") == "armed", 3.0):
+                arm_front()
+            rid = f"{run}-{attempt}"
+            end = time.monotonic() + 3.0
+            out = {}
+            while time.monotonic() < end:
+                seq[0] += 1
+                code, out = purge.timed_beat(
+                    {"hold": True, "run": rid, "seq": seq[0],
+                     "seconds": seconds}, me, True, who="Andy",
+                    screen="Rack screen")
+                if code != 200:
+                    break
+                if out.get("started"):
+                    return time.monotonic()
+                time.sleep(0.1)
+            err = str(out.get("error", ""))
+            if "armed yet" in err:
+                arm_front()
+                continue
+            if "interrupted" not in err:
+                check(False, f"the hold was refused: {out}")
+                return None
+        check(False, f"three holds interrupted by the runner's load: {out}")
+        return None
+
+    def stalled():
+        """The last end was the engine's timer stalling on a loaded
+        runner (the stall guard ending it, as it must): the step is run
+        again rather than counted."""
+        return bool(lines) and "timer stalled" in lines[-1][0]
+
+    def on_spans(trace):
+        on = [t for t, v, _s in trace if v == 240]
+        return (on[0], on[-1]) if on else (None, None)
+    dt = threading.Thread(target=deck, daemon=True)
+    dt.start()
+    try:
+        if not check(wait_for(lambda: status.last is not None, 15),
+                     "flamesafe is up: " + "".join(said)[-500:]):
+            return
+        if not check(arm_front(), f"front row armed: {state()}"):
+            return
+        code, out = purge.select("g1", True, "Rack screen", True)
+        check(code == 200, f"Ground 1 selected: {out}")
+        # 1. A 2 s timed purge: 240 at the node for 2 s, then zero.
+        for attempt in range(3):
+            t0 = start(2, f"e1-{attempt}")
+            tr = node_trace(3.2)
+            if not stalled():
+                break
+        first, last = on_spans(tr)
+        check(t0 is not None and first is not None and
+              1.6 <= last - t0 <= 2.4,
+              f"240 at the node from the start for about 2 s "
+              f"({(last - t0) if last and t0 else None!r} s)")
+        tail = [v for t, v, _s in tr if last is not None and t > last + 0.3]
+        check(len(tail) > 20 and not any(tail),
+              f"then zero by itself, nothing pressed: {tail[-3:]}")
+        check(not purge.timed_running() and
+              any("2 s were up" in x[0] for x in lines),
+              f"and the engine says why it ended: {lines[-1:]}")
+        check(state().get("armed") == "armed",
+              "the purge never disarmed the group itself")
+        # 2. The link's own hard end, with the engine's deadline gone.
+        for attempt in range(3):
+            t0 = start(2, f"e2-{attempt}")
+            f = purge.fire
+            if f is not None:
+                # The engine's own deadline pushed out of reach: only the
+                # link's hard end (purge_limit, set at the start) is left.
+                f["timed"]["deadline"] += 1000.0
+            tr = node_trace(3.2)
+            purge.stop("test")
+            if not stalled():
+                break
+        first, last = on_spans(tr)
+        tail = [v for t, v, _s in tr if last is not None and t > last + 0.3]
+        check(t0 is not None and last is not None and
+              last - t0 <= 2.4 and len(tail) > 20 and not any(tail),
+              f"the engine's deadline gone, the timer still sending: the "
+              f"link's hard end zeroes the node at 2 s "
+              f"({(last - t0) if last and t0 else None!r} s)")
+        purge.stop("test")
+        # 3. The engine's timer hangs: zero at the node within the hold.
+        real_send = purge.timed_send
+        hang = threading.Event()
+        try:
+            t0 = start(10, "e3")
+            check(t0 is not None, "a 10 s timed purge started")
+            node_trace(0.5)
+            purge.timed_send = lambda now=None: hang.wait(30) and ""
+            t_hang = time.monotonic()
+            tr = node_trace(1.5)
+        finally:
+            hang.set()
+            purge.timed_send = real_send
+        first, last = on_spans(tr)
+        tail = [v for t, v, _s in tr if t > t_hang + 0.5]
+        check(len(tail) > 20 and not any(tail) and
+              (last is None or last - t_hang <= 0.6),
+              f"the timer hung: zero at the node within the link's 0.25 s "
+              f"(last 240 {(last - t_hang) if last else None!r} s after)")
+        purge.tick(time.monotonic(), True)
+        check(not purge.timed_running() and
+              any("timer stopped" in x[0] for x in lines),
+              f"and the watcher ends it, saying why: {lines[-1:]}")
+        # 4. Abort at the link: zero at once, the purge ends on its next
+        # send.
+        t0 = start(10, "e4")
+        node_trace(0.5)
+        t_ab = time.monotonic()
+        link.disarm_all("Abort from the rack screen (selftest)")
+        tr = node_trace(1.0)
+        first, last = on_spans(tr)
+        check(last is None or last - t_ab <= 0.3,
+              f"Abort: zero at the node at once "
+              f"({(last - t_ab) if last else None!r} s)")
+        check(wait_for(lambda: not purge.timed_running(), 1.0) and
+              any("zeroed" in x[0] for x in lines),
+              f"and the timed purge ended, saying why: {lines[-1:]}")
+        # 5. The engine dies: the link stops sending, flamesafe zeroes.
+        if check(arm_front(), f"front row armed again: {state()}"):
+            purge.select("g1", True, "Rack screen", True)
+            t0 = start(10, "e5")
+            node_trace(0.5)
+            t_dead = time.monotonic()
+            link.stop()
+            tr = node_trace(2.0)
+            first, last = on_spans(tr)
+            tail = [v for t, v, _s in tr if t > t_dead + 1.2]
+            check(len(tail) > 20 and not any(tail) and
+                  (last is None or last - t_dead <= 1.0),
+                  f"the engine stopped sending: flamesafe's frame "
+                  f"staleness zeroes the node "
+                  f"({(last - t_dead) if last else None!r} s)")
+    finally:
+        stop.set()
+        dt.join(2)
+        try:
+            purge.clear("the test is over")
+        except Exception:
+            pass
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        arm.close()
+        status.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+
+def _morning_view_timed(selected=("m1", "m2"), running=False, left=7.3):
+    """_morning_view_pico with the timed purge's numbers, as the engine
+    sends them, and (`running`) one running."""
+    mo = _morning_view_pico(selected=selected)
+    mo["timed_settings"] = {"presets": [2, 5, 10, 20, 30], "default_s": 5,
+                            "max_s": 30, "min_s": 1, "limit_s": 120,
+                            "hold_s": 1.0, "error": ""}
+    names = [m["name"] for m in mo["machines"] if m["id"] in selected]
+    mo["timed"] = {"running": running, "left_s": left if running else None,
+                   "seconds": 10 if running else None,
+                   "elapsed_s": 10 - left if running else None,
+                   "machines": names if running else [], "firing": [],
+                   "waiting": [], "device": "this PC (rack screen)"
+                   if running else None, "who": "Andy" if running else "",
+                   "holding": False, "holder": None, "mine": False,
+                   "held_s": None, "hold_s": 1.0, "last": ""}
+    mo["purge_state"]["timed"] = running
+    mo["purge_state"]["firing"] = running
+    return mo
+
+
+_TIMED_MEASURE_JS = r"""
+<script>
+(function(){
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function hits(el){
+  el.scrollIntoView({block:"center", inline:"nearest"});
+  const r = el.getBoundingClientRect(), bad = [];
+  if(r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) bad.push("not wholly inside the window when scrolled to");
+  const ins = Math.min(4, r.width / 4, r.height / 4);
+  for(const [x, y] of [[r.left + r.width/2, r.top + r.height/2], [r.left + ins, r.top + ins], [r.right - ins, r.bottom - ins]]){
+    const at = document.elementFromPoint(x, y);
+    if(!at || !(el === at || el.contains(at))) bad.push("covered at " + Math.round(x) + "," + Math.round(y) + " by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
+  }
+  return bad;
+}
+function measure(){
+  scrollTo(0, 0);
+  const out = {vw:innerWidth, vh:innerHeight, problems:[], small:[], targets:[], sw:document.scrollingElement.scrollWidth,
+    tp_shown:shown(document.getElementById("tp")), hold:(document.getElementById("tp-hold") || {}).textContent || "",
+    st:(document.getElementById("tp-st") || {}).textContent || "",
+    banner:shown(document.getElementById("tp-banner")) ? document.getElementById("tp-banner-text").textContent : null,
+    presets:[...document.querySelectorAll("#tp-presets button")].map(b => b.textContent + (b.classList.contains("on") ? "*" : "")),
+    secs:(document.getElementById("tp-secs") || {}).value, key:(document.getElementById("mo-key") || {}).textContent || ""};
+  if(out.sw > innerWidth + 1) out.problems.push("the page scrolls sideways: " + out.sw + " > " + innerWidth);
+  const tp = document.getElementById("tp");
+  if(shown(tp)){
+    const tw = document.createTreeWalker(tp, NodeFilter.SHOW_TEXT);
+    for(let n = tw.nextNode(); n; n = tw.nextNode()){
+      const t = n.textContent.trim(); const el = n.parentElement;
+      if(!t || !shown(el)) continue;
+      const px = parseFloat(getComputedStyle(el).fontSize);
+      if(px < 14) out.small.push(Math.round(px * 10) / 10 + " px: " + (el.id || el.className || el.tagName) + ": " + t.slice(0, 30));
+    }
+    const ctl = [...tp.querySelectorAll("button, input")].filter(shown);
+    for(const el of ctl){
+      const r = el.getBoundingClientRect();
+      if(r.height < 44 - 0.5) out.targets.push((el.id || el.textContent) + " " + Math.round(r.height) + " px high");
+      for(const b of hits(el)) out.problems.push((el.id || el.textContent) + ": " + b);
+    }
+    // Nothing in the timed purge overlaps anything else in it, or the
+    // other panels of the page.
+    const rects = ctl.map(el => [el.id || el.textContent, el.getBoundingClientRect()]);
+    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
+      const a = rects[i][1], b = rects[j][1];
+      if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+        out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
+    }
+    scrollTo(0, 0);
+    const panels = ["mo-groups", "mo-field", "mo-firebar", "tp", "mo-shut"].map(id => document.getElementById(id)).filter(shown);
+    const abs = el => { const r = el.getBoundingClientRect(); return {l:r.left, r:r.right, t:r.top + scrollY, b:r.bottom + scrollY}; };
+    for(let i = 0; i < panels.length; i++) for(let j = i + 1; j < panels.length; j++){
+      const a = abs(panels[i]), b = abs(panels[j]);
+      if(a.l < b.r - 0.5 && b.l < a.r - 0.5 && a.t < b.b - 0.5 && b.t < a.b - 0.5)
+        out.problems.push("overlap: " + panels[i].id + " and " + panels[j].id);
+    }
+  }
+  const bn = document.getElementById("tp-banner");
+  if(shown(bn)){
+    for(const b of hits(document.getElementById("tp-banner-stop"))) if(shown(document.getElementById("tp-banner-stop"))) out.problems.push("banner Stop purge: " + b);
+    const r = bn.getBoundingClientRect();
+    if(r.right > innerWidth + 0.5) out.problems.push("the banner runs off the window");
+  }
+  // Abort: on the window, never covered, at the top and the bottom.
+  const ab = document.getElementById("b-abort");
+  for(const y of [0, 1e6]){
+    scrollTo(0, y);
+    const r = ab.getBoundingClientRect();
+    if(r.bottom > innerHeight + 0.5 || r.top < 0) out.problems.push("Abort is off the window at scroll " + y);
+  }
+  scrollTo(0, 0);
+  for(const b of hits(ab)) out.problems.push("Abort: " + b);
+  scrollTo(0, 0);
+  return out;
+}
+function go(){
+  const onMorning = (location.hash || "") === "#morning";
+  if(onMorning && (!document.querySelector("#mo-field .mach") || document.getElementById("tp").hidden)) return setTimeout(go, 100);
+  setTimeout(() => {
+    const pre = document.createElement("pre"); pre.id = "rack-measure";
+    pre.textContent = JSON.stringify([measure()]);
+    document.body.appendChild(pre);
+  }, 700);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_timed_purge_on_the_pages():
+    section("timed purge on the pages (Jeff, 2026-10-29): 1.0's Startup page "
+            "has the seconds (2, 5, 10, 20, 30 and Other, kept within the "
+            "show machine's longest) and one button HELD like a Hold to arm "
+            "whose words name the machines and the seconds, with Stop "
+            "purge beside it; a banner on every screen counts down from "
+            "the engine's clock with Stop purge; 2.0 pins it with its own "
+            "Stop purge; drawn at the seven rack sizes with nothing "
+            "overflowing, overlapping or under Abort")
+    one, two = _ui2_pages()
+    # The pure rules, in node.
+    bad = _page_logic_in_node(one, r"""
+const mo = {machines:[{id:"a", name:"Ground 1"}, {id:"b", name:"Ground 2"}],
+  purge_state:{selected:["a", "b"]}, purge_enabled:true, live_refusal:"",
+  timed_settings:{presets:[2,5,10,20,30], default_s:5, max_s:30, min_s:1, error:""},
+  timed:{running:false}};
+let L = timedPurgeLook(mo, 10, false, false, false);
+t(L.ok && L.word === "Hold to purge Ground 1, Ground 2 for 10 s", "the button names the machines and the seconds: " + L.word);
+L = timedPurgeLook(mo, 10, true, false, false);
+t(L.word === "Keep holding: Ground 1, Ground 2 for 10 s" && !L.cut, "while held it says keep holding: " + L.word);
+t(!timedPurgeLook(mo, 31, false, false, false).ok, "31 s with 30 s the longest: not pressable");
+t(!timedPurgeLook(mo, 2.5, false, false, false).ok, "2.5 s: not a whole number");
+t(!timedPurgeLook(mo, 0, false, false, false).ok, "0 s: not pressable");
+t(timedPurgeLook(mo, 10, false, true, false).block.indexOf("not live") >= 0, "a stale page: refused");
+t(timedPurgeLook(mo, 10, true, true, false).cut, "a stale page cuts a hold under way");
+t(timedPurgeLook(mo, 10, false, false, true).block.indexOf("view only") >= 0, "signed out: view only");
+t(timedPurgeLook(Object.assign({}, mo, {purge_enabled:false}), 10, false, false, false).block.indexOf("switched off") >= 0, "purge arming off");
+t(timedPurgeLook(Object.assign({}, mo, {live_refusal:"a scheduled show is live (SHOW)"}), 10, false, false, false).block.indexOf("show is live") >= 0, "a show live: said in full");
+t(timedPurgeLook(Object.assign({}, mo, {purge_state:{selected:[]}}), 10, false, false, false).block.indexOf("Click a machine") >= 0, "nothing selected");
+t(timedPurgeLook(Object.assign({}, mo, {purge_state:{selected:["a"], firing:true}}), 10, false, false, false).block.indexOf("One purge at a time") >= 0, "a purge firing: one at a time");
+t(timedPurgeLook(Object.assign({}, mo, {timed:{holding:true, mine:false, holder:"iPad at 10.20.0.44"}}), 10, false, false, false).block.indexOf("iPad at 10.20.0.44") >= 0, "another screen holding");
+t(timedPurgeLook(Object.assign({}, mo, {timed_settings:{error:"ltcplay_remote.json could not be read"}}), 10, false, false, false).block.indexOf("could not be read") >= 0, "the settings file broken: no timed purge");
+const R = timedPurgeLook(Object.assign({}, mo, {timed:{running:true, left_s:6.2, machines:["Ground 1"]}}), 10, false, false, false);
+t(R.running && R.word === "PURGING Ground 1: 7 s left", "running: the engine's seconds left, rounded up: " + R.word);
+t(timedClamp("45", 1, 30) === 30 && timedClamp("0", 1, 30) === 1 && timedClamp("7.4", 1, 30) === 7 && timedClamp("", 1, 30) === null && timedClamp("x", 1, 30) === null, "Other: kept to 1 to 30 whole seconds");
+t(timedLeft(0.01) === "1 s" && timedLeft(0) === "0 s" && timedLeft(-3) === "0 s", "the seconds left round up, never below 0");
+t(timedBanner({machines:["Ground 1"], left_s:3.5, seconds:10, device:"iPad at 10.20.0.44", who:"Andy"}) === "Ground 1: 4 s left of 10 s. Started on the iPad at 10.20.0.44 by Andy.", "the banner's words");
+""")
+    if bad is not None:
+        check(not bad, f"the timed purge's rules in node: {bad}")
+    # The page's wiring, read.
+    _i = one.find("// ---- The timed purge")
+    blk = one[_i:one.find("// WEATHER (weather.py", _i)]
+    check('post("/api/remote/purge-timed", moActor({hold:true, run:run, '
+          'seq:seq, seconds:TP_SECS}))' in blk and
+          'moActor({hold:false, run:run, seq:++TP_SEQ, seconds:TP_SECS})'
+          in blk and 'hb.addEventListener("pointerdown"' in blk and
+          '"pointerup", "pointercancel", "lostpointercapture"' in blk and
+          ".disabled" not in blk and len(blk) > 2000,
+          "1.0: a hold of beats every 100 ms on pointer down, a release on "
+          "every let go, and never the disabled attribute")
+    for ev in ('window.addEventListener("blur", () => { if(TP_HOLD) tpLetGo',
+               'if(document.hidden && TP_HOLD) tpLetGo',
+               'window.addEventListener("pagehide", () => tpLetGo'):
+        check(ev in blk, f"1.0: the hold ends on {ev[:40]!r}")
+    check('post("/api/remote/purge-stop", moActor({}))' in blk and
+          '$("tp-banner-stop").addEventListener("click", tpStopPress)' in blk
+          and "if(st.running){ tpStopPress(); return; }" in blk,
+          "1.0: Stop purge here and on the banner; a press while it runs "
+          "ends it")
+    check("!MO.purge_state.timed" in one[one.find("function morningView"):
+                                         one.find("async function morningPoll")],
+          "1.0: leaving the page does not clear a timed purge's selection "
+          "(it ends on the engine's clock)")
+    pin = _js_function(two, "pinItems")
+    check(pin and 's.morning && s.morning.timed' in pin and
+          '"Stop purge"' in pin and "timedLeft(tp.left_s)" in pin,
+          "2.0: a running timed purge is pinned with its countdown and Stop "
+          "purge")
+    # 2.0's pin, run in node on 1.0's rules (the page carries them).
+    bad = _page_logic_in_node(one, pin + r"""
+let P = pinItems({morning:{timed:{left_s:12.2, seconds:20, machines:["Ground 1"], device:"iPad at 10.20.0.44", who:"Dallen"}}});
+t(P.length === 1 && P[0].key === "tp" && P[0].pill === "PURGING 13 s" && P[0].btn === "Stop purge" &&
+  P[0].text === "Purging: 13 s left. Stop when done." && P[0].full.indexOf("Ground 1: 13 s left of 20 s") >= 0, "2.0 pins it: " + JSON.stringify(P));
+t(pinItems({morning:{timed:null}}).length === 0 && pinItems({}).length === 0, "nothing running: no pin");
+""") if pin else ["no pinItems in 2.0"]
+    if bad is not None:
+        check(not bad, f"2.0's pin in node: {bad}")
+    check('if(k === "tp"){' in two and
+          'post("/api/remote/purge-stop", actor({}))' in two,
+          "2.0: its pin's Stop purge is 1.0's press")
+    for name, p in (("1.0", one), ("2.0", two)):
+        for frag in ((blk + _js_function(p, "timedPurgeLook") +
+                      _js_function(p, "timedBanner")) if name == "1.0"
+                     else pin or "",):
+            check("\u2014" not in frag and "\u2013" not in frag,
+                  f"{name}: no em or en dash in the timed purge's words")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True, "timed": None}
+    # 1. Ready: two machines selected, nothing running. Every rack size.
+    got = _rack_screen_in_chromium(
+        chrome, one, st, RACK_SIZES, measure_js=_TIMED_MEASURE_JS,
+        frag="#morning", routes={"/api/remote/morning":
+                                 _morning_view_timed()})
+    for (w, h), res in got.items():
+        if not check(isinstance(res, list) and res,
+                     f"{w}x{h}: drawn and measured: {res!r}"):
+            continue
+        m = res[0]
+        check(m["tp_shown"] and m["hold"] == "Hold to purge front row 1, "
+              "front row 2 for 5 s" and m["presets"] ==
+              ["2 s", "5 s*", "10 s", "20 s", "30 s"] and m["secs"] == "5",
+              f"{w}x{h}: the control, 5 s chosen, the machines named: "
+              f"{m['hold']!r} {m['presets']} {m['secs']!r}")
+        check(not m["problems"] and not m["small"] and not m["targets"],
+              f"{w}x{h}: nothing over the window, overlapping or covered, "
+              f"Abort clear, text 14 px or more, targets 44 px or more: "
+              f"{m['problems'][:5]} {m['small'][:3]} {m['targets'][:3]}")
+    # 2. Running: the Startup page and the banner on the show view.
+    st_run = dict(st)
+    st_run["morning"] = dict(st["morning"], timed={
+        "left_s": 7.3, "seconds": 10, "elapsed_s": 2.7,
+        "machines": ["front row 1", "front row 2"],
+        "device": "this PC (rack screen)", "who": "Andy"})
+    for frag in ("#morning", ""):
+        got = _rack_screen_in_chromium(
+            chrome, one, st_run, RACK_SIZES, measure_js=_TIMED_MEASURE_JS,
+            frag=frag, routes={"/api/remote/morning":
+                               _morning_view_timed(running=True)})
+        for (w, h), res in got.items():
+            if not check(isinstance(res, list) and res,
+                         f"running {frag or '#show'} {w}x{h}: drawn: "
+                         f"{res!r}"):
+                continue
+            m = res[0]
+            check(m["banner"] == "front row 1, front row 2: 8 s left of 10 "
+                  "s. Started on the this PC (rack screen) by Andy.",
+                  f"running {frag or '#show'} {w}x{h}: the banner counts "
+                  f"down from the engine's seconds: {m['banner']!r}")
+            if frag:
+                check(m["hold"] == "PURGING front row 1, front row 2: 8 s "
+                      "left" and m["key"].startswith("TIMED PURGE: 8 s"),
+                      f"running {w}x{h}: the button and the fire key say "
+                      f"PURGING and the seconds left: {m['hold']!r} "
+                      f"{m['key']!r}")
+            check(not m["problems"] and not m["small"] and not m["targets"],
+                  f"running {frag or '#show'} {w}x{h}: {m['problems'][:5]} "
+                  f"{m['small'][:3]} {m['targets'][:3]}")
+    print("  ok")
+
+
+def test_timed_purge_button_driven():
+    section("timed purge, the button driven in a real browser (Jeff, "
+            "2026-10-29): pressing it beats every 100 ms with one hold id "
+            "and the seconds; letting go early sends the release and "
+            "nothing else; the engine's start ends the beats; a press "
+            "while it runs is Stop purge; Other is kept to the longest")
+    one, _two = _ui2_pages()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _rack_status_pico(many=False)
+    st["morning"] = {"locked_machines": [], "locked_lasers": [],
+                     "flamesafe_confirmed": True, "purge": True,
+                     "purge_enabled": True, "open": True, "timed": None}
+    steps = r"""
+  while(document.getElementById("tp").hidden) await h.sleep(50);
+  const hb = document.getElementById("tp-hold");
+  const tp = () => h.posts("purge-timed");
+  // A short press: beats, then the release when it lifts. Nothing else.
+  document.querySelector('#tp-presets [data-s="10"]').click();
+  await h.sleep(50);
+  h.ev(hb, "pointerdown");
+  await h.sleep(450);
+  h.ev(hb, "pointerup");
+  await h.sleep(250);
+  const a = tp();
+  out.short = {n:a.length, holds:a.filter(p => p.body.hold === true).length,
+    runs:[...new Set(a.map(p => p.body.run))].length, last:a.length ? a[a.length - 1].body : null,
+    secs:[...new Set(a.map(p => p.body.seconds))], seen:a.every(p => typeof p.body.seen === "number"),
+    stops:h.posts("purge-stop").length};
+  // A whole press: the engine answers started on the 11th beat; the
+  // beats stop there though the finger is still down.
+  let n = 0;
+  window.__answer["purge-timed"] = b => { if(b.hold !== true) return [200, {running:false}];
+    n++; return n >= 11 ? [200, {ok:true, started:true, running:true, text:"Timed purge started: front row 1, front row 2 for 10 s."}] : [200, {running:false, holding:true, mine:true}]; };
+  const before = tp().length;
+  h.ev(hb, "pointerdown");
+  await h.sleep(1800);
+  const b = tp().slice(before);
+  out.whole = {n:b.length, holds:b.filter(p => p.body.hold === true).length,
+    runs:[...new Set(b.map(p => p.body.run))].length, st:document.getElementById("tp-st").textContent};
+  h.ev(hb, "pointerup");
+  await h.sleep(200);
+  out.after_lift = tp().slice(before).filter(p => p.body.hold !== true).length;
+  // Running: a press is Stop purge.
+  window.__patchMorning = mo => { mo.timed = Object.assign({}, mo.timed, {running:true, left_s:4.2, seconds:10, machines:["front row 1"]}); mo.purge_state.timed = true; return mo; };
+  await h.sleep(900);
+  const s0 = h.posts("purge-stop").length, t0 = tp().length;
+  h.ev(hb, "pointerdown"); h.ev(hb, "pointerup");
+  await h.sleep(300);
+  out.running = {word:hb.textContent, stops:h.posts("purge-stop").length - s0, timed:tp().length - t0};
+  window.__patchMorning = null;
+  await h.sleep(900);
+  // Other: 45 is kept to 30.
+  const inp = document.getElementById("tp-secs");
+  inp.value = "45"; inp.dispatchEvent(new Event("change", {bubbles:true}));
+  await h.sleep(100);
+  out.other = {value:inp.value, word:hb.textContent};
+"""
+    js = "<script>window.__drive = async (out, h) => {\n" + steps + \
+        "\n};</script>" + _RACK_DRIVE_JS
+    js = js.replace('if(!document.querySelector("#fl-lamps .lamp")) '
+                    'return setTimeout(go, 50);',
+                    'if(!document.querySelector("#mo-field .mach")) '
+                    'return setTimeout(go, 50);')
+    got = _rack_screen_in_chromium(
+        chrome, one, st, ((1366, 768),), measure_js=js, frag="#morning",
+        routes={"/api/remote/morning": _morning_view_timed()},
+        budget_ms=12000)
+    res = got[(1366, 768)]
+    if not check(isinstance(res, list) and res, f"driven: {res!r}"):
+        print("  ok")
+        return
+    o = res[0]
+    check(not o.get("problems"), f"the steps ran: {o.get('problems')}")
+    s = o.get("short") or {}
+    check(s.get("holds", 0) >= 3 and s.get("runs") == 1 and
+          (s.get("last") or {}).get("hold") is False and
+          s.get("secs") == [10] and s.get("seen") and s.get("stops") == 0,
+          f"a short press: hold beats of one id with 10 s and the page's "
+          f"status time, then the release, nothing else: {s}")
+    w = o.get("whole") or {}
+    check(w.get("holds") == 11 and w.get("runs") == 1 and
+          "You can let go" in w.get("st", ""),
+          f"a whole press: the beats stop at the engine's start, and it "
+          f"says you can let go: {w}")
+    check(o.get("after_lift") == 0,
+          f"lifting after the start sends no release of a hold that is "
+          f"over: {o.get('after_lift')}")
+    r = o.get("running") or {}
+    check(r.get("word", "").startswith("PURGING front row 1: 5 s left") and
+          r.get("stops") == 1 and r.get("timed") == 0,
+          f"running: the button counts down; a press is Stop purge, "
+          f"never a new hold: {r}")
+    ot = o.get("other") or {}
+    check(ot.get("value") == "30" and ot.get("word", "").endswith("for 30 s"),
+          f"Other 45 is kept to the longest, 30: {ot}")
+    print("  ok")
+
+
+
+def test_timed_purge_deck_key():
+    section("timed purge on the Stream Deck (Jeff, 2026-10-29): while the "
+            "engine says one runs, key 0 reads PURGING and the engine's "
+            "seconds left (rounded up), the group stays wanted with the "
+            "page closed, and pressing FIRE is a second purge press sent "
+            "to the engine (which ends it); it goes back to normal after")
+    from ltcplay import streamdeck as sd
+    arm = _FakeArmSocket(3)
+    names = ["front row", "cat-walk", "wave flamer"]
+    t = [100.0]
+    scr = _FakeMorningScreen()
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      conductor=_FakeConductor(),
+                      journal=lambda t_, **kw: None,
+                      clock=lambda: t[0], screen=scr)
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+
+    def mo(left):
+        scr.mo = {"open": True, "purge_enabled": True,
+                  "purge": {"wanted_groups": [0], "selected": 1,
+                            "firing": left is not None,
+                            "timed_left_s": left},
+                  "locks": {"groups_fully_locked": []}}
+
+    def step(dt=0.05):
+        t[0] += dt
+        c.screen_pass()
+        c.tick()
+    mo(None)
+    step()
+    check(c.purge_timed_left() is None, "no timed purge: None")
+    for bad in (True, "7", float("nan"), None):
+        scr.mo["purge"]["timed_left_s"] = bad
+        check(c.purge_timed_left() is None,
+              f"timed_left_s {bad!r}: not a countdown")
+    mo(7.2)
+    step()
+    check(c.purge_timed_left() == 7.2 and arm.wanted[0] is True,
+          f"running: the seconds left, and the group stays armed: "
+          f"{arm.wanted}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    try:
+        if fonts is not None:
+            c.draw(fonts, blink_on=False, chase=0)
+            check(faces[0][0] == ["PURGING", "8 S"],
+                  f"key 0 reads PURGING 8 S: {faces[0]}")
+            mo(0.04)
+            step()
+            c.draw(fonts, blink_on=True, chase=0)
+            check(faces[0][0] == ["PURGING", "1 S"],
+                  f"0.04 s left reads 1 S, never 0 while it runs: "
+                  f"{faces[0]}")
+        down, up = [True] + [False] * 5, [False] * 6
+        c.run_once(down)
+        check(pf.calls and pf.calls[-1][0] == "start",
+              f"FIRE pressed while it runs: a purge press goes to the "
+              f"engine (a second press, which ends it): {pf.calls}")
+        c.run_once(up)
+        mo(None)
+        step()
+        if fonts is not None:
+            c.draw(fonts, blink_on=False, chase=0)
+            check(faces[0][0] == ["FIRE", "HOLD"],
+                  f"once it has ended: FIRE HOLD again: {faces[0]}")
+    finally:
+        restore()
+    print("  ok")
+
+
+
+def test_timed_purge_stall_inside_a_send_and_a_signed_out_deck():
+    section("timed purge, re-review of #172 (B1, B2): a pause INSIDE one "
+            "send of the engine's timer, long or short, never relights a "
+            "frame the flame link has dropped (the real FlameLink on the "
+            "test's clock); a zero landing after the count was read is "
+            "refused under the link's lock; and the Stream Deck's FIRE "
+            "with nobody signed in on the rack screen still ends a timed "
+            "purge an iPad started")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    from ltcplay import users as U
+    R = _tp_rig(S)
+
+    def real_link():
+        cfg = fl.FlameLinkConfig("127.0.0.1", 5571, 1, _fl_key(),
+                                 frame_stale_ms=500)
+        lk = fl.FlameLink(cfg, cues=lambda tc: [0] * 512,
+                          show_state=lambda: (None, False),
+                          clock=lambda: R.mono[0], seek_guard=False)
+        lk._send = lambda d: True
+        lk.sender_state = lambda: "running"
+        return lk
+
+    def slot(lk):
+        return lk.values_now()[1][410]
+
+    def step(dt):
+        R.mono[0] += dt
+        R.wall[0] += dt
+        R.feed()
+        R.remote._deck_seen = R.mono[0]
+
+    def fresh_start(seconds=10):
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=R.loop)
+        st, out, _r = _tp_hold(R, seconds)
+        return check(st == 200 and out.get("started"),
+                     f"setup: a timed purge running: {out}")
+    real_checks = R.m.timed_blockers
+    try:
+        # B1, large: a 2 s pause inside one send, after its first look.
+        R.link = link = real_link()
+        if fresh_start():
+            check(slot(link) == 240, "firing on the real link")
+            _tp_step(R, 0.1)
+            seen = {}
+
+            def slow(t):
+                r = real_checks(t)
+                if t is not None and not seen:
+                    step(2.0)
+                    seen["during"] = slot(link)
+                return r
+            R.m.timed_blockers = slow
+            step(0.1)
+            why = R.m.purge.timed_send()
+            R.m.timed_blockers = real_checks
+            check(seen.get("during") == 0,
+                  "the link dropped the frame during the pause")
+            check(why and not R.m.purge.timed_running() and slot(link) == 0,
+                  f"after a 2 s pause inside the send: ended, the frame "
+                  f"never comes back: {why!r} slot {slot(link)}")
+            check("stalled" in why or "did not take" in why,
+                  f"and said why: {why!r}")
+        # The engine's own look, alone (a link with no belt): the same
+        # pause inside a send ends it there, and the frame is never set.
+        R.link = fake = _FakeTimedLink()
+        if fresh_start():
+            _tp_step(R, 0.1)
+            n0 = len(fake.frames)
+            seen = {}
+
+            def slow_fake(t):
+                r = real_checks(t)
+                if t is not None and not seen:
+                    seen["x"] = True
+                    step(0.5)
+                return r
+            R.m.timed_blockers = slow_fake
+            step(0.1)
+            why = R.m.purge.timed_send()
+            R.m.timed_blockers = real_checks
+            check("stalled" in why and len(fake.frames) == n0,
+                  f"a 0.5 s pause inside the send: the engine itself ends "
+                  f"it and sets no frame: {why!r}")
+        # And a link that refuses the frame (zeroed, dropped, past its
+        # hard end): the engine ends it, never carries on unheard.
+        R.link = fake = _FakeTimedLink()
+        if fresh_start():
+            fake.purge_set = lambda values, gen=None: False
+            step(0.1)
+            why = R.m.purge.timed_send()
+            check("did not take" in why and not R.m.purge.timed_running(),
+                  f"a refused frame ends it: {why!r}")
+        # B1, small: 0.225 s with no send, then 60 ms inside the send.
+        R.link = link = real_link()
+        if fresh_start():
+            trace = []
+            for _ in range(9):
+                step(0.025)
+                trace.append(slot(link))
+
+            def slow2(t):
+                r = real_checks(t)
+                if t is not None:
+                    for _ in range(3):
+                        step(0.02)
+                        trace.append(slot(link))
+                return r
+            R.m.timed_blockers = slow2
+            why = R.m.purge.timed_send()
+            R.m.timed_blockers = real_checks
+            after = []
+            for _ in range(8):
+                step(0.025)
+                R.m.tick()
+                after.append(slot(link))
+            check(0 in trace and not any(after) and
+                  not R.m.purge.timed_running(),
+                  f"the link dropped it at 0.25 s; the send that came late "
+                  f"ends it rather than relight it: {trace} -> {after} "
+                  f"({why!r})")
+        # A pause after the send's last look and before the link's lock
+        # (round 3 of #172): the link sees the frame it would replace has
+        # gone stale and refuses it; the engine ends the purge.
+        R.link = link = real_link()
+        if fresh_start():
+            _tp_step(R, 0.1)
+            real_set = link.purge_set
+
+            def paused(vals, gen=None):
+                step(2.0)
+                return real_set(vals, gen=gen)
+            link.purge_set = paused
+            step(0.1)
+            why = R.m.purge.timed_send()
+            link.purge_set = real_set
+            check(slot(link) == 0 and not link.purge_active() and
+                  not R.m.purge.timed_running(),
+                  f"a 2 s pause just before the link's lock: nothing "
+                  f"relit, ended: {why!r}")
+        # A pause between the engine reading its clock and the link
+        # taking its hard end (round 3 of #172): the end stays the
+        # engine's deadline, never later.
+        R.link = link = real_link()
+        real_limit = link.purge_limit
+
+        def slow_limit(s, **kw):
+            step(0.2)
+            return real_limit(s, **kw)
+        link.purge_limit = slow_limit
+        try:
+            ok = fresh_start(2)
+        finally:
+            link.purge_limit = real_limit
+        if ok:
+            dl = R.m.purge.fire["timed"]["deadline"]
+            check(link._purge_until is not None and
+                  link._purge_until <= dl + 1e-9,
+                  f"a 0.2 s pause before the link's lock: its hard end is "
+                  f"the deadline, not later (+"
+                  f"{(link._purge_until or 0) - dl:.3f} s)")
+            R.m.purge.clear("test reset")
+        # A momentary press whose frame the link refuses is never answered
+        # as firing.
+        R.link = fake = _FakeTimedLink()
+        R.m.purge.clear("test reset")
+        R.m.open_beat("Rack screen")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=R.loop)
+        fake.purge_set = lambda values, gen=None: False
+        st, out = R.m.purge.fire_beat({"on": True}, "Rack screen", True)
+        check(st == 409 and "did not take" in out.get("error", "") and
+              R.m.purge.fire is None,
+              f"a refused momentary frame: not firing, said so: {st} {out}")
+        R.m.purge.clear("test reset")
+        # A Space press that looked before a timed purge started on its
+        # own screen and lands after: it ends it with its line, never
+        # overwrites it.
+        R.link = fake = _FakeTimedLink()
+        if fresh_start():
+            n_end = len(_tp_lines(R, "timed_end"))
+            R.m.purge.timed_running = lambda: False
+            try:
+                st, out = R.m.purge.fire_beat({"on": True}, "Rack screen",
+                                              True)
+            finally:
+                del R.m.purge.timed_running
+            ln = _tp_lines(R, "timed_end")
+            check(st == 409 and R.m.purge.fire is None and
+                  len(ln) == n_end + 1 and
+                  "second purge press" in ln[-1]["text"],
+                  f"a press that raced a timed purge's start ends it with a "
+                  f"journal line: {st} {out} {ln[-1:]}")
+        # The link's own belt: a timed purge's frame that went stale is
+        # refused from then on, until purge_clear().
+        lk = real_link()
+        frame = bytes([0] * 410 + [240] + [0] * 101)
+        lk.purge_limit(30)
+        lk.purge_set(frame)
+        step(0.3)
+        check(slot(lk) == 0 and lk.purge_set(frame) is False and
+              slot(lk) == 0, "a timed frame dropped stale is never set "
+                             "again by the link")
+        lk.purge_clear()
+        check(lk.purge_set(frame) is True, "until purge_clear()")
+        # The zero count, under the link's lock.
+        g = lk._zero_gen
+        lk.zero()
+        check(lk.purge_set(frame, gen=g) is False and slot(lk) == 0,
+              "a frame whose count was read before a zero is refused")
+        check(lk.purge_set(frame, gen=lk._zero_gen) is True,
+              "with the current count it is taken")
+        # B2: nobody signed in on the rack screen; Ollie started it on an
+        # iPad; the deck's FIRE ends it.
+        R.link = link = real_link()
+        udir = tempfile.mkdtemp()
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        R.remote.users = us
+        ok, why, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        us.sign_out(tok, "rack", local=True)
+        ok, why, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                      "10.20.0.44")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        R.m.purge.clear("test reset")
+        R.m.open_beat("iPad at 10.20.0.44")
+        R.ask("POST", "/api/remote/purge-select",
+              {"machine": "g1", "seen": R.seen()}, client=R.ipad,
+              headers=hdr)
+        st, out, _r = _tp_hold(R, 30, client=R.ipad, headers=hdr)
+        if check(st == 200 and out.get("started"),
+                 f"setup: Ollie's timed purge from the iPad: {out}"):
+            posts = []
+
+            def poster(path, body):
+                st_, _h_, o = R.ask("POST", path, body, client=R.loop)
+                posts.append((path, st_, bool((o or {}).get("ended"))))
+                return (st_ == 200, (o or {}).get("error", ""), o)
+            pf = sd.PurgeFire(poster)
+            pf.start(who="")
+            pf.join(2.0)
+            check(not R.m.purge.timed_running() and slot(link) == 0,
+                  f"the deck's FIRE with nobody signed in ends it: "
+                  f"{posts}")
+            check(posts and posts[0][:3] == ("/api/remote/purge-fire", 403,
+                                             True),
+                  f"the press itself ended it (refused as an arm, but a "
+                  f"second purge press): {posts}")
+            check(any(p[:2] == ("/api/remote/purge-stop", 200)
+                      for p in posts),
+                  f"and the refused press posts purge-stop on its way out: "
+                  f"{posts}")
+            pf.stop(who="")
+        R.remote.users = None
+    finally:
+        R.m.timed_blockers = real_checks
+        R.close()
+    print("  ok")
 
 
 def test_windows_rack_window_and_explorer_front():
@@ -72150,14 +75128,20 @@ def test_deck_purge_fire_stop_never_waits_on_a_post():
     check(log.count("purge-stop") == 2 and len(log) == n,
           f"the second press's stop: one more purge-stop, then silence: "
           f"{log[-3:]}")
-    # A press the engine refused ended itself: stop() posts nothing more.
+    # A press the engine refused ended itself, and posted one purge-stop
+    # on its way out (re-review of #172, B2: a refusal never leaves a
+    # purge running): stop() posts nothing more.
     log.clear()
     refuse = sd.PurgeFire(lambda path, body: (
         log.append(path.rsplit("/", 1)[-1]) or (False, "no", {})))
     refuse.start()
-    _wait(lambda: not refuse.firing, 1)
-    check(refuse.stop() is False and log == ["purge-fire"],
-          f"a refused press: no purge-stop from stop(): {log}")
+    _wait(lambda: not refuse.firing and "purge-stop" in log, 1)
+    check(refuse.stop() is False,
+          "a refused press has already ended itself")
+    time.sleep(0.3)
+    check(log == ["purge-fire", "purge-stop"],
+          f"a refused press: its own one purge-stop, none from stop(): "
+          f"{log}")
     refuse.join()
     print("  ok")
 
@@ -76013,7 +78997,7 @@ def test_lasers_lamp_follows_the_beyond_link():
     check(BW.windows_probe(raises) is None, "tasklist missing: None")
     check(BW.on_this_pc("127.0.0.2") and BW.on_this_pc("localhost") and
           not BW.on_this_pc("10.0.0.9") and not BW.on_this_pc(None),
-          "only the loopback is this PC")
+          "the loopback is this PC, another address and no host are not")
     check(BW.probe_for("127.0.0.2", windows=True) is BW.windows_probe and
           BW.probe_for("10.0.0.9", windows=True)() is None and
           BW.probe_for("127.0.0.2", windows=False)() is None,
@@ -76094,6 +79078,208 @@ def test_lasers_lamp_follows_the_beyond_link():
     st = r2.status(RM.Ctx(True, "127.0.0.1"))
     check((st.get("beyond_link") or {}).get("link") == "lost",
           f"the page is told: {st.get('beyond_link')}")
+    print("  ok")
+
+
+def test_this_pc_includes_its_own_addresses_and_loopback_adapters():
+    section("Jeff's show PC feeds BEYOND over an internal loopback adapter "
+            "(2026-10-30): BEYOND or MadMapper on any address of THIS PC "
+            "(a LAN address, a loopback adapter's) is on this PC; any other "
+            "address is still another machine; 0.0.0.0 is never a host; a "
+            "list that cannot be read falls back to loopback only; the "
+            "sentences name the host and this PC's addresses")
+    import types
+    from ltcplay import thispc as TP, beyondwatch as BW, \
+        madmapperwatch as MW, windowfront as WF, preroll as P, web as W
+    saved = (TP.gather, TP._clock, TP.GATHER_TIMEOUT_S, TP._by_name,
+             TP._routed, TP._windows_adapters)
+    t = [1000.0]
+    calls = []
+    LAN, ADAPTER, APIPA = "192.168.4.42", "10.77.0.1", "169.254.10.2"
+
+    def fake(windows=None):
+        calls.append(1)
+        return {LAN, ADAPTER, APIPA, "0.0.0.0"}
+    try:
+        TP.gather = fake
+        TP._clock = lambda: t[0]
+        TP.forget()
+        for h in ("127.0.0.2", "127.0.0.1", "localhost", " LocalHost "):
+            check(TP.on_this_pc(h) and BW.on_this_pc(h) and
+                  MW.on_this_pc(h), f"{h!r}: loopback is this PC")
+        for h, why in ((LAN, "this PC's LAN address"),
+                       (ADAPTER, "a loopback adapter's address"),
+                       (APIPA, "a 169.254 adapter address")):
+            check(TP.on_this_pc(h) and BW.on_this_pc(h) and
+                  MW.on_this_pc(h), f"{h}: {why} is this PC, for BEYOND "
+                                    f"and MadMapper alike")
+        for h in ("192.168.4.43", "10.0.0.9", "0.0.0.0", "255.255.255.255",
+                  "239.1.1.1", None, "", "showpc", "192.168.4.42.5", 7):
+            check(not TP.on_this_pc(h) and not BW.on_this_pc(h) and
+                  not MW.on_this_pc(h),
+                  f"{h!r}: not one of this PC's addresses: another machine")
+        check(TP.addresses() == (ADAPTER, APIPA, LAN, "0.0.0.0") or
+              TP.addresses() == ("0.0.0.0", ADAPTER, APIPA, LAN),
+              f"the list, sorted: {TP.addresses()}")
+        # Cached: read once in CACHE_S, read again after it.
+        n = len(calls)
+        TP.on_this_pc(ADAPTER)
+        TP.on_this_pc(LAN)
+        check(len(calls) == n, f"read at most once every CACHE_S: "
+                               f"{len(calls) - n} more reads")
+        t[0] += TP.CACHE_S + 1
+        TP.on_this_pc(ADAPTER)
+        check(len(calls) == n + 1, "and read again after CACHE_S")
+        # What the features do with it.
+        check(BW.probe_for(ADAPTER, windows=True) is BW.windows_probe and
+              MW.probe_for(ADAPTER, windows=True) is MW.windows_probe and
+              BW.probe_for("10.0.0.9", windows=True)() is None and
+              MW.probe_for("10.0.0.9", windows=True)() is None,
+              "the process watch looks here for a loopback adapter's "
+              "address, never for another machine's")
+        check(BW.unknown_why(ADAPTER, windows=True) is None and
+              MW.unknown_why(ADAPTER, windows=True) is None,
+              "a loopback adapter's address is never 'another machine'")
+        far = BW.unknown_why("10.0.0.9", windows=True)
+        check("another computer" in far and "10.0.0.9" in far and
+              LAN in far and ADAPTER in far,
+              f"BEYOND on another machine names its host and this PC's "
+              f"addresses: {far}")
+        far = MW.unknown_why("10.0.0.9", windows=True)
+        check(far.startswith("unknown, MadMapper is on another machine")
+              and "10.0.0.9" in far and ADAPTER in far,
+              f"and MadMapper the same: {far}")
+        ok, text = WF.open_beyond("10.0.0.9", windows=True, api=object())
+        check(not ok and "another machine" in text and "10.0.0.9" in text
+              and ADAPTER in text and "ltcplay_fire_ice.json" in text,
+              f"Open BEYOND, another machine: refused, naming the host, "
+              f"this PC's addresses and where it is set: {text}")
+        ok, text = WF.open_beyond(ADAPTER, windows=True, api=object())
+        check(not ok and "another machine" not in text,
+              f"Open BEYOND, a loopback adapter's address: looked for "
+              f"here: {text}")
+        for t_ in (far, text, BW.unknown_why("10.0.0.9", True)):
+            check("—" not in t_ and "–" not in t_, "no dashes")
+        arm = types.SimpleNamespace(view=lambda: {"armed": 0})
+        bl = types.SimpleNamespace(fault=None, gate=None)
+        ok, text = P.check_lasers(
+            _pr_probe(), bl, arm, _PrConductor([]), lambda: None,
+            lambda: BW.unknown_why("10.0.0.9", windows=True))
+        check(ok is True and "10.0.0.9" in text and "another computer" in
+              text, f"the pre-roll's Lasers line names BEYOND's host: "
+                    f"{text}")
+        ok, text = P.check_lasers(_pr_probe(), bl, arm, _PrConductor([]),
+                                  lambda: None, lambda: None)
+        check(ok is True and "another computer" not in text and text,
+              f"cannot tell, not another computer: never said so: {text}")
+        cfg = types.SimpleNamespace(
+            madmapper=types.SimpleNamespace(host=LAN),
+            beyond=types.SimpleNamespace(host=ADAPTER),
+            flamesafe_config=None)
+        h = types.SimpleNamespace(control=types.SimpleNamespace(
+            session=None), fire_ice=None)
+        check(W._preroll_hosts(h, cfg) == [],
+              f"the Network check leaves out a BEYOND and a MadMapper on "
+              f"this PC: {W._preroll_hosts(h, cfg)}")
+        cfg.beyond.host = "10.0.0.9"
+        check(W._preroll_hosts(h, cfg) == [("BEYOND", "10.0.0.9")],
+              f"and pings one on another machine: "
+              f"{W._preroll_hosts(h, cfg)}")
+        # The list cannot be read: loopback only, as before.
+        for broken in (lambda windows=None: None,
+                       lambda windows=None: 1 / 0):
+            TP.gather = broken
+            TP.forget()
+            check(TP.on_this_pc("127.0.0.2") and TP.on_this_pc("localhost")
+                  and not TP.on_this_pc(ADAPTER) and not TP.on_this_pc(LAN)
+                  and TP.addresses() is None,
+                  "the list cannot be read: only loopback is this PC")
+            check("could not be read" in TP.listed() and
+                  "could not be read" in BW.unknown_why(ADAPTER, True),
+                  f"and the sentence says so: {TP.listed()}")
+        TP.GATHER_TIMEOUT_S = 0.05
+        TP.gather = lambda windows=None: time.sleep(0.5) or {ADAPTER}
+        TP.forget()
+        t0 = time.monotonic()
+        check(not TP.on_this_pc(ADAPTER) and time.monotonic() - t0 < 0.4,
+              "a read that hangs counts as failed, never holds the caller")
+        TP.GATHER_TIMEOUT_S = saved[2]
+        # gather() itself: each source on its own, only usable IPv4.
+        TP.gather = saved[0]
+
+        def boom():
+            raise OSError("x")
+        TP._by_name = boom
+        TP._routed = boom
+        TP._windows_adapters = boom
+        check(TP.gather(windows=True) is None and
+              TP.gather(windows=False) is None,
+              "no source could be read: None, never an empty 'not here'")
+        TP._windows_adapters = lambda: {ADAPTER, "0.0.0.0", "224.0.0.1",
+                                        "fe80::1", "x"}
+        check(TP.gather(windows=True) == {ADAPTER} and
+              TP.gather(windows=False) is None,
+              "Windows' adapter list (loopback adapters included) is read "
+              "on Windows only; 0.0.0.0, multicast and anything not IPv4 "
+              "are left out")
+        TP._routed = lambda: {LAN}
+        check(TP.gather(windows=True) == {ADAPTER, LAN} and
+              TP.gather(windows=False) == {LAN},
+              "one failing source leaves the others")
+    finally:
+        (TP.gather, TP._clock, TP.GATHER_TIMEOUT_S, TP._by_name,
+         TP._routed, TP._windows_adapters) = saved
+        TP.forget()
+    got = TP.gather()
+    check(got is None or (isinstance(got, set) and
+                          all(TP._ipv4(a) is not None for a in got)),
+          f"this PC's real list reads, or says it cannot: {got}")
+    print("  ok")
+
+
+def test_a_laser_without_its_calibration_cue_says_what_and_where():
+    section("A laser whose calibration cue is not set up (mechanism none) "
+            "says plainly what is needed and where, on the Startup page and "
+            "when pressed, and names no BEYOND address")
+    from ltcplay import lasertest as LT
+    lasers = LT.parse_lasers([
+        {"id": "l1", "name": "Laser 1"},
+        {"id": "l2", "name": "Laser 2", "mechanism": "osc",
+         "host": "127.0.0.2", "port": 8100,
+         "on": [["/x/on", 1]], "off": [["/x/off", 1]]}], "x")
+    v1, v2 = lasers[0].view(), lasers[1].view()
+    need = v1.get("setup_needed") or ""
+    check(v2.get("setup_needed") is None and need and
+          not v1["configured"], f"only the laser not set up says so: "
+                                f"{v1} {v2}")
+    for words in ("not set up yet", "OSC messages", "not known yet",
+                  "lasers block of ltcplay_morning.json",
+                  "How to set up the laser calibration cue"):
+        check(words in need, f"the Startup page's line says {words!r}: "
+                             f"{need}")
+    check("/beyond" not in need and "/" not in need.replace(
+        "MORNING.md and OPERATOR.md", ""),
+          f"and invents no BEYOND address: {need}")
+    text = LT.not_set_up(lasers[0])
+    check("Laser 1" in text and '"l1"' in text and "Nothing was sent" in
+          text and "placeholder" in text and "not known yet" in text and
+          "restart the engine" in text,
+          f"pressed: what, where and nothing sent: {text}")
+    for t in (need, text):
+        check("—" not in t and "–" not in t, "no dashes")
+    here = os.path.dirname(os.path.abspath(__file__))
+    html = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check("!l.configured ? need :" in html and "l.setup_needed" in html,
+          "the Startup page shows the sentence for a laser not set up, "
+          "armed or not")
+    doc = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
+    sec = doc[doc.index("### How to set up the laser calibration cue"):]
+    sec = sec[:sec.index("\n### ", 5)]
+    check("OSC Monitor" in sec and "step by step" in sec and
+          "NOT verified" in sec, "MORNING.md says how to find the address "
+                                 "with BEYOND's OSC Monitor, and what is "
+                                 "not verified")
     print("  ok")
 
 
@@ -87675,7 +90861,7 @@ def test_ui2_page_makes_only_1_0_presses():
     for n in ("isStale", "armState", "armButtonMode", "clickAction",
               "allButtonMode", "armAllPlan", "armAllRefusal",
               "pressDecision", "stopWords",
-              "refusedWords", "announceLook", "laserPill", "wxBlock",
+              "refusedWords", "announceLook", "wxBlock",
               "countdownAnchor", "rearmLeftMs", "holdRefusalWords",
               "bottomPad", "mayRow", "lampClass"):
         check(n in rules and re.search(r"\b" + n + r"\(", two),
@@ -87804,7 +90990,8 @@ def test_ui2_page_makes_only_1_0_presses():
     check("isLive(ST)" in tour and '"armed"' in tour and "stale()" in tour,
           f"the tour never starts over a live show: {tour[:200]!r}")
     # 1.0: one tap to 2.0, nothing else of it changed.
-    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1,
+    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1 and
+          'aria-label="Back to 1.0"' in two,
           "Try 2.0 on 1.0 and Back to 1.0 on 2.0, once each")
     import shutil
     node = shutil.which("node")
@@ -87815,13 +91002,19 @@ def test_ui2_page_makes_only_1_0_presses():
         print("  ok")
         return
     fns = "\n".join(_js_function(two, n) or "" for n in (
-        "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "goLook",
-        "nextStep", "pillLook", "alertItems"))
+        "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "signWhy",
+        "goLook", "nextStep", "pillLook", "alertItems"))
     # alertItems' words and the page's own state it reads.
     for c in ("ALERT_WHAT", "ALERT_DO"):
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
         fns += "\n" + (m.group(0) if m else "")
     fns += ("\nlet ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null;")
+    # The systems badge's words.
+    for c in ("SYS_LABEL", "SYS_SHORT", "SYS_OFF", "SYS_SAY"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        fns += "\n" + (m.group(0) if m else "")
+    fns += "\n" + "\n".join(_js_function(two, n) or "" for n in (
+        "short8", "sysItem", "sysLook"))
     js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
@@ -87878,19 +91071,49 @@ for(const x of states) for(const st of [false, true]) for(const local of [true, 
 }
 t(/Abort, Hold, Stop/.test(nextStep(base(), true, true, []).text), "no contact says Abort, Hold and Stop still work");
 t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
+// The systems badge names what to check (Jeff, 2026-10-29).
+const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
+let L = sysLook(okSubs.concat([{name:"Deck", state:"warn", word:"USB slow 0.9 s"}]).slice(1), false);
+t(L.text === "Deck: check" && /^First: Stream Deck\. /.test(L.first), "one to check is named: " + L.text + " / " + L.first);
+L = sysLook([{name:"Lasers", state:"bad", word:"LINK LOST"}], false);
+t(L.text === "Lasers: fault" && /BEYOND not answering/.test(L.first) && L.cls === "bad", "one fault is named, with what to do: " + L.first);
+L = sysLook([{name:"Deck", state:"warn", word:"late 1.2 s"}, {name:"Pixels", state:"bad", word:"not sending"}], false);
+t(L.text === "2 to check" && /^First: Pixels\./.test(L.first), "several: the count, and the worst first: " + L.first);
+L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:"Laser arm", state:"warn", word:"ARMED"}, {name:"Deck", state:"off", word:"not heard"}], false);
+t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,off" && /Pick one in Settings/.test(L.first),
+  "announcements with no output picked are a problem, all armed reads On, not set up reads Off: " + L.text + " " + L.items.map(i => i.state));
+t(sysLook([{name:"Disk", state:"bad", word:"critical"}], true).text === "No contact", "no contact: said");
+for(const [n, w] of [["Video", "not set up"], ["Show audio", "none"], ["Pixels", "stopped"], ["Flamesafe", "not connected"]])
+  t(sysItem({name:n, state:"warn", word:w}).state === "off", "a warn that is only not set up here reads Off: " + n + " " + w);
+for(const w of ["not heard", "missing", "late 1.2 s", "USB slow 2.0 s", "default keys: ltcplay_deck.json not used", "USB 3 write(s) failed", "not known", "no status", "fault",
+                "not attached", "lost", "show audio not open", "output not attached", "pick one output", "file problem", "low", "critical", "not writing", "2 of 4 armed",
+                "LINK LOST", "blanking not set up", "BEYOND restarted: dark until lit again", "lit? link unknown", "not sending", "a long engine sentence with many words in it here"])
+  for(const n of ["Deck", "Flamesafe", "Show audio", "Announcements", "Disk", "Audit", "Laser arm", "Lasers", "Pixels", "Video", "Timecode", "Somethingnew"])
+    for(const stt of ["warn", "bad"]){ const it = sysItem({name:n, state:stt, word:w});
+      t(it.say.split(/\s+/).length <= 8, "a system's words are 8 or fewer: " + n + " " + w + ": " + it.say); }
 // A live mode is pinned, said first and never READY (safety review B2).
 for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLEANING"], [x => x.cleaning = {state:"unknown"}, "CLEANING"],
                         [x => x.live_flame = {on:true}, "LIVE FLAME"]]){
   s = base(); f(s);
   const n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
   t(n.tone === "bad" && p.text === word && p.cls === "bad", "a live mode is the next step and the state: " + n.text + " / " + p.text);
-  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "sf"].includes(i.key)), "a live mode is pinned, never paged");
+  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "pf"].includes(i.key)), "a live mode is pinned, never paged");
   t(n.text.split(/\s+/).length <= 8, "pinned words are 8 or fewer: " + n.text);
 }
 // The switch "Fire flames while scrubbing" is gone (2026-10-29): an old
 // engine's scrub_flames is never pinned, and no button posts its route.
 s = base(); s.scrub_flames = {on:true};
 t(pinItems(s).length === 0, "an old scrub_flames is not pinned");
+// Programming playback playing the flame cues (#173): pinned, said first,
+// its Stop 1.0's Hold.
+s = base(); s.programming_flames = {available:true, follows:true, on:false};
+t(pinItems(s).length === 0, "Programming flames not playing: nothing pinned");
+s.programming_flames.on = true;
+{ const pf = pinItems(s)[0], n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
+  t(pf && pf.key === "pf" && pf.btn === "Stop" && n.text === "Flames can fire from Programming." && n.tone === "bad" && p.text === "FLAMES LIVE",
+    "Programming flames playing: pinned in the top line with Stop: " + n.text + " / " + p.text); }
+s.cleaning = {state:"phase1"};
+t(pinItems(s).map(x => x.btn).join("|") === "Stop cleaning|Stop Programming", "two pins: each Stop names what it stops: " + pinItems(s).map(x => x.btn));
 s = base(); s.cleaning = {state:"phase1"};
 t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
 s.schedule.state = "SHOW";
@@ -88163,13 +91386,133 @@ async function fdPresses(){
   res.fail_next = q("next-t").textContent;
   return res;
 }
+// The calm screens (Jeff, 2026-10-29): what may not act is disabled, says
+// why and sends nothing when tapped; the emergency controls never dim; the
+// brand is there and never adds a header row.
+function sat(c, k){
+  const [r, g, b] = c;
+  return [(0.213 + 0.787 * k) * r + (0.715 - 0.715 * k) * g + (0.072 - 0.072 * k) * b,
+          (0.213 - 0.213 * k) * r + (0.715 + 0.285 * k) * g + (0.072 - 0.072 * k) * b,
+          (0.213 - 0.213 * k) * r + (0.715 - 0.715 * k) * g + (0.072 + 0.928 * k) * b];
+}
+function rgb(s){ const m = String(s).match(/rgba?\(([^)]+)\)/); return m ? m[1].split(",").map(Number) : [0, 0, 0, 0]; }
+function lum(c){ const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); }
+function filtOf(el){ for(let p = el; p; p = p.parentElement){ const f = getComputedStyle(p).filter; if(f && f !== "none") return {f:f, at:p}; } return null; }
+function inactSnap(){
+  const q = id => document.getElementById(id);
+  const s = {inactive:document.body.classList.contains("inactive"), next:q("next-t").textContent,
+    next_b:q("next-b").hidden ? "" : q("next-b").textContent, title:document.title,
+    brand:q("brand").style.visibility === "hidden" ? "" : (q("brand-show").hidden ? "logo" : q("brand-show").textContent),
+    note:q("ann-note").textContent, armall:q("armall-why").textContent,
+    pillf:filtOf(q("pill")) ? filtOf(q("pill")).f : "none",
+    pins:[...document.querySelectorAll("#pins .b")].map(b => ({k:b.dataset.pin, dis:b.disabled, t:b.textContent.trim()}))};
+  s.ann = [...q("ann-btns").querySelectorAll(".b"), q("ann-stop")].map(b => {
+    const f = b.querySelector(".fill");
+    return {id:b.dataset.ann || b.id, dis:b.disabled, fill:f ? getComputedStyle(f).display : "none", pe:getComputedStyle(b).pointerEvents};
+  });
+  s.hz = [...document.querySelectorAll("#hazers [data-hzb]")].map(b => ({dis:b.disabled, w:b.querySelector(".hw").textContent}));
+  s.safe = ["b-abort", "b-hold", "b-stop", "b-disall"].map(id => {
+    let op = 1; for(let p = q(id); p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
+    return {id:id, dis:q(id).disabled, filt:filtOf(q(id)) ? filtOf(q(id)).f : "none", op:op};
+  });
+  // Text under the calm tone keeps 4.5:1 (the filter applied to both).
+  s.lowc = [];
+  for(const el of document.querySelectorAll("body *")){
+    if(!shown(el) || ![...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim())) continue;
+    const fo = filtOf(el); if(!fo) continue;
+    const k = Number((fo.f.match(/saturate\(([\d.]+)\)/) || [0, 1])[1]);
+    let bg = null, bgEl = null;
+    for(let p = el; p; p = p.parentElement){ const c = rgb(getComputedStyle(p).backgroundColor); if(c.length < 4 || c[3] > 0.5){ bg = c; bgEl = p; break; } }
+    bg = bg || [7, 6, 5];
+    const fg = sat(rgb(getComputedStyle(el).color), k), b2 = bgEl && fo.at.contains(bgEl) ? sat(bg, k) : bg;
+    const x = lum(fg), y = lum(b2), cr = (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    if(cr < 4.5) s.lowc.push(el.textContent.trim().slice(0, 30) + " " + cr.toFixed(2));
+  }
+  // The brand never adds a header row: the header is as tall without it.
+  const hd = document.querySelector("header"), h1 = hd.getBoundingClientRect().height;
+  q("brand").style.display = "none"; const h0 = hd.getBoundingClientRect().height; q("brand").style.display = "";
+  s.hdr_same = Math.abs(h1 - h0) < 1; s.hdr = [Math.round(h0), Math.round(h1)];
+  s.xscroll = document.scrollingElement.scrollWidth - innerWidth;
+  return s;
+}
+async function tapDisabled(){
+  posts.length = 0;
+  const els = [...document.querySelectorAll("#ann-btns .b, #ann-stop, #m-snd, #hazers [data-hzb], #b-armall, #pins .b")].filter(b => b.disabled);
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
+  for(const b of els){
+    b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(120);
+    b.dispatchEvent(new PointerEvent("pointerup", o)); b.click(); await wait(80);
+  }
+  await wait(300);
+  return {n:els.length, posts:posts.map(p => p.u)};
+}
+async function inact(){
+  const out = {};
+  out.first = inactSnap(); out.first_taps = await tapDisabled();
+  if(/pf=1/.test(location.search)){
+    const pb = document.querySelector('#pins [data-pin="pf"]');
+    posts.length = 0;
+    if(pb && !pb.disabled){ pb.click(); await wait(400); }
+    out.pf_posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+    // Refused: kept in the alert slot until seen, as the other pins'.
+    window.__fail = /\/api\/remote\/hold/;
+    if(pb) pb.click();
+    await wait(500);
+    window.__fail = null;
+    out.pf_refused = document.getElementById("al-what").textContent;
+  }
+  if(/dayc=1/.test(location.search)){
+    // DAY when this screen cannot act: the steps go quiet, never Abort or
+    // the strip's Hold, Stop show and Disarms; Run off is DAY's own state.
+    document.querySelector('.tab[data-tab="day"]').click(); await wait(900);
+    const st0 = document.querySelector("#d-steps .st");
+    const fl = id => { const e = document.getElementById(id); return e && shown(e) ? (filtOf(e) ? filtOf(e).f : "none") : "hidden"; };
+    out.day = {noact:document.body.classList.contains("noact"), steps:document.querySelectorAll("#d-steps .st").length,
+      step_filter:st0 ? (filtOf(st0) ? filtOf(st0).f : "none") : "none",
+      emerg:Object.fromEntries(["b-abort", "m-hold", "m-stop", "m-disf", "m-disl"].map(id => [id, fl(id)])),
+      safe_ctl:[...document.querySelectorAll("#d-ctl .b.red, #d-ctl .b.safe, #d-ctl .b.redline")].filter(shown).map(e => filtOf(e) ? filtOf(e).f : "none")};
+    // Text under the quiet tone keeps 4.5:1.
+    out.day.lowc = inactSnap().lowc;
+    document.querySelector('.tab[data-tab="show"]').click(); await wait(400);
+  }
+  if(/ipad=1/.test(location.search)){
+    ME.local = false; await wait(700);
+    out.ipad = inactSnap(); out.ipad_taps = await tapDisabled();
+    ME.local = true; await wait(700);
+  }
+  if(/dead=1/.test(location.search)){
+    window.__dead = true; await wait(3500);
+    out.stale = inactSnap(); out.stale_taps = await tapDisabled();
+    window.__dead = false; await wait(2500);
+    out.back = inactSnap();
+  }
+  return out;
+}
 async function go(){
   if(!document.querySelector("#groups .tile") || document.getElementById("next-t").textContent === "Connecting to the show PC") return setTimeout(go, 100);
   await wait(600);
   const res = {layout:measure()};
   if(/presses=1/.test(location.search)) res.presses = await presses();
+  if(/inact=1/.test(location.search)) res.inact = await inact();
   if(/prhold=1/.test(location.search)) res.pr = await prPresses();
   if(/fd=1/.test(location.search)) res.fd = await fdPresses();
+  if(/pfpin=1/.test(location.search)){
+    // Programming playback playing the flame cues (#173): pinned, and its
+    // Stop is 1.0's Hold.
+    const pb = document.querySelector('#pins [data-pin="pf"]');
+    res.pf = {shown:!!pb && shown(pb), label:pb ? pb.textContent.trim() : "", dis:pb ? pb.disabled : null,
+              next:document.getElementById("next-t").textContent, pill:document.getElementById("pill-t").textContent};
+    posts.length = 0;
+    if(pb) pb.click();
+    await wait(400);
+    res.pf.posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+    // Refused: kept in the alert slot until seen, as the other pins'.
+    window.__fail = /\/api\/remote\/hold/;
+    if(pb) pb.click();
+    await wait(500);
+    window.__fail = null;
+    res.pf.refused = document.getElementById("al-what").textContent;
+  }
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
   document.body.appendChild(pre);
@@ -88178,6 +91521,17 @@ go();
 })();
 </script>
 """
+
+
+def _ui2_status_pf():
+    """Programming playback playing with the show's flame cues following
+    it (#173's programming_flames.on)."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    st["transport"] = {"programming": True}
+    st["programming_flames"] = {"available": True, "follows": True,
+                                "on": True, "line": ""}
+    return st
 
 
 def _ui2_status_running():
@@ -88269,6 +91623,325 @@ UI2_NO_SCROLL = ((1920, 1080), (1366, 768), (1280, 800), (1024, 768),
 UI2_SPARE = {(1024, 768): 24, (768, 1024): 40}
 
 
+def _ui2_status_inactive(kind, hazers=True):
+    """Run off (operator on the show PC, screen arming off), signed out,
+    or a show running; three hazers disarmed. For the calm screens."""
+    st = _ui2_status_running()
+    st["hazers"] = {"available": True, "down": "", "agree": True,
+                    "show": "held", "levels_fault": "", "last_off": None,
+                    "hazers": [{"name": f"Hazer {i + 1}", "haze_slot": 1,
+                                "fan_slot": 2, "armed": False,
+                                "label": f"Hazer {i + 1} DISARMED",
+                                "state": "disarmed", "haze": 102,
+                                "fan": 153, "haze_pct": 40, "fan_pct": 60,
+                                "why": ""} for i in range(3)]}
+    if not hazers:
+        st.pop("hazers")
+    st["arming"] = dict(st.get("arming") or {}, enabled=False)
+    st["announce"]["route"] = {"ok": True, "kind": "show",
+                               "text": "the show audio"}
+    if kind not in ("running", "running out"):
+        st["schedule"].update({"state": "STANDBY", "running": None,
+                               "next": {"show": 5, "start": "19:50",
+                                        "in_s": 900}})
+        st["show"] = {"running": False, "timecode": None}
+        st["countdown"] = {"kind": "next", "label": "Next show", "s": 900,
+                           "running": True}
+        st["flames"]["groups"] = [{"name": n, "armed": "disarmed"} for n in
+                                  ("front row", "cat-walk", "wave flamer")]
+        st["laser_arm"]["lasers"][0]["armed"] = False
+    else:
+        # Three groups beside the lasers and the hazers, as the hazers'
+        # own drawing test has them.
+        st["flames"]["groups"] = st["flames"]["groups"][:3]
+    if kind.startswith("pf"):
+        st["programming_flames"] = {"available": True, "follows": True,
+                                    "on": True, "line": ""}
+        st["transport"] = {"programming": True}
+    if kind == "viewer":
+        # Signed in, but a role that may press nothing.
+        st["me"] = {"local": True, "user": "Guest", "role": "viewer",
+                    "view_only": False,
+                    "may": {k: False for k in ("show", "arm", "unlock",
+                                               "checklist", "show_files",
+                                               "settings", "users")}}
+    if kind in ("signed out", "playing", "pf out", "running out"):
+        st["me"] = {"local": True, "user": None, "role": None,
+                    "view_only": True,
+                    "may": {k: False for k in ("show", "arm", "unlock",
+                                               "checklist", "show_files",
+                                               "settings", "users")}}
+    if kind == "playing":
+        # One playing: its Stop is never gated on the show PC, signed out
+        # or not (users.REMOTE_ROUTES: announce-stop is "safety").
+        st["announce"]["playing"] = {"id": "delayed", "name": "Delayed",
+                                     "elapsed_s": 3, "length_s": 12,
+                                     "held_schedule": True}
+    return st
+
+
+def test_ui2_calm_screens_and_brand():
+    section("interface 2.0 when the show cannot act (Jeff, 2026-10-29): "
+            "signed out, Run off, no contact or off the show PC, every "
+            "control that cannot act is disabled, says why in 8 words or "
+            "fewer and sends nothing when tapped; the screen goes calm "
+            "(4.5:1 kept) and the top line says what is needed; Abort, "
+            "Hold, Stop show and Disarm flames never dim or disable; the "
+            "show's brand (1.0's logo and name) is in the header and the "
+            "top line, never adding a header row")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    # The brand as 1.0 shows it, the one GET 1.0 already makes.
+    check('<img id="brand-logo" src="/brand/logo_small.png" alt="Jeff '
+          'Holmes Presents"' in two and 'onerror="this.hidden=true' in two
+          and 'getJSON("/api/brand", 3000)' in two and
+          'document.title = SHOW_NAME ? SHOW_NAME + " remote" : "Show remote";'
+          in two and
+          "/api/brand" in one,
+          "2.0 shows 1.0's logo (its alt text, hidden if missing) and the "
+          "show's name from 1.0's /api/brand, the page title like 1.0's")
+    check('class="qbrand"' in two[two.find('<div id="qcard"'):],
+          "the quick card prints the brand")
+    for word in ("No contact", "Show PC only", "Sign in to use",
+                 "Cannot play now", "No sound output", "Sign in to arm",
+                 "Arming off here", "Sign in", "View only",
+                 "Your sign-in cannot arm", "Cannot arm"):
+        check(len(word.split()) <= 8 and ('"' + word + '"') in two,
+              f"2.0 says why in 8 words or fewer: {word!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    brand = {"/api/brand": {"show": "Fire and Ice"}}
+    day_routes = {"/api/remote/morning": _morning_view_pico(selected=()),
+                  "/api/remote/cleaning": {"available": True, "problem": "",
+                                           "state": "idle", "running": False,
+                                           "mine": False,
+                                           "armed": "disarmed",
+                                           "settings": {}}}
+    longb = {"/api/brand": {"show": "The Grand Winter Fire and Ice "
+                                    "Spectacle"}}
+    sizes = UI2_NO_SCROLL + ((390, 844),)
+    runs = [("Run off", "run off", ((1366, 768),),
+             "?inact=1&ipad=1&dead=1&tour=0", brand),
+            ("signed out", "signed out", ((1024, 768),),
+             "?inact=1&tour=0", brand),
+            ("signed out, one playing", "playing", ((1366, 768),),
+             "?inact=1&ipad=1&tour=0", brand),
+            ("a show running", "running", ((1366, 768),),
+             "?inact=1&tour=0", brand),
+            ("Programming flames playing", "pf", ((1366, 768),),
+             "?inact=1&pf=1&dead=1&tour=0", brand),
+            ("DAY signed out", "signed out", ((1366, 768),),
+             "?inact=1&dayc=1&tour=0", dict(brand, **day_routes)),
+            ("DAY with Run off", "run off", ((1366, 768),),
+             "?inact=1&dayc=1&tour=0", dict(brand, **day_routes)),
+            ("a show playing, signed out", "running out", ((1366, 768),),
+             "?inact=1&dead=1&tour=0", brand),
+            ("signed in, may press nothing", "viewer", ((1366, 768),),
+             "?inact=1&tour=0", brand),
+            ("Programming flames playing, signed out", "pf out",
+             ((1024, 768),), "?inact=1&pf=1&tour=0", brand),
+            ("a long show name", "signed out", sizes, "?inact=1&tour=0",
+             longb),
+            ("a long show name, running", "running", sizes,
+             "?inact=1&tour=0", longb)]
+    # The layout runs (every window) without the hazers: this fixture's
+    # three groups, lasers and hazers are 5 px over at 1366x768 in this
+    # browser on bench-build too; the hazers' own test draws their row.
+    layout = ("a long show name", "a long show name, running")
+    safe_ok = lambda sn: all(not x["dis"] and "saturate" not in x["filt"]
+                             and x["op"] == 1 for x in sn["safe"])
+    for what, kind, sz, frag, routes in runs:
+        got = _rack_screen_in_chromium(chrome, page,
+                                       _ui2_status_inactive(
+                                           kind, hazers=what not in layout),
+                                       sz,
+                                       measure_js=_UI2_MEASURE_JS,
+                                       frag=frag, routes=routes,
+                                       budget_ms=25000)
+        for (w, h), res in got.items():
+            where = f"2.0, {what}, {w}x{h}"
+            if not check(isinstance(res, dict) and "inact" in res,
+                         f"{where}: drawn and measured: {res!r}"[:900]):
+                continue
+            m, r = res["layout"], res["inact"]
+            a = r["first"]
+            check(not m["problems"], f"{where}: {m['problems'][:12]}")
+            if (w, h) in UI2_NO_SCROLL and what in layout:
+                check(m["main_excess"] <= 1 and m["doc_excess"] <= 1,
+                      f"{where}: no scroll: {m['main_excess']} "
+                      f"{m['doc_excess']}")
+            check(a["hdr_same"] and a["xscroll"] <= 0,
+                  f"{where}: the brand adds no header row and nothing "
+                  f"goes off the side: {a['hdr']} {a['xscroll']}")
+            check(not a["lowc"], f"{where}: the calm tone keeps 4.5:1: "
+                                 f"{a['lowc'][:8]}")
+            check(safe_ok(a), f"{where}: Abort, Hold, Stop show and "
+                              f"Disarm flames live and full colour: "
+                              f"{a['safe']}")
+            check(not r["first_taps"]["posts"],
+                  f"{where}: a disabled control sends nothing: "
+                  f"{r['first_taps']}")
+            check(all(x["fill"] == "none" and x["pe"] == "none"
+                      for x in a["ann"] if x["dis"]),
+                  f"{where}: a disabled control shows no press: {a['ann']}")
+            check(a["title"].startswith(routes["/api/brand"]["show"]) and
+                  a["title"].endswith(" remote"),
+                  f"{where}: the page title is the show's: {a['title']!r}")
+            if (w, h) == (1366, 768) and routes is brand:
+                check(a["brand"] == "Fire and Ice",
+                      f"{where}: the header names the show: "
+                      f"{a['brand']!r}")
+            if "day" in r:
+                d = r["day"]
+                emerg_ok = all(v in ("none", "hidden") or "saturate" not in v
+                               for v in d["emerg"].values()) and \
+                    d["emerg"]["b-abort"] != "hidden" and \
+                    all("saturate" not in v for v in d["safe_ctl"])
+                if kind == "signed out":
+                    check(d["noact"] and d["steps"] and
+                          "saturate" in d["step_filter"] and emerg_ok and
+                          not d["lowc"],
+                          f"{where}: DAY signed out: the steps go quiet "
+                          f"(4.5:1 kept), never Abort, Hold, Stop show or a "
+                          f"Disarm: {d}")
+                else:
+                    check(not d["noact"] and d["steps"] and
+                          "saturate" not in d["step_filter"] and emerg_ok,
+                          f"{where}: DAY with Run off (its normal state) is "
+                          f"not quietened: {d}")
+                continue
+            if kind == "running out":
+                check(not a["inactive"] and not r["stale"]["inactive"],
+                      f"{where}: a show playing is never calm, signed out "
+                      f"or not, nor once contact is lost (review of #175): "
+                      f"{a['inactive']} {r['stale']['inactive']} "
+                      f"{a['next']!r}")
+                continue
+            if kind == "viewer":
+                check(a["inactive"] and a["note"] == "View only" and
+                      a["armall"] == "Cannot arm" and
+                      all(x["w"] == "Your sign-in cannot arm" and x["dis"]
+                          for x in a["hz"]) and len(a["hz"]) == 3,
+                      f"{where}: signed in without the right, it says so "
+                      f"rather than Sign in: {a['note']!r} {a['armall']!r} "
+                      f"{a['hz']}")
+                continue
+            if a["inactive"]:
+                check("saturate" not in a["pillf"],
+                      f"{where}: the state pill keeps its full colour on a "
+                      f"calm screen: {a['pillf']}")
+            if kind.startswith("pf"):
+                pin = [x for x in a["pins"] if x["k"] == "pf"]
+                if "stale" in r:
+                    sl = r["stale"]
+                    sp = [x for x in sl["pins"] if x["k"] == "pf"]
+                    check(not sl["inactive"] and sp and not sp[0]["dis"] and
+                          "saturate" not in sl["pillf"] and safe_ok(sl),
+                          f"{where}: contact lost with flames live: never "
+                          f"calm, the pin's Stop live, the pill full colour "
+                          f"(review of #175): {sl['inactive']} {sl['pins']} "
+                          f"{sl['pillf']}")
+                # Hold is a safety press: never off, signed out included.
+                check(pin and not pin[0]["dis"] and pin[0]["t"] == "Stop"
+                      and a["next"] == "Flames can fire from Programming."
+                      and [u for u, _ in r["pf_posts"]] ==
+                      ["/api/remote/hold"] and not a["inactive"] and
+                      r["pf_refused"] ==
+                      "Programming NOT paused. Abort or Disarm flames." and
+                      not r["first_taps"]["posts"],
+                      f"{where}: Programming playback firing flames is "
+                      f"pinned in the top line, never calm; its Stop is "
+                      f"1.0's Hold, live for anyone: {a['pins']} "
+                      f"{a['next']!r} {r['pf_posts']} {a['inactive']}")
+                continue
+            if kind == "running":
+                check(not a["inactive"] and not a["next_b"] and
+                      not any(x["dis"] for x in a["ann"][:-1]) and
+                      a["note"] == "Plays over the show",
+                      f"{where}: a running show is not calm and its "
+                      f"announcements are live: {a}"[:900])
+                continue
+            check(a["inactive"], f"{where}: the screen is calm")
+            if routes is brand:
+                check(a["next_b"] == "Fire and Ice.",
+                      f"{where}: the top line carries the show's name: "
+                      f"{a['next_b']!r}")
+            if kind == "playing":
+                check(not a["ann"][-1]["dis"],
+                      f"{where}: Stop sound is never refused on the show "
+                      f"PC, signed out included: {a['ann']}")
+                ip = r["ipad"]
+                check(ip["ann"][-1]["dis"] and ip["note"] ==
+                      "Stop sound: Show PC only" and safe_ok(ip) and
+                      not r["ipad_taps"]["posts"],
+                      f"{where}: off the show PC Stop sound is disabled "
+                      f"(the engine refuses it there), says why and sends "
+                      f"nothing: {ip['ann']} {ip['note']!r} "
+                      f"{r['ipad_taps']}")
+            if kind == "signed out":
+                check(a["next"] == "Signed out: view only. Sign in to "
+                                   "control.",
+                      f"{where}: the top line says to sign in: "
+                      f"{a['next']!r}")
+                check(all(x["dis"] for x in a["ann"][:-1]) and
+                      a["note"] == "Sign in to use" and
+                      all(x["dis"] and x["w"] == "Sign in to arm"
+                          for x in a["hz"]) and
+                      (len(a["hz"]) == 3 or what in layout) and
+                      a["armall"] == "Sign in",
+                      f"{where}: announcements, hazer arming and Arm all "
+                      f"are disabled and say why: {a}"[:900])
+
+            if kind == "run off":
+                check(a["next"] == "Show not running. Press Run show.",
+                      f"{where}: the top line says to press Run: "
+                      f"{a['next']!r}")
+                # The engine plays an announcement with Run off (it holds
+                # the schedule), so on the show PC they stay live.
+                check(not any(x["dis"] for x in a["ann"][:-1]),
+                      f"{where}: on the show PC the announcements stay "
+                      f"live with Run off (the engine plays them): "
+                      f"{a['ann']}")
+                ip = r["ipad"]
+                check(all(x["dis"] for x in ip["ann"][:-1]) and
+                      ip["note"] == "Show PC only" and
+                      all(x["dis"] and x["w"] == "Arming off here"
+                          for x in ip["hz"]) and safe_ok(ip) and
+                      not r["ipad_taps"]["posts"] and
+                      r["ipad_taps"]["n"] >= 7,
+                      f"{where}: off the show PC the announcements, Stop "
+                      f"sound and hazer arming (screen arming off) are "
+                      f"disabled, say why and send nothing: {ip} "
+                      f"{r['ipad_taps']}"[:1200])
+                sl = r["stale"]
+                check(sl["inactive"] and sl["next"].startswith("No contact")
+                      and all(x["dis"] for x in sl["ann"][:-1]) and
+                      sl["note"] == "No contact" and
+                      all(x["dis"] and x["w"] == "No contact"
+                          for x in sl["hz"]) and safe_ok(sl) and
+                      not sl["lowc"] and not r["stale_taps"]["posts"],
+                      f"{where}: no contact, the screen is calm within a "
+                      f"poll, what needs the engine is disabled and says "
+                      f"No contact, Abort and the rest stay live: {sl} "
+                      f"{r['stale_taps']}"[:1200])
+                check(not r["back"]["inactive"] or
+                      r["back"]["next"] == "Show not running. Press Run "
+                                           "show.",
+                      f"{where}: contact back, the screen is as before: "
+                      f"{r['back']['next']!r}")
+    print("  ok")
+
+
 def test_ui2_show_tab_in_a_browser():
     section("interface 2.0's SHOW tab drawn in a real browser: no scroll at "
             "1920x1080, 1366x768, 1280x800, 1024x768, 820x1180 and "
@@ -88307,7 +91980,9 @@ def test_ui2_show_tab_in_a_browser():
             ("rig check pressed", _ui2_status_rigcheck(), ((1024, 768),),
              "?prhold=1&tour=0"),
             ("finger down", _rack_status_pico(), ((1366, 768),),
-             "?fd=1&tour=0")]
+             "?fd=1&tour=0"),
+            ("Programming flames playing", _ui2_status_pf(), ((1366, 768),),
+             "?pfpin=1&tour=0")]
     for what, status, sz, frag in runs:
         if not frag:
             frag = "?tour=0"
@@ -88361,6 +92036,18 @@ def test_ui2_show_tab_in_a_browser():
                       pr["wc_pill"] == "CLEANING" and not pr["wc_in_slot"],
                       f"{where}: a running cleaning is pinned with its "
                       f"Stop, never paged, and never READY: {pr}")
+            pf = res.get("pf")
+            if frag.startswith("?pfpin"):
+                check(pf and pf["shown"] and pf["label"] == "Stop" and
+                      not pf["dis"] and
+                      pf["next"] == "Flames can fire from Programming." and
+                      pf["pill"] == "FLAMES LIVE" and
+                      [u for u, _ in pf["posts"]] == ["/api/remote/hold"] and
+                      pf["refused"] ==
+                      "Programming NOT paused. Abort or Disarm flames.",
+                      f"{where}: Programming playback firing flames is "
+                      f"pinned with Stop, which is 1.0's Hold; refused, it "
+                      f"stays in the alert slot: {pf}")
             fd = res.get("fd")
             if frag.startswith("?fd"):
                 check(fd and fd["act"] == "ack" and fd["n"] >= 2 and
@@ -88369,9 +92056,11 @@ def test_ui2_show_tab_in_a_browser():
                       fd["same"] == 1,
                       f"{where}: the slot's button acts only on the alert "
                       f"shown at finger-down: {fd}")
+                # (DAY beats as 1.0's Startup page does while it shows.)
                 check(fd and all(fd["mini"]) and fd["next_shown"] and
-                      fd["mini_routes"] == ["/api/remote/hold",
-                                            "/api/remote/disarm-all"],
+                      [r for r in fd["mini_routes"]
+                       if r != "/api/remote/morning-open"] ==
+                      ["/api/remote/hold", "/api/remote/disarm-all"],
                       f"{where}: off the SHOW tab, Hold, Stop show and "
                       f"Disarm flames are one tap, with Abort: {fd}")
                 check(fd and fd["fail_slot"] == "Disarm NOT done." and
@@ -88463,6 +92152,414 @@ def test_ui2_show_tab_in_a_browser():
               res.get("on_top") and res.get("size") == [96, 96],
               f"{where}: Abort still works: nothing on the first tap, "
               f"1.0's Abort on the second, never covered: {res!r}")
+    print("  ok")
+
+
+# The DAY tab's copies of 1.0's Startup page code: purge selection, open
+# beats, lock and unlock, the fire key, the cleaning's holds.
+UI2_DAY_COPIES = ("moActor", "openBeatBody", "groupAnySelected",
+                  "groupButtonDisabled", "groupClick", "moPress",
+                  "lockClick", "lockBody", "lockUndoOffer", "lockUndoGone",
+                  "lockUndo", "fireStart", "fireBeat", "fireStop",
+                  "morningPoll", "cleaningView", "wcPoll", "wcNow",
+                  "wcLetGo", "wcStart", "wcBeat", "wcStopPress")
+
+
+def _ui2_press_keys(src):
+    """{route: {sorted body keys, ...}} of every moPress, fuPress and
+    post("/api/remote/...", ...) call with an object body in `src`."""
+    out = {}
+    for m in re.finditer(r'(?:moPress|fuPress)\("([a-z-]+)", \{([^}]*)\}',
+                         src):
+        keys = tuple(sorted(re.findall(r'(\w+)\s*:', m.group(2))))
+        out.setdefault(m.group(1), set()).add(keys)
+    return out
+
+
+def test_ui2_day_makes_only_1_0_presses():
+    section("interface 2.0's DAY tab presses exactly what 1.0's Startup, "
+            "Fuel and Shutdown pages press: the purge, open beats, fire "
+            "key, lock and cleaning code is 1.0's own, every route and "
+            "body is 1.0's, Space fires only on the Purge step; and in "
+            "node, the steps that apply now, in 8 words or fewer")
+    one, two = _ui2_pages()
+    for n in UI2_DAY_COPIES:
+        f1, f2 = _js_function(one, n), _js_function(two, n)
+        check(f1 and f2 and _js_same(f1) == _js_same(f2),
+              f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
+    k1, k2 = _ui2_press_keys(one), _ui2_press_keys(two)
+    check(k2 and all(r in k1 and keys <= k1[r] for r, keys in k2.items()),
+          f"every DAY press is a 1.0 press, body keys and all: "
+          f"{ {r: sorted(k) for r, k in k2.items() if r not in k1 or not k <= k1[r]} }")
+    for need in ('fuPress("fuel-refill", {all:true, confirm:true, '
+                 'units:(FU && FU.unit_ids) || []});',
+                 'fuPress("fuel-refill", {unit:u.id});',
+                 'moPress("laser-test", {all:true, on:true}, "mo-lmsg")',
+                 'moPress("laser-test", {all:true, on:false}, "mo-lmsg")',
+                 'moPress("open-beyond", {}, "mo-lmsg")',
+                 'moPress("purge-clear", {})',
+                 'post("/api/remote/purge-clear", moActor({}))'):
+        check(need in one and need in two, f"1.0 and DAY both press: {need}")
+    check(re.search(r'moPress\("checklist-tick", \{checklist:\w+\.id, '
+                    r'step:s\.id, done: !s\.done, who:MO_NAME\}, '
+                    r'"mo-cmsg"\)', one) and
+          re.search(r'moPress\("checklist-tick", \{checklist:\w+\.id, '
+                    r'step:s\.id, done: !s\.done, who:MO_NAME\}, '
+                    r'"mo-cmsg"\)', two),
+          "a tick is 1.0's: the list, the step, done or not, who")
+    check('if(TAB !== "day" || DAY_STEP !== "purge") return;' in two,
+          "Space fires the purge on DAY's Purge step only")
+    check('$("d-hz-open").addEventListener("click", openHazerSheet); '
+          '$("d-hz-off").addEventListener("click", hazersOff);' in two and
+          two.count("function openHazerSheet(") == 1,
+          "DAY's hazer step is #168's own sheet and Hazers off, not a copy")
+    check("touch" not in (_js_function(two, "dayBuild") or "x") and
+          '"purge-fire"' not in two.rsplit("// END OF THE COPY.", 1)[1],
+          "nothing on DAY fires a purge but 1.0's own fire key code")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "isLive", "short8", "dayList", "daySteps", "dayIcon",
+        "dayDefaultPart"))
+    js = lo + "\n" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const mo = () => ({checks:[{title:"a", level:"ok"}], groups:{"front row":["m1"]}, purge_state:{selected:[]}, purge_enabled:true,
+  machines:[{id:"m1", name:"front row 1"}], lasers:[{id:"L1", name:"Laser 1"}], lockout:{machines:{}, lasers:{}},
+  checklists:{checklists:[{id:"startup", done:1, total:3, steps:[]}, {id:"shutdown", done:0, total:2, steps:[]}], names:["Andy"]}});
+const st = (u) => ({me:{users_active:true, user:u || null}, schedule:{attached:true, next:{show:4}}});
+const keys = xs => xs.map(x => x.key).join(",");
+let s = daySteps("start", {st:st(), mo:mo(), seen:() => false});
+t(keys(s) === "signin,checks,startlist,purge,lasers,locks", "signed out: sign in first: " + keys(s));
+s = daySteps("start", {st:st("Andy"), mo:mo(), seen:() => false});
+t(!keys(s).includes("signin"), "signed in: no sign in step");
+s = daySteps("shut", {st:st("Andy"), mo:mo(), wc:{available:true, state:"idle"}, seen:() => false});
+t(keys(s) === "shutlist,clean,locks-shut,signout", "shutdown: list, cleaning, locks, sign out: " + keys(s));
+const m2 = mo(); m2.purge_state = {selected:["m1"], firing:true};
+s = daySteps("start", {st:st("Andy"), mo:m2, seen:() => false});
+t(s.find(x => x.key === "purge").state === "live", "a purge firing is live");
+s = daySteps("shut", {st:st("Andy"), mo:mo(), wc:{available:true, state:"paused"}, seen:() => false});
+t(s.find(x => x.key === "clean").state === "live", "a cleaning waiting is live");
+s = daySteps("shut", {st:st("Andy"), mo:mo(), wc:{available:false, problem:"There is no wave flamer group."}, seen:() => false});
+t(s.find(x => x.key === "clean").state === "blocked", "no cleaning here: blocked, said");
+const m3 = mo(); m3.checks = [{title:"x", level:"bad"}];
+t(daySteps("start", {st:st("Andy"), mo:m3, seen:() => false}).find(x => x.key === "checks").state === "blocked", "a bad check blocks");
+t(daySteps("start", {st:st("Andy"), mo:mo(), seen:k => k === "purge"}).find(x => x.key === "purge").state === "done", "a purge looked at is done");
+const sh = st("Andy"); sh.hazers = {available:true, hazers:[{name:"Hazer 1", armed:true}, {name:"Hazer 2", armed:false}]};
+s = daySteps("start", {st:sh, mo:mo(), seen:() => false});
+t(keys(s) === "checks,startlist,purge,lasers,hazers,locks" && s.find(x => x.key === "hazers").why === "1 of 2 armed.", "hazers (#168): a step with its own sheet: " + keys(s));
+t(!keys(daySteps("shut", {st:sh, mo:mo(), seen:() => false})).includes("hazers"), "hazers are a startup step");
+// Every why, for many states: 8 words or fewer.
+for(const part of ["start", "shut"]) for(const m of [mo(), m2, m3]) for(const wc of [null, {available:true, state:"idle"}, {available:true, state:"phase2"}, {available:false, problem:"There is no wave flamer group in this engine at all."}])
+  for(const u of [null, "Andy"]) for(const x of daySteps(part, {st:st(u), mo:m, wc:wc, fu:{units:[{refill_soon:true}]}, seen:() => false}))
+    t(String(x.why).split(/\s+/).length <= 8 && String(x.title).split(/\s+/).length <= 3, "short: " + x.title + " / " + x.why);
+// Startup until the shows are over and the startup list is done.
+const m4 = mo(); m4.checklists.checklists[0].done = 3;
+t(dayDefaultPart(st("Andy"), m4) === "start", "shows to come: Startup");
+const s5 = st("Andy"); s5.schedule.next = null;
+t(dayDefaultPart(s5, m4) === "shut" && dayDefaultPart(s5, mo()) === "start", "the night over and the list done: Shutdown");
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"DAY's steps, in node: {r.stdout[-900:]!r} {r.stderr[-600:]!r}")
+    print("  ok")
+
+
+_UI2_DAY_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const of = r => posts.filter(p => p.u === "/api/remote/" + r).map(p => JSON.parse(p.b));
+const key = (code, type, repeat) => document.dispatchEvent(new KeyboardEvent(type, {code:code, key:" ", bubbles:true, repeat:!!repeat}));
+async function go(){
+  for(let i = 0; i < 60 && !document.querySelector("#d-steps .st"); i++) await wait(100);
+  await wait(400);
+  const res = {};
+  const main = document.querySelector("main");
+  res.excess = main.scrollHeight - main.clientHeight;
+  res.steps = [...document.querySelectorAll("#d-steps .st")].map(b => b.dataset.step);
+  res.small = [...document.querySelectorAll("#t-day button, #t-day a")].filter(b => b.getClientRects().length).filter(b => { const r = b.getBoundingClientRect(); return r.height < 55.5; }).map(b => b.id || b.textContent.trim().slice(0, 20));
+  // Purge: a group, then Space held (with the key's repeats), then let go.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  document.querySelector('#mo-groups [data-grp="cat-walk"]').click(); await wait(300);
+  res.select = of("purge-select");
+  // A group with a member already armed: its tap takes the whole group off.
+  posts.length = 0;
+  document.querySelector('#mo-groups [data-grp="front row"]').click(); await wait(300);
+  res.select_part = of("purge-select");
+  posts.length = 0;
+  key("Space", "keydown"); for(let i = 0; i < 4; i++){ await wait(90); key("Space", "keydown", true); }
+  res.fire_held = of("purge-fire");
+  key("Space", "keyup"); await wait(300);
+  res.fire_after = of("purge-fire").length; res.stop = of("purge-stop").length;
+  // Space over an open sheet presses the sheet's button and never fires
+  // (review of #169, 3).
+  posts.length = 0;
+  q("d-q").click(); await wait(300);
+  const sb = document.querySelector("#sheet button");
+  res.sheet_open = !q("sheet").hidden;
+  if(sb){ sb.focus(); sb.dispatchEvent(new KeyboardEvent("keydown", {code:"Space", key:" ", bubbles:true})); }
+  key("Space", "keydown"); await wait(300); key("Space", "keyup");
+  document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true})); await wait(200);
+  res.fire_sheet = of("purge-fire").length;
+  // A tapped group button keeps the focus (second review of #169, 1):
+  // Space on it still fires, and its default is stopped down and up, so
+  // the browser never presses the button (which would drop the group).
+  posts.length = 0;
+  const gb = document.querySelector('#mo-groups [data-grp="cat-walk"]');
+  gb.focus(); res.focus_is_btn = document.activeElement === gb;
+  const kopt = r => ({code:"Space", key:" ", bubbles:true, cancelable:true, repeat:!!r});
+  const kd = new KeyboardEvent("keydown", kopt(false)); gb.dispatchEvent(kd);
+  for(let i = 0; i < 4; i++){ await wait(90); gb.dispatchEvent(new KeyboardEvent("keydown", kopt(true))); }
+  res.fire_focused = of("purge-fire").length;
+  const ku = new KeyboardEvent("keyup", kopt(false)); gb.dispatchEvent(ku); await wait(300);
+  res.prevented = [kd.defaultPrevented, ku.defaultPrevented];
+  res.sel_after_focus = of("purge-select").length + of("purge-clear").length;
+  gb.blur();
+  // Space on a focused Abort or Disarm flames presses it and never fires
+  // (third review of #169): its default is left alone, no purge beat goes.
+  res.emerg = {};
+  for(const id of ["b-abort", "m-disf"]){
+    posts.length = 0;
+    const eb = q(id); eb.focus();
+    const ed = new KeyboardEvent("keydown", kopt(false)); eb.dispatchEvent(ed); await wait(300);
+    const eu = new KeyboardEvent("keyup", kopt(false)); eb.dispatchEvent(eu); await wait(200);
+    res.emerg[id] = {focused:document.activeElement === eb, fire:of("purge-fire").length, prevented:[ed.defaultPrevented, eu.defaultPrevented]};
+    eb.blur();
+  }
+  // Next on Purge moves on and leaves it to do (a look is not a purge),
+  // with nothing selected (a selection keeps it to do regardless).
+  MO.purge_state = Object.assign({}, MO.purge_state || {}, {selected:[]});
+  q("d-next").click(); await wait(100);
+  res.purge_after_next = document.querySelector('[data-step="purge"]').className;
+  // Leaving the Purge step drops this screen's selection (review of #169, 1).
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  document.querySelector('[data-step="locks"]').click(); await wait(300);
+  res.clear_on_step = of("purge-clear").length;
+  // The Purge step dropping out on a redraw (no purge groups now) goes as
+  // if left: this screen's selection with it.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  const g0 = MO.groups; MO.groups = {}; renderMorning(); await wait(300);
+  res.clear_on_drop = of("purge-clear").length;
+  MO.groups = g0; renderMorning(); await wait(100);
+  document.querySelector('[data-step="locks"]').click(); await wait(300);
+  // Space on another step fires nothing.
+  posts.length = 0;
+  key("Space", "keydown"); await wait(300); key("Space", "keyup"); await wait(100);
+  res.fire_elsewhere = of("purge-fire").length;
+  // A lock: a fresh read of the lockout, then 1.0's body.
+  posts.length = 0;
+  document.querySelector('#d-locks [data-lock="m2"]').click(); await wait(500);
+  res.lock = of("lock");
+  // The startup list: who, then a tick (a step's first second is quiet).
+  document.querySelector('[data-step="startlist"]').click(); await wait(1200);
+  posts.length = 0;
+  q("d-tick").click(); await wait(300);
+  res.tick_noname = of("checklist-tick").length;
+  res.noname_msg = q("mo-cmsg").textContent;
+  const who = document.querySelector('#d-ck-who [data-who="Andy"]'); if(who) who.click(); await wait(200);
+  posts.length = 0;
+  q("d-tick").click(); await wait(300);
+  res.tick = of("checklist-tick");
+  // A double tap is one tick, of the step drawn (review of #169, 2): the
+  // second tap comes inside the quiet second; after it a tap counts again.
+  await wait(1100);
+  posts.length = 0;
+  res.tick_step = q("d-tick").dataset.step;
+  q("d-tick").click(); await wait(40); q("d-tick").click(); await wait(400);
+  res.double = of("checklist-tick").map(b => b.step);
+  await wait(1100);
+  q("d-tick").click(); await wait(300);
+  res.after_quiet = of("checklist-tick").length;
+  // Switching Startup and Shutdown on the Purge step drops it too.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  document.querySelector('#d-seg [data-part="shut"]').click(); await wait(300);
+  res.clear_on_part = of("purge-clear").length;
+  document.querySelector('#d-seg [data-part="start"]').click(); await wait(300);
+  document.querySelector('[data-step="startlist"]').click(); await wait(300);
+  // Next: to the next step not done.
+  const before = document.querySelector("#d-steps .st.on").dataset.step;
+  q("d-next").click(); await wait(300);
+  res.next = [before, document.querySelector("#d-steps .st.on").dataset.step];
+  // Shutdown: the cleaning's hold beats while held, lets go on release.
+  document.querySelector('#d-seg [data-part="shut"]').click(); await wait(300);
+  document.querySelector('[data-step="clean"]').click(); await wait(400);
+  posts.length = 0;
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:5};
+  q("wc-hold").dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
+  res.beats_held = of("cleaning-beat").map(b => b.hold);
+  q("wc-hold").dispatchEvent(new PointerEvent("pointerup", o)); await wait(300);
+  res.beats_after = of("cleaning-beat").map(b => b.hold);
+  q("wc-stop").click(); await wait(200);
+  res.cstop = of("cleaning-stop").length;
+  // A timed purge running (#172): the Purge step is live with the
+  // engine's countdown, and leaving the step never clears it.
+  document.querySelector('#d-seg [data-part="start"]').click(); await wait(300);
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  MO.purge_state = Object.assign({}, MO.purge_state || {}, {selected:["m1"], owner:MO.me, firing:false, timed:true});
+  MO.timed = {left_s:12.2, seconds:30, elapsed_s:17.8, machines:["front row 1"]};
+  renderMorning(); await wait(150);
+  res.tp_key = q("mo-key").textContent;
+  res.tp_step = document.querySelector('[data-step="purge"]').className;
+  posts.length = 0;
+  document.querySelector('[data-step="locks"]').click(); await wait(300);
+  res.tp_clear = of("purge-clear").length;
+  MO.purge_state = Object.assign({}, MO.purge_state, {timed:false}); MO.timed = null;
+  // Leaving DAY drops this screen's own purge selection.
+  posts.length = 0;
+  document.querySelector('.tab[data-tab="show"]').click(); await wait(300);
+  res.left = posts.map(p => p.u);
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_ui2_day_tab_in_a_browser():
+    section("interface 2.0's DAY tab in a real browser: no scroll, targets "
+            "56 px; a group tap is 1.0's purge select, Space held beats "
+            "1.0's purge fire and its release stops it, Space elsewhere "
+            "fires nothing, a lock reads the lockout first and sends 1.0's "
+            "body, a tick is 1.0's, Next goes on, the cleaning's hold beats "
+            "while held and lets go on release, and leaving DAY drops this "
+            "screen's purge selection")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    mo = _morning_view_pico(selected=("m1",))
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    wc = {"available": True, "problem": "", "state": "idle",
+          "running": False, "mine": False, "armed": "disarmed",
+          "settings": {}}
+    got = _rack_screen_in_chromium(
+        chrome, page, st, ((1366, 768),), measure_js=_UI2_DAY_JS,
+        frag="?tour=0#day", budget_ms=20000,
+        routes={"/api/remote/morning": mo, "/api/remote/cleaning": wc},
+        posts={"/api/remote/cleaning-beat": dict(wc, state="starting",
+                                                 mine=True),
+               "/api/remote/purge-fire": {"fire_id": 7,
+                                          "firing": ["cat-walk 1"]}})
+    for (w, h), res in got.items():
+        where = f"2.0 DAY, {w}x{h}"
+        if not check(isinstance(res, dict) and "steps" in res,
+                     f"{where}: drawn and measured: {res!r}"):
+            continue
+        check(res["excess"] <= 1 and not res["small"],
+              f"{where}: no scroll, nothing under 56 px: {res['excess']} "
+              f"{res['small']}")
+        sel = res["select"]
+        check(len(sel) == 1 and sel[0].get("machines") == ["m4", "m5", "m6"]
+              and sel[0].get("group") == "cat-walk" and
+              sel[0].get("on") is True and "seen" in sel[0],
+              f"{where}: a group tap is 1.0's purge select: {sel}")
+        sp = res["select_part"]
+        check(len(sp) == 1 and sp[0].get("machines") == ["m1", "m2", "m3"]
+              and sp[0].get("on") is False,
+              f"{where}: a group with a member armed comes off whole: {sp}")
+        fh = res["fire_held"]
+        check(len(fh) >= 2 and all(b.get("on") is True for b in fh) and
+              fh[1].get("fire_id") == 7,
+              f"{where}: Space held beats 1.0's purge fire: {fh}")
+        check(res["stop"] >= 1 and res["fire_after"] == len(fh),
+              f"{where}: letting go of Space stops it, no beat after: "
+              f"{res}")
+        check(res["sheet_open"] and res["fire_sheet"] == 0,
+              f"{where}: Space over an open sheet never fires (review of "
+              f"#169, 3): {res['fire_sheet']}")
+        check(res["focus_is_btn"] and res["fire_focused"] >= 2 and
+              res["prevented"] == [True, True] and
+              res["sel_after_focus"] == 0,
+              f"{where}: Space on a focused group button fires as 1.0's "
+              f"does and never presses the button (second review of #169, "
+              f"1): {res['fire_focused']} {res['prevented']} "
+              f"{res['sel_after_focus']}")
+        em = res.get("emerg") or {}
+        check(set(em) == {"b-abort", "m-disf"} and
+              all(v["focused"] and v["fire"] == 0 and
+                  v["prevented"] == [False, False] for v in em.values()),
+              f"{where}: Space on a focused Abort or Disarm flames presses "
+              f"it and never fires the purge (third review of #169): {em}")
+        check(res["clear_on_step"] >= 1 and res["clear_on_part"] >= 1 and
+              res["clear_on_drop"] >= 1,
+              f"{where}: leaving the Purge step or switching Startup and "
+              f"Shutdown drops this screen's purge selection (review of "
+              f"#169, 1), or when the step drops out: "
+              f"{res['clear_on_step']} {res['clear_on_part']} "
+              f"{res['clear_on_drop']}")
+        check("done" not in res["purge_after_next"].split(),
+              f"{where}: Next on Purge leaves it to do: "
+              f"{res['purge_after_next']}")
+        check(res["double"] == [res["tick_step"]] and
+              res["tick_step"] == "s1" and res["after_quiet"] == 2,
+              f"{where}: a double tap on Tick is one tick, of the step "
+              f"drawn; a tap after the quiet second counts (review of "
+              f"#169, 2): {res['double']} {res['tick_step']} "
+              f"{res['after_quiet']}")
+        check(res["fire_elsewhere"] == 0,
+              f"{where}: Space on another step fires nothing: {res}")
+        check(res["lock"] == [dict(res["lock"][0], kind="machine", id="m2",
+                                   on=True)] if res["lock"] else False,
+              f"{where}: a lock is 1.0's body: {res['lock']}")
+        check(res["tick_noname"] == 0 and
+              res["noname_msg"].startswith("Pick who"),
+              f"{where}: no tick goes in without a name: {res}")
+        tk = res["tick"]
+        check(len(tk) == 1 and tk[0].get("checklist") == "startup" and
+              tk[0].get("step") == "s1" and tk[0].get("done") is True and
+              tk[0].get("who") == "Andy",
+              f"{where}: a tick is 1.0's: {tk}")
+        check(res["next"][0] != res["next"][1],
+              f"{where}: Next goes to the next step: {res['next']}")
+        check(len(res["beats_held"]) >= 2 and
+              all(b is True for b in res["beats_held"]) and
+              res["beats_after"][-1] is False and res["cstop"] == 1,
+              f"{where}: the cleaning's hold beats while held, lets go on "
+              f"release, Stop is 1.0's: {res}")
+        check(res.get("tp_key") == "TIMED PURGE: 13 s left" and
+              "live" in res.get("tp_step", "").split() and
+              res.get("tp_clear") == 0,
+              f"{where}: a timed purge (#172): the Purge step is live with "
+              f"the engine's countdown, and leaving it does not clear it: "
+              f"{res.get('tp_key')!r} {res.get('tp_step')!r} "
+              f"{res.get('tp_clear')}")
+        check("/api/remote/purge-clear" in res["left"],
+              f"{where}: leaving DAY drops this screen's own purge "
+              f"selection: {res['left']}")
     print("  ok")
 
 
@@ -88970,6 +93067,11 @@ if __name__ == "__main__":
         test_fire_ice_auto_start_off_and_start_now,
         test_fire_ice_start_rules_on_the_ordered_line,
         test_fire_ice_review_hand_mutations,
+        test_every_show_start_clears_the_pixels,
+        test_the_show_takes_over_the_pixels_on_its_first_frame,
+        test_no_dark_frame_between_the_show_and_the_idle_look,
+        test_hold_abort_stop_black_the_pixels_after_a_start,
+        test_closed_night_abort_and_stop_say_what_they_did,
         test_fire_ice_show_log_is_written_off_the_logging_threads,
         test_fire_ice_abort_and_hold_before_the_show_is_confirmed,
         test_fire_ice_show_end_burst_never_holds_up_the_flame_link,
@@ -89130,6 +93232,14 @@ if __name__ == "__main__":
         test_morning_arrange_mode_arms_nothing,
         test_morning_arrange_disables_firing,
         test_purge_release_can_never_start_a_fire,
+        test_timed_purge_flame_link_hard_end,
+        test_timed_purge_at_the_engine,
+        test_timed_purge_every_end_cause,
+        test_timed_purge_end_to_end_real_flamesafe,
+        test_timed_purge_on_the_pages,
+        test_timed_purge_button_driven,
+        test_timed_purge_deck_key,
+        test_timed_purge_stall_inside_a_send_and_a_signed_out_deck,
         test_windows_rack_window_and_explorer_front,
         test_users_passwords_are_slow_salted_hashes_and_never_stored,
         test_users_lockout_is_short_and_never_permanent,
@@ -89160,6 +93270,8 @@ if __name__ == "__main__":
         test_group_disarm_is_confirmed_or_forced,
         test_group_disarm_across_two_screens_real_flamesafe,
         test_lasers_lamp_follows_the_beyond_link,
+        test_this_pc_includes_its_own_addresses_and_loopback_adapters,
+        test_a_laser_without_its_calibration_cue_says_what_and_where,
         test_video_lamp_follows_the_madmapper_watch,
         test_madmapper_not_following_is_a_display_only_alert,
         test_reset_says_how_the_rig_stands,
@@ -89233,6 +93345,9 @@ if __name__ == "__main__":
         test_ui2_pages_served_and_switched,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_show_tab_in_a_browser,
+        test_ui2_day_makes_only_1_0_presses,
+        test_ui2_day_tab_in_a_browser,
+        test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
     ]
     _stopped = _run_tests(TESTS)

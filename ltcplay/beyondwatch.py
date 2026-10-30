@@ -16,18 +16,20 @@ without psutil). That is a LINK check, never a laser check:
              it lands: the lamp says LINK LOST, and an alert is raised once
              per loss.
   "unknown"  it cannot be told: not Windows, BEYOND on another machine
-             (its OSC host is not this PC's loopback), the process list
+             (its OSC host is not one of this PC's addresses: thispc.py),
+             the process list
              could not be read, or no look in the last STALE_S.
 
 Display only. Nothing here sends anything to BEYOND or the rig, and
 nothing here can blank, unblank, arm or disarm a laser.
 """
 import fnmatch
-import ipaddress
 import subprocess
 import sys
 import threading
 import time
+
+from . import thispc
 
 INTERVAL_S = 3.0      # one look at the process list every this long
 STALE_S = 10.0        # a look older than this says nothing any more
@@ -35,16 +37,12 @@ IMAGES = ("beyond*.exe",)   # soak_apps.APPS["BEYOND"]["exe"], lower case
 
 
 def on_this_pc(host):
-    """True when BEYOND's OSC host is this PC's loopback (the show PC's
-    127.0.0.2, or localhost): only then can its process be looked for
-    here. False for anything else, including no host."""
-    h = str(host or "").strip().lower()
-    if h == "localhost":
-        return True
-    try:
-        return ipaddress.IPv4Address(h).is_loopback
-    except (ipaddress.AddressValueError, ValueError):
-        return False
+    """True when BEYOND's OSC host is this PC: localhost, a 127.x.x.x
+    loopback address (the show PC's 127.0.0.2), or one of this PC's own
+    interface addresses, a loopback adapter's included (thispc.py, shared
+    with the MadMapper watch): only then can its process be looked for
+    here. False for anything else, including no host and 0.0.0.0."""
+    return thispc.on_this_pc(host)
 
 
 def windows_probe(run=subprocess.run):
@@ -67,12 +65,29 @@ def windows_probe(run=subprocess.run):
 
 def probe_for(host, windows=None):
     """The probe for a BEYOND whose OSC host is `host`: windows_probe on
-    the show PC with BEYOND on its loopback, else one that cannot tell."""
+    the show PC with BEYOND on this PC (on_this_pc), else one that cannot
+    tell."""
     if windows is None:
         windows = sys.platform == "win32"
     if windows and on_this_pc(host):
         return windows_probe
     return lambda: None
+
+
+def unknown_why(host, windows=None):
+    """Why whether BEYOND is running cannot be told from here, in a
+    sentence, for a probe_for(host) that cannot: BEYOND on another machine
+    (naming its OSC host and this PC's addresses), or not the Windows show
+    PC. None when it can look. Never raises."""
+    if windows is None:
+        windows = sys.platform == "win32"
+    if host is not None and not on_this_pc(host):
+        return (f"BEYOND is on another computer: its OSC host is {host}, "
+                f"{thispc.not_mine()}. Its address is in the Network check")
+    if not windows:
+        return ("this is not the Windows show PC, so whether BEYOND is "
+                "running cannot be told from here")
+    return None
 
 
 class BeyondWatch:
