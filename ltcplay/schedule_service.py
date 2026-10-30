@@ -1136,6 +1136,13 @@ class Service:
              if dropped else []) + list(skipped))
         self.machine = out.machine
         self._record(out, now)
+        if out.machine.state == sch.OFF and out.machine.slots != m.slots \
+                and str(m.date) in self._summarised:
+            # The summary written when the night closed says the list as
+            # it is now (review B of PR #196: a save after Close for the
+            # night added rows the summary did not have).
+            self._write_summary("closed; its list was changed by a "
+                                "schedule saved after it closed")
         if out.machine.state == sch.BOOT:
             # A night that never opened (sch.follow_rule): it starts as a
             # restart starts it, through BOOT_DONE and its usual effects,
@@ -2655,7 +2662,14 @@ class Service:
             return None
         words = sch.reset_words()
         ends = sch.night_reset(m.date, m.tz, self.rule, m)
-        default = ends == sch.night_reset(m.date, m.tz)
+        # Said as the 2 AM reset only when the night was over by 2 AM: a
+        # show delayed at a time after 2 AM ends the night later (review B
+        # of PR #196).
+        two = sch.night_reset(m.date, m.tz)
+        late = m.delayed() is not None and m.delayed().start > two
+        default = ends == two and not late
+        if late:
+            ends = max(ends, m.delayed().start)
         if not default:
             words = f"{m.hm(ends)} hand over to the next night"
         if m.delayed() is None:

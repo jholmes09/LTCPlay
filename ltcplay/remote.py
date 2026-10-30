@@ -6993,10 +6993,8 @@ class Remote:
             cw.refresh(path)
         # Jeff, 2026-10-30: "Don't restrict the schedule in any way." What
         # used to refuse a save is said here, and the save stands.
-        try:
-            warns = list(sch.rule_warnings(rule))
-        except Exception:                        # noqa: BLE001
-            warns = []
+        # rule_warnings never raises: a failure is itself a warning.
+        warns = list(sch.rule_warnings(rule))
         warned = (" Warnings, saved anyway: " + " ".join(warns)) \
             if warns else ""
         self._journal("", "Rack screen", "schedule file", "saved",

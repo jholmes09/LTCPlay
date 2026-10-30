@@ -696,16 +696,38 @@ def _night_span(rule, d):
 SCAN_NIGHTS = 400
 
 
+# How many date exceptions rule_warnings looks at (review B of PR #196:
+# 100000 exceptions took over 20 s).
+SCAN_EXCEPTIONS = 2000
+
+
 def rule_warnings(rule, most=6):
     """Sentences for a schedule that is saved and used as it is, but has
     something an operator should know (Jeff, 2026-10-30: "Don't restrict
-    the schedule in any way": what was refused is now said here). Pure."""
+    the schedule in any way": what was refused is now said here). Never
+    raises: a failure is itself a sentence (review B of PR #196: it was
+    swallowed and the save said nothing). Pure."""
+    try:
+        return _rule_warnings(rule, most)
+    except Exception as e:                       # noqa: BLE001
+        return [f"The schedule could not be checked for warnings "
+                f"({type(e).__name__}: {e}). It is saved and used as it "
+                f"is; check its numbers."]
+
+
+def _rule_warnings(rule, most):
     out = list(rule.notes)
+    exc_all = sorted(rule.exceptions.items())
+    exc = dict(exc_all[:SCAN_EXCEPTIONS])
+    if len(exc_all) > SCAN_EXCEPTIONS:
+        out.append(f"The schedule has {len(exc_all)} date exceptions; the "
+                   f"first {SCAN_EXCEPTIONS} were checked for warnings. All "
+                   f"of them are used.")
     need = rule.show_len_s + rule.guard_s
     nights = [(f"weekly {k}", rule.weekly[k]) for k in WEEKDAYS
               if k in rule.weekly]
-    nights += [(f"exception {d}", n) for d, n in sorted(
-        rule.exceptions.items()) if n is not None]
+    nights += [(f"exception {d}", n) for d, n in sorted(exc.items())
+               if n is not None]
     for where, n in nights:
         if n.interval_min * 60 < need:
             out.append(
@@ -725,7 +747,7 @@ def rule_warnings(rule, most=6):
         out.append(f"The season ends on {rule.last_date} before it starts "
                    f"on {rule.first_date}, so only the date exceptions have "
                    f"shows. Saved as it is.")
-    for d, n in sorted(rule.exceptions.items()):
+    for d, n in sorted(exc.items()):
         if not (rule.first_date <= d <= rule.last_date):
             out.append(f"The exception for {d} is outside the season "
                        f"({rule.first_date} to {rule.last_date}). "
@@ -741,7 +763,7 @@ def rule_warnings(rule, most=6):
                                 "Thursday", "Friday", "Saturday", "Sunday")))
     one = timedelta(days=1)
     dates = set()
-    for e in rule.exceptions:
+    for e in exc:
         dates.update((e - one, e))
     lo, hi = sorted((rule.first_date, rule.last_date))
     d, k = lo - one, 0
@@ -1015,8 +1037,11 @@ class Machine:
         (review of PR #196: a list that runs past midnight)."""
         local = dt.astimezone(self.tz)
         day = (local.date() - self.date).days
-        return clock(local) + (" (tomorrow)" if day == 1 else
-                               f" ({local.date()})" if day else "")
+        # The autumn's repeated hour: the second 01:05 is said as such
+        # (review B of PR #196).
+        head = "the second " if getattr(local, "fold", 0) else ""
+        return head + clock(local) + (
+            " (tomorrow)" if day == 1 else f" ({local.date()})" if day else "")
 
 
 @dataclass(frozen=True)
@@ -2095,7 +2120,14 @@ def night_of(now, tz, rule=None, m=None):
         live = m if m is not None and m.date == y else None
         if now < night_reset(y, tz, rule, live):
             return y
-    return local.date()
+    # Today's night may hand over before midnight, when tomorrow's first
+    # show is early enough that its preshow starts tonight (review B of PR
+    # #196: a first show at 00:10 had no preshow).
+    today = local.date()
+    live = m if m is not None and m.date == today else None
+    if now >= night_reset(today, tz, rule, live):
+        return today + timedelta(days=1)
+    return today
 
 
 def night_reset(d, tz, rule=None, m=None):
@@ -2117,6 +2149,12 @@ def night_reset(d, tz, rule=None, m=None):
         return base
     _first, end = _night_span(rule, d)
     if m is not None:
+        # The machine is the night: what it still has to run decides, not
+        # the file's hours (review B of PR #196: a night closed with Close
+        # for the night, or with its late shows skipped, held the next
+        # night back until its planned end, and the next night's first
+        # shows were missed). Nothing left to run: the night is over.
+        end = None
         need = timedelta(seconds=m.show_len_s + m.guard_s)
         for s in m.slots:
             if s.status == PENDING:
@@ -2179,11 +2217,17 @@ EDIT_DAY_LIMIT = timedelta(hours=3)
 
 def _edit_time(m, ev, now=None):
     """The time an operator typed for tonight's list ("00:30", or "10:55
-    tomorrow", "23:30 today"). Without a day, a time earlier in the day
-    than tonight's first show is after midnight, on the next day (Jeff,
-    2026-10-30: shows between midnight and 2 AM); a time that would land
-    more than EDIT_DAY_LIMIT after tonight's last planned show is never
-    guessed: it is refused, saying how to type it with its day."""
+    tomorrow", "23:30 today").
+
+    Without a day, the time is the nearest occurrence still to come inside
+    tonight's window: from the start of the night's date to its planned end
+    (the file's last_end, or its last planned show) plus EDIT_DAY_LIMIT
+    (review B of PR #196: a guess from whatever was on the list sent a
+    time typed in the afternoon to the next day). A time that has gone by
+    and is still inside the window is taken (and then refused as passed);
+    anything else is never guessed: it is refused, saying how to type it
+    with its day. A time in the autumn's repeated hour is the first one,
+    and the journal says so (_ambiguous_note)."""
     text = str(ev.at or "").strip()
     day = None
     for word in ("tomorrow", "today", "tonight"):
@@ -2197,25 +2241,38 @@ def _edit_time(m, ev, now=None):
         return later
     if day is not None:
         return same
-    times = [(s.planned or s.start) for s in m.slots]
-    if not times:
+    planned = [(s.planned or s.start) for s in m.slots if s.origin == "rule"]
+    ends = [x for x in (m.night_end, max(planned, default=None))
+            if x is not None]
+    if not ends:
         return same
-    first, last = min(times), max(times)
-    pick = same
-    if t < _local(m, first).time() and \
-            (now is None or same <= _utc(_aware(now))):
-        # Earlier in the day than tonight's first show and gone by today:
-        # the small hours, after midnight.
-        pick = later
-    if pick > last + EDIT_DAY_LIMIT:
-        word = "tomorrow" if pick == later else "today"
-        hhmm = _hm(t)
-        raise ValueError(
-            f"{hhmm} would be {word} at {clock(_local(m, pick))}, more than "
-            f"{int(EDIT_DAY_LIMIT.total_seconds() // 3600)} hours after "
-            f"tonight's last show at {m.hm(last)}. If that is what you "
-            f"mean, type \"{hhmm} {word}\" to confirm.")
-    return pick
+    start = _utc(datetime.combine(m.date, time(0), tzinfo=m.tz))
+    limit = max(ends) + EDIT_DAY_LIMIT
+    cut = _utc(_aware(now)) if now is not None else start
+    for c in (same, later):
+        if cut < c <= limit:
+            return c
+    # Gone by, near tonight's own hours: it is tonight's, and refused as
+    # passed by the spacing check.
+    if planned and min(planned) - EDIT_DAY_LIMIT <= same <= limit:
+        return same
+    hhmm = _hm(t)
+    word = "tomorrow" if later > limit else "today"
+    raise ValueError(
+        f"{hhmm} is not inside tonight's night, which ends at "
+        f"{m.hm(max(ends))} (with {int(EDIT_DAY_LIMIT.total_seconds() // 3600)}"
+        f" hours to spare). If you mean {word} at {hhmm}, type "
+        f"\"{hhmm} {word}\" to confirm.")
+
+
+def _ambiguous_note(m, when):
+    """A sentence when `when` is in the autumn's repeated hour, else ""."""
+    local = when.astimezone(m.tz)
+    other = local.replace(fold=1 - getattr(local, "fold", 0))
+    if _utc(other) == _utc(local):
+        return ""
+    return (f" {clock(local)} happens twice tonight, as the clocks go back; "
+            f"this is the first one.")
     first, last = min(times), max(times)
     later = _utc(_wall(m.date + timedelta(days=1), t, m.tz))
     # Earlier in the day than tonight's first show, and within 12 hours
@@ -2249,8 +2306,9 @@ def _edit_move(m, ev, now):
               f"{clock(_local(m, when))})")
     tx.note(EDIT_MOVE, "done", reason,
             f"{_operator_name(ev)} moved show {s.n} from "
-            f"{clock(_local(m, s.start))} to {clock(_local(m, when))}"
-            f"{_screen(ev)}, for tonight only.", show=s.n)
+            f"{m.hm(s.start)} to {m.hm(when)}"
+            f"{_screen(ev)}, for tonight only."
+            f"{_ambiguous_note(m, when)}", show=s.n)
     _note_late(tx, m)
     return tx.done()
 
@@ -2269,7 +2327,8 @@ def _edit_add(m, ev, now):
     tx.m = replace(tx.m, slots=slots)
     tx.note(EDIT_ADD, "done", "ADDED (operator)",
             f"{_operator_name(ev)} added show {n} at "
-            f"{clock(_local(m, when))}{_screen(ev)}, for tonight only.",
+            f"{m.hm(when)}{_screen(ev)}, for tonight only."
+            f"{_ambiguous_note(m, when)}",
             show=n)
     _note_late(tx, m)
     return tx.done()

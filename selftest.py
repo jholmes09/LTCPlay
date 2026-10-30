@@ -12652,17 +12652,23 @@ def test_schedule_edits_past_last_end_and_midnight():
     check(o.accepted and added.start == _den(S, 0, 30, d=(2026, 11, 15)),
           f"a show added at 00:30 is tonight's, after midnight: "
           f"{o.refused!r} {added.start if added else None}")
-    o = n.op(S.EDIT_MOVE, _den(S, 21, 3), show=12, at="01:45")
+    o = n.op(S.EDIT_MOVE, _den(S, 21, 3), show=12, at="00:45")
     check(o.accepted and n.m.slot(12).start ==
-          _den(S, 1, 45, d=(2026, 11, 15)),
+          _den(S, 0, 45, d=(2026, 11, 15)),
           f"a move past midnight is allowed: {o.refused!r}")
+    # Past the night's end (22:00) plus 3 hours it asks for its day
+    # (review B of PR #196).
+    o = n.op(S.EDIT_MOVE, _den(S, 21, 3), show=11, at="01:45")
+    check(not o.accepted and '"01:45 tomorrow"' in o.refused,
+          f"01:45 is after tonight's night: asks for its day: "
+          f"{o.refused!r}")
     o = n.op(S.EDIT_ADD, _den(S, 21, 3), at="17:00")
-    check(not o.accepted and '"17:00 tomorrow"' in o.refused,
-          f"17:00 at 21:03 is not guessed to be tomorrow afternoon: it asks "
-          f"for the day: {o.refused!r}")
+    check(not o.accepted and "already passed" in o.refused,
+          f"17:00 at 21:03 is tonight's, gone by, never tomorrow afternoon: "
+          f"{o.refused!r}")
     o = n.op(S.DELAY_REST, _den(S, 21, 4), minutes=10)
     check(o.accepted and n.m.slot(12).start ==
-          _den(S, 1, 55, d=(2026, 11, 15)),
+          _den(S, 0, 55, d=(2026, 11, 15)),
           f"Delay the rest past midnight is allowed: {o.refused!r}")
     n.audit("late edits")
     print("  ok")
@@ -12678,6 +12684,7 @@ def test_schedule_shows_after_midnight():
     S = _sched()
     if S is None:
         return
+    import json
     import tempfile
     from datetime import date, timedelta
     from ltcplay import schedule_service as SV
@@ -12731,17 +12738,19 @@ def test_schedule_shows_after_midnight():
     m = svc.machine
     check(m.date == date(*THU) and _starts(svc) == list(range(1, 10)),
           f"all 9 shows ran on Thursday's night: {m.date} {_starts(svc)}")
+    check(svc._tonight(at(3, 7)) == date(*THU),
+          "while its 03:00 show runs the night is Thursday's")
     run(None, None, at(3, 9), svc=svc, now=now)
-    check(svc.machine.date == date(*THU) and
-          svc.machine.state in (S.CLOSING, S.OFF) and
-          all(x.status == S.DONE for x in svc.machine.slots),
-          f"and it closed after its last show: {svc.machine.state}")
-    # It hands over to Friday once nothing of it is left (02:00 was the old
-    # reset; here the last show ends 03:09:20 with its guard).
-    check(svc._tonight(at(3, 9)) == date(*THU) and
-          svc._tonight(at(3, 10)) == date(*FRI),
-          "the night hands over to Friday when its last show and guard "
-          "are over, not at 2 AM")
+    thu = json.load(open(SV.tonight_path(date(*THU), svc.state_dir),
+                         encoding="utf-8"))
+    check(all(x["status"] == S.DONE for x in thu["slots"]) and
+          thu["state"] in (S.CLOSING, S.OFF),
+          f"and it closed after its last show: {thu['state']}")
+    # It hands over to Friday once nothing of it is left to run (02:00 was
+    # the old reset; here the last show ends at 03:07:20).
+    check(svc.machine.date == date(*FRI),
+          "the night hands over to Friday when its last show is over, not "
+          "at 2 AM")
     svc.stop()
 
     # A restart at 00:45 picks Thursday's night up again and runs on.
