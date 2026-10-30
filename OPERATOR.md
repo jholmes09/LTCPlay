@@ -998,15 +998,24 @@ that long. The stages, in this order:
 - **Where: Interface 2.0, the Schedule tab, Fireball timeline.** Pick
   the show file, then FSEQ or Timeline. Each stage is one row: tap its
   name to use it or leave it out, type its start (HH:MM:SS:FF) and its
-  length in seconds (2.5 or 2,5). A time typed into a stage that is not
-  used uses it. The bar under the rows draws each stage on the show's
-  length. A row that would be refused says why in red under the row at
-  once and nothing is sent. Save sends it, against the version you
-  started from; Revert reads the saved one again. If someone else saved
+  length in seconds (2.5 or 2,5; 1,000 is refused as unclear: write 1000
+  or 1.0). A time typed into a stage that is not used uses it. The bar
+  under the rows draws each stage on the show's length. A row that would
+  be refused says why in red under the row at once, Save stays greyed
+  ("Fix the marked rows") and nothing is sent. Save sends it, against
+  the version you started from; Revert reads the saved one again. Before
+  Revert or picking another show drops changes you have not saved, the
+  card asks: **Keep editing** or **Discard my changes**. If someone else saved
   this show's timeline since you started (seen when you come back to the
   tab, or when Save is refused), Save stays greyed ("Saved elsewhere:
   Revert") until you press Revert and make your change again. While a
-  save is on its way the fields are locked. Picking another show file
+  save, or a read of this show, is on its way the fields are locked and
+  Save is greyed. If a read fails, what is on the screen stays (your
+  changes too) and **Could not read: Retry** reads it again; a save that
+  could not be read back says "Saved. Could not read it back: Retry". A
+  save with no answer in 15 seconds says "No answer: check the
+  connection" and the fields unlock (it may have saved: Revert reads
+  what is there). Picking another show file
   empties the rows until that show's own timeline has been read. If the
   timeline file is broken, an admin sees **Replace the file** (it asks
   first: every other show's timeline in it is lost). The card says who

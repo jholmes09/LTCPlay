@@ -98832,7 +98832,11 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Arming off here", "Hold, Stop show, Disarm flames and "
                  "Abort stay at full strength", "Saved elsewhere: Revert",
                  "**Replace the file**", "the fields are locked",
-                 "empties the rows"):
+                 "empties the rows", "**Keep editing**",
+                 "**Discard my changes**", "**Could not read: Retry**",
+                 "Saved. Could not read it back: Retry",
+                 "No answer: check the connection", "Fix the marked rows",
+                 "1,000 is refused as unclear"):
         check(" ".join(need.split()) in " ".join(o.split()),
               f"OPERATOR.md's fireball timeline section says {need!r}")
     c = _fb_doc_part("OPERATOR.md", "### The fuel and air charge", "\n## ")
@@ -100456,8 +100460,10 @@ async function go(){
   if(!air.disabled){
     typeIn(air, "00:00:02:30");
     await wait(300);
-    res.bad = {err:document.querySelector('#fbt-rows [data-k="air"] .err').textContent, save:q("fbt-save").disabled};
+    res.bad = {err:document.querySelector('#fbt-rows [data-k="air"] .err').textContent, save:q("fbt-save").disabled, why:q("fbt-why").textContent};
     q("fbt-save").click(); await wait(300);
+    // The belt under the greyed Save: asked to save anyway, it refuses.
+    fbtSave(false); await wait(300);
     res.bad.posts = posts.filter(p => p.u.indexOf("fireball-timeline-save") >= 0).length;
     res.bad.msg = q("fbt-msg").textContent;
     typeIn(air, "00:00:02:15");
@@ -100489,18 +100495,24 @@ _FBT_FLOW_JS = r"""
 const posts = [];
 const V = {rev:4, show_len_s:300.0, error:"", show_problem:"", default_source:"fseq",
   entry:{source:"fseq", stages:[{stage:"fuel", start:"00:00:01:00", dur_s:1.0}], edited_by:"Andy", edited_at:""}};
-let lists = 0, other = null, saveAnswer = null;
+let lists = 0, other = null, saveAnswer = null, readMode = "ok";
 const realFetch = window.fetch;
 const J = (o, code) => new Response(JSON.stringify(o), {status:code || 200, headers:{"Content-Type":"application/json"}});
+const saved = () => { V.rev += 1; return J({ok:true, text:"Saved.", entry:{rev:V.rev}}); };
 window.fetch = function(u, o){
   u = String(u);
   if(o && o.method === "POST" && u.indexOf("fireball-timeline-save") >= 0){
     posts.push(JSON.parse(String(o.body || "{}")));
-    return new Promise(r => setTimeout(() => r(saveAnswer ? saveAnswer() : J({ok:true, text:"Saved."})), 800));
+    return new Promise((res, rej) => {
+      if(o.signal) o.signal.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+      setTimeout(() => res(saveAnswer ? saveAnswer() : saved()), 800);
+    });
   }
   if(u.indexOf("/api/timelines") >= 0){ lists++; return Promise.resolve(J({timelines:[{file:"Show.json"}, {file:"Other.json"}]})); }
   if(u.indexOf("/api/remote/fireball-timeline?") >= 0){
     if(u.indexOf("Other.json") >= 0) return new Promise(r => { other = () => r(J(Object.assign({}, V, {rev:9, entry:{source:"timeline", stages:[]}}))); });
+    if(readMode === "fail") return Promise.resolve(J({error:"Not readable now"}, 503));
+    if(readMode === "slow") return new Promise(r => setTimeout(() => r(J(JSON.parse(JSON.stringify(V)))), 1000));
     return Promise.resolve(J(JSON.parse(JSON.stringify(V))));
   }
   return realFetch.apply(this, arguments);
@@ -100508,9 +100520,13 @@ window.fetch = function(u, o){
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const q = id => document.getElementById(id);
 const row = k => document.querySelector('#fbt-rows [data-k="' + k + '"]');
+const du = () => row("fuel").querySelector(".du").value;
 const typeIn = (el, v) => { el.value = v; el.dispatchEvent(new Event("input", {bubbles:true})); };
 const tab = t => document.querySelector('.tab[data-tab="' + t + '"]').click();
 const save = () => ({dis:q("fbt-save").disabled, why:q("fbt-why").textContent});
+const locked = () => [...document.querySelectorAll("#fbt-rows input")].every(i => i.disabled);
+const pick = f => { q("fbt-show").value = f; q("fbt-show").dispatchEvent(new Event("change", {bubbles:true})); };
+const shown = id => !q(id).hidden;
 async function go(){
   for(let i = 0; i < 60 && !document.querySelector("#fbt-rows .fbt-row"); i++) await wait(100);
   await wait(600);
@@ -100520,23 +100536,53 @@ async function go(){
   res.typed_used = row("igniter").querySelector(".use").getAttribute("aria-pressed");
   typeIn(row("igniter").querySelector(".du"), "0.5");
   typeIn(row("fuel").querySelector(".du"), "2,5");
-  V.rev = 5;
+  // Back to the tab and its read fails: the unsaved edit stays, Retry.
+  readMode = "fail";
   tab("day"); await wait(300); tab("schedule"); await wait(900);
-  res.b1 = {dur:row("fuel").querySelector(".du").value, save:save(), msg:q("fbt-msg").textContent, lists:lists};
+  res.f1 = {dur:du(), retry:shown("fbt-retry"), save:save(), msg:q("fbt-msg").textContent, locked:locked()};
+  // Retry, and while that read is on its way nothing may be typed or saved.
+  readMode = "slow"; V.rev = 5;
+  q("fbt-retry").click(); await wait(200);
+  res.f2 = {locked:locked(), save:save(), retry:shown("fbt-retry")};
+  await wait(1300);
+  readMode = "ok";
+  res.b1 = {dur:du(), save:save(), msg:q("fbt-msg").textContent, lists:lists};
   q("fbt-save").click(); await wait(300);
   res.b1.posts = posts.length;
-  q("fbt-revert").click(); await wait(600);
-  res.revert = {save:save(), dur:row("fuel").querySelector(".du").value};
+  // Revert with an unsaved edit asks first.
+  q("fbt-revert").click(); await wait(200);
+  res.ask_rev = {shown:shown("fbt-ask"), dur:du(), q:q("fbt-ask").textContent};
+  q("fbt-keep").click(); await wait(100);
+  res.ask_rev.kept = {hidden:q("fbt-ask").hidden, dur:du()};
+  q("fbt-revert").click(); await wait(100);
+  q("fbt-drop").click(); await wait(600);
+  res.revert = {save:save(), dur:du()};
   typeIn(row("fuel").querySelector(".du"), "2,5");
   await wait(100);
   q("fbt-save").click(); await wait(200);
-  res.inflight = {locked:[...document.querySelectorAll("#fbt-rows input")].every(i => i.disabled), save:save()};
+  res.inflight = {locked:locked(), save:save()};
   await wait(1500);
   res.saved = posts.slice(-1)[0] || null;
-  q("fbt-show").value = "Other.json"; q("fbt-show").dispatchEvent(new Event("change", {bubbles:true}));
-  await wait(300);
+  // Saved, and reading it back fails: said, the rows stay and stay open,
+  // and the next save is against the revision just saved.
+  typeIn(row("fuel").querySelector(".du"), "3");
+  readMode = "fail";
+  q("fbt-save").click(); await wait(1500);
+  res.f4a = {msg:q("fbt-msg").textContent, retry:shown("fbt-retry"), dur:du(), locked:locked(), save:save(), rev:V.rev};
+  readMode = "ok";
+  typeIn(row("fuel").querySelector(".du"), "4");
+  q("fbt-save").click(); await wait(1500);
+  res.f4a.next = posts.slice(-1)[0] || null;
+  // Another show with an unsaved edit asks first.
+  typeIn(row("fuel").querySelector(".du"), "5");
+  pick("Other.json"); await wait(200);
+  res.ask_show = {shown:shown("fbt-ask"), sel:q("fbt-show").value, dur:du(), show_dis:q("fbt-show").disabled};
+  q("fbt-keep").click(); await wait(100);
+  res.ask_show.kept = {hidden:q("fbt-ask").hidden, dur:du(), sel:q("fbt-show").value};
+  pick("Other.json"); await wait(100);
+  q("fbt-drop").click(); await wait(300);
   res.b2 = {starts:[...document.querySelectorAll("#fbt-rows .st")].map(i => i.value),
-    locked:[...document.querySelectorAll("#fbt-rows input")].every(i => i.disabled), save:save()};
+    locked:locked(), save:save()};
   const n = posts.length;
   q("fbt-save").click(); await wait(200);
   res.b2.posts = posts.length - n;
@@ -100545,9 +100591,25 @@ async function go(){
   res.b2.after = {src:[...document.querySelectorAll("#fbt-src .b.on")].map(b => b.dataset.v), locked:row("fuel").querySelector(".st").disabled};
   typeIn(row("fuel").querySelector(".st"), "00:00:01:00");
   typeIn(row("fuel").querySelector(".du"), "1");
+  // A save with no answer: given up, said, unlocked.
+  FBT_POST_MS = 300;
+  saveAnswer = () => new Promise(() => {});
+  q("fbt-save").click(); await wait(150);
+  res.f4d = {during:locked()};
+  await wait(900);
+  Object.assign(res.f4d, {msg:q("fbt-msg").textContent, locked:locked(), save:save()});
+  FBT_POST_MS = 15000;
   saveAnswer = () => J({error:"Not saved: someone saved the fireball timeline since this screen read it. Press Revert to read it again, check the times, and save again."}, 409);
   q("fbt-save").click(); await wait(1300);
   res.refused = {save:save(), msg:q("fbt-msg").textContent};
+  // Another show whose read fails: nothing loading, Save says so, Retry.
+  readMode = "fail";
+  pick("Show.json"); await wait(100);
+  q("fbt-drop").click(); await wait(500);
+  res.f1b = {why:q("fbt-why").textContent, retry:shown("fbt-retry"), starts:[...document.querySelectorAll("#fbt-rows .st")].map(i => i.value), locked:locked()};
+  readMode = "ok";
+  q("fbt-retry").click(); await wait(500);
+  res.f1b.after = {locked:locked(), dur:du(), retry:shown("fbt-retry")};
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
   document.body.appendChild(pre);
@@ -100581,12 +100643,20 @@ def test_ui2_fireball_timeline_editor():
     js_b = two.find("// ---- The brand (1.0's loadBrand)")
     js = two[js_a:js_b]
     check(js_a > 0 and js_b > js_a and
-          'post("/api/remote/fireball-timeline-save", actor(body));' in js
+          'fbtPost("/api/remote/fireball-timeline-save", actor(body));'
+          in js
           and 'body = fbtBody(show, FBT_BASE, FBT_SRC, chk.stages);' in js
           and 'getJSON("/api/remote/fireball-timeline?show=" + '
               'encodeURIComponent(want)' in js,
           "it reads fireball-timeline and saves through "
           "fireball-timeline-save, with the actor's seen")
+    fp = _js_function(two, "fbtPost") or ""
+    check("let FBT_POST_MS = 15000;" in js and
+          "setTimeout(() => ctl.abort(), FBT_POST_MS)" in fp and
+          "signal:ctl.signal" in fp and '"X-LTC-Window": WINDOW_ID' in fp
+          and '"No answer: check the connection"' in fp,
+          "the save gives up after 15 s with no answer and says so "
+          "(review of #194), with 1.0's window header")
     check("purge" not in js.lower().replace("purge is never a stage", "")
           .replace("never here. only by hand", ""),
           "the editor has no Purge stage and no purge press")
@@ -100600,8 +100670,10 @@ def test_ui2_fireball_timeline_editor():
     for word in ("No contact", "Sign in to edit", "Admins only",
                  "Arming off here", "Show cannot be timed", "No changes",
                  "Loading", "File broken: replace it",
-                 "Saved elsewhere: Revert", "Saving"):
-        check(('"' + word + '"') in js and len(word.split()) <= 8,
+                 "Saved elsewhere: Revert", "Saving",
+                 "Could not read: Retry", "Fix the marked rows",
+                 "Keep editing", "Discard my changes"):
+        check((('"' + word + '"') in js or ('>' + word + '<') in sched) and len(word.split()) <= 8,
               f"says why in 8 words or fewer: {word!r}")
     from ltcplay import fireball_timeline as FT
     check([(k, w, s) for k, w, s in FT.STAGES] ==
@@ -100618,7 +100690,8 @@ def test_ui2_fireball_timeline_editor():
         check(not IN_CI, "node is missing on this CI runner")
     else:
         fns = "\n".join(_js_function(two, n) or "" for n in (
-            "fbtParseTc", "fbtTcText", "fbtDur", "fbtCheck", "fbtWhy",
+            "fbtParseTc", "fbtTcText", "fbtDurUnclear", "fbtDur",
+            "fbtCheck", "fbtWhy",
             "fbtBlock", "fbtBody", "fbtBands"))
         consts = "\n".join(re.findall(r"^const FBT_(?:FPS|STAGES) = .*;$",
                                       two, re.M))
@@ -100638,8 +100711,14 @@ t(c.stages.length === 1 && c.stages[0].dur_s === 36000, "no longest length (Jeff
 c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"-1"}, {k:"air", used:true, start:"00:00:01:00", dur:"x"}, {k:"valve", used:true, start:"00:00:01:00", dur:"Infinity"}], 300);
 t(c.errors.fuel && c.errors.air && c.errors.valve && !c.stages.length, "negative, words, infinity: refused");
 t(fbtDur("2,5") === 2.5 && fbtDur("2.5") === 2.5 && fbtDur(" 3 ") === 3 && fbtDur(".5") === 0.5, "a point or a comma before the decimals");
-t(fbtDur("2,5,1") === null && fbtDur("1e3") === null && fbtDur("0") === null && fbtDur("") === null && fbtDur("2..5") === null, "anything else is not a length");
+t(fbtDur("2,5,1") === null && fbtDur("1e3") === null && fbtDur("0") === null && fbtDur("") === null && fbtDur("2..5") === null && fbtDur("1,5.0") === null, "anything else is not a length");
+t(fbtDur("1,000") === null && fbtDur(" 12,500 ") === null && fbtDur("1,0") === 1 && fbtDur("1,0000") === 1 && fbtDur("1000") === 1000, "a comma before exactly 3 digits is unclear: refused, never read as 1 (review of #194)");
+c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"1,000"}], 300);
+t(c.errors.fuel === "Length: 1,000 is unclear: write 1000 or 1.000." && !c.stages.length, "1,000 said in words: " + c.errors.fuel);
 t(fbtBlock(null, "S", "", false, false) === "Loading" && fbtBlock({rev:1}, "S", "T", false, false) === "Loading", "no data, or another show's: Loading");
+t(fbtBlock(null, "S", "", false, false, false, true) === "Could not read: Retry" && fbtBlock({rev:1}, "S", "T", false, false, false, true) === "Could not read: Retry", "a read failed and nothing is loading: never Loading (review of #194)");
+t(fbtBlock({rev:1}, "S", "S", false, false, true) === "Loading" && fbtBlock({rev:1}, "S", "S", false, false, false, true) === "", "a read on its way blocks Save; this show's data kept after a failed read does not");
+t(fbtBlock({rev:1}, "S", "S", false, false, false, false, true) === "Fix the marked rows" && fbtBlock({rev:1}, "S", "S", true, false, false, false, true) === "Saved elsewhere: Revert", "red rows grey Save out (review of #194)");
 t(fbtBlock({rev:1, error:"x"}, "S", "S", false, false) === "File broken: replace it", "a broken file");
 t(fbtBlock({rev:1, show_problem:"x"}, "S", "S", false, false) === "Show cannot be timed", "a show that cannot be timed");
 t(fbtBlock({rev:1}, "S", "S", true, false) === "Saved elsewhere: Revert", "stale: Revert first");
@@ -100762,9 +100841,11 @@ console.log(JSON.stringify(out));
                 bad = res.get("bad") or {}
                 check(bad.get("err") == "Start: write HH:MM:SS:FF, frames "
                       "00 to 29." and bad.get("posts") == 0 and
+                      bad.get("save") is True and
+                      bad.get("why") == "Fix the marked rows" and
                       "Not saved" in bad.get("msg", ""),
-                      f"{where}: frame 30 is said in plain words and "
-                      f"nothing is sent: {bad}")
+                      f"{where}: frame 30 is said in plain words, Save is "
+                      f"greyed and nothing is sent: {bad}")
                 check(res["good_save"] == {"dis": False, "why": ""},
                       f"{where}: fixed: Save may: {res['good_save']}")
                 saves = [p for p in res["posts"]
@@ -100798,7 +100879,7 @@ console.log(JSON.stringify(out));
     # The review's flows (#194): one admin, the show PC.
     got = _rack_screen_in_chromium(
         chrome, page, status(admin), ((1366, 768),),
-        measure_js=_FBT_FLOW_JS, frag="?tour=0#schedule", budget_ms=30000,
+        measure_js=_FBT_FLOW_JS, frag="?tour=0#schedule", budget_ms=45000,
         routes=routes)
     res = got.get((1366, 768))
     if check(isinstance(res, dict) and "b1" in res,
@@ -100807,6 +100888,18 @@ console.log(JSON.stringify(out));
                                   f"target: {res['sel_h']}")
         check(res["typed_used"] == "true",
               "a time typed into a stage not used uses it")
+        f1 = res["f1"]
+        check(f1["dur"] == "2,5" and f1["retry"] and not f1["locked"] and
+              f1["save"] == {"dis": False, "why": ""} and
+              "Could not read it again" in f1["msg"] and
+              "Your changes are kept" in f1["msg"],
+              f"back to the tab and the read fails: the unsaved edit stays, "
+              f"Retry is offered (review of #194, 1): {f1}")
+        check(res["f2"] == {"locked": True, "save": {"dis": True,
+                                                     "why": "Loading"},
+                            "retry": False},
+              f"a read on its way: fields locked, Save greyed (review of "
+              f"#194, 2): {res['f2']}")
         b1 = res["b1"]
         check(b1["dur"] == "2,5" and b1["save"] == {
             "dis": True, "why": "Saved elsewhere: Revert"} and
@@ -100815,9 +100908,17 @@ console.log(JSON.stringify(out));
               f"edit stays, Save waits for Revert, nothing sent: {b1}")
         check(b1["lists"] > res["lists0"],
               f"the show list is read again when the tab opens: {b1}")
+        ar = res["ask_rev"]
+        check(ar["shown"] and ar["dur"] == "2,5" and
+              "Your changes are not saved." in ar["q"] and
+              "Keep editing" in ar["q"] and "Discard my changes" in ar["q"]
+              and ar["kept"] == {"hidden": True, "dur": "2,5"},
+              f"Revert with an unsaved edit asks first; Keep editing keeps "
+              f"it (review of #194, 3): {ar}")
         check(res["revert"] == {"save": {"dis": True, "why": "No changes"},
                                 "dur": "1"},
-              f"Revert reads the newer one: {res['revert']}")
+              f"Discard my changes: Revert reads the newer one: "
+              f"{res['revert']}")
         check(res["inflight"]["locked"] and
               res["inflight"]["save"]["dis"],
               f"a save on its way: every field locked: {res['inflight']}")
@@ -100827,6 +100928,21 @@ console.log(JSON.stringify(out));
                if s.get("stage") == "fuel"] == [2.5],
               f"saved against the revision it was made on, 2,5 as 2.5: "
               f"{sv}")
+        f4a = res["f4a"]
+        check("Saved. Could not read it back: Retry" in f4a["msg"] and
+              f4a["retry"] and f4a["dur"] == "3" and not f4a["locked"] and
+              f4a["save"] == {"dis": True, "why": "No changes"},
+              f"saved, read back failed: said, the rows stay open (review "
+              f"of #194, 4): {f4a}")
+        check((f4a["next"] or {}).get("rev") == f4a["rev"],
+              f"the next save is against the revision just saved: "
+              f"{f4a['next']} {f4a['rev']}")
+        ak = res["ask_show"]
+        check(ak["shown"] and ak["sel"] == "Show.json" and ak["dur"] == "5"
+              and ak["kept"] == {"hidden": True, "dur": "5",
+                                 "sel": "Show.json"},
+              f"another show with an unsaved edit asks first; Keep editing "
+              f"keeps it and the show (review of #194, 3): {ak}")
         b2 = res["b2"]
         check(b2["starts"] == ["", "", "", ""] and b2["locked"] and
               b2["save"]["dis"] and b2["save"]["why"] == "Loading" and
@@ -100835,6 +100951,18 @@ console.log(JSON.stringify(out));
               f"save until its own read: {b2}")
         check(b2["after"] == {"src": ["timeline"], "locked": False},
               f"its own read: its data, open: {b2['after']}")
+        f4d = res["f4d"]
+        check(f4d["during"] and not f4d["locked"] and
+              "No answer: check the connection" in f4d["msg"] and
+              f4d["save"] == {"dis": False, "why": ""},
+              f"a save with no answer: given up, said, unlocked (review of "
+              f"#194, 4): {f4d}")
+        f1b = res["f1b"]
+        check(f1b["why"] == "Could not read: Retry" and f1b["retry"] and
+              f1b["starts"] == ["", "", "", ""] and f1b["locked"] and
+              f1b["after"] == {"locked": False, "dur": "1", "retry": False},
+              f"another show's read fails: Save says Could not read, not "
+              f"Loading; Retry reads it (review of #194, 1): {f1b}")
         check(res["refused"]["save"] == {"dis": True,
                                          "why": "Saved elsewhere: Revert"}
               and "Press Revert" in res["refused"]["msg"],

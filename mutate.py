@@ -20560,18 +20560,83 @@ def build():
 
  ("fireball editor: another show's rows stay while the new one is read",
   "ltcplay/web/remote2.html",
-  "  FBT_SHOW = $(\"fbt-show\").value; FBT = null; FBT_FOR = \"\"; FBT_DIRTY = false; FBT_STALE = false;\n  fbtDrawRows(null);",
-  "  FBT_SHOW = $(\"fbt-show\").value; FBT_DIRTY = false; FBT_STALE = false;\n  fbtDrawRows(FBT && FBT.entry);"),
+  "  FBT_SHOW = show; FBT = null; FBT_FOR = \"\"; FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null;\n  $(\"fbt-show\").value = show;\n  fbtDrawRows(null);",
+  "  FBT_SHOW = show; FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null;\n  $(\"fbt-show\").value = show;\n  fbtDrawRows(FBT && FBT.entry);"),
 
  ("fireball editor: a save goes while the data is another show's",
   "ltcplay/web/remote2.html",
-  "  if(!v || forShow !== show) return \"Loading\";",
-  "  if(!v) return \"Loading\";"),
+  "  if(!v || forShow !== show) return failed ? ",
+  "  if(!v) return failed ? "),
 
  ("fireball editor: fields stay open while a save is on its way",
   "ltcplay/web/remote2.html",
-  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY;",
-  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem));"),
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY || FBT_READING;",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_READING;"),
+
+ ("fireball editor: an unsaved edit is wiped when coming back and the read fails (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(FBT && FBT_FOR === FBT_SHOW){\n      // This show's own data stays",
+  "    if(false){\n      // This show's own data stays"),
+
+ ("fireball editor: no Retry after a failed read (round 2)",
+  "ltcplay/web/remote2.html",
+  "  $(\"fbt-retry\").hidden = !FBT_FAIL || FBT_READING;",
+  "  $(\"fbt-retry\").hidden = true;"),
+
+ ("fireball editor: Save says Loading when nothing is loading (round 2)",
+  "ltcplay/web/remote2.html",
+  "return failed ? \"Could not read: Retry\" : \"Loading\";",
+  "return \"Loading\";"),
+
+ ("fireball editor: fields stay open while a read is on its way (round 2)",
+  "ltcplay/web/remote2.html",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY || FBT_READING;",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY;"),
+
+ ("fireball editor: Save stays open while a read is on its way (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(reading) return \"Loading\";\n",
+  ""),
+
+ ("fireball editor: another show drops an unsaved edit without asking (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(FBT_DIRTY && to !== FBT_SHOW){",
+  "  if(false){"),
+
+ ("fireball editor: Revert drops an unsaved edit without asking (round 2)",
+  "ltcplay/web/remote2.html",
+  "{ if(FBT_DIRTY) fbtAsk({kind:\"revert\"}); else fbtRevert(); }",
+  "{ fbtRevert(); }"),
+
+ ("fireball editor: Keep editing does not close the question (round 2)",
+  "ltcplay/web/remote2.html",
+  "$(\"fbt-keep\").addEventListener(\"click\", () => { FBT_ASK = null; fbtGate(stale()); });",
+  "$(\"fbt-keep\").addEventListener(\"click\", () => {});"),
+
+ ("fireball editor: a save not read back says only Saved (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(FBT_FAIL) fbtSay(\"Saved. Could not read it back: Retry.\", \"bad\");\n    else ",
+  "    "),
+
+ ("fireball editor: the next save is against the old revision (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(j.entry && typeof j.entry.rev === \"number\") FBT_BASE = j.entry.rev;\n",
+  ""),
+
+ ("fireball editor: Save stays open with red rows (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(rowsBad) return \"Fix the marked rows\";\n",
+  ""),
+
+ ("fireball editor: 1,000 is read as 1 s (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(fbtDurUnclear(v)) return null;\n",
+  ""),
+
+ ("fireball editor: a save with no answer locks the fields for ever (round 2)",
+  "ltcplay/web/remote2.html",
+  "  const t = setTimeout(() => ctl.abort(), FBT_POST_MS);",
+  "  const t = 0;"),
 
  ("fireball editor: a time typed into an unused stage is left out",
   "ltcplay/web/remote2.html",
