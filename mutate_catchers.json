@@ -1371,7 +1371,7 @@
 "halt: a show that ended by itself is a failure (review of #130, 8)": "test_stop_halt_review_of_130",
 "halt: a show the scheduler did not end is no deck fault": "test_stop_says_when_its_flame_disarm_failed",
 "halt: a step that raises stops the rest": "test_stop_halt_review_of_130",
-"halt: playback stops before the conductor's fade (review of #130, 5)": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"halt: playback stops before the conductor's fade (review of #130, 5)": "test_stop_final_review",
 "halt: playback stops before the scheduler ends the show": "test_stop_disarms_every_flame_group_without_the_latch",
 "halt: the Rack screen's Stop (no halt) is taken during a show": "test_live_show_refuses_the_page_transport",
 "halt: the deck's Stop does not ask for a halt": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
@@ -3125,5 +3125,13 @@
 "halt: the conductor's Stop is not asked at the press (round 3, F1/F3)": "test_stop_round3_dark_close_and_timing",
 "halt: the Stop ends before the conductor has taken it (round 3, F4)": "test_stop_round3_dark_close_and_timing",
 "scheduler: a Stop with nothing left tonight holds the night open (round 3, F2)": "test_stop_round3_dark_close_and_timing",
-"scheduler: the Stop's Hold keeps a finished night from closing (round 3, F2)": "test_stop_round3_dark_close_and_timing"
+"scheduler: the Stop's Hold keeps a finished night from closing (round 3, F2)": "test_stop_round3_dark_close_and_timing",
+"halt: the conductor's fade is not waited for (second review of #130, 7)": "test_stop_final_review",
+"halt: the conductor's calls are not flushed before playback stops": "test_stop_halt_second_review_of_130",
+"Start now's lock re-check runs before the tick's alert Hold": "test_refused_starts_say_why_and_what_to_press",
+"scheduler: the carried Hold's dark disarms and cuts the pump (final, 4)": "test_stop_final_review",
+"scheduler: a Stop on a Hold does not mark it dark (final, 4)": "test_stop_final_review",
+"halt: the press does not wait for the conductor to take the Stop (final, 4)": "test_stop_final_review",
+"scheduler: a Stop's Hold is put back over a Start now (final, G1)": "test_stop_final_review",
+"scheduler: Start now does not wait for a running dark fade (final, G2)": "test_stop_final_review"
 }

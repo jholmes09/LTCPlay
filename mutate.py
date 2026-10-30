@@ -17071,8 +17071,8 @@ def build():
  # Review of #130 (fix forward).
  ("halt: playback stops before the conductor's fade (review of #130, 5)",
   "ltcplay/web.py",
-  "        if h.get(\"show_ended\"):\n            svc = getattr(self.server, \"schedule\", None)",
-  "        if False:\n            svc = getattr(self.server, \"schedule\", None)"),
+  "                rm.wait_stop_window(h, HALT_FADE_WAIT_S)\n",
+  "                pass\n"),
 
  ("halt: the flames are not first (review of #130, 6)",
   "ltcplay/remote.py",
@@ -17137,13 +17137,13 @@ def build():
 
  # Second review of #130 (fix forward).
  ("halt: the conductor's fade is not waited for (second review of #130, 7)",
-  "ltcplay/web.py",
-  "                    cond.wait_idle(HALT_FADE_WAIT_S)\n",
-  "                    pass\n"),
+  "ltcplay/remote.py",
+  "                cond.wait_idle(left())\n",
+  "                pass\n"),
 
  ("halt: the conductor's calls are not flushed before playback stops",
-  "ltcplay/web.py",
-  "                svc.flush_conductor(HALT_FADE_WAIT_S)\n",
+  "ltcplay/remote.py",
+  "                svc.flush_conductor(left())\n",
   "                pass\n"),
 
  ("halt: the lasers are not blanked at once (second review of #130, 7)",
@@ -17586,10 +17586,8 @@ def build():
 
  ("halt: the Stop ends before the conductor has taken it (round 3, F4)",
   "ltcplay/remote.py",
-  "        done = h.get(\"_cond_done\")\n"
-  "        if done is not None:\n"
-  "            done.wait(STOP_FADE_WAIT_S)",
-  "        done = h.get(\"_cond_done\")"),
+  "                done.wait(left())\n",
+  "                pass\n"),
 
  ("scheduler: a Stop with nothing left tonight holds the night open (round 3, F2)",
   "ltcplay/schedule_service.py",
@@ -17600,6 +17598,32 @@ def build():
   "ltcplay/schedule_service.py",
   "        if m.state not in self.SHOWTIME_FROM or not m.waiting():",
   "        if m.state not in self.SHOWTIME_FROM:"),
+
+ # Final review of #191.
+ ("scheduler: the carried Hold's dark disarms and cuts the pump (final, 4)",
+  "ltcplay/schedule_service.py",
+  "                [(\"Dark again for the Stop's Hold\", \"show_stopped\",",
+  "                [(\"Dark again for the Stop's Hold\", \"stop\","),
+
+ ("scheduler: a Stop on a Hold does not mark it dark (final, 4)",
+  "ltcplay/schedule_service.py",
+  "                self.machine = replace(m, stop_hold=True, dark=True)",
+  "                self.machine = replace(m, stop_hold=True)"),
+
+ ("halt: the press does not wait for the conductor to take the Stop (final, 4)",
+  "ltcplay/remote.py",
+  "        done.wait(self.COND_STOP_WAIT_S)\n",
+  ""),
+
+ ("scheduler: a Stop's Hold is put back over a Start now (final, G1)",
+  "ltcplay/schedule_service.py",
+  "        if self._start_waiters > 0 or self._start_press_tick:",
+  "        if False:"),
+
+ ("scheduler: Start now does not wait for a running dark fade (final, G2)",
+  "ltcplay/schedule_service.py",
+  "            why = self._stop_still_fading()",
+  "            why = \"\""),
 
  ("conductor: Stop leaves a Hold decided before it in the line",
   "ltcplay/schedule_service.py",
@@ -18410,11 +18434,10 @@ def build():
 
  ("Start now's lock re-check runs before the tick's alert Hold",
   "ltcplay/schedule_service.py",
-  "        with self._locked():\n"
-  "            # The tick first: a Hold it takes (the engine's own at\n"
-  "            # showtime for an open alert) cancels the start below (C1).\n"
-  "            self.tick()\n",
-  "        with self._locked():\n"),
+  "            self._start_press_tick = kind == sch.START_NOW\n"
+  "            try:\n                self.tick()\n",
+  "            self._start_press_tick = kind == sch.START_NOW\n"
+  "            try:\n                pass\n"),
 
  ("a late failure report raises a did-not-start alert",
   "ltcplay/schedule_service.py",

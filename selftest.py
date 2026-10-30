@@ -59801,6 +59801,171 @@ def test_stop_round3_dark_close_and_timing():
     print("  ok")
 
 
+def test_stop_final_review():
+    section("Stop (final review of #191): one deadline for the Stop's window "
+            "with a threaded conductor (the press answers once the fade is "
+            "over); the Stream Deck's Stop waits for the conductor too; a "
+            "Start now waits for a dark fade still running or is refused "
+            "with what to do, and a fade running 10 s is a fault; a Stop's "
+            "Hold is never put back over a Start now, and when it comes back "
+            "it never disarms or cuts the pump; a Stop on a Hold marks it "
+            "dark; the at-press conductor Stop comes before the scheduler's "
+            "step")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    C = _cond_mod()
+    # One deadline, a threaded conductor on real time: the screen's Stop
+    # answers once the conductor's fade (1 s) is over.
+    R = _RemoteRig(S, conductor=False)
+    rig = _CondRig(time.monotonic)
+    c = C.Conductor(rig, rig, lambda: None, threaded=True)
+    try:
+        R.svc.conductor = c
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        t0 = time.monotonic()
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        took = time.monotonic() - t0
+        check(st == 200 and not c.snapshot()["busy"] and took < 3.6,
+              f"the Stop answers once the conductor's fade is over, within "
+              f"one 3 s window: {took:.2f} s busy {c.snapshot()['busy']}")
+    finally:
+        c.close()
+        R.close()
+    # The Stream Deck's Stop (web.py) waits for the conductor to take it.
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        took = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.6),
+                                     took.append(time.monotonic()),
+                                     real_cs(*a, **kw))[2]
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        t1 = time.monotonic()
+        check(took and took[0] <= t1,
+              f"the deck's Stop answers only once the conductor has taken "
+              f"it: {took} {t1}")
+    finally:
+        R.close()
+    # The at-press conductor Stop comes before the scheduler's step.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        order = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.1),
+                                     order.append("conductor"),
+                                     real_cs(*a, **kw))[2]
+        real_hs = R.svc.halt_schedule
+        R.svc.halt_schedule = lambda *a, **kw: (order.append("scheduler"),
+                                                real_hs(*a, **kw))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(order[:2] == ["conductor", "scheduler"],
+              f"the press waits (0.25 s at most) for the conductor to take "
+              f"the Stop before the scheduler's step: {order}")
+    finally:
+        R.close()
+    # A Start now while a dark fade still runs: waits, then is refused with
+    # what to do; one running 10 s is a fault.
+    R = _RemoteRig(S)
+    try:
+        class _Busy:
+            threaded = True
+            stops = 0
+
+            def snapshot(self):
+                return {"busy": True, "look": "STOPPED_DARK",
+                        "busy_s": 12.0}
+
+            def wait_idle(self, timeout):
+                return False
+        real_c = R.svc.conductor
+        R.svc.conductor = _Busy()
+        try:
+            r = R.svc.operator_press("start-now", "Andy", "Rack screen",
+                                     confirmed=True, preroll=False)
+        finally:
+            R.svc.conductor = real_c
+        check(not r["ok"] and "still being taken dark" in r["text"] and
+              R.svc.machine.running == 0 and
+              any("taking the rig dark" in f
+                  for f in R.svc.machine.faults),
+              f"a Start now while the Stop's fade still runs is refused "
+              f"with what to do, and 10 s of it is a fault: {r} "
+              f"{R.svc.machine.faults}")
+    finally:
+        R.close()
+    # A Stop's Hold is never put back by a Start now's own tick, and when
+    # it comes back it never disarms (nor cuts the pump: no Stop count).
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        R.now[0] = _den(S, 18, 10)
+        R.svc.operator_press("start-now", "Andy", "Rack screen",
+                             confirmed=True, preroll=False)
+        R.settle()
+        R.now[0] = _den(S, 18, 10, 1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 17))
+        R.settle()
+        check(R.svc.machine.state == S.STANDBY, "setup: the show ended")
+        dark = []
+        real_ss = R.c.show_stopped
+        R.c.show_stopped = lambda *a, **kw: (dark.append(a),
+                                             real_ss(*a, **kw))[1]
+        R.now[0] = _den(S, 18, 17, 1)
+        r = R.svc.operator_press("start-now", "Andy", "Rack screen",
+                                 confirmed=True, preroll=False)
+        R.settle()
+        check(r["ok"] and R.svc.machine.state == S.SHOW and not dark,
+              f"a Start now before the next tick starts its show, and the "
+              f"Hold is not put back over it (no dark asked): {r} {dark}")
+        R.now[0] = _den(S, 18, 17, 2)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 24))
+        R.settle()
+        disarms, stops = R.rig.count("flames_disarm_all"), R.c.stops
+        R.now[0] = _den(S, 18, 24, 1)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and dark and
+              R.rig.count("flames_disarm_all") == disarms and
+              R.c.stops == stops,
+              f"when the Hold comes back it asks the plain dark, never a "
+              f"Stop: no disarm, no Stop counted (so the pump is not cut): "
+              f"{R.svc.machine.state} {dark} "
+              f"{R.rig.count('flames_disarm_all') - disarms} "
+              f"{R.c.stops - stops}")
+        # A Stop on an operator's Hold marks it dark.
+        R.svc._stop_carry = None
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and not R.svc.machine.dark,
+              f"setup: an operator's Hold, not dark: {R.svc.machine.state} "
+              f"{R.svc.machine.dark}")
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.stop_hold and R.svc.machine.dark,
+              "a Stop on it marks it the Stop's, and dark")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_stop_says_when_its_flame_disarm_failed():
     """Third review of #126, P2-2: /api/stop also disarms every flame group,
     and when that disarm fails, the Rack screen says so instead of a bare
@@ -101622,6 +101787,7 @@ if __name__ == "__main__":
         test_stop_round2_conductor_and_marks,
         test_stop_hold_round3,
         test_stop_round3_dark_close_and_timing,
+        test_stop_final_review,
         test_screen_arm_end_to_end_probes,
         test_screen_arming_switch_and_refusals,
         test_engine_stall_probe_memory_is_bounded,
