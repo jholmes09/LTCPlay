@@ -811,7 +811,11 @@ function say(short, full, level){
 function short8(text, fallback){
   const t = String(text || "").trim();
   if(!t) return fallback || "";
-  const first = t.split(/(?<=[.!?])\s/)[0];
+  // The first sentence: up to the first . ! or ? with a space after it.
+  // (No lookbehind: Safari before iPadOS 16.4 cannot read one, and one
+  // left 2.0's whole script dead on an older iPad.)
+  const end = /[.!?]\s/.exec(t);
+  const first = end ? t.slice(0, end.index + 1) : t;
   return first.split(/\s+/).length <= 8 ? first : (fallback || "Done. Tap Details.");
 }
 $("msg-more").addEventListener("click", () => sheet("Details", `<div class="full">${esc(MSG_FULL)}</div>`, [{label:"Close", cls:"blue"}]));
@@ -2225,6 +2229,7 @@ const SYS_SAY = [
   [/^flamesafe$/, /fault/, "Fault. Disarm, then tell Jeff."],
   [/^show audio$/, /not attached/, "Interface missing. Check its USB."],
   [/^show audio$/, /lost|fault/, "Lost. Check the audio interface."],
+  [/^announcements$/, /delayed recording/, "Delayed button cannot play. Tell Jeff."],
   [/^announcements$/, /show audio not open/, "Cannot play: show audio not open."],
   [/^announcements$/, /output/, "No output. Pick one in Settings."],
   [/^announcements$/, /./, "Cannot play. Tell Jeff."],
