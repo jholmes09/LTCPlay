@@ -19320,8 +19320,8 @@ def build():
 
  ("fireball timeline: the history copy is written before the save is in place",
   "ltcplay/fireball_timeline.py",
-  "                old = self._read_bytes()\n                self._write(new)\n                # Only once the new file is in place: a save that failed\n                # leaves no history copy behind.\n                self._keep_history(doc[\"rev\"], bool(err), old)",
-  "                old = self._read_bytes()\n                self._keep_history(doc[\"rev\"], bool(err), old)\n                self._write(new)"),
+  "                old = self._read_bytes()\n                self._write(new)",
+  "                old = self._read_bytes()\n                os.makedirs(self.history_dir(), exist_ok=True)\n                self._keep_history(doc[\"rev\"], bool(err), old)\n                self._write(new)"),
 
  ("fireball timeline: a refused replace leaves its temporary file",
   "ltcplay/fireball_timeline.py",
@@ -19340,13 +19340,23 @@ def build():
 
  ("fireball timeline: show names are compared case for case",
   "ltcplay/fireball_timeline.py",
-  "    return str(name).rstrip(\" .\").casefold()",
+  "    return str(name).rstrip(\" .\").lower()",
   "    return str(name)"),
 
  ("fireball timeline: two spellings of one show are taken",
   "ltcplay/remote.py",
   "        if len(same) == 1:\n            return same[0], \"\"",
   "        if len(same) >= 1:\n            return same[0], \"\""),
+
+ ("fireball timeline: a refused history copy makes a save that was made say Not saved",
+  "ltcplay/fireball_timeline.py",
+  "            except OSError as e:\n                warn = (",
+  "            except KeyError as e:\n                warn = ("),
+
+ ("fireball timeline: names are folded as Unicode case folding (sz as ss)",
+  "ltcplay/fireball_timeline.py",
+  "    return str(name).rstrip(\" .\").lower()",
+  "    return str(name).rstrip(\" .\").casefold()"),
 
 ]
 

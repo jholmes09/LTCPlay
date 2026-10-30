@@ -94890,6 +94890,11 @@ def test_fireball_timeline_store():
         check(not [n for n in os.listdir(work) if n.endswith(".tmp")],
               "no temporary file is left behind")
         raw = open(store.path, encoding="utf-8").read()
+        check(FT.show_key("SHOW.JSON ") == FT.show_key("show.json") and
+              FT.show_key("Stra\u00dfe.json") !=
+              FT.show_key("STRASSE.json"),
+              "names compare as the folders do: case and Windows trailing "
+              "spaces and dots, never \u00df as ss")
         check(FT.read_doc(_j.loads(raw))["rev"] == 1,
               "the file on disk is a good timeline at revision 1")
         check(store.history() == [], "the first save had nothing to keep")
@@ -95012,6 +95017,33 @@ def test_fireball_timeline_store():
               not [n for n in os.listdir(work) if n.endswith(".tmp")],
               f"a replace refused: no .tmp, no history, nothing changed: "
               f"{text} {os.listdir(work)}")
+        # The new file in place and THEN the history copy refused (an
+        # antivirus): the save stands and says so, with a warning, and its
+        # listeners are told (review of #184: it said "Not saved").
+        told_ = []
+        store.on_saved.append(lambda *a: told_.append(a[2]))
+        real_kh = store._keep_history
+
+        def kh_fails(*a):
+            raise PermissionError(13, "Access is denied")
+        store._keep_history = kh_fails
+        try:
+            ok, text, entry = store.save(show, "Show", 60.0, "fseq", [], rev,
+                                         who="Andy")
+        finally:
+            store._keep_history = real_kh
+            store.on_saved.pop()
+        check(ok and entry["rev"] == rev + 1 and
+              store.load()[0]["rev"] == rev + 1 and
+              text.startswith("Saved:") and "could not be kept" in text and
+              told_ == [rev + 1] and
+              any(ln[0][2] == "history_failed" and ln[1].get("fault")
+                  for ln in lines[-3:]),
+              f"saved, the history copy refused: said saved, with the "
+              f"warning: {ok} {text}")
+        rev += 1
+        before = open(store.path, "rb").read()
+        hist0 = store.history()
         # Every read is under the store's lock (a save's replace never
         # meets this program's own reader holding the file).
         import threading as _th
