@@ -1093,7 +1093,7 @@ MUTATIONS = [
 
  ("soak: the screens see only a refusal, never the show-load CUES FAULT",
   "ltcplay/fire_ice.py",
-  "        return self.fault or self.render_fault_now()",
+  "        return self.fault or rf",
   "        return self.fault"),
 
  ("flame cues: a stale render is not refused while the reader is mid-pass",
@@ -1150,13 +1150,13 @@ MUTATIONS = [
 
  ("soak: FlameCues.start() starts nothing until a frame asks",
   "ltcplay/fire_ice.py",
-  "        if self._bg and self._thread is None and not self._stop.is_set():\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,",
-  "        if self._bg and self._thread is None and not self._stop.is_set() \\\n"
-  "                and getattr(self, '_layout', None) is not None:\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,"),
+  "        if not self._bg or self._stop.is_set():\n"
+  "            return self\n"
+  "        # From the sender",
+  "        if not self._bg or self._stop.is_set() or \\\n"
+  "                getattr(self, '_layout', None) is None:\n"
+  "            return self\n"
+  "        # From the sender"),
 
  ("soak: another show folder in showpc.json goes unsaid",
   "ltcplay/remote.py",
@@ -2684,6 +2684,317 @@ MUTATIONS = [
   "ltcplay/remote.py",
   "            was = hz.cut()",
   "            hz.cut()\n            was = []"),
+
+ # the fuel pump (Jeff, 2026-10-30): flamesafe's switch, run by the engine
+ ("pump: the FSEQ's data on the pump's slot reaches it",
+  "ltcplay/flamelink.py",
+  "        if self._pump_chan is not None:\n            out[self._pump_chan] = 0\n",
+  ""),
+
+ ("pump: the flame frame never names the pump",
+  "ltcplay/flamelink.py",
+  "        if self._pump_live():\n            return self._hazers_on | {self._pump_name}",
+  "        if False:\n            return self._hazers_on | {self._pump_name}"),
+
+ ("pump: Stop and Abort leave the pump on at the link",
+  "ltcplay/flamelink.py",
+  "                self._pump_on = False\n                self._pump_until = None\n                self._hazers_on = frozenset()",
+  "                self._hazers_on = frozenset()"),
+
+ ("pump: Hold (a zero) turns the pump off",
+  "ltcplay/flamelink.py",
+  "            # No timed purge's hard end outlives a zero (review of #172).\n            self._purge_until = None\n            self._program = None",
+  "            # No timed purge's hard end outlives a zero (review of #172).\n            self._purge_until = None\n            self._pump_on = False\n            self._program = None"),
+
+ ("pump: ON is taken while an Abort is being repeated",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id or self.abort_repeating():",
+  "                if gen != self.abort_id:"),
+
+ ("pump: a start carrying a count from before a Stop is taken",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id or self.abort_repeating():",
+  "                if self.abort_repeating():"),
+
+ ("pump: the link's hard end never ends it",
+  "ltcplay/flamelink.py",
+  "            elif now >= until:\n                why = \"its time was up\"",
+  "            elif False:\n                why = \"its time was up\""),
+
+ ("pump: a stalled timer keeps it on at the link",
+  "ltcplay/flamelink.py",
+  "            elif now - beat > PUMP_HOLD_S or now < beat:",
+  "            elif False:"),
+
+ ("pump: a beat carrying a count from before a Stop keeps it on",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id:\n                    self._pump_on = False",
+  "                if False:\n                    self._pump_on = False"),
+
+ ("pump: the engine's deadline is not carried to the link",
+  "ltcplay/flamelink.py",
+  "                    if left < s:\n                        s = left\n                    if not s > 0:\n                        return False\n                self._pump_until = mine + s",
+  "                    if not s > 0:\n                        return False\n                self._pump_until = mine + s"),
+
+ ("pump: the engine reads a switch whose on is outside 1 to 255",
+  "ltcplay/flamelink.py",
+  "                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:",
+  "                    False:"),
+
+ ("pump: the engine reads a second switch",
+  "ltcplay/flamelink.py",
+  "            if switches:",
+  "            if False:"),
+
+ ("pump: the hazers count the pump as a hazer",
+  "ltcplay/hazers.py",
+  "                and str(p.get(\"kind\") or \"hazer\") == \"hazer\"]",
+  "                ]"),
+
+ ("pump: the engine's timer never ends it at its time",
+  "ltcplay/fuelpump.py",
+  "        if now >= r[\"deadline\"]:\n            return f\"its {clock_text(r['seconds'])} were up\"",
+  "        if False:\n            return f\"its {clock_text(r['seconds'])} were up\""),
+
+ ("pump: a stall between the timer's passes is not seen",
+  "ltcplay/fuelpump.py",
+  "        if now - r[\"beat\"] > BEAT_STALE_S or now < r[\"beat\"]:",
+  "        if False:"),
+
+ ("pump: a stall inside a pass is not seen",
+  "ltcplay/fuelpump.py",
+  "            elif fresh - r[\"beat\"] > BEAT_STALE_S or fresh < r[\"beat\"]:",
+  "            elif False:"),
+
+ ("pump: a Stop landing after the beat inside a pass is not seen",
+  "ltcplay/fuelpump.py",
+  "                lost = \"\" if link.pump_gen() == r[\"gen\"] else \\",
+  "                lost = \"\" if True else \\"),
+
+ ("pump: flamesafe going quiet leaves it on",
+  "ltcplay/fuelpump.py",
+  "        why = self.down()\n        if why:\n            return why.rstrip(\".\")",
+  "        why = \"\"\n        if why:\n            return why"),
+
+ ("pump: a replayed press starts it again",
+  "ltcplay/fuelpump.py",
+  "        if used:",
+  "        if False:"),
+
+ ("pump: a second ON adds time",
+  "ltcplay/fuelpump.py",
+  "            broke = \"\"\n            if running is None and self._off_gen != off0:",
+  "            broke = \"\"\n            running = None\n            if False:"),
+
+ ("pump: the run is not reserved before the second look",
+  "ltcplay/fuelpump.py",
+  "                self.run = {\"id\": rid, \"reserved\": True}",
+  "                pass"),
+
+ ("pump: cut() leaves an ON being checked free to start after it",
+  "ltcplay/fuelpump.py",
+  "                self._off_gen += 1\n                was, self.run",
+  "                was, self.run"),
+
+ ("pump: a start that raised leaves the reservation (the pump wedged)",
+  "ltcplay/fuelpump.py",
+  "                if isinstance(self.run, dict) and \"deadline\" not in \\\n                        self.run:\n                    self.run = None",
+  "                pass"),
+
+ ("pump: the screens read a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "        r = self._live_run()",
+  "        r = self.run"),
+
+ ("pump: on() reads a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "            return self._live_run() is not None and link is not None and \\",
+  "            return self.run is not None and link is not None and \\"),
+
+ ("pump: a run's last_off carries no count",
+  "ltcplay/fuelpump.py",
+  "            self.last_off = {\"reason\": why, \"who\": by, \"n\": self._offs,\n",
+  "            self.last_off = {\"reason\": why, \"who\": by,\n"),
+
+ ("pump: an ON from a stale or ageless screen is taken",
+  "ltcplay/remote.py",
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
+  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+
+ ("pump: a start that raised leaves the link naming the pump",
+  "ltcplay/fuelpump.py",
+  "                broke = type(e).__name__\n                try:\n                    link.pump_stop()\n                except Exception:\n                    pass",
+  "                broke = type(e).__name__"),
+
+ ("pump: the second look's refusal is not audited",
+  "ltcplay/fuelpump.py",
+  "            self._audit(who, screen, \"fuel pump on\", \"refused\", why)\n            return False, why\n        if running is not None:",
+  "            return False, why\n        if running is not None:"),
+
+ ("pump: a start that raised is not audited",
+  "ltcplay/fuelpump.py",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)\n            self._audit(who, screen, \"fuel pump on\", \"refused\", why)",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)"),
+
+ ("pump: the screens get no boot id",
+  "ltcplay/fuelpump.py",
+  "                \"last_off\": self.last_off, \"boot\": self.boot}",
+  "                \"last_off\": self.last_off}"),
+
+ ("pump: live flame programming starts while the pump runs",
+  "ltcplay/remote.py",
+  "        if on:\n            return (\"The fuel pump is on, and live flame",
+  "        if False:\n            return (\"The fuel pump is on, and live flame"),
+
+ ("pump: the status waits on the flame link's lock",
+  "ltcplay/fuelpump.py",
+  "                bool(link.pump_live_now())",
+  "                bool(link.pump_on)"),
+
+ ("pump: a disarm to every group is blamed on Stop or Abort",
+  "ltcplay/fuelpump.py",
+  "        return ended or (\"the disarm to every flame group was sent (a Stop, \"",
+  "        return (\"the disarm to every flame group was sent (a Stop, \""),
+
+ ("pump: the link not sending leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if not snap.get(\"open\") or not snap.get(\"sending_ok\"):",
+  "        if not snap.get(\"open\"):"),
+
+ ("pump: cut() leaves it on at the link",
+  "ltcplay/fuelpump.py",
+  "            if link is not None:\n                link.pump_stop()\n            with self._lock:\n                self._off_gen += 1",
+  "            with self._lock:\n                self._off_gen += 1"),
+
+ ("pump: an ON whose checks began before a Pump off starts after it",
+  "ltcplay/fuelpump.py",
+  "            if running is None and self._off_gen != off0:",
+  "            if False:"),
+
+ ("pump: ON is taken while live flame programming is being turned on",
+  "ltcplay/remote.py",
+  "        programming = lf is not None and (getattr(lf, \"on\", False) or\n                                          getattr(lf, \"_starting\", False))",
+  "        programming = lf is not None and getattr(lf, \"on\", False)"),
+
+ ("pump: the blocker is not asked again with the run reserved",
+  "ltcplay/fuelpump.py",
+  "                try:\n                    late = self._blocker() or \"\"\n                except Exception:\n                    late = \"the engine's state could not be read.\"",
+  "                late = \"\""),
+
+ ("pump: live flame programming's own start check ignores the pump",
+  "ltcplay/remote.py",
+  "        if lf is None or not getattr(lf, \"on\", False):\n            why = self.live_flame_pump_refusal()",
+  "        if False:\n            why = self.live_flame_pump_refusal()"),
+
+ ("pump: an Abort standing leaves a run on",
+  "ltcplay/fuelpump.py",
+  "            if self._abort_standing():\n                return \"an Abort is standing\"",
+  "            if False:\n                return \"an Abort is standing\""),
+
+ ("pump: flamesafe not passing it never ends the run",
+  "ltcplay/fuelpump.py",
+  "            elif now - since > NOT_PASSING_S:",
+  "            elif False:"),
+
+ ("pump: flamesafe passing it with the engine off is not said",
+  "ltcplay/fuelpump.py",
+  "        if not on and p and p.get(\"passing\"):",
+  "        if False:"),
+
+ ("pump: the night closing leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_CLOSING:\n            return \"the night is closing\"",
+  "        if False:\n            return \"the night is closing\""),
+
+ ("pump: the night over leaves a run on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_OVER and r.get(\"night\") not in NIGHT_OVER:",
+  "        if False:"),
+
+ ("pump: ON while the night closes",
+  "ltcplay/fuelpump.py",
+  "        if self._night() in NIGHT_CLOSING:\n            return \"the night is closing.\"",
+  "        if False:\n            return \"the night is closing.\""),
+
+ ("pump: on 1 at the route turns it on",
+  "ltcplay/remote.py",
+  "        on = body.get(\"on\") is True\n        if not on:\n            ok, text = pm.set(False",
+  "        on = bool(body.get(\"on\"))\n        if not on:\n            ok, text = pm.set(False"),
+
+ ("pump: a run time over pump_max_s is taken",
+  "ltcplay/fuelpump.py",
+  "    if v > max_s:",
+  "    if False:"),
+
+ ("pump: ON with an Abort standing",
+  "ltcplay/fuelpump.py",
+  "            if self._abort_standing():\n                return (\"an Abort is standing. Press Reset, then turn it on \"",
+  "            if False:\n                return (\"an Abort is standing. Press Reset, then turn it on \""),
+
+ ("pump: ON within 0.75 s of a Stop or Abort at the engine",
+  "ltcplay/fuelpump.py",
+  "        if repeating:\n            return (\"a Stop or Abort is still being sent",
+  "        if False:\n            return (\"a Stop or Abort is still being sent"),
+
+ ("pump: ON with flamesafe's status stale",
+  "ltcplay/fuelpump.py",
+  "        if fl.get(\"stale\") or age is None or age > STATUS_FRESH_S * 1000:",
+  "        if False:"),
+
+ ("pump: ON with flamesafe's pump not the engine's",
+  "ltcplay/fuelpump.py",
+  "        if sorted(theirs) != self.mine():\n            return (\"flamesafe's fuel pump",
+  "        if False:\n            return (\"flamesafe's fuel pump"),
+
+ ("pump: ON with its slot in the lockout file",
+  "ltcplay/fuelpump.py",
+  "        if locked:",
+  "        if False:"),
+
+ ("pump: ON with live flame programming on",
+  "ltcplay/remote.py",
+  "            return (\"live flame programming is on, and turning it off \"\n                    \"turns the fuel pump off. Turn it off first.\")",
+  "            return \"\""),
+
+ ("pump: the screens say on before flamesafe has taken it",
+  "ltcplay/fuelpump.py",
+  "        elif not p or not p.get(\"passing\"):",
+  "        elif False:"),
+
+ ("pump: Stop (the halt) leaves the pump on",
+  "ltcplay/remote.py",
+  "            self.pump_cut(why, who, screen)",
+  "            pass"),
+
+ ("pump: an Abort press leaves the pump on",
+  "ltcplay/remote.py",
+  "            self.pump_cut(f\"{who or 'someone'} pressed Abort on the \"",
+  "            (f\"{who or 'someone'} pressed Abort on the \""),
+
+ ("pump: Stop on the rack screen's /api/stop leaves the pump on",
+  "ltcplay/web.py",
+  "        fn = getattr(rm, \"pump_cut\", None)",
+  "        fn = None"),
+
+ ("pump: ON from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            why = (\"Turning the fuel pump on",
+  "        if False:\n            why = (\"Turning the fuel pump on"),
+
+ ("pump: ON needs no permission",
+  "ltcplay/users.py",
+  "    \"fuel-pump\": \"arm\",",
+  "    \"fuel-pump\": None,"),
+
+ ("pump: OFF needs the arm permission",
+  "ltcplay/users.py",
+  "        if name == \"fuel-pump\" and body.get(\"on\") is not True:",
+  "        if False:"),
+
+ ("pump: a pump_max_s past its limit is read",
+  "ltcplay/remote.py",
+  "                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:",
+  "                False:"),
 
  ("deck: with announcements a tap of key 5 opens the hazers page",
   "ltcplay/streamdeck.py",
@@ -7309,18 +7620,400 @@ def build():
 
  ("flame cues: a block that could not be cut is tried again",
   "ltcplay/fire_ice.py",
-  "            if b in self.blocks or b in self.errors:",
-  "            if b in self.blocks:"),
+  "        if b in self.errors:\n            t = self.slow.get(b)",
+  "        if False:\n            t = self.slow.get(b)"),
 
  ("flame cues: a block that could not be cut is a silent zero",
   "ltcplay/fire_ice.py",
-  "        if e is not None:\n            raise e",
-  "        if False:\n            raise e"),
+  "        if e is not None:\n            # With no traceback",
+  "        if False:\n            # With no traceback"),
 
  ("flame cues: a block not cut yet is a silent zero",
   "ltcplay/fire_ice.py",
-  "                    return self._zero(CUES_LOADING, fault=True)",
-  "                    return self._zero(CUES_LOADING, fault=False)"),
+  "                            else CUES_LOADING), fault=True)",
+  "                            else CUES_LOADING), fault=False)"),
+
+ # -- review of #174, round 2 follow-ups (2026-10-29)
+ ("flame cues: the cutting thread never cuts ahead",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            pass"),
+
+ ("flame cues: a dead background thread is never started again",
+  "ltcplay/fire_ice.py",
+  "        if t is not None and t.is_alive():\n            return\n"
+  "        now = self._mono()",
+  "        if t is not None:\n            return\n"
+  "        now = self._mono()"),
+
+ # -- review B of #177 (2026-10-30)
+ ("flame cues: a passing error faults its block for good",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif True:"),
+
+ ("flame cues: a missing tail journals a line for every piece",
+  "ltcplay/fire_ice.py",
+  "                short = (n, FSEQError(CUT_SHORT_TEXT))",
+  "                short = (n, FSEQError(f\"{CUT_SHORT_TEXT} at {n}\"))"),
+
+ ("flame cues: a reader stalled at Run is silent zeros for good",
+  "ltcplay/fire_ice.py",
+  "        return self._zero(why, fault=True)\n\n    def _idle",
+  "        return self._zero(why)\n\n    def _idle"),
+
+ ("flame cues: start() is not locked",
+  "ltcplay/fire_ice.py",
+  "        with self._start_lock:\n            if self._stop.is_set():",
+  "        if True:\n            if self._stop.is_set():"),
+
+ # -- review of #177 (2026-10-30)
+ ("flame cues: the uncut timer restarts at every block",
+  "ltcplay/fire_ice.py",
+  "                    key = (id(s), label)",
+  "                    key = (id(s), label, cut._block(idx) if cut is not None\n"
+  "                           else None)"),
+
+ ("flame cues: the lookahead is back to 3 s",
+  "ltcplay/fire_ice.py",
+  "CUT_AHEAD_S = 15.0",
+  "CUT_AHEAD_S = 3.0"),
+
+ ("flame cues: the playing cue is not cut before its render is published",
+  "ltcplay/fire_ice.py",
+  "        self._cut_ahead(s, cuts)\n        self._cuts = cuts",
+  "        self._cuts = cuts"),
+
+ ("flame cues: a thread that keeps dying is restarted at once every time",
+  "ltcplay/fire_ice.py",
+  "            if since is not None and n and now - since < \\",
+  "            if False and \\"),
+
+ ("flame cues: a thread that keeps dying is never a screen fault",
+  "ltcplay/fire_ice.py",
+  "            if n >= self.RESTART_FAULT_AFTER:",
+  "            if False:"),
+
+ ("flame cues: close() leaves the cutting thread running",
+  "ltcplay/fire_ice.py",
+  "        for t in (self._thread, self._cutter):",
+  "        for t in (self._thread,):"),
+
+ ("flame cues: the first missing frame of a render reads as there",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None and idx > sh[0]:"),
+
+ ("flame cues: a served row does not end the uncut episode",
+  "ltcplay/fire_ice.py",
+  "                self._uncut = None\n                count = span[1]",
+  "                count = span[1]"),
+
+ ("flame cues: a thread started again is still said to be gone",
+  "ltcplay/fire_ice.py",
+  "        self._start_failed.discard(attr)",
+  "        pass"),
+
+ ("flame cues: the cutting thread looks only once a second",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(1.0):\n            self._cut_ahead()"),
+
+ ("flame cues: a cutter that cannot start still promises the cues",
+  "ltcplay/fire_ice.py",
+  "        return bool(self._start_failed)",
+  "        return False"),
+
+ ("flame cues: every move to an uncut frame is a CUES FAULT at once",
+  "ltcplay/fire_ice.py",
+  "                    if not dead and now - u[1] < CUT_FAULT_AFTER_S:",
+  "                    if False:"),
+
+ ("flame cues: one missing frame faults its whole block",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None:"),
+
+ ("flame cues: an uncompressed render is copied whole to be cut",
+  "ltcplay/fire_ice.py",
+  "        self.whole = g.compression == NONE and len(g._blocks) == 1",
+  "        self.whole = False"),
+
+ ("flame cues: a cut block's channel data is kept",
+  "ltcplay/fire_ice.py",
+  "                g._cache_idx, g._cache = -1, b\"\"",
+  "                pass"),
+
+ # -- review 3 of #177 (2026-10-30)
+ ("flame cues: a one-block render is cut past its block",
+  "ltcplay/fire_ice.py",
+  "            end = self.boff + self.blen",
+  "            end = len(self.mv)"),
+
+ ("flame cues: a one-block render's missing bytes are no fault",
+  "ltcplay/fire_ice.py",
+  "            if end > len(self.mv):\n                # As _load_block",
+  "            if False:\n                # As _load_block"),
+
+ ("flame cues: a cut that keeps failing is retried forever",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif b in self.errors:"),
+
+ ("flame cues: a block's retries are never backed off further",
+  "ltcplay/fire_ice.py",
+  "CUT_RETRY_S[\n                            min(n, len(CUT_RETRY_S)) - 1], e)",
+  "CUT_RETRY_S[0], e)"),
+
+ ("flame cues: a block failing to cut waits out the grace silently",
+  "ltcplay/fire_ice.py",
+  "                    if failing is not None:",
+  "                    if False:"),
+
+ ("flame cues: a thread that keeps stopping ranks below the loading fault",
+  "ltcplay/fire_ice.py",
+  "        if self.thread_fault and (not self.fault or\n"
+  "                                  self.fault in CUES_WAITING):",
+  "        if self.thread_fault and not self.fault:"),
+
+ ("flame cues: a stopped cutter still promises the cues within a second",
+  "ltcplay/fire_ice.py",
+  "        return t is not None and not t.is_alive() and \\\n"
+  "            not self._stop.is_set()",
+  "        return False"),
+
+ ("flame cues: a cutter that keeps stopping is said to be loading",
+  "ltcplay/fire_ice.py",
+  "                        self.thread_fault or (",
+  "                        \"\" or ("),
+
+ ("flame cues: the restart count resets after 60 s with no start()",
+  "ltcplay/fire_ice.py",
+  "            if began is not None and ended is not None and \\\n"
+  "                    ended - began >= self.RESTART_RESET_S:",
+  "            if began is not None and \\\n"
+  "                    now - began >= self.RESTART_RESET_S:"),
+
+ ("flame cues: a thread that ran 60 s never starts the count again",
+  "ltcplay/fire_ice.py",
+  "                    ended - began >= self.RESTART_RESET_S:\n"
+  "                n = 0",
+  "                    ended - began >= self.RESTART_RESET_S:\n"
+  "                pass"),
+
+ ("flame cues: a dying thread's back-off never grows",
+  "ltcplay/fire_ice.py",
+  "self.RESTART_BACKOFF_S[min(n, len(\n"
+  "                        self.RESTART_BACKOFF_S)) - 1]:",
+  "self.RESTART_BACKOFF_S[0]:"),
+
+ ("flame cues: a pause or a stop does not end the uncut grace",
+  "ltcplay/fire_ice.py",
+  "        self._uncut = None\n        return self._zero(why)",
+  "        return self._zero(why)"),
+
+ ("flame cues: a new cue plays on the last cue's uncut grace",
+  "ltcplay/fire_ice.py",
+  "                    key = (id(s), label)",
+  "                    key = \"uncut\""),
+
+ ("flame cues: a new session plays on the last one's read grace",
+  "ltcplay/fire_ice.py",
+  "self._late_zero((id(s), label), CUES_READING_LAYOUT)",
+  "self._late_zero(\"read\", CUES_READING_LAYOUT)"),
+
+ ("flame cues: a fault from before shows in the read grace",
+  "ltcplay/fire_ice.py",
+  "            self.fault = \"\"\n            return None\n"
+  "        return self._zero(why, fault=True)\n\n    def _idle",
+  "            return None\n"
+  "        return self._zero(why, fault=True)\n\n    def _idle"),
+
+ ("flame cues: a failed start is journaled as a restart",
+  "ltcplay/fire_ice.py",
+  "            self._start_failed.add(attr)\n            return\n"
+  "        setattr(self, attr, nt)",
+  "            self._start_failed.add(attr)\n"
+  "        setattr(self, attr, nt)"),
+
+ ("flame cues: a thread that cannot start is never journaled",
+  "ltcplay/fire_ice.py",
+  "            if attr not in self._start_failed:\n                self._note(",
+  "            if False:\n                self._note("),
+
+ ("flame cues: a start() that waited out close() starts threads",
+  "ltcplay/fire_ice.py",
+  "            if self._stop.is_set():\n"
+  "                return self              # close() came in while we waited",
+  "            if False:\n"
+  "                return self              # close() came in while we waited"),
+
+ ("flame cues: the thread fault always clears",
+  "ltcplay/fire_ice.py",
+  "        if self.thread_fault and all(",
+  "        if self.thread_fault or True or all("),
+
+ ("flame cues: the thread fault never clears",
+  "ltcplay/fire_ice.py",
+  "            self.thread_fault = \"\"\n\n    def _cutter_dead",
+  "            pass\n\n    def _cutter_dead"),
+
+ # -- round 2 review of #177 (2026-10-30)
+ ("flame cues: a passing cut fault is kept for every later show",
+  "ltcplay/fire_ice.py",
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S",
+  "                        pass"),
+
+ ("flame cues: a data error is tried again like a passing one",
+  "ltcplay/fire_ice.py",
+  "                    if _cut_data_error(e):\n"
+  "                        # The render's own bytes are wrong: for good.",
+  "                    if False:\n"
+  "                        # The render's own bytes are wrong: for good."),
+
+ ("flame cues: a look does not end the uncut grace",
+  "ltcplay/fire_ice.py",
+  "            self._uncut = None\n            plain =",
+  "            plain ="),
+
+ ("flame cues: the back-off counts from the start, not the death",
+  "ltcplay/fire_ice.py",
+  "            since = ended if ended is not None and (\n"
+  "                last is None or ended > last) else last",
+  "            since = last"),
+
+ ("flame cues: a retry set meanwhile is not seen under the lock",
+  "ltcplay/fire_ice.py",
+  "                if not self._due(b):\n                    continue\n"
+  "                r = self.retry.get(b)",
+  "                r = self.retry.get(b)"),
+
+ ("flame cues: a first start that fails is tried on every call",
+  "ltcplay/fire_ice.py",
+  "        if tried is not None and now - tried[1] < self.RESTART_BACKOFF_S[",
+  "        if False and now - tried[1] < self.RESTART_BACKOFF_S["),
+
+ ("flame cues: a first start's recovery is not said",
+  "ltcplay/fire_ice.py",
+  "        if t is None and again:\n            self._note(",
+  "        if False:\n            self._note("),
+
+ ("flame cues: a render whose ranges disagree with its channels is read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if False:"),
+
+ ("flame cues: a cut past the frame's bytes is a shifted row",
+  "ltcplay/fire_ice.py",
+  "        if len(row) != count:",
+  "        if False:"),
+
+ ("flame cues: a garbage frame count lists every piece",
+  "ltcplay/fire_ice.py",
+  "            self.firsts = None\n            self.pieces =",
+  "            self.firsts = list(range(0, max(1, g.frame_count),\n"
+  "                                     CUT_PIECE_FRAMES))\n"
+  "            self.pieces ="),
+
+ ("flame cues: a death during a restart loses its reason",
+  "ltcplay/fire_ice.py",
+  "        setattr(self, attr, nt)\n        self._start_failed.discard(attr)",
+  "        setattr(self, attr, nt)\n        self._died.pop(attr, None)\n"
+  "        self._start_failed.discard(attr)"),
+
+ # -- round 3 review of #177 (2026-10-30)
+ ("flame cues: a cut set-up that failed for a passing reason is kept",
+  "ltcplay/fire_ice.py",
+  "                    cut.span != tuple(span) or cut.stale():",
+  "                    cut.span != tuple(span):"),
+
+ ("flame cues: a damaged render's set-up is made again",
+  "ltcplay/fire_ice.py",
+  "        c.rebuild_at = None if _cut_data_error(error) else \\",
+  "        c.rebuild_at = None if False else \\"),
+
+ ("flame cues: failed starts count as restarts",
+  "ltcplay/fire_ice.py",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)\n"
+  "            self._restarts[attr] = (n, now, None)"),
+
+ ("flame cues: a kept block error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "                    e = _bare(e)\n",
+  "                    pass\n"),
+
+ ("flame cues: a failed set-up's error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "        c.blocks, c.errors, c.short = {}, {0: _bare(error)}, {}",
+  "        c.blocks, c.errors, c.short = {}, {0: error}, {}"),
+
+ ("flame cues: a passing cut fault is said as a damaged render",
+  "ltcplay/fire_ice.py",
+  "            if self._bg and not _cut_data_error(e):",
+  "            if False:"),
+
+ ("flame cues: a fault is journaled for each block's own words",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why"),
+
+ ("flame cues: ranges under the header's channel count are read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if covered > f.channel_count:"),
+
+ ("flame cues: a thread's old death reason is said again",
+  "ltcplay/fire_ice.py",
+  "        why = self._died.pop(attr, \"it ended\")",
+  "        why = self._died.get(attr, \"it ended\")"),
+
+ ("flame cues: a failed slow retry is retried fast",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif n > CUT_RETRIES:"),
+
+ ("flame cues: a data error is tried again every 30 s",
+  "ltcplay/fire_ice.py",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow.pop(b, None)\n",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S\n"),
+
+ ("flame cues: zstd out of memory is a damaged render",
+  "ltcplay/fire_ice.py",
+  "            return not (\"memory\" in text or \"allocat\" in text)",
+  "            return True"),
+
+ # -- final review of #177 (2026-10-30)
+ ("flame cues: a render that cannot be opened is said as a cut tried again",
+  "ltcplay/fire_ice.py",
+  "                    name = type(got).__name__\n"
+  "                    return self._zero(",
+  "                    raise got\n"
+  "                    return self._zero("),
+
+ ("flame cues: a kept error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise e.with_traceback(None)",
+  "            raise e"),
+
+ ("flame cues: a short render's error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise sh[1].with_traceback(None)",
+  "            raise sh[1]"),
+
+ ("flame cues: a start that works keeps its failed-start count",
+  "ltcplay/fire_ice.py",
+  "        self._start_tries.pop(attr, None)",
+  "        pass"),
+
+ ("flame cues: the journal counts a fault's kind, not its cue",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why if cause is None else cause[0]"),
 
  ("flame cues: nothing is cut ahead of the show timecode",
   "ltcplay/fire_ice.py",
@@ -8581,8 +9274,8 @@ def build():
 
  ('show-assembly: flame cues read while nothing is running',
   'ltcplay/fire_ice.py',
-  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._zero("")',
-  '        if s is None:\n            self._look_since = None\n            return self._zero("")'),
+  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._idle()',
+  '        if s is None:\n            self._look_since = None\n            return self._idle()'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
@@ -8628,8 +9321,8 @@ def build():
 
  ('fix round 1: flame cues follow a GO free run',
   'ltcplay/fire_ice.py',
-  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._zero(',
-  '        if False:\n            return self._zero('),
+  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._idle(',
+  '        if False:\n            return self._idle('),
 
  ('fix round 1: flame cues go on while the show audio is paused',
   'ltcplay/fire_ice.py',
@@ -9378,8 +10071,8 @@ def build():
 
  ('review43: a render that cannot be read is a quiet zero',
   'ltcplay/fire_ice.py',
-  '                              f"({type(e).__name__}: {e})", fault=True)',
-  '                              f"({type(e).__name__}: {e})")'),
+  '                              f"({name}: {e})", fault=True,',
+  '                              f"({name}: {e})",'),
 
  ('review43: /api/conductor leaves out the flame cue fault',
   'ltcplay/web.py',
