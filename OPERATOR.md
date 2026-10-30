@@ -997,7 +997,12 @@ FSEQ:
   moment later, or a flicker effect, never charges a charged tank again.
 - **The fireball must be on 55 to 59.** If flamesafe's fireball group is
   on other channels, no show fires its fireball (its own channels are held
-  at zero) and the screens say why, until the group is on 55 to 59.
+  at zero), the charge record watches nothing, and the screens say why,
+  until the group is on 55 to 59.
+- **No fireball group found at all** in flamesafe's config: 55 to 59 are
+  still guarded for every show, whatever is wired to them. Purge (59) is
+  always zero, and Fuel (55) and Air (56) each get one charge until a
+  shot (57) or a Purge empties the record again.
 - Valve Open (57), the Igniter (58) and every other channel of an FSEQ
   show are exactly as before.
 
@@ -1020,14 +1025,19 @@ FSEQ:
   A tank NOT KNOWN is skipped too: purge or fire to reset it. A charge cut
   short (stopped for more than a quarter of a second: Hold, Stop, a seek)
   never charges again in that play, even after a Resume inside its time:
-  "Fuel charge cut short ... not charged again in this play". A stop of a
-  frame or two (one frame not read or not sent) is no cut: the same charge
-  carries on. The Valve Open and Igniter stages are not limited by this.
+  "Fuel charge cut short ... not charged again in this play": that shot
+  is under-charged, and the journal says so too. A stage interrupted for
+  0.25 s or less resumes within the same window; longer ends it. So a
+  dropped frame, a send that failed, a short link outage, a lockout
+  undone at once, or a Hold under 0.1 s with an instant Resume rides
+  through as the same charge; its time on never adds up to more than its
+  window. The Valve Open and Igniter stages are not limited by this.
 - **Editing during a show.** A saved change is taken on the next frame. A
   stage already started keeps the times it started with. A stage not
   started yet takes the new times, unless its new start is already behind
   the show: then it is not fired in this play. A change of source (FSEQ
-  or Timeline) applies from the next time a show cue starts.
+  or Timeline) applies from the next time a show cue starts: the play
+  running finishes its own stages, Valve Open included.
 - A show plays the timeline saved for it under any spelling of its file
   name ("SHOW.JSON" plays the timeline of "Show.json"); two entries that
   differ only by case are a fault and that show fires no fireball.

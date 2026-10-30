@@ -20434,6 +20434,16 @@ def build():
   "                run.sent_at.pop(tank, None)\n                run.sent_tanks.discard(tank)\n                continue",
   "                continue"),
 
+ ("fireball cues: a switch to the FSEQ mid-play drops the play's stages (round 4, s40)",
+  "ltcplay/fireball_cues.py",
+  "                run.rev = rev\n            else:",
+  "                run.adopt(dict(entry or {}, stages=[]), rev, relf)\n            else:"),
+
+ ("fireball cues: a skipped or cut short stage is not journaled (round 4)",
+  "ltcplay/fireball_cues.py",
+  "        self._note(text, outcome=\"fireball_skipped\")",
+  "        pass"),
+
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",
   "        if group is not None and group != list(SLOTS):",

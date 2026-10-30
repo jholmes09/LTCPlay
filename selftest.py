@@ -98658,9 +98658,14 @@ def test_fireball_timeline_docs_in_plain_words():
                  "double charge).", "NOT KNOWN is skipped",
                  "never charges again in that play",
                  "keeps the times it started with",
-                 "more than a quarter of a second", "is no cut",
+                 "more than a quarter of a second",
+                 "A stage interrupted for 0.25 s or less resumes within "
+                 "the same window; longer ends it",
+                 "a Hold under 0.1 s with an instant Resume rides through",
+                 "under-charged, and the journal says so too",
                  "under any\nspelling",
                  "not fired in this play", "next time a show cue starts",
+                 "finishes its own stages, Valve Open included",
                  "zero for **every** show"):
         check(" ".join(need.split()) in " ".join(s.split()),
               f"OPERATOR.md's timeline in a show says {need!r}")
@@ -98677,6 +98682,10 @@ def test_fireball_timeline_docs_in_plain_words():
                  "the next charge in the FSEQ goes out again",
                  "A charge the FSEQ itself turns off has ended",
                  "The fireball must be on 55 to 59",
+                 "the charge record watches nothing",
+                 "No fireball group found at all",
+                 "Purge (59) is always zero",
+                 "each get one charge until a shot (57) or a Purge",
                  "exactly as before"):
         check(" ".join(need.split()) in " ".join(ev.split()),
               f"OPERATOR.md's every-show rule says {need!r}")
@@ -99662,6 +99671,11 @@ def test_fireball_cues_rules():
               "charge).",
               f"after a Hold or a seek inside the Fuel window: never on "
               f"again in this play, said as it is: {R.fq.messages}")
+        check(any(t == R.fq.messages[-1] and
+                  k.get("outcome") == "fireball_skipped"
+                  for t, k in R.lines),
+              f"the under-charge is in the journal too (round-4 review): "
+              f"{R.lines[-1:]}")
         # One frame not sent (a send that failed, one frame the cues could
         # not read) is no cut: the same charge carries on, and the charge
         # state is told so its edge is not a double charge (review of
@@ -99915,6 +99929,37 @@ def test_fireball_cues_rules():
               f"{R.fq.messages}")
         check(on[58] == list(range(210, 240)),
               f"a stage not started takes the new times: {on[58][:2]}")
+        # Switched to the FSEQ in the middle of the play (round-4 review,
+        # s40): this play keeps its own stages to the end, Valve Open
+        # included (dropping them left Fuel charged with no shot).
+        R40 = _fbq_rig([_st("fuel", "00:00:01:00", 1),
+                        _st("air", "00:00:02:00", 1),
+                        _st("igniter", "00:00:03:00", 1),
+                        _st("valve", "00:00:04:00", 0.5)])
+        rigs.append(R40)
+        for f in range(0, 45):
+            if R40.frame(f)[54]:
+                R40.tank.tanks["fuel"] = "charged"
+        R40.save([_st("fuel", "00:00:01:00", 1),
+                  _st("air", "00:00:02:00", 1),
+                  _st("igniter", "00:00:03:00", 1),
+                  _st("valve", "00:00:04:00", 0.5)], source_="fseq")
+        R40.fq.refresh()
+        got = {f: R40.frame(f, base=noise) for f in range(45, 200)}
+        on = {s: [f for f, g in got.items() if g[s - 1]]
+              for s in (55, 56, 57, 58, 59)}
+        check(on[56] == list(range(60, 90)) and
+              on[58] == list(range(90, 120)) and
+              on[57] == list(range(120, 135)) and not on[59] and
+              all(got[f][s - 1] == 0 for f in range(135, 200)
+                  for s in (55, 56, 57, 58, 59)),
+              f"switched to the FSEQ mid-play: this play finishes its own "
+              f"stages, Valve Open included, nothing of the FSEQ on 55 to "
+              f"59: {[(s, v[:1], v[-1:]) for s, v in on.items()]}")
+        R40.cue_obj = {"label": "Show"}
+        g = R40.frame(10, base=noise)
+        check(g[56:58] == noise[56:58],
+              "and the next cue plays its FSEQ")
         # The source is taken when a cue starts.
         R.save([_st("igniter", "00:00:08:00", 1)], source_="fseq")
         g = R.frame(245, base=noise)
