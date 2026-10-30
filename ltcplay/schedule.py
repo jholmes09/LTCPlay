@@ -313,6 +313,9 @@ class Rule:
     late_grace_s: int = 0
     version: int = 0
     tz: object = field(default=None, compare=False, repr=False)
+    # What parse_rule had to change to use the file at all (a value capped,
+    # a weekday written twice), said first by rule_warnings.
+    notes: tuple = field(default=(), compare=False, repr=False)
 
 
 def zone(name):
@@ -375,7 +378,25 @@ WEEKDAY_NAMES.update({full: w for w, full in zip(WEEKDAYS, (
     "sunday"))})
 
 
-def _night(doc, where, show_len_s, guard_s, problems):
+# The longest a show, a guard or the gap between shows can be (review of
+# PR #196: a show length of 1e14 s loaded, then every tick overflowed).
+# Longer is capped to this, and said; it is not refused.
+MAX_SPAN_S = 24 * 3600
+# The season's furthest dates (a season from year 1 to 9999 ran off the
+# calendar when the night before or after it was looked at).
+SEASON_MIN = date(1971, 1, 1)
+SEASON_MAX = date(9998, 12, 30)
+
+
+def _capped(v, most, name, notes):
+    if v is not None and v > most:
+        notes.append(f"{name} is {v}, more than {most}; {most} is used. "
+                     f"Saved as it is.")
+        return most
+    return v
+
+
+def _night(doc, where, show_len_s, guard_s, problems, notes=None):
     if not isinstance(doc, dict):
         problems.append(f"{where} has to be a block with first_start, "
                         f"interval_min and last_end.")
@@ -400,6 +421,8 @@ def _night(doc, where, show_len_s, guard_s, problems):
     if why:
         problems.append(why)
         return None
+    interval = _capped(interval, MAX_SPAN_S // 60, f"{where} interval_min",
+                       [] if notes is None else notes)
     # Jeff, 2026-10-30: "Don't restrict the schedule in any way." A night
     # may start at any time of day and run past midnight (last_end at or
     # before first_start is on the next day); spacing that does not fit is
@@ -444,14 +467,17 @@ def parse_rule(doc, where=""):
     show_len_s = guard_s = None
     grace = 0
     version = 0
+    notes = []
     if "show_len_s" in doc:
         show_len_s, why = _whole(doc["show_len_s"], "show_len_s", 1)
         if why:
             problems.append(why)
+        show_len_s = _capped(show_len_s, MAX_SPAN_S, "show_len_s", notes)
     if "guard_s" in doc:
         guard_s, why = _whole(doc["guard_s"], "guard_s", 0)
         if why:
             problems.append(why)
+        guard_s = _capped(guard_s, MAX_SPAN_S, "guard_s", notes)
     if "late_grace_s" in doc:
         grace, why = _whole(doc["late_grace_s"], "late_grace_s", 0,
                             MAX_LATE_GRACE_S)
@@ -490,6 +516,14 @@ def parse_rule(doc, where=""):
                 first_date = last_date = None
             # A season that ends before it starts is warned about
             # (rule_warnings): only the date exceptions then have shows.
+            if first_date and first_date < SEASON_MIN:
+                notes.append(f"The season starts on {first_date}; "
+                             f"{SEASON_MIN} is used. Saved as it is.")
+                first_date = SEASON_MIN
+            if last_date and last_date > SEASON_MAX:
+                notes.append(f"The season ends on {last_date}; {SEASON_MAX} "
+                             f"is used. Saved as it is.")
+                last_date = SEASON_MAX
 
     weekly = {}
     if "weekly" in doc:
@@ -503,8 +537,13 @@ def parse_rule(doc, where=""):
                     problems.append(f"weekly: {k!r} is not a weekday. Use "
                                     f"{', '.join(WEEKDAYS)}.")
                     continue
-                n = _night(v, f"weekly {k}", show_len_s, guard_s, problems)
+                n = _night(v, f"weekly {k}", show_len_s, guard_s, problems,
+                           notes)
                 if n is not None:
+                    if k in weekly:
+                        # Review of PR #196: {"thu": A, "Thursday": B}.
+                        notes.append(f"weekly: {k0!r} is {k} again; the "
+                                     f"later one is used. Saved as it is.")
                     weekly[k] = n
 
     exceptions = {}
@@ -523,7 +562,7 @@ def parse_rule(doc, where=""):
         if v is None:
             exceptions[d] = None
             continue
-        n = _night(v, f"exception {d}", show_len_s, guard_s, problems)
+        n = _night(v, f"exception {d}", show_len_s, guard_s, problems, notes)
         if n is not None:
             exceptions[d] = n
 
@@ -532,7 +571,7 @@ def parse_rule(doc, where=""):
     return Rule(timezone=doc["timezone"], first_date=first_date,
                 last_date=last_date, weekly=weekly, exceptions=exceptions,
                 show_len_s=show_len_s, guard_s=guard_s, late_grace_s=grace,
-                version=version, tz=tz)
+                version=version, tz=tz, notes=tuple(notes))
 
 
 def rule_to_doc(rule):
@@ -592,7 +631,7 @@ def night_window(n, d, tz):
     return start, end
 
 
-def expand(rule, d):
+def expand(rule, d, count_only=False):
     """The shows for one date. No I/O; the answer depends only on the rule and
     the date. Slots are first_start, then every interval_min in real elapsed
     time, and one is kept only if start + show_len_s + guard_s <= last_end,
@@ -618,6 +657,13 @@ def expand(rule, d):
     start, end = night_window(n, d, tz)
     step = timedelta(minutes=n.interval_min)
     need = timedelta(seconds=rule.show_len_s + rule.guard_s)
+    if count_only:
+        # Only the first and last start, without the list (_night_span, on
+        # every tick and across a long season: review of PR #196).
+        if start + need > end:
+            return None
+        k = (end - need - start) // step
+        return start, start + k * step
     out = []
     s = start
     while s + need <= end:
@@ -638,18 +684,23 @@ def expand_season(rule):
 def _night_span(rule, d):
     """(first show start, end of the last show and its guard) of the
     night of `d` from the rule, UTC; (None, None) with no shows. Pure."""
-    plan = expand(rule, d)
-    if not plan.starts:
+    plan = expand(rule, d, count_only=True)
+    if plan is None or isinstance(plan, Plan):
         return None, None
-    return (_utc(plan.starts[0]), _utc(plan.starts[-1]) +
-            timedelta(seconds=rule.show_len_s + rule.guard_s))
+    first, last = plan
+    return first, last + timedelta(seconds=rule.show_len_s + rule.guard_s)
+
+
+# How many nights of the season rule_warnings looks at for two nights
+# running into each other.
+SCAN_NIGHTS = 400
 
 
 def rule_warnings(rule, most=6):
     """Sentences for a schedule that is saved and used as it is, but has
     something an operator should know (Jeff, 2026-10-30: "Don't restrict
     the schedule in any way": what was refused is now said here). Pure."""
-    out = []
+    out = list(rule.notes)
     need = rule.show_len_s + rule.guard_s
     nights = [(f"weekly {k}", rule.weekly[k]) for k in WEEKDAYS
               if k in rule.weekly]
@@ -681,31 +732,47 @@ def rule_warnings(rule, most=6):
                        + ("It runs its own hours on that date anyway."
                           if n is not None else
                           "That date has no shows anyway."))
-    # One night's last show running into the next night's first show.
-    dates = set(rule.exceptions)
+    # One night's last show running into the next night's first show:
+    # every night next to an exception, and the first SCAN_NIGHTS of the
+    # season, each weekday said once (review of PR #196: a season to 2099
+    # took 8 s, every save).
+    tz = rule.tz or zone(rule.timezone)
+    names = dict(zip(WEEKDAYS, ("Monday", "Tuesday", "Wednesday",
+                                "Thursday", "Friday", "Saturday", "Sunday")))
+    one = timedelta(days=1)
+    dates = set()
+    for e in rule.exceptions:
+        dates.update((e - one, e))
     lo, hi = sorted((rule.first_date, rule.last_date))
-    d = lo - timedelta(days=1)
-    while d <= hi:
+    d, k = lo - one, 0
+    while d <= hi and k < SCAN_NIGHTS:
         dates.add(d)
-        d += timedelta(days=1)
+        d += one
+        k += 1
+    scanned_all = d > hi
     seen, clash = set(), []
     for d in sorted(dates):
         _f, end = _night_span(rule, d)
-        first, _e = _night_span(rule, d + timedelta(days=1))
+        first, _e = _night_span(rule, d + one)
         if end is None or first is None or end <= first:
             continue
-        key = (expand(rule, d).source, WEEKDAYS[d.weekday()])
+        special = d in rule.exceptions or d + one in rule.exceptions
+        key = d if special else WEEKDAYS[d.weekday()]
         if key in seen:
             continue
         seen.add(key)
-        tz = rule.tz or zone(rule.timezone)
+        who = (f"The night of {d}" if special else
+               f"A {names[WEEKDAYS[d.weekday()]]} night")
         clash.append(
-            f"The night of {d} ({WEEKDAYS[d.weekday()]}) has a show "
-            f"finishing at {_hm(end.astimezone(tz).timetz())} with its "
-            f"guard, after the next night's first show at "
+            f"{who} has a show finishing at "
+            f"{_hm(end.astimezone(tz).timetz())} with its guard, after the "
+            f"next night's first show at "
             f"{_hm(first.astimezone(tz).timetz())}: the earlier night "
             f"finishes first, and a show of the next night whose time has "
             f"gone by then is missed. Saved as it is.")
+    if not scanned_all:
+        clash.append(f"Nights running into each other were checked for the "
+                     f"first {SCAN_NIGHTS} nights of the season only.")
     out += clash
     if len(out) > most:
         out = out[:most] + [f"And {len(out) - most} more like these."]
@@ -943,8 +1010,13 @@ class Machine:
         return s.fired_at + timedelta(seconds=self.show_len_s + paused)
 
     def hm(self, dt):
-        """An instant as tonight's wall clock reads it: 18:20."""
-        return clock(dt.astimezone(self.tz))
+        """An instant as tonight's wall clock reads it: 18:20, and
+        "00:30 (tomorrow)" once it is past midnight, on the next day
+        (review of PR #196: a list that runs past midnight)."""
+        local = dt.astimezone(self.tz)
+        day = (local.date() - self.date).days
+        return clock(local) + (" (tomorrow)" if day == 1 else
+                               f" ({local.date()})" if day else "")
 
 
 @dataclass(frozen=True)
@@ -980,12 +1052,6 @@ def rule_fingerprint(rule):
     doc.pop("version", None)
     text = json.dumps(doc, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def midnight(m):
-    """The end of tonight's date: no show on tonight's list may run past it."""
-    return _utc(datetime.combine(m.date + timedelta(days=1), time(0),
-                                 tzinfo=m.tz))
 
 
 def runs_late(m, s):
@@ -2105,15 +2171,51 @@ def close_at_reset(m, now, at_default=True):
     return tx.done()
 
 
-def _edit_time(m, ev):
-    """The time an operator typed for tonight's list. A time earlier in the
-    day than tonight's first show is after midnight, on the next day
-    (Jeff, 2026-10-30: shows between midnight and 2 AM)."""
-    t = parse_time(ev.at, "The new time")
-    when = _utc(_wall(m.date, t, m.tz))
+# How far past tonight's last planned show a typed time may land before it
+# has to say its day (review of PR #196: at 22:40 "10:55", meant 22:55,
+# became Friday 10:55 AM and started then).
+EDIT_DAY_LIMIT = timedelta(hours=3)
+
+
+def _edit_time(m, ev, now=None):
+    """The time an operator typed for tonight's list ("00:30", or "10:55
+    tomorrow", "23:30 today"). Without a day, a time earlier in the day
+    than tonight's first show is after midnight, on the next day (Jeff,
+    2026-10-30: shows between midnight and 2 AM); a time that would land
+    more than EDIT_DAY_LIMIT after tonight's last planned show is never
+    guessed: it is refused, saying how to type it with its day."""
+    text = str(ev.at or "").strip()
+    day = None
+    for word in ("tomorrow", "today", "tonight"):
+        if text.lower().endswith(" " + word):
+            day, text = word, text[:-len(word) - 1].strip()
+            break
+    t = parse_time(text, "The new time")
+    same = _utc(_wall(m.date, t, m.tz))
+    later = _utc(_wall(m.date + timedelta(days=1), t, m.tz))
+    if day == "tomorrow":
+        return later
+    if day is not None:
+        return same
     times = [(s.planned or s.start) for s in m.slots]
     if not times:
-        return when
+        return same
+    first, last = min(times), max(times)
+    pick = same
+    if t < _local(m, first).time() and \
+            (now is None or same <= _utc(_aware(now))):
+        # Earlier in the day than tonight's first show and gone by today:
+        # the small hours, after midnight.
+        pick = later
+    if pick > last + EDIT_DAY_LIMIT:
+        word = "tomorrow" if pick == later else "today"
+        hhmm = _hm(t)
+        raise ValueError(
+            f"{hhmm} would be {word} at {clock(_local(m, pick))}, more than "
+            f"{int(EDIT_DAY_LIMIT.total_seconds() // 3600)} hours after "
+            f"tonight's last show at {m.hm(last)}. If that is what you "
+            f"mean, type \"{hhmm} {word}\" to confirm.")
+    return pick
     first, last = min(times), max(times)
     later = _utc(_wall(m.date + timedelta(days=1), t, m.tz))
     # Earlier in the day than tonight's first show, and within 12 hours
@@ -2133,7 +2235,7 @@ def _edit_move(m, ev, now):
         return _refuse(m, ev, now, f"Show {s.n} is {s.status} and can no "
                                    f"longer be moved.")
     try:
-        when = _edit_time(m, ev)
+        when = _edit_time(m, ev, now)
     except ValueError as e:
         return _refuse(m, ev, now, str(e))
     slots = tuple(replace(x, start=when, planned=x.planned or x.start)
@@ -2155,7 +2257,7 @@ def _edit_move(m, ev, now):
 
 def _edit_add(m, ev, now):
     try:
-        when = _edit_time(m, ev)
+        when = _edit_time(m, ev, now)
     except ValueError as e:
         return _refuse(m, ev, now, str(e))
     n = max((s.n for s in m.slots), default=0) + 1
@@ -2326,8 +2428,13 @@ def step(m, ev, now):
 # aside, rather than reading the night and quietly dropping the dark or the
 # Abort latch: that would bring the rig back up after a restart.
 TONIGHT_FORMAT = 4
+# A list with a show on the next day (a night past midnight, PR #196):
+# an older ltcplay reads every show as on the night's own date, so it is
+# told plainly that the file is newer, and sets it aside.
+TONIGHT_NEXT_DAY_FORMAT = 5
 TONIGHT_PLAIN_FORMAT = 3
-TONIGHT_FORMATS = (TONIGHT_PLAIN_FORMAT, TONIGHT_FORMAT)
+TONIGHT_FORMATS = (TONIGHT_PLAIN_FORMAT, TONIGHT_FORMAT,
+                   TONIGHT_NEXT_DAY_FORMAT)
 TONIGHT_KEYS = frozenset((
     "format", "date", "rule_id", "state", "running", "last_end",
     "held_from", "faults", "shows_started", "slots"))
@@ -2351,8 +2458,11 @@ def machine_to_doc(m):
     ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
     always come from the rule file, never from here. Pure."""
     marked = m.dark or m.abort_latched or m.closed_by_operator
+    next_day = any(t is not None and t.astimezone(m.tz).date() != m.date
+                   for s in m.slots for t in (s.start, s.planned))
     doc = {
-        "format": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,
+        "format": (TONIGHT_NEXT_DAY_FORMAT if next_day else
+                   TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT),
         "date": m.date.isoformat(),
         "rule_id": m.rule_id, "state": m.state, "running": m.running,
         "last_end": _iso(m.last_end),
@@ -2432,15 +2542,17 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     fmt = doc.get("format")
     if fmt not in TONIGHT_FORMATS:
         newer = isinstance(fmt, int) and not isinstance(fmt, bool) and \
-            fmt > TONIGHT_FORMAT
-        reads = " and ".join(str(f) for f in TONIGHT_FORMATS)
+            fmt > TONIGHT_NEXT_DAY_FORMAT
+        reads = (", ".join(str(f) for f in TONIGHT_FORMATS[:-1]) +
+                 f" and {TONIGHT_FORMATS[-1]}")
         if newer:
             raise ValueError(f"It was saved by a newer ltcplay (format "
                              f"{fmt}); this version reads formats {reads}.")
         raise ValueError(f"It is not a saved night this version can read "
                          f"(format {fmt!r}; this version reads formats "
                          f"{reads}).")
-    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT
+    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt in (
+        TONIGHT_FORMAT, TONIGHT_NEXT_DAY_FORMAT)
                               else frozenset())
     unknown = sorted(k for k in doc if k not in allowed)
     missing = sorted(k for k in TONIGHT_KEYS if k not in doc)

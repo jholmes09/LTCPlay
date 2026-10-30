@@ -12657,9 +12657,9 @@ def test_schedule_edits_past_last_end_and_midnight():
           _den(S, 1, 45, d=(2026, 11, 15)),
           f"a move past midnight is allowed: {o.refused!r}")
     o = n.op(S.EDIT_ADD, _den(S, 21, 3), at="17:00")
-    check(not o.accepted and "already passed" in o.refused,
-          f"17:00 at 21:03 is not tomorrow afternoon: it has passed: "
-          f"{o.refused!r}")
+    check(not o.accepted and '"17:00 tomorrow"' in o.refused,
+          f"17:00 at 21:03 is not guessed to be tomorrow afternoon: it asks "
+          f"for the day: {o.refused!r}")
     o = n.op(S.DELAY_REST, _den(S, 21, 4), minutes=10)
     check(o.accepted and n.m.slot(12).start ==
           _den(S, 1, 55, d=(2026, 11, 15)),
@@ -39726,13 +39726,26 @@ def test_schedule_tonight_file_format():
         check(False, "a format 3 file carrying dark is refused")
     except ValueError as e:
         check("dark" in str(e), f"format 3 carrying dark is refused: {e}")
-    newer = dict(plain, format=5)
+    newer = dict(plain, format=6)
     try:
         S.machine_from_doc(newer, rule, n.m.date, at)
         check(False, "a newer format is refused")
     except ValueError as e:
-        check("newer ltcplay" in str(e) and "3 and 4" in str(e),
+        check("newer ltcplay" in str(e) and "3, 4 and 5" in str(e),
               f"a newer format is refused saying so: {e}")
+    # A list with a show on the next morning (review of PR #196) is format
+    # 5, so an older ltcplay (formats 3 and 4) refuses it in words rather
+    # than reading the 00:30 show as 00:30 on the night's own date.
+    from dataclasses import replace as _rp
+    late = _rp(n.m, slots=n.m.slots + (S.Slot(
+        n=99, start=_den(S, 0, 30, d=(2026, 11, 15)), origin="edit"),))
+    doc5 = S.machine_to_doc(late)
+    back = S.machine_from_doc(doc5, rule, n.m.date, at)
+    check(doc5["format"] == S.TONIGHT_NEXT_DAY_FORMAT == 5 and
+          back.slot(99).start == _den(S, 0, 30, d=(2026, 11, 15)) and
+          late.hm(late.slot(99).start) == "00:30 (tomorrow)",
+          f"a next-morning show is format 5, reads back, and is said as "
+          f"tomorrow: {doc5['format']} {late.hm(late.slot(99).start)}")
     # Fix round 3: a latch that is not plainly true or false is refused.
     for k in ("dark", "abort_latched"):
         odd = dict(plain, format=4, **{k: "yes"})
