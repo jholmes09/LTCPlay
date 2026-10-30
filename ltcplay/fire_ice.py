@@ -1265,16 +1265,32 @@ CUT_SHORT_TEXT = "the render's channel data ends before its last frames"
 
 def _cut_data_error(e):
     """True for an error in the render's own bytes (it will never cut):
-    a truncated or corrupt block, a bad table. Anything else may pass."""
+    a truncated or corrupt block, a bad table. Anything else may pass,
+    a zstd error that is out of memory too (round 3 review of #177)."""
     import zlib
     from .fseq import FSEQError
     kinds = [FSEQError, zlib.error, ValueError, IndexError, EOFError]
     try:
         import zstandard
-        kinds.append(zstandard.ZstdError)
+        if isinstance(e, zstandard.ZstdError):
+            text = str(e).lower()
+            return not ("memory" in text or "allocat" in text)
     except Exception:                            # noqa: BLE001
         pass
     return isinstance(e, tuple(kinds))
+
+
+def _bare(e):
+    """`e` with no traceback or chained errors, to be kept: a kept error
+    never pins the frames (and the decompressed block) it was raised in
+    (round 3 review of #177)."""
+    try:
+        e.__traceback__ = None
+        e.__context__ = None
+        e.__cause__ = None
+    except Exception:                            # noqa: BLE001
+        pass
+    return e
 
 
 # How often the cutting thread looks at the play position.
@@ -1306,10 +1322,11 @@ class _FlameCut:
     the render's bytes in memory (never the published one, which another
     thread may be reading). The sender only reads `row`: dict lookups and a
     slice, no lock. The cutting threads share `lock`. A block that cannot
-    be cut keeps its error, which `row` raises; it is never tried again
-    for this FSEQ. A block cut only part of the way (its later frames
-    missing) keeps the rows it has and the error from the first missing
-    frame on."""
+    be cut keeps its error, which `row` raises: for good when it is the
+    render's own bytes (a data error), else tried again (CUT_RETRY_S, then
+    every CUT_RETRY_SLOW_S). A block cut only part of the way (its later
+    frames missing) keeps the rows it has and the error from the first
+    missing frame on."""
 
     def __init__(self, path, f, spans, span, data):
         import io
@@ -1346,11 +1363,15 @@ class _FlameCut:
         self.errors = {}         # block index -> the error cutting it
         self.short = {}          # block index -> (first missing frame, error)
         self.slow = {}           # block index -> when its kept error is retried
+        self.rebuild_at = None   # a cut that never fails as a whole
 
     @classmethod
     def failed(cls, f, span, error):
-        """A render that could not be cut at all: every row raises `error`
-        (a CUES FAULT), and it is never tried again for this FSEQ."""
+        """A render whose cut could not be set up: every row raises `error`
+        (a CUES FAULT). A data error is for good for this FSEQ; anything
+        else (memory, the system) is set up again from CUT_RETRY_SLOW_S on
+        (rebuild_at; round 3 review of #177: it was kept for every later
+        show)."""
         import threading as _th
         c = cls.__new__(cls)
         c.f, c.span, c.count, c.spans = f, tuple(span), int(span[1]), []
@@ -1358,8 +1379,15 @@ class _FlameCut:
         c.firsts = [0]
         c.lock = _th.Lock()
         c.retry, c.slow = {}, {}
-        c.blocks, c.errors, c.short = {}, {0: error}, {}
+        c.blocks, c.errors, c.short = {}, {0: _bare(error)}, {}
+        c.rebuild_at = None if _cut_data_error(error) else \
+            c.clock() + CUT_RETRY_SLOW_S
         return c
+
+    def stale(self):
+        """True when this failed set-up is due to be made again."""
+        return self.rebuild_at is not None and \
+            self.clock() >= self.rebuild_at
 
     def frames(self, seconds):
         if self.g is None:
@@ -1425,6 +1453,7 @@ class _FlameCut:
                     self.slow.pop(b, None)
                 except Exception as e:
                     n = (r[0] if r else 0) + 1
+                    e = _bare(e)
                     if _cut_data_error(e):
                         # The render's own bytes are wrong: for good.
                         self.errors[b] = e
@@ -1573,6 +1602,7 @@ class FlameCues:
         self._died = {}          # thread attribute -> what ended it
         self._ended = {}         # thread attribute -> when it ended
         self._start_failed = set()
+        self._start_tries = {}   # thread attribute -> (failed starts, last)
         self._restarts = {}      # thread attribute -> (restarts, last, began)
         self._start_lock = threading.Lock()
         self.thread_fault = ""   # a thread that keeps stopping, for screens
@@ -1601,14 +1631,17 @@ class FlameCues:
             except Exception:
                 pass
 
-    def _zero(self, why, fault=False):
+    def _zero(self, why, fault=False, cause=None):
         """All zeros, saying why once each time the reason changes (an
         episode); the cue going out again clears it. A `fault` is
         journaled as one and held in self.fault for the screens until
-        the reason changes."""
+        the reason changes. `cause`, when given, is what counts as the
+        reason for the journal (round 3 review of #177: one line per cause,
+        not one for each block's own words)."""
         self.fault = why if fault else ""
-        if why != self._why:
-            self._why = why
+        key = why if cause is None else cause
+        if key != self._why:
+            self._why = key
             if why:
                 self._note(f"Flame cues are zero: {why}", action="flames",
                            outcome="cues_refused" if fault else "cues_zero",
@@ -1751,13 +1784,16 @@ class FlameCues:
         # themselves: whoever finds a render in _by_path finds the start of
         # its cues ready, as when only the file was read. One _FlameCut per
         # (FSEQ, span), kept from pass to pass and session to session; a
-        # block that cannot be cut is kept as its error, never tried again.
+        # block that cannot be cut is kept as its error (tried again unless
+        # it is the render's own bytes), and a cut that could not be set up
+        # for a passing reason is set up again every CUT_RETRY_SLOW_S.
         cuts = {}
         for path, got in by.items():
             if isinstance(got, Exception) or span is None:
                 continue
             cut = self._cuts.get(path)
-            if cut is None or cut.f is not got[0] or cut.span != tuple(span):
+            if cut is None or cut.f is not got[0] or \
+                    cut.span != tuple(span) or cut.stale():
                 mine = self._data.get(path)
                 if mine is None or mine[0] is not got[0]:
                     continue    # its bytes are not this render's: not cut
@@ -1878,11 +1914,16 @@ class FlameCues:
             return
         now = self._mono()
         n = 0
-        # A thread that died, or one that could not be started even the
-        # first time: backed off alike (round 2 review of #177: a first
-        # start that failed was tried again on every call).
-        again = t is not None or attr in self._start_failed
-        if again:
+        # A start that failed is backed off on its own count (round 2
+        # review of #177: a first start that failed was tried again on
+        # every call), never counted as a restart (round 3: five failed
+        # starts made the first real death wait 60 s and 'keep stopping').
+        tried = self._start_tries.get(attr)
+        if tried is not None and now - tried[1] < self.RESTART_BACKOFF_S[
+                min(tried[0], len(self.RESTART_BACKOFF_S)) - 1]:
+            return
+        again = tried is not None
+        if t is not None:
             n, last, began = self._restarts.get(attr, (0, None, None))
             ended = self._ended.get(attr)
             # How long it actually ran, started to died (review of #177:
@@ -1909,7 +1950,7 @@ class FlameCues:
         except Exception as e:                   # noqa: BLE001
             # Said once, then tried again after the back-off.
             self._died.setdefault(attr, why)
-            self._restarts[attr] = (max(n, 1), now, None)
+            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)
             if attr not in self._start_failed:
                 self._note(f"Flame cues: the thread {name} could not be "
                            f"started ({type(e).__name__}: {e}).", fault=True,
@@ -1919,10 +1960,12 @@ class FlameCues:
             return
         setattr(self, attr, nt)
         self._start_failed.discard(attr)
+        self._start_tries.pop(attr, None)
         self._restarts[attr] = (n, now, now)
         if t is None and again:
             self._note(f"Flame cues: the thread {name} is running now, after "
-                       f"it could not be started (try {n}).", fault=True,
+                       f"it could not be started (try {tried[0] + 1}).",
+                       fault=True,
                        action="flames", outcome="cues_thread_restarted")
         elif t is not None:
             # Said only once it is running again (review of #177).
@@ -2201,7 +2244,9 @@ class FlameCues:
                         return self._zero(
                             f"the show's render could not be cut here "
                             f"({type(failing).__name__}: {failing}); it is "
-                            f"tried again", fault=True)
+                            f"tried again", fault=True,
+                            cause=("retrying", label,
+                                   type(failing).__name__))
                     # One episode per session and cue (review of #177):
                     # playing on across uncut blocks faults after
                     # CUT_FAULT_AFTER_S however short the blocks.
@@ -2227,8 +2272,19 @@ class FlameCues:
                 return out
             data = f.frame(idx)
         except Exception as e:
+            name = type(e).__name__
+            if self._bg and not _cut_data_error(e):
+                # A passing trouble (memory, the system, a missing module):
+                # said as one, never as a damaged file (round 3 review of
+                # #177).
+                return self._zero(
+                    f"the show's flame cues could not be cut from its "
+                    f"render ({name}: {e}); they are tried again every "
+                    f"{CUT_RETRY_SLOW_S:g} s", fault=True,
+                    cause=("cut", label, name))
             return self._zero(f"the show's render could not be read "
-                              f"({type(e).__name__}: {e})", fault=True)
+                              f"({name}: {e})", fault=True,
+                              cause=("read", label, name))
         start, count = span
         first, end = start - 1, start - 1 + count
         out = [0] * 512

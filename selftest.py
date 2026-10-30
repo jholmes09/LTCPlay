@@ -42935,10 +42935,11 @@ def test_fire_ice_flame_cut_round3_of_177():
               f"for good: {cut.errors.get(3)!r}")
         for k in range(20):
             got = bg(_fi_at(clk, 90 + k % 5))
-        named = [t for t in lines if "could not be read (ModuleNotFoundError"
-                 in t]
+        named = [t for t in lines if "could not be cut from its render "
+                 "(ModuleNotFoundError" in t]
         check(got is None and "ModuleNotFoundError: No module named" in
-              bg.fault and len(named) == 1,
+              bg.fault and "tried again every 30 s" in bg.fault and
+              "could not be read" not in bg.fault and len(named) == 1,
               f"for good: the screens and one journal line name it: "
               f"{bg.fault!r} {named}")
         bg.close()
