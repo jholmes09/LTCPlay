@@ -18,12 +18,13 @@ from places that know nothing of each other, each with its own age:
                   METAR through aviationweather.gov's data API (no key).
                3. Optionally one National Weather Service observation
                   station, named in the settings (off unless named).
-             The line names the source it used and its age. A backup
-             station's reading is amber, says "backup station" and how far
-             away it is, and says why UTALP was not used ("UTALP (Iowa
-             mesonet) stopped reporting at 3:40 AM, last reading 3 h 12
-             min ago") or what UTALP reads. With no current reading at all
-             it says NO CURRENT DATA and why, per source, and no number.
+             The line names the source it used and when that reading was
+             last updated. A backup station's reading is amber, says
+             "backup station" and how far away it is, and says why UTALP
+             was not used ("UTALP (Iowa mesonet) stopped reporting, last
+             updated Oct 26, 8:48 AM") or what UTALP reads. With no
+             current reading at all it says NO CURRENT DATA and why, per
+             source, and no number.
   FORECAST   the National Weather Service's hourly forecast for the exact
              spot (its gridpoint data, which carries gusts; the plain
              hourly forecast if that fails).
@@ -31,8 +32,7 @@ from places that know nothing of each other, each with its own age:
              Wind Advisory, High Wind Warning, Red Flag Warning and the
              other wind and fire ones, as a banner line.
 
-Advisory only. Nothing here is a go or no-go: the on-site wind check
-decides, and the page says so.
+Nothing here is a go or no-go: nothing in the show reads it.
 
 What this module is not allowed to do
 =====================================
@@ -47,9 +47,14 @@ a lock held for a copy. The rack screen asks for it on its own slow timer.
 
 Age, stale and no data (the rules, Jeff, 2026-10-26 and 2026-10-28)
 ===================================================================
-Every measured number is shown with its age, and its age is the reading's
+Every measured number is judged on its age, and its age is the reading's
 own time (the station's), never when this PC fetched it, so a restart that
-shows the saved values shows their true age.
+shows the saved values shows their true age. The words say when, not how
+long ago (Jeff, 2026-10-30): "Last updated Oct 30, 2:14 PM", the reading's
+own time in the show's time zone (show_zone: ltcplay_schedule.json's
+"timezone", else America/Denver), and "NWS issued Oct 30, 1:50 PM" for the
+forecast's issue time. The ages below decide the states; only the words
+changed.
 
   measured   each source on its own limits (station_limits): the 5 minute
              mesonet feed is current up to 20 min, STALE to 45 min; the
@@ -65,10 +70,10 @@ shows the saved values shows their true age.
              several hours old while it is still the NWS's current
              forecast. So the forecast's age is mainly how long since this
              PC last GOT it from the NWS: over 1 h, amber STALE; over 6 h,
-             grey. And as a check on the NWS itself: issued over 18 h ago
-             (missed updates), amber STALE; over 36 h, grey. The saved
-             forecast not reaching this hour, or its time over 15 min in
-             the future (this PC's clock): grey. The line says which.
+             grey. And as a check on the NWS itself: issued over 18 h
+             before now (missed updates), amber STALE; over 36 h, grey.
+             The saved forecast not reaching this hour, or its time over
+             15 min in the future (this PC's clock): grey. The line says which.
   disagree   two current readings (measured from any source, or the
              forecast) whose speeds differ by more than 10 mph: "Sources
              disagree, verify on site", and the measured line says what
@@ -97,8 +102,20 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+try:
+    import zoneinfo
+except ImportError:                          # pragma: no cover
+    zoneinfo = None
+
 SETTINGS_FILE = "ltcplay_remote.json"     # remote.SETTINGS_FILE
 CACHE_FILE = "ltcplay_weather_cache.json"
+# The show's time zone, for the times the block says: the scheduler's own
+# file's "timezone" (schedule_service.RULE_FILE, read here as plain JSON),
+# else the venue's.
+RULE_FILE = "ltcplay_schedule.json"
+ZONE_DEFAULT = "America/Denver"
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
+          "Oct", "Nov", "Dec")
 # The selftest sets this so no engine it starts ever reaches the internet.
 OFFLINE_ENV = "LTCPLAY_WEATHER_OFFLINE"
 
@@ -137,8 +154,6 @@ FIRE_EVENTS = ("red flag warning", "fire weather watch",
                "blowing dust warning", "blowing dust advisory",
                "severe thunderstorm warning")
 
-ADVISORY = ("Advisory only. The on-site wind check decides, not this "
-            "screen.")
 NO_DATA = "NO CURRENT DATA, use on-site wind check"
 
 # The settings (ltcplay_remote.json, "weather"), their defaults and what
@@ -335,6 +350,36 @@ def load_config(folder):
         return check_config(doc.get("weather")), ""
     except ValueError as e:
         return dict(DEFAULTS), f"{e} Weather is off until this is fixed."
+
+
+def zone(name):
+    """The tzinfo for an IANA zone name, or None (this PC's own zone then
+    stands in) when it is not one this PC knows."""
+    if zoneinfo is None or not isinstance(name, str) or not name.strip():
+        return None
+    try:
+        return zoneinfo.ZoneInfo(name.strip())
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+def show_zone(folder):
+    """The show's time zone for the times the block says: the "timezone"
+    in ltcplay_schedule.json in `folder` (the zone the rack screen's show
+    times are in), else America/Denver (the venue's), else this PC's own
+    (None)."""
+    name = ""
+    path = os.path.join(folder, RULE_FILE) if folder else ""
+    if path and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+            if isinstance(doc, dict) and isinstance(doc.get("timezone"),
+                                                    str):
+                name = doc["timezone"]
+        except (OSError, ValueError):
+            name = ""
+    return zone(name) or zone(ZONE_DEFAULT)
 
 
 # ------------------------------------------------------- small helpers --
@@ -862,6 +907,7 @@ class Weather:
                     for n in list(self.every) + names}
         self.points = None           # parse_points + "got_at", "key"
         self._cache_said = False
+        self._zone_key = self._zone = None
         self._load_cache()
 
     # -- identity of what a saved value is for -------------------------
@@ -1093,28 +1139,27 @@ class Weather:
             t.join(timeout=TIMEOUT_S + 2)
 
     # -- what the page draws ---------------------------------------------
+    def zone(self):
+        """show_zone for this folder, read again only when the file
+        changes."""
+        path = os.path.join(self.folder, RULE_FILE) if self.folder else ""
+        try:
+            st = os.stat(path) if path else None
+            key = (st.st_mtime_ns, st.st_size) if st else None
+        except OSError:
+            key = None
+        if self._zone_key != key or self._zone is None:
+            self._zone_key, self._zone = key, show_zone(self.folder)
+        return self._zone
+
     def view(self):
         with self._lock:
             snap = {n: dict(s) for n, s in self.src.items()}
         return judge(snap, self.cfg, self.wall(), self.config_error,
-                     self.offline_for_tests)
+                     self.offline_for_tests, tz=self.zone())
 
 
 # --------------------------------------------------------------- rules --
-
-def age_text(s):
-    """"just now", "6 min", "1 h 20 min", "2 days"."""
-    s = max(0, int(s))
-    m = s // 60
-    if m < 1:
-        return "under 1 min"
-    if m < 60:
-        return f"{m} min"
-    h, m = divmod(m, 60)
-    if h < 48:
-        return f"{h} h {m} min" if m else f"{h} h"
-    return f"{h // 24} days"
-
 
 def wind_text(speed, gust, deg, variable=False):
     """"12 mph, gusts 21 mph, from NNW (338°)"."""
@@ -1132,10 +1177,34 @@ def wind_text(speed, gust, deg, variable=False):
     return out + f", from {compass(deg)} ({int(round(deg)) % 360}°)"
 
 
-def _clock_text(epoch):
-    d = datetime.fromtimestamp(epoch).astimezone()
+def _local(epoch, tz=None):
+    """`epoch` as a datetime in `tz` (the show's zone), or in this PC's own
+    zone when there is none."""
+    if tz is None:
+        return datetime.fromtimestamp(epoch).astimezone()
+    return datetime.fromtimestamp(epoch, tz)
+
+
+def _clock_text(epoch, tz=None):
+    """"3:40 PM" in the show's zone."""
+    d = _local(epoch, tz)
     h = d.hour % 12 or 12
     return f"{h}:{d.minute:02d} {'AM' if d.hour < 12 else 'PM'}"
+
+
+def when_text(epoch, tz=None, now=None):
+    """"Oct 30, 2:14 PM": the month, day and time of `epoch` in the show's
+    zone. A time after `now` (this PC's clock behind the source's) is said
+    as `now`, never as a time still to come."""
+    if now is not None and epoch > now:
+        epoch = now
+    d = _local(epoch, tz)
+    return f"{MONTHS[d.month - 1]} {d.day}, {_clock_text(epoch, tz)}"
+
+
+def updated_text(epoch, tz=None, now=None):
+    """"Last updated Oct 30, 2:14 PM"."""
+    return f"Last updated {when_text(epoch, tz, now)}"
 
 
 def measured_sources(cfg):
@@ -1177,10 +1246,10 @@ def _cap(text):
     return text[:1].upper() + text[1:]
 
 
-def _why_not(r, now, cfg):
+def _why_not(r, now, cfg, tz=None):
     """Why measured source row `r` is not current, in plain words, or ""
     when it is."""
-    short, s, d, st, age = r["short"], r["s"], r["d"], r["st"], r["age"]
+    short, s, d, st = r["short"], r["s"], r["d"], r["st"]
     err = _bare(s.get("error")) if s.get("tried") else ""
     if st == "ok":
         return ""
@@ -1188,38 +1257,41 @@ def _why_not(r, now, cfg):
         return (f"the {short} reading is timed in the future; check this "
                 f"PC's clock")
     if st == "stale":
-        return (f"the last {short} reading is {age_text(age)} old, over its "
-                f"{r['stale_min']:g} min limit")
-    at_ = ""
-    if d is not None:
-        at_ = (f" at {_clock_text(d['valid'])}" if age < 20 * 3600 else "")
+        return (f"the last {short} reading is stale, over its "
+                f"{r['stale_min']:g} min limit, last updated "
+                f"{when_text(d['valid'], tz, now)}")
+    upd = ("" if d is None else
+           f"last updated {when_text(d['valid'], tz, now)}")
     if err and not s.get("answered"):
         txt = (f"{short} did not answer: {err}" if s.get("offline") else
                f"{short} could not be read: {err}")
         if d is not None:
-            txt += f"; last reading{at_}, {age_text(age)} ago"
+            txt += f"; {upd}"
         return txt
     if d is not None:
-        txt = (f"{short} stopped reporting{at_}, last reading "
-               f"{age_text(age)} ago")
+        txt = f"{short} stopped reporting, {upd}"
         return txt + (f" ({err})" if err else "")
     if err:
         return f"{short} answered with no usable reading: {err}"
-    return f"{short} not read yet"
+    return f"{short}: no reading yet"
 
 
-def judge(src, cfg, now, config_error="", offline_for_tests=False):
+def judge(src, cfg, now, config_error="", offline_for_tests=False,
+          tz=None):
     """The Weather block, as the page draws it: {"enabled", "state",
     "where", "lines": [{"kind", "level", "text"}], "banner": [...],
-    "disagree", "internet", "advisory", "error"}. Every number in a line
-    carries its age. `level` is "ok", "stale" (amber, STALE), "backup"
-    (amber: a current reading from a backup station) or "none" (grey)."""
+    "disagree", "internet", "error"}. Every number in a line says when it
+    was last updated, as a date and time in `tz` (the show's zone,
+    show_zone; None is this PC's own). `level` is "ok", "stale" (amber,
+    STALE), "backup" (amber: a current reading from a backup station) or
+    "none" (grey)."""
+    if tz is None:
+        tz = zone(ZONE_DEFAULT)
     out = {"enabled": bool(cfg.get("enabled", True)) and not config_error,
            "where": (f"Thanksgiving Point area ({cfg['lat']:.4f}, "
                      f"{cfg['lon']:.4f})"),
            "lines": [], "banner": [], "disagree": "", "internet": "",
-           "advisory": ADVISORY, "error": config_error,
-           "page_dead_s": PAGE_DEAD_S}
+           "error": config_error, "page_dead_s": PAGE_DEAD_S}
     if config_error:
         out["state"] = "error"
         return out
@@ -1255,7 +1327,7 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
                      "who": sid, "s": s, "d": d, "st": st, "age": age,
                      "stale_min": st_min, "no_data_min": nd_min})
     for r in rows:
-        r["why"] = _why_not(r, now, cfg)
+        r["why"] = _why_not(r, now, cfg, tz)
     usable = [r for r in rows if r["st"] in ("ok", "stale")]
     pick = max(usable, key=lambda r: (r["d"]["speed_mph"], -r["i"])) \
         if usable else None
@@ -1276,7 +1348,7 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
         said = wind_text(d["speed_mph"], d["gust_mph"], d["dir_deg"],
                          d.get("variable", False))
         text = (f"Measured, {lab}: {said}. "
-                f"{age_text(age)} old.{tail(pick['s'])}")
+                f"{updated_text(d['valid'], tz, now)}.{tail(pick['s'])}")
         ahead = [r for r in rows[:pick["i"]] if r not in usable]
         if ahead:
             text += (" Using the backup because "
@@ -1296,8 +1368,8 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
         if others:
             text += (" " + "; ".join(
                 _cap(f"{r['short']} reads "
-                     f"{int(round(r['d']['speed_mph']))} mph, "
-                     f"{age_text(r['age'])} old, "
+                     f"{int(round(r['d']['speed_mph']))} mph, last updated "
+                     f"{when_text(r['d']['valid'], tz, now)}, "
                      + (f"STALE (over its {r['stale_min']:g} min limit)"
                         if r["st"] == "stale" else "current"))
                 for r in others)
@@ -1341,32 +1413,30 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
         elif d is not None and sp is None:
             why = " The saved forecast does not reach this hour."
         elif d is not None and got_age > fdead_s:
-            why = (f" This PC last got it from the NWS "
-                   f"{age_text(got_age)} ago, over the "
-                   f"{cfg['forecast_no_data_hours']:g} h limit. Issued "
-                   f"{age_text(issued_age)} ago.")
+            why = (f" This PC has not got it from the NWS within the "
+                   f"{cfg['forecast_no_data_hours']:g} h limit. "
+                   f"{updated_text(got, tz, now)}. NWS issued "
+                   f"{when_text(d['issued'], tz, now)}.")
         elif d is not None:
-            why = (f" The NWS has not updated it for "
-                   f"{age_text(issued_age)}, over the "
-                   f"{cfg['forecast_issued_no_data_hours']:g} h limit.")
+            why = (f" The NWS has not updated it within the "
+                   f"{cfg['forecast_issued_no_data_hours']:g} h limit. NWS "
+                   f"issued {when_text(d['issued'], tz, now)}.")
         line.update(level="none", text=f"{label}: {NO_DATA}.{why}"
-                    f"{'' if s.get('tried') or d else ' Not read yet.'}"
+                    f"{'' if s.get('tried') or d else ' No reading yet.'}"
                     f"{tail(s)}")
     else:
         stale = []
         if got_age > fstale_s:
-            stale.append(f"this PC has not got it from the NWS for "
-                         f"{age_text(got_age)} (the limit is "
-                         f"{cfg['forecast_stale_hours']:g} h)")
+            stale.append(f"this PC has not got it from the NWS within "
+                         f"the {cfg['forecast_stale_hours']:g} h limit")
         if issued_age > fissued_s:
-            stale.append(f"the NWS has not updated it for "
-                         f"{age_text(issued_age)} (it normally does at "
-                         f"least twice a day; the limit is "
-                         f"{cfg['forecast_issued_stale_hours']:g} h)")
+            stale.append(f"the NWS has not updated it within the "
+                         f"{cfg['forecast_issued_stale_hours']:g} h limit "
+                         f"(it normally does at least twice a day)")
         line.update(level="stale" if stale else "ok",
                     text=f"{label}: {wind_text(sp, at(d['gust'], now), at(d['dir'], now))}. "
-                         f"Issued {age_text(issued_age)} ago; this PC got "
-                         f"it {age_text(got_age)} ago."
+                         f"NWS issued {when_text(d['issued'], tz, now)}. "
+                         f"{updated_text(got, tz, now)}."
                          + (" Stale because " + " and ".join(stale) + "."
                             if stale else "") + tail(s),
                     age_s=int(got_age), issued_age_s=int(issued_age),
@@ -1390,21 +1460,25 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
     age = None if d is None else now - d["checked"]
     if d is None or age > cfg["no_data_min"] * 60:
         out["alerts_line"] = {"level": "none", "text":
-                              "NWS wind and fire alerts: not checked "
-                              "recently." + tail(s)}
+                              "NWS wind and fire alerts: "
+                              + ("no reading yet." if d is None else
+                                 f"not checked recently. "
+                                 f"{updated_text(d['checked'], tz, now)}.")
+                              + tail(s)}
     else:
         live = [a for a in d["alerts"]
                 if a.get("ends") is None or a["ends"] > now]
         for a in live:
-            until = (f" until {_clock_text(a['ends'])}"
+            until = (f" until {_clock_text(a['ends'], tz)}"
                      if a.get("ends") else "")
             out["banner"].append(f"NWS {a['event'].upper()} in effect"
-                                 f"{until}. Checked {age_text(age)} ago.")
+                                 f"{until}. "
+                                 f"{updated_text(d['checked'], tz, now)}.")
         out["alerts_line"] = {
             "level": "ok", "text":
             (f"NWS wind and fire alerts for this spot: "
-             f"{'see above' if live else 'none'}. Checked "
-             f"{age_text(max(0, age))} ago.")}
+             f"{'see above' if live else 'none'}. "
+             f"{updated_text(d['checked'], tz, now)}.")}
 
     # No internet: every source's last try could not reach its server.
     tried = [x for x in src.values() if x.get("tried")]
@@ -1414,7 +1488,7 @@ def judge(src, cfg, now, config_error="", offline_for_tests=False):
                            + (" Weather fetching is off for the self test."
                               if offline_for_tests else
                               " Anything below is the last saved reading, "
-                              "with its true age."))
+                              "with when it was last updated."))
     levels = [ln["level"] for ln in out["lines"]]
     out["state"] = ("none" if all(lv == "none" for lv in levels) else
                     "stale" if any(lv != "ok" for lv in levels) else "ok")
@@ -1429,7 +1503,7 @@ def hosts_text():
 def view_when_missing():
     """The view for an engine without a weather service."""
     return {"enabled": False, "state": "off", "lines": [], "banner": [],
-            "disagree": "", "internet": "", "advisory": ADVISORY,
+            "disagree": "", "internet": "",
             "error": "", "where": "", "page_dead_s": PAGE_DEAD_S,
             "text": "Weather is not running in this engine."}
 
@@ -1547,10 +1621,12 @@ def run_check(folder, get=None, out=print, raw_chars=1200, wall=time.time):
             raise ValueError("nothing usable came back (see above)")
         return doc
 
+    tz = show_zone(folder)
+
     def obs_said(d):
         said = wind_text(d["speed_mph"], d["gust_mph"], d["dir_deg"],
                          d.get("variable", False))
-        return (f"{said}, {age_text(now - d['valid'])} old"
+        return (f"{said}, last updated {when_text(d['valid'], tz, now)}"
                 + (f", {d['miles']:.0f} miles away" if d.get("miles")
                    else ""))
 
@@ -1593,7 +1669,7 @@ def run_check(folder, get=None, out=print, raw_chars=1200, wall=time.time):
                 if sp is None:
                     raise ValueError("no forecast for this hour")
                 return (f"{wind_text(sp, at(f['gust'], now), at(f['dir'], now))}"
-                        f", issued {age_text(now - f['issued'])} ago")
+                        f", NWS issued {when_text(f['issued'], tz, now)}")
             verdict(f"NWS {title}", said)
         if "observationStations" in pts:
             doc = fetch("NWS observation stations near the spot "

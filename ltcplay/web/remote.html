@@ -374,7 +374,6 @@ button.lzdis{min-height:clamp(38px,4.2vh,46px);padding:4px 16px;font:800 clamp(1
 .wx-lines .net{font-weight:800}
 .wx-lines .dim{color:var(--muted);font-weight:400}
 .wx-lines .alert{background:var(--amber);color:var(--amber-ink);border-radius:4px;padding:0 6px;font-weight:800}
-.wx-foot{grid-column:1 / -1;font:400 11px/1.2 var(--sans);color:var(--muted)}
 
 /* ---- Tonight: one screen, two columns, detail behind a tap ---- */
 #v-tonight{display:flex;flex-direction:column;gap:8px}
@@ -1024,7 +1023,6 @@ button.fb-pad.na{opacity:.45}
     <div class="wx none" id="wx" aria-label="Wind">
       <div class="wx-head"><b>Wind</b><small id="wx-where"></small></div>
       <div class="wx-lines" id="wx-lines"></div>
-      <div class="wx-foot" id="wx-foot"></div>
     </div>
   </section>
 
@@ -1321,6 +1319,7 @@ button.fb-pad.na{opacity:.45}
       <h2>Rig check (pre-roll)</h2>
       <div class="dim" style="font-size:14px">Before every show the engine checks the rig by itself: audio, announcements, timecode, video, the flame link, the lasers and the network. Check the rig runs the same checks now, between shows: nothing is started, armed or played, and the screens go black until the next show.</div>
       <div class="row" style="margin-top:8px"><b id="rc-now" style="flex:2 1 0"></b><button class="ghost" id="rc-run" style="flex:1 1 0">Check the rig</button></div>
+      <div class="warnbox open" id="rc-warn" hidden></div>
       <div class="path" id="rc-items" style="font-size:14px;margin-top:6px"></div>
       <div class="toast" id="rc-msg"></div>
     </section>
@@ -1940,14 +1939,13 @@ function laserPill(subs, la, bl){
 }
 // WEATHER (weather.py, WEATHER.md): what the Weather block draws, from the
 // engine's /api/remote/weather (`w`) and how many seconds ago this page
-// last heard it. The engine writes each line, its age included; a reply
+// last heard it. The engine writes each line, with when it was last
+// updated (a date and time in the show's zone, never "min ago"); a reply
 // older than w.page_dead_s greys the whole block, so no number is ever
-// shown with an age that is not true any more.
-const WX_ADVISORY = "Advisory only. The on-site wind check decides, not this screen.";
+// shown once this page has stopped hearing the engine.
 function wxBlock(w, heardAgoS){
-  const foot = (w && w.advisory) || WX_ADVISORY;
   const dead = (w && Number(w.page_dead_s)) || 60;
-  const one = (cls, text) => ({cls:cls, lines:[{cls:"none", text:text}], foot:foot});
+  const one = (cls, text) => ({cls:cls, lines:[{cls:"none", text:text}]});
   if(!w || heardAgoS === null || heardAgoS === undefined) return one("none", "Wind: not heard from the engine yet.");
   if(heardAgoS > dead) return one("none", "NO CURRENT DATA, use on-site wind check. This screen has not heard from the engine for " + Math.round(heardAgoS) + " s.");
   if(w.state === "error") return one("none", "Weather is off: " + (w.error || "its settings are wrong."));
@@ -1963,7 +1961,7 @@ function wxBlock(w, heardAgoS){
     L.push({cls:lv === "backup" ? "stale" : lv, text:(lv === "stale" ? "STALE. " : "") + l.text});
   });
   if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
-  return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L, foot:foot};
+  return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L};
 }
 // The Users screen's "sign everyone out after the last show" minutes, as
 // typed: a whole number 0 to 1440, or null (blank, a word, a decimal,
@@ -2066,12 +2064,16 @@ function pressDecision(seen, now, flippedAt, nowMs, busy){
 function prerollLook(pr){
   const p = pr || {};
   const checking = p.state === "checking" || p.state === "queued";
-  const items = (p.items || []).map(i => String(i.name || "") + (i.ok ? " OK" : " FAILED: " + String(i.text || "")));
+  // An advisory check (required false: Announcements, Jeff 2026-10-30) is a WARNING, never a failure.
+  const items = (p.items || []).map(i => String(i.name || "") + (i.ok ? " OK" : (i.required === false ? " WARNING: " : " FAILED: ") + String(i.text || "")));
   const failed = p.state === "failed" && !p.manual && typeof p.age_s === "number" && p.age_s < 600;
+  // A passing check with an advisory one not OK still says so on the card's own line.
+  const warn = checking ? "" : items.filter(t => / WARNING: /.test(t)).join("; ");
   return {checking:checking, word:"Checking", label:"Checking the rig before " + String(p.label || "the show") + ". Nothing is heard or seen.",
           trouble: failed ? "Rig check FAILED before " + String(p.label || "the show") + ": " + items.filter(t => / FAILED: /.test(t)).join("; ") + "." : "",
-          now: checking ? "Checking the rig..." : p.state === "passed" ? "Last check passed" : p.state === "failed" ? "Last check FAILED" :
+          now: checking ? "Checking the rig..." : p.state === "passed" ? (warn ? "Last check passed, with a WARNING" : "Last check passed") : p.state === "failed" ? "Last check FAILED" :
                p.state === "cancelled" ? "Last check was cancelled" : "Not checked yet",
+          warn: warn ? warn + "." : "",
           items: items};
 }
 // After a failed rig check before a show, between shows: the failed items
@@ -2608,7 +2610,8 @@ function render(){
     if(sch.error) label += (label ? ". " : "") + sch.error;
   }
   // The alert hold (alerthold.py, Jeff 2026-10-26): held at showtime with
-  // an alert open, and the Delayed countdown, said on the state card.
+  // an alert open, said on the state card. Nothing plays on the PA by
+  // itself (Jeff, 2026-10-30).
   const prl = prerollLook(s.preroll);
   if(prl.checking && sch.attached && !sch.aborted && sch.state !== "SHOW" && sch.state !== "PAUSED"){
     word = prl.word; label = prl.label; cls = "warn";
@@ -2617,6 +2620,8 @@ function render(){
   rcard.hidden = !s.preroll || !(ME && ME.local);
   if(s.preroll){
     $("rc-now").textContent = prl.now;
+    $("rc-warn").hidden = !prl.warn;
+    $("rc-warn").textContent = prl.warn;
     $("rc-items").textContent = prl.items.join(". ");
     $("rc-run").disabled = prl.checking;
   }
@@ -5701,7 +5706,6 @@ function renderWx(){
   $("wx-where").textContent = (WX && WX.where) || "";
   const html = v.lines.map(l => `<div class="${esc(l.cls)}">${esc(l.text)}</div>`).join("");
   if(html !== WX_HTML){ $("wx-lines").innerHTML = html; WX_HTML = html; }
-  $("wx-foot").textContent = v.foot;
 }
 async function wxPoll(){
   try{ WX = await getJSON("/api/remote/weather", 4000); WX_AT = monoNow(); }
