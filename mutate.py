@@ -2860,6 +2860,57 @@ MUTATIONS = [
   "                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:",
   "                False:"),
 
+ # the fuel pump on interface 2.0 (2026-10-30)
+ ("ui 2.0: Pump off is disabled with no contact",
+  "ltcplay/web/remote2.html",
+  "  $(\"pm-off\").disabled = false;",
+  "  $(\"pm-off\").disabled = stale();"),
+
+ ("ui 2.0: Fuel pump: On is live for a role that may not arm",
+  "ltcplay/web/remote2.html",
+  "  if(!mayRow(s, \"arm\")) return signWhy(s, \"arm\", true);\n  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)",
+  "  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)"),
+
+ ("ui 2.0: Fuel pump: On is live from an iPad while arming from screens is off",
+  "ltcplay/web/remote2.html",
+  "  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)",
+  "  if(secs === null)"),
+
+ ("ui 2.0: Fuel pump: On is live when the engine would refuse it",
+  "ltcplay/web/remote2.html",
+  "  if(v.refusal) return short8(v.refusal, \"Not now. Tap for why.\");",
+  ""),
+
+ ("ui 2.0: Fuel pump: On is live while the pump runs",
+  "ltcplay/web/remote2.html",
+  "  if(v.on) return \"Pump is on\";",
+  ""),
+
+ ("ui 2.0: Fuel pump: On is live with a run time that is not m:ss",
+  "ltcplay/web/remote2.html",
+  "  if(secs === null) return \"Run time as m:ss\";",
+  ""),
+
+ ("ui 2.0: Pump off could start the pump",
+  "ltcplay/web/remote2.html",
+  "post(\"/api/remote/fuel-pump\", actor({on: false}))",
+  "post(\"/api/remote/fuel-pump\", actor({on: true, seconds: 300, run: String(Date.now())}))"),
+
+ ("ui 2.0: one press id for every tap of Fuel pump: On",
+  "ltcplay/web/remote2.html",
+  "  const run = String(Date.now()) + \"-\" + String(Math.random()).slice(2, 10);\n  try{ const j = await post(\"/api/remote/fuel-pump\"",
+  "  const run = \"pump\";\n  try{ const j = await post(\"/api/remote/fuel-pump\""),
+
+ ("ui 2.0: Space on a focused Pump off is not kept from firing",
+  "ltcplay/web/remote2.html",
+  "#d-hz-off, #pm-off,",
+  "#d-hz-off,"),
+
+ ("ui 2.0: the calm tone quiets Pump off",
+  "ltcplay/web/remote2.html",
+  "body.inactive #pm-on{filter:saturate(.3)}",
+  "body.inactive #pm-on, body.inactive #pm-off{filter:saturate(.3)}"),
+
  ("deck: with announcements a tap of key 5 opens the hazers page",
   "ltcplay/streamdeck.py",
   "                if self.hazers_view():\n                    # Hazers too: a hold opens their page (tick), a tap",
