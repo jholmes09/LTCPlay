@@ -71,6 +71,7 @@ The rules
     ("on" anything but true) and can never start the pump.
 """
 import collections
+import secrets
 import threading
 import time
 
@@ -163,6 +164,10 @@ class FuelPump:
         self._used = collections.deque(maxlen=RUN_IDS_KEPT)
         self.last_off = None        # {"reason", "who", "n"}
         self._offs = 0              # last_off's "n": +1 on every OFF said
+        # This engine's run of the pump, new at every start: a screen left
+        # open across an engine restart sees it change and puts its run
+        # time back to 5:00 (final delta review of #188, 1).
+        self.boot = secrets.token_hex(4)
 
     # -- plumbing ---------------------------------------------------------
     def _note(self, who, screen, outcome, text, fault=False):
@@ -613,8 +618,10 @@ class FuelPump:
     def _said_off(self, why, who="", screen="", system=True):
         why = " ".join(str(why or "Fuel pump off").split())[:200]
         by = who or ("system" if system else "unsigned")
-        self._offs += 1
-        self.last_off = {"reason": why, "who": by, "n": self._offs}
+        with self._lock:
+            self._offs += 1
+            self.last_off = {"reason": why, "who": by, "n": self._offs,
+                             "boot": self.boot}
         self._note(by, screen or "engine", "off", f"Fuel pump off: {why}.")
         self._audit(by, screen or "engine", "fuel pump off", "accepted", why,
                     system=system and not who)
@@ -705,4 +712,4 @@ class FuelPump:
                 "refusal": refusal, "down": self.down(),
                 "agree": None if theirs is None else
                 sorted(theirs) == self.mine(),
-                "last_off": self.last_off}
+                "last_off": self.last_off, "boot": self.boot}

@@ -2813,8 +2813,33 @@ MUTATIONS = [
 
  ("pump: a run's last_off carries no count",
   "ltcplay/fuelpump.py",
-  "        self.last_off = {\"reason\": why, \"who\": by, \"n\": self._offs}",
-  "        self.last_off = {\"reason\": why, \"who\": by}"),
+  "            self.last_off = {\"reason\": why, \"who\": by, \"n\": self._offs,\n",
+  "            self.last_off = {\"reason\": why, \"who\": by,\n"),
+
+ ("pump: an ON from a stale or ageless screen is taken",
+  "ltcplay/remote.py",
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
+  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+
+ ("pump: a start that raised leaves the link naming the pump",
+  "ltcplay/fuelpump.py",
+  "                broke = type(e).__name__\n                try:\n                    link.pump_stop()\n                except Exception:\n                    pass",
+  "                broke = type(e).__name__"),
+
+ ("pump: the second look's refusal is not audited",
+  "ltcplay/fuelpump.py",
+  "            self._audit(who, screen, \"fuel pump on\", \"refused\", why)\n            return False, why\n        if running is not None:",
+  "            return False, why\n        if running is not None:"),
+
+ ("pump: a start that raised is not audited",
+  "ltcplay/fuelpump.py",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)\n            self._audit(who, screen, \"fuel pump on\", \"refused\", why)",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)"),
+
+ ("pump: the screens get no boot id",
+  "ltcplay/fuelpump.py",
+  "                \"last_off\": self.last_off, \"boot\": self.boot}",
+  "                \"last_off\": self.last_off}"),
 
  ("pump: live flame programming starts while the pump runs",
   "ltcplay/remote.py",
