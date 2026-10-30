@@ -7903,8 +7903,8 @@ def build():
  # Item 3: while latched, Hold, Resume and an announcement stay dark.
  ("scheduler fix round 2: Hold while aborted brings the intermission back",
   "ltcplay/schedule.py",
-  "    _enter(tx, HOLD, after_stop=ev.latched)",
-  "    _enter(tx, HOLD)"),
+  "    _enter(tx, HOLD, after_stop=ev.latched or stop)",
+  "    _enter(tx, HOLD, after_stop=stop)"),
 
  ("scheduler fix round 2: Resume while aborted brings the intermission back",
   "ltcplay/schedule.py",
@@ -7946,8 +7946,8 @@ def build():
 
  ("scheduler fix round 2: the conductor's trouble never reaches the page",
   "ltcplay/schedule_service.py",
-  "                    \"trouble\": t[\"text\"] if t else None}",
-  "                    \"trouble\": None}"),
+  "                    \"trouble\": t[\"text\"] if t else None,\n",
+  "                    \"trouble\": None,\n"),
 
  ("scheduler fix round 2: Abort waits behind a hung conductor request",
   "ltcplay/schedule_service.py",
@@ -8703,8 +8703,8 @@ def build():
 
  ('fix round 1: music_started records nothing',
   'ltcplay/conductor.py',
-  '            self._set("music", MUSIC_PLAYING)\n\n    def pixels_to_show',
-  '            pass\n\n    def pixels_to_show'),
+  '            self._set("music", MUSIC_PLAYING)\n            self._stopped_since_music = False\n\n    def pixels_to_show',
+  '            self._stopped_since_music = False\n\n    def pixels_to_show'),
 
  ('fix round 1: an Abort during the start leaves the music playing',
   'ltcplay/fire_ice.py',
@@ -8944,7 +8944,13 @@ def build():
 
  ("fix round 2: a press's answer says nothing was disarmed",
   'ltcplay/schedule_service.py',
+  '        # The answer the page, the iPad and the deck see says what the\n'
+  '        # journal says (fix round 2, E: it said "nothing was disarmed"\n'
+  '        # while the conductor did disarm).\n'
   '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
+  '        # The answer the page, the iPad and the deck see says what the\n'
+  '        # journal says (fix round 2, E: it said "nothing was disarmed"\n'
+  '        # while the conductor did disarm).\n'
   '        text = " ".join(le.text for le in out.log if le.text)'),
 
  ("pixels: a show start never takes the closing black off (Jeff's dark "
@@ -16205,8 +16211,8 @@ def build():
 
  ("halt: screen arm holds survive a halt",
   "ltcplay/remote.py",
-  "                self.cancel_holds(f\"{who or 'someone'} held Stop on the \"",
-  "                (lambda *a: 0)(f\"{who or 'someone'} held Stop on the \""),
+  "                self.cancel_holds(f\"{who or 'someone'} {how} Stop on the \"",
+  "                (lambda *a: 0)(f\"{who or 'someone'} {how} Stop on the \""),
 
  ("halt: the purge selection and laser tests survive a halt",
   "ltcplay/remote.py",
@@ -16532,13 +16538,13 @@ def build():
 
  ("scheduler: a Stop at showtime ticks first and pauses the show (A-F1)",
   "ltcplay/schedule_service.py",
-  "            self._press_stamp = self.stamp_press()\n"
-  "            try:\n                out = self._apply(ev)\n",
-  "            self._press_stamp = self.stamp_press()\n"
-  "            self.tick()\n"
-  "            if self.machine.state == sch.SHOW:\n"
-  "                ev = replace(ev, kind=sch.HOLD_ON, confirmed=False)\n"
-  "            try:\n                out = self._apply(ev)\n"),
+  "        self._press_stamp = self.stamp_press()\n"
+  "        try:\n            out = self._apply(ev)\n",
+  "        self._press_stamp = self.stamp_press()\n"
+  "        self.tick()\n"
+  "        if self.machine.state == sch.SHOW:\n"
+  "            ev = replace(ev, kind=sch.HOLD_ON, confirmed=False)\n"
+  "        try:\n            out = self._apply(ev)\n"),
 
  ("scheduler: Reset ends a Stop's Hold (A-F4)",
   "ltcplay/schedule_service.py",
@@ -16547,21 +16553,73 @@ def build():
 
  ("scheduler: a Stop's Hold is not marked as a Stop's",
   "ltcplay/schedule.py",
-  "    tx.m = replace(tx.m, held_from=m.state,\n"
-  "                   stop_hold=str(ev.detail or \"\").startswith(\n"
-  "                       STOP_HOLD_DETAILS))",
+  "    tx.m = replace(tx.m, held_from=m.state, stop_hold=stop)",
   "    tx.m = replace(tx.m, held_from=m.state)"),
 
- ("scheduler: a Stop's Hold ends at the night reset (A-F2)",
+ ("scheduler: a Stop's Hold is not kept on later nights (A-F2)",
   "ltcplay/schedule_service.py",
-  "        stop_held = (self.machine.state == sch.HOLD and\n"
-  "                     self.machine.stop_hold)",
-  "        stop_held = False"),
+  "        if self._stop_carry is None or m is None or self.halting():",
+  "        if True:"),
 
- ("scheduler: a Stop's Hold is lost over a night with no shows (A-F2)",
+ ("scheduler: a Stop with nothing to hold leaves no Hold (round 2, 1)",
   "ltcplay/schedule_service.py",
-  "            self._stop_hold_carry = was_night\n",
-  "            pass\n"),
+  "            self._stop_carry_set(who, screen)\n            try:",
+  "            try:"),
+
+ ("scheduler: a restart forgets the Stop's Hold (round 2, 3)",
+  "ltcplay/schedule_service.py",
+  "        self._stop_carry = self._stop_carry_load()",
+  "        self._stop_carry = None"),
+
+ ("scheduler: Resume never releases a Stop's Hold",
+  "ltcplay/schedule_service.py",
+  "                    if before == sch.HOLD:\n"
+  "                        # Only an operator's Resume ends a Stop's Hold.\n"
+  "                        self._stop_carry_clear(who, screen, \"pressed Resume\")",
+  "                    if before == sch.HOLD:\n"
+  "                        # Only an operator's Resume ends a Stop's Hold.\n"
+  "                        pass"),
+
+ ("scheduler: Continue anyway resumes a Stop's Hold (round 2, 8)",
+  "ltcplay/schedule_service.py",
+  "        if m.state == sch.HOLD and not self.stop_held():",
+  "        if m.state == sch.HOLD:"),
+
+ ("scheduler: a Stop's conductor call waits for tonight's save (round 2, 4)",
+  "ltcplay/schedule_service.py",
+  "        early = [c for c in calls if c.method == \"stop\"]",
+  "        early = []"),
+
+ ("scheduler: a Stop between shows leaves the idle look up (round 2, 5)",
+  "ltcplay/schedule_service.py",
+  "        if kind == \"hold\" and self.conductor is not None:",
+  "        if False:"),
+
+ ("scheduler: a Stop's Hold between shows is not dark (round 2, 5)",
+  "ltcplay/schedule.py",
+  "    _enter(tx, HOLD, after_stop=ev.latched or stop)",
+  "    _enter(tx, HOLD, after_stop=ev.latched)"),
+
+ ("conductor: a show start asked for before a Stop is taken (round 2, 2)",
+  "ltcplay/conductor.py",
+  "            if (stops is not None and stops != self.stops) or \\\n"
+  "                    (stops is None and self._stopped_since_music):",
+  "            if False:"),
+
+ ("scheduler: the show start's Stop count is not taken (round 2, 2)",
+  "ltcplay/schedule_service.py",
+  "                call.stops = getattr(self.conductor, \"stops\", None)",
+  "                call.stops = None"),
+
+ ("Rack screen: no Stop while the conductor has the rig up",
+  "ltcplay/web/remote.html",
+  "  if(sch.lit === true) return true;",
+  ""),
+
+ ("ui2 page: no Held after Stop on the top line",
+  "ltcplay/web/remote2.html",
+  "  if(sch.stop_held && !isLive(st)) return {tone:\"warn\", icon:\"pause\", text:\"Held after Stop: press Resume.\"};",
+  ""),
 
  ("scheduler: a Stop's Hold is not kept in tonight's file",
   "ltcplay/schedule.py",
@@ -17324,14 +17382,14 @@ def build():
 
  ("Rack screen: Start now never becomes Stop during a show",
   "ltcplay/web/remote.html",
-  '  if(sch.state === "SHOW" || sch.state === "PAUSED") return true;\n  if(sch.start_waiting === true) return true;',
-  '  if(false) return true;\n  if(sch.start_waiting === true) return true;'),
+  '  if(sch.state === "SHOW" || sch.state === "PAUSED") return true;\n  // The rig is up',
+  '  if(false) return true;\n  // The rig is up'),
 
  ("Rack screen: Stop is not the complete halt", "ltcplay/web/remote.html",
   ': await fetch("/api/remote/stop", ', ': await fetch("/api/stop", '),
 
  ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
-  "        h = self.halt(who, screen)\n        out = {k: h[k]",
+  "        h = self.halt(who, screen, how=\"pressed\")\n        out = {k: h[k]",
   "        h = {}\n        out = {k: h[k]"),
 
  ("Reset ends a Hold inside the late grace and the show starts",
@@ -18476,8 +18534,8 @@ def build():
   '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
 
  ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
-  '                if kind == sch.RESUME and not out.refused:\n                    self._preroll_release(who, screen)',
-  '                if kind == sch.RESUME and not out.refused:\n                    pass'),
+  '                        self._stop_carry_write()\n                    self._preroll_release(who, screen)',
+  '                        self._stop_carry_write()\n                    pass'),
 
  ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
   '        if st == "HOLD" and held:',
@@ -18664,8 +18722,8 @@ def build():
   '<button id="b-hold" class="hold">'),
 
  ('key guard: Stop is held back after focus (2.0)', 'ltcplay/web/remote2.html',
-  '<button data-safe class="b redline" id="b-stop">',
-  '<button class="b redline" id="b-stop">'),
+  '<button data-safe class="b red nostop" id="b-stop">',
+  '<button class="b red nostop" id="b-stop">'),
 
  ('key guard: a Stop or Disarm two-way button is held back', 'ltcplay/web/remote.html',
   '  return m === "stop" || m === "disarm" ||',

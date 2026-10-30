@@ -40906,6 +40906,7 @@ t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:
 // Where Stop is drawn (Jeff, 2026-10-30: if nothing is playing there is no
 // Stop button).
 t(stopShows(att("SHOW", {})) && stopShows(att("PAUSED", {})), "a show live or paused: Stop");
+t(stopShows({schedule:{attached:true, state:"HOLD", lit:true}}) && !stopShows({schedule:{attached:true, state:"HOLD", lit:false}}), "the conductor has the rig up, whatever the scheduler says: Stop");
 // A rehearsal Run with its timecode moving is playing (cold review of
 // #191, B1); one whose timecode is not moving is not.
 t(stopShows(att("STANDBY", {running:true, state:"LOCKED"}, {transport:{programming:true}})) && stopShows(att("STANDBY", {running:true, state:"FREERUN"}, {transport:{programming:true}})), "a rehearsal Run with timecode moving: Stop");
@@ -57036,6 +57037,8 @@ def test_conductor_stop_is_abort_without_the_latch():
           not any("Latched until Reset" in t for t, _f in lines),
           f"journaled as a Stop, with no latch: {lines[-3:]}")
     # No latch: the next show start brings the rig back with no Reset.
+    # (a real start tells the conductor the music started first)
+    c.music_started()
     check(c.show_starting("the scheduler", "").ok,
           "a show start after a Stop is taken (no Reset)")
     # A second Stop while the first is still fading: no new generation and
@@ -57586,9 +57589,12 @@ def test_stop_at_showtime_never_starts_or_pauses_a_show():
         st, _h, out = R.ask("POST", "/api/remote/stop", {})
         R.settle()
         m = R.svc.machine
+        # (the conductor's Stop is asked to take the idle look down:
+        # between shows a Stop's Hold is dark, round 2 item 5)
         check(m.state == S.HOLD and m.running == 0 and m.stop_hold and
-              m.slot(1).status in (S.PENDING, S.DELAYED) and
-              m.slot(1).fired_at is None and not asked,
+              m.dark and m.slot(1).status in (S.PENDING, S.DELAYED) and
+              m.slot(1).fired_at is None and
+              R.c.snapshot()["look"] != "PLAYING",
               f"Stop at showtime holds; show 1 never started or paused: "
               f"{st} {m.state} {m.running} {m.slot(1)} {asked} {out}")
         R.now[0] = _den(S, 18, 0, 5)
@@ -57961,6 +57967,11 @@ def test_stop_round2_conductor_and_marks():
           f"refused: {r}")
     r = c.show_starting("the scheduler", "engine", stops=stops)
     check(not r.ok, f"one decided before the Stop is refused: {r}")
+    # Even once a newer start's music began: the count decides.
+    c.music_started()
+    r = c.show_starting("the scheduler", "engine", stops=stops)
+    check(not r.ok, f"one decided before the Stop is refused even after "
+                    f"newer music started: {r}")
     c.run_pending()
     c.music_started()
     r = c.show_starting("the scheduler", "engine", stops=c.stops)
@@ -57973,6 +57984,12 @@ def test_stop_round2_conductor_and_marks():
     # The conductor's Stop is asked before tonight's save.
     R = _RemoteRig(S)
     try:
+        calls = R.svc._decide_conductor(
+            [("Show start", "show_starting", frozenset())],
+            S.Event(S.SHOW_CONFIRMED, "madmapper"))
+        check(calls and calls[0].stops == R.c.stops,
+              f"a show start is decided with the Stop count then: "
+              f"{[getattr(c_, 'stops', None) for c_ in calls]}")
         _live_show(R)
         order = []
         real_save = R.svc._save_tonight
@@ -94317,6 +94334,10 @@ t(goLook(s, false, true).blocked === "The show audio is missing.", "a start the 
 s = base(); s.preroll = {state:"checking", label:"Show 4"};
 t(goLook(s, false, true).mode === "checking" && goLook(s, false, true).off, "the rig being checked: nothing to start (1.0's Checking)");
 t(goLook(s, false, true).mode === "checking" && startLook(s, false, false).mode === "stop" && stopShows(s), "the rig check: 2.0's big button says Checking, and Stop is drawn (1.0's Start now is Stop then, Jeff 2026-10-30)");
+// A Stop's Hold stands until Resume, also with nothing held right now
+// (cold review of #191 round 2): the top line and the big button say so.
+{ const sh = base(); sh.schedule.state = "CLOSING"; sh.schedule.stop_held = true;
+t(nextStep(sh, false, true, []).text === "Held after Stop: press Resume." && goLook(sh, false, true).mode === "resume" && goLook(sh, false, true).why === "Held after Stop", "a Stop's Hold: Held after Stop, press Resume: " + JSON.stringify(nextStep(sh, false, true, []))); }
 t(/Checking the rig/.test(nextStep(s, false, true, []).text) && pillLook(s, false).text === "CHECKING RIG", "the rig check is said");
 s = base(); s.preroll = {state:"failed", label:"Show 4", age_s:5, show_check:{label:"Show 4", items:[{name:"Video", ok:false, text:"no"}], off:["video"]}};
 t(/Rig check failed/.test(nextStep(s, false, true, []).text), "a failed rig check: the next step says so");

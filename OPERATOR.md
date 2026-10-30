@@ -894,21 +894,29 @@ stop:
   and music fade to dark over 1 second and MadMapper stops. Nothing is
   fired. Stop works the same from the rack screen, an iPad and the Stream
   Deck (key 0, held half a second), signed in or not.
-- **Stop also holds.** After a Stop the schedule is on Hold, dark: no
-  show starts by itself until you press **Resume**. A show whose time
-  comes during the Hold waits as a delayed show for Start now. Start now
-  still works from the Hold, as an explicit start (with its rig check).
-  After the last show of the night there is nothing to hold: the night
-  closes, as before. A Stop pressed the very moment a show comes due holds
-  the schedule before that show can start: it never starts the show and
-  never just pauses it, and while a Stop is under way the scheduler starts
-  no show. **Reset does not end a Stop's Hold** (it can still clear the
-  fault flag): only Resume does. **A Stop's Hold outlives the 02:00 night
-  reset**: if nobody presses Resume, the next evening with shows comes up
-  on Hold too, so no show starts unattended while Run is on (Jeff,
-  2026-10-30). A second Stop while on Hold disarms everything again
-  and stays on Hold. While a Stop is still disarming and fading to dark,
-  Resume, Start now and Run are refused until it has finished.
+- **Stop also holds, until Resume.** Every Stop puts on a Stop's Hold,
+  whatever was happening: during a show, between shows, on the night's
+  last show, while the night is closing, on a night with no shows. While
+  it stands no show starts by itself, tonight or on any later night, even
+  with Run on: the next night with shows comes up on Hold (Jeff,
+  2026-10-30). It is kept in `ltcplay_stop_hold.json` next to tonight's
+  file, so a restart keeps it too. Every screen says **Held after Stop:
+  press Resume**. Only **Resume** ends it (pressed with nothing held, it
+  just releases it); **Reset does not** (it can still clear the fault
+  flag), and neither does Continue anyway. A show whose time comes during
+  the Hold waits as a delayed show for Start now. **Start now** still works
+  from it, as an explicit start with its rig check: it starts that one
+  show, and the Hold comes back when that show ends. A Stop between shows
+  takes the idle or intermission look down too (the Hold is dark); Resume
+  brings it back. A second Stop disarms everything again and stays on
+  Hold. A Stop pressed the very moment a show comes due holds the
+  schedule before that show can start: it never starts the show and never
+  just pauses it, and while a Stop is under way the scheduler starts no
+  show. A show start already on its way when the Stop lands is refused,
+  and one whose music already began is stopped and faded again. While a
+  Stop is still disarming and fading to dark, Resume, Start now and Run
+  are refused until it has finished. The Stop's fade never waits on a
+  file being written.
 - **Stop never turns Run off.** Run stays on: Hold (or a Stop's Hold) is
   how the schedule is stopped. Each flame group needs arming again, and
   the lasers can only be armed again after Resume. The line under the
