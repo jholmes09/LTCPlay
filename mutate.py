@@ -2966,6 +2966,16 @@ MUTATIONS = [
   "#d-hz-off, #pm-off,",
   "#d-hz-off,"),
 
+ ("ui 2.0: the run time keeps a longer one after the pump turns off",
+  "ltcplay/web/remote2.html",
+  "  if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; $(\"pm-time\").value = pumpClock(v.default_s || 300); }\n",
+  ""),
+
+ ("ui 2.0: flamesafe having the pump on is not said",
+  "ltcplay/web/remote2.html",
+  "  if(v.state === \"flamesafe_on\") return \"flamesafe has it on: press Pump off\";\n",
+  ""),
+
  ("ui 2.0: the calm tone quiets Pump off",
   "ltcplay/web/remote2.html",
   "body.inactive #pm-on{filter:saturate(.3)}",
