@@ -1016,7 +1016,12 @@ FSEQ:
   moment later, or a flicker effect, never charges a charged tank again.
 - **The fireball must be on 55 to 59.** If flamesafe's fireball group is
   on other channels, no show fires its fireball (its own channels are held
-  at zero) and the screens say why, until the group is on 55 to 59.
+  at zero), the charge record watches nothing, and the screens say why,
+  until the group is on 55 to 59.
+- **No fireball group found at all** in flamesafe's config: 55 to 59 are
+  still guarded for every show, whatever is wired to them. Purge (59) is
+  always zero, and Fuel (55) and Air (56) each get one charge until a
+  shot (57) or a Purge empties the record again.
 - Valve Open (57), the Igniter (58) and every other channel of an FSEQ
   show are exactly as before.
 
@@ -1039,14 +1044,19 @@ FSEQ:
   A tank NOT KNOWN is skipped too: purge or fire to reset it. A charge cut
   short (stopped for more than a quarter of a second: Hold, Stop, a seek)
   never charges again in that play, even after a Resume inside its time:
-  "Fuel charge cut short ... not charged again in this play". A stop of a
-  frame or two (one frame not read or not sent) is no cut: the same charge
-  carries on. The Valve Open and Igniter stages are not limited by this.
+  "Fuel charge cut short ... not charged again in this play": that shot
+  is under-charged, and the journal says so too. A stage interrupted for
+  0.25 s or less resumes within the same window; longer ends it. So a
+  dropped frame, a send that failed, a short link outage, a lockout
+  undone at once, or a Hold under 0.1 s with an instant Resume rides
+  through as the same charge; its time on never adds up to more than its
+  window. The Valve Open and Igniter stages are not limited by this.
 - **Editing during a show.** A saved change is taken on the next frame. A
   stage already started keeps the times it started with. A stage not
   started yet takes the new times, unless its new start is already behind
   the show: then it is not fired in this play. A change of source (FSEQ
-  or Timeline) applies from the next time a show cue starts.
+  or Timeline) applies from the next time a show cue starts: the play
+  running finishes its own stages, Valve Open included.
 - A show plays the timeline saved for it under any spelling of its file
   name ("SHOW.JSON" plays the timeline of "Show.json"); two entries that
   differ only by case are a fault and that show fires no fireball.
@@ -1068,18 +1078,35 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   57 on and then off again) or Purge (59, on and then off again), each only once flamesafe
   has reported sending it. Nothing else: **Stop, Hold, the end of a show,
   a disarm and a restart of LTC Player change nothing.** The Igniter
-  plays no part.
+  plays no part. A charge that went on and off again while the valve (or
+  the purge) was still open was released with it: that tank is EMPTY
+  after the shot. One still on when the valve closed is CHARGED after it.
 - **A top-off is not a double charge.** Fuel or Air pressed again on the
   Fireball page while that tank is charged is counted as a top-off by
   that person, and the journal says so.
-- **NOT KNOWN:** the record could not be read, LTC Player stopped while
-  the valve or the purge was open, or a charge or release went out while
-  flamesafe's status was not known. A shot or a purge seen for certain
-  makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
-  charges it automatically.
+- **NOT KNOWN** (cautious on purpose; each one says why on the screens
+  and in the journal):
+  - the record could not be read (a half-written record left by a power
+    cut says what the last full record said);
+  - LTC Player stopped while the valve or the purge was open (the release
+    may not have finished);
+  - a shot or a purge that flamesafe did not report sending within half
+    a second;
+  - a charge or a release that went out while flamesafe's status was not
+    known (flamesafe down or not reporting): the tank may really be empty,
+    but nothing proves it;
+  - no record could be written in the settings folder at the very first
+    start.
+
+  A shot or a purge seen for certain makes it EMPTY again. While a tank
+  is CHARGED or NOT KNOWN, nothing charges it automatically.
 - **The very first start** (no record yet) counts both tanks EMPTY (Jeff:
-  tanks start empty), and the journal says: if the fuel or air tank is
-  pressurised now, press Purge on the Fireball page.
+  tanks start empty), and the journal says loudly, with the folder: "No
+  charge record found: starting both tanks EMPTY". If the fuel or air
+  tank is pressurised now, press Purge on the Fireball page. **If the
+  settings folder is lost or the program runs under another Windows user,
+  the tanks read EMPTY: confirm by eye before a show** (the record is in
+  that Windows user's own settings folder, `%LOCALAPPDATA%\ltcplay`).
 - **Tanks are empty** (an admin, on the Fireball page, while a tank is
   NOT KNOWN): if both tanks are known to be depressurised, it makes the
   NOT KNOWN ones EMPTY (it asks first, and the journal names who). A
@@ -1094,7 +1121,10 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   memory, written again every second until it is, and the screens show
   the fault meanwhile: do not restart LTC Player until it clears. (If it
   is restarted anyway, the newest record the write left behind is the one
-  read; if that cannot be read, both tanks are NOT KNOWN.) Every screen's status carries it as one
+  read, by its revision number, which only ever goes up; if that cannot
+  be read, both tanks are NOT KNOWN.) If flamesafe's fireball group is on
+  other channels than 55 to 59, the record watches nothing until it is,
+  and the screens say so. Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
@@ -1947,6 +1977,48 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   interface", on the show PC itself, by someone with Settings (admins).
   It starts at 1.0 and stays there until Jeff changes it. It is
   `ui_default` (1 or 2) in `ltcplay_remote.json`; anything else reads as 1.
+- 2.0 Settings, "Play-from cues" (on the show PC, by someone with
+  Settings, admins): a list of named points in a show file to play the
+  show from later. Saving the list sends nothing to the rig and starts
+  nothing; playing from a cue is not built yet. Pick the show file, then
+  Add cue, or change a name, time, lead-in or note in place, or Delete a
+  cue, and Save. Each cue has:
+  - a name, up to 40 characters, used once in that show (Finale and
+    finale count as the same name);
+  - a time, HH:MM:SS:FF at 30 frames a second, counted from the top of
+    the show cue (00:00:00:00 is the first frame of the show audio, the
+    same count as the Art-Net timecode, MadMapper and BEYOND). It must be
+    inside the show AUDIO: the card says how long the audio is;
+  - a lead-in, the whole seconds played before the cue: 2 when left
+    empty, at least 1 and at most 30. The time less the lead-in cannot be
+    before the top of the show cue;
+  - a note, optional, up to 200 characters.
+  A cue that breaks a rule is marked in red and Save waits until it is
+  fixed; the engine checks every rule again and says what it refused.
+  Names and notes are one line of plain text: a control or invisible
+  character is refused. If someone else saved the list since this screen
+  read it, the save is refused and nothing is overwritten: tap Reload to
+  read the list again (changes not saved are dropped), then make them
+  again and save. The list is `ltcplay_play_from.json` in the settings
+  folder, one list per show file, under the show file's name exactly as
+  the show folder spells it; a copy of every saved file is kept in
+  `play_from_history` (the last 50), and every save and every refusal is
+  in the journal and the audit log. When the file cannot be read (damaged
+  by hand, or written by a newer LTC Player), or was saved before and is
+  gone now (deleted, moved, quarantined), the card says so and nothing
+  can be saved over it. An admin taps Restore the last saved copy (every
+  show's list, as last saved), or fixes the file, or taps Replace the
+  file, then makes this show's list and saves. Replace starts the file
+  again with only this show's list (the other shows' lists in it are
+  gone); the broken file is kept in `play_from_history` first, and when
+  it cannot be kept nothing is replaced. When the show audio is
+  rendered again at another length, the card says so and names any cue
+  now past its end; a list whose show file is no longer in the show folder
+  is named too. Anyone signed in can read the list; saving it from an
+  iPad also needs Arming from a screen on. With no users set up, the show
+  PC reads the list but nobody can save it until an admin exists.
+  This card and Default interface are 2.0's own: 1.0 has no button for
+  them.
 - The 2.0 SHOW screen, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
   next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
