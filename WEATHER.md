@@ -3,11 +3,11 @@
 The rack screen's main page has a small **Wind** block under the lasers.
 It shows wind speed, wind direction and gusts for Thanksgiving Point in
 Lehi, Utah (40.4263, -111.8875): one measured line and one forecast line,
-each with its own age, from sources that know nothing of each other.
+each saying when it was last updated, from sources that know nothing of
+each other.
 
-**It is advisory only.** It never arms, fires, holds or stops anything, and
-nothing in the show waits for it. The on-site wind check decides, not this
-screen. The block says so in small print.
+It never arms, fires, holds or stops anything, and nothing in the show
+waits for it.
 
 ## What each line means
 
@@ -30,9 +30,9 @@ screen. The block says so in small print.
      backup reading is **amber**, says "backup station", the airport and
      how far away it is, and why UTALP was not used or what UTALP reads,
      for example: "Measured, backup station Provo airport (KPVU), 17 mi
-     away: 12 mph, gusts not reported, from S (180°). 4 min old. Using the
-     backup because UTALP (Iowa mesonet) stopped reporting at 3:40 AM,
-     last reading 3 h 12 min ago."
+     away: 12 mph, gusts not reported, from S (180°). Last updated Oct 26,
+     11:56 AM. Using the backup because UTALP (Iowa mesonet) stopped
+     reporting, last updated Oct 26, 8:48 AM."
   3. A Weather Service observation station, only if one is named in the
      settings (`nws_station`).
 
@@ -40,12 +40,12 @@ screen. The block says so in small print.
   mph but is 25 min old and Provo reads 8 mph and is current, the line
   shows UTALP's 30 mph, amber and marked STALE, and says Provo's beside it
   ("STALE: over its 20 min limit. KPVU (aviationweather.gov) reads 8 mph,
-  4 min old, current."). Any other reading more than 10 mph from the one
-  shown is said the same way.
+  last updated Oct 26, 11:56 AM, current."). Any other reading more than
+  10 mph from the one shown is said the same way.
 - **Forecast for this spot (NWS).** The National Weather Service's hourly
-  forecast for the exact spot, for the current hour, with gusts. "Issued"
-  is how long ago the Weather Service last updated it; "this PC got it" is
-  how long ago this PC last fetched it from the Weather Service.
+  forecast for the exact spot, for the current hour, with gusts. "NWS
+  issued" is when the Weather Service last updated it; "Last updated" is
+  when this PC last fetched it from the Weather Service.
 - **NWS alerts.** If the Weather Service has a Wind Advisory, High Wind
   Warning, Red Flag Warning or another wind or fire alert in effect for the
   spot, it shows as an orange line at the top of the block.
@@ -55,9 +55,18 @@ point and in degrees, like "from NNW (338°)".
 
 ## Age, STALE and NO CURRENT DATA
 
-Every number is shown with its age. A measured reading's age is how old
-the reading itself is, not when this PC fetched it. After a restart the
-block shows the last saved values with their true age.
+Every number says when it was last updated, as a date and a time, never
+how long ago (Jeff, 2026-10-30): "Last updated Oct 30, 2:14 PM". The time
+is in the show's time zone, the "timezone" in ltcplay_schedule.json
+(America/Denver when there is none), with no zone name, as the rack
+screen's show times are. A measured reading's time is the reading's own,
+not when this PC fetched it, so after a restart the block shows the last
+saved values with their true time. With nothing received yet a line says
+"No reading yet", with no time. A time ahead of this PC's clock is said as
+the PC's time now.
+
+The rules below still go by each value's age (how long before now that
+time is); only the words changed. A STALE line still says STALE.
 
 | Line | Shown normally | Amber **STALE** | Grey **NO CURRENT DATA, use on-site wind check** |
 |---|---|---|---|
@@ -76,14 +85,14 @@ they would go blank for part of every hour.
 **Why, in plain words.** Each line says why it is not normal. With no
 current measured reading the line says why for each source, for example:
 "Measured wind: NO CURRENT DATA, use on-site wind check. UTALP (Iowa
-mesonet) stopped reporting at 3:40 AM, last reading 3 h 12 min ago. KPVU
+mesonet) stopped reporting, last updated Oct 26, 8:48 AM. KPVU
 (aviationweather.gov) did not answer: no answer in 8 s." "Stopped
 reporting" means the service answered but has nothing newer from that
 station; "did not answer" means this PC could not reach the service, and
 "could not be read" means the service answered with an error; both say
 what went wrong. A STALE forecast says "Stale because this PC has not got
-it from the NWS for ..." or "Stale because the NWS has not updated it for
-...".
+it from the NWS within the 1 h limit" or "Stale because the NWS has not
+updated it within the 18 h limit".
 
 **Why the forecast is judged on when this PC got it** (Jeff, 2026-10-28).
 The Weather Service updates the forecast for a spot when its forecasters
@@ -104,7 +113,8 @@ Other messages:
   line's, a backup airport's, or the forecast's) are more than 10 mph
   apart. One of them is wrong for right now; go and check.
 - **No internet.** This PC cannot reach the weather services at all. Any
-  values still shown are the last saved ones, with their true age.
+  values still shown are the last saved ones, with when each was last
+  updated.
 - **The whole block grey** with "This screen has not heard from the engine":
   the screen itself lost touch with LTC Player for over a minute.
 
