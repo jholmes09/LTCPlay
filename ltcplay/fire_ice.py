@@ -54,6 +54,7 @@ import atexit
 import json
 import os
 import threading
+import time
 
 from . import benchhooks
 from . import conductor as C
@@ -459,8 +460,14 @@ class FireIceShow(C.ShowOutputs):
             return C.failed("Pixels to black was not sent: nothing is "
                             "running. Press Run first.")
         with self._lock:
+            # A show start's hand-over still waiting for its first frame
+            # (pixels_for_show) ends here: this black stands, and what it
+            # gives back later is the show, never the look held at the
+            # start (a Hold before the first frame, then Resume).
+            cancel = getattr(p, "cancel_show_handoff", None)
+            waiting = cancel() if cancel is not None else False
             if not self._pix_ours:
-                self._pix_prev = p.override
+                self._pix_prev = None if waiting else p.override
                 self._pix_ours = True
             p.override = "blackout"
         if s.log:
@@ -497,6 +504,86 @@ class FireIceShow(C.ShowOutputs):
             s.log.event("override", f"show conductor set output to "
                                     f"{p.override or 'auto'}")
         return C.done("Pixels back.")
+
+    # -- every show start (Jeff's report, 2026-10-29) ------------------------
+    LOOK_NAMES = {"blackout": "Blackout", "preshow": "Preshow"}
+
+    def pixels_for_show(self, what, programming=False):
+        """THE one place a show start clears the pixel output: Start now, a
+        scheduled start (ShowRunner.start_show) and the Programming
+        screen's Play (playhead.ShowAudioPlayhead). Called before the show
+        cue is played, whatever ended the show before it. Writes the same
+        journal line every time and returns it ("" with nothing running).
+
+        Every start clears:
+          the show conductor's black (closing, a stopped or failed show, an
+            Abort since Reset, a Hold), and what it had saved under it;
+          a stale record of that black with nothing over the output.
+        A scheduled start and Start now also clear a look the page put up
+        before the start (Blackout, Preshow; PR #43 fix round 2, E: the
+        page is locked during the show, so it could not be undone). On the
+        Programming screen, which is not locked, the page's own look stays.
+
+        Nothing goes dark for it: the look that is up (the idle look, a
+        Preshow, a black) stays until the first show frame and the show
+        takes over on that frame (Player.hold_until_show). A Hold, an
+        Abort or a look pressed after the start is not touched and holds."""
+        s, p = self._player()
+        if p is None:
+            return ""
+        with self._lock:
+            ours, under = self._pix_ours, self._pix_prev
+            self._pix_ours, self._pix_prev = False, None
+            look = p.override
+            keep = None
+            if programming:
+                keep = (under if look == "blackout" else look) if ours \
+                    else look
+            if keep is not None:
+                # A hand-over still waiting from an earlier start never
+                # lifts this look on later timecode (review of PR #171).
+                cancel = getattr(p, "cancel_show_handoff", None)
+                if cancel is not None:
+                    cancel()
+                if p.override != keep:
+                    p.override = keep
+                held = None
+            else:
+                hold = getattr(p, "hold_until_show", None)
+                if hold is not None:
+                    held = hold()
+                else:
+                    if look is not None:
+                        p.override = None
+                    held = None
+        name = self.LOOK_NAMES.get(look, look)
+        if ours and look == "blackout":
+            cleared = "the show conductor's black from between shows"
+        elif ours and look is None:
+            cleared = ("a stale record of the show conductor's black, with "
+                       "the idle look up")
+        elif ours:
+            cleared = f"the page's {name} look over the show conductor's black"
+        elif look is not None and keep is None:
+            cleared = f"the page's {name} look"
+        else:
+            cleared = "nothing was over it"
+        if keep is not None:
+            rest = (f" The page's {self.LOOK_NAMES.get(keep, keep)} look "
+                    f"stays: on the Programming screen it is the operator's; "
+                    f"press Stop on the Show file card (1.0, on the show "
+                    f"machine), then Run, to give the pixels to the "
+                    f"show.")
+        else:
+            first = {None: "The idle look", "blackout": "The black",
+                     "preshow": "The Preshow look"}.get(held, "The look")
+            rest = (f" {first} stays up until the first show frame goes "
+                    f"out, and the show takes over on that frame.")
+        text = (f"{what}: the pixel output is cleared for the show "
+                f"({cleared}).{rest} A Hold, an Abort or a Stop after this "
+                f"start still holds.")
+        self._note(text, action="pixels", outcome="cleared_for_show")
+        return text
 
     # -- flames ---------------------------------------------------------------
     def flames_zero(self):
@@ -1092,6 +1179,27 @@ def show_folder_render_faults(folder):
 # fault depends on it: past the end the output is zero either way.
 RENDER_END_TOLERANCE_FRAMES = 2
 
+# A show playing with the pixel output on a look (Jeff's report,
+# 2026-10-29: the closing black stayed over two whole shows and only the
+# journal said so): once it has lasted this long it is a CUES FAULT on the
+# rack screen and the Stream Deck, not a quiet zero. Display only. Never a
+# Hold's or an Abort's own fade (the music is pausing or stopping then),
+# nor the look a start holds until the first show frame.
+LOOK_IN_SHOW_FAULT_S = 1.5
+# Rack screen words: short as a whole (1.0 shows it as one message, 2.0
+# in a sheet behind "Flame cues are off"), no sentence over eight words.
+# The Fire & Ice screens have no Black or Preshow button (those are the
+# GPL page's). In 1.0 what clears a look in Programming is Stop on the
+# "Show file, on this machine" card (it ends Run and sends black), then
+# Run (a new player, no look); that card is on the show machine only.
+# 2.0 has no Show file card: it sends you to 1.0 ("Open in 1.0").
+LOOK_IN_SHOW = ("CUES FAULT: pixels show {look}, not the show. "
+                "Programming: Show file card, Stop, then Run. "
+                "On 2.0, Open in 1.0 first. "
+                "Scheduled show: tell Jeff.")
+# The look in plain words.
+LOOK_BUTTONS = {"blackout": "black", "preshow": "preshow"}
+
 RENDER_OLDER_THAN_LAYOUT = (
     "the show's render is older than xlights_networks.xml: the layout was "
     "changed after the show was rendered, so which channels are the flames "
@@ -1124,6 +1232,109 @@ def _tail_by_design(clk, label, f, rel):
         return False
 
 
+# Background mode's cut ahead (2026-10-29): each cue's first CUT_START_S
+# before its render is published, and the playing cue CUT_AHEAD_S ahead of
+# its show timecode.
+CUT_START_S = 0.5
+CUT_AHEAD_S = 3.0
+CUES_LOADING = ("the show's flame cues are still being cut from its render "
+                "(off the flame link's sender), so they are zero here; "
+                "they follow within a second")
+
+
+class _FlameCut:
+    """One render's flame channels for one span, cut block by block on
+    the reading thread (FlameCues background mode), through an FSEQ of its
+    own over the render's bytes in memory (never the published one, which
+    another thread may be reading). The sender only reads `row`: a dict
+    lookup and a slice. A block that cannot be cut keeps its error, which
+    `row` raises; it is never tried again for this FSEQ."""
+
+    def __init__(self, path, f, spans, span, data):
+        import io
+        from .fseq import FSEQ
+        self.f = f
+        self.span = tuple(span)
+        self.count = int(span[1])
+        self.spans = spans
+        g = FSEQ(path, fileobj=io.BytesIO(data))
+        if g.frame_count != f.frame_count or \
+                g.channel_count != f.channel_count:
+            g.close()
+            raise ValueError("the render changed while it was read")
+        self.g = g
+        self.firsts = [b[0] for b in g._blocks]
+        self.blocks = {}         # block index -> its frames' rows, joined
+        self.errors = {}         # block index -> the error cutting it
+
+    @classmethod
+    def failed(cls, f, span, error):
+        """A render that could not be cut at all: every row raises `error`
+        (a CUES FAULT), and it is never tried again for this FSEQ."""
+        c = cls.__new__(cls)
+        c.f, c.span, c.count, c.spans = f, tuple(span), int(span[1]), []
+        c.g = None
+        c.firsts = [0]
+        c.blocks, c.errors = {}, {0: error}
+        return c
+
+    def frames(self, seconds):
+        if self.g is None:
+            return 0
+        return int(seconds * 1000.0 // self.g.step_time_ms) + 1
+
+    def _block(self, idx):
+        import bisect
+        return max(0, bisect.bisect_right(self.firsts, idx) - 1)
+
+    def ensure(self, lo, hi):
+        """Cut every block holding frames lo to hi (inside the render),
+        yielding the interpreter between blocks. Never raises."""
+        if self.g is None:
+            return
+        n = self.g.frame_count
+        lo, hi = max(0, lo), min(n - 1, hi)
+        if lo > hi:
+            return
+        import time as _t
+        for b in range(self._block(lo), self._block(hi) + 1):
+            if b in self.blocks or b in self.errors:
+                continue
+            try:
+                self.blocks[b] = self._cut_block(b)
+            except Exception as e:
+                self.errors[b] = e
+            _t.sleep(0)
+
+    def _cut_block(self, b):
+        g, cc = self.g, self.g.channel_count
+        first = self.firsts[b]
+        last = self.firsts[b + 1] if b + 1 < len(self.firsts) \
+            else g.frame_count
+        raw = memoryview(g._load_block(b))
+        rows = []
+        for n in range(first, last):
+            at = (n - first) * cc
+            if at + cc > len(raw):
+                raise ValueError(f"frame {n} runs past the end of block {b}")
+            rows.append(FlameCues._cut(raw[at:at + cc], self.spans,
+                                       self.span))
+        return b"".join(rows)
+
+    def row(self, idx):
+        """Frame idx's flame channels (count bytes), None while its block
+        is not cut yet; raises the error its block could not be cut with."""
+        b = self._block(idx)
+        e = self.errors.get(b)
+        if e is not None:
+            raise e
+        blk = self.blocks.get(b)
+        if blk is None:
+            return None
+        at = (idx - self.firsts[b]) * self.count
+        return blk[at:at + self.count]
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
     show's OWN render at the show timecode (PR #43 review, finding 1).
@@ -1152,6 +1363,10 @@ class FlameCues:
         self._total = None       # the map's channel count, for the render
         self._problem = ""
         self._why = ""
+        # Since when a playing show has had a look over its pixels (see
+        # LOOK_IN_SHOW_FAULT_S), or None.
+        self._look_since = None
+        self._mono = time.monotonic
         # The refusal now in force that is a FAULT (review of PR #43, P1-3:
         # a render that does not fit the layout, a timecode past its end, a
         # render that cannot be read, a render older than the layout or
@@ -1170,6 +1385,16 @@ class FlameCues:
         self._bg = bool(background)
         self._layout = None      # (session, span, total, layout mtime)
         self._by_path = {}       # fseq path -> _render's tuple, or an error
+        # Background mode (2026-10-29, Jeff's Pico: flame frames 78 to 178
+        # ms late): the flame controller's channels, cut out of each render
+        # block by block on the reading thread (_FlameCut), so the sender
+        # only slices memory. It used to decompress the render's block
+        # (megabytes) on the sender thread itself each time the show
+        # crossed into the next one. Cut ahead: every cue's first
+        # CUT_START_S before its render is published, and the playing cue
+        # CUT_AHEAD_S ahead of the show timecode. fseq path -> _FlameCut.
+        self._cuts = {}
+        self._data = {}          # fseq path -> (its FSEQ, the render's bytes)
         self._stop = threading.Event()
         self._thread = None
         # The CUES FAULT said at show load (soak 2026-10-21): renders of
@@ -1274,7 +1499,24 @@ class FlameCues:
                 spans.append((start0, src, length))
                 src += length
             got = self._open[key] = (f, spans, key[1], start)
+            if self._bg:
+                self._data[path] = (f, data)
         return got
+
+    @staticmethod
+    def _cut(data, spans, span):
+        """The flame controller's `span` (first channel, count) out of one
+        frame's channel bytes, as count bytes: the same cut __call__ makes,
+        a channel no range covers left at zero."""
+        start, count = span
+        first, end = start - 1, start - 1 + count
+        row = bytearray(count)
+        for dst, src, length in spans:
+            lo, hi = max(dst, first), min(dst + length, end)
+            if lo < hi:
+                row[lo - first:hi - first] = data[src + lo - dst:
+                                                  src + hi - dst]
+        return bytes(row)
 
     def _refresh_once(self):
         """Background mode: the channels and every cue's render of the
@@ -1293,7 +1535,56 @@ class FlameCues:
                         path, span[0] if span else None)
                 except Exception as e:
                     by[path] = e
+        # Each render's cut (_FlameCut), its first CUT_START_S and the
+        # playing cue's next CUT_AHEAD_S cut, published BEFORE the renders
+        # themselves: whoever finds a render in _by_path finds the start of
+        # its cues ready, as when only the file was read. One _FlameCut per
+        # (FSEQ, span), kept from pass to pass and session to session; a
+        # block that cannot be cut is kept as its error, never tried again.
+        cuts = {}
+        for path, got in by.items():
+            if isinstance(got, Exception) or span is None:
+                continue
+            cut = self._cuts.get(path)
+            if cut is None or cut.f is not got[0] or cut.span != tuple(span):
+                mine = self._data.get(path)
+                if mine is None or mine[0] is not got[0]:
+                    continue    # its bytes are not this render's: not cut
+                try:
+                    cut = _FlameCut(path, got[0], got[1], span, mine[1])
+                except Exception as e:
+                    cut = _FlameCut.failed(got[0], span, e)
+            cuts[path] = cut
+        for cut in cuts.values():
+            cut.ensure(0, cut.frames(CUT_START_S))
+        self._cut_ahead(s, cuts)
+        self._cuts = cuts
         self._by_path = by
+
+    def _cut_ahead(self, s=None, cuts=None):
+        """The playing cue's blocks from its show timecode to CUT_AHEAD_S
+        on, cut now (the reading thread). Never raises."""
+        try:
+            s = s or getattr(self.control, "session", None)
+            cuts = self._cuts if cuts is None else cuts
+            clk = getattr(s, "clock", None)
+            cue = getattr(clk, "_cue", None)
+            last = getattr(clk, "last_sent", None)
+            label = cue.get("label") if isinstance(cue, dict) else None
+            if not label or not last:
+                return
+            hits = [c for c in (getattr(getattr(s, "tl", None), "cues",
+                                        None) or ())
+                    if getattr(c, "name", None) == label]
+            cut = cuts.get(getattr(hits[0], "path", None)) \
+                if len(hits) == 1 else None
+            if cut is None:
+                return
+            rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
+            idx = int(rel * 1000.0 // cut.g.step_time_ms)
+            cut.ensure(idx, idx + cut.frames(CUT_AHEAD_S))
+        except Exception:
+            pass
 
     def _refresher(self):
         while not self._stop.is_set():
@@ -1305,7 +1596,12 @@ class FlameCues:
                 self._refresh_once()
             except Exception:
                 pass
-            self._stop.wait(0.25)
+            # Between full passes, keep cutting ahead of the play position
+            # every 50 ms (cheap once the blocks are cut).
+            for _ in range(5):
+                if self._stop.wait(0.05):
+                    break
+                self._cut_ahead()
 
     def start(self):
         """Background mode: the reading thread, started now, so the
@@ -1381,23 +1677,43 @@ class FlameCues:
             except Exception:
                 pass
         self._open.clear()
+        self._data.clear()
+        self._cuts = {}
 
     def __call__(self, tc):
         s = getattr(self.control, "session", None)
         if s is None or not getattr(s, "running", False):
+            self._look_since = None
             return self._zero("")
         clk = getattr(s, "clock", None)
         cue = getattr(clk, "_cue", None)
         if getattr(clk, "source", None) != "audio_master" or not cue or \
                 getattr(clk, "paused", True):
+            # No show playing: a look held over the last one never counts
+            # toward the next one's CUES FAULT.
+            self._look_since = None
             return self._zero("")
         p = getattr(s, "player", None)
         if p is None:
+            self._look_since = None
             return self._zero("")
         look = getattr(p, "override", None)
-        if look is not None:
-            return self._zero(f"the pixel output is on {look}, not the "
-                              f"show")
+        if look is None:
+            self._look_since = None
+        else:
+            plain = f"the pixel output is on {look}, not the show"
+            if getattr(p, "show_handoff", None) is not None or \
+                    getattr(clk, "_halting", False) or \
+                    getattr(clk, "_pause_req", False):
+                self._look_since = None
+                return self._zero(plain)
+            now = self._mono()
+            if self._look_since is None:
+                self._look_since = now
+            if now - self._look_since < LOOK_IN_SHOW_FAULT_S:
+                return self._zero(plain)
+            return self._zero(LOOK_IN_SHOW.format(
+                look=LOOK_BUTTONS.get(look, look)), fault=True)
         if getattr(p, "freerun_epoch", None) is not None:
             return self._zero("the show was moved by hand (GO), so the "
                               "pixels are not following the show audio")
@@ -1500,6 +1816,25 @@ class FlameCues:
                         "cues")
                 return self._zero("the timecode is past the end of the "
                                   "show's render", fault=True)
+            if self._bg:
+                # Memory only on the sender (2026-10-29): the frame's flame
+                # channels as the reading thread cut them from this very
+                # render, for this very span. A block it could not cut
+                # raises its error here (the render could not be read, a
+                # fault). Not cut yet while the show plays: a CUES FAULT,
+                # never a silent zero.
+                cut = self._cuts.get(hits[0].path)
+                row = None
+                if cut is not None and cut.f is f and cut.span == span:
+                    row = cut.row(idx)
+                if row is None:
+                    return self._zero(CUES_LOADING, fault=True)
+                count = span[1]
+                out = [0] * 512
+                out[0:count] = row
+                self._why = ""
+                self.fault = ""
+                return out
             data = f.frame(idx)
         except Exception as e:
             return self._zero(f"the show's render could not be read "
@@ -1633,6 +1968,55 @@ class BackgroundShowLog(showlog_mod.ShowLog):
         if w is not None and w is _log_writer:
             w.stop()
             w.start()
+
+
+# The interpreter's switch interval while a flame link sends (2026-10-29).
+# Python hands its lock (the GIL) to a waiting thread only after the
+# running one has held it this long; the default is 5 ms. Every flame frame
+# needs the lock two or three times (waking from its sleep, after each
+# send), so with a few busy threads (status requests, the pixel output) the
+# sender waited 5 ms a time, again and again: in the timing harness four
+# busy threads made 99 in 100 frames within 190 ms at 5 ms and within
+# 102 ms at 1 ms. Only `ltc serve` with a flame link sets it.
+FLAME_SWITCH_INTERVAL_S = 0.001
+
+
+def keep_flame_frames_on_time(sys_mod=None, gc_mod=None):
+    """`ltc serve` with a flame link, once everything is built and before
+    it serves (cli._cmd_serve): the switch interval to
+    FLAME_SWITCH_INTERVAL_S, then one full garbage collection and
+    gc.freeze(), so the objects made before it serves (the modules, the
+    engine's own objects) are never walked again by the collector. A full
+    collection holds the GIL from start to end: 24 to 97 ms each, every
+    20 s or so, in the timing harness's engine, and no flame frame goes out
+    meanwhile; after this a pass no longer walks those. Only once, at
+    start: an object set aside is never collected, so nothing made later
+    (a show loaded by Run) is ever frozen. Nothing about what is sent
+    changes. Returns one sentence for the log. Never raises."""
+    import gc as _gc
+    import sys as _sys
+    sys_mod = sys_mod or _sys
+    gc_mod = gc_mod or _gc
+    out = []
+    try:
+        was = sys_mod.getswitchinterval()
+        sys_mod.setswitchinterval(FLAME_SWITCH_INTERVAL_S)
+        out.append(f"the interpreter lock changes hands every "
+                   f"{FLAME_SWITCH_INTERVAL_S * 1000:g} ms (was "
+                   f"{was * 1000:g} ms)")
+    except Exception as e:                       # noqa: BLE001
+        out.append(f"the switch interval could not be set "
+                   f"({type(e).__name__})")
+    try:
+        gc_mod.collect()
+        gc_mod.freeze()
+        out.append(f"{gc_mod.get_freeze_count()} objects made at start are "
+                   f"left out of every garbage collection from now on")
+    except Exception as e:                       # noqa: BLE001
+        out.append(f"the start up objects could not be set aside "
+                   f"({type(e).__name__})")
+    return ("Flame link timing: " + "; ".join(out) + ", so neither can hold "
+            "up a flame frame for long.")
 
 
 def flame_link_config(cfg):
@@ -1796,6 +2180,7 @@ class ShowRunner:
         self._cue = None    # {"show", "clock", "played", "confirmed",
                             #  "failed"}
         self._closing_reported = False
+        self._seen_state = None
         self._stop = threading.Event()
         self._thread = None
         # Continue anyway (Service.continue_anyway): (outputs off, who), for
@@ -1949,7 +2334,17 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
-        self._clear_look(s, n)
+        pix = self._clear_look(s, n)
+        # This start's own hand-over (one slot on the player): what poll()
+        # may later cancel, never a newer start's.
+        hand = getattr(pix, "show_handoff", None)
+        if pix is None and self.conductor.latched:
+            # An Abort landed just before the hand-over: its black stands
+            # and nothing goes out.
+            why = self.LATCHED
+            with self._lock:
+                self._cue = {"show": n, "failed": why, "nothing_sent": True}
+            return C.failed(f"Show {n} was not started: {why}.")
         off = self._outputs_off(clk, n, cont)
         if self.mm is not None and "video" not in off:
             try:
@@ -1958,6 +2353,7 @@ class ShowRunner:
                 self._note(f"Selecting the MadMapper show bank failed: {e}",
                            fault=True, action="video", outcome="failed")
             follow_show_bank(self.mm, self._note)
+        sent = self._mono()
         try:
             pick = s.clock_play(self.cfg.show_cue)
         except Exception as e:
@@ -1965,6 +2361,7 @@ class ShowRunner:
             # 2026-10-28): "still loading" says to wait.
             why = self._refusal(s, clk) or self.SHOW_START_ERROR.format(
                 why=_full_stop(e))
+            self._start_undone()
             with self._lock:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}.")
@@ -1979,6 +2376,7 @@ class ShowRunner:
             # may have run before the cue began: stop the music here too.
             why = "it was aborted while it was starting"
             self.show.music_halt(C.ABORT_FADE_S)
+            self._start_undone()
             with self._lock:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}; the music "
@@ -1986,7 +2384,8 @@ class ShowRunner:
         with self._lock:
             self._cue = {"show": n, "clock": clk,
                          "played": clk.cues_played, "confirmed": False,
-                         "failed": None}
+                         "failed": None, "pix": pix, "sent": sent,
+                         "hand": hand}
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
 
     def _degraded_over(self, off_seq):
@@ -2045,44 +2444,49 @@ class ShowRunner:
         return frozenset(off)
 
     def _clear_look(self, s, n):
-        """A look the page chose before the show (Preshow, Blackout, any
-        override) does not stay on through the scheduled show: the 409 gate
-        then keeps anyone from clearing it, and the flame cues stay zero
-        all show (PR #43 fix round 2, E). The show conductor's own black
-        (between shows) is its to lift on SHOW_CONFIRMED; only what was
-        under it is forgotten."""
-        p = getattr(s, "player", None)
-        if p is None:
-            return
-        show = self.show
-        look = getattr(p, "override", None)
-        if getattr(show, "_pix_ours", False):
-            # The conductor's black: it stays until SHOW_CONFIRMED lifts it,
-            # and the look under it is forgotten. A look the page put over
-            # it is taken back to that black.
-            show._pix_prev = None
-            if look == "blackout":
-                return
-            p.override = "blackout"
-        elif look is None:
-            return
-        else:
-            p.override = None
-        self._note(f"Show {n}: the page's {look} look was cleared so the "
-                   f"show plays as rendered.", action="pixels",
-                   outcome="look_cleared")
+        """Every look that is not the show is cleared for it, in the one
+        place every start does it (FireIceShow.pixels_for_show), whatever
+        ended the show before: never left to that show's own end (Jeff's
+        report, 2026-10-29: after a show that finished on its own, the
+        closing black stayed on all of the next show). Returns the player
+        whose hand-over poll() watches for the first show frame, or None
+        when an Abort latched first (its black stands; nothing handed
+        over). The conductor's pixels record goes UNKNOWN in the same step
+        (Conductor.pixels_to_show), so a Hold, an Abort or a Stop after
+        it sends its black (review of PR #171)."""
+        what = f"Show {n} start"
+        to_show = getattr(self.conductor, "pixels_to_show", None)
+        if to_show is None:
+            self.show.pixels_for_show(what)
+        elif to_show(lambda: self.show.pixels_for_show(what)) is None:
+            return None
+        return getattr(s, "player", None)
+
+    def _start_undone(self):
+        """A start that did not happen (the clock refused it, an Abort
+        landed while it was starting): the hand-over it armed ends and the
+        pixels are black, never the show nor the look held at the start
+        (review of PR #171). The conductor's dark sequence for the failed
+        start or the Abort sends its black again. Never raises."""
+        try:
+            self.show.pixels_fade_out(0)
+        except Exception:                        # noqa: BLE001
+            pass
 
     def poll(self):
         with self._lock:
             off_seq = self._off_seq
         sch = self.svc.machine
         state = sch.state if sch is not None else None
+        # The state the last poll saw: a closing straight out of a show is
+        # that show's own end (_close).
+        was, self._seen_state = self._seen_state, state
         with self._lock:
             cue = self._cue
         if state == "CLOSING":
             if not self._closing_reported:
                 self._closing_reported = True
-                self._close()
+                self._close(after_show=was in ("SHOW", "PAUSED"))
             return
         self._closing_reported = False
         if state not in ("SHOW", "PAUSED"):
@@ -2104,6 +2508,7 @@ class ShowRunner:
                 self.svc.report("SHOW_FAILED", cue["failed"], show=n,
                                 nothing_sent=cue.get("nothing_sent") is True)
             return
+        self._first_frame(cue)
         clk = cue["clock"]
         mine = clk.playing and clk.cues_played == cue["played"]
         if not cue["confirmed"] and mine and \
@@ -2117,12 +2522,71 @@ class ShowRunner:
                 if self._cue is cue:
                     self._cue = None
             how = getattr(clk, "last_ended", "") or "the cue stopped"
+            self._handoff_over(cue)
             if not cue["confirmed"]:
                 how = self.NEVER_CONFIRMED.format(how=how)
             self.svc.report("SHOW_ENDED" if cue["confirmed"]
                             else "SHOW_FAILED", how, show=n)
 
-    def _close(self):
+    @staticmethod
+    def _handoff_over(cue):
+        """The show this start was for failed or ended: its hand-over, if
+        still waiting for a first frame, never lifts the look on later
+        timecode (review B of PR #171: a show that never confirmed and
+        ended late, then an Abort refused as "nothing is playing", left it
+        armed). Never raises."""
+        hand = cue.get("hand")
+        cancel = getattr(cue.get("pix"), "cancel_show_handoff", None)
+        if cancel is not None and hand is not None:
+            try:
+                # Only this start's own hand-over: a new start may have
+                # armed the player's one slot since poll() read this cue.
+                cancel(hand)
+            except Exception:                    # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _mono():
+        from . import player as player_mod
+        return player_mod._now()
+
+    def _first_frame(self, cue):
+        """Once: when the show's first frame went out on the pixels, in
+        the journal (Jeff's report, 2026-10-29, the blink at the start)."""
+        p = cue.get("pix")
+        done = getattr(p, "show_handoff_done", None) if p is not None \
+            else None
+        if done is None or cue.get("pix_said"):
+            return
+        cue["pix_said"] = True
+        look, at = done
+        took = max(0.0, at - cue.get("sent", at))
+        was = {None: "the idle look", "blackout": "black",
+               "preshow": "the Preshow look"}.get(look, look)
+        self._note(f"Show {cue['show']}: the first show frame went out on "
+                   f"the pixels {took:.2f} s after the start was sent. The "
+                   f"pixels went from {was} to the show on that frame, with "
+                   f"no dark frame between.", action="pixels",
+                   outcome="first_show_frame", show=cue["show"])
+
+    def _operator_show_ended(self):
+        """The show that ended last was an operator's extra show (Start
+        now) and it ended on its own. Never raises."""
+        try:
+            m = self.svc.machine
+            ended = [x for x in m.slots if x.ended_at is not None]
+            if not ended:
+                return None
+            last = max(ended, key=lambda x: x.ended_at)
+            if last.origin == "operator" and \
+                    str(last.reason).startswith("DONE") and \
+                    m.last_end == last.ended_at:
+                return last.n
+        except Exception:                        # noqa: BLE001
+            pass
+        return None
+
+    def _close(self, after_show=False):
         if self.show._session() is None:
             # Run is not pressed: the closing sends nothing to the rig.
             self._note("Closing: Run has not been pressed, so nothing was "
@@ -2133,7 +2597,19 @@ class ShowRunner:
             if not r.ok:
                 self._note(f"Closing: {r.sentence}", fault=True,
                            action="closing", outcome="failed")
-            self.show.pixels_fade_out(1.0)
+            extra = self._operator_show_ended() if after_show else None
+            if extra is None:
+                self.show.pixels_fade_out(1.0)
+            else:
+                # Jeff's report, 2026-10-29: a show started with Start now
+                # ends on the idle look like a scheduled show that has
+                # another after it, not on the closing black.
+                self._note(f"Closing: the pixels stay on the idle look. "
+                           f"Show {extra} was started with Start now and "
+                           f"ended on its own, so it ends like a scheduled "
+                           f"show, not on black. Flame cues are zero and "
+                           f"the lasers are dark.", action="closing",
+                           outcome="idle_look", show=extra)
         self._note("Closing: the MadMapper stop is not performed in this "
                    "build.", action="closing", outcome="not performed")
         self.svc.report("CLOSING_DONE",

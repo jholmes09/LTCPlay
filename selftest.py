@@ -38133,9 +38133,38 @@ class _FiClock:
 
 
 class _FiPlayer:
+    """Stands in for player.Player as FireIceShow uses it: the override,
+    and a show start's hand-over (hold_until_show), which the real tick
+    ends on the first show frame; here first_frame() is that tick."""
+
     def __init__(self, calls, T):
         self.calls, self.T = calls, T
         self._override = None
+        self.show_handoff = None
+        self.show_handoff_done = None
+
+    def hold_until_show(self):
+        self.show_handoff = (self._override, 0)
+        self.show_handoff_done = None
+        return self._override
+
+    def cancel_show_handoff(self, hand=None):
+        if hand is not None and self.show_handoff is not hand:
+            return False
+        had = self.show_handoff is not None
+        self.show_handoff = None
+        return had
+
+    def first_frame(self):
+        """The first frame of the show's timecode reaches the tick."""
+        hand = self.show_handoff
+        if hand is None:
+            return
+        self.show_handoff = None
+        if self._override == hand[0]:
+            if self._override is not None:
+                self.override = None
+            self.show_handoff_done = (hand[0], self.T.now())
 
     @property
     def override(self):
@@ -41946,6 +41975,262 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     print("  ok")
 
 
+def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
+    """A show folder for the cut-ahead tests: Pixels A 1-510, Flames
+    511-1022; `ncues` renders of `frames` frames (zlib, 37 frames a
+    block), each frame its own byte ((i * 7 + 3) & 255), sparse by default
+    (part of the pixels, then flame channels 601 to 800 only). Optionally
+    one block of the first render corrupted. Returns (control, clock,
+    [render paths])."""
+    import types
+    import test_show_fixtures as _fx
+    show = os.path.join(work, "show")
+    os.makedirs(show, exist_ok=True)
+    with open(os.path.join(show, "xlights_networks.xml"), "w") as fh:
+        fh.write(_FI2_NETWORKS.format(extra="", name="Flames",
+                                      state="Inactive", after=""))
+    paths, cues = [], []
+    for k in range(ncues):
+        p = os.path.join(show, f"c{k}.fseq")
+        _fx.write_fseq(p, frame_count=frames, step_ms=25,
+                       compression="zlib", block_frames=37,
+                       **({"sparse_ranges": [(0, 100), (600, 200)]}
+                          if sparse else {"channel_count": 1022}),
+                       fill=lambda i: (i * 7 + 3) & 0xFF)
+        paths.append(p)
+        cues.append(types.SimpleNamespace(name=f"c{k}", path=p))
+    if corrupt_block is not None:
+        from ltcplay import fseq as FS
+        f = FS.FSEQ(paths[0])
+        _first, off, length = f._blocks[corrupt_block]
+        f.close()
+        with open(paths[0], "r+b") as fh:
+            fh.seek(off + length // 2)
+            fh.write(b"\x00\xff" * 8)
+    clk = types.SimpleNamespace(source="audio_master", paused=False,
+                                _cue={"label": "c0", "position_s": 0.0},
+                                last_sent=(0, 0, 0, 0))
+    sess = types.SimpleNamespace(
+        running=True, clock=clk,
+        player=types.SimpleNamespace(override=None, freerun_epoch=None),
+        tl=types.SimpleNamespace(show_dir=show, cues=cues))
+    return types.SimpleNamespace(session=sess), clk, paths
+
+
+def _fi_at(clk, n, label=None):
+    """The show clock at frame n (30 a second) of cue `label`."""
+    s, f = divmod(n, 30)
+    m, s = divmod(s, 60)
+    clk.last_sent = (0, m, s, f)
+    if label is not None:
+        clk._cue = {"label": label, "position_s": 0.0}
+    return f"00:{m:02d}:{s:02d}:{f:02d}"
+
+
+def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
+    section("fire & ice (2026-10-29): in serve's background mode the flame "
+            "channels are cut from the render block by block on the reading "
+            "thread, ahead of the show timecode, equal to the direct read "
+            "frame by frame (a sparse render too); the sender never "
+            "decompresses a block; a cut of another render or span is "
+            "never used; a block not cut yet is a CUES FAULT, never a "
+            "silent zero")
+    import shutil
+    import tempfile
+    import threading
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    real_load = FS.FSEQ._load_block
+    asking = threading.Event()
+    on_ask = []
+
+    def spy_load(self, idx):
+        if asking.is_set():
+            on_ask.append(idx)
+        return real_load(self, idx)
+    try:
+        ctl, clk, paths = _fi_cut_show(work)
+        direct = F.FlameCues(ctl, "Flames")
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()                    # no thread: driven by hand
+        bg._check_renders_once()
+        bg._refresh_once()
+        FS.FSEQ._load_block = spy_load
+        bad = []
+        for n in range(0, 7 * 30 + 15):          # 7.5 s: every frame
+            tc = _fi_at(clk, n)
+            bg._cut_ahead()                       # the reading thread
+            asking.set()
+            a = bg(tc)
+            asking.clear()
+            b = direct(tc)
+            if a != b:
+                bad.append((tc, a and a[100:102], b and b[100:102]))
+        FS.FSEQ._load_block = real_load
+        check(not bad, f"cut ahead equals the direct read every frame: "
+                       f"{bad[:3]}")
+        check(not on_ask, f"asking (the sender) decompressed no block: "
+                          f"{on_ask[:5]}")
+        want = [0] * 512
+        idx = int((3 + 10 / 30.0) * 1000.0 // 25)
+        want[90:290] = [(idx * 7 + 3) & 0xFF] * 200
+        check(bg(_fi_at(clk, 100)) == want,
+              "flame channels 601 to 800 carry the frame, the rest zero")
+        cut = bg._cuts[paths[0]]
+        # A cut for another span, or of another FSEQ: never used, a fault.
+        other = F._FlameCut.__new__(F._FlameCut)
+        other.__dict__.update(cut.__dict__)
+        other.span = (cut.span[0] + 1, cut.span[1])
+        bg._cuts = {paths[0]: other}
+        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+              f"a cut for another span: zero and a CUES FAULT: {bg.fault!r}")
+        other.span = cut.span
+        other.f = FS.FSEQ(paths[0])
+        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+              "a cut of another FSEQ of the same render: never used")
+        other.f.close()
+        bg._cuts = {paths[0]: cut}
+        check(bg(_fi_at(clk, 100)) == want and bg.fault == "",
+              "its own cut again: the cues")
+        # Not cut yet while the show plays: a CUES FAULT at once, then the
+        # cues once the reading thread has cut it.
+        far = 290 * 30 // 40
+        cut.blocks.pop(cut._block(289))       # as if not cut yet
+        got = bg(_fi_at(clk, far))
+        check(got is None and bg.fault == F.CUES_LOADING,
+              f"a block not cut yet: a CUES FAULT, not a silent zero: "
+              f"{bg.fault!r}")
+        bg._cut_ahead()
+        check(bg(_fi_at(clk, far)) == direct(_fi_at(clk, far)) and
+              bg.fault == "", "cut by the next pass: the cues")
+        bg.close()
+        direct.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_guards():
+    section("fire & ice (2026-10-29): the cut-ahead guards: a render whose "
+            "bytes are another's is never cut; a cut of bytes with another "
+            "frame or channel count is refused; the renders are published "
+            "only after their cut starts; a block that cannot be cut is a "
+            "CUES FAULT with its error, tried once; a many-cue show has "
+            "every cue's start ready at once")
+    import shutil
+    import tempfile
+    import test_show_fixtures as _fx
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        # A render whose bytes in memory belong to another render: never
+        # cut from them.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "a"))
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        bg._check_renders_once()
+        bg._refresh_once()
+        f = bg._cuts[paths[0]].f
+        alt = os.path.join(work, "alt.fseq")
+        _fx.write_fseq(alt, frame_count=300, step_ms=25, compression="zlib",
+                       block_frames=37, sparse_ranges=[(0, 100), (600, 200)],
+                       fill=lambda i: 0xAA)
+        with open(alt, "rb") as fh:
+            alt_data = fh.read()
+        bg._data[paths[0]] = (FS.FSEQ(alt), alt_data)
+        bg._cuts = {}
+        bg._refresh_once()
+        got = bg(_fi_at(clk, 10))
+        check(paths[0] not in bg._cuts and got is None and
+              bg.fault == F.CUES_LOADING,
+              f"bytes that are another render's: not cut, a CUES FAULT, "
+              f"never their values: {got and got[90:92]}")
+        bg.close()
+        # Bytes with another frame or channel count: refused.
+        short = os.path.join(work, "short.fseq")
+        _fx.write_fseq(short, frame_count=200, step_ms=25,
+                       compression="zlib", block_frames=37,
+                       sparse_ranges=[(0, 100), (600, 200)])
+        with open(short, "rb") as fh:
+            sdata = fh.read()
+        try:
+            F._FlameCut(paths[0], f, [(0, 0, 100),
+                                       (600, 100, 200)],
+                        (511, 512), sdata)
+            check(False, "a cut of bytes with another frame count was made")
+        except ValueError as e:
+            check("changed" in str(e), f"refused: {e}")
+        # Published in order: a render in _by_path always has its cut,
+        # with its start already cut.
+        seen = []
+
+        class Spy(F.FlameCues):
+            def __setattr__(self, k, v):
+                if k == "_by_path" and v:
+                    seen.append(all(
+                        p in self._cuts and 0 in self._cuts[p].blocks
+                        for p in v))
+                super().__setattr__(k, v)
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "m"), ncues=12,
+                                       frames=2000, sparse=False)
+        sp = Spy(ctl, "Flames", background=True)
+        sp._stop.set()
+        sp._check_renders_once()
+        t0 = time.perf_counter()
+        sp._refresh_once()
+        took = time.perf_counter() - t0
+        check(seen == [True], f"the cuts are published before the renders, "
+                              f"their start cut: {seen}")
+        ok = []
+        for k in range(12):
+            got = sp(_fi_at(clk, 5, label=f"c{k}"))
+            ok.append(bool(got) and sp.fault == "")
+        check(all(ok), f"12 cues of 2000 frames: every cue's start ready "
+                       f"after one pass ({took:.2f} s): {ok}")
+        check(all(len(c.blocks) <= 4 for c in sp._cuts.values()),
+              f"and only their start is cut, not whole renders: "
+              f"{[len(c.blocks) for c in sp._cuts.values()]}")
+        sp.close()
+        # A block that cannot be cut: the frames before it as they are, then
+        # a CUES FAULT with the render's own error, the block tried once.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "c"),
+                                       corrupt_block=4)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        bg._check_renders_once()
+        tried = []
+        real_cut = F._FlameCut._cut_block
+
+        def spy_cut(self, b):
+            tried.append(b)
+            return real_cut(self, b)
+        F._FlameCut._cut_block = spy_cut
+        try:
+            bg._refresh_once()
+            before = bg(_fi_at(clk, int(36 * 25 / 33.34)))
+            n4 = 37 * 4 * 30 // 40 + 1
+            for _ in range(6):
+                _fi_at(clk, n4)
+                bg._cut_ahead()
+                bg._refresh_once()
+            got = bg(_fi_at(clk, n4))
+        finally:
+            F._FlameCut._cut_block = real_cut
+        check(before is not None and got is None and
+              bg.fault.startswith("the show's render could not be read"),
+              f"before the bad block the cues, at it a CUES FAULT with its "
+              f"error: {bg.fault!r}")
+        check(tried.count(4) == 1, f"the bad block was tried once: "
+                                   f"{tried.count(4)}")
+        bg.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_onlyone_named_lock_sees_a_copy_in_another_folder():
     section("one copy: on Windows every lock is also a named kernel mutex, "
             "so a copy whose files were redirected into another app's "
@@ -42573,6 +42858,782 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
     print("  ok")
 
 
+def _one_show_work(S, shows=1):
+    """A work folder whose rule has `shows` scheduled shows on Saturday
+    from 18:00, 20 minutes apart, so the last one closes the night."""
+    import tempfile
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    end = {1: "18:10", 2: "18:30"}[shows]
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": end}}, exceptions={}))
+    return work
+
+
+def _px_ends_on_its_own(n):
+    """The running show's cue confirms, then finishes by itself; the runner
+    reports both and sees what the night does next (a closing, if any)."""
+    clk = n.sess.clock
+    n.sess.player.first_frame()
+    clk._last_frame = 30
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    clk.playing = False
+    clk.last_ended = "Show finished"
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    n.w.runner.poll()           # CLOSING, when it closes the night
+    _settle(n.svc, n.c)
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+
+
+def _px_cues_why(n):
+    """What the show's flame cues say right now, through the real
+    FlameCues, with the fake show audio playing its cue."""
+    F = n.F
+    clk = n.sess.clock
+    clk._cue, clk.paused = {"label": "Show"}, False
+    cues = F.FlameCues(n.control, "flames")
+    cues(None)
+    return cues._why
+
+
+def _px_start_line(n, what):
+    return [t for t, _f in n.lines
+            if t.startswith(what) and "is cleared for the show" in t]
+
+
+def test_every_show_start_clears_the_pixels():
+    section("pixels: every show start (Start now, a scheduled start, the "
+            "Programming screen's Play) clears whatever dark the last show "
+            "left (the closing black after a show that ended on its own, a "
+            "stale record of it, Stop, Abort and Reset), with the same "
+            "journal line; a Start now show ends on the idle look; a look "
+            "on the pixels during a show is a CUES FAULT (Jeff's report, "
+            "2026-10-29)")
+    import types
+    S = _sched()
+    if S is None:
+        return
+    # A: the night's last scheduled show ends on its own: the closing
+    # blacks the pixels, outside the conductor.
+    n = _fi_night(work=_one_show_work(S))
+    n.svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          _px_start_line(n, "Show 1 start"),
+          f"setup: show 1 started on schedule with the start's pixel "
+          f"line: {n.svc.machine.state}")
+    n.now[0] = _den(S, 18, 8)
+    _px_ends_on_its_own(n)
+    check(n.svc.machine.state in (S.CLOSING, S.OFF) and
+          n.sess.player.override == "blackout" and n.w.show._pix_ours,
+          f"setup: the last scheduled show ended on its own and the "
+          f"closing blacked the pixels: {n.svc.machine.state} "
+          f"{n.sess.player.override!r}")
+    # Start now: the black is taken off by the start itself, held until
+    # the first show frame, then the show; the flame cues are never
+    # refused for it.
+    n.now[0] = _den(S, 18, 20)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    m = n.svc.machine
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(m.state == S.SHOW and held == "blackout" and
+          n.sess.player.override is None and not n.w.show._pix_ours,
+          f"Start now after a show that ended on its own: the closing "
+          f"black stays only until the first show frame, then the show "
+          f"(Jeff's shows 4 and 6): {m.state} {held!r} "
+          f"{n.sess.player.override!r}")
+    line = _px_start_line(n, f"Show {m.running} start")
+    check(line and "the show conductor's black" in line[-1],
+          f"the start's own journal line says what it cleared: {line}")
+    n.w.runner.poll()
+    check(any("first show frame went out" in t for t, _f in n.lines),
+          "the journal says when the first show frame went out")
+    check("blackout" not in _px_cues_why(n),
+          "the flame cues are not refused for a blackout after the start")
+    n.sess.clock._cue = None
+    # C: that Start now show ends on its own: the night closes again, but
+    # the pixels stay on the idle look, like a scheduled show's end.
+    del n.lines[:]
+    _px_ends_on_its_own(n)
+    check(n.svc.machine.state in (S.CLOSING, S.OFF) and
+          n.sess.player.override is None and not n.w.show._pix_ours and
+          any("stay on the idle look" in t for t, _f in n.lines),
+          f"a Start now show that ends on its own ends on the idle look, "
+          f"not on black: {n.svc.machine.state} "
+          f"{n.sess.player.override!r}")
+    # D: and Start now again starts with pixels, with the same line.
+    n.now[0] = _den(S, 18, 40)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    m = n.svc.machine
+    check(m.state == S.SHOW and n.sess.player.override is None and
+          _px_start_line(n, f"Show {m.running} start"),
+          f"Start now again after a Start now show ended: pixels on the "
+          f"show, the same line: {m.state} {n.sess.player.override!r}")
+    # Stop: the show conductor's black; Start now clears it.
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout",
+          f"setup: Stop blacked the pixels: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 18, 50)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.svc.machine.state == S.SHOW and n.sess.player.override is None,
+          f"Start now after Stop: the show plays as rendered: "
+          f"{n.sess.player.override!r}")
+    # Abort, Reset, Start now.
+    n.svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(n.svc, n.c)
+    n.svc.reset_conductor("Andy", "Rack screen")
+    _settle(n.svc, n.c)
+    check(not n.c.latched and not n.svc.machine.abort_latched,
+          "setup: the Abort was Reset")
+    n.now[0] = _den(S, 19, 0)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.svc.machine.state == S.SHOW and n.sess.player.override is None,
+          f"Start now after Abort and Reset: the show plays as rendered: "
+          f"{n.svc.machine.state} {n.sess.player.override!r}")
+    # A Hold before the first show frame, then Resume: the show comes
+    # back, never the black held at the start. The Stop really runs its
+    # fade (the start before it put the conductor's pixels record to
+    # UNKNOWN), so the look the start holds is black, not the idle look.
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout" and n.w.show._pix_ours,
+          f"setup: the Stop after a start ran its own black, not left to "
+          f"the record of the Abort before: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 19, 10)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.sess.player.show_handoff is not None and
+          n.sess.player.show_handoff[0] == "blackout",
+          f"setup: the start holds the Stop's black until its first frame: "
+          f"{n.sess.player.show_handoff!r}")
+    n.svc._apply(_op(S, S.HOLD))            # the real Hold, mid start
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()             # no hand-over: Hold stands
+    held = n.sess.player.override
+    n.svc._apply(_op(S, S.RESUME))
+    _settle(n.svc, n.c)
+    check(held == "blackout" and n.sess.player.override is None,
+          f"a Hold before the first show frame holds, and Resume gives "
+          f"back the show, not the start's held black: {held!r} "
+          f"{n.sess.player.override!r}")
+    n.c.close()
+    n.link.close()
+    # The stale record (Jeff's show 5): the conductor's black on record,
+    # the idle look on the output: nothing is put to black at the start.
+    n = _fi_night()
+    n.svc.tick()
+    n.w.show._pix_ours, n.w.show._pix_prev = True, None
+    del n.calls[:]
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(("pixels", ("blackout",)) not in [(k, a) for k, a, _t in n.calls]
+          and not n.w.show._pix_ours,
+          f"a stale record of the conductor's black never blacks the idle "
+          f"look at the start: {[c for c in n.calls if c[0] == 'pixels']}")
+    line = _px_start_line(n, "Show 1 start")
+    check(line and "stale record" in line[-1] and
+          "The idle look stays up until the first show frame" in line[-1],
+          f"its journal line: {line}")
+    # Manual, ended on its own, then the scheduled start.
+    n.c.close()
+    n.link.close()
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.now[0] = _den(S, 17, 48)
+    _px_ends_on_its_own(n)
+    check(n.sess.player.override is None,
+          f"setup: a Start now show with shows to come ends on the idle "
+          f"look: {n.svc.machine.state} {n.sess.player.override!r}")
+    n.w.show._pix_ours = True              # however it got there
+    n.sess.player.override = "blackout"
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    m = n.svc.machine
+    check(m.state == S.SHOW and n.sess.player.override is None and
+          _px_start_line(n, f"Show {m.running} start"),
+          f"the scheduled start after a Start now show clears the black: "
+          f"{m.state} {n.sess.player.override!r}")
+    # Programming Play after the closing black.
+    from ltcplay.playhead import ShowAudioPlayhead
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    n.svc.machine = types.SimpleNamespace(state="OFF")
+    clk = n.sess.clock
+    n.sess.playhead_clock = lambda: clk
+    n.sess.clock_play_from = lambda s, check_only=False: (
+        (types.SimpleNamespace(name="Show"), s) if check_only else
+        (clk.play("Show"), (types.SimpleNamespace(name="Show"), s))[1])
+    n.sess.clock_here = lambda: 0.0
+    ph = ShowAudioPlayhead(n.control, n.svc)
+    n.w.show.pixels_fade_out(1.0)           # the closing's black
+    ph.play_from(3600.0, "Andy", "iPad")
+    n.c.run_pending()
+    n.sess.player.first_frame()
+    check(n.sess.player.override is None and
+          _px_start_line(n, "Play from on the Programming screen"),
+          f"Programming Play after the closing black: the show plays as "
+          f"rendered, with the start's line: {n.sess.player.override!r}")
+    # On the Programming screen the page's own look stays.
+    n.sess.player.override = "preshow"
+    ph.play_from(3600.0, "Andy", "iPad")
+    n.c.run_pending()
+    check(n.sess.player.override == "preshow",
+          "Programming Play keeps a look the operator put on the page")
+    n.c.close()
+    n.link.close()
+    # The pre-roll never puts a look on the pixel output.
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "preroll.py")) as fh:
+        pre = fh.read()
+    check(".override" not in pre and "pixels_fade_out" not in pre,
+          "the pre-roll blacks MadMapper's surfaces, never the pixels")
+    # 4: a look on the pixels while the show plays is a CUES FAULT once it
+    # lasts, never during a Hold's or an Abort's own fade or a start's
+    # hand-over.
+    F = _fi_mod()
+    t = [0.0]
+    clk = types.SimpleNamespace(source="audio_master", _cue={"label": "S"},
+                                paused=False, _halting=False,
+                                _pause_req=False, last_sent=None)
+    p = types.SimpleNamespace(override="blackout", show_handoff=None,
+                              freerun_epoch=None)
+    sess = types.SimpleNamespace(running=True, clock=clk, player=p)
+    lines = []
+    cues = F.FlameCues(types.SimpleNamespace(session=sess), "flames",
+                       journal=lambda text, **f: lines.append((text, f)))
+    cues._mono = lambda: t[0]
+    cues(None)
+    check(cues.fault == "", "a look over a playing show is not a fault at "
+                            "once")
+    t[0] = F.LOOK_IN_SHOW_FAULT_S + 0.1
+    cues(None)
+    check(cues.faults_now() == F.LOOK_IN_SHOW.format(look="black") and
+          lines and lines[-1][1].get("fault"),
+          f"once it lasts it is a CUES FAULT on the screens and in the "
+          f"journal: {cues.fault!r}")
+    # The rack screen's words (reviews of PR #171): only buttons the Fire
+    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0:
+    # Open in 1.0), never the GPL page's Black, Preshow or Auto, nor the
+    # Programming card's "Follow timecode again" / "Stop the show audio";
+    # short as a whole, no sentence over eight words; "black", never
+    # "blackout".
+    said = cues.faults_now()
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote.html"),
+              encoding="utf-8") as fh:
+        rack = fh.read()
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote2.html"),
+              encoding="utf-8") as fh:
+        rack2 = fh.read()
+    check("Programming: Show file card, Stop, then Run." in said and
+          "Open in 1.0" in said and len(said.split()) <= 30 and
+          'label:"Stop"' in rack and 'label:"Run"' in rack and
+          "Show file, on this machine" in rack and "Open in 1.0" in rack2
+          and "Follow timecode" not in said and "Auto" not in said and
+          "Black" not in said and "blackout" not in said and
+          "show audio" not in said and
+          all(len(x.split()) <= 8 for x in said.split(". ")),
+          f"the CUES FAULT says what to press on the rack screen: "
+          f"{said!r}")
+    # A look over the LAST show never counts toward the next one: no show
+    # playing (between shows) starts the count again.
+    clk._cue = None
+    t[0] = 2.0
+    cues(None)
+    t[0] = 3.0
+    clk._cue = {"label": "S"}
+    cues(None)
+    check(cues.fault == "", "a look between shows is no CUES FAULT for "
+                            "the next show at once")
+    t[0] = 3.0 + F.LOOK_IN_SHOW_FAULT_S + 0.1
+    cues(None)
+    check(cues.fault != "", "it is, once it lasts into that show")
+    clk._cue = None
+    cues(None)
+    clk._cue = {"label": "S"}
+    clk._halting = True
+    cues(None)
+    check(cues.fault == "", "an Abort's own fade is no CUES FAULT")
+    clk._halting, p.show_handoff = False, ("blackout", 0)
+    t[0] = 10.0
+    cues(None)
+    t[0] = 20.0
+    cues(None)
+    check(cues.fault == "", "a start's hand-over is no CUES FAULT")
+    print("  ok")
+
+
+def test_closed_night_abort_and_stop_say_what_they_did():
+    section("pixels: in a closed night (after a Start now show) Abort still "
+            "disarms the flames and blanks the lasers, stops no show and "
+            "latches nothing; Stop is a complete halt that ends no show; "
+            "both say so truthfully (OPERATOR.md, review of PR #171)")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S, at=_den(S, 23, 30))
+    try:
+        check(R.svc.machine.state == S.OFF, f"setup: the night is closed: "
+                                            f"{R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        text = str(out.get("text") or "")
+        check(st == 200 and out.get("disarmed") and
+              out.get("lasers_blanked") and not out.get("stopped") and
+              "No show was stopped" in text and
+              not R.svc.machine.abort_latched and not R.c.latched,
+              f"Abort with no show: flames disarmed, lasers blanked, no "
+              f"show stopped, nothing latched: {st} {out}")
+        before = len(list(R.svc.journal))
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        rows = R.lines_for("stop")
+        new = list(R.svc.journal)[before:]
+        check(rows and ": a complete halt." in rows[-1]["text"] and
+              "show" not in out and
+              not any("No show is running" in str(r.get("text"))
+                      for r in new),
+              f"Stop with no show is journaled as a complete halt and ends "
+              f"no show (no 'No show is running' line): {out} "
+              f"{rows[-1:]}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def _px_after_stop(S, ff=False):
+    """A night with a Start now show, then Stop, then Start now again,
+    with nothing confirmed yet; `ff`: its first frame has gone out (the
+    0.1 to 0.3 s before SHOW_CONFIRMED)."""
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+    check(n.sess.player.override == "blackout",
+          f"setup: Stop blacked the pixels: {n.sess.player.override!r}")
+    n.now[0] = _den(S, 17, 45)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          n.sess.player.show_handoff is not None,
+          f"setup: the start is waiting for its first frame: "
+          f"{n.svc.machine.state} {n.sess.player.show_handoff!r}")
+    if ff:
+        n.sess.player.first_frame()
+        check(n.sess.player.override is None,
+              "setup: the first show frame went out, not confirmed yet")
+    return n
+
+
+def test_hold_abort_stop_black_the_pixels_after_a_start():
+    section("pixels: after a Stop (or an Abort and Reset) and a new start, "
+            "a Hold, an Abort, a Stop or a failed start, before the first "
+            "show frame or before the show is confirmed, still puts the "
+            "pixels to black through the real show conductor (review of "
+            "PR #171)")
+    import types
+    from ltcplay import conductor as C
+    S = _sched()
+    if S is None:
+        return
+    for ff in (False, True):
+        when = ("between the first frame and the confirmation" if ff
+                else "before the first show frame")
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.c.latched and n.sess.player.override == "blackout" and
+              n.sess.player.show_handoff is None,
+              f"Abort {when}: the pixels are black under the latch, never "
+              f"the show: {n.sess.player.override!r}")
+        n.svc.reset_conductor("Andy", "Rack screen")
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.sess.player.override == "blackout",
+              f"and after Reset the pixels stay dark until a show starts: "
+              f"{n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.HOLD))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.svc.machine.state == S.PAUSED and
+              n.sess.player.override == "blackout",
+              f"Hold {when}: the pixels are black, never the show: "
+              f"{n.svc.machine.state} {n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+        n = _px_after_stop(S, ff)
+        n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+        _settle(n.svc, n.c)
+        n.sess.player.first_frame()
+        check(n.sess.player.override == "blackout" and
+              n.sess.player.show_handoff is None,
+              f"Stop {when}: the pixels are black, never the show: "
+              f"{n.sess.player.override!r}")
+        n.c.close()
+        n.link.close()
+    # A failed start after a Stop ends on black, not on the idle look.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    n.svc._apply(_op(S, S.STOP_SHOW, confirmed=True))
+    _settle(n.svc, n.c)
+
+    def no_audio(cue=None):
+        raise RuntimeError("the show audio is not there")
+    n.sess.clock_play = no_audio
+    n.now[0] = _den(S, 17, 45)
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    for _ in range(3):
+        n.w.runner.poll()
+        _settle(n.svc, n.c)
+    n.sess.player.first_frame()
+    check(n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"a failed start after a Stop ends on black, with no hand-over "
+          f"left: {n.svc.machine.state} {n.sess.player.override!r}")
+    # The start itself puts its hand-over back when the clock refuses it,
+    # before the conductor's failed start runs.
+    n.sess.player.override = None
+    n.w.show._pix_ours = False
+    n.sess.player.show_handoff = None
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"a start the clock refused ends its own hand-over on black: "
+          f"{n.sess.player.override!r} {n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # An Abort that lands while the cue is starting: the start puts the
+    # black back itself, before the Abort's own fade runs.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    real = n.sess.clock_play
+
+    def aborted_meanwhile(cue=None):
+        got = real(cue)
+        n.c.abort("Andy", "Rack screen")
+        return got
+    n.sess.clock_play = aborted_meanwhile
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and n.c.latched and
+          n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"an Abort while the cue was starting: black at once, no "
+          f"hand-over: {n.sess.player.override!r} "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # An Abort just before the hand-over: nothing goes out, the music
+    # never starts, the Abort keeps its black.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    to_show = n.c.pixels_to_show
+
+    def abort_first(clear):
+        n.sess.clock.playing = True         # an earlier cue still going
+        n.c.abort("Andy", "Rack screen")
+        n.c.run_pending()
+        return to_show(clear)
+    n.c.pixels_to_show = abort_first
+    del n.calls[:]
+    r = n.w.runner.start_show(9, who="Andy")
+    check(not r.ok and "music_play" not in [k for k, _a, _t in n.calls] and
+          n.sess.player.override == "blackout" and n.w.show._pix_ours and
+          n.sess.player.show_handoff is None,
+          f"an Abort just before the hand-over: refused, no music, its "
+          f"black stands: {r.sentence} {n.sess.player.override!r}")
+    del n.c.pixels_to_show
+    # And while it stands, nothing is handed over at all.
+    n.c.run_pending()
+    got = []
+    check(n.c.pixels_to_show(lambda: got.append(1) or "x") is None and
+          not got and n.w.show._pix_ours,
+          "under a latched Abort the conductor hands nothing to a show")
+    n.c.close()
+    n.link.close()
+    # The Programming screen: a refused show start (an Abort landed) ends
+    # on black; a Play the clock refused leaves no hand-over waiting; a
+    # look the operator keeps ends a stale hand-over.
+    from ltcplay.playhead import ShowAudioPlayhead, PlayheadError
+    n = _fi_night()
+    n.svc.tick()
+    n.svc.machine = types.SimpleNamespace(state="OFF")
+    clk = n.sess.clock
+    n.sess.playhead_clock = lambda: clk
+    n.sess.clock_play_from = lambda s, check_only=False: (
+        (types.SimpleNamespace(name="Show"), s) if check_only else
+        (clk.play("Show"), (types.SimpleNamespace(name="Show"), s))[1])
+    n.sess.clock_here = lambda: 0.0
+    n.sess.clock_halt = lambda: clk.halt()
+    ph = ShowAudioPlayhead(n.control, n.svc)
+    real_start = n.c.show_starting
+    n.c.show_starting = lambda *a, **k: C.failed("aborted meanwhile")
+    try:
+        ph.play_from(3600.0, "Andy", "iPad")
+    except PlayheadError:
+        pass
+    n.c.show_starting = real_start
+    n.sess.player.first_frame()
+    check(n.sess.player.override == "blackout" and
+          n.sess.player.show_handoff is None,
+          f"Programming Play refused at the show start: black, never the "
+          f"show: {n.sess.player.override!r}")
+    n.sess.player.override = None
+    n.w.show._pix_ours = False
+
+    def refused(s, check_only=False):
+        if check_only:
+            return types.SimpleNamespace(name="Show"), s
+        raise RuntimeError("the clock refused it")
+    n.sess.clock_play_from = refused
+    try:
+        ph.play_from(3600.0, "Andy", "iPad")
+    except Exception:                            # noqa: BLE001
+        pass
+    check(n.sess.player.show_handoff is None,
+          f"a Play the clock refused leaves no hand-over waiting: "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    F = _fi_mod()
+    calls = []
+    p = _FiPlayer(calls, types.SimpleNamespace(now=lambda: 0.0))
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    p.hold_until_show()                  # an earlier start, still waiting
+    p.override = "preshow"               # the operator's look on the page
+    p.show_handoff = ("preshow", 0)
+    fis.pixels_for_show("Play from on the Programming screen",
+                        programming=True)
+    p.first_frame()
+    check(p.override == "preshow" and p.show_handoff is None,
+          f"a look the Programming screen keeps ends a stale hand-over, "
+          f"so later timecode never lifts it: {p.override!r}")
+    # A look set through the engine (/api/override) during a start's
+    # hand-over stands, even the same black the start held.
+    from ltcplay import web as web_mod
+    p = _FiPlayer(calls, types.SimpleNamespace(now=lambda: 0.0))
+    p.override = "blackout"
+    p.hold_until_show()
+    ctl = types.SimpleNamespace(session=types.SimpleNamespace(
+        running=True, player=p, log=None))
+    web_mod.Control.override(ctl, "blackout")
+    p.first_frame()
+    check(p.override == "blackout" and p.show_handoff is None,
+          f"a Black set during the hand-over is never lifted by the first "
+          f"show frame: {p.override!r}")
+    # A start whose show failed or ended unconfirmed ends its own
+    # hand-over, before anything the conductor does.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.sess.player.override = "blackout"
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.sess.player.show_handoff is not None,
+          "setup: the start is waiting for its first frame")
+    n.sess.clock.playing = False
+    n.sess.clock.last_ended = "Show stopped"
+    n.w.runner.poll()
+    check(n.sess.player.show_handoff is None,
+          f"a show that ended before it was confirmed ends its start's "
+          f"hand-over: {n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    # The race: a new start arms the player's one hand-over slot after
+    # poll() read the old cue. The old show's end never cancels the new
+    # start's hand-over.
+    n = _fi_night(work=_one_show_work(S, shows=2))
+    n.now[0] = _den(S, 17, 40)
+    n.svc.tick()
+    n.sess.player.override = "blackout"
+    n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    n.sess.clock.playing = False
+    n.sess.clock.last_ended = "Show stopped"
+    n.sess.player.hold_until_show()          # the newer start's
+    newer = n.sess.player.show_handoff
+    n.w.runner.poll()
+    check(n.sess.player.show_handoff is newer and newer is not None,
+          f"an older show's end leaves a newer start's hand-over armed: "
+          f"{n.sess.player.show_handoff!r}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+class _LitFSEQ(FakeFSEQ):
+    """A FakeFSEQ whose every frame is lit (FakeFSEQ's frame 0 is all
+    zeros, which would hide a dark frame)."""
+
+    def __init__(self, base, **kw):
+        FakeFSEQ.__init__(self, **kw)
+        self.base = base
+
+    def frame(self, i):
+        FakeFSEQ.frame(self, i)
+        return bytes([self.base + i % 50]) * self.channel_count
+
+
+def test_the_show_takes_over_the_pixels_on_its_first_frame():
+    section("pixels: a show start keeps the look that is up (the idle "
+            "look, a black) until the first frame of the show's timecode "
+            "and switches on that very tick: no dark frame between the "
+            "idle look and the show (Jeff's show 5, 2026-10-29)")
+    import types
+    F = _fi_mod()
+    idle = _LitFSEQ(100, frames=40, channels=64)
+    show = _LitFSEQ(10, frames=400, channels=64)
+    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
+
+    def player():
+        p = Player(tl, FakeNetmap(), CountingSender())
+        p.on_lost = "hold"
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq",
+                                  "preshow loop")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        p.idle_cue._gaps = None
+        return p
+
+    def frames(p, k):
+        return [bytes(p._alert_mix(p._tick()) or b"") for _ in range(k)]
+
+    def lit(f):
+        return len(f) > 0 and any(f)
+    base = tcmod.parse_tc("01:00:00:00", 30)
+    first_show = bytes(show.frame(0))
+    # The idle look under a stale record of the conductor's black (Jeff's
+    # show 5): through the real FireIceShow start.
+    p = player()
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    fis._pix_ours = True
+    out = frames(p, 3)
+    text = fis.pixels_for_show("Show 5 start")
+    out += frames(p, 3)
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    out += frames(p, 3)
+    check(all(lit(f) for f in out),
+          f"no dark frame from the idle look into the show: "
+          f"{[f[:1] for f in out]}")
+    check(out[5][:1] == bytes([100 + 0])[:1] or out[5][0] >= 100,
+          "the idle look stays up until the show's timecode arrives")
+    check(out[6] == first_show and p.override is None and
+          p.show_handoff_done is not None and
+          p.show_handoff_done[0] is None,
+          f"the show's first frame goes out on the first tick after its "
+          f"timecode: {out[6][:1]!r}")
+    check("stale record" in text, f"the start's line: {text}")
+    # A start that never played (the clock refused it, then stopped): no
+    # hand-over left to lift the look on later timecode.
+    p = player()
+    p.override = "blackout"
+    p.hold_until_show()
+    p.drop_clock()
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "blackout" and p.show_handoff is None,
+          "the show clock stopping ends a waiting hand-over")
+    # A cancel names the hand-over it means: a newer one is never ended
+    # for an older one.
+    p = player()
+    p.hold_until_show()
+    older = p.show_handoff
+    p.hold_until_show()
+    check(p.cancel_show_handoff(older) is False and
+          p.show_handoff is not None and
+          p.cancel_show_handoff(p.show_handoff) is True and
+          p.show_handoff is None,
+          "cancel_show_handoff(hand) ends only that hand-over")
+    # The closing black: black frames, then the show's first frame, with
+    # no idle look flashed between.
+    p = player()
+    p.override = "blackout"
+    out = frames(p, 2)
+    p.hold_until_show()
+    out += frames(p, 2)
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    out += frames(p, 2)
+    check(out[:4] == [b""] * 4 and out[4] == first_show,
+          f"from black straight to the show on its first frame: "
+          f"{[f[:1] for f in out]}")
+    # A clock left from an earlier cue is not the new show's first frame.
+    p = player()
+    p.feed_timecode(base + 50.0, _now(), False, "01:00:50:00")
+    p.override = "blackout"
+    p.hold_until_show()
+    out = frames(p, 2)
+    check(out == [b"", b""] and p.override == "blackout",
+          "the held look waits for a frame that came after the start")
+    # Someone else's look since the start (a Hold's black) stands.
+    p = player()
+    p.hold_until_show()
+    p.cancel_show_handoff()
+    p.override = "blackout"
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "blackout", "a Hold's black during the hand-over "
+                                    "is never lifted by it")
+    p = player()
+    p.hold_until_show()
+    p.override = "preshow"          # the page's look, set straight on it
+    p.feed_timecode(base, _now(), False, "01:00:00:00")
+    frames(p, 2)
+    check(p.override == "preshow" and p.show_handoff is None,
+          "a look put on the pixels after the start stands: the hand-over "
+          "lifts only the look it held")
+    # The runner says when the first show frame went out.
+    lines = []
+    r = types.SimpleNamespace(_note=lambda text, **f: lines.append(text))
+    cue = {"show": 5, "pix": types.SimpleNamespace(
+        show_handoff_done=(None, 10.2)), "sent": 10.0}
+    F.ShowRunner._first_frame(r, cue)
+    F.ShowRunner._first_frame(r, cue)
+    check(len(lines) == 1 and "first show frame went out" in lines[0] and
+          "0.20 s" in lines[0],
+          f"the journal says when the first show frame went out: {lines}")
+    print("  ok")
+
+
 def test_fire_ice_review_hand_mutations():
     section("fire & ice: the runner starts the show it was told, confirms "
             "only the cue it started, closes the night for real; a release "
@@ -42614,24 +43675,30 @@ def test_fire_ice_review_hand_mutations():
     n.svc.tick()
     n.sess.player.override = "preshow"
     r = n.w.runner.start_show(9, who="Andy")
-    check(r.ok and n.sess.player.override is None,
-          f"a look chosen before the show is cleared when it starts: "
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(r.ok and held == "preshow" and n.sess.player.override is None,
+          f"a look chosen before the show stays up until the first show "
+          f"frame, then is cleared on that frame: {held!r} "
           f"{n.sess.player.override!r} {r}")
     n.sess.player.override = None
     n.w.show._pix_ours, n.w.show._pix_prev = True, "preshow"
     n.sess.player.override = "blackout"
     n.w.runner.start_show(10, who="Andy")
-    check(n.sess.player.override == "blackout" and
-          n.w.show._pix_prev is None,
-          "the conductor's own black stays until the show is confirmed, "
-          "and what was under it is forgotten")
+    held = n.sess.player.override
+    n.sess.player.first_frame()
+    check(held == "blackout" and not n.w.show._pix_ours and
+          n.w.show._pix_prev is None and n.sess.player.override is None,
+          "the conductor's own black is cleared by the start itself (held "
+          "until the first show frame, never left for the confirmation), "
+          "and what was under it is forgotten (Jeff's report, 2026-10-29)")
+    n.w.show._pix_ours, n.w.show._pix_prev = True, None
     n.sess.player.override = "preshow"      # the page, over that black
     n.w.runner.start_show(11, who="Andy")
-    check(n.sess.player.override == "blackout" and
-          n.w.show._pix_prev is None,
-          f"a look the page put over the conductor's black goes back to "
-          f"that black, to be lifted on confirmation: "
-          f"{n.sess.player.override!r}")
+    n.sess.player.first_frame()
+    check(n.sess.player.override is None and not n.w.show._pix_ours,
+          f"a look the page put over the conductor's black is cleared with "
+          f"it: {n.sess.player.override!r}")
     # H12: closing zeroes the flames, blanks the lasers, blacks the pixels.
     n = _fi_night()
     n.svc.tick()
@@ -44271,6 +45338,470 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
           and all(abs(g - period) < 1e-6 for g in pg if g not in stall),
           f"the schedule: one period between frames, the stall once, no "
           f"burst after it: {sorted(set(pg))}")
+
+
+def test_flame_link_schedule_absolute_deadlines_no_burst():
+    section("flame link timing (2026-10-29): absolute deadlines on a fake "
+            "clock, no drift from late wakes, and after a stall the latest "
+            "frame once and then the next grid point, never a burst")
+    import json
+    from ltcplay import flamelink as fl
+    P = 0.025
+    nd = fl.next_deadline
+    G = P * fl.MIN_GAP_SHARE                 # 5 ms at 40 a second
+    # Waking late is made up on the next sleep: the deadlines stay on the
+    # grid of the first frame (no drift builds up, the rate stays 40).
+    check(abs(nd(1.000, 1.003, P) - 1.025) < 1e-9 and
+          abs(nd(1.025, 1.0374, P) - 1.050) < 1e-9 and
+          abs(nd(1.000, 1.019, P) - 1.025) < 1e-9,
+          "a late wake keeps the grid")
+    # The next grid point too close (or gone): skipped, never sent late.
+    check(abs(nd(1.000, 1.022, P) - 1.050) < 1e-9 and
+          abs(nd(1.000, 1.200, P) - 1.225) < 1e-9 and
+          abs(nd(1.000, 1.2051, P) - 1.225) < 1e-9 and
+          abs(nd(1.000, 1.2210, P) - 1.250) < 1e-9,
+          "behind: the next grid point at least 5 ms away")
+    for now in (1.0, 1.001, 1.0124, 1.0126, 1.02, 1.0201, 1.0249, 1.03,
+                1.3, 5.0, 5.0123):
+        got = nd(1.0, now, P)
+        steps = (got - 1.0) / P
+        check(got - now >= G - 1e-9 and abs(steps - round(steps)) < 1e-6,
+              f"on the grid and never sooner than 5 ms: {now} -> {got}")
+
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "send_hz": 40,
+                                    "frame_stale_ms": 500})
+
+    def run(late, n=200, early=0.0):
+        """The real _run on a fake clock: each sleep takes what it was
+        asked for plus late[k] (the k-th sleep), minus `early` never."""
+        clk = [100.0]
+
+        class Stop:
+            def __init__(self):
+                self.left = n
+                self.k = 0
+
+            def is_set(self):
+                return self.left <= 0
+
+            def set(self):
+                self.left = 0
+
+            def clear(self):
+                pass
+        st = Stop()
+
+        def sleep(d):
+            st.k += 1
+            clk[0] += d + late.get(st.k, 0.0)
+            st.left -= 1
+        lk = fl.FlameLink(cfg, clock=lambda: clk[0], sleep=sleep)
+        sk = _FlSock()
+        lk._sock = sk
+        lk._stop = st
+        lk._run()
+        mono = [json.loads(d)["mono"] for d, _a in sk.sent]
+        return lk, [round(b - a, 6) for a, b in zip(mono, mono[1:])], mono
+
+    # Every sleep 3 ms late: the cadence stays 25 ms on average and every
+    # frame stays on the 25 ms grid from the first one (absolute deadlines).
+    lk, gaps, mono = run({k: 0.003 for k in range(1, 400)})
+    span = mono[-1] - mono[0]
+    check(abs(span / (len(mono) - 1) - P) < 1e-4,
+          f"3 ms late every time: still 40 a second on average "
+          f"({span / (len(mono) - 1) * 1000:.2f} ms)")
+    check(all(abs(((m - mono[0]) / P) - round((m - mono[0]) / P)) * P
+              <= 0.0031 for m in mono),
+          "and each frame within 3 ms of its own grid point: no drift")
+    # One 210 ms stall: one long gap, the overdue frame once, then the
+    # next grid point (never the missed ones, so never a burst), and the
+    # cadence again.
+    lk, gaps, mono = run({60: 0.21})
+    long_ = [g for g in gaps if g > P * 1.5]
+    check(len(long_) == 1 and abs(long_[0] - (P + 0.21)) < 1e-6,
+          f"the stall shows once: {sorted(set(gaps))[-3:]}")
+    i = gaps.index(long_[0])
+    check(abs(gaps[i + 1] - 0.015) < 1e-6 and
+          all(abs(g - P) < 1e-6 for g in gaps[i + 2:]),
+          f"after the stall the next grid point, then the cadence: "
+          f"{gaps[i + 1:i + 5]}")
+    check(len(mono) == 200 and min(gaps) >= G - 1e-6,
+          f"no burst: one frame a wake, shortest gap {min(gaps)}")
+    span = mono[-1] - mono[0]
+    check(abs(round(span / P) * P - span) < 1e-6,
+          "and every frame still on the grid of the first")
+    # A wake 22 ms late: the late frame goes; the grid point 3 ms after it
+    # is skipped, the next one after that is not.
+    lk, gaps, mono = run({60: 0.022})
+    check(min(gaps) >= G - 1e-6 and max(gaps) <= P + 0.022 + 1e-6 and
+          any(abs(g - 0.028) < 1e-6 for g in gaps),
+          f"a 22 ms late wake: no frame squeezed in 3 ms after it: "
+          f"{sorted(set(gaps))}")
+    # The timing counters saw the same intervals the frames carry.
+    v = lk.timing_view()["since_start"]
+    check(v["intervals"] == len(gaps) and abs(v["worst_ms"] - 47.0) < 0.01,
+          f"the sender counted every interval and the worst: {v}")
+    print("  ok")
+
+
+def test_flame_link_frame_timing_counts_and_journals():
+    section("flame link timing (2026-10-29): intervals counted per show and "
+            "per hour on the sender (over 50, 75, 100, 150 ms, worst, 99 in "
+            "100), journaled by the watch thread, the last hour's late "
+            "frames for the alert, in the status")
+    from ltcplay import flamelink as fl
+    t = fl.FrameTiming(0.0)
+    for _ in range(990):
+        t.add(0.025)
+    for ms in (60, 80, 120, 178, 40, 30, 26, 27, 28, 29):
+        t.add(ms / 1000.0)
+    v = t.view()
+    check(v["intervals"] == 1000 and v["over_ms"] == {"50": 4, "75": 3,
+                                                      "100": 2, "150": 1}
+          and abs(v["worst_ms"] - 178.0) < 1e-6 and v["over_limit"] == 2
+          and v["limit_ms"] == 100,
+          f"counts over each limit, the worst: {v}")
+    check(v["p99_ms"] == 26, f"99 in 100 within 26 ms (to the ms above): "
+                             f"{v['p99_ms']}")
+    t3 = fl.FrameTiming()
+    for _ in range(980):
+        t3.add(0.025)
+    for _ in range(20):
+        t3.add(0.060)
+    check(t3.p99_ms() == 61, f"the 99th in 100 is in the tail: "
+                             f"{t3.p99_ms()}")
+    s = t.sentence("this hour")
+    check("worst 178 ms" in s and "over 100 ms: 2" in s and
+          "\u2013" not in s and "\u2014" not in s,
+          f"one plain line, no dashes: {s}")
+    check(fl.FrameTiming().view()["p99_ms"] == 0 and
+          fl.FrameTiming().view()["mean_ms"] == 0.0, "empty: zeros")
+    t2 = fl.FrameTiming()
+    t2.add(2.0)
+    check(t2.view()["p99_ms"] == 301 and t2.view()["worst_ms"] == 2000.0,
+          f"past the last bin: at least 300, the worst exact: {t2.view()}")
+    t2.add("rubbish")
+    check(t2.frames == 1, "rubbish is not counted and does not raise")
+
+    # On the link: the sender's _timing_add, a show window from the first
+    # live frame to the first frame with no show timecode, an hour window,
+    # each finished one journaled once by the watch thread's half.
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "frame_stale_ms": 500})
+    clk = [1000.0]
+    jl = _FlJournal()
+    lk = fl.FlameLink(cfg, clock=lambda: clk[0], journal=jl)
+
+    def tick(gap, live, tc):
+        clk[0] += gap
+        lk._haze_live, lk._frame_tc = live, tc
+        lk._timing_add(gap, clk[0])
+    for _ in range(10):
+        tick(0.025, False, None)
+    check(lk.timing_view()["this_show"] is None, "no show: no show window")
+    tick(0.025, True, "00:00:00:01")
+    for _ in range(40):
+        tick(0.025, True, "00:00:01:00")
+    tick(0.130, True, "00:00:02:00")             # one late frame in the show
+    tick(0.025, False, "00:00:02:00")            # a Hold: still the show
+    check(lk.timing_view()["this_show"]["intervals"] == 42,
+          f"the show window counts from its first live frame, through a "
+          f"Hold: {lk.timing_view()['this_show']}")
+    tick(0.025, False, None)                     # the show is over
+    check(lk.timing_view()["this_show"] is None, "the show window closed")
+    lk._timing_journal()
+    lines = [(t, kw) for t, kw in jl.lines
+             if kw.get("outcome") in ("frame_timing", "frames_late")]
+    check(len(lines) == 2 and "in the show that just ended" in lines[0][0]
+          and "over 100 ms: 1" in lines[0][0]
+          and lines[0][1]["timing"]["over_limit"] == 1
+          and lines[1][0].startswith("Flame frames late: 1 in the show")
+          and not any(kw.get("fault") for _t, kw in lines),
+          f"one line for the show, one more for its late frame, notes "
+          f"(the alert is the fault): {lines}")
+    lk._timing_journal()
+    check(len([1 for _t, kw in jl.lines
+               if kw.get("outcome") == "frame_timing"]) == 1,
+          "each finished window is journaled once")
+    n, worst = lk.late_last_hour()
+    check((n, worst) == (1, 130.0), f"the last hour: 1, 130 ms: {n} {worst}")
+    # An hour on: the hour window rolls over and is journaled; the late
+    # frame drops out of "the last hour".
+    clk[0] += fl.TIMING_HOUR_S
+    tick(0.025, False, None)
+    lk._timing_journal()
+    check(any("in the last hour" in t for t, _kw in jl.lines),
+          "the finished hour is journaled")
+    tv = lk.timing_view()
+    check(tv["late_last_hour"] == 0 and tv["last_hour"]["over_limit"] == 1
+          and tv["this_hour"]["intervals"] == 1
+          and tv["since_start"]["intervals"] == 55
+          and tv["in_shows"]["intervals"] == 43
+          and tv["in_shows"]["over_limit"] == 1,
+          f"the late frame is out of the last hour; the hour that had it is "
+          f"kept as last_hour: {tv}")
+    snap = lk.snapshot()
+    check(snap["frame_timing"]["limit_ms"] == 100 and
+          "since_start" in snap["frame_timing"],
+          "the status carries frame_timing")
+    # The limit is flamesafe's own fire_hold_ms, read from its config with
+    # the rest of the link: at 250 a 178 ms gap is not late, 260 ms is.
+    import json
+    import tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "flamesafe", "flamesafe.example.json"),
+              encoding="utf-8") as fh:
+        doc = json.load(fh)
+    d = tempfile.mkdtemp()
+    try:
+        for hold, gaps, late in ((100, (0.178,), 1), (250, (0.178, 0.26), 1),
+                                 (None, (0.120,), 1)):
+            dd = dict(doc)
+            if hold is None:
+                dd.pop("fire_hold_ms", None)
+            else:
+                dd["fire_hold_ms"] = hold
+            path = os.path.join(d, f"fs{hold}.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(dd, fh)
+            c2 = fl.FlameLinkConfig.from_flamesafe_config(path)
+            k2 = [10.0]
+            l2 = fl.FlameLink(c2, clock=lambda: k2[0])
+            for g in gaps:
+                k2[0] += g
+                l2._timing_add(g, k2[0])
+            tv = l2.timing_view()
+            check(c2.fire_hold_ms == hold and
+                  tv["limit_ms"] == (hold or fl.TIMING_ALERT_MS) and
+                  tv["late_last_hour"] == late and
+                  tv["since_start"]["over_limit"] == late,
+                  f"fire_hold_ms {hold}: limit and late frames {tv}")
+            check(f"over flamesafe's fire_hold_ms ({hold or 100} ms): {late}"
+                  in l2._timing_total.sentence("since start"),
+                  "the journal line names flamesafe's fire_hold_ms")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_flame_link_sender_not_held_by_other_threads():
+    section("flame link timing (2026-10-29): the real sender thread keeps "
+            "sending while another thread holds the show's lock and a "
+            "request-style lock, while the journal hangs, and while another "
+            "thread sleeps holding them")
+    import threading as _th
+    from ltcplay import flamelink as fl
+    F = _fi_mod()
+    import types
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "send_hz": 40,
+                                    "frame_stale_ms": 500})
+    hang = _th.Event()
+
+    def stuck_journal(text, **kw):
+        hang.wait(10.0)              # a journal that never comes back
+    jr = F.OffThreadJournal(stuck_journal)
+    clk = types.SimpleNamespace(source="audio_master", playing=True,
+                                paused=False, _halting=False,
+                                last_sent=(0, 0, 1, 0), _paused=False,
+                                on_pause=None, on_resume=None)
+    control = types.SimpleNamespace(session=types.SimpleNamespace(
+        running=True, clock=clk, player=None, tl=None))
+    show = F.FireIceShow(control, journal=None, flame_link=object())
+    calls = [0]
+
+    def raising_cues(tc):
+        calls[0] += 1
+        raise RuntimeError("a provider that fails every frame")
+    lk = fl.FlameLink(cfg, cues=raising_cues,
+                      show_state=fl.audio_master_state(show.clock_nolock),
+                      journal=jr)
+    sk = _FlSock()
+    lk._sock = sk
+    request_lock = _th.Lock()
+    held = _th.Event()
+
+    def hold_locks():
+        # A request thread holding the show's own lock and a lock of its
+        # own, asleep with both held (GIL-free), for the whole measurement.
+        with show._lock, request_lock:
+            held.set()
+            hang.wait(10.0)
+    h = _th.Thread(target=hold_locks, daemon=True)
+    h.start()
+    held.wait(2.0)
+    # The timecode moves, so the provider is asked (and raises, so the
+    # sender writes a journal line, which hangs on its own thread).
+    def move():
+        f = 0
+        while not hang.is_set():
+            f = (f + 1) % 30
+            clk.last_sent = (0, 0, 1 + (f // 30), f)
+            time.sleep(0.03)
+    m = _th.Thread(target=move, daemon=True)
+    m.start()
+    lk.release()
+    lk.start()
+    time.sleep(0.6)
+    n = len(sk.sent)
+    sender = lk.sender_state()
+    hang.set()
+    lk.stop()
+    h.join(2.0)
+    m.join(2.0)
+    check(n >= 12 and calls[0] >= 5,
+          f"the sender kept sending ({n} frames in 0.6 s, the provider asked "
+          f"{calls[0]} times) with the show's lock and a request lock held "
+          f"by a sleeping thread and the journal hung")
+    check(sender in ("running",),
+          f"and it never read as stalled: {sender}")
+    print("  ok")
+
+
+def test_flame_link_encode_is_byte_for_byte_the_same():
+    section("flame link timing (2026-10-29): a flame frame built from parts, "
+            "its values' text kept from the frame before, is byte for byte "
+            "what json.dumps of the whole frame gives")
+    import json
+    import random
+    from ltcplay import flamelink as fl
+
+    def ref(seq, tc, mono, universe, values, key, hazers_on=None):
+        obj = {"v": fl.CONTRACT_VERSION, "k": key, "t": "flame",
+               "seq": int(seq), "tc": tc, "mono": float(mono),
+               "universe": int(universe),
+               "values": [int(v) for v in values]}
+        if hazers_on is not None:
+            obj["hazers_on"] = sorted(str(h) for h in hazers_on)
+        return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    r = random.Random(20261029)
+    bad = []
+    prev = bytes(512)
+    for i in range(1500):
+        # Runs of the same values (the cache), new ones, lists and bytes.
+        if i % 5 == 0:
+            prev = bytes(r.randrange(256) for _ in range(512))
+        vals = prev if i % 7 else bytearray(prev)
+        v = vals if i % 2 else list(vals)
+        hz = [None, [], ["Hazer 2", "Hazer 1"], {"a\"b", "\u00e9"}][i % 4]
+        tc = [None, "00:01:02:03"][i % 2]
+        key = "".join(chr(r.randrange(0x21, 0x7f))
+                      for _ in range(r.randrange(16, 40)))
+        a = (r.randrange(10 ** 12), tc, r.random() * 1e5,
+             r.randrange(1, 64000), v, key, hz)
+        if fl.encode_flame(*a) != ref(*a):
+            bad.append(a[:4])
+    check(not bad, f"every frame byte for byte the same: {bad[:2]}")
+    print("  ok")
+
+
+def test_flame_frame_timing_alert_and_systems_line():
+    section("flame link timing (2026-10-29): frames over 100 ms in the last "
+            "hour raise a display only 'timing' alert in plain words (again "
+            "only for new late frames), and the rack screen's Systems sheet "
+            "has a Flame timing line")
+    import tempfile
+    from ltcplay import alerts as AL
+    from ltcplay import flamelink as fl
+    from ltcplay import remote as RM
+    check("timing" in AL.KINDS and "timing" in AL.DISPLAY_ONLY and
+          AL.SEVERITY["timing"] == "warning",
+          "timing is a display only kind: shown and journaled, no booth "
+          "note, never holds a show")
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "frame_stale_ms": 500})
+    clk = [5000.0]
+    lk = fl.FlameLink(cfg, clock=lambda: clk[0])
+    rm = RM.Remote(None, None, folder=tempfile.mkdtemp(), log=lambda t: None)
+    lines = []
+    rm._journal = lambda *a, **k: lines.append(a)
+
+    def row():
+        got = [x for x in rm.subsystems({}) if x["name"] == "Flame timing"]
+        return got[0] if got else None
+    check(row() is None, "no flame link: no Flame timing line")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "no flame link: no alert")
+    rm.flame_link_get = lambda: lk
+    for _ in range(100):
+        clk[0] += 0.025
+        lk._timing_add(0.025, clk[0])
+    rm._frame_timing_work()
+    r = row()
+    check(not rm.alerts.open() and r and r["state"] == "ok" and
+          r["word"] == "on time, worst 25 ms this hour",
+          f"on time: no alert, the line says so: {r}")
+    clk[0] += 0.178
+    lk._timing_add(0.178, clk[0])
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    r = row()
+    check(len(al) == 1 and al[0].kind == "timing" and
+          al[0].text.startswith("Flame frames late: 1 in the last hour, "
+                                "worst 178 ms") and
+          "nothing was changed" in al[0].text and
+          "\u2013" not in al[0].text and "\u2014" not in al[0].text,
+          f"a frame 178 ms late: the alert, in plain words: "
+          f"{[a.text for a in al]}")
+    check(r and r["state"] == "warn" and
+          r["word"] == "1 frame(s) late in the last hour, worst 178 ms",
+          f"and the Systems line: {r}")
+    first = al[0].id
+    rm.alerts.clear(id=first, who="Andy", action="Acknowledge",
+                    screen="rack")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "acknowledged, and no new late frame: it "
+                                "stays cleared")
+    clk[0] += 0.120
+    lk._timing_add(0.120, clk[0])
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(len(al) == 1 and al[0].text.startswith(
+        "Flame frames late: 2 in the last hour, worst 178 ms"),
+          f"a new late frame raises it again: {[a.text for a in al]}")
+    print("  ok")
+
+
+def test_flame_serve_keeps_frames_on_time():
+    section("flame link timing (2026-10-29): `ltc serve` with a flame link "
+            "sets a 1 ms switch interval and sets the start up objects "
+            "aside from the garbage collector, says so, and never raises")
+    import types
+    F = _fi_mod()
+    calls = []
+    fsys = types.SimpleNamespace(
+        getswitchinterval=lambda: 0.005,
+        setswitchinterval=lambda v: calls.append(("switch", v)))
+    fgc = types.SimpleNamespace(
+        collect=lambda: calls.append(("collect",)),
+        freeze=lambda: calls.append(("freeze",)),
+        get_freeze_count=lambda: 123456)
+    line = F.keep_flame_frames_on_time(fsys, fgc)
+    check(calls == [("switch", 0.001), ("collect",), ("freeze",)],
+          f"switch interval 1 ms, one collection, then freeze: {calls}")
+    check("every 1 ms (was 5 ms)" in line and "123456 objects" in line
+          and "\u2013" not in line and "\u2014" not in line,
+          f"one plain line: {line}")
+
+    def boom(*a):
+        raise RuntimeError("no")
+    line = F.keep_flame_frames_on_time(
+        types.SimpleNamespace(getswitchinterval=boom, setswitchinterval=boom),
+        types.SimpleNamespace(collect=boom, freeze=boom,
+                              get_freeze_count=boom))
+    check("could not be set" in line and "could not be set aside" in line,
+          f"failures are said, never raised: {line}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "cli.py"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    i = src.find("keep_flame_frames_on_time()")
+    check(i > 0 and src.rfind("if _link is not None:", 0, i) > 0 and
+          src.find("httpd.serve_forever", i) > i,
+          "cli serve calls it with a flame link only, before it serves")
+    print("  ok")
 
 
 def test_flame_link_end_to_end_against_the_real_flamesafe():
@@ -60296,7 +61827,10 @@ def test_hazers_on_the_rack_screens():
               "/api/remote/hazer-level" in p and "hazerStep(" in p and
               "Same for all" in p,
               f"{name}: the row, its taps, Hazers off and the levels")
-        check("b.disabled = !look.armed && !mayArm;" in p and
+        check(("b.disabled = !look.armed && !mayArm;" in p or
+               ('const hzWhy = look.armed ? "" :' in p and
+                '!mayArm ? signWhy(s, "arm") :' in p and
+                "b.disabled = !!hzWhy;" in p)) and
               'mayRow(s, "arm")' in p,
               f"{name}: arming greyed for a role that may not arm, a "
               f"disarm never (reviewer B, 6)")
@@ -69453,7 +70987,15 @@ def test_flame_cues_refused_while_the_reader_is_mid_pass():
         try:
             cues.start()
             check(read_once.wait(10), "setup: the reader read the render")
-            check(cues("00:00:02:15") == [50] * 512,
+            # The flame channels are cut from it right after (2026-10-29,
+            # FlameCues._tables): zero until that is done too.
+            first = None
+            for _ in range(250):
+                first = cues("00:00:02:15")
+                if first:
+                    break
+                time.sleep(0.02)
+            check(first == [50] * 512,
                   "setup: the flames from the render in memory")
             r = os.stat(rig.render).st_mtime_ns
             os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
@@ -86269,8 +87811,8 @@ def test_ui2_page_makes_only_1_0_presses():
         print("  ok")
         return
     fns = "\n".join(_js_function(two, n) or "" for n in (
-        "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "goLook",
-        "nextStep", "pillLook", "alertItems"))
+        "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "signWhy",
+        "goLook", "nextStep", "pillLook", "alertItems"))
     # alertItems' words and the page's own state it reads.
     for c in ("ALERT_WHAT", "ALERT_DO"):
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
@@ -86364,7 +87906,7 @@ for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLE
   s = base(); f(s);
   const n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
   t(n.tone === "bad" && p.text === word && p.cls === "bad", "a live mode is the next step and the state: " + n.text + " / " + p.text);
-  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "sf"].includes(i.key)), "a live mode is pinned, never paged");
+  t(pinItems(s).length === 1 && !alertItems(s).some(i => ["wc", "lf", "pf"].includes(i.key)), "a live mode is pinned, never paged");
   t(n.text.split(/\s+/).length <= 8, "pinned words are 8 or fewer: " + n.text);
 }
 // The switch "Fire flames while scrubbing" is gone (2026-10-29): an old
@@ -86653,11 +88195,114 @@ async function fdPresses(){
   res.fail_next = q("next-t").textContent;
   return res;
 }
+// The calm screens (Jeff, 2026-10-29): what may not act is disabled, says
+// why and sends nothing when tapped; the emergency controls never dim; the
+// brand is there and never adds a header row.
+function sat(c, k){
+  const [r, g, b] = c;
+  return [(0.213 + 0.787 * k) * r + (0.715 - 0.715 * k) * g + (0.072 - 0.072 * k) * b,
+          (0.213 - 0.213 * k) * r + (0.715 + 0.285 * k) * g + (0.072 - 0.072 * k) * b,
+          (0.213 - 0.213 * k) * r + (0.715 - 0.715 * k) * g + (0.072 + 0.928 * k) * b];
+}
+function rgb(s){ const m = String(s).match(/rgba?\(([^)]+)\)/); return m ? m[1].split(",").map(Number) : [0, 0, 0, 0]; }
+function lum(c){ const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); }
+function filtOf(el){ for(let p = el; p; p = p.parentElement){ const f = getComputedStyle(p).filter; if(f && f !== "none") return {f:f, at:p}; } return null; }
+function inactSnap(){
+  const q = id => document.getElementById(id);
+  const s = {inactive:document.body.classList.contains("inactive"), next:q("next-t").textContent,
+    next_b:q("next-b").hidden ? "" : q("next-b").textContent, title:document.title,
+    brand:q("brand").style.visibility === "hidden" ? "" : (q("brand-show").hidden ? "logo" : q("brand-show").textContent),
+    note:q("ann-note").textContent, armall:q("armall-why").textContent,
+    pillf:filtOf(q("pill")) ? filtOf(q("pill")).f : "none",
+    pins:[...document.querySelectorAll("#pins .b")].map(b => ({k:b.dataset.pin, dis:b.disabled, t:b.textContent.trim()}))};
+  s.ann = [...q("ann-btns").querySelectorAll(".b"), q("ann-stop")].map(b => {
+    const f = b.querySelector(".fill");
+    return {id:b.dataset.ann || b.id, dis:b.disabled, fill:f ? getComputedStyle(f).display : "none", pe:getComputedStyle(b).pointerEvents};
+  });
+  s.hz = [...document.querySelectorAll("#hazers [data-hzb]")].map(b => ({dis:b.disabled, w:b.querySelector(".hw").textContent}));
+  s.safe = ["b-abort", "b-hold", "b-stop", "b-disall"].map(id => {
+    let op = 1; for(let p = q(id); p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
+    return {id:id, dis:q(id).disabled, filt:filtOf(q(id)) ? filtOf(q(id)).f : "none", op:op};
+  });
+  // Text under the calm tone keeps 4.5:1 (the filter applied to both).
+  s.lowc = [];
+  for(const el of document.querySelectorAll("body *")){
+    if(!shown(el) || ![...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim())) continue;
+    const fo = filtOf(el); if(!fo) continue;
+    const k = Number((fo.f.match(/saturate\(([\d.]+)\)/) || [0, 1])[1]);
+    let bg = null, bgEl = null;
+    for(let p = el; p; p = p.parentElement){ const c = rgb(getComputedStyle(p).backgroundColor); if(c.length < 4 || c[3] > 0.5){ bg = c; bgEl = p; break; } }
+    bg = bg || [7, 6, 5];
+    const fg = sat(rgb(getComputedStyle(el).color), k), b2 = bgEl && fo.at.contains(bgEl) ? sat(bg, k) : bg;
+    const x = lum(fg), y = lum(b2), cr = (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    if(cr < 4.5) s.lowc.push(el.textContent.trim().slice(0, 30) + " " + cr.toFixed(2));
+  }
+  // The brand never adds a header row: the header is as tall without it.
+  const hd = document.querySelector("header"), h1 = hd.getBoundingClientRect().height;
+  q("brand").style.display = "none"; const h0 = hd.getBoundingClientRect().height; q("brand").style.display = "";
+  s.hdr_same = Math.abs(h1 - h0) < 1; s.hdr = [Math.round(h0), Math.round(h1)];
+  s.xscroll = document.scrollingElement.scrollWidth - innerWidth;
+  return s;
+}
+async function tapDisabled(){
+  posts.length = 0;
+  const els = [...document.querySelectorAll("#ann-btns .b, #ann-stop, #m-snd, #hazers [data-hzb], #b-armall, #pins .b")].filter(b => b.disabled);
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
+  for(const b of els){
+    b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(120);
+    b.dispatchEvent(new PointerEvent("pointerup", o)); b.click(); await wait(80);
+  }
+  await wait(300);
+  return {n:els.length, posts:posts.map(p => p.u)};
+}
+async function inact(){
+  const out = {};
+  out.first = inactSnap(); out.first_taps = await tapDisabled();
+  if(/pf=1/.test(location.search)){
+    const pb = document.querySelector('#pins [data-pin="pf"]');
+    posts.length = 0;
+    if(pb && !pb.disabled){ pb.click(); await wait(400); }
+    out.pf_posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+    // Refused: kept in the alert slot until seen, as the other pins'.
+    window.__fail = /\/api\/remote\/hold/;
+    if(pb) pb.click();
+    await wait(500);
+    window.__fail = null;
+    out.pf_refused = document.getElementById("al-what").textContent;
+  }
+  if(/dayc=1/.test(location.search)){
+    // DAY when this screen cannot act: the steps go quiet, never Abort or
+    // the strip's Hold, Stop show and Disarms; Run off is DAY's own state.
+    document.querySelector('.tab[data-tab="day"]').click(); await wait(900);
+    const st0 = document.querySelector("#d-steps .st");
+    const fl = id => { const e = document.getElementById(id); return e && shown(e) ? (filtOf(e) ? filtOf(e).f : "none") : "hidden"; };
+    out.day = {noact:document.body.classList.contains("noact"), steps:document.querySelectorAll("#d-steps .st").length,
+      step_filter:st0 ? (filtOf(st0) ? filtOf(st0).f : "none") : "none",
+      emerg:Object.fromEntries(["b-abort", "m-hold", "m-stop", "m-disf", "m-disl"].map(id => [id, fl(id)])),
+      safe_ctl:[...document.querySelectorAll("#d-ctl .b.red, #d-ctl .b.safe, #d-ctl .b.redline")].filter(shown).map(e => filtOf(e) ? filtOf(e).f : "none")};
+    // Text under the quiet tone keeps 4.5:1.
+    out.day.lowc = inactSnap().lowc;
+    document.querySelector('.tab[data-tab="show"]').click(); await wait(400);
+  }
+  if(/ipad=1/.test(location.search)){
+    ME.local = false; await wait(700);
+    out.ipad = inactSnap(); out.ipad_taps = await tapDisabled();
+    ME.local = true; await wait(700);
+  }
+  if(/dead=1/.test(location.search)){
+    window.__dead = true; await wait(3500);
+    out.stale = inactSnap(); out.stale_taps = await tapDisabled();
+    window.__dead = false; await wait(2500);
+    out.back = inactSnap();
+  }
+  return out;
+}
 async function go(){
   if(!document.querySelector("#groups .tile") || document.getElementById("next-t").textContent === "Connecting to the show PC") return setTimeout(go, 100);
   await wait(600);
   const res = {layout:measure()};
   if(/presses=1/.test(location.search)) res.presses = await presses();
+  if(/inact=1/.test(location.search)) res.inact = await inact();
   if(/prhold=1/.test(location.search)) res.pr = await prPresses();
   if(/fd=1/.test(location.search)) res.fd = await fdPresses();
   if(/pfpin=1/.test(location.search)){
@@ -86785,6 +88430,325 @@ def _ui2_status_rigcheck():
 UI2_NO_SCROLL = ((1920, 1080), (1366, 768), (1280, 800), (1024, 768),
                  (820, 1180), (768, 1024))
 UI2_SPARE = {(1024, 768): 24, (768, 1024): 40}
+
+
+def _ui2_status_inactive(kind, hazers=True):
+    """Run off (operator on the show PC, screen arming off), signed out,
+    or a show running; three hazers disarmed. For the calm screens."""
+    st = _ui2_status_running()
+    st["hazers"] = {"available": True, "down": "", "agree": True,
+                    "show": "held", "levels_fault": "", "last_off": None,
+                    "hazers": [{"name": f"Hazer {i + 1}", "haze_slot": 1,
+                                "fan_slot": 2, "armed": False,
+                                "label": f"Hazer {i + 1} DISARMED",
+                                "state": "disarmed", "haze": 102,
+                                "fan": 153, "haze_pct": 40, "fan_pct": 60,
+                                "why": ""} for i in range(3)]}
+    if not hazers:
+        st.pop("hazers")
+    st["arming"] = dict(st.get("arming") or {}, enabled=False)
+    st["announce"]["route"] = {"ok": True, "kind": "show",
+                               "text": "the show audio"}
+    if kind not in ("running", "running out"):
+        st["schedule"].update({"state": "STANDBY", "running": None,
+                               "next": {"show": 5, "start": "19:50",
+                                        "in_s": 900}})
+        st["show"] = {"running": False, "timecode": None}
+        st["countdown"] = {"kind": "next", "label": "Next show", "s": 900,
+                           "running": True}
+        st["flames"]["groups"] = [{"name": n, "armed": "disarmed"} for n in
+                                  ("front row", "cat-walk", "wave flamer")]
+        st["laser_arm"]["lasers"][0]["armed"] = False
+    else:
+        # Three groups beside the lasers and the hazers, as the hazers'
+        # own drawing test has them.
+        st["flames"]["groups"] = st["flames"]["groups"][:3]
+    if kind.startswith("pf"):
+        st["programming_flames"] = {"available": True, "follows": True,
+                                    "on": True, "line": ""}
+        st["transport"] = {"programming": True}
+    if kind == "viewer":
+        # Signed in, but a role that may press nothing.
+        st["me"] = {"local": True, "user": "Guest", "role": "viewer",
+                    "view_only": False,
+                    "may": {k: False for k in ("show", "arm", "unlock",
+                                               "checklist", "show_files",
+                                               "settings", "users")}}
+    if kind in ("signed out", "playing", "pf out", "running out"):
+        st["me"] = {"local": True, "user": None, "role": None,
+                    "view_only": True,
+                    "may": {k: False for k in ("show", "arm", "unlock",
+                                               "checklist", "show_files",
+                                               "settings", "users")}}
+    if kind == "playing":
+        # One playing: its Stop is never gated on the show PC, signed out
+        # or not (users.REMOTE_ROUTES: announce-stop is "safety").
+        st["announce"]["playing"] = {"id": "delayed", "name": "Delayed",
+                                     "elapsed_s": 3, "length_s": 12,
+                                     "held_schedule": True}
+    return st
+
+
+def test_ui2_calm_screens_and_brand():
+    section("interface 2.0 when the show cannot act (Jeff, 2026-10-29): "
+            "signed out, Run off, no contact or off the show PC, every "
+            "control that cannot act is disabled, says why in 8 words or "
+            "fewer and sends nothing when tapped; the screen goes calm "
+            "(4.5:1 kept) and the top line says what is needed; Abort, "
+            "Hold, Stop show and Disarm flames never dim or disable; the "
+            "show's brand (1.0's logo and name) is in the header and the "
+            "top line, never adding a header row")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    # The brand as 1.0 shows it, the one GET 1.0 already makes.
+    check('<img id="brand-logo" src="/brand/logo_small.png" alt="Jeff '
+          'Holmes Presents"' in two and 'onerror="this.hidden=true' in two
+          and 'getJSON("/api/brand", 3000)' in two and
+          'document.title = SHOW_NAME ? SHOW_NAME + " remote" : "Show remote";'
+          in two and
+          "/api/brand" in one,
+          "2.0 shows 1.0's logo (its alt text, hidden if missing) and the "
+          "show's name from 1.0's /api/brand, the page title like 1.0's")
+    check('class="qbrand"' in two[two.find('<div id="qcard"'):],
+          "the quick card prints the brand")
+    for word in ("No contact", "Show PC only", "Sign in to use",
+                 "Cannot play now", "No sound output", "Sign in to arm",
+                 "Arming off here", "Sign in", "View only",
+                 "Your sign-in cannot arm", "Cannot arm"):
+        check(len(word.split()) <= 8 and ('"' + word + '"') in two,
+              f"2.0 says why in 8 words or fewer: {word!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    brand = {"/api/brand": {"show": "Fire and Ice"}}
+    day_routes = {"/api/remote/morning": _morning_view_pico(selected=()),
+                  "/api/remote/cleaning": {"available": True, "problem": "",
+                                           "state": "idle", "running": False,
+                                           "mine": False,
+                                           "armed": "disarmed",
+                                           "settings": {}}}
+    longb = {"/api/brand": {"show": "The Grand Winter Fire and Ice "
+                                    "Spectacle"}}
+    sizes = UI2_NO_SCROLL + ((390, 844),)
+    runs = [("Run off", "run off", ((1366, 768),),
+             "?inact=1&ipad=1&dead=1&tour=0", brand),
+            ("signed out", "signed out", ((1024, 768),),
+             "?inact=1&tour=0", brand),
+            ("signed out, one playing", "playing", ((1366, 768),),
+             "?inact=1&ipad=1&tour=0", brand),
+            ("a show running", "running", ((1366, 768),),
+             "?inact=1&tour=0", brand),
+            ("Programming flames playing", "pf", ((1366, 768),),
+             "?inact=1&pf=1&dead=1&tour=0", brand),
+            ("DAY signed out", "signed out", ((1366, 768),),
+             "?inact=1&dayc=1&tour=0", dict(brand, **day_routes)),
+            ("DAY with Run off", "run off", ((1366, 768),),
+             "?inact=1&dayc=1&tour=0", dict(brand, **day_routes)),
+            ("a show playing, signed out", "running out", ((1366, 768),),
+             "?inact=1&dead=1&tour=0", brand),
+            ("signed in, may press nothing", "viewer", ((1366, 768),),
+             "?inact=1&tour=0", brand),
+            ("Programming flames playing, signed out", "pf out",
+             ((1024, 768),), "?inact=1&pf=1&tour=0", brand),
+            ("a long show name", "signed out", sizes, "?inact=1&tour=0",
+             longb),
+            ("a long show name, running", "running", sizes,
+             "?inact=1&tour=0", longb)]
+    # The layout runs (every window) without the hazers: this fixture's
+    # three groups, lasers and hazers are 5 px over at 1366x768 in this
+    # browser on bench-build too; the hazers' own test draws their row.
+    layout = ("a long show name", "a long show name, running")
+    safe_ok = lambda sn: all(not x["dis"] and "saturate" not in x["filt"]
+                             and x["op"] == 1 for x in sn["safe"])
+    for what, kind, sz, frag, routes in runs:
+        got = _rack_screen_in_chromium(chrome, page,
+                                       _ui2_status_inactive(
+                                           kind, hazers=what not in layout),
+                                       sz,
+                                       measure_js=_UI2_MEASURE_JS,
+                                       frag=frag, routes=routes,
+                                       budget_ms=25000)
+        for (w, h), res in got.items():
+            where = f"2.0, {what}, {w}x{h}"
+            if not check(isinstance(res, dict) and "inact" in res,
+                         f"{where}: drawn and measured: {res!r}"[:900]):
+                continue
+            m, r = res["layout"], res["inact"]
+            a = r["first"]
+            check(not m["problems"], f"{where}: {m['problems'][:12]}")
+            if (w, h) in UI2_NO_SCROLL and what in layout:
+                check(m["main_excess"] <= 1 and m["doc_excess"] <= 1,
+                      f"{where}: no scroll: {m['main_excess']} "
+                      f"{m['doc_excess']}")
+            check(a["hdr_same"] and a["xscroll"] <= 0,
+                  f"{where}: the brand adds no header row and nothing "
+                  f"goes off the side: {a['hdr']} {a['xscroll']}")
+            check(not a["lowc"], f"{where}: the calm tone keeps 4.5:1: "
+                                 f"{a['lowc'][:8]}")
+            check(safe_ok(a), f"{where}: Abort, Hold, Stop show and "
+                              f"Disarm flames live and full colour: "
+                              f"{a['safe']}")
+            check(not r["first_taps"]["posts"],
+                  f"{where}: a disabled control sends nothing: "
+                  f"{r['first_taps']}")
+            check(all(x["fill"] == "none" and x["pe"] == "none"
+                      for x in a["ann"] if x["dis"]),
+                  f"{where}: a disabled control shows no press: {a['ann']}")
+            check(a["title"].startswith(routes["/api/brand"]["show"]) and
+                  a["title"].endswith(" remote"),
+                  f"{where}: the page title is the show's: {a['title']!r}")
+            if (w, h) == (1366, 768) and routes is brand:
+                check(a["brand"] == "Fire and Ice",
+                      f"{where}: the header names the show: "
+                      f"{a['brand']!r}")
+            if "day" in r:
+                d = r["day"]
+                emerg_ok = all(v in ("none", "hidden") or "saturate" not in v
+                               for v in d["emerg"].values()) and \
+                    d["emerg"]["b-abort"] != "hidden" and \
+                    all("saturate" not in v for v in d["safe_ctl"])
+                if kind == "signed out":
+                    check(d["noact"] and d["steps"] and
+                          "saturate" in d["step_filter"] and emerg_ok and
+                          not d["lowc"],
+                          f"{where}: DAY signed out: the steps go quiet "
+                          f"(4.5:1 kept), never Abort, Hold, Stop show or a "
+                          f"Disarm: {d}")
+                else:
+                    check(not d["noact"] and d["steps"] and
+                          "saturate" not in d["step_filter"] and emerg_ok,
+                          f"{where}: DAY with Run off (its normal state) is "
+                          f"not quietened: {d}")
+                continue
+            if kind == "running out":
+                check(not a["inactive"] and not r["stale"]["inactive"],
+                      f"{where}: a show playing is never calm, signed out "
+                      f"or not, nor once contact is lost (review of #175): "
+                      f"{a['inactive']} {r['stale']['inactive']} "
+                      f"{a['next']!r}")
+                continue
+            if kind == "viewer":
+                check(a["inactive"] and a["note"] == "View only" and
+                      a["armall"] == "Cannot arm" and
+                      all(x["w"] == "Your sign-in cannot arm" and x["dis"]
+                          for x in a["hz"]) and len(a["hz"]) == 3,
+                      f"{where}: signed in without the right, it says so "
+                      f"rather than Sign in: {a['note']!r} {a['armall']!r} "
+                      f"{a['hz']}")
+                continue
+            if a["inactive"]:
+                check("saturate" not in a["pillf"],
+                      f"{where}: the state pill keeps its full colour on a "
+                      f"calm screen: {a['pillf']}")
+            if kind.startswith("pf"):
+                pin = [x for x in a["pins"] if x["k"] == "pf"]
+                if "stale" in r:
+                    sl = r["stale"]
+                    sp = [x for x in sl["pins"] if x["k"] == "pf"]
+                    check(not sl["inactive"] and sp and not sp[0]["dis"] and
+                          "saturate" not in sl["pillf"] and safe_ok(sl),
+                          f"{where}: contact lost with flames live: never "
+                          f"calm, the pin's Stop live, the pill full colour "
+                          f"(review of #175): {sl['inactive']} {sl['pins']} "
+                          f"{sl['pillf']}")
+                # Hold is a safety press: never off, signed out included.
+                check(pin and not pin[0]["dis"] and pin[0]["t"] == "Stop"
+                      and a["next"] == "Flames can fire from Programming."
+                      and [u for u, _ in r["pf_posts"]] ==
+                      ["/api/remote/hold"] and not a["inactive"] and
+                      r["pf_refused"] ==
+                      "Programming NOT paused. Abort or Disarm flames." and
+                      not r["first_taps"]["posts"],
+                      f"{where}: Programming playback firing flames is "
+                      f"pinned in the top line, never calm; its Stop is "
+                      f"1.0's Hold, live for anyone: {a['pins']} "
+                      f"{a['next']!r} {r['pf_posts']} {a['inactive']}")
+                continue
+            if kind == "running":
+                check(not a["inactive"] and not a["next_b"] and
+                      not any(x["dis"] for x in a["ann"][:-1]) and
+                      a["note"] == "Plays over the show",
+                      f"{where}: a running show is not calm and its "
+                      f"announcements are live: {a}"[:900])
+                continue
+            check(a["inactive"], f"{where}: the screen is calm")
+            if routes is brand:
+                check(a["next_b"] == "Fire and Ice.",
+                      f"{where}: the top line carries the show's name: "
+                      f"{a['next_b']!r}")
+            if kind == "playing":
+                check(not a["ann"][-1]["dis"],
+                      f"{where}: Stop sound is never refused on the show "
+                      f"PC, signed out included: {a['ann']}")
+                ip = r["ipad"]
+                check(ip["ann"][-1]["dis"] and ip["note"] ==
+                      "Stop sound: Show PC only" and safe_ok(ip) and
+                      not r["ipad_taps"]["posts"],
+                      f"{where}: off the show PC Stop sound is disabled "
+                      f"(the engine refuses it there), says why and sends "
+                      f"nothing: {ip['ann']} {ip['note']!r} "
+                      f"{r['ipad_taps']}")
+            if kind == "signed out":
+                check(a["next"] == "Signed out: view only. Sign in to "
+                                   "control.",
+                      f"{where}: the top line says to sign in: "
+                      f"{a['next']!r}")
+                check(all(x["dis"] for x in a["ann"][:-1]) and
+                      a["note"] == "Sign in to use" and
+                      all(x["dis"] and x["w"] == "Sign in to arm"
+                          for x in a["hz"]) and
+                      (len(a["hz"]) == 3 or what in layout) and
+                      a["armall"] == "Sign in",
+                      f"{where}: announcements, hazer arming and Arm all "
+                      f"are disabled and say why: {a}"[:900])
+
+            if kind == "run off":
+                check(a["next"] == "Show not running. Press Run show.",
+                      f"{where}: the top line says to press Run: "
+                      f"{a['next']!r}")
+                # The engine plays an announcement with Run off (it holds
+                # the schedule), so on the show PC they stay live.
+                check(not any(x["dis"] for x in a["ann"][:-1]),
+                      f"{where}: on the show PC the announcements stay "
+                      f"live with Run off (the engine plays them): "
+                      f"{a['ann']}")
+                ip = r["ipad"]
+                check(all(x["dis"] for x in ip["ann"][:-1]) and
+                      ip["note"] == "Show PC only" and
+                      all(x["dis"] and x["w"] == "Arming off here"
+                          for x in ip["hz"]) and safe_ok(ip) and
+                      not r["ipad_taps"]["posts"] and
+                      r["ipad_taps"]["n"] >= 7,
+                      f"{where}: off the show PC the announcements, Stop "
+                      f"sound and hazer arming (screen arming off) are "
+                      f"disabled, say why and send nothing: {ip} "
+                      f"{r['ipad_taps']}"[:1200])
+                sl = r["stale"]
+                check(sl["inactive"] and sl["next"].startswith("No contact")
+                      and all(x["dis"] for x in sl["ann"][:-1]) and
+                      sl["note"] == "No contact" and
+                      all(x["dis"] and x["w"] == "No contact"
+                          for x in sl["hz"]) and safe_ok(sl) and
+                      not sl["lowc"] and not r["stale_taps"]["posts"],
+                      f"{where}: no contact, the screen is calm within a "
+                      f"poll, what needs the engine is disabled and says "
+                      f"No contact, Abort and the rest stay live: {sl} "
+                      f"{r['stale_taps']}"[:1200])
+                check(not r["back"]["inactive"] or
+                      r["back"]["next"] == "Show not running. Press Run "
+                                           "show.",
+                      f"{where}: contact back, the screen is as before: "
+                      f"{r['back']['next']!r}")
+    print("  ok")
 
 
 def test_ui2_show_tab_in_a_browser():
@@ -87875,6 +89839,8 @@ if __name__ == "__main__":
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,
         test_fire_ice_flame_link_from_flamesafe_config,
+        test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress,
+        test_fire_ice_flame_cut_guards,
         test_onlyone_named_lock_sees_a_copy_in_another_folder,
         test_onlyone_named_lock_is_machine_wide_or_says_so,
         test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,
@@ -87887,6 +89853,10 @@ if __name__ == "__main__":
         test_fire_ice_auto_start_off_and_start_now,
         test_fire_ice_start_rules_on_the_ordered_line,
         test_fire_ice_review_hand_mutations,
+        test_every_show_start_clears_the_pixels,
+        test_the_show_takes_over_the_pixels_on_its_first_frame,
+        test_hold_abort_stop_black_the_pixels_after_a_start,
+        test_closed_night_abort_and_stop_say_what_they_did,
         test_fire_ice_show_log_is_written_off_the_logging_threads,
         test_fire_ice_abort_and_hold_before_the_show_is_confirmed,
         test_fire_ice_show_end_burst_never_holds_up_the_flame_link,
@@ -87899,6 +89869,12 @@ if __name__ == "__main__":
         test_flame_link_fix_round_2,
         test_the_deck_arm_hold_fits_inside_the_post_abort_window,
         test_flame_link_sends_at_its_rate_on_one_socket,
+        test_flame_link_schedule_absolute_deadlines_no_burst,
+        test_flame_link_frame_timing_counts_and_journals,
+        test_flame_link_sender_not_held_by_other_threads,
+        test_flame_link_encode_is_byte_for_byte_the_same,
+        test_flame_frame_timing_alert_and_systems_line,
+        test_flame_serve_keeps_frames_on_time,
         test_flame_link_end_to_end_against_the_real_flamesafe,
         test_the_gpl_path_never_loads_the_flame_link,
         test_remote_no_sign_in_over_the_network,
@@ -88146,6 +90122,7 @@ if __name__ == "__main__":
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,
         test_ui2_day_tab_in_a_browser,
+        test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
     ]
     _stopped = _run_tests(TESTS)

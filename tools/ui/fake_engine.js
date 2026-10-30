@@ -77,6 +77,15 @@ function baseStatus(){
 const SCENARIOS = {
   idle_operator: s => s,
   signed_out: s => { s.me = me(null, null); },
+  // The brand at its worst: a 40 character show name (admin, so the
+  // header has its most tabs; signed out, so the top line carries it), and
+  // a missing logo.
+  long_name: s => { s.me = me("Jeff", "admin"); },
+  long_name_out: s => { s.me = me(null, null); },
+  no_logo: s => s,
+  // An operator on an iPad (not the show PC), screen arming off: the
+  // announcements and a hazer's arm are refused there, so they say why.
+  ipad: s => { s.me.local = false; s.me.device = "iPad"; s.arming = Object.assign({}, s.arming || {}, {enabled: false}); },
   admin: s => { s.me = me("Jeff", "admin"); },
   show_pending: s => { s.show = Object.assign({}, s.show, {running: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
     s.flames.groups.forEach(g => g.armed = "armed"); s.subsystems[3].word = "armed"; },
@@ -182,7 +191,7 @@ function routesFor(name, st){
   r["/api/timelines"] = {folder: "C:\\Users\\show\\Documents\\LTC Shows", timelines: [{file: "fireice_timeline.json"}, {file: "fireice_rehearsal.json"}]};
   r["/api/remote/network"] = {address: "10.20.0.5", choices: ["10.20.0.5", "192.168.1.20"]};
   r["/api/schedule/operator"] = {current: "Dallen", operators: ["Andy", "Dallen", "Dave", "Jared", "Jeff"]};
-  r["/api/brand"] = {};
+  r["/api/brand"] = /^long_name/.test(name) ? {show: "The Grand Winter Fire and Ice Spectacle"} : {show: "Fire and Ice"};
   return r;
 }
 
@@ -325,6 +334,7 @@ class FakeEngine {
       if(p === "/remote-logic.js") return route.fulfill({status: 200, contentType: "application/javascript; charset=utf-8", body: this.logic});
       if(p === "/api/remote/ui-default") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({default: this.uiDefault})});
       if(p.startsWith("/brand/") && process.env.NOFONT) return route.fulfill({status: 404, body: "{}"});
+      if(p.startsWith("/brand/logo") && this.name === "no_logo") return route.fulfill({status: 404, body: "{}"});
       if(p.startsWith("/brand/")){
         const f = path.join(REPO, "ltcplay", "web", "brand", path.basename(p));
         if(fs.existsSync(f)) return route.fulfill({status: 200, body: fs.readFileSync(f),

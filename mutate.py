@@ -2561,8 +2561,8 @@ MUTATIONS = [
 
  ("hazers: the flame frame never says which hazers are armed",
   "ltcplay/flamelink.py",
-  "        obj[\"hazers_on\"] = sorted(str(h) for h in hazers_on)",
-  "        obj[\"hazers_on\"] = []"),
+  "        sorted(str(h) for h in hazers_on), separators=(\",\", \":\"))",
+  "        [], separators=(\",\", \":\"))"),
 
  ("hazers: the flame link's Abort leaves the hazers armed",
   "ltcplay/flamelink.py",
@@ -2716,8 +2716,89 @@ MUTATIONS = [
 
  ("ui 2.0: arming a hazer is not greyed for a role that may not arm",
   "ltcplay/web/remote2.html",
-  "    b.disabled = !look.armed && !mayArm;",
-  "    b.disabled = false;"),
+  " !mayArm ? signWhy(s, \"arm\") :",
+  " false ? signWhy(s, \"arm\") :"),
+
+ ("ui 2.0: announcements play from off the show PC",
+  "ltcplay/web/remote2.html",
+  "  if(!local) return \"Show PC only\";\n",
+  ""),
+
+ ("ui 2.0: announcements stay live with no contact",
+  "ltcplay/web/remote2.html",
+  "  if(!st || isStaleNow) return \"No contact\";\n",
+  ""),
+
+ ("ui 2.0: Stop sound is live off the show PC",
+  "ltcplay/web/remote2.html",
+  "function annStopWhy(st, local){ return local ? \"\" : \"Show PC only\"; }",
+  "function annStopWhy(st, local){ return \"\"; }"),
+
+ ("ui 2.0: a disabled control still takes a press",
+  "ltcplay/web/remote2.html",
+  "color:#B3A68E;pointer-events:none}",
+  "color:#B3A68E}"),
+
+ ("ui 2.0: the screen never goes calm",
+  "ltcplay/web/remote2.html",
+  "  document.body.classList.toggle(\"inactive\", calm);",
+  "  document.body.classList.toggle(\"inactive\", false);"),
+
+ ("ui2 day: the quiet DAY tone dims a Stop or a Disarm",
+  "ltcplay/web/remote2.html",
+  "body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mode=\"disarm\"]){filter:saturate(.3)}",
+  "body.noact #d-ctl .b, body.noact #m-disf, body.noact #m-hold{filter:saturate(.3)}"),
+
+ ("ui2 day: DAY goes quiet with Run off",
+  "ltcplay/web/remote2.html",
+  "  document.body.classList.toggle(\"noact\", calm && (!ST || isSt || !!(ST.me && ST.me.view_only)));",
+  "  document.body.classList.toggle(\"noact\", calm);"),
+
+ ("ui 2.0: the calm tone dims Hold and Disarm flames",
+  "ltcplay/web/remote2.html",
+  "body.inactive #lz-b[data-mode=\"arm\"]{filter:saturate(.3)}",
+  "body.inactive #lz-b[data-mode=\"arm\"], body.inactive #b-hold, body.inactive #b-disall{filter:saturate(.3)}"),
+
+ ("ui 2.0: a live hazard reads calm",
+  "ltcplay/web/remote2.html",
+  "  if(st && pinItems(st).length) return false;\n",
+  ""),
+
+ ("ui 2.0: a live hazard reads calm once contact is lost",
+  "ltcplay/web/remote2.html",
+  "  if(st && pinItems(st).length) return false;\n",
+  "  if(st && isStaleNow) return true;\n  if(st && pinItems(st).length) return false;\n"),
+
+ ("ui 2.0: a show playing reads calm when signed out",
+  "ltcplay/web/remote2.html",
+  "  if(st && isLive(st)) return false;\n",
+  ""),
+
+ ("ui 2.0: the calm tone mutes the state pill",
+  "ltcplay/web/remote2.html",
+  "body.inactive .state > div:not(#pill), body.inactive #b-go,",
+  "body.inactive .state, body.inactive #b-go,"),
+
+ ("ui 2.0: a signed-in viewer is told to sign in",
+  "ltcplay/web/remote2.html",
+  "  if(me.user) return perm === \"arm\" ? (short ? \"Cannot arm\" : \"Your sign-in cannot arm\") : \"View only\";\n",
+  ""),
+
+
+ ("ui 2.0: the brand can add a header row",
+  "ltcplay/web/remote2.html",
+  "#brand{flex:1 1 0;",
+  "#brand{flex:1 1 auto;"),
+
+ ("ui 2.0: the page title is not the show's",
+  "ltcplay/web/remote2.html",
+  "    document.title = SHOW_NAME ? SHOW_NAME + \" remote\" : \"Show remote\";\n",
+  ""),
+
+ ("ui 2.0: arming a hazer from an iPad is live while arming from screens is off",
+  "ltcplay/web/remote2.html",
+  "      !(ME && ME.local) && !(s.arming && s.arming.enabled) ? \"Arming off here\" : \"\";",
+  "      false ? \"Arming off here\" : \"\";"),
 
  ("ui: a hazer on Hold reads plain ARMED",
   "ltcplay/web/remote.html",
@@ -7087,8 +7168,150 @@ def build():
 
  ("fix1 H13: a late sender bursts to catch up",
   "ltcplay/flamelink.py",
-  "                        next_at = now + period",
+  "    return nxt + math.ceil((now + gap - nxt) / period) * period",
+  "    return nxt"),
+
+ # -- flame frame timing (2026-10-29, Jeff's Pico: frames 78 to 178 ms late)
+ ("flame timing: the deadline drifts with every late wake",
+  "ltcplay/flamelink.py",
+  "    nxt = next_at + period",
+  "    nxt = now + period"),
+
+ ("flame timing: a late wake squeezes the next frame in after it",
+  "ltcplay/flamelink.py",
+  "    if nxt - now >= gap:",
+  "    if nxt - now >= 0:"),
+
+ ("flame timing: an interval over a limit is not counted over it",
+  "ltcplay/flamelink.py",
+  "                    if ms > lim:",
+  "                    if ms > lim + 100:"),
+
+ ("flame timing: the sender counts no interval",
+  "ltcplay/flamelink.py",
+  "                        self._timing_add(start - last_start, start)",
   "                        pass"),
+
+ ("flame timing: the show window never closes",
+  "ltcplay/flamelink.py",
+  "            elif show is not None and self._frame_tc is None:",
+  "            elif False:"),
+
+ ("flame timing: a late frame is not kept for the last hour",
+  "ltcplay/flamelink.py",
+  "                self._timing_late.append((now, gap * 1000.0))",
+  "                pass"),
+
+ ("flame timing: a finished show or hour is never journaled",
+  "ltcplay/flamelink.py",
+  "            while self._timing_done:",
+  "            while False:"),
+
+ ("flame timing: shows are not added up for the soak",
+  "ltcplay/flamelink.py",
+  "                self._timing_shows.add(gap)",
+  "                pass"),
+
+ ("flame timing: the values' text of another frame is sent",
+  "ltcplay/flamelink.py",
+  "        if last[0] == b:",
+  "        if last[0] is not None:"),
+
+ ("flame timing: no alert for frames late in the last hour",
+  "ltcplay/remote.py",
+  "            if n > self._timing_said:",
+  "            if False:"),
+
+ ("flame timing: the timing alert holds the show and sounds the booth",
+  "ltcplay/alerts.py",
+  'DISPLAY_ONLY = DISPLAY_ONLY | {"timing"}',
+  'DISPLAY_ONLY = DISPLAY_ONLY'),
+
+ ("flame timing: serve keeps the 5 ms switch interval",
+  "ltcplay/fire_ice.py",
+  "        sys_mod.setswitchinterval(FLAME_SWITCH_INTERVAL_S)",
+  "        pass"),
+
+ ("flame timing: serve never sets the start up objects aside",
+  "ltcplay/fire_ice.py",
+  "        gc_mod.freeze()",
+  "        pass"),
+
+ ("flame cues: the sender decompresses the render again",
+  "ltcplay/fire_ice.py",
+  "            if self._bg:\n                # Memory only on the sender",
+  "            if False:\n                # Memory only on the sender"),
+
+ ("flame cues: a cut for another span is used",
+  "ltcplay/fire_ice.py",
+  "                if cut is not None and cut.f is f and cut.span == span:",
+  "                if cut is not None and cut.f is f:"),
+
+ ("flame cues: a cut of another FSEQ of the render is used",
+  "ltcplay/fire_ice.py",
+  "                if cut is not None and cut.f is f and cut.span == span:",
+  "                if cut is not None and cut.span == span:"),
+
+ ("flame cues: a cut of bytes with another frame count is made",
+  "ltcplay/fire_ice.py",
+  "        if g.frame_count != f.frame_count or \\\n"
+  "                g.channel_count != f.channel_count:\n            g.close()",
+  "        if False:\n            g.close()"),
+
+ ("flame cues: a render is cut from another render's bytes",
+  "ltcplay/fire_ice.py",
+  "                if mine is None or mine[0] is not got[0]:",
+  "                if mine is None:"),
+
+ ("flame cues: the renders are published before their cuts",
+  "ltcplay/fire_ice.py",
+  "        self._cuts = cuts\n        self._by_path = by",
+  "        self._by_path = by\n        self._cuts = cuts"),
+
+ ("flame cues: a block that could not be cut is tried again",
+  "ltcplay/fire_ice.py",
+  "            if b in self.blocks or b in self.errors:",
+  "            if b in self.blocks:"),
+
+ ("flame cues: a block that could not be cut is a silent zero",
+  "ltcplay/fire_ice.py",
+  "        if e is not None:\n            raise e",
+  "        if False:\n            raise e"),
+
+ ("flame cues: a block not cut yet is a silent zero",
+  "ltcplay/fire_ice.py",
+  "                    return self._zero(CUES_LOADING, fault=True)",
+  "                    return self._zero(CUES_LOADING, fault=False)"),
+
+ ("flame cues: nothing is cut ahead of the show timecode",
+  "ltcplay/fire_ice.py",
+  "            cut.ensure(idx, idx + cut.frames(CUT_AHEAD_S))",
+  "            pass"),
+
+ ("flame timing: flamesafe's fire_hold_ms is not read",
+  "ltcplay/flamelink.py",
+  "                            and 1 <= hold < cfg.frame_stale_ms else None)",
+  "                            and False else None)"),
+
+ ("flame timing: no interval is counted over fire_hold_ms",
+  "ltcplay/flamelink.py",
+  "            if ms > self.limit_ms:\n                self.over_lim += 1",
+  "            if ms > self.limit_ms:\n                self.over_lim += 0"),
+
+ ("flame cues: the cut-ahead table is one channel off",
+  "ltcplay/fire_ice.py",
+  "                row[lo - first:hi - first] = data[src + lo - dst:\n"
+  "                                                  src + hi - dst]",
+  "                row[lo - first:hi - first] = data[src + lo - dst + 1:\n"
+  "                                                  src + hi - dst + 1]"),
+
+ ("flame timing: the sender's clock read takes the show's lock",
+  "ltcplay/fire_ice.py",
+  "        (PR #43 review, item 9: it used to take this object's lock).\"\"\"\n"
+  "        s = getattr(self.control, \"session\", None)\n",
+  "        (PR #43 review, item 9: it used to take this object's lock).\"\"\"\n"
+  "        with self._lock:\n"
+  "            s = getattr(self.control, \"session\", None)\n"),
 
  ("fix1: ltcplay takes a timecode with a trailing newline",
   "ltcplay/flamelink.py",
@@ -8319,8 +8542,8 @@ def build():
 
  ('show-assembly: flame cues read while nothing is running',
   'ltcplay/fire_ice.py',
-  '        if s is None or not getattr(s, "running", False):\n            return self._zero("")',
-  '        if s is None:\n            return self._zero("")'),
+  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._zero("")',
+  '        if s is None:\n            self._look_since = None\n            return self._zero("")'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
@@ -8361,8 +8584,8 @@ def build():
  # -- show-assembly fix round 1 (PR #43 independent review, 2026-10-03).
  ('fix round 1: flame cues follow Blackout, Preshow or a look',
   'ltcplay/fire_ice.py',
-  '        if look is not None:\n            return self._zero(',
-  '        if False:\n            return self._zero('),
+  '        look = getattr(p, "override", None)\n        if look is None:\n            self._look_since = None\n',
+  '        look = None\n        if look is None:\n            self._look_since = None\n'),
 
  ('fix round 1: flame cues follow a GO free run',
   'ltcplay/fire_ice.py',
@@ -8442,8 +8665,8 @@ def build():
 
  ('fix round 1: music_started records nothing',
   'ltcplay/conductor.py',
-  '            self._set("music", MUSIC_PLAYING)\n\n    def intermission',
-  '            pass\n\n    def intermission'),
+  '            self._set("music", MUSIC_PLAYING)\n\n    def pixels_to_show',
+  '            pass\n\n    def pixels_to_show'),
 
  ('fix round 1: an Abort during the start leaves the music playing',
   'ltcplay/fire_ice.py',
@@ -8560,7 +8783,7 @@ def build():
 
  ('review H12: closing reports done without zeroing flames, blanking lasers or blacking the pixels',
   'ltcplay/fire_ice.py',
-  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self._close()\n            return',
+  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self._close(after_show=was in ("SHOW", "PAUSED"))\n            return',
   '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self.svc.report("CLOSING_DONE", "x")\n            return'),
 
 
@@ -8684,10 +8907,151 @@ def build():
   '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
   '        text = " ".join(le.text for le in out.log if le.text)'),
 
+ ("pixels: a show start never takes the closing black off (Jeff's dark "
+  "shows, 2026-10-29)",
+  'ltcplay/fire_ice.py',
+  '                hold = getattr(p, "hold_until_show", None)\n',
+  '                hold = (lambda: p.override)\n'),
+
+ ("pixels: a show start leaves the conductor's black on record for the "
+  "confirmation again",
+  'ltcplay/fire_ice.py',
+  '            self._pix_ours, self._pix_prev = False, None\n            look = p.override\n',
+  '            look = p.override\n'),
+
+ ("pixels: a show start puts the idle look to black until the show is "
+  "confirmed (the blink)",
+  'ltcplay/fire_ice.py',
+  '                if hold is not None:\n                    held = hold()\n',
+  '                if hold is not None:\n                    p.override = "blackout"\n                    held = hold()\n'),
+
+ ("pixels: the held look never hands over to the show",
+  'ltcplay/player.py',
+  '        if hand is not None:\n            self._take_handoff(hand, epoch, fed, now)\n',
+  '        if False:\n            self._take_handoff(hand, epoch, fed, now)\n'),
+
+ ("pixels: a clock left from an earlier cue counts as the show's first frame",
+  'ltcplay/player.py',
+  '            if epoch is None or fed == armed:\n',
+  '            if epoch is None:\n'),
+
+ ("pixels: the hand-over lifts a look set after the start",
+  'ltcplay/player.py',
+  '            if self.override != look:\n                # A look set since the start: theirs stands.\n',
+  '            if False:\n'),
+
+ ("pixels: a Hold before the first show frame restores the start's held "
+  "look on Resume",
+  'ltcplay/fire_ice.py',
+  '                self._pix_prev = None if waiting else p.override\n',
+  '                self._pix_prev = p.override\n'),
+
+ ("pixels: a Start now show that ends on its own closes on black again",
+  'ltcplay/fire_ice.py',
+  '            extra = self._operator_show_ended() if after_show else None\n',
+  '            extra = None\n'),
+
+ ("pixels: Programming Play leaves the closing black for show_starting",
+  'ltcplay/playhead.py',
+  '        if clear is not None:\n            to_show = getattr(cond, "pixels_to_show", None)\n',
+  '        if False:\n            to_show = getattr(cond, "pixels_to_show", None)\n'),
+
+ ("pixels: a look over a playing show is a quiet zero, not a CUES FAULT",
+  'ltcplay/fire_ice.py',
+  '            return self._zero(LOOK_IN_SHOW.format(\n                look=LOOK_BUTTONS.get(look, look)), fault=True)\n',
+  '            return self._zero(plain)\n'),
+
+ ("pixels: the journal never says when the first show frame went out",
+  'ltcplay/fire_ice.py',
+  '        self._first_frame(cue)\n        clk = cue["clock"]\n',
+  '        clk = cue["clock"]\n'),
+
+ ("pixels: a show start leaves the conductor's pixels record on the Stop's "
+  "black, so a Hold, Abort or Stop before the confirmation sends none",
+  'ltcplay/conductor.py',
+  '            self._set("pixels", UNKNOWN)\n            return clear()\n',
+  '            return clear()\n'),
+
+ ("pixels: a show start hands the pixels to the show under a latched Abort",
+  'ltcplay/conductor.py',
+  '            if self._latched:\n                return None\n            self._set("pixels", UNKNOWN)\n',
+  '            self._set("pixels", UNKNOWN)\n'),
+
+ ("pixels: a start refused by an Abort just before the hand-over plays "
+  "the music anyway",
+  'ltcplay/fire_ice.py',
+  '        elif to_show(lambda: self.show.pixels_for_show(what)) is None:\n            return None\n',
+  '        else:\n            to_show(lambda: self.show.pixels_for_show(what))\n'),
+
+ ("pixels: an Abort while the cue was starting leaves the hand-over armed",
+  'ltcplay/fire_ice.py',
+  '            self.show.music_halt(C.ABORT_FADE_S)\n            self._start_undone()\n',
+  '            self.show.music_halt(C.ABORT_FADE_S)\n'),
+
+ ("pixels: a start the clock refused leaves its hand-over armed",
+  'ltcplay/fire_ice.py',
+  '                why=_full_stop(e))\n            self._start_undone()\n',
+  '                why=_full_stop(e))\n'),
+
+ ("pixels: the show clock stopping leaves a waiting hand-over",
+  'ltcplay/player.py',
+  '            self.show_handoff = None\n        self._event("clock", "the show clock stopped',
+  '        self._event("clock", "the show clock stopped'),
+
+ ("pixels: a look the Programming screen keeps leaves a stale hand-over "
+  "waiting",
+  'ltcplay/fire_ice.py',
+  '                if cancel is not None:\n                    cancel()\n                if p.override != keep:\n',
+  '                if p.override != keep:\n'),
+
+ ("pixels: Programming Play refused at the show start leaves the show on "
+  "the pixels",
+  'ltcplay/playhead.py',
+  '                        fade(0)\n',
+  '                        pass\n'),
+
+ ("pixels: a Programming Play the clock refused leaves its hand-over "
+  "waiting",
+  'ltcplay/playhead.py',
+  '            if cancel is not None:\n                cancel()\n            raise\n',
+  '            raise\n'),
+
+ ("pixels: a look between shows counts toward the next show's CUES FAULT",
+  'ltcplay/fire_ice.py',
+  "            # toward the next one's CUES FAULT.\n            self._look_since = None\n",
+  "            # toward the next one's CUES FAULT.\n"),
+
+ ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
+  "screens do not have",
+  'ltcplay/fire_ice.py',
+  '                "Programming: Show file card, Stop, then Run. "\n',
+  '                "Programming screen: press Follow timecode. "\n'),
+
+ ("pixels: a look set through the engine during a start's hand-over is "
+  "lifted by the first show frame",
+  'ltcplay/web.py',
+  '        if cancel is not None:\n            cancel()\n        s.player.override = None if what',
+  '        s.player.override = None if what'),
+
+ ("pixels: an older show's end cancels a newer start's hand-over",
+  'ltcplay/fire_ice.py',
+  '                cancel(hand)\n',
+  '                cancel()\n'),
+
+ ("pixels: cancel_show_handoff ends whatever hand-over is waiting",
+  'ltcplay/player.py',
+  '            if hand is not None and self.show_handoff is not hand:\n                return False\n',
+  ''),
+
+ ("pixels: a show that ended unconfirmed leaves its start's hand-over armed",
+  'ltcplay/fire_ice.py',
+  '            self._handoff_over(cue)\n            if not cue["confirmed"]:\n',
+  '            if not cue["confirmed"]:\n'),
+
  ('fix round 2: a look chosen before the show stays on',
   'ltcplay/fire_ice.py',
-  '        self._clear_look(s, n)\n',
-  ''),
+  '        pix = self._clear_look(s, n)\n',
+  '        pix = None\n'),
 
  ("R2-H1 the page's Blackout/Preshow (override) is not refused during a live show",
   'ltcplay/web.py',
@@ -16374,8 +16738,8 @@ def build():
   "                pass"),
 
  ("a refused show start leaves the music playing", "ltcplay/playhead.py",
-  "                s.clock_halt()\n                self._refused(r, \"Play from\")",
-  "                self._refused(r, \"Play from\")"),
+  "                s.clock_halt()\n                # The Abort's black stands",
+  "                # The Abort's black stands"),
 
  ("Pause freezes only the clock, not the show's Hold", "ltcplay/playhead.py",
   '            self._refused(cond.hold(who, screen), "Pause")',

@@ -37,6 +37,8 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["idle_operator", "day", "step_purge"], ["day_firing", "day", "step_purge"], ["idle_operator", "day", "step_lasers"], ["idle_operator", "day", "step_hazers"],
   ["day_locked", "day", "step_locks"], ["day_shut", "day"], ["day_shut_jeff", "day", "step_shutlist"], ["day_shut", "day", "step_clean"],
   ["day_clean_paused", "day", "step_clean"], ["day_shut", "day", "step_locks-shut"], ["day_shut", "day", "step_signout"], ["idle_operator", "day", "shut"], ["idle_operator", "schedule"], ["admin", "settings"], ["signed_out", "show", "signin"],
+  ["ipad", "show"], ["long_name", "show"], ["long_name_out", "show"], ["no_logo", "show"], ["long_name", "day"],
+  ["stale", "day"], ["signed_out", "day", "step_purge"], ["stale", "day", "step_purge"], ["day_shut", "day", "step_clean"],
 ];
 const CASES_1 = [
   ["idle_operator", "show"], ["signed_out", "show"], ["show_pending", "show"], ["running", "show"],
@@ -211,7 +213,8 @@ const MEASURE = () => {
     }
     const fs = parseFloat(cs.fontSize);
     const minFs = onShow && !e.closest("#sheet") ? 20 : 16;
-    if(fs < minFs) issue("small_font", e, `${fs}px (min ${minFs})`, {own: own.slice(0, 120)});
+    // The brand's kicker is decoration (its words are the logo's alt text).
+    if(fs < minFs && !e.closest("[data-brand]")) issue("small_font", e, `${fs}px (min ${minFs})`, {own: own.slice(0, 120)});
     const fg = (cs.color.match(/rgba?\(([^)]+)\)/) || [0, "0,0,0"])[1].split(",").map(Number);
     const alpha = fg.length > 3 ? fg[3] : 1;
     const op = Number(cs.opacity);
