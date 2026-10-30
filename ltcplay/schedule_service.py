@@ -1167,6 +1167,12 @@ class Service:
                    "on.")
         elif not plan.starts:
             why = plan.why
+        elif sch._utc(plan.starts[-1]) > sch._utc(now):
+            # Review of PR #180: not "gone by" when the later times were
+            # skipped, taken off tonight's list or missed.
+            why = (f"the shows on the schedule for {m.date} still to come "
+                   f"(the last at {sch.clock(plan.starts[-1])}) were "
+                   f"skipped, taken off tonight's list or missed tonight.")
         else:
             why = (f"every show on the schedule for {m.date} has already "
                    f"gone by (the last was at "

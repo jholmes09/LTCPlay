@@ -18989,6 +18989,11 @@ def build():
   "                sl = replace(sl, start=was.start, planned=was.planned)",
   "                sl = replace(sl, planned=was.planned)"),
 
+ ("review180: shows taken off tonight are said to have gone by",
+  "ltcplay/schedule_service.py",
+  "        elif sch._utc(plan.starts[-1]) > sch._utc(now):",
+  "        elif False:"),
+
  ("review180: the answer to a save on Hold does not say the Hold stands",
   "ltcplay/schedule_service.py",
   "            text += \" The schedule is on Hold: nothing starts until Resume.\"\n",

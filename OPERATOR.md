@@ -862,10 +862,13 @@ until the engine was restarted. Now:
   keep their number and status, an extra show (Start now) keeps its
   number, and a show still to come at a time the old list also had keeps
   its number. A new time gets the lowest number no other show tonight has.
-  A show taken off tonight's list or skipped stays skipped. Tonight's
-  delays and moves of shows still to come, and shows added tonight, are
-  dropped, and the answer to the save says each one ("This save undid
-  tonight's changes: ...").
+  A show taken off tonight's list or skipped stays skipped. A Delay next,
+  Delay the rest or move of a show still to come is kept as long as that
+  show's own time is still in the new schedule, so a delayed show is never
+  put back at a time that has already gone by. A move of a show whose time
+  is no longer in the schedule, and shows added tonight, are dropped, and
+  the answer to the save says each one ("This save undid tonight's
+  changes: ...").
 - **The answer says what tonight now holds.** For example "tonight now has
   4 shows still to come, next show 4 at 22:35", or "Saved, but there are
   no more shows tonight:" and the reason (every show has gone by, the
@@ -896,7 +899,9 @@ until the engine was restarted. Now:
 - **During a show the save is refused** on the Programming screen. If a
   schedule is loaded while a show runs or while the night is closing, the
   show and its status are left alone and tonight follows the file once
-  that is over; the journal says so.
+  that is over; the journal says so. If that show was the last one on the
+  old list, the night closes after it as usual (fade, black), and then
+  opens again in STANDBY, dark, for the new later show.
 - **A hand edit of the file is not watched.** Only a save from the
   Programming screen is followed at once. A file changed on disk by hand
   is followed at the next engine restart.
@@ -909,8 +914,9 @@ and LTC Player never presses it for you (no show starts unattended). While
 Run is off and a show is still to come, the rack screen says so in red:
 "Run is off: the 22:50 show (show 5) will NOT start. Press Run." On a Hold
 it says "Press Run, then Resume.", and after an Abort nobody has Reset it
-says Reset first ("Press Reset, then Run."). During a Programming Run (Run reads as pressed, but the
-schedule starts nothing over a rehearsal) it says "A Programming Run is in
+says Reset first ("Press Reset, then Run."). During a Programming Run
+(Run reads as pressed, but the schedule starts nothing over a rehearsal)
+it says "A Programming Run is in
 force: the 22:50 show (show 5) will NOT start. Press Stop, choose Show,
 then Run." It is a fault banner on 1.0's show screen and Schedule screen,
 an alert on 2.0's show screen, and part of the answer to a schedule save.

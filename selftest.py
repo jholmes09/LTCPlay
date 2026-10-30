@@ -13631,6 +13631,23 @@ def test_schedule_save_keeps_tonights_delays_when_times_unchanged():
     _no_dashes(words, "undone answer")
     svc.stop()
 
+    # Every show still to come taken off tonight's list: the answer does not
+    # say they have gone by (review of PR #180).
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule(last_end="18:30"))
+    svc.start(thread=False)
+    svc._apply(_op(S, S.EDIT_REMOVE, show=1))
+    svc._apply(_op(S, S.EDIT_REMOVE, show=2))
+    SV.save_rule(svc.path, rule(last_end="18:30", fri="19:00"))
+    svc.reload()
+    words = svc.tonight_words()
+    check("no more shows tonight" in words and "gone by" not in words and
+          "skipped, taken off tonight's list or missed" in words,
+          f"shows taken off are not said to have gone by: {words!r}")
+    _no_dashes(words, "taken off answer")
+    svc.stop()
+
     # The restart path: Delay the rest, then the file changed only for
     # Friday while LTC Player was down.
     work = tempfile.mkdtemp()
