@@ -62467,8 +62467,9 @@ def test_pump_review_fixes():
               f"the night closing ends it: {why}")
         R.feed()
         st, _h, out = tap(True)
-        check(st == 409 and "night is closing" in out["error"],
-              f"and refuses ON while it closes: {out}")
+        check(st == 409 and "night is closing" in out["error"] and
+              "was not turned on" in out["error"] and pm.run is None,
+              f"and refuses ON while it closes, before it starts: {out}")
         R.night[0] = "SHOW"
         off()
         tap(True)
