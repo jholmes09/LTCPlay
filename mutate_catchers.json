@@ -875,6 +875,7 @@
 "fireball charge: a charge counts while the group is not armed": "test_fireball_charge_state",
 "fireball charge: a charge on during the shot is forgotten": "test_fireball_charge_state",
 "fireball charge: a charge with the status not known leaves the tank EMPTY": "test_fireball_charge_state",
+"fireball charge: a release flamesafe never reported sending empties the tanks": "test_fireball_charge_state",
 "fireball charge: a release not seen for certain empties the tanks": "test_fireball_charge_state",
 "fireball charge: a restart in the middle of a release is not UNKNOWN": "test_fireball_charge_state",
 "fireball charge: a top-off from the Fireball page is called a double charge": "test_fireball_charge_state",

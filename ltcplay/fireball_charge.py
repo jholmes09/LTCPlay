@@ -30,9 +30,14 @@ The evidence (what counts)
 ==========================
 
 flamesafe passes a fire value only while its group is ARMED; it is the
-only writer of the flame universe. So a value on a fireball slot counts
-only when the frame went out (the send worked) AND flamesafe's status,
-under STATUS_FRESH_S old, said the fireball group was ARMED:
+only writer of the flame universe, and its status reports, per group and
+every tick, the fire values it SENT (sent_fire). A charge counts when the
+frame went out (the send worked) AND flamesafe's status, under
+STATUS_FRESH_S old, said the fireball group was ARMED (cautious: a charge
+is never missed, even one shorter than a status frame). A release (the
+valve or the purge) resets the tanks only once flamesafe's own status has
+also reported SENDING it: one it never reported within CONFIRM_S of
+closing leaves the tanks UNKNOWN (cautious: a reset is never assumed):
 
   - ARMED: the value reached the fireball. Evidence.
   - not armed (a fresh status saying so): flamesafe sent zero. Nothing
@@ -41,10 +46,9 @@ under STATUS_FRESH_S old, said the fireball group was ARMED:
     reached the fireball. Never counted as a reset; a charge sent then
     makes an EMPTY tank UNKNOWN.
 
-flamesafe's status reports each group's armed state, not the values it
-wrote on each slot, so "what reached the fireball" is: what the engine
-sent, while flamesafe said the group was armed. Any value above 0 counts
-as ON (the most cautious reading).
+Any value above 0 counts as ON (the most cautious reading). A status
+with no sent_fire (an older flamesafe) confirms a release by the armed
+state alone.
 
 The transitions
 ===============
@@ -91,6 +95,10 @@ EMPTY, CHARGED, UNKNOWN = "empty", "charged", "unknown"
 STATES = (EMPTY, CHARGED, UNKNOWN)
 GROUP_NAME = "fireball"
 STATUS_FRESH_S = 0.5        # flamesafe's status, as the Fireball page
+# A release (the valve or the purge) is only counted once flamesafe's own
+# status has reported SENDING it (its group's sent_fire): this long after
+# it closed, a release flamesafe never reported leaves the tanks UNKNOWN.
+CONFIRM_S = 0.5
 MANUAL_FRESH_S = 0.5        # a Fireball page press names who, this long
 WATCH_S = 0.02
 QUEUE_MAX = 2000
@@ -184,6 +192,13 @@ class ChargeTracker:
         self._armed_at = None
         self._prev = {k: 0 for k in TANK_WORD}    # last value seen passing
         self._release = None    # {"kind", "certain", "during": {tank: lvl}}
+        self._ending = None     # (that release, when it closed)
+        # flamesafe's own report of what it SENT on the fireball's slots
+        # (its status's per group sent_fire): None until a status that
+        # carries it is read; then when it last showed the valve or the
+        # purge above 0.
+        self._sent_supported = None
+        self._sent_release_at = None
         self._manual = {}       # tank -> (who, screen, at)
         self.last_sent = bytes(512)
         self.frames = 0
@@ -328,6 +343,23 @@ class ChargeTracker:
             v = None
         self._armed = armed_from_status(v)
         self._armed_at = self._clock()
+        try:
+            for g in (v or {}).get("groups") or []:
+                if str(g.get("name", "")).strip().lower() != GROUP_NAME:
+                    continue
+                slots, sent = g.get("fire_slots"), g.get("sent_fire")
+                if isinstance(slots, list) and isinstance(sent, list) and \
+                        slots and len(slots) == len(sent) and \
+                        not v.get("stale"):
+                    self._sent_supported = True
+                    got = dict(zip(slots, sent))
+                    if (got.get(VALVE_SLOT) or 0) > 0 or \
+                            (got.get(PURGE_SLOT) or 0) > 0:
+                        self._sent_release_at = self._armed_at
+        except Exception:                        # noqa: BLE001
+            pass
+        with self._lock:
+            self._finish_release(self._clock())
 
     def observe(self, tc, values, ok):
         """Called on the flame link's sender thread after each frame went
@@ -359,11 +391,16 @@ class ChargeTracker:
         certain = armed == "armed"
         with self._lock:
             rel = self._release
+            if (valve or purge) and rel is None and self._ending is not None:
+                # Opened again before the last one was confirmed: the
+                # same release carries on.
+                rel = self._release = self._ending[0]
+                self._ending = None
             if valve or purge:
                 kind = "purge" if purge else "shot"
                 if rel is None:
                     rel = self._release = {"kind": kind, "certain": certain,
-                                           "during": {}}
+                                           "during": {}, "at": now}
                     if self.releasing != kind:
                         self.releasing = kind
                         self._event("system", "engine", "releasing",
@@ -387,7 +424,28 @@ class ChargeTracker:
                 self._charge(k, certain, rising, now_w, now)
             if rel is not None and not (valve or purge):
                 self._release = None
-                self._released(rel, now_w)
+                self._ending = (rel, now)
+            self._finish_release(now)
+
+    def _finish_release(self, now):
+        """A closed release counted once flamesafe has reported sending it
+        (or at once when its status carries no sent_fire); after CONFIRM_S
+        with no such report, counted as not certain (UNKNOWN). Under
+        self._lock."""
+        end = self._ending
+        if end is None:
+            return
+        rel, closed = end
+        seen = self._sent_release_at
+        if self._sent_supported is not True:
+            confirmed = True          # nothing more to wait for
+        else:
+            confirmed = seen is not None and seen >= rel.get("at", 0) - 0.1
+        if confirmed or now - closed > CONFIRM_S:
+            self._ending = None
+            if not confirmed:
+                rel = dict(rel, certain=False, unreported=True)
+            self._released(rel, self._wall())
 
     def _charge(self, k, certain, rising, now_w, now):
         word = TANK_WORD[k]
@@ -443,10 +501,12 @@ class ChargeTracker:
             elif self.tanks[k]["state"] != EMPTY:
                 self._set(k, UNKNOWN, f"{what}, but flamesafe's status was "
                           f"not known", now_w)
+        why = "" if rel["certain"] else (
+            " (flamesafe did not report sending it)" if rel.get("unreported")
+            else " (flamesafe status not known)")
         self._event("system", "engine", rel["kind"],
-                    f"Fireball charge: {what}"
-                    f"{'' if rel['certain'] else ' (flamesafe status not known)'}"
-                    f". {self.sentence()}", fault=not rel["certain"])
+                    f"Fireball charge: {what}{why}. {self.sentence()}",
+                    fault=not rel["certain"])
 
     # -- views ---------------------------------------------------------------
     def state(self, tank):

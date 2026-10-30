@@ -92317,6 +92317,49 @@ def test_fireball_charge_state():
         C2.t[0] += 1.0
         check(tr.armed_now() == "unknown", "a status reading older than "
                                            "0.5 s is not known")
+        # flamesafe's own report: a release resets the tanks only once
+        # flamesafe's status has reported SENDING the valve or the purge.
+        sent = {"v": [0, 0, 0, 0, 0]}
+        tr._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": list(sent["v"])}]}
+        tr._read_armed()
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == C_, "the valve closed but flamesafe has "
+                                      "not reported sending it: not yet")
+        C.t[0] += 0.6
+        C2.t[0] += 0.6
+        tr._read_armed()
+        tr.pump()
+        check(tr.state("fuel") == U and
+              "did not report sending it" in C2.lines[-1][0][3],
+              f"never reported within 0.5 s: UNKNOWN, said: "
+              f"{C2.lines[-1][0][3]}")
+        sent["v"] = [0, 0, 0, 0, 255]
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr._read_armed()
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == E, "a purge flamesafe reported sending: "
+                                     "EMPTY")
+        sent["v"] = [0, 0, 0, 0, 0]
+        tr.see(_fbc_frame(air=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr._read_armed()
+        tr._sent_release_at = None
+        sent["v"] = [0, 0, 255, 0, 0]
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("air") == C_, "closed before the report came")
+        tr._read_armed()
+        check(tr.state("air") == E, "the report comes: the shot counts")
+        tr._flames = lambda: None
+        tr._read_armed()
+        tr._sent_supported = None
         # The sender's call never touches a file.
         import builtins
         real_open, real_replace = builtins.open, os.replace
