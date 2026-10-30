@@ -2162,7 +2162,10 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             if getattr(fire_ice, "beyond", None) is not None else None
         checks = [
             ("Audio", True, lambda p: P.check_audio(p, clk(), refusal())),
-            ("Announcements", True,
+            # Advisory (Jeff, 2026-10-30): nothing plays on the PA by
+            # itself, so a missing output or recording is a warning line
+            # for the operator's own buttons, never a failed check.
+            ("Announcements", False,
              lambda p: P.check_announcements(p, httpd.announce)),
             ("Booth speaker", True,
              lambda p: P.check_booth(p, remote.alerts.booth, booth_resolve)),
