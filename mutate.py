@@ -1093,7 +1093,7 @@ MUTATIONS = [
 
  ("soak: the screens see only a refusal, never the show-load CUES FAULT",
   "ltcplay/fire_ice.py",
-  "        return self.fault or self.render_fault_now()",
+  "        return self.fault or rf",
   "        return self.fault"),
 
  ("flame cues: a stale render is not refused while the reader is mid-pass",
@@ -1150,13 +1150,13 @@ MUTATIONS = [
 
  ("soak: FlameCues.start() starts nothing until a frame asks",
   "ltcplay/fire_ice.py",
-  "        if self._bg and self._thread is None and not self._stop.is_set():\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,",
-  "        if self._bg and self._thread is None and not self._stop.is_set() \\\n"
-  "                and getattr(self, '_layout', None) is not None:\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,"),
+  "        if not self._bg or self._stop.is_set():\n"
+  "            return self\n"
+  "        # From the sender",
+  "        if not self._bg or self._stop.is_set() or \\\n"
+  "                getattr(self, '_layout', None) is None:\n"
+  "            return self\n"
+  "        # From the sender"),
 
  ("soak: another show folder in showpc.json goes unsaid",
   "ltcplay/remote.py",
@@ -6962,8 +6962,8 @@ def build():
   "        self._journal(f\"Alert ({a.severity}, {kind}): {text}\", fault=False,"),
 
  ("a second alert of the same kind opens a second banner", "ltcplay/alerts.py",
-  "        a = self._open.get(kind)\n        if a is not None:",
-  "        a = None\n        if a is not None:"),
+  "            a = self._open.get(kind)\n            if a is not None:",
+  "            a = None\n            if a is not None:"),
 
  ("Stop clears an alert like Acknowledge", "ltcplay/alerts.py",
   "        if action not in CLEARING:",
@@ -7721,18 +7721,400 @@ def build():
 
  ("flame cues: a block that could not be cut is tried again",
   "ltcplay/fire_ice.py",
-  "            if b in self.blocks or b in self.errors:",
-  "            if b in self.blocks:"),
+  "        if b in self.errors:\n            t = self.slow.get(b)",
+  "        if False:\n            t = self.slow.get(b)"),
 
  ("flame cues: a block that could not be cut is a silent zero",
   "ltcplay/fire_ice.py",
-  "        if e is not None:\n            raise e",
-  "        if False:\n            raise e"),
+  "        if e is not None:\n            # With no traceback",
+  "        if False:\n            # With no traceback"),
 
  ("flame cues: a block not cut yet is a silent zero",
   "ltcplay/fire_ice.py",
-  "                    return self._zero(CUES_LOADING, fault=True)",
-  "                    return self._zero(CUES_LOADING, fault=False)"),
+  "                            else CUES_LOADING), fault=True)",
+  "                            else CUES_LOADING), fault=False)"),
+
+ # -- review of #174, round 2 follow-ups (2026-10-29)
+ ("flame cues: the cutting thread never cuts ahead",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            pass"),
+
+ ("flame cues: a dead background thread is never started again",
+  "ltcplay/fire_ice.py",
+  "        if t is not None and t.is_alive():\n            return\n"
+  "        now = self._mono()",
+  "        if t is not None:\n            return\n"
+  "        now = self._mono()"),
+
+ # -- review B of #177 (2026-10-30)
+ ("flame cues: a passing error faults its block for good",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif True:"),
+
+ ("flame cues: a missing tail journals a line for every piece",
+  "ltcplay/fire_ice.py",
+  "                short = (n, FSEQError(CUT_SHORT_TEXT))",
+  "                short = (n, FSEQError(f\"{CUT_SHORT_TEXT} at {n}\"))"),
+
+ ("flame cues: a reader stalled at Run is silent zeros for good",
+  "ltcplay/fire_ice.py",
+  "        return self._zero(why, fault=True)\n\n    def _idle",
+  "        return self._zero(why)\n\n    def _idle"),
+
+ ("flame cues: start() is not locked",
+  "ltcplay/fire_ice.py",
+  "        with self._start_lock:\n            if self._stop.is_set():",
+  "        if True:\n            if self._stop.is_set():"),
+
+ # -- review of #177 (2026-10-30)
+ ("flame cues: the uncut timer restarts at every block",
+  "ltcplay/fire_ice.py",
+  "                    key = (id(s), label)",
+  "                    key = (id(s), label, cut._block(idx) if cut is not None\n"
+  "                           else None)"),
+
+ ("flame cues: the lookahead is back to 3 s",
+  "ltcplay/fire_ice.py",
+  "CUT_AHEAD_S = 15.0",
+  "CUT_AHEAD_S = 3.0"),
+
+ ("flame cues: the playing cue is not cut before its render is published",
+  "ltcplay/fire_ice.py",
+  "        self._cut_ahead(s, cuts)\n        self._cuts = cuts",
+  "        self._cuts = cuts"),
+
+ ("flame cues: a thread that keeps dying is restarted at once every time",
+  "ltcplay/fire_ice.py",
+  "            if since is not None and n and now - since < \\",
+  "            if False and \\"),
+
+ ("flame cues: a thread that keeps dying is never a screen fault",
+  "ltcplay/fire_ice.py",
+  "            if n >= self.RESTART_FAULT_AFTER:",
+  "            if False:"),
+
+ ("flame cues: close() leaves the cutting thread running",
+  "ltcplay/fire_ice.py",
+  "        for t in (self._thread, self._cutter):",
+  "        for t in (self._thread,):"),
+
+ ("flame cues: the first missing frame of a render reads as there",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None and idx > sh[0]:"),
+
+ ("flame cues: a served row does not end the uncut episode",
+  "ltcplay/fire_ice.py",
+  "                self._uncut = None\n                count = span[1]",
+  "                count = span[1]"),
+
+ ("flame cues: a thread started again is still said to be gone",
+  "ltcplay/fire_ice.py",
+  "        self._start_failed.discard(attr)",
+  "        pass"),
+
+ ("flame cues: the cutting thread looks only once a second",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(1.0):\n            self._cut_ahead()"),
+
+ ("flame cues: a cutter that cannot start still promises the cues",
+  "ltcplay/fire_ice.py",
+  "        return bool(self._start_failed)",
+  "        return False"),
+
+ ("flame cues: every move to an uncut frame is a CUES FAULT at once",
+  "ltcplay/fire_ice.py",
+  "                    if not dead and now - u[1] < CUT_FAULT_AFTER_S:",
+  "                    if False:"),
+
+ ("flame cues: one missing frame faults its whole block",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None:"),
+
+ ("flame cues: an uncompressed render is copied whole to be cut",
+  "ltcplay/fire_ice.py",
+  "        self.whole = g.compression == NONE and len(g._blocks) == 1",
+  "        self.whole = False"),
+
+ ("flame cues: a cut block's channel data is kept",
+  "ltcplay/fire_ice.py",
+  "                g._cache_idx, g._cache = -1, b\"\"",
+  "                pass"),
+
+ # -- review 3 of #177 (2026-10-30)
+ ("flame cues: a one-block render is cut past its block",
+  "ltcplay/fire_ice.py",
+  "            end = self.boff + self.blen",
+  "            end = len(self.mv)"),
+
+ ("flame cues: a one-block render's missing bytes are no fault",
+  "ltcplay/fire_ice.py",
+  "            if end > len(self.mv):\n                # As _load_block",
+  "            if False:\n                # As _load_block"),
+
+ ("flame cues: a cut that keeps failing is retried forever",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif b in self.errors:"),
+
+ ("flame cues: a block's retries are never backed off further",
+  "ltcplay/fire_ice.py",
+  "CUT_RETRY_S[\n                            min(n, len(CUT_RETRY_S)) - 1], e)",
+  "CUT_RETRY_S[0], e)"),
+
+ ("flame cues: a block failing to cut waits out the grace silently",
+  "ltcplay/fire_ice.py",
+  "                    if failing is not None:",
+  "                    if False:"),
+
+ ("flame cues: a thread that keeps stopping ranks below the loading fault",
+  "ltcplay/fire_ice.py",
+  "        if self.thread_fault and (not self.fault or\n"
+  "                                  self.fault in CUES_WAITING):",
+  "        if self.thread_fault and not self.fault:"),
+
+ ("flame cues: a stopped cutter still promises the cues within a second",
+  "ltcplay/fire_ice.py",
+  "        return t is not None and not t.is_alive() and \\\n"
+  "            not self._stop.is_set()",
+  "        return False"),
+
+ ("flame cues: a cutter that keeps stopping is said to be loading",
+  "ltcplay/fire_ice.py",
+  "                        self.thread_fault or (",
+  "                        \"\" or ("),
+
+ ("flame cues: the restart count resets after 60 s with no start()",
+  "ltcplay/fire_ice.py",
+  "            if began is not None and ended is not None and \\\n"
+  "                    ended - began >= self.RESTART_RESET_S:",
+  "            if began is not None and \\\n"
+  "                    now - began >= self.RESTART_RESET_S:"),
+
+ ("flame cues: a thread that ran 60 s never starts the count again",
+  "ltcplay/fire_ice.py",
+  "                    ended - began >= self.RESTART_RESET_S:\n"
+  "                n = 0",
+  "                    ended - began >= self.RESTART_RESET_S:\n"
+  "                pass"),
+
+ ("flame cues: a dying thread's back-off never grows",
+  "ltcplay/fire_ice.py",
+  "self.RESTART_BACKOFF_S[min(n, len(\n"
+  "                        self.RESTART_BACKOFF_S)) - 1]:",
+  "self.RESTART_BACKOFF_S[0]:"),
+
+ ("flame cues: a pause or a stop does not end the uncut grace",
+  "ltcplay/fire_ice.py",
+  "        self._uncut = None\n        return self._zero(why)",
+  "        return self._zero(why)"),
+
+ ("flame cues: a new cue plays on the last cue's uncut grace",
+  "ltcplay/fire_ice.py",
+  "                    key = (id(s), label)",
+  "                    key = \"uncut\""),
+
+ ("flame cues: a new session plays on the last one's read grace",
+  "ltcplay/fire_ice.py",
+  "self._late_zero((id(s), label), CUES_READING_LAYOUT)",
+  "self._late_zero(\"read\", CUES_READING_LAYOUT)"),
+
+ ("flame cues: a fault from before shows in the read grace",
+  "ltcplay/fire_ice.py",
+  "            self.fault = \"\"\n            return None\n"
+  "        return self._zero(why, fault=True)\n\n    def _idle",
+  "            return None\n"
+  "        return self._zero(why, fault=True)\n\n    def _idle"),
+
+ ("flame cues: a failed start is journaled as a restart",
+  "ltcplay/fire_ice.py",
+  "            self._start_failed.add(attr)\n            return\n"
+  "        setattr(self, attr, nt)",
+  "            self._start_failed.add(attr)\n"
+  "        setattr(self, attr, nt)"),
+
+ ("flame cues: a thread that cannot start is never journaled",
+  "ltcplay/fire_ice.py",
+  "            if attr not in self._start_failed:\n                self._note(",
+  "            if False:\n                self._note("),
+
+ ("flame cues: a start() that waited out close() starts threads",
+  "ltcplay/fire_ice.py",
+  "            if self._stop.is_set():\n"
+  "                return self              # close() came in while we waited",
+  "            if False:\n"
+  "                return self              # close() came in while we waited"),
+
+ ("flame cues: the thread fault always clears",
+  "ltcplay/fire_ice.py",
+  "        if self.thread_fault and all(",
+  "        if self.thread_fault or True or all("),
+
+ ("flame cues: the thread fault never clears",
+  "ltcplay/fire_ice.py",
+  "            self.thread_fault = \"\"\n\n    def _cutter_dead",
+  "            pass\n\n    def _cutter_dead"),
+
+ # -- round 2 review of #177 (2026-10-30)
+ ("flame cues: a passing cut fault is kept for every later show",
+  "ltcplay/fire_ice.py",
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S",
+  "                        pass"),
+
+ ("flame cues: a data error is tried again like a passing one",
+  "ltcplay/fire_ice.py",
+  "                    if _cut_data_error(e):\n"
+  "                        # The render's own bytes are wrong: for good.",
+  "                    if False:\n"
+  "                        # The render's own bytes are wrong: for good."),
+
+ ("flame cues: a look does not end the uncut grace",
+  "ltcplay/fire_ice.py",
+  "            self._uncut = None\n            plain =",
+  "            plain ="),
+
+ ("flame cues: the back-off counts from the start, not the death",
+  "ltcplay/fire_ice.py",
+  "            since = ended if ended is not None and (\n"
+  "                last is None or ended > last) else last",
+  "            since = last"),
+
+ ("flame cues: a retry set meanwhile is not seen under the lock",
+  "ltcplay/fire_ice.py",
+  "                if not self._due(b):\n                    continue\n"
+  "                r = self.retry.get(b)",
+  "                r = self.retry.get(b)"),
+
+ ("flame cues: a first start that fails is tried on every call",
+  "ltcplay/fire_ice.py",
+  "        if tried is not None and now - tried[1] < self.RESTART_BACKOFF_S[",
+  "        if False and now - tried[1] < self.RESTART_BACKOFF_S["),
+
+ ("flame cues: a first start's recovery is not said",
+  "ltcplay/fire_ice.py",
+  "        if t is None and again:\n            self._note(",
+  "        if False:\n            self._note("),
+
+ ("flame cues: a render whose ranges disagree with its channels is read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if False:"),
+
+ ("flame cues: a cut past the frame's bytes is a shifted row",
+  "ltcplay/fire_ice.py",
+  "        if len(row) != count:",
+  "        if False:"),
+
+ ("flame cues: a garbage frame count lists every piece",
+  "ltcplay/fire_ice.py",
+  "            self.firsts = None\n            self.pieces =",
+  "            self.firsts = list(range(0, max(1, g.frame_count),\n"
+  "                                     CUT_PIECE_FRAMES))\n"
+  "            self.pieces ="),
+
+ ("flame cues: a death during a restart loses its reason",
+  "ltcplay/fire_ice.py",
+  "        setattr(self, attr, nt)\n        self._start_failed.discard(attr)",
+  "        setattr(self, attr, nt)\n        self._died.pop(attr, None)\n"
+  "        self._start_failed.discard(attr)"),
+
+ # -- round 3 review of #177 (2026-10-30)
+ ("flame cues: a cut set-up that failed for a passing reason is kept",
+  "ltcplay/fire_ice.py",
+  "                    cut.span != tuple(span) or cut.stale():",
+  "                    cut.span != tuple(span):"),
+
+ ("flame cues: a damaged render's set-up is made again",
+  "ltcplay/fire_ice.py",
+  "        c.rebuild_at = None if _cut_data_error(error) else \\",
+  "        c.rebuild_at = None if False else \\"),
+
+ ("flame cues: failed starts count as restarts",
+  "ltcplay/fire_ice.py",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)\n"
+  "            self._restarts[attr] = (n, now, None)"),
+
+ ("flame cues: a kept block error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "                    e = _bare(e)\n",
+  "                    pass\n"),
+
+ ("flame cues: a failed set-up's error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "        c.blocks, c.errors, c.short = {}, {0: _bare(error)}, {}",
+  "        c.blocks, c.errors, c.short = {}, {0: error}, {}"),
+
+ ("flame cues: a passing cut fault is said as a damaged render",
+  "ltcplay/fire_ice.py",
+  "            if self._bg and not _cut_data_error(e):",
+  "            if False:"),
+
+ ("flame cues: a fault is journaled for each block's own words",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why"),
+
+ ("flame cues: ranges under the header's channel count are read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if covered > f.channel_count:"),
+
+ ("flame cues: a thread's old death reason is said again",
+  "ltcplay/fire_ice.py",
+  "        why = self._died.pop(attr, \"it ended\")",
+  "        why = self._died.get(attr, \"it ended\")"),
+
+ ("flame cues: a failed slow retry is retried fast",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif n > CUT_RETRIES:"),
+
+ ("flame cues: a data error is tried again every 30 s",
+  "ltcplay/fire_ice.py",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow.pop(b, None)\n",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S\n"),
+
+ ("flame cues: zstd out of memory is a damaged render",
+  "ltcplay/fire_ice.py",
+  "            return not (\"memory\" in text or \"allocat\" in text)",
+  "            return True"),
+
+ # -- final review of #177 (2026-10-30)
+ ("flame cues: a render that cannot be opened is said as a cut tried again",
+  "ltcplay/fire_ice.py",
+  "                    name = type(got).__name__\n"
+  "                    return self._zero(",
+  "                    raise got\n"
+  "                    return self._zero("),
+
+ ("flame cues: a kept error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise e.with_traceback(None)",
+  "            raise e"),
+
+ ("flame cues: a short render's error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise sh[1].with_traceback(None)",
+  "            raise sh[1]"),
+
+ ("flame cues: a start that works keeps its failed-start count",
+  "ltcplay/fire_ice.py",
+  "        self._start_tries.pop(attr, None)",
+  "        pass"),
+
+ ("flame cues: the journal counts a fault's kind, not its cue",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why if cause is None else cause[0]"),
 
  ("flame cues: nothing is cut ahead of the show timecode",
   "ltcplay/fire_ice.py",
@@ -8993,8 +9375,8 @@ def build():
 
  ('show-assembly: flame cues read while nothing is running',
   'ltcplay/fire_ice.py',
-  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._zero("")',
-  '        if s is None:\n            self._look_since = None\n            return self._zero("")'),
+  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._idle()',
+  '        if s is None:\n            self._look_since = None\n            return self._idle()'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
@@ -9040,8 +9422,8 @@ def build():
 
  ('fix round 1: flame cues follow a GO free run',
   'ltcplay/fire_ice.py',
-  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._zero(',
-  '        if False:\n            return self._zero('),
+  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._idle(',
+  '        if False:\n            return self._idle('),
 
  ('fix round 1: flame cues go on while the show audio is paused',
   'ltcplay/fire_ice.py',
@@ -9790,8 +10172,8 @@ def build():
 
  ('review43: a render that cannot be read is a quiet zero',
   'ltcplay/fire_ice.py',
-  '                              f"({type(e).__name__}: {e})", fault=True)',
-  '                              f"({type(e).__name__}: {e})")'),
+  '                              f"({name}: {e})", fault=True,',
+  '                              f"({name}: {e})",'),
 
  ('review43: /api/conductor leaves out the flame cue fault',
   'ltcplay/web.py',
@@ -18462,8 +18844,8 @@ def build():
   '            if False:'),
 
  ('pre-roll: a failed check lets the scheduler start the show', 'ltcplay/schedule_service.py',
-  '            if v == "failed":\n                return True\n',
-  '            if v == "failed":\n                return False\n'),
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "failed":\n                return False\n            if v == "cleared":\n'),
 
  ('pre-roll: a show due with no check starts unchecked', 'ltcplay/schedule_service.py',
   '            if v is None:\n                self._preroll_kick(n)\n            return True',
@@ -18598,8 +18980,424 @@ def build():
   '        if False:'),
 
  ("continue anyway: the next show's check does not end the Continue", 'ltcplay/preroll.py',
-  "            if not manual:\n                # A new show's check: the last Continue anyway is over.\n                self.continued = None",
+  "            if not manual:\n                # A new show's check: the last Continue anyway is over, and\n                # so is the last \"failure cleared\" note.\n                self.continued = None",
   '            if False:\n                self.continued = None'),
+ # -- the rig check failure cleared by a later pass, MadMapper's output
+ # window and the rack screen kept in front (Jeff's field reports,
+ # 2026-10-29) --
+ ('rig check cleared: a pass clears nothing', 'ltcplay/preroll.py',
+  '            self._clear_failure(r)\n            if self._on_pass is not None:',
+  '            if self._on_pass is not None:'),
+
+ ('rig check cleared: a pass clears a failure raised after it began', 'ltcplay/preroll.py',
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
+
+ ('rig check cleared: a pass clears a preroll alert opened after it began', 'ltcplay/preroll.py',
+  '                    now_id != r.get("alert_at_start"):',
+  '                    False:'),
+
+ ('rig check cleared: the failed verdict stays after a pass', 'ltcplay/preroll.py',
+  '                            v["state"] = "cleared"\n',
+  ''),
+
+ ('rig check cleared: a failed Pre-check does not refresh the failure', 'ltcplay/preroll.py',
+  '        elif in_force:\n            self._refresh_failure(r, bad)',
+  '        elif False:\n            self._refresh_failure(r, bad)'),
+
+ ('rig check cleared: a cleared show is started by the scheduler unattended', 'ltcplay/schedule_service.py',
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
+
+ ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
+  '                if kind == sch.RESUME and not out.refused:\n                    self._preroll_release(who, screen)',
+  '                if kind == sch.RESUME and not out.refused:\n                    pass'),
+
+ ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
+  '        if st == "HOLD" and held:',
+  '        if False:'),
+
+ ('rig check cleared: 1.0 and 2.0 still show the old failure', 'ltcplay/web/remote.html',
+  '  if(p.cleared && !p.show_check && s.state !== "SHOW"',
+  '  if(false && p.cleared && !p.show_check && s.state !== "SHOW"'),
+
+ ('mm output: a window with a title bar counts as the output', 'ltcplay/showwindows.py',
+  '        if w.get("caption"):\n            continue',
+  '        if False:\n            continue'),
+
+ ('mm output: a window that does not fill the display counts', 'ltcplay/showwindows.py',
+  '    return l <= ml + tol and t <= mt + tol and r >= mr - tol and \\\n        b >= mb - tol',
+  '    return l <= ml + tol and t <= mt + tol'),
+
+ ('mm output: the rig check passes with the output OFF', 'ltcplay/preroll.py',
+  '        return False, (f"{why}. Turn it on in MadMapper: Output menu, "',
+  '        return True, (f"{why}. Turn it on in MadMapper: Output menu, "'),
+
+ ('mm output: the rig check passes when the output is not known', 'ltcplay/preroll.py',
+  '    return False, why or "not known"',
+  '    return True, why or "not known"'),
+
+ ('mm output: the switch off is ignored', 'ltcplay/web.py',
+  '        if not getattr(fire_ice, "madmapper_output_check", True):',
+  '        if False:'),
+
+ ('mm output: the lamp reads ok with the output OFF', 'ltcplay/remote.py',
+  '            add("MadMapper output", {"on": "ok", "off": "bad"}.get(',
+  '            add("MadMapper output", {"on": "ok", "off": "ok"}.get('),
+
+ ('rack keeper: raises the rack screen over the projection on its display', 'ltcplay/showwindows.py',
+  '        if any(overlap(w["rect"], area) > 0 for w in wins\n               if w["hwnd"] in outs):',
+  '        if False:'),
+
+ ('rack keeper: raises over a window a person brought forward', 'ltcplay/showwindows.py',
+  '                 and w["hwnd"] not in self.chosen\n',
+  ''),
+
+ ('rack keeper: raises over old windows after the boot settle', 'ltcplay/showwindows.py',
+  '                 and (boot or now - self.seen[w["hwnd"]] <=',
+  '                 and (True or now - self.seen[w["hwnd"]] <='),
+
+ ('rack keeper: never gives up on a window that stays on top', 'ltcplay/showwindows.py',
+  '        if n >= MAX_RAISES:',
+  '        if False:'),
+
+ ('mm output watch: alerts before MadMapper had time to come on', 'ltcplay/showwindows.py',
+  '        due = (now - self.first_seen >= self.settle_s and',
+  '        due = (True and'),
+
+ ('mm output watch: an alert the engine did not take is not sent again', 'ltcplay/showwindows.py',
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}")',
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}") or True'),
+
+ ('mm output watch: the alert stays after the output comes on', 'ltcplay/showwindows.py',
+  '            self.alerted = False\n            if self.raised and now >= self.next_try:',
+  '            self.alerted = False\n            if False:'),
+
+ ("mm output: the rack screen's own display counts as the projector's", 'ltcplay/showwindows.py',
+  '        outs = [(w, n) for w, n in outs if n != r]\n',
+  ''),
+
+ ('mm output: one display only reads as on', 'ltcplay/showwindows.py',
+  '    if not monitor and len(mons) == 1:',
+  '    if False:'),
+
+ ("mm output: a display past the PC's reads as off, not not known", 'ltcplay/showwindows.py',
+  '    if monitor and monitor > len(mons):',
+  '    if False:'),
+
+ ('mm output: a rig check that saw the output on leaves its alert open', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if False:'),
+
+ ('mm output: a rig check clears an output alert newer than it', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if a.kind == "output":'),
+
+ ('supervisor: the output watch reads showpc.json, not the engine file', 'packaging/windows/supervisor.py',
+  '    chk, mon, quiet = output_settings(settings)',
+  '    chk, mon, quiet = True, 0, ""'),
+
+ ('rack keeper: takes the keyboard from a person typing', 'ltcplay/showwindows.py',
+  '        if age is None or age < INPUT_QUIET_S:',
+  '        if False:'),
+
+ ('rack keeper: takes the foreground from any program', 'ltcplay/showwindows.py',
+  '        take = self.api.foreground() == c["hwnd"]',
+  '        take = True'),
+
+ ('rack keeper: picks another Edge window of the same process', 'ltcplay/showwindows.py',
+  '    if pid is not None and w.get("pid") != pid:\n        return False\n',
+  '    if pid is not None and w.get("pid") == pid:\n        return True\n'),
+
+ ('rack keeper: a minimized rack screen is restored over the projection', 'ltcplay/showwindows.py',
+  '        if rack["minimized"]:\n            # Left minimized',
+  '        if rack["minimized"] and False:\n            # Left minimized'),
+
+ ('rig check cleared: Resume journals a Start now key as a show', 'ltcplay/schedule_service.py',
+  '                        key[0] != night or not isinstance(key[1], int):',
+  '                        not isinstance(key[1], int):'),
+
+ ('rack keeper: moves the rack screen when the displays cannot be read', 'ltcplay/showwindows.py',
+  '        if not mons:\n            # The displays cannot be read',
+  '        if False:\n            # The displays cannot be read'),
+
+ ('rack keeper: a titleless MadMapper window not filling a display is a cover', 'ltcplay/showwindows.py',
+  '            if image_is(w.get("image"), MADMAPPER) and not w.get("caption")}',
+  '            if False}'),
+
+ ('mm output: page_monitor wins over where the rack screen is', 'ltcplay/showwindows.py',
+  '        r = rack_display(wins, mons, fallback=rack or 1)',
+  '        r = rack or rack_display(wins, mons)'),
+
+ ('mm output watch: a new off spell reuses a stale alert', 'ltcplay/showwindows.py',
+  "            if self.raised:\n                # The last spell's",
+  "            if False:\n                # The last spell's"),
+
+ ('mm output: the engine ignores page_monitor', 'ltcplay/web.py',
+  '            rack=_page_monitor()).start()',
+  '            rack=1).start()'),
+
+ ("mm output: the rack window under the output makes its display the rack's", 'ltcplay/showwindows.py',
+  '            if n and n not in outd:',
+  '            if n:'),
+
+ ('mm output: an output hidden by another window reads on', 'ltcplay/showwindows.py',
+  '        c = covered_by(wins, w)\n        if c is None:',
+  '        c = covered_by(wins, w)\n        if True:'),
+
+ ("supervisor: watches a MadMapper that is not the show's", 'packaging/windows/supervisor.py',
+  '    elif not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):',
+  '    elif False:'),
+
+ ('supervisor: watches with no MadMapper in the show', 'packaging/windows/supervisor.py',
+  '    if not isinstance(mm, dict):\n        quiet = (',
+  '    if False:\n        quiet = ('),
+
+ ('supervisor: an alert that never reached the engine counts as sent', 'packaging/windows/supervisor.py',
+  '            f"did not reach the engine ({e.reason})")\n        return False',
+  '            f"did not reach the engine ({e.reason})")\n        return True'),
+
+ ('mm output watch: a new engine never gets the alert again', 'ltcplay/showwindows.py',
+  '        if ep != self._epoch:',
+  '        if False:'),
+
+ ('mm output watch: a refused alert is retried at the same pace forever', 'ltcplay/showwindows.py',
+  '        self.backoff = min(self.backoff * 2, 600.0)',
+  '        self.backoff = self.retry_s'),
+
+ ("mm output watch: an earlier supervisor's alert is never cleared", 'ltcplay/showwindows.py',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = True',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = False'),
+
+ ('rack keeper: the click that brought a window forward is not a choice', 'ltcplay/showwindows.py',
+  '            if age is not None and now - age >= self.fg_since[fg] - \\\n                    (2 * self.tick_s + 1.0):',
+  '            if age is not None and now - age >= self.fg_since[fg]:'),
+
+ ("rack keeper: a raise buries a dialog or the person's window", 'ltcplay/showwindows.py',
+  '        if why:\n            self._say("dialog"',
+  '        if False:\n            self._say("dialog"'),
+
+ ('mm output: a see-through overlay hides the output', 'ltcplay/showwindows.py',
+  '        if w.get("minimized") or w.get("seethrough"):',
+  '        if w.get("minimized"):'),
+
+ ('rack keeper: a restart of LTC Player re-enters the boot settle', 'ltcplay/showwindows.py',
+  '            if isinstance(sess, (int, float)) and sess >= 0 \\',
+  '            if False \\'),
+
+ ('rack keeper: the brought-forward margin is one tick only', 'ltcplay/showwindows.py',
+  '                    (2 * self.tick_s + 1.0):',
+  '                    self.tick_s:'),
+
+ ('supervisor: an unreadable settings file can raise output alerts', 'packaging/windows/supervisor.py',
+  '        return True, 0, "ltcplay_fire_ice.json could not be read"\n    if not isinstance',
+  '        return True, 0, ""\n    if not isinstance'),
+
+ ('key guard: Hold is held back after focus (1.0)', 'ltcplay/web/remote.html',
+  '<button data-safe id="b-hold" class="hold">',
+  '<button id="b-hold" class="hold">'),
+
+ ('key guard: Stop is held back after focus (2.0)', 'ltcplay/web/remote2.html',
+  '<button data-safe class="b redline" id="b-stop">',
+  '<button class="b redline" id="b-stop">'),
+
+ ('key guard: a Stop or Disarm two-way button is held back', 'ltcplay/web/remote.html',
+  '  return m === "stop" || m === "disarm" ||',
+  '  return false ||'),
+
+ ("key guard: a purge's release is dropped after focus", 'ltcplay/web/remote.html',
+  '  if(KEY_GUARD.passed.has(k)){ KEY_GUARD.passed.delete(k); return; }',
+  '  if(false){ KEY_GUARD.passed.delete(k); return; }'),
+
+ ('key guard: data-safe is ignored', 'ltcplay/web/remote.html',
+  '  if(b.dataset && b.dataset.safe !== undefined) return true;',
+  '  if(false) return true;'),
+
+ ('key guard: a Space on the Startup page fires a purge right after focus', 'ltcplay/web/remote.html',
+  '  if(keyFresh() || keySafe(e.target)){',
+  '  if(false){'),
+
+ ('key guard: a key held across a blur is let through after', 'ltcplay/web/remote.html',
+  'window.addEventListener("blur", () => { KEY_GUARD.passed.clear(); });',
+  'window.addEventListener("blur", () => {});'),
+
+ ('mm output watch: a switched-off watch keeps alerting', 'ltcplay/showwindows.py',
+  '            if self._config is not None and not self._config[0]:',
+  '            if False:'),
+
+ ('rack keeper: the taskbar stops the raise', 'ltcplay/showwindows.py',
+  '                 and not w.get("seethrough") and not is_taskbar(w)\n',
+  '                 and not w.get("seethrough")\n'),
+
+ ("rack keeper: the rack screen's own pop-up stops the raise", 'ltcplay/showwindows.py',
+  '                 and w.get("owner") != rack["hwnd"]\n',
+  ''),
+
+ ('rack keeper: a window nobody uses stops the raise', 'ltcplay/showwindows.py',
+  '            if w["hwnd"] == fg_now and (age is None or\n                                        age < FOREGROUND_IN_USE_S):',
+  '            if True:'),
+
+ ('rack keeper: an unowned dialog of the covering program is buried', 'ltcplay/showwindows.py',
+  '                    w.get("owner") or w.get("pid") == c.get("pid"))):',
+  '                    w.get("owner"))):'),
+
+ ('key guard: the listed safe buttons are held back', 'ltcplay/web/remote.html',
+  '  if(KEY_SAFE_IDS.includes(b.id)) return true;',
+  '  if(false) return true;'),
+
+ ("key guard: 2.0's DAY purge fires on a Space right after focus", 'ltcplay/web/remote2.html',
+  '  if(keyFresh() || keySafe(e.target)) return;\n  if(fireKeyNotOurs(e)) return;',
+  '  if(fireKeyNotOurs(e)) return;'),
+
+ ("mm output watch: the supervisor's 'this PC' is only loopback", 'ltcplay/showwindows.py',
+  '    return _thispc.on_this_pc(host)',
+  "    return str(host or '').startswith('127.') or host == 'localhost'"),
+
+ # -- review fixes of #176 (two cold reviews, 2026-10-30) --
+ ("mm output: the rig check's backstop reads the note, not whether it looked", 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            and not i.get("note")]'),
+
+ ('mm output: a rig check that did not look clears the output alert', 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            ]'),
+
+ ('rig check: an item the show does not use counts as seen', 'ltcplay/preroll.py',
+  'note=True, used=False))',
+  'note=True))'),
+
+ ('mm output: Continue anyway blacks the video on an unproven output check', 'ltcplay/preroll.py',
+  'OFF_FOR = {"Video": "video", "Lasers"',
+  'OFF_FOR = {"Video": "video", "MadMapper output": "video", "Lasers"'),
+
+ ('rack keeper: a parentless dialog box counts as a cover', 'ltcplay/showwindows.py',
+  'and not w.get("owner") and not is_dialog(w)\n',
+  'and not w.get("owner")\n'),
+
+ ("rack keeper: another program's dialog box is buried", 'ltcplay/showwindows.py',
+  '            if is_dialog(w) or (is_app(w) and (',
+  '            if (is_app(w) and ('),
+
+ ('rack keeper: windows open before a restart count as just appeared', 'ltcplay/showwindows.py',
+  'float("-inf") if first else now)',
+  'now)'),
+
+ ('rack keeper: raises over the window in use since before a restart or the lock screen', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        False)):'),
+
+ ('rack keeper: moves a rack screen that is not responding', 'ltcplay/showwindows.py',
+  '            if self.api.hung(rack["hwnd"]):',
+  '            if False:'),
+
+ ('rig check cleared: a clear ignores a raise made in place since', 'ltcplay/alerts.py',
+  '                if rev is not None and a.rev != rev:',
+  '                if False:'),
+
+ ('rig check cleared: the alert is cleared by kind, not as the check saw it', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                got = self._clear_alert(KIND)'),
+
+ ('rig check cleared: a refused clear still clears the verdict', 'ltcplay/preroll.py',
+  '                if not self._clear(now_id) and self.alert_open():',
+  '                if False:'),
+
+ ('rig check cleared: an alert opened after the check read none is ignored', 'ltcplay/preroll.py',
+  '            elif self.alert_open():\n                # Opened since',
+  '            elif False:\n                # Opened since'),
+
+ ('rig check cleared: a failure numbered during the clear is ignored', 'ltcplay/preroll.py',
+  '                    if self._fail_seq > r.get("seq", 0):\n                        newer = True',
+  '                    if False:\n                        newer = True'),
+
+ ('rig check cleared: the order of events is not checked first', 'ltcplay/preroll.py',
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
+
+ ("rig check: 'could not run' is never raised again after a pass cleared it", 'ltcplay/schedule_service.py',
+  '        once = (why, getattr(self.preroll, "clears", 0))',
+  '        once = why'),
+
+ ('rig check cleared: an open alert alone is not a failure in force', 'ltcplay/preroll.py',
+  '        return failed or self.alert_open()',
+  '        return failed'),
+
+ ('rig check cleared: Resume releases a show whose check still failed', 'ltcplay/preroll.py',
+  '                    if v["state"] == "cleared"]\n            for k in keys:',
+  '                    if v["state"] in ("cleared", "failed")]\n            for k in keys:'),
+
+ ("rig check: a 'could not run' failure is not numbered", 'ltcplay/preroll.py',
+  '        before it can clear it."""\n        with self._lock:\n            self._seq += 1',
+  '        before it can clear it."""\n        return\n        with self._lock:\n            self._seq += 1'),
+
+ ("rig check cleared: failing again keeps the old failure's age", 'ltcplay/preroll.py',
+  '                v["done"] = r["done"]\n',
+  ''),
+
+ ('rig check cleared: Resume gives the show no late allowance', 'ltcplay/schedule_service.py',
+  '                self._preroll_late[key] = pr.late_ok_s()\n                d = m.delayed()',
+  '                d = m.delayed()'),
+
+ ("rig check cleared: the note survives a show's own check", 'ltcplay/preroll.py',
+  '                self.continued = None\n                self.cleared = None',
+  '                self.continued = None'),
+
+ ('rig check cleared: Press Resume when no show was released', 'ltcplay/remote.py',
+  '        if st == "HOLD" and held:',
+  '        if st == "HOLD":'),
+
+ ('rig check: Check again refused before a show after a failure', 'ltcplay/remote.py',
+  ' and \\\n                    not pr.failure_in_force():',
+  ':'),
+
+ ('rig check: Check again allowed in the minute before a show', 'ltcplay/remote.py',
+  '            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s and \\',
+  '            if False and \\'),
+
+ ('rig check cleared: a clear is not counted', 'ltcplay/preroll.py',
+  '                        self.clears += 1\n',
+  ''),
+
+ ('rig check cleared: the screens are not told how many shows', 'ltcplay/preroll.py',
+  '                                  "shows": cl.get("shows", 0),\n',
+  ''),
+
+ ('rig check cleared: the alerts are called under the pre-roll\'s lock (deadlock)', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                with self._lock:\n                    got = self._clear_alert(KIND, alert_id)'),
+
+ ("rig check: a show's pass older than a later failure is not run again", 'ltcplay/preroll.py',
+  'self._fresh(r) and not self._stale(r):',
+  'self._fresh(r):'),
+
+ ("rig check: a show's pass older than a later failure still counts", 'ltcplay/preroll.py',
+  '(not self._fresh(r) or self._stale(r)):',
+  'not self._fresh(r):'),
+
+ ('rack keeper: the in-use rule covers a window that opened after the last input', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        True)):'),
+
+ ('mm output: a rig check clears the output alert while the output is off again', 'ltcplay/web.py',
+  '        if look.now()[0] != "on":',
+  '        if False:'),
+
+ ('rig check cleared: a delayed show held says Press Resume', 'ltcplay/remote.py',
+  '        if m is not None and m.delayed() is not None:\n            # A delayed show waits',
+  '        if False:\n            # A delayed show waits'),
+
+ ('rig check cleared: the Resume line says a delayed show is checked again', 'ltcplay/schedule_service.py',
+  '                if d is not None and d.n == key[1]:',
+  '                if False:'),
+
+ ('continue anyway: a failed MadMapper output check reads as nothing failed', 'ltcplay/schedule_service.py',
+  '        if any(i["name"] == "MadMapper output" for i in bad):',
+  '        if False:'),
+
+ ('rig check cleared: a cleared show is journaled as a late check', 'ltcplay/schedule_service.py',
+  '            if v in ("failed", "cleared"):',
+  '            if v == "failed":'),
+
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,
  # and the SHOW tab's presses kept 1.0's --
