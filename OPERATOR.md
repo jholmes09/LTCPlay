@@ -461,8 +461,11 @@ closing disarm every laser, and after Resume or Reset they stay dark until
 you arm them again; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
-how BEYOND is told is not set yet, so each button says so until Jeff fills
-in `lasers` in ltcplay_morning.json); Calibrate all lasers (the test on
+how BEYOND is told is not set yet, so each laser says "Calibration cue not
+set up yet", what is needed and where, until Jeff fills in `lasers` in
+ltcplay_morning.json: see How to set up the laser calibration cue in
+MORNING.md, which has a step by step way to find and check BEYOND's
+address with BEYOND's own OSC Monitor); Calibrate all lasers (the test on
 for every armed laser that is not locked out, one after another; it names
 any it skipped and why) and Calibration off (every test off, always
 works); Open BEYOND (on the show PC only: brings the BEYOND window to the
@@ -1307,7 +1310,14 @@ while BEYOND is not running: it reads LINK LOST first, in red, and if
 BEYOND was running and stops, an alert says so. BEYOND never answers back, so "lit, unconfirmed" means the
 lasers were sent lit and BEYOND is running; it cannot prove the beams are
 on. Off the show PC, or with BEYOND on another machine, the pill's details
-say "lit? link unknown".
+say "lit? link unknown". BEYOND is on this PC when the `host` in the
+`beyond` block of ltcplay_fire_ice.json is localhost, a 127.x.x.x address
+(127.0.0.2 on the show PC), or any other address of this PC, a Windows
+loopback adapter's (such as "Microsoft KM-TEST Loopback Adapter") included;
+any other address is another machine. Open BEYOND and the pre-roll's
+Lasers line name that host and this PC's own addresses when they read it
+as another machine, so you can see which address ltcplay uses (MORNING.md,
+"Is BEYOND (or MadMapper) on this PC?").
 
 The video chip says whether MadMapper is ready before any show plays. On
 the show PC it reads "MadMapper running" (green) while the MadMapper
@@ -1332,7 +1342,9 @@ heartbeat drift alarm is not switched on in this build, so there is no
 drift alert. Off
 the show PC, or with MadMapper on another machine, it cannot be told:
 the chip reads "not sent yet" (grey) until a show sends something, and
-its tooltip says why.
+its tooltip says why, naming MadMapper's host and this PC's own addresses
+(the same rule as BEYOND's, above: a loopback adapter's address on this PC
+is this PC).
 
 "Left in this show" counts down the show that is playing. On Hold it stands
 still, because the show's own clock is stopped. Between shows the next

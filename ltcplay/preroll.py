@@ -599,11 +599,14 @@ def check_flame_link(p, fstatus, link, deck_chip):
     return True, ""
 
 
-def check_lasers(p, blanking, arm, conductor, beyond_running=None):
+def check_lasers(p, blanking, arm, conductor, beyond_running=None,
+                 beyond_why=None):
     """Lasers: blanking set up, the laser arm readable, a blank sent NOW
     that got out (a blank only darkens), BEYOND's black zone timecode
     flowing at 30 frames a second when blanking by timecode, and BEYOND
-    running. Never arms or lights anything."""
+    running. `beyond_why()` says why BEYOND's process cannot be looked for
+    from here (beyondwatch.unknown_why), when `beyond_running()` cannot
+    tell. Never arms or lights anything."""
     if blanking is None:
         return None, "no lasers in this show"
     fault = getattr(blanking, "fault", None)
@@ -634,8 +637,13 @@ def check_lasers(p, blanking, arm, conductor, beyond_running=None):
         if got is False:
             return False, "BEYOND is not running"
         if got is None:
-            return True, ("BEYOND is on another computer: its address is "
-                          "in the Network check")
+            why = None
+            try:
+                why = beyond_why() if beyond_why is not None else None
+            except Exception:                    # noqa: BLE001
+                why = None
+            return True, (why or "whether BEYOND is running cannot be "
+                                 "told from here")
     return True, ""
 
 

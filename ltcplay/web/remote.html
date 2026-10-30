@@ -4587,9 +4587,13 @@ function renderMorning(){
     const el = lb.querySelector(`[data-laser="${l.id}"]`); if(!el) return;
     const a = (la.lasers || []).find(x => x.id === l.id) || {};
     el.className = "laser" + (l.locked ? " locked" : l.on ? " on" : "") + (a.armed ? " armed" : "");
+    // A laser whose calibration cue is not set up says what is needed and
+    // where, armed or not (lasertest.SETUP_NEEDED): arming it would not
+    // put a grid up.
+    const need = l.setup_needed || "Calibration cue not set up yet: BEYOND's OSC messages for this laser's grid go under lasers in ltcplay_morning.json (MORNING.md, How to set up the laser calibration cue).";
     el.querySelector("span:not(.arm)").textContent = (a.armed ? "ARMED. " : "Disarmed. ") + (l.locked ? "Locked out" : l.on ? "TEST ON at low power" :
-      !a.armed ? "Arm it to put the grid up." :
-      l.configured ? "Off. Click to put the grid up." : "Not set up yet (placeholder in ltcplay_morning.json)");
+      !l.configured ? need :
+      !a.armed ? "Arm it to put the grid up." : "Off. Click to put the grid up.");
     const btn = el.querySelector(".arm");
     if(btn) btn.textContent = a.armed ? "Disarm" : (l.locked ? "Locked" : "Arm");
   });
