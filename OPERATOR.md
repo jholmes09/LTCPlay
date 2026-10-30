@@ -1025,6 +1025,24 @@ file, on this machine" card (it ends playback and turns Run off), not
 "Stop the show audio". 2.0 shows it as "Flame cues are off" with the
 full text behind a tap. It is display only.
 
+**Other flame cue faults while a show plays.** The flame cues are cut from
+the show's render on a thread of their own, a little ahead of the show. A
+frame not cut yet is zero, and a CUES FAULT once it has stayed so for 1 s.
+"The show's render could not be read (...)" names the error, and so does
+"could not be cut here (...); it is tried again" while a passing trouble
+(memory, the system) is tried again. A cut that fails every try stays a
+fault, and is still tried again every 30 s, so the next show plays it once
+the trouble has passed. "The thread that cuts the show's flame cues ...
+keeps stopping ... restart LTC Player" means what it says: restart LTC
+Player before the next show.
+
+**Known: a flame can fire part way through its cue.** If the flame cues
+were zero for a while during a show (any CUES FAULT above, or a render
+still being read) and come back while a flame cue is on, that flame fires
+from that frame to the end of its cue. The seek guard holds only flames
+that were already on when the timecode moved; it does not hold a cue that
+comes back after a fault. After any CUES FAULT in a show, expect that.
+
 ## The rig check before each show (pre-roll)
 
 Jeff, 2026-10-28: "the show starts with an immediate announcement so if

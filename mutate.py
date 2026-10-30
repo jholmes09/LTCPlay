@@ -7270,20 +7270,8 @@ def build():
 
  ("flame cues: a block that could not be cut is tried again",
   "ltcplay/fire_ice.py",
-  "            if b in self.blocks or b in self.errors:\n"
-  "                continue\n"
-  "            r = self.retry.get(b)\n"
-  "            if r is not None and self.clock() < r[1]:\n"
-  "                continue\n"
-  "            with self.lock:\n"
-  "                if b in self.blocks or b in self.errors:",
-  "            if b in self.blocks:\n"
-  "                continue\n"
-  "            r = self.retry.get(b)\n"
-  "            if r is not None and self.clock() < r[1]:\n"
-  "                continue\n"
-  "            with self.lock:\n"
-  "                if b in self.blocks:"),
+  "        if b in self.errors:\n            t = self.slow.get(b)",
+  "        if False:\n            t = self.slow.get(b)"),
 
  ("flame cues: a block that could not be cut is a silent zero",
   "ltcplay/fire_ice.py",
@@ -7311,8 +7299,8 @@ def build():
  # -- review B of #177 (2026-10-30)
  ("flame cues: a passing error faults its block for good",
   "ltcplay/fire_ice.py",
-  "                    if _cut_data_error(e) or n > CUT_RETRIES:",
-  "                    if True:"),
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif True:"),
 
  ("flame cues: a missing tail journals a line for every piece",
   "ltcplay/fire_ice.py",
@@ -7419,8 +7407,8 @@ def build():
 
  ("flame cues: a cut that keeps failing is retried forever",
   "ltcplay/fire_ice.py",
-  "                    if _cut_data_error(e) or n > CUT_RETRIES:",
-  "                    if _cut_data_error(e):"),
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif b in self.errors:"),
 
  ("flame cues: a block's retries are never backed off further",
   "ltcplay/fire_ice.py",
@@ -7519,6 +7507,69 @@ def build():
   "ltcplay/fire_ice.py",
   "            self.thread_fault = \"\"\n\n    def _cutter_dead",
   "            pass\n\n    def _cutter_dead"),
+
+ # -- round 2 review of #177 (2026-10-30)
+ ("flame cues: a passing cut fault is kept for every later show",
+  "ltcplay/fire_ice.py",
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S",
+  "                        pass"),
+
+ ("flame cues: a data error is tried again like a passing one",
+  "ltcplay/fire_ice.py",
+  "                    if _cut_data_error(e):\n"
+  "                        # The render's own bytes are wrong: for good.",
+  "                    if False:\n"
+  "                        # The render's own bytes are wrong: for good."),
+
+ ("flame cues: a look does not end the uncut grace",
+  "ltcplay/fire_ice.py",
+  "            self._uncut = None\n            plain =",
+  "            plain ="),
+
+ ("flame cues: the back-off counts from the start, not the death",
+  "ltcplay/fire_ice.py",
+  "            since = ended if ended is not None and (\n"
+  "                last is None or ended > last) else last",
+  "            since = last"),
+
+ ("flame cues: a retry set meanwhile is not seen under the lock",
+  "ltcplay/fire_ice.py",
+  "                if not self._due(b):\n                    continue\n"
+  "                r = self.retry.get(b)",
+  "                r = self.retry.get(b)"),
+
+ ("flame cues: a first start that fails is tried on every call",
+  "ltcplay/fire_ice.py",
+  "        again = t is not None or attr in self._start_failed",
+  "        again = t is not None"),
+
+ ("flame cues: a first start's recovery is not said",
+  "ltcplay/fire_ice.py",
+  "        if t is None and again:\n            self._note(",
+  "        if False:\n            self._note("),
+
+ ("flame cues: a render whose ranges disagree with its channels is read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if False:"),
+
+ ("flame cues: a cut past the frame's bytes is a shifted row",
+  "ltcplay/fire_ice.py",
+  "        if len(row) != count:",
+  "        if False:"),
+
+ ("flame cues: a garbage frame count lists every piece",
+  "ltcplay/fire_ice.py",
+  "            self.firsts = None\n            self.pieces =",
+  "            self.firsts = list(range(0, max(1, g.frame_count),\n"
+  "                                     CUT_PIECE_FRAMES))\n"
+  "            self.pieces ="),
+
+ ("flame cues: a death during a restart loses its reason",
+  "ltcplay/fire_ice.py",
+  "        setattr(self, attr, nt)\n        self._start_failed.discard(attr)",
+  "        setattr(self, attr, nt)\n        self._died.pop(attr, None)\n"
+  "        self._start_failed.discard(attr)"),
 
  ("flame cues: nothing is cut ahead of the show timecode",
   "ltcplay/fire_ice.py",

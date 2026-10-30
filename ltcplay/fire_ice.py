@@ -1256,6 +1256,10 @@ CUT_FAULT_AFTER_S = 1.0
 # missing zstandard or a bug was retried forever and never named).
 CUT_RETRY_S = (0.5, 1.0, 2.0)
 CUT_RETRIES = 3
+# Named and kept as a fault, such a block is still tried again this often,
+# so a passing trouble at one Run never faults it for every later show while
+# serve runs (round 2 review of #177). A data error is never tried again.
+CUT_RETRY_SLOW_S = 30.0
 CUT_SHORT_TEXT = "the render's channel data ends before its last frames"
 
 
@@ -1326,11 +1330,13 @@ class _FlameCut:
             # Uncompressed: pieces sliced straight from the bytes, never past
             # the one block's own end (review of #177: a table whose block
             # is shorter than the data, or than the frame count, used to be
-            # cut from whatever bytes followed it).
+            # cut from whatever bytes followed it). Piece b is frames
+            # b * CUT_PIECE_FRAMES on, worked out, never listed (a garbage
+            # frame count must not allocate a list of its pieces).
             self.mv = memoryview(data)
             _first, self.boff, self.blen = g._blocks[0]
-            self.firsts = list(range(0, max(1, g.frame_count),
-                                     CUT_PIECE_FRAMES))
+            self.firsts = None
+            self.pieces = max(1, -(-g.frame_count // CUT_PIECE_FRAMES))
         else:
             self.mv = None
             self.firsts = [b[0] for b in g._blocks]
@@ -1339,6 +1345,7 @@ class _FlameCut:
         self.blocks = {}         # block index -> its frames' rows, joined
         self.errors = {}         # block index -> the error cutting it
         self.short = {}          # block index -> (first missing frame, error)
+        self.slow = {}           # block index -> when its kept error is retried
 
     @classmethod
     def failed(cls, f, span, error):
@@ -1350,7 +1357,7 @@ class _FlameCut:
         c.g, c.whole, c.mv = None, False, None
         c.firsts = [0]
         c.lock = _th.Lock()
-        c.retry = {}
+        c.retry, c.slow = {}, {}
         c.blocks, c.errors, c.short = {}, {0: error}, {}
         return c
 
@@ -1360,8 +1367,32 @@ class _FlameCut:
         return int(seconds * 1000.0 // self.g.step_time_ms) + 1
 
     def _block(self, idx):
+        if self.firsts is None:
+            return max(0, min(idx // CUT_PIECE_FRAMES, self.pieces - 1))
         import bisect
         return max(0, bisect.bisect_right(self.firsts, idx) - 1)
+
+    def _first(self, b):
+        """Block (or piece) b's first frame."""
+        return b * CUT_PIECE_FRAMES if self.firsts is None else self.firsts[b]
+
+    def _end(self, b):
+        """The frame after block (or piece) b's last."""
+        if self.firsts is None:
+            return min((b + 1) * CUT_PIECE_FRAMES, self.g.frame_count)
+        return self.firsts[b + 1] if b + 1 < len(self.firsts) \
+            else self.g.frame_count
+
+    def _due(self, b):
+        """True when block b may be cut now: not cut, not a kept error
+        (unless its slow retry is due), not waiting for its retry."""
+        if b in self.blocks:
+            return False
+        if b in self.errors:
+            t = self.slow.get(b)
+            return t is not None and self.clock() >= t
+        r = self.retry.get(b)
+        return r is None or self.clock() >= r[1]
 
     clock = staticmethod(time.monotonic)
 
@@ -1376,28 +1407,37 @@ class _FlameCut:
             return
         import time as _t
         for b in range(self._block(lo), self._block(hi) + 1):
-            if b in self.blocks or b in self.errors:
-                continue
-            r = self.retry.get(b)
-            if r is not None and self.clock() < r[1]:
+            if not self._due(b):
                 continue
             with self.lock:
-                if b in self.blocks or b in self.errors:
+                # Again under the lock: the other cutting thread may have
+                # cut it, or failed it and set its retry, meanwhile.
+                if not self._due(b):
                     continue
+                r = self.retry.get(b)
                 try:
                     rows, short = self._cut_block(b)
                     if short is not None:
                         self.short[b] = short
                     self.blocks[b] = rows
                     self.retry.pop(b, None)
+                    self.errors.pop(b, None)
+                    self.slow.pop(b, None)
                 except Exception as e:
                     n = (r[0] if r else 0) + 1
-                    if _cut_data_error(e) or n > CUT_RETRIES:
-                        # The render's own bytes are wrong, or it failed
-                        # every retry (a missing module, a bug, memory that
-                        # never comes back): for good, its error named.
+                    if _cut_data_error(e):
+                        # The render's own bytes are wrong: for good.
                         self.errors[b] = e
                         self.retry.pop(b, None)
+                        self.slow.pop(b, None)
+                    elif n > CUT_RETRIES or b in self.errors:
+                        # It failed every retry (a missing module, a bug,
+                        # memory that does not come back): a fault, its
+                        # error named, and still tried again every
+                        # CUT_RETRY_SLOW_S (round 2 review of #177).
+                        self.errors[b] = e
+                        self.retry.pop(b, None)
+                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S
                     else:
                         # Anything else (memory, the system) may pass: the
                         # block stays uncut, a CUES FAULT naming the error
@@ -1412,9 +1452,7 @@ class _FlameCut:
         """(the rows of block b joined, None or (first missing frame, its
         error))."""
         g, cc = self.g, self.g.channel_count
-        first = self.firsts[b]
-        last = self.firsts[b + 1] if b + 1 < len(self.firsts) \
-            else g.frame_count
+        first, last = self._first(b), self._end(b)
         if self.whole:
             from .fseq import FSEQError
             end = self.boff + self.blen
@@ -1465,7 +1503,7 @@ class _FlameCut:
         sh = self.short.get(b)
         if sh is not None and idx >= sh[0]:
             raise sh[1]
-        at = (idx - self.firsts[b]) * self.count
+        at = (idx - self._first(b)) * self.count
         return blk[at:at + self.count]
 
 
@@ -1683,6 +1721,12 @@ class FlameCues:
             if lo < hi:
                 row[lo - first:hi - first] = data[src + lo - dst:
                                                   src + hi - dst]
+        if len(row) != count:
+            # A range past the frame's bytes (round 2 review of #177):
+            # never a row shifted out of place.
+            from .fseq import FSEQError
+            raise FSEQError(f"the render's sparse ranges run past its "
+                            f"{len(data)} channels")
         return bytes(row)
 
     def _refresh_once(self):
@@ -1834,7 +1878,11 @@ class FlameCues:
             return
         now = self._mono()
         n = 0
-        if t is not None:
+        # A thread that died, or one that could not be started even the
+        # first time: backed off alike (round 2 review of #177: a first
+        # start that failed was tried again on every call).
+        again = t is not None or attr in self._start_failed
+        if again:
             n, last, began = self._restarts.get(attr, (0, None, None))
             ended = self._ended.get(attr)
             # How long it actually ran, started to died (review of #177:
@@ -1849,7 +1897,9 @@ class FlameCues:
                         self.RESTART_BACKOFF_S)) - 1]:
                 return
             n += 1
-        why = self._died.get(attr, "it ended")
+        # Taken BEFORE the start (round 2 review of #177): a new thread that
+        # dies at once leaves its own reason, never popped by this call.
+        why = self._died.pop(attr, "it ended")
         try:
             nt = threading.Thread(target=self._guarded,
                                   args=(attr, getattr(self, body)),
@@ -1858,7 +1908,8 @@ class FlameCues:
             nt.start()
         except Exception as e:                   # noqa: BLE001
             # Said once, then tried again after the back-off.
-            self._restarts[attr] = (n, now, None)
+            self._died.setdefault(attr, why)
+            self._restarts[attr] = (max(n, 1), now, None)
             if attr not in self._start_failed:
                 self._note(f"Flame cues: the thread {name} could not be "
                            f"started ({type(e).__name__}: {e}).", fault=True,
@@ -1869,9 +1920,12 @@ class FlameCues:
         setattr(self, attr, nt)
         self._start_failed.discard(attr)
         self._restarts[attr] = (n, now, now)
-        if t is not None:
+        if t is None and again:
+            self._note(f"Flame cues: the thread {name} is running now, after "
+                       f"it could not be started (try {n}).", fault=True,
+                       action="flames", outcome="cues_thread_restarted")
+        elif t is not None:
             # Said only once it is running again (review of #177).
-            self._died.pop(attr, None)
             self._note(f"Flame cues: the thread {name} stopped ({why}); it "
                        f"was started again (restart {n}).", fault=True,
                        action="flames", outcome="cues_thread_restarted")
@@ -2066,6 +2120,15 @@ class FlameCues:
             # render and must match the map exactly; a truly sparse one
             # must at least lie inside it.
             have = max(s + n for s, _src, n in spans)
+            covered = sum(n for _s, _src, n in spans)
+            if covered != f.channel_count:
+                # Its sparse ranges and its channel count disagree (round 2
+                # review of #177): every flame channel would be read from
+                # the wrong place, in this path and the cut one alike.
+                return self._zero(
+                    f"the show's render has {f.channel_count} channels but "
+                    f"its sparse ranges cover {covered}: it is damaged. "
+                    f"Render the show again", fault=True)
             whole = len(spans) == 1 and spans[0][0] == 0
             if total is None or (have != total if whole
                                  else have > total):
