@@ -18272,6 +18272,10 @@ def build():
   '            if is_app(w) and (w.get("owner") or w.get("pid") == c.get("pid")):',
   '            if is_app(w) and w.get("owner"):'),
 
+ ('key guard: the listed safe buttons are held back', 'ltcplay/web/remote.html',
+  '  if(KEY_SAFE_IDS.includes(b.id)) return true;',
+  '  if(false) return true;'),
+
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,
  # and the SHOW tab's presses kept 1.0's --

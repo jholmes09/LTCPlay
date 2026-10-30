@@ -734,10 +734,13 @@ document.addEventListener("keydown", e => { if(e.key === "Escape" && SHEET_DONE)
 // whose press was let through (a purge held on Space always ends).
 // Data driven (review B round 4): every such button carries data-safe,
 // and the selftest checks that no stop, disarm, off or Hold button lacks it.
+// The few whose exact markup other checks pin carry no attribute: listed.
+const KEY_SAFE_IDS = [];
 function keySafe(t){
   const b = t && t.closest ? (t.closest("button") || t) : t;
   if(!b) return false;
   if(b.dataset && b.dataset.safe !== undefined) return true;
+  if(KEY_SAFE_IDS.includes(b.id)) return true;
   const m = b.dataset ? b.dataset.mode : "";
   return m === "stop" || m === "disarm" || (b.classList && (b.classList.contains("disarm") || b.classList.contains("stopnow")));
 }

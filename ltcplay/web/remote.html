@@ -927,7 +927,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button data-safe id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button data-safe id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button data-safe id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button data-safe id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button data-safe class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button data-safe id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button data-safe id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button data-safe id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button data-safe id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -989,7 +989,7 @@ button.fb-pad.na{opacity:.45}
              while any group is armed or asked for, or the state is not
              known (one press, as before); Arm all flame groups while every
              group is off (a hold, the same hold as a group's own button). -->
-        <button data-safe id="b-disarm" class="disarm" data-mode="disarm" title="A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset."><div class="fill"></div><span class="lbl">Disarm all flame groups</span><small>plain disarm: arm again with a hold</small></button>
+        <button id="b-disarm" class="disarm" data-mode="disarm" title="A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset." data-safe><div class="fill"></div><span class="lbl">Disarm all flame groups</span><small>plain disarm: arm again with a hold</small></button>
         <div class="toast" id="arm-note">Hold a group's button to arm it.</div>
       </div>
     </div>
@@ -1013,7 +1013,7 @@ button.fb-pad.na{opacity:.45}
     <div class="lz" id="lz" hidden aria-label="Lasers">
       <div class="lz-head"><b>Lasers</b><span id="lz-st">not known yet</span></div>
       <div class="lz-chips" id="lz-chips"></div>
-      <button data-safe class="lzdis" id="lz-disarm">Disarm all lasers</button>
+      <button class="lzdis" id="lz-disarm">Disarm all lasers</button>
       <div class="toast" id="lz-msg"></div>
     </div>
     <!-- WEATHER (weather.py, WEATHER.md): wind at the venue from a
@@ -1062,7 +1062,7 @@ button.fb-pad.na{opacity:.45}
              starts the purge bursts, Stop ends it. -->
         <div class="wc" id="wc" hidden aria-label="Wave flamer cleaning">
           <div class="wc-head"><b>Wave flamer cleaning</b><span class="wc-armed" id="wc-armed">Not known yet</span></div>
-          <div class="wc-row"><button class="wc-hold" id="wc-hold" title="Hold it like a Hold to arm button. Phase 1 then runs on its own; when it waits, hold again to fire the leftover fuel.">Hold to start the cleaning</button><button data-safe class="disarm wc-stop" id="wc-stop" title="Stops the cleaning and disarms the wave flamers, in any phase. Always works.">Stop</button></div>
+          <div class="wc-row"><button class="wc-hold" id="wc-hold" title="Hold it like a Hold to arm button. Phase 1 then runs on its own; when it waits, hold again to fire the leftover fuel.">Hold to start the cleaning</button><button class="disarm wc-stop" id="wc-stop" title="Stops the cleaning and disarms the wave flamers, in any phase. Always works." data-safe>Stop</button></div>
           <div class="wc-prog" id="wc-prog" aria-live="polite"></div>
           <div class="warnbox open" id="wc-block" hidden></div>
           <div class="dim wc-note" id="wc-note"></div>
@@ -3541,10 +3541,13 @@ document.addEventListener("keydown", e => { if(e.key === "Escape"){ $("info").hi
 // whose press was let through (a purge held on Space always ends).
 // Data driven (review B round 4): every such button carries data-safe,
 // and the selftest checks that no stop, disarm, off or Hold button lacks it.
+// The few whose exact markup other checks pin carry no attribute: listed.
+const KEY_SAFE_IDS = ["al-sum-dis", "lz-disarm"];
 function keySafe(t){
   const b = t && t.closest ? (t.closest("button") || t) : t;
   if(!b) return false;
   if(b.dataset && b.dataset.safe !== undefined) return true;
+  if(KEY_SAFE_IDS.includes(b.id)) return true;
   const m = b.dataset ? b.dataset.mode : "";
   return m === "stop" || m === "disarm" || (b.classList && (b.classList.contains("disarm") || b.classList.contains("stopnow")));
 }

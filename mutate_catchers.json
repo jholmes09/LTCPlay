@@ -1355,6 +1355,7 @@
 "key guard: a key held across a blur is let through after": "test_rack_page_key_guard_never_holds_back_the_safe_buttons",
 "key guard: a purge's release is dropped after focus": "test_rack_page_key_guard_never_holds_back_the_safe_buttons",
 "key guard: data-safe is ignored": "test_rack_page_key_guard_never_holds_back_the_safe_buttons",
+"key guard: the listed safe buttons are held back": "test_rack_page_key_guard_never_holds_back_the_safe_buttons",
 "lasers lamp: a laser command sent while BEYOND was gone counts": "test_lasers_lamp_follows_the_beyond_link",
 "lasers lamp: a restarted BEYOND reads lit with no new unblank": "test_lasers_lamp_follows_the_beyond_link",
 "lasers lamp: lit reads ok whatever the BEYOND link says": "test_lasers_lamp_follows_the_beyond_link",

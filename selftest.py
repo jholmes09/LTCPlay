@@ -89730,6 +89730,9 @@ def _key_safe_scan(page):
     skip = _re.compile(r'id="(hz-same|abort-said-ok)"|data-ann=|data-lz=|'
                        r'data-hzb=')
     lacking, ids = [], []
+    listed = _re.search(r"const KEY_SAFE_IDS = \[([^\]]*)\];", page)
+    listed = set(_re.findall(r'"([^"]+)"', listed.group(1))) if listed \
+        else set()
     for m in _re.finditer(r"<button\b([^>]*)>(.*?)</button>", page, _re.S):
         attrs, inner = m.group(1), m.group(2)
         label = _re.sub(r"<[^>]+>", " ", inner)
@@ -89737,8 +89740,8 @@ def _key_safe_scan(page):
         label = _re.sub(r"\s+", " ", label).strip()
         if skip.search(attrs):
             continue
-        safe = "data-safe" in attrs
         mid = _re.search(r'\bid="([^"$]+)"', attrs)
+        safe = "data-safe" in attrs or bool(mid and mid.group(1) in listed)
         if safe and mid:
             ids.append(mid.group(1))
         if (want.search(label) or _re.search(r'id="(b-abort|b-hold|m-hold)"',
@@ -89787,11 +89790,15 @@ function key(type, t, code){ const e = {target: t, code: code, dropped: false,
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 function focusNow(){ NOW += 10000; (H.focus || []).forEach(f => f({})); }
-for(const id of SAFE_IDS){
+for(const id of __SAFE_IDS__){
   focusNow();
   t(key("keydown", btn(id, "", [], true), "Enter") && key("keyup", btn(id, "", [], true), "Enter"), id + " Enter held back");
   focusNow();
   t(key("keydown", btn(id, "", [], true), "Space") && key("keyup", btn(id, "", [], true), "Space"), id + " Space held back");
+}
+for(const id of KEY_SAFE_IDS){
+  focusNow();
+  t(key("keydown", btn(id), "Enter"), id + " (listed, its markup pinned elsewhere) held back");
 }
 focusNow();
 t(!key("keydown", btn("b-hold"), "Enter"), "a button without data-safe: held back (the attribute decides)");
@@ -89819,7 +89826,7 @@ t(key("keyup", btn("mo-fire"), "Space"), "the purge's release right after focus:
 focusNow(); (H.pointerdown || []).forEach(f => f({}));
 t(key("keydown", btn("b-start", "start"), "Enter"), "after a touch: keys work");
 console.log(JSON.stringify(out));
-""".replace("SAFE_IDS", json.dumps(safe_ids))
+""".replace("__SAFE_IDS__", json.dumps(safe_ids))
         r = _node_js(node, js, capture_output=True, text=True, timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
