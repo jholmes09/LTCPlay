@@ -18955,6 +18955,56 @@ def build():
   "                _before(tc, values, ok)\n",
   "                pass\n"),
 
+ ("fireball charge: no record reads as both tanks EMPTY",
+  "ltcplay/fireball_charge.py",
+  "            state = UNKNOWN if self.path else EMPTY",
+  "            state = EMPTY"),
+
+ ("fireball charge: a record that could not be written is never tried again",
+  "ltcplay/fireball_charge.py",
+  "        elif self._unwritten is not None and \\\n                self._clock() - self._retry_at >= RETRY_S:",
+  "        elif False:"),
+
+ ("fireball charge: a record that could not be written is forgotten",
+  "ltcplay/fireball_charge.py",
+  "            self._unwritten = doc\n            self._retry_at = self._clock()",
+  "            self._unwritten = None\n            self._retry_at = self._clock()"),
+
+ ("fireball charge: close() does not try the unwritten record again",
+  "ltcplay/fireball_charge.py",
+  "            if self._unwritten is not None:\n                # One last try now",
+  "            if False:\n                # One last try now"),
+
+ ("fireball charge: a charge after the valve closed is wiped by the late confirmation",
+  "ltcplay/fireball_charge.py",
+  "                tgt = rel if rel is not None else (\n                    self._ending[0] if self._ending is not None else None)\n                if tgt is not None:\n                    tgt[\"during\"][k]",
+  "                tgt = rel\n                if tgt is not None:\n                    tgt[\"during\"][k]"),
+
+ ("fireball charge: flamesafe reporting a charge sent is not evidence",
+  "ltcplay/fireball_charge.py",
+  "                            self._sent_charge(k)",
+  "                            pass"),
+
+ ("fireball charge: a report of an older release confirms this one",
+  "ltcplay/fireball_charge.py",
+  "seen >= rel.get(\"at\", 0) - 0.1",
+  "seen >= rel.get(\"at\", 0) - 10.0"),
+
+ ("fireball charge: a status over 0.5 s old counts",
+  "ltcplay/fireball_charge.py",
+  "not isinstance(age, (int, float)) or age > fresh_s * 1000:",
+  "not isinstance(age, (int, float)) or age > fresh_s * 10000:"),
+
+ ("fireball charge: Tanks are empty is not a Settings press",
+  "ltcplay/users.py",
+  "    \"fireball-charge-empty\": \"settings\",",
+  "    \"fireball-charge-empty\": None,"),
+
+ ("fireball charge: an operator may confirm the tanks are empty",
+  "ltcplay/remote.py",
+  "        elif not u.may(me.get(\"role\"), \"settings\"):\n            why = (f\"{me.get('name')} may not: \"",
+  "        elif False:\n            why = (f\"{me.get('name')} may not: \""),
+
 ]
 
 

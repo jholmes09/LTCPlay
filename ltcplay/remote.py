@@ -215,6 +215,10 @@ HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
 # too. Restricted by who, never by when: a save during a show is allowed.
 FIREBALL_TIMELINE_GET_ROUTES = ("fireball-timeline",)
 FIREBALL_TIMELINE_POST_ROUTES = ("fireball-timeline-save",)
+# The fuel and air charge record (fireball_charge.py): an admin confirms
+# NOT KNOWN tanks are empty (the Settings row, signed in, screen_arming
+# from the show network). It only changes the record; it sends nothing.
+FIREBALL_CHARGE_POST_ROUTES = ("fireball-charge-empty",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
@@ -225,7 +229,8 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
+    FIREBALL_CHARGE_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1965,6 +1970,8 @@ class Remote:
             return (*self.hazer_post(name, body, ctx),) + ({},)
         if name in FIREBALL_TIMELINE_POST_ROUTES:
             return (*self.fireball_timeline_save(body, ctx),) + ({},)
+        if name in FIREBALL_CHARGE_POST_ROUTES:
+            return (*self.fireball_charge_empty(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -4589,6 +4596,38 @@ class Remote:
             cue, length, why = self.fireball_show_info(show)
             out.update(cue=cue, show_len_s=length, show_problem=why)
         return 200, out
+
+    def fireball_charge_empty(self, body, ctx):
+        """POST fireball-charge-empty: an admin confirms the fuel and air
+        tanks the record does not know are empty (Tanks are empty on the
+        Fireball page). The Settings row, a signed-in person, from the
+        show network screen_arming too. (code, body)."""
+        from . import users as users_mod
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        tr = self.fireball_charge
+        if tr is None:
+            return 404, {"error": "The fireball charge record is not running "
+                                  "in this engine."}
+        why = ""
+        if u is None or not u.active() or not me.get("name"):
+            why = "confirming the tanks are empty needs a signed-in admin."
+        elif not u.may(me.get("role"), "settings"):
+            why = (f"{me.get('name')} may not: "
+                   f"{users_mod.perm_label('settings')}.")
+        elif not self.may_act_from(ctx.local):
+            why = ("confirming the tanks are empty from a device on the "
+                   "show network needs screen_arming.")
+        if why:
+            self._journal(who, device, "fireball charge", "refused",
+                          f"{who or 'Someone'}'s Tanks are empty on the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": f"Not changed: {why}"}
+        ok, text = tr.confirm_empty(who, device)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
 
     def fireball_timeline_save(self, body, ctx):
         """POST fireball-timeline-save {"show", "rev", "source": "fseq" or

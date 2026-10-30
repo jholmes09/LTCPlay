@@ -923,12 +923,22 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   flamesafe's status was not known. A shot or a purge seen for certain
   makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
   charges it automatically.
-- **The very first start** (no record yet) counts both tanks EMPTY and the
-  journal says: if the fuel or air tank is pressurised now, press Purge
-  on the Fireball page.
+- **The very first start** (no record yet, or the record lost) counts both
+  tanks NOT KNOWN, not empty (a behaviour change for Andy to confirm):
+  the timeline charges nothing, and the Fireball page says so. Fire the
+  shot or press Purge on the Fireball page; or, if both tanks are known to
+  be depressurised, an admin presses **Tanks are empty** there (it asks
+  first, and the journal names who). It changes NOT KNOWN tanks only: a
+  charged tank is emptied only by the shot or by Purge.
+- **Evidence.** A charge counts when it went out while flamesafe said the
+  Fireball was armed, or when flamesafe itself reports having sent it
+  (so a short charge right after arming is never missed).
 - Kept in `ltcplay_fireball_charge.json` in the settings folder (written
   whole on every change, so it survives a power cut); every change is one
-  journal line and one audit line. Every screen's status carries it as one
+  journal line and one audit line. If the file cannot be written (on
+  Windows an antivirus or the indexer can hold it), the record is kept in
+  memory, written again every second until it is, and the screens show
+  the fault meanwhile: do not restart LTC Player until it clears. Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 

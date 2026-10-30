@@ -93243,6 +93243,9 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Stop, Hold, the end of a show", "change nothing",
                  "Igniter plays no part", "top-off is not a double charge",
                  "very first start", "press Purge",
+                 "counts both tanks NOT KNOWN, not empty",
+                 "**Tanks are empty**", "flamesafe itself reports",
+                 "written again every second until it is",
                  "ltcplay_fireball_charge.json", "never invented"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
@@ -93343,15 +93346,30 @@ def test_fireball_charge_state():
           "Fuel 55, Air 56, Valve Open 57, Purge 59")
     work = tempfile.mkdtemp()
     try:
-        # The very first run: no file, both EMPTY, said once, written.
+        # The very first run (or a lost record): no file, both NOT KNOWN,
+        # never EMPTY (review of #185), said as a fault, written; an admin
+        # confirms them empty (Tanks are empty).
         C = _fbc(work)
         tr = C.tr
-        check(tr.state("fuel") == E and tr.state("air") == E and
-              tr.first_run, "no file: both tanks EMPTY (the first run)")
+        check(tr.state("fuel") == U and tr.state("air") == U and
+              tr.first_run, "no file: both tanks NOT KNOWN")
         tr.pump()
-        check(any(a[2] == "first_run" and "both tanks start EMPTY" in a[3]
-                  for a, _k in C.lines) and os.path.exists(tr.path),
-              f"said and written: {C.lines[:1]}")
+        check(any(a[2] == "first_run" and "both tanks are NOT KNOWN" in a[3]
+                  and k.get("fault") for a, k in C.lines) and
+              os.path.exists(tr.path),
+              f"said as a fault and written: {C.lines[:1]}")
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        tr.pump()
+        check(ok and tr.state("fuel") == E and tr.state("air") == E and
+              "Fuel and Air confirmed EMPTY by Andy on the Rack screen" in
+              text and C.events[-1]["user"] == "Andy" and
+              C.events[-1]["target"] == "confirmed_empty",
+              f"an admin confirms them empty: journaled and audited: {text}")
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        check(not ok and "nothing to confirm" in text,
+              f"nothing NOT KNOWN: nothing to confirm: {text}")
+        check(_fbc(None).tr.state("fuel") == E,
+              "memory only (no settings folder): EMPTY")
         check(tr.sentence() == "Fuel: empty. Air: empty.",
               f"the words: {tr.sentence()}")
         # Not armed: nothing reached the fireball, nothing changes.
@@ -93600,6 +93618,109 @@ def test_fireball_charge_state():
         check(C4.tr.state("fuel") == E and "could not be written" in
               C4.tr.view()["fault"], "a failed write: the state stands in "
                                      "memory, the fault shown")
+        # ... and it is written again every RETRY_S until it is (review
+        # of #185: a restart read the old record and double charged).
+        tries = []
+        C4.tr._write = lambda doc: tries.append(doc["rev"]) or (
+            _ for _ in ()).throw(PermissionError(13, "Access is denied"))
+        C4.tr.see(_fbc_frame(air=True), "armed")
+        C4.tr.see(_fbc_frame(), "armed")
+        C4.tr.pump()
+        n0 = len(tries)
+        C4.t[0] += 0.5
+        C4.tr.pump()
+        check(len(tries) == n0, "not again before RETRY_S")
+        C4.t[0] += FC.RETRY_S
+        C4.tr.pump()
+        check(len(tries) == n0 + 1 and "written again every" in
+              C4.tr.view()["fault"],
+              f"tried again after RETRY_S, the fault shown: {tries}")
+        real_w = FC.ChargeTracker._write.__get__(C4.tr)
+        C4.tr._write = real_w
+        C4.t[0] += FC.RETRY_S
+        C4.tr.pump()
+        doc = _j.load(open(os.path.join(work, FC.FILE), encoding="utf-8"))
+        check(doc["tanks"]["air"]["state"] == "charged" and
+              not C4.tr.write_fault and C4.tr._unwritten is None,
+              f"once it can, the newest record is on disk and the fault "
+              f"clears: {doc['tanks']['air']['state']}")
+        C5 = _fbc(work)
+        check(C5.tr.state("air") == C_, "a restart reads it")
+        # A write still failing when the engine stops: one last try.
+        C5.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "Access is denied"))
+        C5.tr.see(_fbc_frame(valve=True), "armed")
+        C5.tr.see(_fbc_frame(), "armed")
+        C5.tr.pump()
+        C5.tr._write = FC.ChargeTracker._write.__get__(C5.tr)
+        C5.tr.close()
+        doc = _j.load(open(os.path.join(work, FC.FILE), encoding="utf-8"))
+        check(doc["tanks"]["air"]["state"] == "empty",
+              "close() writes the record that could not be written")
+        # A charge made after the valve closed and before flamesafe
+        # confirmed the shot is not wiped by the confirmation (review of
+        # #185).
+        C6 = _fbc(None)
+        t6 = C6.tr
+        sent6 = {"v": [0, 0, 0, 0, 0]}
+        t6._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": list(sent6["v"])}]}
+        t6._read_armed()
+        t6.see(_fbc_frame(fuel=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.see(_fbc_frame(valve=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.note_manual({"fuel"}, "Andy", "Rack screen")
+        t6.see(_fbc_frame(fuel=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        sent6["v"] = [0, 0, 255, 0, 0]
+        t6._read_armed()
+        check(t6.state("fuel") == C_,
+              f"Andy's charge after the valve closed stands when the shot "
+              f"is confirmed: {t6.tanks['fuel']}")
+        # A report of the valve older than this release (0.1 s slack) is
+        # not this release's: never reported in time, UNKNOWN.
+        sent6["v"] = [0, 0, 0, 0, 0]
+        t6._read_armed()
+        C6.t[0] += 5.0
+        t6._sent_release_at = C6.t[0] - 0.5
+        t6.see(_fbc_frame(air=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.see(_fbc_frame(valve=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6._finish_release(C6.t[0])
+        check(t6.state("air") == C_, "an older report does not confirm it")
+        C6.t[0] += 0.6
+        t6._finish_release(C6.t[0])
+        check(t6.state("air") == U, "and after 0.5 s it is NOT KNOWN")
+        # flamesafe's report of SENDING a charge is evidence even when
+        # the status read just before said disarmed (review of #185).
+        C7 = _fbc(None)
+        t7 = C7.tr
+        t7.see(_fbc_frame(fuel=True), "off")
+        check(t7.state("fuel") == E, "a status saying disarmed: nothing yet")
+        t7._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": [255, 0, 0, 0, 0]}]}
+        t7._read_armed()
+        t7.pump()
+        check(t7.state("fuel") == C_ and t7.state("air") == E and
+              any("flamesafe reported sending it" in a[3]
+                  for a, _k in C7.lines),
+              f"flamesafe reported sending Fuel: CHARGED: {C7.lines[-1:]}")
+        # The status's age: under 0.5 s armed counts, over it does not.
+        for age, want in ((499, "armed"), (501, "unknown"), (True,
+                                                              "unknown")):
+            got = FC.armed_from_status({"connected": True, "stale": False,
+                                        "age_ms": age, "groups": [
+                                            {"name": "fireball",
+                                             "armed": "armed"}]})
+            check(got == want, f"a status {age} ms old: {got}")
         v = C4.tr.view()
         check(v["psi"] is None and set(v["tanks"]) == {"fuel", "air"} and
               v["tanks"]["fuel"]["slot"] == 55 and v["text"],
@@ -93655,6 +93776,47 @@ def test_fireball_charge_wiring():
             "fuel", {}).get("state") in ("empty", "unknown") and
               "text" in st["fireball_charge"],
               f"in the status: {st.get('fireball_charge')}")
+        # Tanks are empty (fireball-charge-empty): the Settings row,
+        # signed in, from the show network screen_arming too.
+        from ltcplay import users as U
+        check(U.classify("/api/remote/fireball-charge-empty", {}) ==
+              "settings" and
+              "fireball-charge-empty" in RM.POST_ROUTES,
+              "Tanks are empty is a Settings press")
+        matrix = U.normalise_matrix(None)
+        rm.users = types.SimpleNamespace(
+            active=lambda: True, matrix=lambda: matrix,
+            may=lambda role, perm: U.allowed(matrix, role, perm))
+
+        def ctx(role=None, local=True):
+            return RM.Ctx(local, "127.0.0.1" if local else "10.0.0.9",
+                          session={"name": "Andy", "role": role}
+                          if role else None)
+        tr.tanks["fuel"]["state"] = "unknown"
+        for c, why in ((ctx(), "signed out"), (ctx("operator"),
+                                               "an operator")):
+            code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                    c)
+            check(code == 403 and tr.state("fuel") == "unknown",
+                  f"{why}: refused, nothing changed: {code} {out}")
+        RM.save_settings(work, screen_arming=False)
+        code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                ctx("admin", local=False))
+        check(code == 403 and "screen_arming" in out["error"],
+              f"an admin on an iPad without screen_arming: refused: {out}")
+        code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                ctx("admin"))
+        check(code == 200 and tr.state("fuel") == "empty" and
+              "confirmed EMPTY by Andy" in out["text"],
+              f"an admin on the show PC: confirmed: {code} {out}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web", "remote.html"),
+            encoding="utf-8").read()
+        check('post("/api/remote/fireball-charge-empty", actor({}))' in page
+              and 'confirmBox("Are both tanks empty?"' in page and
+              'tks[k].state === "unknown"' in page,
+              "the Fireball page's Tanks are empty asks first, shows only "
+              "while a tank is NOT KNOWN, and posts the route")
         httpd.server_close()
         check(closed == [1] and tr._stop.is_set(), "closed with the engine")
     finally:
