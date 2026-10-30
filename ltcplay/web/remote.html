@@ -930,7 +930,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button data-safe id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button data-safe id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button data-safe id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button data-safe id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -958,7 +958,7 @@ button.fb-pad.na{opacity:.45}
     </div>
     <div class="ctl">
       <button id="b-start" class="go" data-mode="start"><span class="lbl">Start now</span><small></small></button>
-      <button id="b-hold" class="hold">Hold</button>
+      <button data-safe id="b-hold" class="hold">Hold</button>
       <button id="b-resume" class="go">Resume</button>
       <button id="b-reset">Reset</button>
     </div>
@@ -992,7 +992,7 @@ button.fb-pad.na{opacity:.45}
              while any group is armed or asked for, or the state is not
              known (one press, as before); Arm all flame groups while every
              group is off (a hold, the same hold as a group's own button). -->
-        <button id="b-disarm" class="disarm" data-mode="disarm" title="A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset."><div class="fill"></div><span class="lbl">Disarm all flame groups</span><small>plain disarm: arm again with a hold</small></button>
+        <button id="b-disarm" class="disarm" data-mode="disarm" title="A plain disarm of every flame group: no Reset and no Abort. Hold a group's button to arm it again. Abort is different: it stops the show, and every group then needs Arm again after Reset." data-safe><div class="fill"></div><span class="lbl">Disarm all flame groups</span><small>plain disarm: arm again with a hold</small></button>
         <div class="toast" id="arm-note">Hold a group's button to arm it.</div>
       </div>
     </div>
@@ -1006,7 +1006,7 @@ button.fb-pad.na{opacity:.45}
     <div class="ann" id="ann" hidden aria-label="Announcements">
       <div class="ann-head"><b id="ann-word">Announcements</b><span id="ann-dev"></span><span class="dim" id="ann-note"></span></div>
       <div class="ann-btns" id="ann-btns"></div>
-      <button id="ann-stop" title="Stops the announcement's sound only. A held schedule stays held until Resume.">Stop announcement</button>
+      <button data-safe id="ann-stop" title="Stops the announcement's sound only. A held schedule stays held until Resume.">Stop announcement</button>
       <div class="toast" id="ann-msg"></div>
     </div>
     <!-- LASERS (Jeff, 2026-10-22): their own strip, apart from the flames.
@@ -1051,7 +1051,7 @@ button.fb-pad.na{opacity:.45}
       <div id="tp" hidden aria-label="Timed purge">
         <div class="tp-row"><b class="tp-h">Timed purge</b><div class="tp-presets" id="tp-presets" role="group" aria-label="Seconds"></div>
           <label class="tp-custom">Other <input id="tp-secs" type="number" inputmode="numeric" min="1" max="30" step="1" aria-label="Seconds"> s</label></div>
-        <div class="tp-row"><button class="tp-hold" id="tp-hold" title="Hold it like a Hold to arm button. The selected machines fire for the seconds chosen, then stop by themselves.">Hold to start a timed purge</button><button class="disarm tp-stop" id="tp-stop" title="Ends a timed purge now, from any screen. A purge held with Space or the Stream Deck's FIRE is ended by letting go, or here from the screen that owns the purge selection or the show PC (a FIRE press too). Abort works everywhere.">Stop purge</button></div>
+        <div class="tp-row"><button class="tp-hold" id="tp-hold" title="Hold it like a Hold to arm button. The selected machines fire for the seconds chosen, then stop by themselves.">Hold to start a timed purge</button><button data-safe class="disarm tp-stop" id="tp-stop" title="Ends a timed purge now, from any screen. A purge held with Space or the Stream Deck's FIRE is ended by letting go, or here from the screen that owns the purge selection or the show PC (a FIRE press too). Abort works everywhere.">Stop purge</button></div>
         <div class="tp-st" id="tp-st" aria-live="polite"></div>
       </div>
       <!-- Shutdown (Jeff, 2026-10-23): its own labelled section on the
@@ -1064,7 +1064,7 @@ button.fb-pad.na{opacity:.45}
              starts the purge bursts, Stop ends it. -->
         <div class="wc" id="wc" hidden aria-label="Wave flamer cleaning">
           <div class="wc-head"><b>Wave flamer cleaning</b><span class="wc-armed" id="wc-armed">Not known yet</span></div>
-          <div class="wc-row"><button class="wc-hold" id="wc-hold" title="Hold it like a Hold to arm button. Phase 1 then runs on its own; when it waits, hold again to fire the leftover fuel.">Hold to start the cleaning</button><button class="disarm wc-stop" id="wc-stop" title="Stops the cleaning and disarms the wave flamers, in any phase. Always works.">Stop</button></div>
+          <div class="wc-row"><button class="wc-hold" id="wc-hold" title="Hold it like a Hold to arm button. Phase 1 then runs on its own; when it waits, hold again to fire the leftover fuel.">Hold to start the cleaning</button><button class="disarm wc-stop" id="wc-stop" title="Stops the cleaning and disarms the wave flamers, in any phase. Always works." data-safe>Stop</button></div>
           <div class="wc-prog" id="wc-prog" aria-live="polite"></div>
           <div class="warnbox open" id="wc-block" hidden></div>
           <div class="dim wc-note" id="wc-note"></div>
@@ -1077,7 +1077,7 @@ button.fb-pad.na{opacity:.45}
         <h2>Lasers: arm and calibration tests</h2>
         <div class="mo-larm" id="mo-larm"><div class="st" id="mo-larm-st">Lasers: not known yet.</div></div>
         <div class="mo-lasers" id="mo-lasers"></div>
-        <div class="mo-larm" id="mo-calib"><button id="mo-cal-on" title="Turns the calibration test on for every armed laser that is not locked out, one after another">Calibrate all lasers</button><button class="ghost" id="mo-cal-off" title="Turns every laser's calibration test off">Calibration off</button><button class="ghost" id="mo-beyond" title="Brings the BEYOND window to the front of this show PC. Sends nothing to BEYOND.">Open BEYOND</button></div>
+        <div class="mo-larm" id="mo-calib"><button id="mo-cal-on" title="Turns the calibration test on for every armed laser that is not locked out, one after another">Calibrate all lasers</button><button data-safe class="ghost" id="mo-cal-off" title="Turns every laser's calibration test off">Calibration off</button><button class="ghost" id="mo-beyond" title="Brings the BEYOND window to the front of this show PC. Sends nothing to BEYOND.">Open BEYOND</button></div>
         <div class="toast" id="mo-lmsg"></div>
       </section>
       <section class="card">
@@ -1125,8 +1125,8 @@ button.fb-pad.na{opacity:.45}
   <section id="v-fireball" class="view" hidden>
     <section class="card" id="fb-head">
       <div class="fb-top"><h2>Fireball</h2><span class="fb-armed" id="fb-armed">Not known yet</span>
-        <button class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
-        <button class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
+        <button data-safe class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
+        <button data-safe class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
       <div class="warnbox open" id="fb-block" hidden></div>
       <div class="dim" id="fb-note"></div>
       <!-- The charge record, and (a tank NOT KNOWN) Tanks are empty
@@ -1298,7 +1298,7 @@ button.fb-pad.na{opacity:.45}
       <h2>Arming from a screen, on this machine</h2>
       <div class="dim" style="font-size:14px" id="sa-what"></div>
       <div class="dim" style="font-size:14px">The Stream Deck has to be running for a hold to arm. Off: arm flames from the Stream Deck only; this rack screen can still purge, unlock and test lasers.</div>
-      <div class="row" style="margin-top:8px"><b id="sa-now" style="flex:2 1 0"></b><button id="sa-on" style="flex:1 1 0">Turn on</button><button id="sa-off" style="flex:1 1 0">Turn off</button></div>
+      <div class="row" style="margin-top:8px"><b id="sa-now" style="flex:2 1 0"></b><button id="sa-on" style="flex:1 1 0">Turn on</button><button data-safe id="sa-off" style="flex:1 1 0">Turn off</button></div>
       <div class="toast" id="sa-msg"></div>
     </section>
     <!-- The announcement output (Jeff's field report, 2026-10-28, item 10):
@@ -1318,7 +1318,7 @@ button.fb-pad.na{opacity:.45}
       <h2>Live flame programming</h2>
       <div class="dim" style="font-size:14px" id="lf-what"></div>
       <div class="dim" style="font-size:14px">Turned on here on the show machine only (Settings permission). Anyone can turn it off, from any screen, signed in or not. The steps for xLights are in LIVE_FLAME_PROGRAMMING.md.</div>
-      <div class="row" style="margin-top:8px"><b id="lf-now" style="flex:2 1 0"></b><button id="lf-on" style="flex:1 1 0">Turn on</button><button id="lf-off" style="flex:1 1 0">Turn off</button></div>
+      <div class="row" style="margin-top:8px"><b id="lf-now" style="flex:2 1 0"></b><button id="lf-on" style="flex:1 1 0">Turn on</button><button data-safe id="lf-off" style="flex:1 1 0">Turn off</button></div>
       <div class="toast" id="lf-msg"></div>
     </section>
     <section class="card" id="rigcheck" hidden>
@@ -1370,7 +1370,7 @@ button.fb-pad.na{opacity:.45}
   </section>
 </div>
 
-<div id="abortbar"><button id="b-abort" aria-label="Abort. Activate twice to abort." aria-describedby="abort-sub" title="Abort: tap twice to stop the show."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub"></small></button></div>
+<div id="abortbar"><button id="b-abort" aria-label="Abort. Activate twice to abort." data-safe aria-describedby="abort-sub" title="Abort: tap twice to stop the show."><span class="oct" aria-hidden="true"><i></i></span><span class="w" aria-hidden="true">ABORT</span><small id="abort-sub"></small></button></div>
 </div>
 
 <div id="stale" hidden role="alert"></div>
@@ -1380,7 +1380,7 @@ button.fb-pad.na{opacity:.45}
     <div class="q" id="m-q"></div>
     <div class="dim" id="m-detail"></div>
     <div class="row">
-      <button id="m-no" class="ghost">Cancel</button>
+      <button data-safe id="m-no" class="ghost">Cancel</button>
       <button id="m-yes" class="yes"></button>
     </div>
   </div>
@@ -2092,6 +2092,11 @@ function prerollChoice(pr, sch){
     return {continued:true, text:"Continued anyway by " + String(c.by || "someone") + ", late. Left off for this show: " +
       ((c.off || []).join(", ") || "nothing") + ". Failed: " + String(c.failed || "") + "."};
   }
+  // A failure a later check cleared (Jeff's field report, 2026-10-29):
+  // the failure is gone from every screen; what to press is said.
+  if(p.cleared && !p.show_check && s.state !== "SHOW" && s.state !== "PAUSED")
+    return {continued:false, cleared:true, text:String(p.cleared.say || "Rig check passed. Press Resume.") +
+      " Cleared by " + String(p.cleared.by || "a check") + "; nothing was started."};
   const f = p.show_check;
   if(!f || p.continued) return null;
   if(s.state === "SHOW" || s.state === "PAUSED") return null;
@@ -2635,8 +2640,8 @@ function render(){
   $("pr-box").hidden = !pch;
   if(pch){
     $("pr-text").textContent = pch.text;
-    $("pr-recheck").hidden = pch.continued || !(ME && ME.local);
-    $("pr-continue").hidden = pch.continued;
+    $("pr-recheck").hidden = pch.continued || pch.cleared || !(ME && ME.local);
+    $("pr-continue").hidden = pch.continued || pch.cleared;
     $("pr-continue").title = pch.confirm || "";
     PR_HOLD_MS = pch.holdMs || 1000;
   }
@@ -2861,7 +2866,7 @@ function renderAlerts(alerts){
   box.innerHTML = alerts.map(a =>
     `<div class="alertbox ${esc(a.severity)}" data-alert="${a.id}"><div class="altext"><span class="alkind">${esc(a.severity)}</span>${esc(a.text)}</div>` +
     `<button class="ack" data-ack="${a.id}">Acknowledge</button>` +
-    (a.options.includes("Disarm all") ? `<button class="disarm" data-aldis="${a.id}">Disarm all</button>` : "") +
+    (a.options.includes("Disarm all") ? `<button data-safe class="disarm" data-aldis="${a.id}">Disarm all</button>` : "") +
     `</div>`).join("");
   box.querySelectorAll("[data-ack]").forEach(b => b.addEventListener("click", async () => {
     try{ await post("/api/remote/alert", actor({id:Number(b.dataset.ack), action:"acknowledge"})); }
@@ -2876,7 +2881,7 @@ let ALERTS_OPEN = false, PENDING_OPEN = false, FAULTS_SEEN = null;
 const LOCAL_FAULT = {}, LOCAL_LABEL = {"an-note": "Art-Net note", "cfg-note": "Settings changed"};
 const ALERT_LABEL = {deck:"Stream Deck", timecode:"Timecode", flames:"Flames", link:"Flame link",
   lasers:"Lasers", audio:"Audio", video:"Video", start:"Start", gate:"Start check", aim:"Aim slots",
-  hazers:"Hazers", timing:"Flame timing"};
+  hazers:"Hazers", timing:"Flame timing", preroll:"Rig check", output:"Projector output"};
 function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
@@ -3014,7 +3019,7 @@ function renderHazers(s){
     HZ_KEY = key;
     row.innerHTML = v.hazers.map((h, i) =>
       `<div class="lamp disarmed" data-hz="${i}"><b>${esc(h.name)}</b><div class="lb"><button class="armb" data-hzb="${i}"><span class="word"></span><span class="act"></span></button></div><i class="why"></i></div>`).join("") +
-      `<div class="lamp" id="hz-all"><b>Hazers</b><div class="lb"><button class="armb" id="hz-off"><span class="word">Hazers off</span><span class="act">Disarm every hazer</span></button></div><i class="why"></i></div>` +
+      `<div class="lamp" id="hz-all"><b>Hazers</b><div class="lb"><button data-safe class="armb" id="hz-off"><span class="word">Hazers off</span><span class="act">Disarm every hazer</span></button></div><i class="why"></i></div>` +
       `<div class="lamp" id="hz-lv"><b>Levels</b><div class="lb"><button class="armb" id="hz-open"><span class="word">Levels</span><span class="act">Haze and fan</span></button></div><i class="why"></i></div>`;
     row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
     $("hz-off").addEventListener("click", hazersOff);
@@ -3281,7 +3286,7 @@ document.addEventListener("visibilitychange", () => { if(document.hidden) armSto
 window.addEventListener("pagehide", () => armStop("the page closed"));
 window.addEventListener("blur", () => armStop("the page lost focus"));
 
-function confirmBox(q, detail, yes, cls, items, flip){
+function confirmBox(q, detail, yes, cls, items, flip, safe){
   return new Promise(res => {
     $("modal").querySelector(".row").classList.toggle("flip", !!flip);
     $("m-q").textContent = q; $("m-q").className = "q" + (items && items.some(i => !i.ok) ? " bad" : "");
@@ -3292,6 +3297,9 @@ function confirmBox(q, detail, yes, cls, items, flip){
       $("m-detail").appendChild(ul);
     }
     $("m-yes").textContent = yes; $("m-yes").className = "yes " + (cls || "");
+    // Its Yes is a safe key (review A round 4) only while it confirms a
+    // Stop: the same button confirms starts too.
+    if(safe) $("m-yes").dataset.safe = ""; else delete $("m-yes").dataset.safe;
     $("modal").hidden = false;
     const done = (v) => { $("modal").hidden = true; $("m-yes").onclick = $("m-no").onclick = null; res(v); };
     $("m-yes").onclick = () => done(true);
@@ -3537,6 +3545,49 @@ $("nav-info").addEventListener("click", () => { $("info").hidden = false; $("inf
 $("info-close").addEventListener("click", () => { $("info").hidden = true; });
 $("info").addEventListener("click", e => { if(e.target === $("info")) $("info").hidden = true; });
 document.addEventListener("keydown", e => { if(e.key === "Escape"){ $("info").hidden = true; } });
+// Keys that arrive just after this window came to the front, before any
+// touch or click in it, were meant for another program (review A of #176:
+// the supervisor's rack screen keeper can bring this window forward).
+// They are dropped, so Space or Enter never STARTS or ARMS anything here.
+// Never held back (review A round 3): a button that acts in the safe
+// direction (Abort, Hold, Stop, every Disarm, every Off and Stop, a
+// two-way button while it disarms or stops), and the release of a key
+// whose press was let through (a purge held on Space always ends).
+// Data driven (review B round 4): every such button carries data-safe,
+// and the selftest checks that no stop, disarm, off or Hold button lacks it.
+// The few whose exact markup other checks pin carry no attribute: listed.
+const KEY_SAFE_IDS = ["al-sum-dis", "lz-disarm"];
+function keySafe(t){
+  const b = t && t.closest ? (t.closest("button") || t) : t;
+  if(!b) return false;
+  if(b.dataset && b.dataset.safe !== undefined) return true;
+  if(KEY_SAFE_IDS.includes(b.id)) return true;
+  const m = b.dataset ? b.dataset.mode : "";
+  return m === "stop" || m === "disarm" || (b.classList && (b.classList.contains("disarm") || b.classList.contains("stopnow")));
+}
+const KEY_GUARD = {at: 0, pointed: true, passed: new Set()};
+window.addEventListener("focus", () => { KEY_GUARD.at = performance.now(); KEY_GUARD.pointed = false; });
+// Keys held when the window lost focus come up elsewhere: forgotten.
+window.addEventListener("blur", () => { KEY_GUARD.passed.clear(); });
+window.addEventListener("pointerdown", () => { KEY_GUARD.pointed = true; }, true);
+function keyFresh(){
+  return !KEY_GUARD.pointed && performance.now() - KEY_GUARD.at <= 2000;
+}
+function keyGuarded(e){
+  return keyFresh() && !keySafe(e.target);
+}
+window.addEventListener("keydown", e => {
+  if(keyGuarded(e)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+  KEY_GUARD.passed.add(e.code || e.key);
+}, true);
+window.addEventListener("keypress", e => {
+  if(keyGuarded(e) && !KEY_GUARD.passed.has(e.code || e.key)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
+window.addEventListener("keyup", e => {
+  const k = e.code || e.key;
+  if(KEY_GUARD.passed.has(k)){ KEY_GUARD.passed.delete(k); return; }
+  if(keyGuarded(e)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 $("info-exit").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/screen", {action:"close"}); $("info-msg").textContent = j.text || "Asked."; }
   catch(e){ $("info-msg").textContent = e.message; }
@@ -3969,6 +4020,10 @@ function drawStart(stale){
   const el = $(id);
   if(!el) return;
   el.addEventListener("pointerdown", () => { DOWN_MODE[id] = el.dataset.mode; });
+  // A key press decides from the mode seen at its keydown too (review B
+  // round 4): a Stop that turns into Start before the key comes up is
+  // never a start.
+  el.addEventListener("keydown", e => { if(!e.repeat && (e.key === "Enter" || e.key === " ")) DOWN_MODE[id] = el.dataset.mode; });
 });
 // What the press means: decided from the mode seen at touch-down.
 function decide(id, now){
@@ -3981,7 +4036,7 @@ function decide(id, now){
 // where it was pressed, and a refusal says why, in the engine's words.
 async function pressStop(msgId){
   const el = $(msgId);
-  if(!(await confirmBox("Stop the show?", STOP_CONFIRM, "Yes, Stop", ""))) return;
+  if(!(await confirmBox("Stop the show?", STOP_CONFIRM, "Yes, Stop", "", null, false, true))) return;
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   el.textContent = "Stopping: disarming, then fading to dark...";
@@ -4583,7 +4638,7 @@ function renderMorning(){
   if(ab.dataset.key !== akey){
     ab.dataset.key = akey;
     ab.innerHTML = Object.keys(la.groups || {}).map(g => `<button data-lgrp="${esc(g)}"></button>`).join("") +
-      `<button class="gdis" id="mo-ldisarm">Disarm all lasers</button><div class="st" id="mo-larm-st"></div>`;
+      `<button data-safe class="gdis" id="mo-ldisarm">Disarm all lasers</button><div class="st" id="mo-larm-st"></div>`;
     ab.querySelectorAll("[data-lgrp]").forEach(b => b.addEventListener("click", () => laserGroupClick(b.dataset.lgrp)));
     $("mo-ldisarm").addEventListener("click", () => moPress("laser-arm", {all:true, on:false}, "mo-lmsg"));
   }
@@ -4929,6 +4984,13 @@ document.addEventListener("keydown", e => {
   if(e.code !== "Space") return;
   if((location.hash || "").replace("#", "") !== "morning") return;
   if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if(keyFresh() || keySafe(e.target)){
+    // Just after the window came forward with no touch in it, whatever
+    // has the focus, a Space never starts a purge fire; and on a safe
+    // button (a Stop, a Disarm, an Off) it presses that button only
+    // (reviews A and B round 4).
+    return;
+  }
   e.preventDefault();
   if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }
   fireStart();

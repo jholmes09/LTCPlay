@@ -847,6 +847,13 @@ class FlameLink:
         self._manual = None
         self.manual_slots = frozenset()
         self.manuals_sent = 0
+        # The show path's own values (cues, purge, programming) of the
+        # frame being read, before the Fireball page's frame is merged, and
+        # of the last frame that went out (all zero when it did not):
+        # fireball_cues judges "the show's charge carrying on" from this
+        # alone, never from Andy's presses (third review, D-F1).
+        self._show_part = bytes(UNIVERSE_SIZE)
+        self.show_sent = bytes(UNIVERSE_SIZE)
         # Programming transport moves (landing()): +1 on each, so a frame
         # whose values were read across one goes out as zeros.
         self._land_gen = 0
@@ -1271,6 +1278,7 @@ class FlameLink:
         merged on its slots (_with_manual). Never raises; zeros on anything
         uncertain. Calls the providers: never under self._lock."""
         tc, vals, manual_ok = self._values_show()
+        self._show_part = bytes(vals)
         if not manual_ok:
             return tc, vals
         return tc, self._with_manual(vals, self._clock())
@@ -1959,12 +1967,16 @@ class FlameLink:
             # a zero() or disarm_all() that landed meanwhile carries none.
             values = self._with_haze(values, False)
             self.last_values_nonzero = any(values)
+            sp = self._show_part
+            show = bytes(map(min, sp, values)) \
+                if len(sp) == len(values) else bytes(UNIVERSE_SIZE)
             wire = self._with_haze(values, run and gen == self._zero_gen)
             seq, mono = self._next()
             ok = self._send(encode_flame(seq, tc, mono, self.cfg.universe,
                                          wire, self.cfg.key,
                                          self._hazers_said()))
             self._last_frame_at = self._clock()
+            self.show_sent = show if ok else bytes(UNIVERSE_SIZE)
             self._repeat_abort()
             late = self._abort_overdue()
         if late is not None:

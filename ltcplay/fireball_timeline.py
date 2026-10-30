@@ -285,8 +285,10 @@ def _show_name(show):
 
 def show_key(name):
     """A show file name as a case-blind folder sees it (Windows, macOS):
-    folded case, and no trailing dots or spaces (Windows drops them)."""
-    return str(name).rstrip(" .").casefold()
+    lower case (str.lower, as the file systems compare: never Unicode
+    case folding, which would make "ß" and "ss" one name), and no
+    trailing dots or spaces (Windows drops them)."""
+    return str(name).rstrip(" .").lower()
 
 
 def entry_of(doc, show):
@@ -479,17 +481,27 @@ class Store:
                 read_doc(new)          # never writes what it would refuse
                 old = self._read_bytes()
                 self._write(new)
-                # Only once the new file is in place: a save that failed
-                # leaves no history copy behind.
-                self._keep_history(doc["rev"], bool(err), old)
-                # The history folder exists from the first save on: the
-                # mark that a missing file was once saved (load).
-                os.makedirs(self.history_dir(), exist_ok=True)
             except (OSError, TimelineError) as e:
                 text = f"Not saved: the file could not be written ({e})."
                 self._note(who, screen, "save_failed", text, fault=True)
                 self._audit(who, screen, show, "error", text)
                 return False, text, None
+            # The new file is in place: the save stands, whatever happens to
+            # the history copy (review of #184: a history copy refused by
+            # an antivirus made a save that WAS made say "Not saved").
+            warn = ""
+            try:
+                # The history folder exists from the first save on: the
+                # mark that a missing file was once saved (load).
+                os.makedirs(self.history_dir(), exist_ok=True)
+                # Only once the new file is in place: a save that failed
+                # leaves no history copy behind.
+                self._keep_history(doc["rev"], bool(err), old)
+            except OSError as e:
+                warn = (f" The copy of the version before could not be "
+                        f"kept in {HISTORY_DIR} ({e}).")
+                self._note(who, screen, "history_failed",
+                           f"Fireball timeline saved, but{warn}", fault=True)
             what = change or "nothing changed"
             text = (f"{who or 'Someone'} saved the fireball timeline for "
                     f"{show} on the {screen or 'unknown screen'} "
@@ -501,7 +513,7 @@ class Store:
                     tell(show, after, new["rev"])
                 except Exception:                # noqa: BLE001
                     pass
-            return True, f"Saved: {what}.", dict(after, rev=new["rev"])
+            return True, f"Saved: {what}.{warn}", dict(after, rev=new["rev"])
 
     def _read_bytes(self):
         """The file as it is now, or None when it is not there."""

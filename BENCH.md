@@ -144,6 +144,21 @@ needs its stems under `clock.audio.cues`.
 
 ## What is NOT wired yet
 
+- **MadMapper output check: bench-verify the rule** (PR #176). LTC
+  Player reads MadMapper 6's video output as on only when MadMapper has a
+  visible window with no title bar covering a whole display. That is an
+  assumption, not yet seen on a real MadMapper 6. On the show PC: with the
+  output on the projectors, the rack screen's lamp **MadMapper output**
+  must read on; turn the output off (Output menu, Fullscreen) and it must
+  read OFF within a few seconds; the supervisor log describes MadMapper's
+  windows (class, owner, title bar, rect). Until this passes, Continue
+  anyway leaves nothing off for a failed MadMapper output check (the video
+  plays as it is). If the lamp reads OFF with the projectors lit, set
+  `"madmapper_output_check": false` in ltcplay_fire_ice.json and press
+  Reload engine. Also note the class of BEYOND's and MadMapper's message
+  boxes in that log: the rack screen keeper treats Windows' dialog class
+  (#32770) as a dialog it never covers.
+
 - **Flames: ltcplay sends no flame cues at all on this branch.** There is
   no flame link from ltcplay to flamesafe yet. flamesafe will show "Show
   program has not answered yet: disarmed" and no group can arm. That is the
