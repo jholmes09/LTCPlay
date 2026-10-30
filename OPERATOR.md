@@ -901,9 +901,33 @@ that long. The stages, in this order:
   and save again), keeps the version before it in
   `fireball_timeline_history` (the last 50), and writes one journal line
   and one audit line: who, which screen, and what changed, stage by
-  stage. If the file cannot be read, no show fires its fireball from a
-  timeline: a show set to Timeline never falls back to its FSEQ.
+  stage. If the file cannot be read, or it is missing after it was saved
+  once, no show fires its fireball from a timeline (a show set to Timeline
+  never falls back to its FSEQ), and every save is refused, because saving
+  over it would lose every other show's timeline. An admin either repairs
+  the file or replaces it on purpose (the broken one is kept in
+  `fireball_timeline_history`). A show is saved under the show folder's
+  own spelling of its name ("show.json" typed on a Mac or Windows PC is
+  saved as "Show.json"); two files whose names differ only by case are
+  refused: rename one.
 - **Where.** The editor is on Interface 2.0 (a later update).
+
+### Every show, FSEQ or Timeline (a behaviour change)
+
+Jeff: never a double charge under any circumstance, and Purge by hand
+only. So for **every** show, also one that plays its fireball from its
+FSEQ:
+
+- **Purge (59) never comes from a show.** Whatever the FSEQ has on 59 is
+  zero. Purge is only the Fireball page's Purge button.
+- **The FSEQ's Fuel Charge (55) and Air Charge (56) follow the same charge
+  rule as the timeline:** they go out only while that tank is EMPTY, or
+  carrying on the charge they started; otherwise they are held off and the
+  journal and the screens say so once ("Fuel already charged: the FSEQ's
+  Fuel Charge was skipped (no double charge)."). After a shot or a Purge
+  empties the tank, the next charge in the FSEQ goes out again.
+- Valve Open (57), the Igniter (58) and every other channel of an FSEQ
+  show are exactly as before.
 
 ### In a show set to Timeline
 
@@ -922,14 +946,19 @@ that long. The stages, in this order:
   once, for example
   "Fuel already charged: the Fuel stage was skipped (no double charge)."
   A tank NOT KNOWN is skipped too: purge or fire to reset it. A charge cut
-  short by Hold, Stop or a seek never charges again in that play, even
-  after a Resume inside its time. The Valve Open and Igniter stages are
-  not limited by this.
+  short (stopped for more than a quarter of a second: Hold, Stop, a seek)
+  never charges again in that play, even after a Resume inside its time:
+  "Fuel charge cut short ... not charged again in this play". A stop of a
+  frame or two (one frame not read or not sent) is no cut: the same charge
+  carries on. The Valve Open and Igniter stages are not limited by this.
 - **Editing during a show.** A saved change is taken on the next frame. A
   stage already started keeps the times it started with. A stage not
   started yet takes the new times, unless its new start is already behind
   the show: then it is not fired in this play. A change of source (FSEQ
   or Timeline) applies from the next time a show cue starts.
+- A show plays the timeline saved for it under any spelling of its file
+  name ("SHOW.JSON" plays the timeline of "Show.json"); two entries that
+  differ only by case are a fault and that show fires no fireball.
 - If the timeline file cannot be read, or could not be set up, 55 to 59
   are zero for **every** show (a Timeline show never falls back to its
   FSEQ) and the journal and every screen's status say why.
@@ -957,12 +986,22 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   flamesafe's status was not known. A shot or a purge seen for certain
   makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
   charges it automatically.
-- **The very first start** (no record yet) counts both tanks EMPTY and the
-  journal says: if the fuel or air tank is pressurised now, press Purge
-  on the Fireball page.
+- **The very first start** (no record yet, or the record lost) counts both
+  tanks NOT KNOWN, not empty (a behaviour change for Andy to confirm):
+  the timeline charges nothing, and the Fireball page says so. Fire the
+  shot or press Purge on the Fireball page; or, if both tanks are known to
+  be depressurised, an admin presses **Tanks are empty** there (it asks
+  first, and the journal names who). It changes NOT KNOWN tanks only: a
+  charged tank is emptied only by the shot or by Purge.
+- **Evidence.** A charge counts when it went out while flamesafe said the
+  Fireball was armed, or when flamesafe itself reports having sent it
+  (so a short charge right after arming is never missed).
 - Kept in `ltcplay_fireball_charge.json` in the settings folder (written
   whole on every change, so it survives a power cut); every change is one
-  journal line and one audit line. Every screen's status carries it as one
+  journal line and one audit line. If the file cannot be written (on
+  Windows an antivirus or the indexer can hold it), the record is kept in
+  memory, written again every second until it is, and the screens show
+  the fault meanwhile: do not restart LTC Player until it clears. Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
