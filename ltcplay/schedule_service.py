@@ -819,6 +819,7 @@ class Service:
         # read back from its file at start.
         self._stop_carry = None
         self._stop_carry_dirty = False
+        self._stop_carry_failing = False
         self._halt_count_lock = threading.Lock()
         # Whether the operator has pressed Run (a show file is running), set
         # by fire_ice.attach() with the conductor. While it says no, nothing
@@ -1818,12 +1819,18 @@ class Service:
             # Stop ends a Start now waiting for the show audio: it is
             # refused under this lock before it can start a show over the
             # Hold (re-review of #144, N1).
-            self.cancel_start_wait(
-                "Stop was pressed" if ev.kind == sch.HOLD_ON and
-                str(ev.detail or "").startswith(sch.STOP_HOLD_DETAILS)
-                else "the schedule was put on Hold" if ev.kind == sch.HOLD_ON
-                else "the show was aborted" if ev.kind == sch.ABORT
-                else "Stop was pressed")
+            if not (ev.kind == sch.HOLD_ON and str(ev.detail or "")
+                    .startswith(sch.STOP_HOLD_DETAILS[1])):
+                # (A Stop's Hold put back by the engine is not a new
+                # press: it never cancels an operator's Start now, which
+                # may start its one show from it. Round 3, L1.)
+                self.cancel_start_wait(
+                    "Stop was pressed" if ev.kind == sch.HOLD_ON and
+                    str(ev.detail or "").startswith(sch.STOP_HOLD_DETAILS)
+                    else "the schedule was put on Hold"
+                    if ev.kind == sch.HOLD_ON
+                    else "the show was aborted" if ev.kind == sch.ABORT
+                    else "Stop was pressed")
         self.machine = out.machine
         plan, held = self._hold_back_unattended(
             self._drive_conductor(out, ev), ev)
@@ -2286,6 +2293,8 @@ class Service:
 
     STOP_HOLD_CARRIED = ("kept the Hold of a Stop pressed on the night of "
                          "{night}, which nobody has Resumed")
+    STOP_HOLD_CARRIED_EARLIER = ("kept the Hold of a Stop pressed earlier, "
+                                 "which nobody has Resumed")
     STOP_HOLD_FILE = "ltcplay_stop_hold.json"
 
     # -- a Stop's Hold, kept until Resume (Jeff, 2026-10-30) ----------------
@@ -2328,33 +2337,59 @@ class Service:
                             "screen": str(screen or "")}
         self._stop_carry_dirty = True
 
+    STOP_HOLD_UNSAVED = ("The Stop's Hold could not be saved to {path} "
+                         "({why}). It stands while ltcplay runs, but would "
+                         "be lost if ltcplay restarted now: it is tried "
+                         "again every tick until it is saved.")
+    STOP_HOLD_UNREMOVED = ("The Stop's Hold was released, but its file "
+                           "{path} could not be removed ({why}). It is "
+                           "tried again every tick; until then a restart "
+                           "would come back held.")
+
     def _stop_carry_write(self):
-        """Write (or remove) the marker file if it changed. Never raises:
-        a failed write is a fault line, and the in-memory Hold stands."""
+        """Write (or remove) the marker file if it changed (lock held).
+        Called after a Stop or Resume and again on every tick until it has
+        worked (round 3 of the cold review, M1): a failure leaves it to
+        do, raises the fault flag once with a sentence (shown on every
+        screen), and the in-memory Hold stands meanwhile. Never raises."""
         if not getattr(self, "_stop_carry_dirty", False):
             return
-        self._stop_carry_dirty = False
         path = self._stop_hold_path()
         if not path:
+            self._stop_carry_dirty = False
             return
         try:
             if self._stop_carry is None:
                 if os.path.exists(path):
                     os.remove(path)
-                return
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(self._stop_carry, fh)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, path)
+            else:
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(self._stop_carry, fh)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
         except Exception as e:                   # noqa: BLE001
+            # Left dirty: the next tick tries again.
+            if not self._stop_carry_failing:
+                self._stop_carry_failing = True
+                text = (self.STOP_HOLD_UNSAVED if self._stop_carry is not None
+                        else self.STOP_HOLD_UNREMOVED).format(
+                    path=path, why=f"{type(e).__name__}: {e}")
+                if self.machine is not None:
+                    self._apply(sch.Event(sch.FAULT_RAISED, "system",
+                                          detail=text))
+                else:
+                    self._journal_line("system", text, action="stop hold",
+                                       outcome="not saved", fault=True)
+            return
+        self._stop_carry_dirty = False
+        if self._stop_carry_failing:
+            self._stop_carry_failing = False
             self._journal_line(
-                "system", f"The Stop's Hold could not be written to "
-                          f"{path} ({type(e).__name__}: {e}). It stands "
-                          f"until Resume while ltcplay runs; after a restart "
-                          f"Run is off, so nothing starts by itself.",
-                action="stop hold", outcome="not saved", fault=True)
+                "system", f"The Stop's Hold file {path} is "
+                          f"{'saved' if self._stop_carry is not None else 'removed'}"
+                          f" now.", action="stop hold", outcome="saved")
 
     def _stop_carry_clear(self, who, screen, why):
         if self._stop_carry is None:
@@ -2380,6 +2415,15 @@ class Service:
         (dark, marked as the Stop's) and an existing Hold is marked as the
         Stop's. Not while a Stop is still under way (its own step decides)."""
         m = self.machine
+        if self._stop_carry is not None and \
+                self._stop_carry.pop("unreadable", False):
+            self._journal_line(
+                "system", f"The Stop's Hold file {self._stop_hold_path()} "
+                          f"is there but could not be read. To be safe it "
+                          f"counts as a Stop's Hold: no show starts by "
+                          f"itself until someone presses Resume.",
+                action="stop hold", outcome="unreadable", fault=True)
+        self._stop_carry_write()
         if self._stop_carry is None or m is None or self.halting():
             return
         if m.state == sch.HOLD:
@@ -2389,11 +2433,30 @@ class Service:
             return
         if m.state not in self.SHOWTIME_FROM:
             return
-        self._apply(sch.Event(
+        night = self._stop_carry.get("night")
+        ev = sch.Event(
             sch.HOLD_ON, "system", who="LTC Player", screen="engine",
-            detail=self.STOP_HOLD_CARRIED.format(
-                night=self._stop_carry.get("night") or "an earlier night")),
-            now)
+            detail=(self.STOP_HOLD_CARRIED.format(night=night) if night
+                    else self.STOP_HOLD_CARRIED_EARLIER))
+        out = self._apply(ev, now)
+        if not out.refused and self.conductor is not None and \
+                getattr(self.conductor, "_look", None) not in (
+                    "STOPPED_DARK", "ABORTED"):
+            # The Hold is back (after a Start now's show, or on a later
+            # night): the look goes dark again, as at the Stop (round 3 of
+            # the cold review, M2). The plain dark of a stopped show: no
+            # disarm, so nothing armed since, and the fuel pump, is touched
+            # (a Hold never ends the pump).
+            calls = self._decide_conductor(
+                [("Dark again for the Stop's Hold", "show_stopped",
+                  frozenset())], ev)
+            self._journal_line(
+                "system", "Sent to the show conductor, dark again for the "
+                          "Stop's Hold. Its own line says what it did.",
+                action="conductor", outcome="sent",
+                reason="show_stopped asked of the show conductor")
+            for c in calls:
+                self._calls.put(c)
 
     LATCH_CARRIED = ("The night of {night} ended with an Abort that nobody "
                      "has Reset, so tonight starts dark: no show starts and "

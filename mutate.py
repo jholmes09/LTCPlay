@@ -17456,6 +17456,46 @@ def build():
   "  if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n",
   ""),
 
+ # Cold review of #191 round 3.
+ ("scheduler: a failed Stop's Hold file is never tried again (round 3, M1)",
+  "ltcplay/schedule_service.py",
+  "            # Left dirty: the next tick tries again.\n",
+  "            self._stop_carry_dirty = False\n"),
+
+ ("scheduler: the tick never retries the Stop's Hold file (round 3, M1)",
+  "ltcplay/schedule_service.py",
+  "        self._stop_carry_write()\n"
+  "        if self._stop_carry is None or m is None or self.halting():",
+  "        if self._stop_carry is None or m is None or self.halting():"),
+
+ ("scheduler: the Stop's Hold back after a Start now is not dark (round 3, M2)",
+  "ltcplay/schedule_service.py",
+  "        if not out.refused and self.conductor is not None and \\\n"
+  "                getattr(self.conductor, \"_look\", None) not in (",
+  "        if False and \\\n"
+  "                getattr(self.conductor, \"_look\", None) not in ("),
+
+ ("scheduler: the Stop's Hold coming back cancels a Start now (round 3, L1)",
+  "ltcplay/schedule_service.py",
+  "            if not (ev.kind == sch.HOLD_ON and str(ev.detail or \"\")\n"
+  "                    .startswith(sch.STOP_HOLD_DETAILS[1])):",
+  "            if True:"),
+
+ ("scheduler: an unreadable Stop's Hold file counts as not held",
+  "ltcplay/schedule_service.py",
+  "            return {\"night\": \"\", \"who\": \"\", \"unreadable\": True}",
+  "            return None"),
+
+ ("scheduler: a tick never marks an existing Hold as the Stop's",
+  "ltcplay/schedule_service.py",
+  "            if not m.stop_hold:\n"
+  "                self.machine = replace(m, stop_hold=True)\n"
+  "                self._save_tonight()\n"
+  "            return\n"
+  "        if m.state not in self.SHOWTIME_FROM:",
+  "            return\n"
+  "        if m.state not in self.SHOWTIME_FROM:"),
+
  ("conductor: Stop leaves a Hold decided before it in the line",
   "ltcplay/schedule_service.py",
   "    STOP_DROPS = (\"hold\", \"resume\", \"show_starting\", \"start_show\")",

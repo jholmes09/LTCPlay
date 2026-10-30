@@ -5617,7 +5617,10 @@ class Remote:
                     out["failed"].append("show")
                 elif r.get("state") == "HOLD":
                     out["hold"] = {"ok": True, "text": ""}
-            elif kind in ("hold", "held"):
+            elif kind in ("hold", "held", "carried"):
+                # "carried": nothing to hold right now (the last show, the
+                # night closing or over), but the Stop's Hold stands, and
+                # the answer says so (round 3 of the cold review).
                 out["hold"] = {"ok": ok, "text": text}
                 if not ok:
                     out["failed"].append("hold")

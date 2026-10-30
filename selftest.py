@@ -59537,6 +59537,139 @@ def test_stop_round2_conductor_and_marks():
     print("  ok")
 
 
+def test_stop_hold_round3():
+    section("A Stop's Hold (cold review of #191 round 3): its file is tried "
+            "again every tick until it is saved, with a fault on the "
+            "screens meanwhile; an unreadable file counts as held and is "
+            "said; the Hold that comes back after a Start now is dark again; "
+            "a Start now right after a Stop is never cancelled by the "
+            "Hold coming back; a tick marks an existing Hold as the Stop's")
+    S = _sched()
+    if S is None:
+        return
+    import os as _os
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+
+    def stop_last(R):
+        m = R.svc.machine
+        last = m.slots[-1]
+        R.now[0] = last.start
+        R.svc.tick()
+        R.settle()
+        R.now[0] = last.start + timedelta(seconds=1)
+        _confirm(S, R.svc)
+        R.settle()
+        return last
+    # M1: the file's first write fails; it is tried again and lands.
+    R = _RemoteRig(S)
+    real = SV.os.replace
+    fails = [1]
+
+    def flaky(a, b):
+        if fails[0] and str(b).endswith(SV.Service.STOP_HOLD_FILE):
+            fails[0] -= 1
+            raise PermissionError("locked for the test")
+        return real(a, b)
+    try:
+        last = stop_last(R)
+        SV.os.replace = flaky
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        path = R.svc._stop_hold_path()
+        check(R.svc.stop_held() and not _os.path.exists(path) and
+              any("could not be saved" in f for f in R.svc.machine.faults),
+              f"a failed write: the Hold stands, the fault flag says so: "
+              f"{R.svc.machine.faults}")
+        R.now[0] = last.start + timedelta(seconds=30)
+        R.svc.tick()
+        check(_os.path.exists(path),
+              "the next tick writes it (tried again until it lands)")
+        svc2 = _svc(S, R.work, R.now)
+        try:
+            check(svc2.stop_held(), "and a restart reads it back")
+        finally:
+            svc2.stop()
+    finally:
+        SV.os.replace = real
+        R.close()
+    # L1: Start now right after a Stop on the last show, before any other
+    # tick (the night is not yet held again): its own tick puts the Stop's
+    # Hold back, and the Start now still starts its one show.
+    R = _RemoteRig(S)
+    try:
+        last = stop_last(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.state != S.HOLD and R.svc.stop_held(),
+              f"setup: not on Hold yet, the Stop's Hold stands: "
+              f"{R.svc.machine.state}")
+        R.now[0] = last.start + timedelta(seconds=10)
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"seen": R.seen(), "confirmed": True})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.SHOW and
+              "just before it started" not in str(out),
+              f"Start now after a Stop starts its show: {st} {out} "
+              f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    # M2: the Hold that comes back after a Start now's show is dark.
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        R.now[0] = _den(S, 17, 59)
+        R.svc.operator_press("start-now", "Andy", "Rack screen",
+                             confirmed=True, preroll=False)
+        R.settle()
+        check(R.svc.machine.state == S.SHOW, "setup: Start now's show")
+        R.now[0] = _den(S, 17, 59, 1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 6))
+        R.settle()
+        check(R.c.snapshot()["look"] not in ("STOPPED_DARK",),
+              f"setup: the show's end brought a look: "
+              f"{R.c.snapshot()['look']}")
+        R.now[0] = _den(S, 18, 6, 5)
+        R.svc.tick()
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.dark and m.stop_hold and
+              R.c.snapshot()["look"] == "STOPPED_DARK",
+              f"the Hold comes back dark: the look goes down again: "
+              f"{m.state} {m.dark} {R.c.snapshot()['look']}")
+        # A tick marks an existing Hold as the Stop's.
+        R.svc.machine = _dc_replace(R.svc.machine, stop_hold=False)
+        R.svc.tick()
+        check(R.svc.machine.stop_hold, "a tick marks the Hold as the Stop's")
+    finally:
+        R.close()
+    # An unreadable file counts as held, and is said.
+    R = _RemoteRig(S)
+    try:
+        path = R.svc._stop_hold_path()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        svc2 = _svc(S, R.work, R.now)
+        try:
+            check(svc2.stop_held(), "an unreadable file counts as held")
+            svc2.tick()
+            rows = [x for x in svc2.journal if x.get("action") == "stop hold"
+                    and x.get("outcome") == "unreadable"]
+            check(rows, "and it is said in the journal")
+        finally:
+            svc2.stop()
+        _os.remove(path)
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_stop_says_when_its_flame_disarm_failed():
     """Third review of #126, P2-2: /api/stop also disarms every flame group,
     and when that disarm fails, the Rack screen says so instead of a bare
@@ -99817,6 +99950,7 @@ if __name__ == "__main__":
         test_fire_ice_stop_while_the_cue_starts,
         test_stop_hold_stands_until_resume,
         test_stop_round2_conductor_and_marks,
+        test_stop_hold_round3,
         test_screen_arm_end_to_end_probes,
         test_screen_arming_switch_and_refusals,
         test_engine_stall_probe_memory_is_bounded,
