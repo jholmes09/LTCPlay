@@ -78,8 +78,9 @@ screen with no scrolling.
   now counts as a show, on a night that has a show on the schedule; on a
   night with no show on the schedule it never happens. Someone who signs
   in after the last show ended stays signed in for the rest of the
-  night. The night is the schedule's own, up to its 2 AM reset, so a show
-  ending just before the reset still gets its sign-out. A blank or wrong
+  night. The night is the schedule's own, up to where it hands over to
+  the next (2 AM, or later while a show of it still has to run), so a
+  show ending just before then still gets its sign-out. A blank or wrong
   number in the box is refused and nothing is saved. An admin can change the minutes on the
   Users screen ("Sign everyone out this many minutes after the last show
   of the night"); 0 means off. The audit log says "after the last show"

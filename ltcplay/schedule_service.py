@@ -952,6 +952,8 @@ class Service:
                   night=self._night())
         if failed:
             self._journal_rule_error()
+        else:
+            self._journal_rule_warnings()
         if why:
             self._journal_line("system", why, action="operators")
         if why_screens:
@@ -1031,7 +1033,21 @@ class Service:
                 self._journal_rule_error()
             else:
                 self._follow_rule(self.clock())
-            return self.rule
+            rule = self.rule
+        # Worked out off the lock (review of PR #196: a long season held
+        # the scheduler for seconds).
+        if rule is not None:
+            try:
+                warns = sch.rule_warnings(rule)
+            except Exception:                    # noqa: BLE001
+                warns = []
+            if warns:
+                with self._locked():
+                    for text in warns:
+                        self._journal_line("system", text,
+                                           action="schedule file",
+                                           outcome="warning")
+        return rule
 
     def _load_rule(self):
         """True when the rule file could not be used."""
@@ -1147,6 +1163,13 @@ class Service:
              if dropped else []) + list(skipped))
         self.machine = out.machine
         self._record(out, now)
+        if out.machine.state == sch.OFF and out.machine.slots != m.slots \
+                and str(m.date) in self._summarised:
+            # The summary written when the night closed says the list as
+            # it is now (review B of PR #196: a save after Close for the
+            # night added rows the summary did not have).
+            self._write_summary("closed; its list was changed by a "
+                                "schedule saved after it closed")
         if out.machine.state == sch.BOOT:
             # A night that never opened (sch.follow_rule): it starts as a
             # restart starts it, through BOOT_DONE and its usual effects,
@@ -1320,6 +1343,17 @@ class Service:
             return str(pr.skip() or "")
         except Exception:                        # noqa: BLE001
             return ""
+
+    def _journal_rule_warnings(self, rule=None):
+        """What the schedule file has that an operator should know (it is
+        used as it is: sch.rule_warnings). Never raises."""
+        try:
+            warns = sch.rule_warnings(rule or self.rule)
+        except Exception:                        # noqa: BLE001
+            return
+        for text in warns:
+            self._journal_line("system", text, action="schedule file",
+                               outcome="warning")
 
     def _journal_rule_error(self):
         self._journal_line("system", "The schedule file was not loaded, so "
@@ -2483,19 +2517,52 @@ class Service:
 
     # -- the night ------------------------------------------------------
     def _tonight(self, now):
-        """The night `now` belongs to: the local date from the nightly
-        reset on, the day before until then (sch.night_of, Jeff,
-        2026-10-03)."""
-        return sch.night_of(now, self.rule.tz)
+        """The night `now` belongs to (sch.night_of with the rule and the
+        machine): the night before until it hands over, then today's.
+
+        It only ever moves forward (review of PR #196: a schedule saved on
+        Friday with Thursday's hours longer reopened Thursday and started
+        its shows on Friday morning): never before the night on the
+        machine, and with no machine yet (a start), never before the
+        latest night with a saved list, which _open_night_before then
+        looks behind for a night still running."""
+        d = sch.night_of(now, self.rule.tz, self.rule, self.machine)
+        m = self.machine
+        if m is not None:
+            return max(d, m.date)
+        floor = self._latest_saved_night(
+            sch._utc(sch._aware(now)).astimezone(self.rule.tz).date())
+        return d if floor is None else max(d, floor)
+
+    def _latest_saved_night(self, upto):
+        """The latest date up to `upto` with a saved list, or None."""
+        try:
+            names = os.listdir(self.state_dir)
+        except OSError:
+            return None
+        best = None
+        for name in names:
+            if not (name.startswith(TONIGHT_PREFIX) and
+                    name.endswith(".json")):
+                continue
+            try:
+                y = datetime.strptime(name[len(TONIGHT_PREFIX):-5],
+                                      "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if y <= upto and (best is None or y > best):
+                best = y
+        return best
 
     # How many days back a start looks for a night left open (a delayed
     # show waiting, or a show running) to close it, see _open_night_before.
     OPEN_NIGHT_LOOK_BACK = 7
 
     def _ensure_night(self, now):
-        """The night the scheduler is on, loaded or moved on at the
-        nightly reset. A night runs until sch.NIGHT_RESET (2 AM local) on
-        the next calendar day, always (Jeff, 2026-10-03): until then a
+        """The night the scheduler is on, loaded or moved on where it
+        hands over (sch.night_reset with the rule and the machine: 2 AM, or
+        later while a show of it still has to run, or earlier for an early
+        next night; Jeff, 2026-10-30): until then a
         delayed show waits for Start now or Close for the night (Jeff,
         2026-10-01); at it the night closes and a show still delayed is
         MISSED, out loud (_still_open). Only a show running or paused at
@@ -2528,15 +2595,19 @@ class Service:
             old = self._boot_latch(old)
             self.machine = replace(old, operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
+            # A night with a show still to run carries on (review of PR
+            # #196: a show moved past the night's planned end, then a
+            # restart); otherwise it is closed below, out loud.
+            d = self._tonight(now)
         if self.machine.date == d:
             return True
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
         # journal rather than dropped without a word. This tick never
-        # starts a show, so it needs no alert gate: a night cannot run past
-        # midnight (schedule.parse_rule refuses it) and the reset is at
-        # NIGHT_RESET (2 AM), so every slot on yesterday's list is long
-        # past by now; BOOT_DONE below starts nothing either, and the next
+        # starts a show, so it needs no alert gate: a night hands over only
+        # once its last show and guard are over (sch.night_reset), so every
+        # slot on yesterday's list is past by now; BOOT_DONE below starts
+        # nothing either, and the next
         # TICK goes through the gate (review of PR #133, 7 and 8).
         self._apply(sch.Event(sch.TICK, "scheduler"), now)
         how = self._still_open(now, d)
@@ -2897,18 +2968,31 @@ class Service:
         if m.state in (sch.SHOW, sch.PAUSED):
             return None
         words = sch.reset_words()
+        ends = sch.night_reset(m.date, m.tz, self.rule, m)
+        # Said as the 2 AM reset only when the night was over by 2 AM: a
+        # show delayed at a time after 2 AM ends the night later (review B
+        # of PR #196).
+        two = sch.night_reset(m.date, m.tz)
+        late = m.delayed() is not None and m.delayed().start > two
+        default = ends == two and not late
+        if late:
+            ends = max(ends, m.delayed().start)
+        if not default:
+            words = f"{m.hm(ends)} hand over to the next night"
         if m.delayed() is None:
-            return (f"written at the {words} nightly reset; the night was "
-                    f"never closed")
-        if now < sch.night_reset(m.date, m.tz):
+            return (f"written at the {words}" +
+                    (" nightly reset" if default else "") +
+                    "; the night was never closed")
+        if now < ends:
             return None
         n = m.delayed().n
-        out = sch.close_at_reset(m, now)
+        out = sch.close_at_reset(m, now, at_default=default)
         self.machine = out.machine
         self._record(out, now)
         self._save_tonight()
-        return (f"closed at the {words} nightly reset; the delayed show {n} "
-                f"never started")
+        return (f"closed at the {words}" +
+                (" nightly reset" if default else "") +
+                f"; the delayed show {n} never started")
 
     def _open_night_before(self, d, now):
         """The most recent night saved before `d`, picked up again if it
@@ -2942,7 +3026,9 @@ class Service:
             waiting = [f"show {n} is delayed and waits for Start now"
                        for n, st in slots if st == sch.DELAYED] + \
                       [f"show {n} was running" for n, st in slots
-                       if st == sch.RUNNING and back == 1]
+                       if st == sch.RUNNING and back == 1] + \
+                      [f"show {n} is still to come" for n, st in slots
+                       if st == sch.PENDING and back <= 2]
             if state in (sch.CLOSING, sch.OFF) or not waiting:
                 return None
             try:
@@ -2955,13 +3041,25 @@ class Service:
                     f"as it is, and {d} starts from its own list.",
                     action="load tonight", outcome="failed", fault=True)
                 return None
+            ends = sch.night_reset(y, self.rule.tz, self.rule, m)
+            if now < ends:
+                # It still has a show to run, after its planned end (a move
+                # or an add past it): it carries on (review of PR #196).
+                self._journal_line(
+                    "system", f"ltcplay started, and the night of {y} still "
+                    f"has a show to run ({'; '.join(waiting)}), so it "
+                    f"carries on until {m.hm(ends)}, when it hands over to "
+                    f"the next night.",
+                    action="load tonight", outcome="night carries on")
+                return m
             self._journal_line(
                 "system", f"ltcplay started on the night of {d}, and the "
                 f"night of {y} was left open when it stopped: "
-                f"{'; '.join(waiting)}. That night ended at the "
-                f"{sch.reset_words()} nightly reset on "
-                f"{y + timedelta(days=1)}, so it is picked up only to close "
-                f"it: nothing from it will run.",
+                f"{'; '.join(waiting)}. That night ended at "
+                f"{m.hm(ends)}, when it handed over to the next night, so "
+                f"it is picked up only to close it: nothing from it will "
+                f"run, and a show still to come on it is missed, said in "
+                f"the journal.",
                 action="load tonight", outcome="closing open night")
             return m
         return None
