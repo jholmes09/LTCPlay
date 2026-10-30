@@ -2798,6 +2798,11 @@ class ShowRunner:
         started only once it is confirmed. Returns a conductor Result at
         once. `who` is "the scheduler" for a show that came due, or the
         operator who pressed Start now."""
+        # A Stop that lands while this start is under way (an urgent Stop
+        # goes beside the line, so it can overtake a start already being
+        # made) is seen after the cue starts, as an Abort is (cold review
+        # of #191, A-F3). Read before anything else (round 2, item 9).
+        stops0 = getattr(self.conductor, "stops", 0)
         clk = self.show._clock()
         s = self.show._session()
         # A Continue anyway is for the start it was pressed for, whatever
@@ -2864,6 +2869,24 @@ class ShowRunner:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}; the music "
                             f"was stopped.")
+        if getattr(self.conductor, "stops", 0) != stops0:
+            # A Stop landed while the cue was starting: its sequence may
+            # have run before the cue began. The music stops here, and the
+            # conductor's Stop runs again, afresh, so whatever this start
+            # brought up (video, pixels, music) fades to dark too.
+            why = "Stop was pressed while it was starting"
+            self.show.music_halt(C.ABORT_FADE_S)
+            try:
+                self.conductor.stop(who, "engine", force_new=True)
+            except Exception as e:                   # noqa: BLE001
+                self._note(f"Taking the rig dark again after a Stop failed "
+                           f"({type(e).__name__}: {e}).", fault=True,
+                           action="stop", outcome="failed")
+            self._start_undone()
+            with self._lock:
+                self._cue = {"show": n, "failed": why}
+            return C.failed(f"Show {n} was not started: {why}; the music "
+                            f"was stopped and the rig taken dark again.")
         with self._lock:
             self._cue = {"show": n, "clock": clk,
                          "played": clk.cues_played, "confirmed": False,
