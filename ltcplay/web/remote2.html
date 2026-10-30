@@ -509,11 +509,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 <main>
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
-    <button class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-    <button class="b red" id="m-stop"><svg class="i"><use href="#i-stop"/></svg>Stop show</button>
-    <button class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
-    <button class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
-    <button class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
+    <button data-safe class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
+    <button data-safe class="b red" id="m-stop"><svg class="i"><use href="#i-stop"/></svg>Stop show</button>
+    <button data-safe class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
+    <button data-safe class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
+    <button data-safe class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
   </div>
   <!-- SHOW: top to bottom, what to do next, where the show is, the
        transport that applies now, one alert, flames and lasers,
@@ -527,8 +527,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     </div>
     <div class="tr">
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
-      <button class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-      <button class="b redline" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
+      <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
+      <button data-safe class="b redline" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -542,7 +542,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <div id="groups" aria-label="Flame groups and lasers"></div>
       <div class="allcol">
         <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span class="lbl"><span id="armall-l">Hold: arm flames</span><small id="armall-why"></small></span></button>
-        <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
+        <button data-safe class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
       <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
            per hazer, and Hazers off. Abort and Stop switch them off. -->
@@ -598,7 +598,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <!-- The heading is the announcements' "?": a tap says what they do. -->
       <button class="head" data-q="announce" aria-label="Announcements: what they do"><b id="ann-w"><svg class="i"><use href="#i-mega"/></svg><span id="ann-word">Announce</span><span class="qm" aria-hidden="true">?</span></b><span id="ann-note"></span></button>
       <div id="ann-btns"></div>
-      <button class="b redline" id="ann-stop"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
+      <button data-safe class="b redline" id="ann-stop"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
     </div>
     <div class="frow">
       <button class="b" id="wx"><svg class="i"><use href="#i-wind"/></svg><span id="wx-t">Wind: waiting</span></button>
@@ -608,7 +608,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </footer>
 </div>
 
-<div id="abortbar"><button id="b-abort" aria-label="Abort. Tap twice to abort."><span class="oct" aria-hidden="true"><i></i></span><span class="w" id="abort-w">ABORT</span></button></div>
+<div id="abortbar"><button id="b-abort" data-safe aria-label="Abort. Tap twice to abort."><span class="oct" aria-hidden="true"><i></i></span><span class="w" id="abort-w">ABORT</span></button></div>
 
 <div id="sheet" hidden role="dialog" aria-modal="true">
   <div class="box">
@@ -805,7 +805,7 @@ function sheet(title, html, buttons, flip){
     $("sh-body").innerHTML = html || "";
     const row = $("sh-row");
     row.className = flip ? "flip" : "";
-    row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}" data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
+    row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}"${b.safe ? " data-safe" : ""} data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
     $("sheet").hidden = false;
     const done = (v) => { if(SHEET_DONE !== done) return; SHEET_DONE = null; $("sheet").hidden = true; res(v); };
     SHEET_DONE = done;
@@ -814,12 +814,55 @@ function sheet(title, html, buttons, flip){
 }
 $("sheet").addEventListener("click", e => { if(e.target === $("sheet") && SHEET_DONE) SHEET_DONE(null); });
 document.addEventListener("keydown", e => { if(e.key === "Escape" && SHEET_DONE) SHEET_DONE(null); });
+// Keys that arrive just after this window came to the front, before any
+// touch or click in it, were meant for another program (review A of #176:
+// the supervisor's rack screen keeper can bring this window forward).
+// They are dropped, so Space or Enter never STARTS or ARMS anything here.
+// Never held back (review A round 3): a button that acts in the safe
+// direction (Abort, Hold, Stop, every Disarm, every Off and Stop, a
+// two-way button while it disarms or stops), and the release of a key
+// whose press was let through (a purge held on Space always ends).
+// Data driven (review B round 4): every such button carries data-safe,
+// and the selftest checks that no stop, disarm, off or Hold button lacks it.
+// The few whose exact markup other checks pin carry no attribute: listed.
+const KEY_SAFE_IDS = [];
+function keySafe(t){
+  const b = t && t.closest ? (t.closest("button") || t) : t;
+  if(!b) return false;
+  if(b.dataset && b.dataset.safe !== undefined) return true;
+  if(KEY_SAFE_IDS.includes(b.id)) return true;
+  const m = b.dataset ? b.dataset.mode : "";
+  return m === "stop" || m === "disarm" || (b.classList && (b.classList.contains("disarm") || b.classList.contains("stopnow")));
+}
+const KEY_GUARD = {at: 0, pointed: true, passed: new Set()};
+window.addEventListener("focus", () => { KEY_GUARD.at = performance.now(); KEY_GUARD.pointed = false; });
+// Keys held when the window lost focus come up elsewhere: forgotten.
+window.addEventListener("blur", () => { KEY_GUARD.passed.clear(); });
+window.addEventListener("pointerdown", () => { KEY_GUARD.pointed = true; }, true);
+function keyFresh(){
+  return !KEY_GUARD.pointed && performance.now() - KEY_GUARD.at <= 2000;
+}
+function keyGuarded(e){
+  return keyFresh() && !keySafe(e.target);
+}
+window.addEventListener("keydown", e => {
+  if(keyGuarded(e)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+  KEY_GUARD.passed.add(e.code || e.key);
+}, true);
+window.addEventListener("keypress", e => {
+  if(keyGuarded(e) && !KEY_GUARD.passed.has(e.code || e.key)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
+window.addEventListener("keyup", e => {
+  const k = e.code || e.key;
+  if(KEY_GUARD.passed.has(k)){ KEY_GUARD.passed.delete(k); return; }
+  if(keyGuarded(e)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 // A confirm: Yes only on the button that says it. `flip` puts Yes on the
 // other side (Start's confirm, as in 1.0, so a Stop's Yes is never where
 // a Start's was).
-async function confirmBox(q, detail, yes, cls, flip){
+async function confirmBox(q, detail, yes, cls, flip, safe){
   const v = await sheet(q, `<div>${esc(detail || "")}</div>`,
-    [{label:"Cancel", value:false}, {label:yes, value:true, cls:cls || "green"}], flip);
+    [{label:"Cancel", value:false, safe:true}, {label:yes, value:true, cls:cls || "green", safe:!!safe}], flip);
   return v === true;
 }
 
@@ -975,6 +1018,7 @@ function nextStep(st, isStaleNow, local, items){
   const pins = pinItems(st);
   if(pins.length) return {tone:"bad", icon:"flame", text: pins.length > 1 ? pins.length + " live modes on. Stop when done." : pins[0].text};
   const pch = prerollChoice(st.preroll, sch);
+  if(pch && pch.cleared) return {tone:"warn", icon:"check", text:String((st.preroll.cleared || {}).say || "Rig check passed. Press Resume.")};
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
   if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
   if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Signed out: view only. Sign in to control."};
@@ -1050,9 +1094,10 @@ const ALERT_WHAT = {deck:"Stream Deck problem.", audio:"Show audio problem.", vi
   start:"Show did not start.", flames:"Flame problem.", link:"Flame link problem.", timecode:"Timecode problem.",
   lasers:"Laser problem.", users:"Sign-in file problem.", aim:"Wave aim does not match.", follow:"Video not following.",
   hazers:"Hazers do not match.", timing:"Flame frames late.",
-  gate:"Check before the show.", preroll:"Rig check failed."};
+  gate:"Check before the show.", preroll:"Rig check failed.", output:"Projector output off."};
 const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", video:"Check the video PC.",
-  timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm."};
+  timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm.",
+  output:"Turn on MadMapper output."};
 let ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null, ALERT_KEY = null, FAULTS_SEEN = null, KEYS_SEEN = null;
 function alertItems(st){
   const s = st || {}, items = [];
@@ -1066,6 +1111,7 @@ function alertItems(st){
   // Hold to continue anyway as the slot's one button.
   const pch = prerollChoice(s.preroll, s.schedule || {});
   if(pch && pch.continued) items.push({key:"pr-cont", tone:"warn", what:"Continued anyway.", do:"Some outputs are off.", full:pch.text});
+  else if(pch && pch.cleared) items.push({key:"pr-cleared", tone:"warn", what:"Rig check passed.", do:String((s.preroll.cleared || {}).say || "Press Resume.").replace(/^Rig check passed\. /, ""), full:pch.text});
   else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
@@ -1227,7 +1273,7 @@ function renderPins(){
   const sig = pins.map(p => p.key + ":" + p.btn).join(",");
   if(sig === PIN_SIG) return;
   PIN_SIG = sig;
-  $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
+  $("pins").innerHTML = pins.map(p => `<button data-safe class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
 }
 $("pins").addEventListener("click", async e => {
   const b = e.target.closest("button[data-pin]"); if(!b) return;
@@ -1396,6 +1442,7 @@ function drawTransport(isSt){
   st.disabled = HALT_BUSY;
 }
 $("b-go").addEventListener("pointerdown", () => { DOWN_MODE.go = $("b-go").dataset.mode; });
+$("b-go").addEventListener("keydown", e => { if(!e.repeat && (e.key === "Enter" || e.key === " ")) DOWN_MODE.go = $("b-go").dataset.mode; });
 // What the press means: decided from the mode seen at touch-down (1.0's
 // pressDecision): a press whose meaning changed under the finger, or just
 // after a show ended, does nothing and says so.
@@ -1445,7 +1492,7 @@ $("b-hold").addEventListener("click", () => press("hold"));
 // Stop: the engine's complete halt (1.0's pressStop): the confirm, the same
 // body, the same answer read the same way.
 async function pressStop(){
-  if(!(await confirmBox("Stop the show?", "Flames and lasers disarm. Rig goes dark.", "Yes, stop", "red"))) return;
+  if(!(await confirmBox("Stop the show?", "Flames and lasers disarm. Rig goes dark.", "Yes, stop", "red", false, true))) return;
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
@@ -1746,11 +1793,11 @@ function renderHazers(s){
     HZ_KEY = key;
     row.innerHTML = compact ?
       `<div class="tn">Hazers</div><div class="hzs" id="hz-sum"></div><div class="hzb2">` +
-      `<button class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
+      `<button data-safe class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
       `<button class="b" id="hz-open"><span class="hn">Hazers</span></button></div>` :
       v.hazers.map((h, i) =>
         `<button class="b off" data-hzb="${i}"><span class="hn"></span><span class="hw"></span></button>`).join("") +
-      `<button class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
+      `<button data-safe class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
       `<button class="b" id="hz-open"><span class="hn">Levels</span></button>`;
     row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
     $("hz-off").addEventListener("click", hazersOff);
@@ -2796,9 +2843,9 @@ function dayBuild(k){
   else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><span class="key" id="mo-key"></span></div>`;
   else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
-  else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open">${icon("wind")}Levels</button><button class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
+  else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open">${icon("wind")}Levels</button><button data-safe class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
   else if(k === "clean") box.innerHTML = `<div class="drow"><span class="dbig" id="wc-armed"></span></div>` +
-    `<div class="drow"><button class="b green hold" id="wc-hold">${icon("ring")}<span id="wc-hold-l">Hold to start</span></button><button class="b red" id="wc-stop">${icon("stop")}Stop</button></div>` +
+    `<div class="drow"><button class="b green hold" id="wc-hold">${icon("ring")}<span id="wc-hold-l">Hold to start</span></button><button data-safe class="b red" id="wc-stop">${icon("stop")}Stop</button></div>` +
     `<div id="wc-prog" class="dbig"></div><div id="wc-block" class="dim"></div>`;
   else box.innerHTML = "";
   dayWire(k);
@@ -3050,6 +3097,10 @@ document.addEventListener("keydown", e => {
   // focused group button or step does not (second review of #169, 1: a
   // tap focuses it): Space fires, and its default is stopped on the way
   // down and up so the browser never presses the focused button.
+  // Just after the window came forward with no touch in it, whatever has
+  // the focus, Space never starts a purge fire (rack screen key guard,
+  // reviews A and B round 4 of #176).
+  if(keyFresh() || keySafe(e.target)) return;
   if(fireKeyNotOurs(e)) return;
   e.preventDefault();
   if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }
