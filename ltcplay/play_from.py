@@ -83,9 +83,14 @@ _ENTRY_KEYS = {"cue", "audio_len_s", "cues", "next_id", "edited_by",
                "screen"}
 _CUE_KEYS = {"id", "name", "tc", "lead_in_s", "note"}
 _DASHES = ("\u2013", "\u2014")
-_HIST_REV = re.compile(r"-rev([0-9]{1,12})(?:-unreadable)?\.json$")
+_HIST_REV = re.compile(r"-rev([0-9]{1,15})(?:-unreadable)?\.json$")
 # A read or a replace that meets the file held open (Windows): tried again.
 RETRIES = 5
+# A read waits this long for a file held open (a sync program, a virus
+# scanner) before calling it unreadable.
+READ_WAIT_S = 2.0
+# A hand-edited revision above this counts as this.
+MAX_REV = 10 ** 12
 # The words of the two refusals a page acts on (remote.play_from_save
 # tells the page which one it met): a stale page, and a broken file.
 STALE_WORDS = "since this screen read them"
@@ -153,23 +158,37 @@ def parse_lead_in(v):
     return v
 
 
+# Joiners that shape a word (emoji sequences, Indic and Persian script):
+# allowed inside a name or a note; every other invisible format character
+# (a zero-width space, a right-to-left override) is not.
+_JOINERS = ("\u200c", "\u200d")
+
+
 def _clean(v, what):
-    """`v` NFKC-normalised (a name typed with a combining accent and one
-    typed precomposed are the same name), refused with a control or an
-    invisible formatting character in it (Cc, Cf: a new line, an escape,
-    a zero-width space, a right-to-left override)."""
-    v = unicodedata.normalize("NFKC", v)
-    if any(unicodedata.category(ch) in ("Cc", "Cf") for ch in v):
+    """`v` as typed, refused with a control character or an invisible
+    formatting character in it (Cc, Cf: a new line, an escape, a
+    zero-width space, a right-to-left override), the joiners ZWJ and ZWNJ
+    aside. Never rewritten: a circled digit or a TM sign stays as typed."""
+    if any(unicodedata.category(ch) in ("Cc", "Cf") and ch not in _JOINERS
+           for ch in v):
         raise CueError(f"the {what} has a control or invisible character "
                        f"in it; type it again")
     return v
+
+
+def name_key(name):
+    """The key two names are compared by: NFC (a name typed with a
+    combining accent and one typed precomposed are the same name) and
+    case folded."""
+    return unicodedata.normalize("NFC", name).casefold()
 
 
 def _name(v):
     if not isinstance(v, str) or not v.strip():
         raise CueError("a cue needs a name")
     v = " ".join(_clean(v, "name").split())
-    if not v:
+    if not v.strip("".join(_JOINERS) + " "):
+        # Nothing but joiners: nothing anyone can read.
         raise CueError("a cue needs a name")
     if len(v) > MAX_NAME:
         raise CueError(f"the name {v[:MAX_NAME]!r}... is longer than "
@@ -235,7 +254,7 @@ def check_cues(cues, audio_len_s=None, need_ids=False):
         else:
             ids.add(cid)
         if name is not None:
-            key = name.casefold()
+            key = name_key(name)
             if key in names:
                 problems.append(f"the name {name!r} is used twice: each cue "
                                 f"has its own name")
@@ -442,6 +461,14 @@ def _utc(t):
 
 # ------------------------------------------------------------ the store --
 
+def _hist_key(name):
+    """A kept copy's order: by revision, then by time (the clock may have
+    gone back; a revision never does)."""
+    m = _HIST_REV.search(name)
+    # At one revision, a copy of a file that broke came after the good one.
+    return (int(m.group(1)) if m else -1, "-unreadable" in name, name)
+
+
 class Store:
     """FILE in `folder`: read strictly, written whole and atomically with a
     revision check, the version before each save kept in HISTORY_DIR, and
@@ -491,18 +518,19 @@ class Store:
 
     def _high_water(self, file_rev=None):
         """The highest revision this file has ever had, as far as can be
-        known: the file's own (when it says one), one above every kept
-        version's, and the last this store wrote. A revision never goes
-        backwards, so a page that read an older file (or a file that was
-        replaced, deleted or broken by hand) cannot pass the stale check."""
+        known: the file's own (when it says one; a hand-edited one above
+        MAX_REV counts as MAX_REV), every kept copy's, and every one this
+        store has seen or written. A revision never goes backwards, so a
+        page that read an older file (or a file replaced, deleted or broken
+        by hand) cannot pass the stale check."""
         top = self._high
         if isinstance(file_rev, int) and not isinstance(file_rev, bool) \
-                and 0 <= file_rev <= 10 ** 12:
-            top = max(top, file_rev)
+                and file_rev >= 0:
+            top = max(top, min(file_rev, MAX_REV))
         for n in self.history():
             m = _HIST_REV.search(n)
             if m:
-                top = max(top, int(m.group(1)) + 1)
+                top = max(top, min(int(m.group(1)), MAX_REV))
         # Remembered: a revision once seen (a newer program's file read
         # before it broke) is never handed out again.
         self._high = top
@@ -510,26 +538,48 @@ class Store:
 
     def _read_raw(self):
         """The file's bytes, or None when it is not there. A read that
-        meets the file mid-replace (Windows) is tried again."""
-        for i in range(RETRIES):
+        meets the file held open (a save on Windows, a virus scanner, a
+        sync program) is tried again for about READ_WAIT_S before the
+        file is called unreadable."""
+        tries = max(1, int(READ_WAIT_S / RETRY_S))
+        for i in range(tries):
             try:
                 with open(self.path, "rb") as fh:
                     return fh.read()
             except FileNotFoundError:
                 return None
             except PermissionError:
-                if i == RETRIES - 1:
+                if i == tries - 1:
                     raise
                 time.sleep(RETRY_S)
         return None
 
+    def last_copy(self):
+        """(file name, doc) of the newest kept copy that reads as a good
+        file (a copy of a file that could not be read is skipped), or
+        (None, None)."""
+        for n in self.history():
+            if "-unreadable" in n:
+                continue
+            try:
+                with open(os.path.join(self.history_dir(), n),
+                          encoding="utf-8-sig") as fh:
+                    return n, read_doc(json.load(fh))
+            except Exception:                    # noqa: BLE001
+                continue
+        return None, None
+
     def load(self):
         """(doc, error): the file read strictly, under the store's lock (a
-        read never meets a save half way). A missing file is an empty doc
-        and no error. A file that cannot be read, of any kind (bad JSON,
-        a future format, a number too big, nesting too deep), is an empty
-        doc and the error in a sentence. The doc's "rev" is the high-water
-        revision (_high_water) either way. Never raises."""
+        read never meets a save half way). A file that was never saved is
+        an empty doc and no error. A file that cannot be read, of any kind
+        (bad JSON, a future format, a number too big, nesting too deep),
+        and a file that was saved before and is gone now (deleted, moved,
+        quarantined), is an empty doc and the error in a sentence: saving
+        is refused then until it is restored or replaced on purpose, so
+        the lists of every other show are never wiped by one save. The
+        doc's "rev" is the high-water revision (_high_water) either way.
+        Never raises."""
         with self._lock:
             if not self.path:
                 return empty_doc(), ""
@@ -537,7 +587,15 @@ class Store:
             try:
                 raw = self._read_raw()
                 if raw is None:
-                    return dict(empty_doc(), rev=self._high_water()), ""
+                    high = self._high_water()
+                    if high > 0 or self.history():
+                        return (dict(empty_doc(), rev=high),
+                                f"{FILE} is missing (it was saved before, "
+                                f"revision {high}), so no show has "
+                                f"play-from cues. Saving is refused until "
+                                f"the last saved copy is restored or the "
+                                f"file is replaced on purpose")
+                    return dict(empty_doc(), rev=high), ""
                 doc = json.loads(raw.decode("utf-8-sig"))
                 if isinstance(doc, dict):
                     raw_rev = doc.get("rev")
@@ -557,11 +615,13 @@ class Store:
              screen="", replace=False):
         """Save one show's cue list: (ok, sentence, the new entry with its
         revision, or None). Checked first, then refused unless `base_rev`
-        is the high-water revision now. While the file cannot be read,
-        refused unless `replace` (an admin who chose to replace it): a save
-        would otherwise wipe every show's list. Nothing is written on any
-        refusal. The version before is kept in HISTORY_DIR only once the
-        new file is in place."""
+        is the high-water revision now. While the file cannot be read or
+        is missing, refused unless `replace` (an admin who chose to replace
+        it): a save would otherwise wipe every show's list. On a replace,
+        the broken file is kept in HISTORY_DIR first, and if it cannot be
+        kept nothing is written. Nothing is written on any refusal. Every
+        saved file is kept in HISTORY_DIR too (the newest HISTORY_KEEP), so
+        the last saved copy can always be restored."""
         with self._lock:
             doc, err = self.load()
             try:
@@ -572,9 +632,10 @@ class Store:
                 new_cues = check_cues(cues, ln)
                 if err and replace is not True:
                     raise CueError(
-                        f"{FILE} could not be read, and a save would replace "
-                        f"the cue lists of every show in it. Fix the file, "
-                        f"or choose {REPLACE_WORDS} on 2.0 Settings (the "
+                        f"{FILE} could not be read or is missing, and a "
+                        f"save would replace the cue lists of every show "
+                        f"in it. Restore the last saved copy, fix the file, "
+                        f"or choose {REPLACE_WORDS} on 2.0 Settings (a "
                         f"broken file is kept in {HISTORY_DIR})")
                 if isinstance(base_rev, bool) or \
                         not isinstance(base_rev, int) or \
@@ -598,34 +659,82 @@ class Store:
             new = {"play_from_format": FORMAT, "rev": doc["rev"] + 1,
                    "shows": dict(doc["shows"])}
             new["shows"][show] = after
-            try:
-                read_doc(new)          # never writes what it would refuse
-                old = self._read_raw()
-                self._write(new)
-            except (OSError, CueError) as e:
-                text = f"Not saved: the file could not be written ({e})."
-                self._note(who, screen, "save_failed", text, fault=True)
-                self._audit(who, screen, show, "error", text)
-                return False, text, None
-            self._high = max(self._high, new["rev"])
-            if old is not None:
-                try:
-                    self._keep_history(old, doc["rev"], bool(err))
-                except OSError as e:
-                    self._note(who, screen, "history_failed",
-                               f"The play-from cues were saved (revision "
-                               f"{new['rev']}), but the version before could "
-                               f"not be kept in {HISTORY_DIR} ({e}).",
-                               fault=True)
             what = change or "nothing changed"
             if err:
                 what = f"replaced the file that could not be read; {what}"
-            text = (f"{who or 'Someone'} saved the play-from cues for "
-                    f"{show} on the {screen or 'unknown screen'} "
-                    f"(revision {new['rev']}): {what}.")
-            self._note(who, screen, "saved", text)
-            self._audit(who, screen, show, "accepted", what)
-            return True, f"Saved: {what}.", dict(after, rev=new["rev"])
+            return self._commit(new, doc, err, who, screen, show, what,
+                                dict(after, rev=new["rev"]))
+
+    def restore(self, base_rev, who="", screen=""):
+        """Put the newest good kept copy back as the file, as a new
+        revision: (ok, sentence, the restored doc or None). Only while the
+        file cannot be read or is missing, and only from the revision the
+        page read (the stale check)."""
+        with self._lock:
+            doc, err = self.load()
+            name, copy = self.last_copy()
+            why = None
+            if not err:
+                why = "the file reads; there is nothing to restore"
+            elif copy is None:
+                why = f"there is no saved copy in {HISTORY_DIR} to restore"
+            elif isinstance(base_rev, bool) or \
+                    not isinstance(base_rev, int) or base_rev != doc["rev"]:
+                why = (f"someone saved the play-from cues {STALE_WORDS}. "
+                       f"Reload, check, and try again")
+            if why:
+                text = f"Not restored: {why}."
+                self.refused(who, screen, FILE, text)
+                return False, text, None
+            new = dict(copy, rev=doc["rev"] + 1)
+            shows = ", ".join(sorted(new["shows"])) or "no show"
+            what = f"restored the last saved copy ({name}): {shows}"
+            return self._commit(new, doc, err, who, screen, FILE, what, new)
+
+    def _commit(self, new, doc, err, who, screen, target, what, result):
+        """Write `new`; on a file that could not be read, keep its bytes in
+        HISTORY_DIR first (refused, nothing written, when they cannot be
+        kept); then keep the new file there too. Journal and audit."""
+        try:
+            read_doc(new)              # never writes what it would refuse
+            old = self._read_raw()
+        except (OSError, CueError) as e:
+            old, new = None, None
+            fail = e
+        if new is not None and err and old is not None:
+            try:
+                self._keep_history(old, doc["rev"], True)
+            except OSError as e:
+                text = (f"Not saved: the file that could not be read could "
+                        f"not be kept in {HISTORY_DIR} first ({e}), so it "
+                        f"was not replaced.")
+                self._note(who, screen, "save_failed", text, fault=True)
+                self._audit(who, screen, target, "error", text)
+                return False, text, None
+        try:
+            if new is None:
+                raise fail
+            self._write(new)
+        except (OSError, CueError) as e:
+            text = f"Not saved: the file could not be written ({e})."
+            self._note(who, screen, "save_failed", text, fault=True)
+            self._audit(who, screen, target, "error", text)
+            return False, text, None
+        self._high = max(self._high, new["rev"])
+        try:
+            self._keep_history(json.dumps(new, indent=1, sort_keys=True)
+                               .encode("utf-8"), new["rev"], False)
+        except OSError as e:
+            self._note(who, screen, "history_failed",
+                       f"The play-from cues were saved (revision "
+                       f"{new['rev']}), but a copy could not be kept in "
+                       f"{HISTORY_DIR} ({e}).", fault=True)
+        text = (f"{who or 'Someone'} saved the play-from cues for "
+                f"{target} on the {screen or 'unknown screen'} "
+                f"(revision {new['rev']}): {what}.")
+        self._note(who, screen, "saved", text)
+        self._audit(who, screen, target, "accepted", what)
+        return True, f"Saved: {what}.", result
 
     def _replace(self, src, dst):
         """os.replace, tried again a few times: on Windows a file another
@@ -659,9 +768,9 @@ class Store:
         return os.path.join(self.folder, HISTORY_DIR)
 
     def _keep_history(self, data, rev, unreadable):
-        """The file as it was before a save (`data`, its bytes), written
-        into HISTORY_DIR once the new file is in place, and the oldest
-        beyond HISTORY_KEEP removed."""
+        """`data` (a file's bytes: a saved file, or one that could not be
+        read) kept in HISTORY_DIR as revision `rev`, and the oldest beyond
+        HISTORY_KEEP removed."""
         d = self.history_dir()
         os.makedirs(d, exist_ok=True)
         stamp = datetime.datetime.fromtimestamp(
@@ -674,7 +783,8 @@ class Store:
             fh.flush()
             os.fsync(fh.fileno())
         self._replace(tmp, os.path.join(d, name))
-        kept = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+        kept = sorted((n for n in os.listdir(d) if n.endswith(".json")),
+                      key=_hist_key)
         for old in kept[:-HISTORY_KEEP]:
             try:
                 os.remove(os.path.join(d, old))
@@ -687,7 +797,8 @@ class Store:
             return []
         try:
             return sorted((n for n in os.listdir(self.history_dir())
-                           if n.endswith(".json")), reverse=True)
+                           if n.endswith(".json")), key=_hist_key,
+                          reverse=True)
         except OSError:
             return []
 
@@ -703,6 +814,9 @@ class Store:
                "lead_in_max_s": LEAD_IN_MAX_S, "max_cues": MAX_CUES,
                "max_name": MAX_NAME, "max_note": MAX_NOTE,
                "shows": sorted(doc["shows"])}
+        name, copy = self.last_copy() if err else (None, None)
+        out["restore_from"] = name
+        out["restore_shows"] = sorted(copy["shows"]) if copy else []
         if show is not None:
             out["show"] = show
             out["entry"] = entry_of(doc, show)

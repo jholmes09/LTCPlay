@@ -1721,14 +1721,17 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   read the list again (changes not saved are dropped), then make them
   again and save. The list is `ltcplay_play_from.json` in the settings
   folder, one list per show file, under the show file's name exactly as
-  the show folder spells it; the version before each save is kept in
+  the show folder spells it; a copy of every saved file is kept in
   `play_from_history` (the last 50), and every save and every refusal is
   in the journal and the audit log. When the file cannot be read (damaged
-  by hand, or written by a newer LTC Player), the card says so and
-  nothing can be saved over it: fix the file, or an admin taps Replace the
-  file, then makes this show's list and saves. That starts the file again
-  with only this show's list (the other shows' lists in it are gone); the
-  broken file is kept in `play_from_history`. When the show audio is
+  by hand, or written by a newer LTC Player), or was saved before and is
+  gone now (deleted, moved, quarantined), the card says so and nothing
+  can be saved over it. An admin taps Restore the last saved copy (every
+  show's list, as last saved), or fixes the file, or taps Replace the
+  file, then makes this show's list and saves. Replace starts the file
+  again with only this show's list (the other shows' lists in it are
+  gone); the broken file is kept in `play_from_history` first, and when
+  it cannot be kept nothing is replaced. When the show audio is
   rendered again at another length, the card says so and names any cue
   now past its end; a list whose show file is no longer in the show folder
   is named too. Anyone signed in can read the list; saving it from an

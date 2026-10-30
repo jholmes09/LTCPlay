@@ -605,6 +605,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b" id="pf-add"><svg class="i"><use href="#i-list"/></svg>Add cue</button>
           <button class="b green" id="pf-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
           <button class="b" id="pf-reload"><svg class="i"><use href="#i-reset"/></svg>Reload</button>
+          <button class="b blue" id="pf-restore" hidden><svg class="i"><use href="#i-back"/></svg>Restore the last saved copy</button>
           <button class="b redline" id="pf-replace" hidden><svg class="i"><use href="#i-warn"/></svg>Replace the file</button></div>
         <div id="pf-rows"></div>
         <div id="pf-msg" role="status"></div></div>
@@ -3169,6 +3170,7 @@ const PF_DASH = /[\u2013\u2014]/;
 // is saved from this copy until Reload reads the list again.
 let PF = null, PF_DIRTY = false, PF_REPLACE = false, PF_STALE = false;
 const PF_STALE_WORDS = "since this screen read them";     // play_from.STALE_WORDS
+const PF_REPLACE_WORDS = "Replace the file";              // play_from.REPLACE_WORDS
 function pfFrames(tc){
   const m = /^(\d{2}):(\d{2}):(\d{2}):(\d{2})$/.exec(String(tc || "").trim());
   if(!m) return null;
@@ -3184,13 +3186,15 @@ function pfTc(fr){
 function pfCheck(cues, audioLen, rules){
   const r = rules || {}, minL = r.lead_in_min_s || 1, maxL = r.lead_in_max_s || 30;
   const seen = {};
-  cues.forEach(c => { const k = String(c.name || "").trim().replace(/\s+/g, " ").toLowerCase(); if(k) seen[k] = (seen[k] || 0) + 1; });
+  // The engine's key: NFC and case folded (play_from.name_key).
+  const key = n => n.normalize("NFC").toLowerCase();
+  cues.forEach(c => { const k = key(String(c.name || "").trim().replace(/\s+/g, " ")); if(k) seen[k] = (seen[k] || 0) + 1; });
   return cues.map(c => {
     const out = [], name = String(c.name || "").trim().replace(/\s+/g, " ");
     if(!name) out.push("Give it a name.");
     else if(name.length > (r.max_name || 40)) out.push("Name too long.");
     else if(PF_DASH.test(name)) out.push("No long dashes in the name.");
-    else if(seen[name.toLowerCase()] > 1) out.push("Name used twice.");
+    else if(seen[key(name)] > 1) out.push("Name used twice.");
     const fr = pfFrames(c.tc);
     const lead = String(c.lead_in_s === undefined || c.lead_in_s === null ? "" : c.lead_in_s).trim();
     const ln = lead === "" ? (r.lead_in_default_s || 2) : Number(lead);
@@ -3218,6 +3222,7 @@ function pfDraw(){
   const rows = $("pf-rows"), may = pfMayEdit();
   $("pf-add").hidden = $("pf-save").hidden = !may;
   $("pf-replace").hidden = !(PF && PF.may_edit && PF.error && !PF_REPLACE);
+  $("pf-restore").hidden = !(PF && PF.may_edit && PF.error && PF.restore_from && !PF_REPLACE);
   if(!PF || !PF.entry){ rows.innerHTML = ""; return; }
   const cues = PF.entry.cues;
   const bad = pfCheck(cues, PF.audio_len_s, PF);
@@ -3244,6 +3249,9 @@ function pfSaveOk(bad){
 // more is saved from it) until Reload reads the list again.
 function pfRefused(message){
   if(String(message).includes(PF_STALE_WORDS)) PF_STALE = true;
+  // The file broke or went missing after this page read it: no Save over
+  // it; Restore, Replace and Reload are offered instead.
+  else if(PF && String(message).includes(PF_REPLACE_WORDS)){ PF.error = String(message); PF_REPLACE = false; }
   return String(message) + (PF_STALE ? " Tap Reload." : "");
 }
 // The marks again after an edit, in place: the rows are not drawn again,
@@ -3295,6 +3303,16 @@ $("pf-reload").addEventListener("click", async () => {
   if(PF_DIRTY && !PF_STALE && !(await confirmBox("Discard the changes?", "Reload reads the list again. The cues you changed are not saved.", "Discard", "red"))) return;
   PF_DIRTY = false; await loadPlayFrom(true);
 });
+// Restore the last saved copy: every show's list as it was last saved, put
+// back while the file is missing or cannot be read.
+$("pf-restore").addEventListener("click", async () => {
+  if(!PF || !PF.error || !PF.restore_from) return;
+  if(!(await confirmBox("Restore the last saved copy?", "Puts back " + PF.restore_from + ", with the lists of: " + (PF.restore_shows || []).join(", ") + ". A broken file is kept in play_from_history.", "Restore", "green"))) return;
+  try{
+    const j = await post("/api/remote/play-from-cues-save", {restore:true, rev:PF.rev});
+    PF_DIRTY = false; await loadPlayFrom(true); pfMsg(j.text || "Restored.", "ok");
+  }catch(e){ pfMsg(pfRefused(e.message), "bad"); pfSay(); pfDraw(); }
+});
 // Replace the file: only when the engine cannot read it, an admin's choice.
 $("pf-replace").addEventListener("click", async () => {
   if(!PF || !PF.error) return;
@@ -3333,7 +3351,7 @@ $("pf-save").addEventListener("click", async () => {
     PF_DIRTY = false;
     await loadPlayFrom(true);
     pfMsg(j.text || "Saved.", "ok");
-  }catch(e){ pfMsg(pfRefused(e.message), "bad"); pfDraw(); }
+  }catch(e){ pfMsg(pfRefused(e.message), "bad"); pfSay(); pfDraw(); }
 });
 
 // ---- The brand (1.0's loadBrand): the show's name from the settings, the

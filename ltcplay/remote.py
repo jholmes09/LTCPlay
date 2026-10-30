@@ -214,6 +214,8 @@ HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
 # users.py), a signed-in person, from the show network with screen_arming
 # too. They send nothing and start nothing.
 PLAY_FROM_GET_ROUTES = ("play-from-cues",)
+# One play-from Store per engine, made under this lock (play_from_store).
+_PFC_STORE_LOCK = threading.Lock()
 PLAY_FROM_POST_ROUTES = ("play-from-cues-save",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
@@ -4522,19 +4524,25 @@ class Remote:
 
     # -- play-from cues (play_from.py): the cue list per show file ----------
     def play_from_store(self):
-        """The play-from cue list's file in the settings folder (one Store
-        per engine, made on first use). Sends nothing."""
-        st = getattr(self, "_pfc_store", None)
-        if st is None or st.audit is not getattr(self, "audit", None):
-            from . import play_from as pf_mod
+        """The play-from cue list's file in the settings folder: ONE Store
+        per engine, made on first use under a lock (two first requests at
+        once would otherwise each make their own, with their own file lock,
+        and overwrite each other). A new audit log is handed to it, never a
+        new store. Sends nothing."""
+        with _PFC_STORE_LOCK:
+            st = getattr(self, "_pfc_store", None)
+            if st is None:
+                from . import play_from as pf_mod
 
-            def _journal(who, screen, outcome, text, fault=False):
-                self._journal(who or "system", screen or "engine",
-                              "play-from cues", outcome, text, fault=fault)
-            st = self._pfc_store = pf_mod.Store(
-                self.folder, journal=_journal,
-                audit=getattr(self, "audit", None), wall=self.wall)
-        return st
+                def _journal(who, screen, outcome, text, fault=False):
+                    self._journal(who or "system", screen or "engine",
+                                  "play-from cues", outcome, text,
+                                  fault=fault)
+                st = self._pfc_store = pf_mod.Store(
+                    self.folder, journal=_journal,
+                    audit=getattr(self, "audit", None), wall=self.wall)
+            st.audit = getattr(self, "audit", None)
+            return st
 
     def play_from_show_info(self, show):
         """(the show's own cue, its AUDIO's length in seconds, "") for a
@@ -4668,6 +4676,16 @@ class Remote:
                                 "on the show network needs screen_arming "
                                 "(on the show machine itself: Programming, "
                                 "Arming from a screen, Turn on).")
+        if body.get("restore") is True:
+            # Put the last saved copy back (the file is missing or cannot
+            # be read): every show's list, as it was last saved.
+            ok, text, _doc = st.restore(body.get("rev"), who=who,
+                                        screen=device)
+            if not ok:
+                return 409, {"error": text + " Nothing was changed.",
+                             "stale": pf_mod.STALE_WORDS in text,
+                             "replace_needed": False}
+            return 200, {"ok": True, "text": text}
         if not isinstance(show, str):
             return refused(400, "choose a show file.")
         cue, length, why = self.play_from_show_info(show)

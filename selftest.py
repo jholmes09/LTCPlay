@@ -94783,15 +94783,21 @@ def test_play_from_cue_model():
              "control or invisible"),
             ([{"name": "Cafe\u0301", "tc": "00:00:05:00"},
               {"name": "Caf\u00e9", "tc": "00:00:06:00"}], "used twice"),
-            ([{"name": "\uff26inale", "tc": "00:00:05:00"},
-              {"name": "Finale", "tc": "00:00:06:00"}], "used twice")):
+            ([{"name": "\u200d\u200c", "tc": "00:00:05:00"}],
+             "needs a name")):
         try:
             PF.check_cues(cues, 120.0)
             check(False, f"refused ({why}): {cues!r:.80}")
         except PF.CueError as e:
             check(why in str(e) and _cfg_dashes(str(e)), f"{why}: {e}")
-    got = PF.check_cues([{"name": "Cafe\u0301", "tc": "00:00:05:00"}], 120.0)
-    check(got[0]["name"] == "Caf\u00e9", "a name is kept in NFC form")
+    # Kept exactly as typed (review of #192): NFC only compares; circled
+    # digits, TM, ligatures, joiners in a word all stay.
+    typed = ["Cafe\u0301", "\u2460 \u2122 \ufb01nale", "a\u200db",
+             "\u0645\u06cc\u200c\u0634\u0648\u062f", "\uff26inale"]
+    got = PF.check_cues([{"name": n, "tc": f"00:00:{10 + i:02d}:00"}
+                         for i, n in enumerate(typed + ["Finale"])], 120.0)
+    check([c["name"] for c in got] == typed + ["Finale"],
+          f"names are kept as typed: {[c['name'] for c in got]}")
     # The file: strict, every cue carries an id.
     doc = {"play_from_format": 1, "rev": 3, "shows": {"Show.json": {
         "cue": "Show", "audio_len_s": 120.0,
@@ -94910,7 +94916,11 @@ def test_play_from_cue_store():
         raw = open(store.path, encoding="utf-8").read()
         check(PF.read_doc(_j.loads(raw))["rev"] == 1,
               "the file on disk is a good list at revision 1")
-        check(store.history() == [], "the first save had nothing to keep")
+        check(len(store.history()) == 1 and
+              store.history()[0].endswith("-rev1.json") and
+              open(os.path.join(store.history_dir(), store.history()[0]),
+                   "rb").read() == open(store.path, "rb").read(),
+              "every saved file is kept too, the first one included")
         check(lines and lines[-1][0][2] == "saved" and
               "Jeff saved the play-from cues for Fire and Ice.json on the "
               "Rack screen (revision 1): Top added" in lines[-1][0][3],
@@ -94929,7 +94939,7 @@ def test_play_from_cue_store():
                                      who="Andy", screen="iPad")
         check(not ok and entry is None and "someone saved" in text and
               open(store.path, "rb").read() == before and
-              store.history() == [],
+              len(store.history()) == 1,
               f"a stale revision is refused and nothing written: {text}")
         check(events[-1]["result"] == "refused" and
               events[-1]["user"] == "Andy" and len(lines) == n_lines + 1 and
@@ -94973,9 +94983,12 @@ def test_play_from_cue_store():
             [c["id"] for c in entry["cues"]] == ["c2"],
             f"the second save: {text}")
         h = store.history()
-        check(len(h) == 1 and h[0].endswith("-rev1.json") and
-              open(os.path.join(store.history_dir(), h[0]), "rb").read() ==
-              before, f"the version before is kept whole: {h}")
+        check(len(h) == 2 and h[0].endswith("-rev2.json") and
+              h[1].endswith("-rev1.json") and
+              open(os.path.join(store.history_dir(), h[1]), "rb").read() ==
+              before and open(os.path.join(store.history_dir(), h[0]),
+                              "rb").read() == open(store.path, "rb").read(),
+              f"the version before and the new one are kept whole: {h}")
         # Another show beside it: the first is kept as it was.
         ok, _t, entry = store.save("Other.json", "Show", 30.0, [], 2,
                                    who="Jeff")
@@ -95007,8 +95020,8 @@ def test_play_from_cue_store():
                 {"name": "A", "tc": f"00:00:{20 + i:02d}:00"}], rev)
             rev = entry["rev"]
         h = store.history()
-        check(len(h) == 4 and h[0].endswith(f"-rev{rev - 1}.json") and
-              h[-1].endswith(f"-rev{rev - 4}.json"),
+        check(len(h) == 4 and h[0].endswith(f"-rev{rev}.json") and
+              h[-1].endswith(f"-rev{rev - 3}.json"),
               f"the newest {PF.HISTORY_KEEP} are kept: {h}")
         PF.HISTORY_KEEP = keep
         # A write that fails: nothing is changed, said as a fault.
@@ -95047,11 +95060,12 @@ def test_play_from_cue_store():
         ok, text, entry = store.save(show, "Show", 60.0, cues, high,
                                      who="Jeff", replace=True)
         h = store.history()
-        check(ok and entry["rev"] == high + 1 and h and h[0].endswith(
+        check(ok and entry["rev"] == high + 1 and len(h) > 1 and
+              h[0].endswith(f"-rev{high + 1}.json") and h[1].endswith(
             f"-rev{high}-unreadable.json") and open(os.path.join(
-                store.history_dir(), h[0]), encoding="utf-8").read() ==
+                store.history_dir(), h[1]), encoding="utf-8").read() ==
               '{"play_from_format": 1, "rev": 1, "shows": {}, "x": 1}',
-              f"replaced on purpose, the broken file kept: {text} {h[:1]}")
+              f"replaced on purpose, the broken file kept: {text} {h[:3]} {high}")
         raw = open(store.path, encoding="utf-8").read()
         with open(store.path, "w", encoding="utf-8-sig") as fh:
             fh.write(raw)
@@ -95112,6 +95126,75 @@ def test_play_from_cue_file_is_never_lost():
               f"c2 deleted, the next cue is c3: {e3 and e3['cues']}")
         ok, _t, _e = store.save("B.json", "Show", 60.0, one, 5)
         check(ok and rev() == 6, "back to one cue, revision 6")
+        # Final review of #192: the file deleted, moved or quarantined.
+        # A save from a page that read it must not make a file of only its
+        # own show: it is refused, and the last saved copy (every show's
+        # list) is offered and restored.
+        saved = body()
+        os.remove(store.path)
+        v = store.view("A.json")
+        check(v["error"] and "missing" in v["error"] and v["replace_needed"]
+              and v["rev"] == 6 and v["restore_from"] and
+              v["restore_shows"] == ["A.json", "B.json"],
+              f"a missing file reads as missing, the last copy offered: "
+              f"{v['error'][:80]} {v.get('restore_from')}")
+        ok, text, _e = store.save("A.json", "Show", 60.0,
+                                  [{"name": "New", "tc": "00:00:30:00"}], 6,
+                                  who="Jeff")
+        check(not ok and PF.REPLACE_WORDS in text and
+              not os.path.exists(store.path),
+              f"no save over a missing file: {text}")
+        ok, text, _e = store.restore(5, who="Jeff")
+        check(not ok and PF.STALE_WORDS in text, "a stale page restores "
+                                                 "nothing")
+        ok, text, _e = store.restore(6, who="Jeff", screen="Rack screen")
+        d, err = store.load()
+        check(ok and err == "" and d["rev"] == 7 and
+              d["shows"] == json.loads(saved)["shows"] and
+              "restored the last saved copy" in text and
+              events[-1]["result"] == "accepted",
+              f"restored, every show's list, revision 7: {text}")
+        ok, text, _e = store.restore(7)
+        check(not ok and "nothing to restore" in text,
+              "a file that reads is not restored over")
+        # Replace keeps the broken bytes FIRST: when they cannot be kept,
+        # nothing is replaced.
+        with open(store.path, "w", encoding="utf-8") as fh:
+            fh.write("{broken but precious")
+        hd = store.history_dir()
+        moved = hd + ".away"
+        os.rename(hd, moved)
+        with open(hd, "w", encoding="utf-8") as fh:
+            fh.write("not a folder")
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, rev(),
+                                  replace=True)
+        check(not ok and "could not be kept" in text and
+              body() == b"{broken but precious",
+              f"the broken file could not be kept, so it was not replaced: "
+              f"{text}")
+        os.remove(hd)
+        os.rename(moved, hd)
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, rev(),
+                                  replace=True)
+        h = store.history()
+        check(ok and any(open(os.path.join(hd, n), "rb").read() ==
+                         b"{broken but precious" for n in h
+                         if "-unreadable" in n),
+              f"replaced, the broken bytes kept: {h[:3]}")
+        # A good file held open for a second (a sync program, a virus
+        # scanner) is waited for, never offered for replacement.
+        slow = []
+
+        def held_open(path, *a, **k):
+            if path == store.path and len(slow) < 20:
+                slow.append(path)
+                raise PermissionError(13, "in use")
+            return builtins.open(path, *a, **k)
+        PF.open = held_open
+        d, err = store.load()
+        del PF.open
+        check(err == "" and len(slow) == 20 and d["shows"],
+              f"held open for about a second: read, not broken: {err}")
         for broken, what in (
                 ("{not json", "bad JSON"),
                 ('{"play_from_format": 2, "rev": 9, "shows": {}}',
@@ -95160,18 +95243,25 @@ def test_play_from_cue_file_is_never_lost():
         h = store.history()
         check(ok and entry["rev"] == r + 1 and
               "replaced the file that could not be read" in text and
-              len(h) == n_hist + 1 and "-unreadable" in h[0] and
-              open(os.path.join(store.history_dir(), h[0]), "rb").read() ==
+              len(h) == n_hist + 2 and h[0].endswith(f"-rev{r + 1}.json")
+              and "-unreadable" in h[1] and
+              open(os.path.join(store.history_dir(), h[1]), "rb").read() ==
               b"[" * 100000 and list(store.load()[0]["shows"]) ==
-              ["A.json"], f"replaced on purpose: {text} {h[:1]}")
+              ["A.json"], f"replaced on purpose: {text} {h[:2]}")
         # Deleted, or put back from an old copy by hand: the revision is
         # still the highest one, and a page that read it before is stale.
         top = rev()
         os.remove(store.path)
         check(rev() == top, f"the file deleted: still revision {top}")
-        ok, text, _e = store.save("A.json", "Show", 60.0, one, 0)
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, top)
+        check(not ok and PF.REPLACE_WORDS in text and "missing" in
+              store.load()[1] and not os.path.exists(store.path),
+              f"a file that was saved before and is gone now: no save over "
+              f"it, even from a page with the right revision: {text}")
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, 0,
+                                  replace=True)
         check(not ok and PF.STALE_WORDS in text,
-              "a page from before cannot save over a deleted file")
+              "a page from before cannot replace a deleted file")
         with open(store.path, "w", encoding="utf-8") as fh:
             json.dump({"play_from_format": 1, "rev": 1, "shows": {}}, fh)
         store2 = PF.Store(work)          # a restart: from the history
@@ -95229,6 +95319,15 @@ def test_play_from_cue_file_is_never_lost():
         store._lock.release()
         t.join(5)
         check(waited and got, "a read waits while a save holds the file")
+        # A hand-edited revision too big is clamped, never reset to 0.
+        with open(store.path, "w", encoding="utf-8") as fh:
+            json.dump({"play_from_format": 1, "rev": 10 ** 13,
+                       "shows": {}}, fh)
+        check(rev() == PF.MAX_REV, f"a revision of 10**13 counts as "
+                                   f"{PF.MAX_REV}: {rev()}")
+        ok, _t, e = store.save("A.json", "Show", 60.0, one, PF.MAX_REV)
+        check(ok and e["rev"] == PF.MAX_REV + 1 and rev() >= PF.MAX_REV,
+              "and the next save goes on from there")
     finally:
         os.replace = real_replace
         if real_open is None and hasattr(PF, "open"):
@@ -95488,6 +95587,43 @@ def test_play_from_cue_routes():
                               "replace": True}, ctx("admin"))
         check(code == 200 and out["entry"]["rev"] == r + 1 and
               "replaced the file" in out["text"], f"replaced: {out}")
+        # Final review of #192: the file gone; the last saved copy put back
+        # through the route, an admin's Settings press like a save.
+        os.remove(path)
+        code, out = read(ctx("admin"))
+        r = out["rev"]
+        check(out["replace_needed"] and out["restore_from"],
+              f"a missing file offers the last copy: {out.get('error')}")
+        code, out, _h = save({"restore": True, "rev": r},
+                             ctx("operator", name="Dave"))
+        check(code == 403 and not os.path.exists(path),
+              "an operator restores nothing")
+        code, out, _h = save({"restore": True, "rev": r - 1}, ctx("admin"))
+        check(code == 409 and out["stale"] is True, "a stale page neither")
+        code, out, _h = save({"restore": True, "rev": r}, ctx("admin"))
+        code2, out2 = read(ctx("admin"))
+        check(code == 200 and "restored the last saved copy" in out["text"]
+              and out2["error"] == "" and out2["rev"] == r + 1 and
+              os.path.exists(path), f"restored: {out}")
+        # One store per engine, whoever asks first (two requests at once).
+        rm2 = RM.Remote(ctl, _Svc(), folder=work, log=lambda t_: None)
+        stores = []
+        gate = threading.Barrier(8)
+
+        def first():
+            gate.wait()
+            stores.append(rm2.play_from_store())
+        ts = [threading.Thread(target=first) for _ in range(8)]
+        for t_ in ts:
+            t_.start()
+        for t_ in ts:
+            t_.join(5)
+        rm2.audit = _Audit()
+        check(len(stores) == 8 and len({id(x) for x in stores}) == 1 and
+              rm2.play_from_store() is stores[0] and
+              stores[0].audit is rm2.audit,
+              "one store per engine, made once; a new audit log is handed "
+              "to it, never a second store")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
@@ -95570,6 +95706,7 @@ def test_play_from_cue_card_in_2_0():
                   "play_from_history", "at least 1", "2 when left",
                   "inside the show AUDIO", "used once", "journal",
                   "Anyone signed in can read", "tap Reload",
+                  "Restore the last saved copy", "gone now",
                   "Replace the", "exactly as", "nobody can save it",
                   "control or invisible"):
         check(a > 0 and words in para, f"OPERATOR.md says: {words}")
@@ -95599,6 +95736,10 @@ def test_play_from_cue_card_in_2_0():
         [{"name": "A", "tc": "0:00:05:00", "lead_in_s": 2}],
         [{"name": "Finale", "tc": "00:00:05:00", "lead_in_s": 2},
          {"name": " finale ", "tc": "00:00:06:00", "lead_in_s": 2}],
+        [{"name": "Cafe\u0301", "tc": "00:00:05:00", "lead_in_s": 2},
+         {"name": "CAF\u00c9", "tc": "00:00:06:00", "lead_in_s": 2}],
+        [{"name": "\uff26inale", "tc": "00:00:05:00", "lead_in_s": 2},
+         {"name": "Finale", "tc": "00:00:06:00", "lead_in_s": 2}],
         [{"name": "Act  two", "tc": "00:00:05:00", "lead_in_s": 2},
          {"name": "act two", "tc": "00:00:06:00", "lead_in_s": 2}],
         [{"name": "", "tc": "00:00:05:00", "lead_in_s": 2}],
@@ -95648,6 +95789,7 @@ def test_play_from_cue_card_in_2_0():
     flow = r"""
 let PF = null, PF_DIRTY = false, PF_REPLACE = false, PF_STALE = false;
 const PF_STALE_WORDS = "%s";
+const PF_REPLACE_WORDS = "%s";
 const out = [];
 PF = {may_edit:true, error:""}; PF_DIRTY = true;
 out.push(["edit", pfMayEdit(), pfSaveOk([[]])]);
@@ -95663,8 +95805,11 @@ const said = pfRefused("Not saved: the name is too long.");
 out.push(["other refusal", PF_STALE, said]);
 const said2 = pfRefused("Not saved: someone saved the play-from cues %s. Reload.");
 out.push(["stale", PF_STALE, pfMayEdit(), pfSaveOk([[]]), said2]);
+PF = {may_edit:true, error:""}; PF_STALE = false; PF_DIRTY = true;
+const said3 = pfRefused("Not saved: the file could not be read or is missing, and a save would replace the cue lists of every show in it. Restore the last saved copy, fix the file, or choose %s on 2.0 Settings.");
+out.push(["broke after read", PF_STALE, !!PF.error, pfMayEdit(), pfSaveOk([[]])]);
 console.log(JSON.stringify(out));
-""" % (PF.STALE_WORDS, PF.STALE_WORDS)
+""" % (PF.STALE_WORDS, PF.REPLACE_WORDS, PF.STALE_WORDS, PF.REPLACE_WORDS)
     fns = "\n".join(_js_function(two, n) or "" for n in
                     ("pfFrames", "pfTc", "pfCheck", "pfBody"))
     js = ("const PF_DASH = /[\\u2013\\u2014]/;\n" + fns +
@@ -95734,6 +95879,15 @@ console.log(JSON.stringify(out));
           and (st.get("stale") or [None])[:3] == [True, False, False] and
           str((st.get("stale") or [""])[-1]).endswith("Tap Reload."),
           f"a stale save locks this copy until Reload: {st}")
+    check(st.get("broke after read") == [False, True, False, False],
+          f"a page that read the file before it broke: after its refused "
+          f"save, no Save; Replace (and Restore) offered: {st}")
+    check('const PF_REPLACE_WORDS = "' + PF.REPLACE_WORDS + '";' in two and
+          'id="pf-restore" hidden' in sec and
+          "Restore the last saved copy</button>" in sec and
+          'post("/api/remote/play-from-cues-save", {restore:true, '
+          'rev:PF.rev})' in two,
+          "the card offers Restore the last saved copy, an admin's press")
     print("  ok")
 
 
