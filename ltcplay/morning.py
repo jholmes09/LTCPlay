@@ -2673,6 +2673,17 @@ class Morning:
                 pass
         self.lasers.all_off("Abort pressed")
 
+    def stop_hooks(self, who="", screen=""):
+        """Stop (Remote.halt, Jeff 2026-10-30: Stop has every guarantee an
+        Abort had): the fireball and the cleaning cut at once, through the
+        same hooks an Abort runs, said as the Stop. Remote.halt clears the
+        purge and ends the laser tests itself. Never raises."""
+        for hook in list(self.abort_hooks):
+            try:
+                hook(who, screen, what="Stop")
+            except Exception:                    # noqa: BLE001
+                pass
+
     def close(self):
         self._stop.set()
         t = self._thread
