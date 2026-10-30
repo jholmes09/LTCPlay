@@ -7517,7 +7517,7 @@ def build():
  ("flamelink: zero() waits for the next tick instead of sending at once",
   "ltcplay/flamelink.py",
   '''            self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            self._zero_gen += 1
             return self._sock is not None'''),
 
@@ -7547,7 +7547,7 @@ def build():
   "ltcplay/flamelink.py",
   '''            self.zeroed = True
             self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            ok = self.send_frame()
             self.zeroed = True
             self._zero_gen += 1
@@ -7556,7 +7556,7 @@ def build():
  ("fix1: zero() asks the providers for its frame",
   "ltcplay/flamelink.py",
   '''            self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            self._zero_gen += 1
             return self.send_frame()'''),
 
@@ -14836,8 +14836,8 @@ def build():
   "        if False:\n            # Live flame programming is on: the show's own cues are held"),
  ('live flame: a live show sends the program frame',
   'ltcplay/flamelink.py',
-  '            # The mode ends as soon as the engine sees the show start.\n            return tc, zeros',
-  '            # The mode ends as soon as the engine sees the show start.\n            return tc, self._program_values(now)'),
+  '            # The mode ends as soon as the engine sees the show start.\n            # Nor the Fireball page\'s frame: one source at a time.\n            return tc, zeros, False',
+  '            # The mode ends as soon as the engine sees the show start.\n            # Nor the Fireball page\'s frame: one source at a time.\n            return tc, self._program_values(now), False'),
  ('live flame: the program frame never expires at the link',
   'ltcplay/flamelink.py',
   '        if now - p[1] > PROGRAM_HOLD_S or now < p[1]:\n            self._program = None',
@@ -14852,8 +14852,8 @@ def build():
   '            if session != self._program_session:'),
  ('live flame: the purge frame is read while it is on',
   'ltcplay/flamelink.py',
-  '            if self._program_on:\n                return tc, self._program_values(now)\n            return tc, self._purge_values(now)',
-  '            return tc, self._purge_values(now)'),
+  '            if self._program_on:\n                # Live flame programming\'s frame alone (one source at a\n                # time): not the Fireball page\'s either.\n                return tc, self._program_values(now), False\n            return tc, self._purge_values(now), True',
+  '            return tc, self._purge_values(now), True'),
  ('live flame: the listener binds any address',
   'ltcplay/flameprog.py',
   '    if ip != LISTEN_IP:\n        raise SettingsError(',
@@ -18313,9 +18313,9 @@ def build():
   '                    cancel(f"Hold was pressed on the {screen}")',
   '                    pass'),
 
- ("Programming playback starts over a Fireball channel that is on", "ltcplay/remote.py",
-  '        if ph is not None and name in ("play-from", "loop") and \\\n                fb is not None and fb.active():',
-  '        if False:'),
+ ("Programming Play from is refused while the Fireball page has a channel on (round 4)", "ltcplay/remote.py",
+  '        # The Fireball page works at any time (Jeff, 2026-10-30): a\n',
+  '        if name in ("play-from", "loop") and self.fireball is not None and self.fireball.active():\n            return 409, {"error": "A Fireball channel is on."}\n        # The Fireball page works at any time (Jeff, 2026-10-30): a\n'),
 
  # Jeff's field report, 2026-10-28: Stop, Reset from Hold, refusal reasons.
  ("a refused start's alert says only that the show did not start",
@@ -18501,17 +18501,13 @@ def build():
 
  ("fireball: the watcher does not see the flame link zeroed",
   "ltcplay/fireball.py",
-  "            if link is None or self._gen(link) != r[\"gen\"]:",
-  "            if link is None:"),
+  "        if link is None or self._gen(link) != r[\"gen\"]:\n            return (\"the flame link was disarmed",
+  "        if link is None:\n            return (\"the flame link was disarmed"),
 
  ("fireball: the watcher does not look at the rules",
   "ltcplay/fireball.py",
-  "            else:\n"
-  "                why = self.refusal()\n"
-  "        if why:",
-  "            else:\n"
-  "                why = \"\"\n"
-  "        if why:"),
+  "            why = self._link_why(self._link(), r) or self.refusal() or \\\n",
+  "            why = self._link_why(self._link(), r) or \\\n"),
 
  ("fireball: a cut run can come back",
   "ltcplay/fireball.py",
@@ -18533,7 +18529,7 @@ def build():
 
  ("fireball: a zero that lands during a beat is ignored",
   "ltcplay/fireball.py",
-  "                lost = self._gen(link) != r[\"gen\"]",
+  "                lost = took is False or self._link_why(link, r)",
   "                lost = False"),
 
  ("fireball: a disarm seen just after the frame went in is ignored",
@@ -18549,10 +18545,10 @@ def build():
   "ltcplay/fireball.py",
   "        if r is not None and link is not None:\n"
   "            try:\n"
-  "                link.purge_clear()",
+  "                link.manual_clear()",
   "        if False:\n"
   "            try:\n"
-  "                link.purge_clear()"),
+  "                link.manual_clear()"),
 
  ("fireball: a refused beat leaves its run on",
   "ltcplay/fireball.py",
@@ -20904,6 +20900,263 @@ def build():
   "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] == UNKNOWN]",
   "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] != EMPTY]"),
 
+ # -- the Fireball page's frame merged on the flame link (2026-10-30) -------
+ ("fireball manual: the charge state is not told before the frame can go out",
+  "ltcplay/fireball.py",
+  "                self._tell(on, who, screen)\n                # Refused by the link",
+  "                pass\n                # Refused by the link"),
+
+ ("fireball manual: the beat's zero count is read after its checks",
+  "ltcplay/fireball.py",
+  "                gen = gen0 if link is link0 else None",
+  "                gen = self._gen(link)"),
+
+ ("fireball manual: the page sets its frame without the zero count",
+  "ltcplay/fireball.py",
+  "                took = link.manual_set(vals, r[\"gen\"], r[\"drops\"]) \\\n                    if r[\"drops\"] is not None else \\\n                    link.manual_set(vals, r[\"gen\"])",
+  "                took = link.manual_set(vals)"),
+
+ ("fireball manual: the conductor's Abort latch does not hold the page off",
+  "ltcplay/fireball.py",
+  "    if getattr(mach, \"abort_latched\", False) or \\\n            getattr(cond, \"latched\", False):\n        return \"the show is aborted",
+  "    if getattr(mach, \"abort_latched\", False):\n        return \"the show is aborted"),
+
+
+ ("fireball manual: flamesafe not confirming the locks does not hold the page off",
+  "ltcplay/fireball.py",
+  "        why = m._locks_confirmed()\n        if why:",
+  "        why = \"\"\n        if why:"),
+
+ ("fireball manual: an unreadable Morning config does not hold the page off during a show",
+  "ltcplay/fireball.py",
+  "    if m.config_error:\n        return (f\"ltcplay_morning.json could not be read \"",
+  "    if False:\n        return (f\"ltcplay_morning.json could not be read \""),
+
+ ("fireball manual: a frame of the wrong size is taken",
+  "ltcplay/flamelink.py",
+  "            vals = bytes(values)\n            if len(vals) != UNIVERSE_SIZE:\n                return False\n            keep",
+  "            vals = bytes(values)[:UNIVERSE_SIZE].ljust(UNIVERSE_SIZE, b\"\\0\")\n            keep"),
+
+ ("fireball manual: a Hold during a frame's read drops the page's channels",
+  "ltcplay/flamelink.py",
+  "            if dropped and aid == self.abort_id:",
+  "            if False:"),
+
+ ("fireball manual: the zero frame a Hold sends drops the page's channels",
+  "ltcplay/flamelink.py",
+  "            return self._send_zero_frame(keep_manual=True)",
+  "            return self._send_zero_frame()"),
+
+ ("fireball manual: the page counts a Hold as a disarm",
+  "ltcplay/fireball.py",
+  "            g = getattr(link, \"abort_id\")",
+  "            g = getattr(link, \"_zero_gen\")"),
+
+ ("fireball manual: a Hold holds the page off during a show",
+  "ltcplay/fireball.py",
+  "    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does",
+  "    if getattr(mach, \"state\", None) in (\"HOLD\", \"PAUSED\"):\n        return \"a Hold is standing.\"\n    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does"),
+
+ ("fireball manual: the page's frame ends on a zero()",
+  "ltcplay/flamelink.py",
+  "            if m is None or m[2] != self.abort_id or \\\n",
+  "            if m is None or m[2] != self.abort_id or self.zeroed or \\\n"),
+
+ ("fireball manual: the show's own sent values carry the page's frame",
+  "ltcplay/flamelink.py",
+  "        return tc, self._with_manual(vals, self._clock())",
+  "        vals = self._with_manual(vals, self._clock())\n        self._show_part = bytes(vals)\n        return tc, vals"),
+
+ ("fireball manual: a frame that did not go out counts as the show's",
+  "ltcplay/flamelink.py",
+  "            self.show_sent = show if ok else bytes(UNIVERSE_SIZE)",
+  "            self.show_sent = show"),
+
+ ("fireball manual: the show's sent values keep a frame a zero() dropped (round 4, E2)",
+  "ltcplay/flamelink.py",
+  "                if len(sp) == len(values) and not dropped \\\n",
+  "                if len(sp) == len(values) \\\n"),
+
+ ("fireball manual: a zero frame leaves the show's sent values (round 4, E15)",
+  "ltcplay/flamelink.py",
+  "        self.show_sent = bytes(UNIVERSE_SIZE)\n        return self._send(encode_flame(seq, None, mono,",
+  "        return self._send(encode_flame(seq, None, mono,"),
+
+ ("fireball manual: a frame not sent keeps the page's frame (round 4, s95)",
+  "ltcplay/flamelink.py",
+  "            self._manual = None\n            self.manual_drops += 1",
+  "            pass"),
+
+ ("fireball manual: a frame not sent does not cut the page's run (round 4, s95)",
+  "ltcplay/fireball.py",
+  "        if self._drops(link) != r.get(\"drops\"):",
+  "        if False:"),
+
+ ("fireball manual: a sign-out leaves the page's run to its beats (round 4, s28)",
+  "ltcplay/remote.py",
+  "                self.fireball_signout_cut(\n",
+  "                (lambda *a: None)(\n"),
+
+ ("fireball manual: a sign-out on the show machine cuts only its own screen's run (round 5, G14)",
+  "ltcplay/fireball.py",
+  "                or (local and r.get(\"local\")))",
+  "                )"),
+
+ ("fireball manual: any sign-out cuts every run (round 5, G15)",
+  "ltcplay/fireball.py",
+  "            hit = r is not None and (",
+  "            hit = r is not None or ("),
+
+ ("fireball manual: a press racing a sign-out starts a run (round 5, F6)",
+  "ltcplay/fireball.py",
+  "                gone = self._still(still)\n                if gone:",
+  "                gone = self._still(still)\n                if False:"),
+
+ ("fireball manual: the watcher never asks whether the sign-in may still arm (round 5, B2)",
+  "ltcplay/fireball.py",
+  "            why = self._link_why(self._link(), r) or self.refusal() or \\\n                self._still(r.get(\"still\"))",
+  "            why = self._link_why(self._link(), r) or self.refusal()"),
+
+ ("fireball manual: the route gives the run no sign-in check (round 5, B2)",
+  "ltcplay/fireball.py",
+  "                          local=bool(getattr(ctx, \"local\", False)),\n                          still=still)",
+  "                          local=bool(getattr(ctx, \"local\", False)),\n                          still=None)"),
+
+ ("fireball manual: a demoted sign-in may still hold a channel (round 5, B2)",
+  "ltcplay/remote.py",
+  "            return (f\"{nobody} may no longer use the Fireball controls \"",
+  "            return \"\"\n            return (f\"{nobody} may no longer use the Fireball controls \""),
+
+ ("fireball manual: frames resuming after a stall bring the page's channel back (round 5, B3)",
+  "ltcplay/flamelink.py",
+  "        if last is not None and self._clock() - last > MANUAL_STALL_S:",
+  "        if False:"),
+
+ ("fireball manual: a beat in flight sets the frame after a failed send (round 5, B4)",
+  "ltcplay/flamelink.py",
+  "                        (drops is not None and self.manual_drops != drops):",
+  "                        False:"),
+
+ ("fireball manual: the timeline judges its charge from the composed frame",
+  "ltcplay/web.py",
+  "            sent_get=lambda: getattr(link, \"show_sent\", None))",
+  "            sent_get=None)"),
+
+ ("fireball: a held pad whose pointer leaves it stays on",
+  "ltcplay/web/remote.html",
+  "$(\"fb-pads\").addEventListener(\"pointerout\", e => {",
+  "$(\"fb-pads\").addEventListener(\"x-pointerout\", e => {"),
+
+ ("fireball manual: the page's frame is not limited to the fireball's slots",
+  "ltcplay/flamelink.py",
+  "            keep = bytearray(UNIVERSE_SIZE)\n"
+  "            for s in self.manual_slots:\n"
+  "                keep[s - 1] = vals[s - 1]\n",
+  "            keep = bytearray(vals)\n"),
+
+ ("fireball manual: the link merges every slot of the page's frame",
+  "ltcplay/flamelink.py",
+  "        hit = False\n        for s in self.manual_slots:",
+  "        hit = False\n        for s in range(1, UNIVERSE_SIZE + 1):"),
+
+ ("fireball manual: the page's value replaces a higher show value",
+  "ltcplay/flamelink.py",
+  "            if v > out[s - 1]:\n                out[s - 1] = v",
+  "            if v != out[s - 1]:\n                out[s - 1] = v"),
+
+ ("fireball manual: the page's frame never expires at the link",
+  "ltcplay/flamelink.py",
+  "        if m[2] != self.abort_id or now - m[1] > MANUAL_HOLD_S or \\\n"
+  "                now < m[1]:",
+  "        if m[2] != self.abort_id or now < m[1]:"),
+
+ ("fireball manual: the page's frame outlives a zero or a disarm_all",
+  "ltcplay/flamelink.py",
+  "        if m[2] != self.abort_id or now - m[1] > MANUAL_HOLD_S or \\\n"
+  "                now < m[1]:",
+  "        if now - m[1] > MANUAL_HOLD_S or now < m[1]:"),
+
+ ("fireball manual: a beat read before a zero is taken",
+  "ltcplay/flamelink.py",
+  "                if (gen is not None and self.abort_id != gen) or \\\n",
+  "                if False or \\\n"),
+
+ ("fireball manual: the lockout does not apply to the page's frame",
+  "ltcplay/flamelink.py",
+  "        self.manuals_sent += 1\n        return self._unlocked(bytes(out))",
+  "        self.manuals_sent += 1\n        return bytes(out)"),
+
+ ("fireball manual: merged while live flame programming is on in a show",
+  "ltcplay/flamelink.py",
+  "            # Nor the Fireball page's frame: one source at a time.\n"
+  "            return tc, zeros, False",
+  "            # Nor the Fireball page's frame: one source at a time.\n"
+  "            return tc, zeros, True"),
+
+ ("fireball manual: merged while live flame programming is on between shows",
+  "ltcplay/flamelink.py",
+  "                return tc, self._program_values(now), False",
+  "                return tc, self._program_values(now), True"),
+
+ ("fireball manual: merged when the show state cannot be read",
+  "ltcplay/flamelink.py",
+  "            return None, zeros, False",
+  "            return None, zeros, True"),
+
+ ("fireball manual: the page's frame is never merged",
+  "ltcplay/flamelink.py",
+  "        return tc, self._with_manual(vals, self._clock())",
+  "        return tc, vals"),
+
+ ("fireball manual: the page's frame is zeroed between shows",
+  "ltcplay/flamelink.py",
+  "                                         and self._program is None\n"
+  "                                         and self._manual is None):",
+  "                                         and self._program is None):"),
+
+ ("fireball manual: the page is held off during a show again",
+  "ltcplay/fireball.py",
+  "                              remote, link, during_show=True),",
+  "                              remote, link),"),
+
+
+ ("fireball manual: an Abort standing does not hold the page off",
+  "ltcplay/fireball.py",
+  "    if getattr(mach, \"abort_latched\", False) or \\\n"
+  "            getattr(cond, \"latched\", False):\n"
+  "        return \"the show is aborted",
+  "    if False:\n"
+  "        return \"the show is aborted"),
+
+ ("fireball manual: live flame programming does not hold the page off",
+  "ltcplay/fireball.py",
+  "    lf = getattr(remote, \"live_flame\", None)\n"
+  "    if lf is not None and lf.on:",
+  "    lf = getattr(remote, \"live_flame\", None)\n"
+  "    if False:"),
+
+ ("fireball manual: the lock state is not asked during a show",
+  "ltcplay/fireball.py",
+  "    why = m.lock_problem()\n    if why:\n"
+  "        return f\"{why}; nothing fires from this page until then.\"",
+  "    why = \"\"\n    if why:\n"
+  "        return f\"{why}; nothing fires from this page until then.\""),
+
+ ("fireball manual: the flame link is never told the fireball's slots",
+  "ltcplay/fireball.py",
+  "            link.set_manual_slots(group[\"fire\"])",
+  "            pass"),
+
+ ("fireball manual: the page shows no charge record",
+  "ltcplay/web/remote.html",
+  "  $(\"fb-charge\").textContent = said.filter(Boolean).join(\" \");",
+  "  $(\"fb-charge\").textContent = \"\";"),
+
+ ("fireball manual: a charged tank's button does not say top-off",
+  "ltcplay/web/remote.html",
+  "tk.state === \"charged\" ? \"Charged: a press is a top-off\"",
+  "tk.state === \"charged\" ? \"\""),
+
  # -- the fireball timeline on the flame cues (fireball_cues.py) -----------
  ("fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show",
   "ltcplay/fireball_cues.py",
@@ -21087,8 +21340,8 @@ def build():
 
  ("fireball cues: the engine never names flamesafe's fireball group",
   "ltcplay/web.py",
-  "            journal=say, group_get=fireball_slots)",
-  "            journal=say)"),
+  "            journal=say, group_get=fireball_slots,",
+  "            journal=say,"),
 
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",

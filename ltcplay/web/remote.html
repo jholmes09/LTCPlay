@@ -874,8 +874,12 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
 .fb-armed.on{color:var(--red)}
 .fb-top button{flex:0 0 auto;min-height:48px}
 #fb-note{font-size:14px;margin-top:6px}
+#fb-charge{font-size:14px;margin-top:6px;flex:1 1 12em;min-width:0}
+.fb-cline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.fb-cline button{flex:0 0 auto;min-height:48px}
+#fb-charge:empty,button.fb-pad .fb-tk:empty{display:none}
 #fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:10px}
-button.fb-pad{min-height:clamp(96px,20vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;
+button.fb-pad{min-height:clamp(96px,14vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:6px;padding:8px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 button.fb-pad b{font:800 clamp(18px,2.8vh,28px)/1.1 var(--sans)}
 button.fb-pad .fb-st{font:800 clamp(16px,2.4vh,24px)/1 var(--caps);letter-spacing:.12em}
@@ -1127,10 +1131,14 @@ button.fb-pad.na{opacity:.45}
     <section class="card" id="fb-head">
       <div class="fb-top"><h2>Fireball</h2><span class="fb-armed" id="fb-armed">Not known yet</span>
         <button data-safe class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
-        <button class="ghost" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins.">Tanks are empty</button>
         <button data-safe class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
       <div class="warnbox open" id="fb-block" hidden></div>
       <div class="dim" id="fb-note"></div>
+      <!-- The charge record, and (a tank NOT KNOWN) Tanks are empty
+           beside it: one line, so the pads keep their room on an iPad. -->
+      <div class="fb-cline"><div class="kv" id="fb-charge"></div>
+        <button class="ghost" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins.">Tanks are empty</button>
+      </div>
       <div class="toast" id="fb-msg"></div>
     </section>
     <div id="fb-pads"></div>
@@ -2301,7 +2309,7 @@ function fireballState(v, on, stale, viewOnly){
     if(any && !out.cut) out.cut = "the Fireball is not armed";
     if(!out.block) out.block = "Arm the Fireball first.";
   } else {
-    out.text = "Armed. Fuel Charge, Air Charge and Purge stay on until pressed again; Valve Open and Igniter are on only while held. Abort, Hold, Stop and any disarm turn everything off.";
+    out.text = "Armed. Fuel Charge, Air Charge and Purge stay on until pressed again; Valve Open and Igniter are on only while held. Abort, Stop and any disarm turn everything off; a Hold does not.";
   }
   out.ok = !out.block;
   return out;
@@ -5571,8 +5579,17 @@ function renderFireball(){
   const box = $("fb-pads");
   if(box.dataset.key !== key){
     box.dataset.key = key;
-    box.innerHTML = ctl.map(c => `<button class="fb-pad" data-k="${esc(c.key)}" data-kind="${esc(c.kind)}"><b>${esc(c.label)}</b><span class="fb-st">OFF</span><small>${c.kind === "toggle" ? "Press: on, press again: off" : "Hold: on only while held"}, channel ${esc(c.slot)}</small></button>`).join("");
+    box.innerHTML = ctl.map(c => `<button class="fb-pad" data-k="${esc(c.key)}" data-kind="${esc(c.kind)}"><b>${esc(c.label)}</b><span class="fb-st">OFF</span><small>${c.kind === "toggle" ? "Press: on, press again: off" : "Hold: on only while held"}, channel ${esc(c.slot)}</small><small class="fb-tk"></small></button>`).join("");
   }
+  // The fuel and air charge (fireball_charge.py) and the timeline's skips
+  // (fireball_cues.py), from every screen's status: display only.
+  const ch = ST && ST.fireball_charge, tl = ST && ST.fireball_timeline;
+  const said = [];
+  if(ch) said.push(ch.fault ? "Charge record: " + ch.fault : (ch.text || ""));
+  if(tl && tl.fault) said.push("Timeline: " + tl.fault);
+  if(tl && tl.messages && tl.messages.length) said.push(tl.messages[tl.messages.length - 1]);
+  $("fb-charge").textContent = said.filter(Boolean).join(" ");
+  const tanks = (ch && ch.tanks) || {};
   box.querySelectorAll(".fb-pad").forEach(b => {
     const on = !!FB_ON[b.dataset.k];
     b.classList.toggle("on", on);
@@ -5580,6 +5597,8 @@ function renderFireball(){
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.setAttribute("aria-disabled", st.ok || on ? "false" : "true");
     b.querySelector(".fb-st").textContent = on ? "ON" : "OFF";
+    const tk = tanks[b.dataset.k], tkEl = b.querySelector(".fb-tk");
+    if(tkEl) tkEl.textContent = !tk ? "" : tk.state === "charged" ? "Charged: a press is a top-off" : tk.state === "unknown" ? "Charge not known" : "";
   });
 }
 // Never the disabled attribute on a pad: a held button that turned
@@ -5600,6 +5619,13 @@ for(const ev of ["pointerup", "pointercancel", "lostpointercapture"]){
     fbPress(b.dataset.k, false);
   });
 }
+// A held pad whose pointer capture failed: the pointer leaving it lets go
+// too (pointerout bubbles; a captured pointer never leaves its pad).
+$("fb-pads").addEventListener("pointerout", e => {
+  const b = e.target.closest && e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "momentary") return;
+  if(e.relatedTarget && b.contains(e.relatedTarget)) return;
+  fbPress(b.dataset.k, false);
+});
 $("fb-pads").addEventListener("contextmenu", e => { if(e.target.closest(".fb-pad")) e.preventDefault(); });
 window.addEventListener("blur", () => fbRelease("the page lost focus"));
 document.addEventListener("visibilitychange", () => { if(document.hidden) fbCut("the page was hidden"); });

@@ -2476,7 +2476,10 @@ def _attach_fireball_timeline(httpd):
         fb = fbc_mod.FireballCues(
             remote.fireball_timeline_store(),
             charge_get=lambda: getattr(remote, "fireball_charge", None),
-            journal=say, group_get=fireball_slots)
+            journal=say, group_get=fireball_slots,
+            # The show path's own sent values, before the Fireball page's
+            # frame (flamelink.show_sent, third review D-F1).
+            sent_get=lambda: getattr(link, "show_sent", None))
         fb.refresh()
     except Exception as e:                       # noqa: BLE001
         fb = fbc_mod.FireballCues(None, journal=say)
