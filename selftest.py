@@ -90003,8 +90003,12 @@ def test_ui2_page_makes_only_1_0_presses():
             r'\b(?:press|annPress)\("([a-z-]+)"', src)}
         return out
     r1, r2 = routes(one), routes(two)
-    check(r2 - r1 == {"/api/remote/ui-default"},
-          f"2.0 adds one route, the default interface: {sorted(r2 - r1)}")
+    # 2.0's own: the default interface, and the fireball timeline's save
+    # (Jeff, 2026-10-30; 2.0 only, no 1.0 page edits it).
+    check(r2 - r1 == {"/api/remote/ui-default",
+                      "/api/remote/fireball-timeline-save"},
+          f"2.0 adds two routes, the default interface and the fireball "
+          f"timeline's save: {sorted(r2 - r1)}")
     # The presses, body for body.
     for press in ('press("start-now", {confirmed:true})',
                   'press("disarm-all")', 'press("group-disarm", {group:i})',
@@ -93209,6 +93213,314 @@ def test_fireball_cues_wiring():
 
 
 
+_FBT_MEASURE_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
+function look(el){
+  const cs = getComputedStyle(el), r = el.getBoundingClientRect();
+  return {id:el.id, dis:!!el.disabled, op:Number(cs.opacity), filt:cs.filter, shown:shown(el),
+    r:[Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)]};
+}
+async function go(){
+  for(let i = 0; i < 60 && !document.querySelector("#fbt-rows .fbt-row"); i++) await wait(100);
+  await wait(800);
+  const res = {vw:innerWidth, sw:document.scrollingElement.scrollWidth, card:shown(q("fbt"))};
+  res.rows = [...document.querySelectorAll("#fbt-rows .fbt-row")].map(r => ({k:r.dataset.k,
+    used:r.querySelector(".use").getAttribute("aria-pressed"), label:r.querySelector(".use").textContent,
+    start:r.querySelector(".st").value, dur:r.querySelector(".du").value,
+    dis:r.querySelector(".st").disabled, h:Math.round(r.querySelector(".st").getBoundingClientRect().height),
+    w:Math.round(r.getBoundingClientRect().right)}));
+  res.src = [...document.querySelectorAll("#fbt-src .b")].filter(b => b.classList.contains("on")).map(b => b.dataset.v);
+  res.bands = [...document.querySelectorAll("#fbt-bar i")].map(i => i.dataset.k);
+  res.save = {dis:q("fbt-save").disabled, why:q("fbt-why").textContent};
+  res.msg = q("fbt-msg").textContent;
+  res.mini = ["m-hold", "m-stop", "m-disf"].map(id => look(q(id)));
+  res.abort = look(q("b-abort"));
+  // Nothing of the editor under the Abort sign.
+  // (Only what can be seen: main scrolls, and what is scrolled out of it
+  // is not under anything.) And Abort is on top at its own centre.
+  const A = q("b-abort").getBoundingClientRect(), M = document.querySelector("main").getBoundingClientRect();
+  res.under = [...q("fbt").querySelectorAll("button, input, select")].filter(el => {
+    const r0 = el.getBoundingClientRect();
+    const r = {left:Math.max(r0.left, M.left), right:Math.min(r0.right, M.right), top:Math.max(r0.top, M.top), bottom:Math.min(r0.bottom, M.bottom)};
+    return shown(el) && r.left < r.right && r.top < r.bottom &&
+      r.left < A.right && A.left < r.right && r.top < A.bottom && A.top < r.bottom;
+  }).map(el => el.id || el.className);
+  const at = document.elementFromPoint(A.left + A.width / 2, A.top + A.height / 2);
+  if(!(at && q("b-abort").contains(at))) res.under.push("Abort is not on top");
+  // An edit: Air's start into the past of a frame 30, then a bad one.
+  const air = document.querySelector('#fbt-rows [data-k="air"] .st');
+  const typeIn = (el, v) => { el.value = v; el.dispatchEvent(new Event("input", {bubbles:true})); };
+  if(!air.disabled){
+    typeIn(air, "00:00:02:30");
+    await wait(300);
+    res.bad = {err:document.querySelector('#fbt-rows [data-k="air"] .err').textContent, save:q("fbt-save").disabled};
+    q("fbt-save").click(); await wait(300);
+    res.bad.posts = posts.filter(p => p.u.indexOf("fireball-timeline-save") >= 0).length;
+    res.bad.msg = q("fbt-msg").textContent;
+    typeIn(air, "00:00:02:15");
+    document.querySelector('#fbt-rows [data-k="igniter"] .use').click();
+    typeIn(document.querySelector('#fbt-rows [data-k="igniter"] .st'), "00:00:04:00");
+    typeIn(document.querySelector('#fbt-rows [data-k="igniter"] .du'), "0.5");
+    document.querySelector('#fbt-src [data-v="timeline"]').click();
+    await wait(300);
+    res.good_save = {dis:q("fbt-save").disabled, why:q("fbt-why").textContent};
+    q("fbt-save").click(); await wait(1200);
+  } else {
+    q("fbt-save").click(); await wait(300);
+  }
+  res.posts = posts.filter(p => p.u.indexOf("fireball-timeline") >= 0).map(p => ({u:p.u, b:JSON.parse(p.b)}));
+  res.after = q("fbt-msg").textContent;
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_ui2_fireball_timeline_editor():
+    section("interface 2.0's fireball timeline editor (Schedule): Jeff's "
+            "four stages in his order with their channels, a start and a "
+            "length each, FSEQ or Timeline, a preview bar; the page's own "
+            "checks in plain words before anything is sent; Save is the "
+            "fireball-timeline-save route with the revision it read; "
+            "signed out or without the Settings row every field and Save "
+            "are disabled and say why in 8 words or fewer and nothing is "
+            "sent; Abort, Hold, Stop show and Disarm flames never dimmed, "
+            "disabled or covered; drawn in a real browser")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    sched = two[two.find('<section class="pane" id="t-schedule"'):]
+    sched = sched[:sched.find("</section>")]
+    check('id="fbt"' in sched and 'id="fbt-save"' in sched and
+          'id="fbt-src"' in sched,
+          "the editor is on the Schedule tab")
+    js_a = two.find("// ---- The fireball timeline (fireball_timeline.py")
+    js_b = two.find("// ---- The brand (1.0's loadBrand)")
+    js = two[js_a:js_b]
+    check(js_a > 0 and js_b > js_a and
+          'post("/api/remote/fireball-timeline-save", actor(fbtBody(' in js
+          and 'getJSON("/api/remote/fireball-timeline?show=" + '
+              'encodeURIComponent(FBT_SHOW)' in js,
+          "it reads fireball-timeline and saves through "
+          "fireball-timeline-save, with the actor's seen")
+    check("purge" not in js.lower().replace("purge is never a stage", "")
+          .replace("never here. only by hand", ""),
+          "the editor has no Purge stage and no purge press")
+    check("—" not in js and "–" not in js and
+          "—" not in sched and "–" not in sched,
+          "no em or en dashes")
+    m = re.search(r'fireball: \["Fireball timeline", (.*?)\]\],\n', two,
+                  re.S)
+    check(m and "Purge" in m.group(1) and "Admins" in m.group(1),
+          "the ? says what each part does, Purge never here")
+    for word in ("No contact", "Sign in to edit", "Admins only",
+                 "Arming off here", "Show cannot be timed", "No changes",
+                 "Loading"):
+        check(('"' + word + '"') in js and len(word.split()) <= 8,
+              f"says why in 8 words or fewer: {word!r}")
+    from ltcplay import fireball_timeline as FT
+    check([(k, w, s) for k, w, s in FT.STAGES] ==
+          [("fuel", "Fuel", 55), ("air", "Air", 56), ("igniter", "Igniter",
+                                                     58),
+           ("valve", "Valve Open", 57)] and
+          'const FBT_STAGES = [["fuel", "Fuel", 55], ["air", "Air", 56], '
+          '["igniter", "Igniter", 58], ["valve", "Valve Open", 57]];' in js
+          and "const FBT_FPS = 30;" in js and FT.FPS == 30,
+          "the page's stages and frames are the engine's")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+    else:
+        fns = "\n".join(_js_function(two, n) or "" for n in (
+            "fbtParseTc", "fbtTcText", "fbtCheck", "fbtWhy", "fbtBody",
+            "fbtBands"))
+        consts = "\n".join(re.findall(r"^const FBT_(?:FPS|STAGES) = .*;$",
+                                      two, re.M))
+        body = lo + "\n" + consts + "\n" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(fbtParseTc("00:00:00:00") === 0 && fbtParseTc("00:01:30:15") === 2715 && fbtParseTc(" 01:00:00:29 ") === 108029, "timecodes to frames");
+t(fbtParseTc("00:00:00:30") === null && fbtParseTc("00:60:00:00") === null && fbtParseTc("00:00:60:00") === null && fbtParseTc("0:00:00:00") === null && fbtParseTc("") === null && fbtParseTc(null) === null, "frame 30, minute 60, second 60, short, empty: not a timecode");
+t(fbtTcText(2715) === "00:01:30:15" && fbtTcText(0) === "00:00:00:00", "frames to timecode");
+let c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"1.5"}, {k:"air", used:false, start:"rubbish", dur:""}, {k:"igniter", used:true, start:"00:00:02:30", dur:"0"}, {k:"valve", used:true, start:"00:10:00:00", dur:"1"}], 300);
+t(JSON.stringify(c.stages) === JSON.stringify([{stage:"fuel", start:"00:00:01:00", dur_s:1.5}]), "only the good used rows are sent: " + JSON.stringify(c.stages));
+t(!("air" in c.errors), "a row not used is never checked");
+t(/HH:MM:SS:FF/.test(c.errors.igniter) && /seconds above 0/.test(c.errors.igniter), "a bad start and a 0 length, said: " + c.errors.igniter);
+t(c.errors.valve === "Start is after the end of the show.", "a start past the show: " + c.errors.valve);
+c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"36000"}], 300);
+t(c.stages.length === 1 && c.stages[0].dur_s === 36000, "no longest length (Jeff)");
+c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"-1"}, {k:"air", used:true, start:"00:00:01:00", dur:"x"}, {k:"valve", used:true, start:"00:00:01:00", dur:"Infinity"}], 300);
+t(c.errors.fuel && c.errors.air && c.errors.valve && !c.stages.length, "negative, words, infinity: refused");
+const st = (me, arming) => ({me:me, arming:{enabled:!!arming}});
+const admin = {user:"Andy", role:"admin", may:{settings:true}};
+t(fbtWhy(st(admin, false), true, false) === "", "an admin on the show PC may");
+t(fbtWhy(st(admin, true), false, false) === "", "an admin on an iPad with arming from a screen on may");
+t(fbtWhy(st(admin, false), false, false) === "Arming off here", "an iPad with it off: says so");
+t(fbtWhy(st({user:"Op", role:"operator", may:{settings:false}}, true), true, false) === "Admins only", "an operator: Admins only");
+t(fbtWhy(st({user:null, may:{settings:false}}, true), true, false) === "Sign in to edit", "signed out: Sign in to edit");
+t(fbtWhy(st({}, true), true, false) === "Sign in to edit", "no sign-in at all: Sign in to edit");
+t(fbtWhy(st(admin, true), true, true) === "No contact", "no contact: No contact");
+t(JSON.stringify(fbtBody("S.json", 7, "timeline", [{stage:"fuel", start:"00:00:01:00", dur_s:1}])) === JSON.stringify({show:"S.json", rev:7, source:"timeline", stages:[{stage:"fuel", start:"00:00:01:00", dur_s:1}]}), "the body: show, rev, source, stages");
+const b = fbtBands([{stage:"fuel", start:"00:00:30:00", dur_s:30}, {stage:"air", start:"00:04:50:00", dur_s:60}], 300);
+t(b.length === 2 && Math.abs(b[0].left - 10) < 1e-9 && Math.abs(b[0].width - 10) < 1e-9 && Math.abs(b[1].width - 100 * 10 / 300) < 1e-9, "the bands, in percent, cut at the show's end: " + JSON.stringify(b));
+t(fbtBands([{stage:"fuel", start:"00:00:01:00", dur_s:1}], null).length === 0, "no length known: no bands");
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, body, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node did not run it: {r.stdout[-300:]!r} "
+                   f"{r.stderr[-600:]!r}"]
+        check(bad == [], f"the editor's rules, in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    view = {"rev": 4, "error": "", "shows": {}, "fps": 30,
+            "sources": ["fseq", "timeline"], "default_source": "fseq",
+            "show": "Show.json", "cue": "Show", "show_len_s": 300.0,
+            "show_problem": "",
+            "stages": [{"stage": k, "word": w, "slot": s}
+                       for k, w, s in FT.STAGES],
+            "entry": {"source": "fseq", "cue": "Show", "show_len_s": 300.0,
+                      "stages": [{"stage": "fuel", "start": "00:00:01:00",
+                                  "dur_s": 1.0},
+                                 {"stage": "air", "start": "00:00:01:15",
+                                  "dur_s": 1.0},
+                                 {"stage": "valve", "start": "00:00:04:05",
+                                  "dur_s": 0.2}],
+                      "edited_by": "Andy", "edited_at":
+                          "2026-10-30T21:04:11Z", "screen": "Rack screen"}}
+    routes = {"/api/timelines": {"timelines": [{"file": "Show.json"},
+                                               {"file": "Other.json"}]},
+              "/api/remote/fireball-timeline": view,
+              "/api/brand": {"show": "Fire and Ice"}}
+    posts = {"/api/remote/fireball-timeline-save": {
+        "ok": True, "text": "Saved: Air start 00:00:01:15 to 00:00:02:15."}}
+
+    def status(me):
+        st = _ui2_status_running()
+        st["fireball"] = {"available": True, "on": [], "owner": None}
+        st["fireball_timeline"] = {"fault": "", "messages": [],
+                                   "source": None, "rev": 4}
+        st["selected_show"] = "Show.json"
+        st["me"] = me
+        return st
+    admin = {"local": True, "user": "Andy", "role": "admin",
+             "users_active": True, "view_only": False,
+             "may": {"arm": True, "show": True, "settings": True}}
+    out = {"local": True, "user": None, "role": None,
+           "users_active": True, "view_only": True,
+           "may": {"arm": False, "show": False, "settings": False}}
+    for who, me, sizes in (("an admin", admin,
+                            ((1366, 768), (1024, 768), (390, 844))),
+                           ("signed out", out, ((1366, 768),))):
+        got = _rack_screen_in_chromium(
+            chrome, page, status(me), sizes, measure_js=_FBT_MEASURE_JS,
+            frag="?tour=0#schedule", budget_ms=20000, routes=routes,
+            posts=posts)
+        for (w, h), res in got.items():
+            where = f"2.0 Schedule, {who}, {w}x{h}"
+            if not check(isinstance(res, dict) and res.get("card"),
+                         f"{where}: the editor is drawn: {res!r}"[:700]):
+                continue
+            check([r["k"] for r in res["rows"]] ==
+                  ["fuel", "air", "igniter", "valve"] and
+                  [r["label"].split(",")[0] for r in res["rows"]] ==
+                  ["FuelUsed", "AirUsed", "IgniterNot used",
+                   "Valve OpenUsed"] and
+                  [r["label"].split("ch ")[-1] for r in res["rows"]] ==
+                  ["55", "56", "58", "57"],
+                  f"{where}: Fuel, Air, Igniter, Valve Open, with their "
+                  f"channels, the saved ones used: "
+                  f"{[r['label'] for r in res['rows']]}")
+            check([(r["start"], r["dur"]) for r in res["rows"]] ==
+                  [("00:00:01:00", "1"), ("00:00:01:15", "1"), ("", ""),
+                   ("00:00:04:05", "0.2")] and res["src"] == ["fseq"] and
+                  res["bands"] == ["fuel", "air", "valve"],
+                  f"{where}: the saved times, the source, the bar: "
+                  f"{res['rows']} {res['src']} {res['bands']}")
+            check(res["sw"] <= res["vw"] + 1 and
+                  all(r["w"] <= res["vw"] + 1 for r in res["rows"]) and
+                  all(r["h"] >= 44 for r in res["rows"]) and
+                  not res["under"],
+                  f"{where}: nothing off the side, fields big enough, "
+                  f"nothing under the Abort sign: {res['sw']} {res['vw']} "
+                  f"{res['under']}")
+            check(all(not x["dis"] and x["op"] == 1 and
+                      "saturate" not in x["filt"] and x["shown"]
+                      for x in res["mini"] + [res["abort"]]),
+                  f"{where}: Hold, Stop show, Disarm flames and Abort are "
+                  f"there, never disabled or dimmed: "
+                  f"{res['mini']} {res['abort']}")
+            check("Last saved by Andy" in res["msg"] and
+                  "A show is live" in res["msg"],
+                  f"{where}: who saved it last, and that a show is live: "
+                  f"{res['msg']!r}")
+            if me is admin:
+                check(res["save"] == {"dis": True, "why": "No changes"},
+                      f"{where}: nothing changed: Save says so: "
+                      f"{res['save']}")
+                bad = res.get("bad") or {}
+                check(bad.get("err") == "Start: write HH:MM:SS:FF, frames "
+                      "00 to 29." and bad.get("posts") == 0 and
+                      "Not saved" in bad.get("msg", ""),
+                      f"{where}: frame 30 is said in plain words and "
+                      f"nothing is sent: {bad}")
+                check(res["good_save"] == {"dis": False, "why": ""},
+                      f"{where}: fixed: Save may: {res['good_save']}")
+                saves = [p for p in res["posts"]
+                         if p["u"] == "/api/remote/fireball-timeline-save"]
+                check(len(saves) == 1 and
+                      {k: v for k, v in saves[0]["b"].items()
+                       if k != "seen"} ==
+                      {"show": "Show.json", "rev": 4, "source": "timeline",
+                       "stages": [{"stage": "fuel", "start": "00:00:01:00",
+                                   "dur_s": 1},
+                                  {"stage": "air", "start": "00:00:02:15",
+                                   "dur_s": 1},
+                                  {"stage": "igniter",
+                                   "start": "00:00:04:00", "dur_s": 0.5},
+                                  {"stage": "valve", "start": "00:00:04:05",
+                                   "dur_s": 0.2}]} and
+                      "seen" in saves[0]["b"],
+                      f"{where}: one save, the revision it read, the "
+                      f"source, the stages in Jeff's order: {saves}")
+                check("Saved" in res["after"],
+                      f"{where}: the engine's answer is shown: "
+                      f"{res['after']!r}")
+            else:
+                check(all(r["dis"] for r in res["rows"]) and
+                      res["save"] == {"dis": True,
+                                      "why": "Sign in to edit"} and
+                      not [p for p in res["posts"] if "save" in p["u"]],
+                      f"{where}: view only: every field and Save disabled, "
+                      f"Save says why, nothing sent: {res['save']} "
+                      f"{res['posts']}")
+    print("  ok")
+
+
 def _fbm_link(live=True, guard=False):
     """A real FlameLink on a fake clock, its show state and cues set by the
     test: R.live, R.tc, R.cue (512 values or None)."""
@@ -94654,6 +94966,7 @@ if __name__ == "__main__":
         test_fireball_timeline_end_to_end_real_flamesafe,
         test_fireball_manual_merged_on_the_flame_link,
         test_fireball_manual_and_timeline_never_double_charge,
+        test_ui2_fireball_timeline_editor,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
