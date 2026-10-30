@@ -85584,8 +85584,10 @@ t(!s.ok, "nothing read yet: nothing may start");
     st["fireball_timeline"] = {"fault": "", "messages": [
         "Fuel already charged: the Fuel stage was skipped (no double "
         "charge)."]}
+    # (768, 968): an iPad in portrait on a runner whose page is shorter
+    # (the ubuntu runner draws 768x1024 as 881 px tall).
     sizes = ((1920, 1080), (1366, 600), (1280, 720), (1024, 768),
-             (768, 1024))
+             (768, 1024), (768, 968))
     for which, fv, szs in (("armed", _fb_view(), sizes),
                            ("not armed", _fb_view("off"),
                             ((1366, 768),)),
