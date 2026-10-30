@@ -331,6 +331,11 @@ class FireballPanel:
             return 400, {"error": "A beat that turns something on has to "
                                   "name its run. Nothing was turned on.",
                          "cut": True}
+        # The zero count is read BEFORE the checks (review of #193, 5): a
+        # Hold, Stop or Abort that lands after them moves it, so the frame
+        # this beat would set is refused at the link (manual_set's gen).
+        link0 = self._link()
+        gen0 = self._gen(link0) if link0 is not None else None
         why = ""
         if not seen_ok:
             why = ("The page's status is more than 1 s old. Wait for it to "
@@ -372,7 +377,7 @@ class FireballPanel:
                 self._remember(owner, r["id"], None)
                 r = self._run = None
             if r is None:
-                gen = self._gen(link)
+                gen = gen0 if link is link0 else None
                 if gen is None:
                     return 409, {"error": "The flame link's state could not "
                                           "be read, so nothing turns on.",
@@ -407,6 +412,12 @@ class FireballPanel:
                 # nothing is set.
                 lost = True
             else:
+                # The charge state is told who holds what BEFORE the frame
+                # can go out (review of #193, 1): the link's sender may
+                # send it the moment it is set, and a charge it sees then
+                # must already be this person's (a top-off, never a
+                # double charge).
+                self._tell(on, who, screen)
                 # Refused by the link itself when a zero() or disarm_all()
                 # (Stop, Hold, Abort) has moved its count since the run
                 # started.
@@ -431,7 +442,6 @@ class FireballPanel:
             self.cut(f"the Fireball is not armed: {why}", who=who,
                      screen=screen)
             return 409, {"error": why, "cut": True}
-        self._tell(on, who, screen)
         if started or before != set(on):
             names = [lb for k, lb, _t in CONTROLS if k in on]
             self._note(f"{owner[0]} on the Fireball page: "
@@ -605,6 +615,10 @@ def _during_show_blockers(remote, m):
             getattr(cond, "latched", False):
         return "the show is aborted; press Reset first."
     if getattr(mach, "state", None) in ("HOLD", "PAUSED"):
+        return "a Hold is standing; Resume or Reset first."
+    # The conductor holding (a Programming Hold, an announcement's DARK)
+    # whatever the schedule's state (review of #193, 4).
+    if getattr(cond, "_look", None) in ("HELD", "DARK"):
         return "a Hold is standing; Resume or Reset first."
     lf = getattr(remote, "live_flame", None)
     if lf is not None and lf.on:

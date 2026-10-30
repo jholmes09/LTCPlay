@@ -85001,6 +85001,46 @@ def test_fireball_at_the_engine():
             R.svc.machine = real_m
         check(st == 409 and "aborted" in out["error"] and link.cur is None,
               f"an Abort standing holds it off: {st} {out}")
+        # The conductor's own latch, its held look (a Programming Hold or
+        # an announcement, whatever the schedule's state), flamesafe not
+        # confirming the locks, an unreadable Morning config: each holds
+        # it off (review of #193).
+        cond = R.svc.conductor
+        for what, on_, off_, word in (
+                ("the conductor latched",
+                 lambda: setattr(cond, "_latched", True),
+                 lambda: setattr(cond, "_latched", False), "aborted"),
+                ("the schedule PAUSED, the conductor not holding",
+                 lambda: (setattr(R.svc, "machine", _dc.replace(
+                     real_m, state="PAUSED")), setattr(cond, "_look",
+                                                        "PLAYING")),
+                 None, "Hold"),
+                ("the conductor HELD",
+                 lambda: setattr(cond, "_look", "HELD"), None, "Hold"),
+                ("the conductor DARK",
+                 lambda: setattr(cond, "_look", "DARK"), None, "Hold"),
+                ("locks not confirmed",
+                 lambda: setattr(R.m, "_locks_confirmed",
+                                 lambda: "flamesafe has not taken the "
+                                         "locks yet"), None,
+                 "not taken the locks"),
+                ("the Morning config unreadable",
+                 lambda: setattr(R.m, "config_error", "bad json"), None,
+                 "could not be read")):
+            saved = (cond._latched, cond._look, R.m.config_error,
+                     R.m.__dict__.get("_locks_confirmed"))
+            on_()
+            try:
+                st, out = beat({"fuel"}, "a12-" + what, 1)
+            finally:
+                cond._latched, cond._look, R.m.config_error = saved[:3]
+                if saved[3] is None:
+                    R.m.__dict__.pop("_locks_confirmed", None)
+                else:
+                    R.m._locks_confirmed = saved[3]
+            R.svc.machine = real_m
+            check(st == 409 and word in out["error"] and link.cur is None,
+                  f"{what}: holds it off: {st} {out}")
         _fb_armed(R, False)      # flamesafe took the disarm
         st, out = beat({"fuel"}, "a13", 1)
         check(st == 409 and "not armed" in out["error"] and
@@ -85679,6 +85719,14 @@ h.ev(pad("valve"), "pointerup");
 await h.sleep(350);
 out.lift = since(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
 out.lift_cls = pad("valve").className;
+// A held pad whose capture failed: the pointer leaving it lets go.
+n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(250);
+pad("valve").dispatchEvent(new PointerEvent("pointerout", {bubbles:true, relatedTarget:document.body}));
+await h.sleep(300);
+const lv = since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body));
+out.leave = {cls:pad("valve").className, first:lv[0] || "", last:lv.length ? lv[lv.length - 1] : "x"};
 // Fuel Charge: a toggle.
 n = mark();
 h.ev(pad("fuel"), "click");
@@ -85772,6 +85820,11 @@ out.buttons = since(n).map(p => p.route + (p.body.group ? ":" + p.body.group : "
           len(m["lift"]) == 1 and "on" not in m["lift_cls"].split(),
           f"the lift: one beat with everything off, then nothing: "
           f"{m['lift']}")
+    lv = m.get("leave") or {}
+    check(lv.get("first") == "valve" and lv.get("last") == "" and
+          "on" not in lv.get("cls", "on").split(),
+          f"a held pad whose pointer leaves it (capture failed) lets go: "
+          f"{lv}")
     check(len(m["fuel"]) >= 3 and all(x == "fuel" for x in m["fuel"]),
           f"Fuel Charge stays on, beating: {m['fuel']}")
     check(m["blur"]["fuel"] and not m["blur"]["ign"] and
@@ -93014,6 +93067,7 @@ def test_fireball_timeline_store():
         def boom(doc):
             raise OSError(28, "No space left on device")
         store._write = boom
+        hist0 = store.history()
         ok, text, _e = store.save(show, "Show", 60.0, "fseq", [], rev)
         store._write = real
         check(not ok and "could not be written" in text and
@@ -93021,8 +93075,42 @@ def test_fireball_timeline_store():
               lines[-1][1].get("fault") is True and
               events[-1]["result"] == "error",
               f"a failed write: nothing changed, a fault: {text}")
-        # A file that cannot be read: no timeline for any show, said; a
-        # save on revision 0 replaces it, the broken one kept.
+        check(store.history() == hist0,
+              "a save that failed leaves no history copy behind")
+        # The replace refused (Windows: the file held by an indexer): no
+        # temporary file, no history copy, the file as it was.
+        real_replace = os.replace
+
+        def held(a, b):
+            if str(b) == store.path:
+                raise PermissionError(13, "Access is denied")
+            return real_replace(a, b)
+        os.replace = held
+        try:
+            ok, text, _e = store.save(show, "Show", 60.0, "fseq", [], rev)
+        finally:
+            os.replace = real_replace
+        check(not ok and open(store.path, "rb").read() == before and
+              store.history() == hist0 and
+              not [n for n in os.listdir(work) if n.endswith(".tmp")],
+              f"a replace refused: no .tmp, no history, nothing changed: "
+              f"{text} {os.listdir(work)}")
+        # Every read is under the store's lock (a save's replace never
+        # meets this program's own reader holding the file).
+        import threading as _th
+        got = []
+        with store._lock:
+            rd = _th.Thread(target=lambda: got.append(store.load()))
+            rd.start()
+            rd.join(0.3)
+            check(rd.is_alive() and not got,
+                  "a read waits while a save holds the store")
+        rd.join(2)
+        check(got and got[0][1] == "", "and reads once it is done")
+        # A file that cannot be read: no timeline for any show, said;
+        # every save refused (it has no revision, and saving would drop
+        # every other show's entry: review of #184), whatever revision it
+        # names, until an admin replaces it; the broken one kept.
         for broken in ("{not json", '{"fireball_timeline_format": 1, '
                        '"rev": 1, "shows": {}, "x": 1}'):
             with open(store.path, "w", encoding="utf-8") as fh:
@@ -93030,20 +93118,43 @@ def test_fireball_timeline_store():
             d, err = store.load()
             check(d["shows"] == {} and d["rev"] == 0 and
                   "could not be read" in err and
-                  "no show fires its fireball from a timeline" in err and
+                  "no show fires its fireball" in err and
                   _cfg_dashes(err), f"a broken file: {err}")
             check(store.view(show)["entry"]["source"] == "fseq" and
                   store.view(show)["error"] == err,
                   "and the view says so")
+        for base in (0, 1, rev):
+            ok, text, entry = store.save("Other.json", "Show", 60.0,
+                                         "timeline", stg(), base,
+                                         who="Andy")
+            check(not ok and "could not be read" in text and
+                  "every other show's timeline in it would be lost" in text
+                  and open(store.path, encoding="utf-8").read() ==
+                  '{"fireball_timeline_format": 1, "rev": 1, "shows": {}, '
+                  '"x": 1}', f"a save over a broken file (revision {base}) "
+                             f"is refused, nothing written: {text}")
         wall[0] += 1
         ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
-                                     0, who="Andy")
+                                     0, who="Andy", replace_unreadable=True)
         h = store.history()
         check(ok and entry["rev"] == 1 and h[0].endswith(
             "-rev0-unreadable.json") and open(os.path.join(
                 store.history_dir(), h[0]), encoding="utf-8").read() ==
               '{"fireball_timeline_format": 1, "rev": 1, "shows": {}, '
               '"x": 1}', f"saved over a broken file, which is kept: {h[:1]}")
+        # A file that was saved and is now missing: not "nothing saved
+        # yet" (an FSEQ fallback): a fault, saves refused until replaced.
+        os.remove(store.path)
+        d, err = store.load()
+        check("is missing although it was saved before" in err and
+              d["shows"] == {}, f"a missing file once saved: {err}")
+        ok, text, _e = store.save(show, "Show", 60.0, "timeline", stg(), 0,
+                                  who="Andy")
+        check(not ok and not os.path.exists(store.path),
+              f"and a save over it is refused: {text}")
+        ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
+                                     0, who="Andy", replace_unreadable=True)
+        check(ok and store.load()[1] == "", f"replaced by an admin: {text}")
         # A UTF-8 BOM (Notepad) reads.
         raw = open(store.path, encoding="utf-8").read()
         with open(store.path, "w", encoding="utf-8-sig") as fh:
@@ -93108,6 +93219,8 @@ def test_fireball_timeline_routes():
         active=lambda: True, matrix=lambda: matrix,
         may=lambda role, perm: U.allowed(matrix, role, perm))
     info = {"Show.json": ("Show", 120.0, "")}
+    for f_ in ("Show.json", "Other.json"):
+        open(os.path.join(work, f_), "w").close()
     opened = []
 
     def fake_info(show):
@@ -93219,6 +93332,28 @@ def test_fireball_timeline_routes():
         check(out["rev"] == 2 and out["entry"]["source"] == "fseq" and
               len(out["entry"]["stages"]) == 2,
               "switched back to the FSEQ, the stages kept for later")
+        # Another spelling of the same file (a case-blind Windows or macOS
+        # folder): saved under the folder's own spelling, the name the
+        # playing session has (review of #187).
+        rev_now = rm.fireball_timeline_store().load()[0]["rev"]
+        code, out, _h = save(dict(good, show="SHOW.JSON", rev=rev_now),
+                             ctx("admin"))
+        doc_ = rm.fireball_timeline_store().load()[0]
+        check(code == 200 and "Show.json" in doc_["shows"] and
+              "SHOW.JSON" not in doc_["shows"] and
+              opened[-1] == "Show.json",
+              f"SHOW.JSON is saved as Show.json: {code} {out} "
+              f"{sorted(doc_['shows'])}")
+        _c, v_ = rm.get("/api/remote/fireball-timeline", ctx(None),
+                        "show=SHOW.JSON")
+        check(v_.get("show") == "Show.json",
+              f"and read as Show.json: {v_.get('show')}")
+        # Two files that differ only by case: refused, said.
+        open(os.path.join(work, "OTHER.json"), "w").close()
+        code, out, _h = save(dict(good, show="other.JSON", rev=rev_now + 1),
+                             ctx("admin"))
+        check(code == 409 and "more than one show file" in out["error"],
+              f"two spellings in the folder: refused: {out}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
@@ -93262,6 +93397,8 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Igniter is independent", "**FSEQ**", "**Timeline**",
                  "Settings row", "never by when", "during a show",
                  "never falls back to its FSEQ",
+                 "every save is refused", "replaces it on purpose",
+                 "show folder's own spelling", "differ only by case",
                  "ltcplay_fireball_timeline.json",
                  "fireball_timeline_history",
                  "Interface 2.0, the Schedule tab, Fireball timeline",
@@ -93276,6 +93413,9 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Stop, Hold, the end of a show", "change nothing",
                  "Igniter plays no part", "top-off is not a double charge",
                  "very first start", "press Purge",
+                 "counts both tanks NOT KNOWN, not empty",
+                 "**Tanks are empty**", "flamesafe itself reports",
+                 "written again every second until it is",
                  "ltcplay_fireball_charge.json", "never invented"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
@@ -93287,6 +93427,8 @@ def test_fireball_timeline_docs_in_plain_words():
                  "double charge).", "NOT KNOWN is skipped",
                  "never charges again in that play",
                  "keeps the times it started with",
+                 "more than a quarter of a second", "is no cut",
+                 "under any\nspelling",
                  "not fired in this play", "next time a show cue starts",
                  "zero for **every** show"):
         check(" ".join(need.split()) in " ".join(s.split()),
@@ -93296,7 +93438,16 @@ def test_fireball_timeline_docs_in_plain_words():
     check(order == sorted(order),
           "OPERATOR.md lists the stages in Jeff's order: Fuel, Air, "
           "Igniter, Valve Open")
-    for name, part in (("MORNING.md", m), ("OPERATOR.md", o + c + s)):
+    ev = _fb_doc_part("OPERATOR.md", "### Every show, FSEQ or Timeline",
+                      "\n### ")
+    for need in ("a behaviour change", "Purge (59) never comes from a show",
+                 "same charge rule as the timeline",
+                 "the FSEQ's Fuel Charge was skipped",
+                 "the next charge in the FSEQ goes out again",
+                 "exactly as before"):
+        check(" ".join(need.split()) in " ".join(ev.split()),
+              f"OPERATOR.md's every-show rule says {need!r}")
+    for name, part in (("MORNING.md", m), ("OPERATOR.md", o + c + s + ev)):
         check("\u2014" not in part and "\u2013" not in part,
               f"{name}'s fireball text has no em or en dashes")
     print("  ok")
@@ -93388,15 +93539,30 @@ def test_fireball_charge_state():
           "Fuel 55, Air 56, Valve Open 57, Purge 59")
     work = tempfile.mkdtemp()
     try:
-        # The very first run: no file, both EMPTY, said once, written.
+        # The very first run (or a lost record): no file, both NOT KNOWN,
+        # never EMPTY (review of #185), said as a fault, written; an admin
+        # confirms them empty (Tanks are empty).
         C = _fbc(work)
         tr = C.tr
-        check(tr.state("fuel") == E and tr.state("air") == E and
-              tr.first_run, "no file: both tanks EMPTY (the first run)")
+        check(tr.state("fuel") == U and tr.state("air") == U and
+              tr.first_run, "no file: both tanks NOT KNOWN")
         tr.pump()
-        check(any(a[2] == "first_run" and "both tanks start EMPTY" in a[3]
-                  for a, _k in C.lines) and os.path.exists(tr.path),
-              f"said and written: {C.lines[:1]}")
+        check(any(a[2] == "first_run" and "both tanks are NOT KNOWN" in a[3]
+                  and k.get("fault") for a, k in C.lines) and
+              os.path.exists(tr.path),
+              f"said as a fault and written: {C.lines[:1]}")
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        tr.pump()
+        check(ok and tr.state("fuel") == E and tr.state("air") == E and
+              "Fuel and Air confirmed EMPTY by Andy on the Rack screen" in
+              text and C.events[-1]["user"] == "Andy" and
+              C.events[-1]["target"] == "confirmed_empty",
+              f"an admin confirms them empty: journaled and audited: {text}")
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        check(not ok and "nothing to confirm" in text,
+              f"nothing NOT KNOWN: nothing to confirm: {text}")
+        check(_fbc(None).tr.state("fuel") == E,
+              "memory only (no settings folder): EMPTY")
         check(tr.sentence() == "Fuel: empty. Air: empty.",
               f"the words: {tr.sentence()}")
         # Not armed: nothing reached the fireball, nothing changes.
@@ -93645,6 +93811,109 @@ def test_fireball_charge_state():
         check(C4.tr.state("fuel") == E and "could not be written" in
               C4.tr.view()["fault"], "a failed write: the state stands in "
                                      "memory, the fault shown")
+        # ... and it is written again every RETRY_S until it is (review
+        # of #185: a restart read the old record and double charged).
+        tries = []
+        C4.tr._write = lambda doc: tries.append(doc["rev"]) or (
+            _ for _ in ()).throw(PermissionError(13, "Access is denied"))
+        C4.tr.see(_fbc_frame(air=True), "armed")
+        C4.tr.see(_fbc_frame(), "armed")
+        C4.tr.pump()
+        n0 = len(tries)
+        C4.t[0] += 0.5
+        C4.tr.pump()
+        check(len(tries) == n0, "not again before RETRY_S")
+        C4.t[0] += FC.RETRY_S
+        C4.tr.pump()
+        check(len(tries) == n0 + 1 and "written again every" in
+              C4.tr.view()["fault"],
+              f"tried again after RETRY_S, the fault shown: {tries}")
+        real_w = FC.ChargeTracker._write.__get__(C4.tr)
+        C4.tr._write = real_w
+        C4.t[0] += FC.RETRY_S
+        C4.tr.pump()
+        doc = _j.load(open(os.path.join(work, FC.FILE), encoding="utf-8"))
+        check(doc["tanks"]["air"]["state"] == "charged" and
+              not C4.tr.write_fault and C4.tr._unwritten is None,
+              f"once it can, the newest record is on disk and the fault "
+              f"clears: {doc['tanks']['air']['state']}")
+        C5 = _fbc(work)
+        check(C5.tr.state("air") == C_, "a restart reads it")
+        # A write still failing when the engine stops: one last try.
+        C5.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "Access is denied"))
+        C5.tr.see(_fbc_frame(valve=True), "armed")
+        C5.tr.see(_fbc_frame(), "armed")
+        C5.tr.pump()
+        C5.tr._write = FC.ChargeTracker._write.__get__(C5.tr)
+        C5.tr.close()
+        doc = _j.load(open(os.path.join(work, FC.FILE), encoding="utf-8"))
+        check(doc["tanks"]["air"]["state"] == "empty",
+              "close() writes the record that could not be written")
+        # A charge made after the valve closed and before flamesafe
+        # confirmed the shot is not wiped by the confirmation (review of
+        # #185).
+        C6 = _fbc(None)
+        t6 = C6.tr
+        sent6 = {"v": [0, 0, 0, 0, 0]}
+        t6._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": list(sent6["v"])}]}
+        t6._read_armed()
+        t6.see(_fbc_frame(fuel=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.see(_fbc_frame(valve=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.note_manual({"fuel"}, "Andy", "Rack screen")
+        t6.see(_fbc_frame(fuel=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        sent6["v"] = [0, 0, 255, 0, 0]
+        t6._read_armed()
+        check(t6.state("fuel") == C_,
+              f"Andy's charge after the valve closed stands when the shot "
+              f"is confirmed: {t6.tanks['fuel']}")
+        # A report of the valve older than this release (0.1 s slack) is
+        # not this release's: never reported in time, UNKNOWN.
+        sent6["v"] = [0, 0, 0, 0, 0]
+        t6._read_armed()
+        C6.t[0] += 5.0
+        t6._sent_release_at = C6.t[0] - 0.5
+        t6.see(_fbc_frame(air=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.see(_fbc_frame(valve=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6._finish_release(C6.t[0])
+        check(t6.state("air") == C_, "an older report does not confirm it")
+        C6.t[0] += 0.6
+        t6._finish_release(C6.t[0])
+        check(t6.state("air") == U, "and after 0.5 s it is NOT KNOWN")
+        # flamesafe's report of SENDING a charge is evidence even when
+        # the status read just before said disarmed (review of #185).
+        C7 = _fbc(None)
+        t7 = C7.tr
+        t7.see(_fbc_frame(fuel=True), "off")
+        check(t7.state("fuel") == E, "a status saying disarmed: nothing yet")
+        t7._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": [255, 0, 0, 0, 0]}]}
+        t7._read_armed()
+        t7.pump()
+        check(t7.state("fuel") == C_ and t7.state("air") == E and
+              any("flamesafe reported sending it" in a[3]
+                  for a, _k in C7.lines),
+              f"flamesafe reported sending Fuel: CHARGED: {C7.lines[-1:]}")
+        # The status's age: under 0.5 s armed counts, over it does not.
+        for age, want in ((499, "armed"), (501, "unknown"), (True,
+                                                              "unknown")):
+            got = FC.armed_from_status({"connected": True, "stale": False,
+                                        "age_ms": age, "groups": [
+                                            {"name": "fireball",
+                                             "armed": "armed"}]})
+            check(got == want, f"a status {age} ms old: {got}")
         v = C4.tr.view()
         check(v["psi"] is None and set(v["tanks"]) == {"fuel", "air"} and
               v["tanks"]["fuel"]["slot"] == 55 and v["text"],
@@ -93700,6 +93969,47 @@ def test_fireball_charge_wiring():
             "fuel", {}).get("state") in ("empty", "unknown") and
               "text" in st["fireball_charge"],
               f"in the status: {st.get('fireball_charge')}")
+        # Tanks are empty (fireball-charge-empty): the Settings row,
+        # signed in, from the show network screen_arming too.
+        from ltcplay import users as U
+        check(U.classify("/api/remote/fireball-charge-empty", {}) ==
+              "settings" and
+              "fireball-charge-empty" in RM.POST_ROUTES,
+              "Tanks are empty is a Settings press")
+        matrix = U.normalise_matrix(None)
+        rm.users = types.SimpleNamespace(
+            active=lambda: True, matrix=lambda: matrix,
+            may=lambda role, perm: U.allowed(matrix, role, perm))
+
+        def ctx(role=None, local=True):
+            return RM.Ctx(local, "127.0.0.1" if local else "10.0.0.9",
+                          session={"name": "Andy", "role": role}
+                          if role else None)
+        tr.tanks["fuel"]["state"] = "unknown"
+        for c, why in ((ctx(), "signed out"), (ctx("operator"),
+                                               "an operator")):
+            code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                    c)
+            check(code == 403 and tr.state("fuel") == "unknown",
+                  f"{why}: refused, nothing changed: {code} {out}")
+        RM.save_settings(work, screen_arming=False)
+        code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                ctx("admin", local=False))
+        check(code == 403 and "screen_arming" in out["error"],
+              f"an admin on an iPad without screen_arming: refused: {out}")
+        code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                ctx("admin"))
+        check(code == 200 and tr.state("fuel") == "empty" and
+              "confirmed EMPTY by Andy" in out["text"],
+              f"an admin on the show PC: confirmed: {code} {out}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web", "remote.html"),
+            encoding="utf-8").read()
+        check('post("/api/remote/fireball-charge-empty", actor({}))' in page
+              and 'confirmBox("Are both tanks empty?"' in page and
+              'tks[k].state === "unknown"' in page,
+              "the Fireball page's Tanks are empty asks first, shows only "
+              "while a tank is NOT KNOWN, and posts the route")
         httpd.server_close()
         check(closed == [1] and tr._stop.is_set(), "closed with the engine")
     finally:
@@ -93784,10 +94094,12 @@ def _fbq_rig(stages, source="timeline", cue="Show", show_len_s=600.0,
     from ltcplay import fireball_cues as FQ
     work = tempfile.mkdtemp()
     store = FT.Store(work)
-    R = types.SimpleNamespace(work=work, store=store, lines=[], rev=[0])
+    R = types.SimpleNamespace(work=work, store=store, lines=[], rev=[0],
+                              clk=[500.0])
     R.tank = tank if tank is not None else _FbcTank()
     R.fq = FQ.FireballCues(store, charge_get=lambda: R.tank,
-                           journal=lambda t, **k: R.lines.append((t, k)))
+                           journal=lambda t, **k: R.lines.append((t, k)),
+                           clock=lambda: R.clk[0])
     R.session = types.SimpleNamespace(timeline_path=os.path.join(
         work, "Show.json"))
     R.cue_obj = {"label": cue}
@@ -93806,6 +94118,7 @@ def _fbq_rig(stages, source="timeline", cue="Show", show_len_s=600.0,
         """FireballCues on cue frame f (30 fps); `sent`: the frame went out
         as it came back (the stand-in charge state sees it)."""
         out = list(base) if base is not None else [0] * 512
+        R.clk[0] += 1 / 30          # one frame on the engine's clock
         got = R.fq.apply(out, R.session, label, f / 30.0, R.cue_obj)
         R.tank.last_sent = bytes(got) if sent else bytes(512)
         return got
@@ -93836,12 +94149,71 @@ def test_fireball_cues_rules():
         # An FSEQ show (the default): the frame exactly as read.
         R = _fbq_rig([_st("fuel", "00:00:01:00", 1)], source="fseq")
         rigs.append(R)
-        check(all(R.frame(f, base=noise) == noise for f in range(0, 90)),
-              "a show on its FSEQ: every frame exactly as the FSEQ has it")
+        nop = list(noise)
+        nop[58] = 0
+        check(all(R.frame(f, base=noise) == nop for f in range(0, 90)),
+              "a show on its FSEQ with both tanks EMPTY: every frame as the "
+              "FSEQ has it, but Purge (59): never from a show (Jeff: Purge "
+              "by hand only)")
         # A show the file does not name: the same.
         R.session.timeline_path = "Other.json"
-        check(R.frame(40, base=noise) == noise, "a show not in the file: "
-                                                "the FSEQ, as today")
+        R.cue_obj = {"label": "Show"}
+        check(R.frame(40, base=noise) == nop, "a show not in the file: "
+                                              "the FSEQ, Purge zero")
+        # NEVER A DOUBLE CHARGE from an FSEQ show either (review of #187):
+        # its Fuel and Air charges go out only while the tank is EMPTY (or
+        # carrying on the charge they started); Valve Open, Igniter and
+        # every other slot exactly as read.
+        R = _fbq_rig(None, tank=_FbcTank(fuel="charged", air="unknown"))
+        rigs.append(R)
+        R.session.timeline_path = "Plain.json"
+        got = [R.frame(f, base=noise) for f in range(0, 30)]
+        check(all(g[54] == 0 and g[55] == 0 and g[58] == 0 and
+                  g[56] == noise[56] and g[57] == noise[57] and
+                  g[0] == noise[0] for g in got),
+              "an FSEQ show, Fuel CHARGED and Air NOT KNOWN: its Fuel and "
+              "Air charges are held off, Valve Open and Igniter go out")
+        check(R.fq.messages == [
+            "Fuel already charged: the FSEQ's Fuel Charge was skipped (no "
+            "double charge).",
+            "Air tank state not known: the FSEQ's Air Charge was skipped (no "
+            "double charge). Purge or fire to reset it."],
+              f"said once each: {R.fq.messages}")
+        # An FSEQ show that charges, fires, and charges again: the second
+        # charge is a new one once the shot emptied the tank.
+        R = _fbq_rig(None)
+        rigs.append(R)
+        R.session.timeline_path = "Plain.json"
+        seq = []
+        for f in range(0, 120):
+            base = [0] * 512
+            if 10 <= f < 20 or 70 <= f < 80:
+                base[54] = 255
+            g = R.frame(f, base=base)
+            seq.append(g[54])
+            if g[54]:
+                R.tank.tanks["fuel"] = "charged"
+            if f == 40:
+                R.tank.tanks["fuel"] = "empty"      # the shot
+        check([i for i, v in enumerate(seq) if v] ==
+              list(range(10, 20)) + list(range(70, 80)),
+              f"charge, shot, charge: both charges go out: "
+              f"{[i for i, v in enumerate(seq) if v]}")
+        R = _fbq_rig(None)
+        rigs.append(R)
+        R.session.timeline_path = "Plain.json"
+        seq = []
+        for f in range(0, 120):
+            base = [0] * 512
+            if 10 <= f < 20 or 70 <= f < 80:
+                base[54] = 255
+            g = R.frame(f, base=base)
+            seq.append(g[54])
+            if g[54]:
+                R.tank.tanks["fuel"] = "charged"
+        check([i for i, v in enumerate(seq) if v] == list(range(10, 20)),
+              f"charge, no shot, charge again: the second is held off: "
+              f"{[i for i, v in enumerate(seq) if v]}")
         # A timeline show.
         R = _fbq_rig([_st("fuel", "00:00:01:00", 1),
                       _st("air", "00:00:01:15", 1),
@@ -93914,15 +94286,18 @@ def test_fireball_cues_rules():
         # though the tank reads CHARGED after its first frame.
         R = _fbq_rig([_st("fuel", "00:00:01:00", 1)])
         rigs.append(R)
+        told = []
+        R.tank.note_continuing = told.append
         ons = []
         for f in range(0, 80):
             g = R.frame(f)
             ons.append(g[54])
             if g[54]:
                 R.tank.tanks["fuel"] = "charged"
-        check([i for i, v in enumerate(ons) if v] == list(range(30, 60)),
-              "an EMPTY tank: the whole window, the stage carrying on its "
-              "own charge")
+        check([i for i, v in enumerate(ons) if v] == list(range(30, 60)) and
+              not told,
+              f"an EMPTY tank: the whole window, the stage carrying on its "
+              f"own charge (no gap, nothing to tell): {told}")
         # A Hold (or the guard) zeroes it on the wire: never again in this
         # play, though its window is still open (Jeff: no re-charge after
         # a Resume).
@@ -93933,12 +94308,33 @@ def test_fireball_cues_rules():
             if g[54]:
                 R.tank.tanks["fuel"] = "charged"
         R.frame(40, sent=False)              # Hold: zeros went out
+        R.clk[0] += 1.0                      # ... for a second
         R.tank.tanks["fuel"] = "empty"       # (whatever the record says)
         got = [R.frame(f)[54] for f in range(41, 90)]
-        check(not any(got) and "already charged in this show" in
-              R.fq.messages[-1],
+        check(not any(got) and R.fq.messages[-1] ==
+              "Fuel charge cut short (it stopped for more than 0.25 s): the "
+              "Fuel stage is not charged again in this play (no double "
+              "charge).",
               f"after a Hold or a seek inside the Fuel window: never on "
-              f"again in this play: {R.fq.messages}")
+              f"again in this play, said as it is: {R.fq.messages}")
+        # One frame not sent (a send that failed, one frame the cues could
+        # not read) is no cut: the same charge carries on, and the charge
+        # state is told so its edge is not a double charge (review of
+        # #187).
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        told = []
+        R.tank.note_continuing = told.append
+        for f in range(25, 40):
+            if R.frame(f)[54]:
+                R.tank.tanks["fuel"] = "charged"
+        R.frame(40, sent=False)
+        R.frame(41, sent=False)
+        got = [R.frame(f)[54] for f in range(42, 90)]
+        check(all(got[i] == 255 for i in range(0, 48)) and
+              told and set(told) == {"fuel"} and not R.fq.messages,
+              f"a gap of two frames: the charge carries on, nothing said: "
+              f"{got[:3]} {told} {R.fq.messages}")
         # A charge that never went out (the guard held it from the start):
         # it may still start when it can, if the tank is EMPTY.
         R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
@@ -93962,6 +94358,57 @@ def test_fireball_cues_rules():
         R.cue_obj = {"label": "Show"}
         check(any(R.frame(f)[54] for f in range(0, 70)),
               "after a shot or a purge: the next show charges")
+        # A case-blind folder (review of #187): the session plays
+        # "SHOW.JSON", the timeline was saved as "Show.json": it is that
+        # show's, never an FSEQ fallback.
+        R = _fbq_rig([_st("air", "00:00:01:00", 1)])
+        rigs.append(R)
+        R.session.timeline_path = os.path.join(R.work, "SHOW.JSON ")
+        g = [R.frame(f, base=noise) for f in range(0, 60)]
+        check(all(x[54] == 0 for x in g) and
+              [f for f, x in enumerate(g) if x[55]] == list(range(30, 60)),
+              "another spelling of the same show file: its timeline")
+        # Two entries that differ only by case: a fault, 55 to 59 zero.
+        import json as _j
+        doc = _j.load(open(R.store.path, encoding="utf-8"))
+        doc["shows"]["show.json"] = doc["shows"]["Show.json"]
+        with open(R.store.path, "w", encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        R.fq.refresh()
+        R.cue_obj = {"label": "Show"}
+        g = R.frame(40, base=noise)
+        check(all(g[s - 1] == 0 for s in (55, 56, 57, 58, 59)) and
+              "more than one spelling" in R.fq.fault,
+              f"two spellings in the file: no fireball, a fault: "
+              f"{R.fq.fault}")
+        # Behind a Play from (the stage never started), an edit to ANOTHER
+        # stage is not "moved into the past by an edit" (review of #187).
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 1),
+                      _st("valve", "00:00:09:00", 0.2)])
+        rigs.append(R)
+        R.frame(150)                      # a Play from at 5 s
+        R.save([_st("fuel", "00:00:01:00", 1),
+                _st("valve", "00:00:09:10", 0.2)])
+        R.frame(151)
+        check(not any("moved into the past" in m for m in R.fq.messages),
+              f"no edit message for a stage the edit did not move: "
+              f"{R.fq.messages}")
+        # The charge state: the show's own charge carrying on after a
+        # short gap is not a double charge; any other edge is.
+        from ltcplay import fireball_charge as FC
+        for told_, want in ((True, []), (False, ["double_charge"])):
+            lines_ = []
+            tr_ = FC.ChargeTracker(None, journal=lambda *a, **k:
+                                   lines_.append(a[2]), threaded=False)
+            tr_.see(_fbc_frame(fuel=True), "armed")
+            tr_.see(_fbc_frame(), "armed")
+            if told_:
+                tr_.note_continuing("fuel")
+            tr_.see(_fbc_frame(fuel=True), "armed")
+            tr_.pump()
+            check([x for x in lines_ if x == "double_charge"] == want,
+                  f"an edge after a gap, carrying on told {told_}: "
+                  f"{lines_}")
         # Valve Open and the Igniter: no charge guard, independent.
         R = _fbq_rig([_st("igniter", "00:00:01:00", 1),
                       _st("valve", "00:00:05:00", 1)],
@@ -93998,12 +94445,16 @@ def test_fireball_cues_rules():
               f"a stage not started takes the new times: {on[58][:2]}")
         # The source is taken when a cue starts.
         R.save([_st("igniter", "00:00:08:00", 1)], source_="fseq")
-        check(R.frame(245, base=noise)[54] == 0,
+        g = R.frame(245, base=noise)
+        check(all(g[s - 1] == 0 for s in (55, 56, 57, 58, 59)),
               "switched to the FSEQ during a play: 55 to 59 stay off the "
-              "FSEQ until the next cue")
+              "FSEQ until the next cue (Valve Open and Igniter included)")
         R.cue_obj = {"label": "Show"}
-        check(R.frame(245, base=noise) == noise,
-              "and the next cue plays its FSEQ")
+        g = R.frame(245, base=noise)
+        check(g[:54] == noise[:54] and g[56:58] == noise[56:58] and
+              g[58] == 0 and g[59:] == noise[59:],
+              "and the next cue plays its FSEQ (but never Purge; its "
+              "charges under the charge rule)")
         # Never raises: garbage in, 55 to 59 zero out.
         got = R.fq.apply(None, R.session, "Show", 1.0, R.cue_obj)
         check(got is None, "nothing read (None, all zeros): None")
@@ -94045,8 +94496,22 @@ def test_fireball_cues_never_drive_purge():
         except FT.TimelineError:
             pass
         src = open(FQ.__file__, encoding="utf-8").read()
-        check("PURGE_SLOT" not in src and "purge_set" not in src,
-              "fireball_cues.py names no purge slot and no purge call")
+        uses = [ln.strip() for ln in src.splitlines()
+                if "PURGE_SLOT" in ln and not ln.strip().startswith("#")]
+        check(uses == ["PURGE_SLOT = fbtl.PURGE_SLOT",
+                       "out[PURGE_SLOT - 1] = 0"] and
+              "purge_set" not in src,
+              f"fireball_cues.py only ever ZEROES the purge slot, and has "
+              f"no purge call: {uses}")
+        # Not from an FSEQ show either (review of #187: Purge by hand
+        # only), whatever the tanks say.
+        R.session.timeline_path = "Plain.json"
+        for state in ("empty", "charged", "unknown"):
+            R.tank.tanks = {"fuel": state, "air": state}
+            R.cue_obj = {"label": "Show"}
+            check(all(R.frame(f, base=fseq)[58] == 0
+                      for f in range(0, 60, 7)),
+                  f"an FSEQ show, tanks {state}: 59 zero")
     finally:
         shutil.rmtree(R.work, ignore_errors=True)
     print("  ok")
@@ -94111,8 +94576,9 @@ def test_fireball_timeline_equals_an_equivalent_fseq():
                 tl=types.SimpleNamespace(show_dir=show, cues=[
                     types.SimpleNamespace(name="Show", path=render)]))
             cues = F.FlameCues(types.SimpleNamespace(session=sess), "Flames")
-            st = FT.Store(work)
-            os.path.exists(st.path) and os.remove(st.path)
+            # A store of its own each run (a file once saved and then
+            # removed is a fault now, never "no timeline").
+            st = FT.Store(tempfile.mkdtemp(dir=work))
             ok, text, _e = st.save("Show.json", "Show", 15.0, source,
                                    stages, 0)
             tank = _FbcTank()
@@ -94746,6 +95212,122 @@ def test_fireball_manual_merged_on_the_flame_link():
     print("  ok")
 
 
+def test_fireball_page_beats_race_the_sender():
+    section("the Fireball page's beat against the flame link's sender "
+            "(review of #193): the charge state knows who holds a charge "
+            "before the frame can go out, so Andy's charge is his and his "
+            "top-off is never a double charge; a Stop, Hold or Abort that "
+            "lands after the beat's checks, or while its frame is set, "
+            "means nothing goes out; a frame of the wrong size is refused")
+    import types
+    from ltcplay import fireball as FB
+    from ltcplay import fireball_charge as FC
+    R = _fbm_link(live=False)
+    real = R.link
+    real.set_manual_slots([55, 56, 57, 58, 59])
+    lines = []
+    tr = FC.ChargeTracker(
+        None, flames_get=lambda: {"connected": True, "stale": False,
+                                  "age_ms": 10, "groups": [
+                                      {"name": "fireball",
+                                       "armed": "armed"}]},
+        journal=lambda who, screen, outcome, text, fault=False:
+        lines.append((who, outcome, text, fault)),
+        clock=lambda: R.clk[0], threaded=False)
+    sent = []
+
+    class Sender:
+        """The real link; the sender sends at the worst moment: right
+        after the frame is set (and, with `zero_first`, a Stop lands just
+        before it is set)."""
+        zero_first = False
+
+        def __getattr__(self, k):
+            return getattr(real, k)
+
+        def manual_set(self, values, gen=None):
+            if self.zero_first:
+                real.zero()
+            took = real.manual_set(values, gen)
+            tc, v = real.values_now()
+            tr._read_armed()
+            tr.observe(tc, v, True)
+            sent.append(bytes(v))
+            return took
+    link = Sender()
+    group, _w = FB.find_group([{"name": "fireball", "safeties": [77],
+                                "fire": [55, 56, 57, 58, 59]}])
+    fl = {"connected": True, "stale": False, "age_ms": 10,
+          "groups": [{"name": "fireball", "armed": "armed"}]}
+    P = FB.FireballPanel(group, link_get=lambda: link,
+                         flames_get=lambda: fl, threaded=False,
+                         clock=lambda: R.clk[0])
+    P.on_controls = lambda on, who, screen: tr.note_manual(on, who, screen)
+    owner = ("Rack screen", "w1")
+    seq = [0]
+
+    def beat(on, run):
+        seq[0] += 1
+        R.clk[0] += 0.1
+        return P.beat({"controls": {k: True for k in on}, "run": run,
+                       "seq": seq[0]}, owner, who="Andy",
+                      screen="Rack screen")
+    try:
+        code, _o = beat({"fuel"}, "r1")
+        tr.pump()
+        check(code == 200 and sent and sent[-1][54] == 255 and
+              tr.state("fuel") == "charged" and
+              tr.tanks["fuel"]["by"] == "Andy",
+              f"Andy's first charge, sent the moment it was set, is "
+              f"Andy's: {tr.tanks['fuel']}")
+        beat(set(), "r1")
+        R.clk[0] += 0.05
+        tc, v = real.values_now()
+        tr.observe(tc, v, True)
+        code, _o = beat({"fuel"}, "r2")
+        tr.pump()
+        check(code == 200 and tr.tanks["fuel"]["topoffs"] == 1 and
+              any(o == "topoff" and w == "Andy" for w, o, _t, _f in lines)
+              and not any(o == "double_charge" for _w, o, _t, _f in lines),
+              f"Andy's Fuel again on the charged tank: a top-off by Andy, "
+              f"never a double charge: {[l[:2] for l in lines]}")
+        beat(set(), "r2")
+        # A Stop landing while the frame is set: refused at the link, so
+        # nothing goes out, and the page says so.
+        n = len(sent)
+        link.zero_first = True
+        code, out = beat({"valve"}, "r3")
+        link.zero_first = False
+        check(code == 409 and sent[n:] and
+              all(s[56] == 0 for s in sent[n:]) and not P.active(),
+              f"a Stop while the frame is set: nothing out, cut: {code} "
+              f"{out} {[s[56] for s in sent[n:]]}")
+        # A Hold landing after the beat's checks, before its run starts.
+        n = len(sent)
+        orig = P.refusal
+
+        def refusal_then_hold(check_armed=True):
+            why = orig(check_armed)
+            real.zero()
+            return why
+        P.refusal = refusal_then_hold
+        try:
+            code, out = beat({"igniter"}, "r4")
+        finally:
+            P.refusal = orig
+        check(code == 409 and all(s[57] == 0 for s in sent[n:]) and
+              not P.active(),
+              f"a Hold just after the checks: nothing out: {code} {out} "
+              f"{[s[57] for s in sent[n:]]}")
+        # A frame of the wrong size is refused.
+        check(real.manual_set(bytes(513)) is False and
+              real.manual_set(bytes(511)) is False,
+              "a frame that is not 512 values is refused")
+    finally:
+        tr.close()
+    print("  ok")
+
+
 def test_fireball_manual_and_timeline_never_double_charge():
     section("the Fireball page and the timeline together on a real flame "
             "link and charge state: Andy's Fuel charges an EMPTY tank; the "
@@ -94963,6 +95545,12 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
                             "sent_fire": g.get("sent_fire")}
                            for g in st.get("groups") or []]}
     tracker = FC.ChargeTracker(work, flames_get=flames)
+    # No record yet: both NOT KNOWN; Andy confirms them empty, as on the
+    # first night (Tanks are empty).
+    check(tracker.state("fuel") == "unknown" and
+          tracker.confirm_empty("Andy", "Rack screen")[0] and
+          tracker.state("fuel") == "empty",
+          "no record: NOT KNOWN until confirmed empty")
     link.observer = tracker.observe
     cues.fireball = FQ.FireballCues(store, charge_get=lambda: tracker)
     link.start()
@@ -95059,7 +95647,13 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
                 any(x < a - tol or y > b + tol for x, y in sp):
             return False
         if charge if charge is not None else False:
-            return len(sp) == 1
+            # One charge: it may ride through stops of a frame or two
+            # (fireball_cues.GAP_S), never come back after a longer one.
+            # (Cue times: a stop is measured on the show clock, which a
+            # busy machine stalls, so the bound has a frame of slack.)
+            from ltcplay import fireball_cues as _FQ
+            return all(b2[0] - a2[1] <= _FQ.GAP_S + 0.1
+                       for a2, b2 in zip(sp, sp[1:]))
         return True
     threading.Thread(target=deck, daemon=True).start()
     try:
@@ -95138,8 +95732,8 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
         check(all(v[0] == 0 for p, v in rec if p is not None and p < 2.5),
               f"Resume inside the Fuel window: Fuel never on again: "
               f"{[(round(p, 2), v) for p, v in rec if v[0]][:3]}")
-        check(any("already charged in this show" in m
-                  for m in cues.fireball.messages),
+        check(any("Fuel charge cut short" in m and "not charged again "
+                  "in this play" in m for m in cues.fireball.messages),
               f"said: {cues.fireball.messages}")
         check(wait_for(lambda: armed() != "armed", 3),
               "Stop: flamesafe disarmed the group")
@@ -96012,6 +96606,8 @@ if __name__ == "__main__":
         test_fireball_timeline_end_to_end_real_flamesafe,
         test_fireball_manual_merged_on_the_flame_link,
         test_fireball_manual_and_timeline_never_double_charge,
+        test_fireball_page_beats_race_the_sender,
+
         test_ui2_fireball_timeline_editor,
     ]
     _stopped = _run_tests(TESTS)

@@ -101,6 +101,10 @@ STATUS_FRESH_S = 0.5        # flamesafe's status, as the Fireball page
 CONFIRM_S = 0.5
 MANUAL_FRESH_S = 0.5        # a Fireball page press names who, this long
 WATCH_S = 0.02
+# A record that could not be written (Windows: an indexer or antivirus
+# holding the file) is kept in memory and written again this often until
+# it is, with a fault shown meanwhile (review of #185).
+RETRY_S = 1.0
 QUEUE_MAX = 2000
 _TANK_KEYS = {"state", "since", "charged_at", "topoffs", "last_event", "by"}
 _DOC_KEYS = {"fireball_charge_format", "rev", "tanks", "releasing"}
@@ -200,6 +204,11 @@ class ChargeTracker:
         self._sent_supported = None
         self._sent_release_at = None
         self._manual = {}       # tank -> (who, screen, at)
+        # tank -> clock: the show's own charge carrying on after a gap of
+        # one frame or so (fireball_cues.GAP_S): its edge is that charge.
+        self._continuing = {}
+        self._unwritten = None  # the newest record not yet on disk
+        self._retry_at = 0.0
         self.last_sent = bytes(512)
         self.frames = 0
         self._load()
@@ -215,16 +224,24 @@ class ChargeTracker:
     def _load(self):
         now = self._wall()
         if not self.path or not os.path.exists(self.path):
-            self.tanks = {k: _new_tank(EMPTY, now, "first run: no charge "
-                                       "record yet") for k in TANK_WORD}
+            # No record (the very first run, or the file was lost): NOT
+            # KNOWN, never EMPTY (review of #185): no automatic charge
+            # until a shot, a Purge, or an admin confirms the tanks are
+            # empty (confirm_empty). Memory only (no settings folder, the
+            # selftest) has nothing to lose and starts EMPTY.
+            state = UNKNOWN if self.path else EMPTY
+            self.tanks = {k: _new_tank(state, now, "no charge record")
+                          for k in TANK_WORD}
             self.releasing = ""
             self.first_run = bool(self.path)
             if self.first_run:
                 self._event("system", "engine", "first_run",
                             f"No fireball charge record was found ({FILE}), "
-                            f"so both tanks start EMPTY. If the fuel or air "
-                            f"tank is pressurised now, press Purge on the "
-                            f"Fireball page.", persist=True)
+                            f"so both tanks are NOT KNOWN and the timeline "
+                            f"charges nothing. Fire the shot or press Purge "
+                            f"on the Fireball page, or, if both tanks are "
+                            f"known to be empty, an admin presses Tanks are "
+                            f"empty there.", fault=True, persist=True)
             return
         try:
             with open(self.path, encoding="utf-8-sig") as fh:
@@ -321,6 +338,15 @@ class ChargeTracker:
         except Exception:                        # noqa: BLE001
             pass
 
+    def note_continuing(self, tank):
+        """The show's own charge of `tank` carries on after a short gap
+        (fireball_cues): the edge seen next is that same charge, not a
+        double charge. Cheap; never raises."""
+        try:
+            self._continuing[tank] = self._clock()
+        except Exception:                        # noqa: BLE001
+            pass
+
     def _manual_by(self, tank, now):
         m = self._manual.get(tank)
         if m is None or now - m[2] > MANUAL_FRESH_S:
@@ -356,6 +382,13 @@ class ChargeTracker:
                     if (got.get(VALVE_SLOT) or 0) > 0 or \
                             (got.get(PURGE_SLOT) or 0) > 0:
                         self._sent_release_at = self._armed_at
+                    # flamesafe's own report that it SENT a charge is
+                    # evidence whatever the armed state read before
+                    # (review of #185: a status up to 0.5 s old saying
+                    # disarmed hid a short charge right after arming).
+                    for k in TANK_WORD:
+                        if (got.get(TANK_SLOT[k]) or 0) > 0:
+                            self._sent_charge(k)
         except Exception:                        # noqa: BLE001
             pass
         with self._lock:
@@ -418,9 +451,14 @@ class ChargeTracker:
                 self._prev[k] = v if certain else (v and self._prev[k])
                 if not v:
                     continue
-                if rel is not None:
-                    rel["during"][k] = CHARGED if certain or \
-                        rel["during"].get(k) == CHARGED else UNKNOWN
+                # A release still open, or closed and not yet confirmed
+                # (review of #185): a charge seen meanwhile is not wiped
+                # when the release is counted.
+                tgt = rel if rel is not None else (
+                    self._ending[0] if self._ending is not None else None)
+                if tgt is not None:
+                    tgt["during"][k] = CHARGED if certain or \
+                        tgt["during"].get(k) == CHARGED else UNKNOWN
                 self._charge(k, certain, rising, now_w, now)
             if rel is not None and not (valve or purge):
                 self._release = None
@@ -447,6 +485,50 @@ class ChargeTracker:
                 rel = dict(rel, certain=False, unreported=True)
             self._released(rel, self._wall())
 
+    def _sent_charge(self, k):
+        """flamesafe reported sending tank k's charge: CHARGED if it is not
+        already (said once, credited to whoever holds it on the Fireball
+        page, else the show)."""
+        with self._lock:
+            if self.tanks[k]["state"] == CHARGED:
+                return
+            now_w, now = self._wall(), self._clock()
+            tgt = self._release if self._release is not None else (
+                self._ending[0] if self._ending is not None else None)
+            if tgt is not None:
+                tgt["during"][k] = CHARGED
+            m = self._manual_by(k, now)
+            by = m[0] if m is not None else "the show"
+            self._set(k, CHARGED, f"charged by {by} (flamesafe reported "
+                      f"sending it)", now_w, by=by, charged=True)
+            self._event(m[0] if m else "system", m[1] if m else "engine",
+                        "charged", f"Fireball charge: {TANK_WORD[k]} "
+                        f"CHARGED by {by} (flamesafe reported sending it).")
+
+    def confirm_empty(self, who, screen=""):
+        """An admin says both tanks are known to be empty (no record, or
+        NOT KNOWN): those tanks become EMPTY, journaled and audited with
+        who. A CHARGED tank is not changed by this: fire it or Purge.
+        (ok, sentence)."""
+        with self._lock:
+            unk = [k for k in TANK_WORD if self.tanks[k]["state"] == UNKNOWN]
+            if not unk:
+                return False, ("No tank is NOT KNOWN, so there is nothing "
+                               "to confirm. A charged tank is emptied by the "
+                               "shot or by Purge.")
+            now_w = self._wall()
+            for k in unk:
+                self._set(k, EMPTY, f"confirmed empty by {who}", now_w)
+            words = " and ".join(TANK_WORD[k] for k in unk)
+            text = (f"Fireball charge: {words} confirmed EMPTY by "
+                    f"{who or 'someone'} on the {screen or 'engine'}.")
+            self._event(who or "someone", screen or "engine",
+                        "confirmed_empty", text)
+            if self.fault and not any(
+                    self.tanks[k]["state"] == UNKNOWN for k in TANK_WORD):
+                self.fault = ""
+        return True, text
+
     def _charge(self, k, certain, rising, now_w, now):
         word = TANK_WORD[k]
         t = self.tanks[k]
@@ -463,6 +545,9 @@ class ChargeTracker:
         if t["state"] == CHARGED:
             if not rising:
                 return      # the same charge, still on
+            c = self._continuing.pop(k, None)
+            if c is not None and 0 <= now - c <= MANUAL_FRESH_S:
+                return      # the show's same charge after a short gap
             if m is not None:
                 self._set(k, CHARGED, f"top-off by {m[0]}", now_w,
                           topoff=True)
@@ -577,6 +662,9 @@ class ChargeTracker:
                 self._say(who, screen, outcome, text, fault)
         if doc is not None:
             self._flush(doc)
+        elif self._unwritten is not None and \
+                self._clock() - self._retry_at >= RETRY_S:
+            self._flush(self._unwritten)
         if self.dropped:
             d, self.dropped = self.dropped, 0
             self._say("system", "engine", "dropped",
@@ -587,11 +675,20 @@ class ChargeTracker:
     def _flush(self, doc):
         try:
             self._write(doc)
+            self._unwritten = None
             if self.write_fault:
                 self.write_fault = ""
+                self._say("system", "engine", "written",
+                          f"Fireball charge: {FILE} written again.", False)
         except OSError as e:
+            # Kept, and written again every RETRY_S until it is: a
+            # restart must never read an older record (review of #185).
+            self._unwritten = doc
+            self._retry_at = self._clock()
             text = (f"{FILE} could not be written ({e}); the charge state "
-                    f"is kept in memory and written at the next change.")
+                    f"is kept in memory and written again every "
+                    f"{RETRY_S:g} s until it is. Do not restart LTC Player "
+                    f"until this clears.")
             if text != self.write_fault:
                 self.write_fault = text
                 self._say("system", "engine", "write_failed", text, True)
@@ -632,5 +729,8 @@ class ChargeTracker:
             t.join(2.0)
         try:
             self.pump()
+            if self._unwritten is not None:
+                # One last try now, whatever the retry timer says.
+                self._flush(self._unwritten)
         except Exception:                        # noqa: BLE001
             pass

@@ -1124,6 +1124,7 @@ button.fb-pad.na{opacity:.45}
     <section class="card" id="fb-head">
       <div class="fb-top"><h2>Fireball</h2><span class="fb-armed" id="fb-armed">Not known yet</span>
         <button class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
+        <button class="ghost" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins.">Tanks are empty</button>
         <button class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
       <div class="warnbox open" id="fb-block" hidden></div>
       <div class="dim" id="fb-note"></div>
@@ -5372,6 +5373,10 @@ function renderFireball(){
   $("fb-block").hidden = !blk; $("fb-block").textContent = blk;
   $("fb-note").textContent = st.text;
   $("fb-disarm").hidden = !(v && v.available);
+  // The charge record does not know a tank (no record yet, a lost write):
+  // an admin may confirm both are empty (fireball_charge.confirm_empty).
+  const chk = ST && ST.fireball_charge, tks = (chk && chk.tanks) || {};
+  $("fb-empty").hidden = !(v && v.available) || !Object.keys(tks).some(k => tks[k] && tks[k].state === "unknown");
   const ctl = (v && v.controls) || [];
   const key = ctl.map(c => c.key + c.slot).join(",");
   const box = $("fb-pads");
@@ -5417,6 +5422,13 @@ for(const ev of ["pointerup", "pointercancel", "lostpointercapture"]){
     fbPress(b.dataset.k, false);
   });
 }
+// A held pad whose pointer capture failed: the pointer leaving it lets go
+// too (pointerout bubbles; a captured pointer never leaves its pad).
+$("fb-pads").addEventListener("pointerout", e => {
+  const b = e.target.closest && e.target.closest(".fb-pad"); if(!b || b.dataset.kind !== "momentary") return;
+  if(e.relatedTarget && b.contains(e.relatedTarget)) return;
+  fbPress(b.dataset.k, false);
+});
 $("fb-pads").addEventListener("contextmenu", e => { if(e.target.closest(".fb-pad")) e.preventDefault(); });
 window.addEventListener("blur", () => fbRelease("the page lost focus"));
 document.addEventListener("visibilitychange", () => { if(document.hidden) fbCut("the page was hidden"); });
@@ -5425,6 +5437,11 @@ window.addEventListener("pagehide", () => fbCut("the page closed"));
 $("fb-alloff").addEventListener("click", () => {
   fbCut("All off pressed");
   post("/api/remote/fireball-off", actor({})).then(j => { $("fb-msg").textContent = j.text || "All off."; }).catch(e => { $("fb-msg").textContent = e.message; });
+});
+$("fb-empty").addEventListener("click", async () => {
+  if(!(await confirmBox("Are both tanks empty?", "Only if the fuel and air tanks are known to be depressurised. The timeline may then charge them again. Your name goes in the journal.", "Yes, they are empty", ""))) return;
+  try{ const j = await post("/api/remote/fireball-charge-empty", actor({})); $("fb-msg").textContent = j.text || "Confirmed."; }
+  catch(e){ $("fb-msg").textContent = e.message; }
 });
 $("fb-disarm").addEventListener("click", async () => {
   fbCut("Disarm Fireball pressed");

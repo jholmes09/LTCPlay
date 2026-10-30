@@ -2872,6 +2872,44 @@ MUTATIONS = [
   "        self._pt_reset(PT_ABORT)",
   "        pass"),
 
+ # passthrough switch (2026-10-30): the fireball's fuel pump
+ ("flamesafe: passthrough switch: the pump's slot carries the frame's value, not its own on",
+  "flamesafe/composer.py",
+  "                        buf[sl - 1] = (p.on if p.kind == \"switch\"\n"
+  "                                       else self._frame[sl - 1])",
+  "                        buf[sl - 1] = self._frame[sl - 1]"),
+
+ ("flamesafe: passthrough switch: an on value outside 1 to 255 loads",
+  "flamesafe/config.py",
+  "                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:",
+  "                    False:"),
+
+ ("flamesafe: passthrough switch: a switch entry takes a haze, fan or any other key",
+  "flamesafe/config.py",
+  "        _only_known(e, SWITCH_KEYS if is_switch else PASSTHROUGH_KEYS,",
+  "        _only_known(e, set(e) if is_switch else PASSTHROUGH_KEYS,"),
+
+ ("flamesafe: passthrough switch: a Composer takes a switch whose on is not 1 to 255",
+  "flamesafe/composer.py",
+  "            if p.kind == \"switch\" and (",
+  "            if False and ("),
+
+ ("flamesafe: passthrough switch: a Composer takes two entries on one slot",
+  "flamesafe/composer.py",
+  "        if len(pt_slots) != len(set(pt_slots)):",
+  "        if False:"),
+
+ ("flamesafe: passthrough switch: a Composer takes a slot outside 1 to 512",
+  "flamesafe/composer.py",
+  "        if bad:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \"",
+  "        if False:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \""),
+
+ ("flamesafe: passthrough switch: the switch is read as a hazer",
+  "flamesafe/config.py",
+  "        is_switch = \"switch\" in e",
+  "        is_switch = False"),
+
+
  ("flamesafe: passthrough: a change of sender leaves the hazers as they were",
   "flamesafe/composer.py",
   "                self._pt_reset(PT_NEW_SENDER)",
@@ -2889,8 +2927,8 @@ MUTATIONS = [
 
  ("flamesafe: passthrough: a hazer slot in the lockout file passes",
   "flamesafe/composer.py",
-  "                    if sl not in self._locked:\n                        buf[sl - 1] = self._frame[sl - 1]",
-  "                    if True:\n                        buf[sl - 1] = self._frame[sl - 1]"),
+  "                    if sl not in self._locked:\n                        buf[sl - 1] = (p.on if p.kind",
+  "                    if True:\n                        buf[sl - 1] = (p.on if p.kind"),
 
  ("flamesafe: passthrough: a hazer slot may be a group's slot",
   "flamesafe/config.py",
@@ -18821,7 +18859,7 @@ def build():
 
  ("fireball timeline: the version before a save is not kept",
   "ltcplay/fireball_timeline.py",
-  "                self._keep_history(doc[\"rev\"], bool(err))",
+  "                self._keep_history(doc[\"rev\"], bool(err), old)",
   "                pass"),
 
  ("fireball timeline: a save is not audited",
@@ -18846,13 +18884,53 @@ def build():
 
  ("fireball timeline: the page's own show length is trusted",
   "ltcplay/remote.py",
-  "        ok, text, entry = st.save(show, cue, length, body.get(\"source\"),",
-  "        ok, text, entry = st.save(show, cue, body.get(\"show_len_s\") or length, body.get(\"source\"),"),
+  "            show, cue, length, body.get(\"source\"), body.get(\"stages\"),",
+  "            show, cue, body.get(\"show_len_s\") or length, body.get(\"source\"), body.get(\"stages\"),"),
 
  ("fireball timeline: a save is not a Settings press",
   "ltcplay/users.py",
   "    \"fireball-timeline-save\": \"settings\",",
   "    \"fireball-timeline-save\": None,"),
+
+ ("fireball timeline: a save over an unreadable file is taken",
+  "ltcplay/fireball_timeline.py",
+  "            if err and replace_unreadable is not True:",
+  "            if False:"),
+
+ ("fireball timeline: a missing file once saved reads as never saved",
+  "ltcplay/fireball_timeline.py",
+  "                if self.path and os.path.isdir(self.history_dir()):",
+  "                if False:"),
+
+ ("fireball timeline: the history copy is written before the save is in place",
+  "ltcplay/fireball_timeline.py",
+  "                old = self._read_bytes()\n                self._write(new)\n                # Only once the new file is in place: a save that failed\n                # leaves no history copy behind.\n                self._keep_history(doc[\"rev\"], bool(err), old)",
+  "                old = self._read_bytes()\n                self._keep_history(doc[\"rev\"], bool(err), old)\n                self._write(new)"),
+
+ ("fireball timeline: a refused replace leaves its temporary file",
+  "ltcplay/fireball_timeline.py",
+  "            try:\n                os.remove(tmp)\n            except OSError:\n                pass\n            raise",
+  "            raise"),
+
+ ("fireball timeline: a read is not under the store's lock",
+  "ltcplay/fireball_timeline.py",
+  "        with self._lock:\n            if not self.path or not os.path.exists(self.path):",
+  "        if True:\n            if not self.path or not os.path.exists(self.path):"),
+
+ ("fireball timeline: a save keeps the spelling it was given",
+  "ltcplay/remote.py",
+  "        show = real\n        cue, length, why = self.fireball_show_info(show)",
+  "        cue, length, why = self.fireball_show_info(show)"),
+
+ ("fireball timeline: show names are compared case for case",
+  "ltcplay/fireball_timeline.py",
+  "    return str(name).rstrip(\" .\").casefold()",
+  "    return str(name)"),
+
+ ("fireball timeline: two spellings of one show are taken",
+  "ltcplay/remote.py",
+  "        if len(same) == 1:\n            return same[0], \"\"",
+  "        if len(same) >= 1:\n            return same[0], \"\""),
 
  # -- the fireball's charge state (fireball_charge.py, Jeff 2026-10-30) ----
  ("fireball charge: zeros (Stop, Hold, a show's end) empty the tanks",
@@ -18915,7 +18993,102 @@ def build():
   "                _before(tc, values, ok)\n",
   "                pass\n"),
 
+ ("fireball charge: no record reads as both tanks EMPTY",
+  "ltcplay/fireball_charge.py",
+  "            state = UNKNOWN if self.path else EMPTY",
+  "            state = EMPTY"),
+
+ ("fireball charge: a record that could not be written is never tried again",
+  "ltcplay/fireball_charge.py",
+  "        elif self._unwritten is not None and \\\n                self._clock() - self._retry_at >= RETRY_S:",
+  "        elif False:"),
+
+ ("fireball charge: a record that could not be written is forgotten",
+  "ltcplay/fireball_charge.py",
+  "            self._unwritten = doc\n            self._retry_at = self._clock()",
+  "            self._unwritten = None\n            self._retry_at = self._clock()"),
+
+ ("fireball charge: close() does not try the unwritten record again",
+  "ltcplay/fireball_charge.py",
+  "            if self._unwritten is not None:\n                # One last try now",
+  "            if False:\n                # One last try now"),
+
+ ("fireball charge: a charge after the valve closed is wiped by the late confirmation",
+  "ltcplay/fireball_charge.py",
+  "                tgt = rel if rel is not None else (\n                    self._ending[0] if self._ending is not None else None)\n                if tgt is not None:\n                    tgt[\"during\"][k]",
+  "                tgt = rel\n                if tgt is not None:\n                    tgt[\"during\"][k]"),
+
+ ("fireball charge: flamesafe reporting a charge sent is not evidence",
+  "ltcplay/fireball_charge.py",
+  "                            self._sent_charge(k)",
+  "                            pass"),
+
+ ("fireball charge: a report of an older release confirms this one",
+  "ltcplay/fireball_charge.py",
+  "seen >= rel.get(\"at\", 0) - 0.1",
+  "seen >= rel.get(\"at\", 0) - 10.0"),
+
+ ("fireball charge: a status over 0.5 s old counts",
+  "ltcplay/fireball_charge.py",
+  "not isinstance(age, (int, float)) or age > fresh_s * 1000:",
+  "not isinstance(age, (int, float)) or age > fresh_s * 10000:"),
+
+ ("fireball charge: Tanks are empty is not a Settings press",
+  "ltcplay/users.py",
+  "    \"fireball-charge-empty\": \"settings\",",
+  "    \"fireball-charge-empty\": None,"),
+
+ ("fireball charge: an operator may confirm the tanks are empty",
+  "ltcplay/remote.py",
+  "        elif not u.may(me.get(\"role\"), \"settings\"):\n            why = (f\"{me.get('name')} may not: \"",
+  "        elif False:\n            why = (f\"{me.get('name')} may not: \""),
+
  # -- the Fireball page's frame merged on the flame link (2026-10-30) -------
+ ("fireball manual: the charge state is not told before the frame can go out",
+  "ltcplay/fireball.py",
+  "                self._tell(on, who, screen)\n                # Refused by the link",
+  "                pass\n                # Refused by the link"),
+
+ ("fireball manual: the beat's zero count is read after its checks",
+  "ltcplay/fireball.py",
+  "                gen = gen0 if link is link0 else None",
+  "                gen = self._gen(link)"),
+
+ ("fireball manual: the page sets its frame without the zero count",
+  "ltcplay/fireball.py",
+  "                took = link.manual_set(vals, r[\"gen\"])",
+  "                took = link.manual_set(vals)"),
+
+ ("fireball manual: the conductor's Abort latch does not hold the page off",
+  "ltcplay/fireball.py",
+  "    if getattr(mach, \"abort_latched\", False) or \\\n            getattr(cond, \"latched\", False):\n        return \"the show is aborted",
+  "    if getattr(mach, \"abort_latched\", False):\n        return \"the show is aborted"),
+
+ ("fireball manual: the conductor holding does not hold the page off",
+  "ltcplay/fireball.py",
+  "    if getattr(cond, \"_look\", None) in (\"HELD\", \"DARK\"):",
+  "    if False:"),
+
+ ("fireball manual: flamesafe not confirming the locks does not hold the page off",
+  "ltcplay/fireball.py",
+  "        why = m._locks_confirmed()\n        if why:",
+  "        why = \"\"\n        if why:"),
+
+ ("fireball manual: an unreadable Morning config does not hold the page off during a show",
+  "ltcplay/fireball.py",
+  "    if m.config_error:\n        return (f\"ltcplay_morning.json could not be read \"",
+  "    if False:\n        return (f\"ltcplay_morning.json could not be read \""),
+
+ ("fireball manual: a frame of the wrong size is taken",
+  "ltcplay/flamelink.py",
+  "            vals = bytes(values)\n            if len(vals) != UNIVERSE_SIZE:\n                return False\n            keep",
+  "            vals = bytes(values)[:UNIVERSE_SIZE].ljust(UNIVERSE_SIZE, b\"\\0\")\n            keep"),
+
+ ("fireball: a held pad whose pointer leaves it stays on",
+  "ltcplay/web/remote.html",
+  "$(\"fb-pads\").addEventListener(\"pointerout\", e => {",
+  "$(\"fb-pads\").addEventListener(\"x-pointerout\", e => {"),
+
  ("fireball manual: the page's frame is not limited to the fireball's slots",
   "ltcplay/flamelink.py",
   "            keep = bytearray(UNIVERSE_SIZE)\n"
@@ -19126,8 +19299,8 @@ def build():
 
  ("fireball cues: a source switch applies in the middle of a play",
   "ltcplay/fireball_cues.py",
-  "        if run.source != \"timeline\":\n            return out",
-  "        run.source = (entry or {}).get(\"source\", \"fseq\")\n        if run.source != \"timeline\":\n            return out"),
+  "        if run.source != \"timeline\":\n            return self._fseq_guarded(out, run)",
+  "        run.source = (entry or {}).get(\"source\", \"fseq\")\n        if run.source != \"timeline\":\n            return self._fseq_guarded(out, run)"),
 
  ("fireball cues: the shot is followed by an automatic purge",
   "ltcplay/fireball_cues.py",
@@ -19148,6 +19321,61 @@ def build():
   "ltcplay/web.py",
   "    cues.fireball = fb\n    remote.fireball_cues = fb",
   "    cues.fireball = fb if fb.store is not None else None\n    remote.fireball_cues = fb"),
+
+ ("fireball cues: another spelling of the show's name falls back to the FSEQ",
+  "ltcplay/fireball_cues.py",
+  "        if entry is None:\n            # A case-blind folder",
+  "        if False:\n            # A case-blind folder"),
+
+ ("fireball cues: two spellings of one show in the file are taken",
+  "ltcplay/fireball_cues.py",
+  "            if len(same) > 1:",
+  "            if False:"),
+
+ ("fireball cues: an FSEQ show is not guarded",
+  "ltcplay/fireball_cues.py",
+  "            return self._fseq_guarded(out, run)\n        out = self._masked(out)",
+  "            return out\n        out = self._masked(out)"),
+
+ ("fireball cues: Purge goes out from an FSEQ show",
+  "ltcplay/fireball_cues.py",
+  "        out[PURGE_SLOT - 1] = 0",
+  "        pass"),
+
+ ("fireball cues: an FSEQ show's charge on a charged tank goes out",
+  "ltcplay/fireball_cues.py",
+  "            if why:\n                out[slot - 1] = 0",
+  "            if False:\n                out[slot - 1] = 0"),
+
+ ("fireball cues: an FSEQ show never charges again after its shot",
+  "ltcplay/fireball_cues.py",
+  "        if fseq and state == \"empty\":",
+  "        if False:"),
+
+ ("fireball cues: a charge cut short by a Hold carries on after it",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if at is not None:"),
+
+ ("fireball cues: one frame not sent ends the charge",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if False:"),
+
+ ("fireball cues: the charge state is not told a charge carries on",
+  "ltcplay/fireball_cues.py",
+  "                if tell is not None:\n                    tell(tank)",
+  "                if tell is not None:\n                    pass"),
+
+ ("fireball charge: the show's charge after a short gap is a double charge",
+  "ltcplay/fireball_charge.py",
+  "            if c is not None and 0 <= now - c <= MANUAL_FRESH_S:",
+  "            if False:"),
+
+ ("fireball cues: an unrelated edit says a stage was moved by it",
+  "ltcplay/fireball_cues.py",
+  "                if old is None or old[\"s0\"] != w[\"s0\"]:",
+  "                if True:"),
 
 ]
 

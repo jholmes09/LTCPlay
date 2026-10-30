@@ -215,6 +215,10 @@ HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
 # too. Restricted by who, never by when: a save during a show is allowed.
 FIREBALL_TIMELINE_GET_ROUTES = ("fireball-timeline",)
 FIREBALL_TIMELINE_POST_ROUTES = ("fireball-timeline-save",)
+# The fuel and air charge record (fireball_charge.py): an admin confirms
+# NOT KNOWN tanks are empty (the Settings row, signed in, screen_arming
+# from the show network). It only changes the record; it sends nothing.
+FIREBALL_CHARGE_POST_ROUTES = ("fireball-charge-empty",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
@@ -225,7 +229,8 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
+    FIREBALL_CHARGE_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1967,6 +1972,8 @@ class Remote:
             return (*self.hazer_post(name, body, ctx),) + ({},)
         if name in FIREBALL_TIMELINE_POST_ROUTES:
             return (*self.fireball_timeline_save(body, ctx),) + ({},)
+        if name in FIREBALL_CHARGE_POST_ROUTES:
+            return (*self.fireball_charge_empty(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -3415,9 +3422,11 @@ class Remote:
         fb = self.fireball
         if ph is not None and name in ("play-from", "loop") and \
                 fb is not None and fb.active():
-            # One source of fire values at a time: the Fireball page has a
-            # channel on (it cuts itself once Run is pressed; this covers
-            # the moment between).
+            # A Programming Play from or Loop never starts while the
+            # Fireball page has a channel on (a landing under a held
+            # Fireball channel). The page itself works during Programming
+            # playback once it plays (fireball.py, Jeff 2026-10-30): start
+            # playback first, then press.
             why = ("A Fireball channel is on. Turn the Fireball page off "
                    "first. Nothing was played.")
             self._journal(who, screen, name, "refused",
@@ -4509,18 +4518,46 @@ class Remote:
                 audit=getattr(self, "audit", None), wall=self.wall)
         return st
 
+    def fireball_show_name(self, show):
+        """(the show file's own name as the show folder spells it, "") or
+        (None, why). Windows and macOS folders ignore case (and Windows
+        trailing dots and spaces), but the engine finds a show's timeline
+        by the name the playing session has, which is the folder's own
+        spelling: a timeline is always saved under that spelling (review
+        of #187: "show.json" was saved, "Show.json" played, and the show
+        fell back to its FSEQ)."""
+        folder = getattr(self.control, "folder", None)
+        name = os.path.basename(str(show or ""))
+        if not folder or not name or name != show:
+            return None, f"{show!r} is not a show file"
+        try:
+            entries = [e for e in os.listdir(folder)
+                       if os.path.isfile(os.path.join(folder, e))]
+        except OSError as e:
+            return None, f"the show folder could not be read ({e})"
+        if name in entries:
+            return name, ""
+        from . import fireball_timeline as fbtl
+        same = [e for e in entries
+                if fbtl.show_key(e) == fbtl.show_key(name)]
+        if len(same) == 1:
+            return same[0], ""
+        if len(same) > 1:
+            return None, (f"{name} matches more than one show file "
+                          f"({', '.join(sorted(same))}); rename one")
+        return None, f"{name} is not in the show folder"
+
     def fireball_show_info(self, show):
         """(the show's own cue, its length in seconds, "") for a show file
         in the show folder, opened as the Check button opens one (nothing
-        sent, nothing played), or (None, None, why)."""
+        sent, nothing played), or (None, None, why). `show` must be the
+        folder's own spelling (fireball_show_name)."""
         ctl = self.control
         folder = getattr(ctl, "folder", None)
-        name = os.path.basename(str(show or ""))
-        if not folder or not name or name != show:
-            return None, None, f"{show!r} is not a show file"
+        name, why = self.fireball_show_name(show)
+        if why:
+            return None, None, why
         path = os.path.join(folder, name)
-        if not os.path.isfile(path):
-            return None, None, f"{name} is not in the show folder"
         from . import clock as clock_mod
         from .session import Session
         kw = dict(getattr(ctl, "defaults", None) or {})
@@ -4559,9 +4596,46 @@ class Remote:
             return 500, {"error": f"The fireball timeline could not be "
                                   f"read ({type(e).__name__})."}
         if show is not None:
+            real, _why = self.fireball_show_name(show)
+            if real and real != show:
+                # The folder's own spelling: the entry the engine uses.
+                show = real
+                out = self.fireball_timeline_store().view(show)
             cue, length, why = self.fireball_show_info(show)
             out.update(cue=cue, show_len_s=length, show_problem=why)
         return 200, out
+
+    def fireball_charge_empty(self, body, ctx):
+        """POST fireball-charge-empty: an admin confirms the fuel and air
+        tanks the record does not know are empty (Tanks are empty on the
+        Fireball page). The Settings row, a signed-in person, from the
+        show network screen_arming too. (code, body)."""
+        from . import users as users_mod
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        tr = self.fireball_charge
+        if tr is None:
+            return 404, {"error": "The fireball charge record is not running "
+                                  "in this engine."}
+        why = ""
+        if u is None or not me.get("name") or not u.active():
+            why = "confirming the tanks are empty needs a signed-in admin."
+        elif not u.may(me.get("role"), "settings"):
+            why = (f"{me.get('name')} may not: "
+                   f"{users_mod.perm_label('settings')}.")
+        elif not self.may_act_from(ctx.local):
+            why = ("confirming the tanks are empty from a device on the "
+                   "show network needs screen_arming.")
+        if why:
+            self._journal(who, device, "fireball charge", "refused",
+                          f"{who or 'Someone'}'s Tanks are empty on the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": f"Not changed: {why}"}
+        ok, text = tr.confirm_empty(who, device)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
 
     def fireball_timeline_save(self, body, ctx):
         """POST fireball-timeline-save {"show", "rev", "source": "fseq" or
@@ -4602,12 +4676,17 @@ class Remote:
                                 "on).")
         if not isinstance(show, str):
             return refused(400, "choose a show file.")
+        real, why = self.fireball_show_name(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        show = real
         cue, length, why = self.fireball_show_info(show)
         if why:
             return refused(409, why[0].upper() + why[1:] + ".")
-        ok, text, entry = st.save(show, cue, length, body.get("source"),
-                                  body.get("stages"), body.get("rev"),
-                                  who=who, screen=device)
+        ok, text, entry = st.save(
+            show, cue, length, body.get("source"), body.get("stages"),
+            body.get("rev"), who=who, screen=device,
+            replace_unreadable=body.get("replace_unreadable") is True)
         if not ok:
             return 409, {"error": text + " Nothing was changed."
                          if "Nothing" not in text else text}
