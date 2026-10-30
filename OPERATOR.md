@@ -844,13 +844,19 @@ channel, and is either ARMED or DISARMED.
 
 **Do not add a fuel pump to flamesafe.json yet.** flamesafe can now read a
 one-channel "switch" entry for the fireball's fuel pump, but LTC Player
-cannot until its own update lands. With a pump line in `flamesafe.json`
-before BOTH are updated: an LTC Player that is started refuses the file and
-does not start, which stops the whole show; and if only flamesafe is
-restarted while an older LTC Player keeps running, flamesafe reports the
-pump among its passthrough entries, LTC Player sees its hazers differ, and
-no hazer can be armed. The order is: update both programs, then add the
-line, then restart both.
+cannot until its own update lands. A pump line in `flamesafe.json` before
+BOTH are updated goes wrong two ways:
+
+- Only flamesafe updated: flamesafe starts, but LTC Player refuses the
+  file and does not start, which stops the whole show.
+- LTC Player not updated and only flamesafe restarted: flamesafe reports
+  the pump among its passthrough entries, LTC Player sees its hazers
+  differ, and no hazer can be armed.
+
+The order is: update both programs, then add the line, then restart both.
+Before the pump is wired, check at the bench that the DMX node (the
+PixLite) drops its outputs to zero when the flame universe stops arriving,
+rather than holding the last look.
 
 ## Stop, Hold and Reset on the rack screen
 

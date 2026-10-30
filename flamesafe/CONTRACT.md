@@ -623,9 +623,10 @@ and the same OFF-then-ON rule. The one difference: while it is switched on
 its slot carries **the entry's own `on` value, written by flamesafe**,
 never the value the frame carries on that slot. So no frame, whatever it
 holds there, can put any other level on the pump; the frame only says ON
-or OFF. A slot in the lockout file is zero. A Composer refuses, when it is
-built, a switch whose `on` is not 1 to 255 and two entries that share a
-slot, however its Config was made. The status frame's entry for a switch
+or OFF. A slot in the lockout file is zero. A Composer re-checks, when it is
+built, whatever built its Config: it refuses a switch whose `on` is not 1
+to 255, a passthrough slot outside 1 to 512, and two entries that share a
+slot. The status frame's entry for a switch
 has `kind` `"switch"`, `slots` (its one slot), `switch` and `on` in place
 of `haze` and `fan`; a hazer's entry gains `kind` `"hazer"` and is
 otherwise unchanged. The start line names it as `Fireball Fuel Pump switch
@@ -637,6 +638,13 @@ does not start. LTC Player refuses it too (an entry without `haze` and
 `fan`) until its own fuel pump update (#188) is installed: this flamesafe
 change alone does NOT make LTC Player read a switch. Install BOTH updates
 first, then add the entry to `flamesafe.json`, then restart both.
+
+**Bench item before a pump is wired.** The pump is the first output on the
+flame universe meant to sit at a steady non-zero value. Check at the bench
+that the PixLite (or whatever DMX node carries the flame universe) drops
+every output to zero when sACN stops, and does not hold the last look:
+flamesafe's zeroing on a lost link only reaches the pump if the node
+passes the zeros, or goes to zero itself when nothing arrives.
 
 **ltcplay's side** (`ltcplay/hazers.py`, `ltcplay/flamelink.py`). The
 engine reads the same `passthrough` list from this file and holds, per
@@ -1373,9 +1381,10 @@ under "Passthrough: the hazers"); the status frame's passthrough entries
 gain `kind`, and a switch's carries `switch` and `on` in place of `haze`
 and `fan`. No field on the flame link changed: a switch is switched by
 name in the existing `hazers_on`. A config without a switch runs exactly
-as before. A flamesafe or LTC Player from before this date refuses a
-config with a switch and does not start: update both, then add the entry,
-then restart both.
+as before. A flamesafe from before this date refuses a config with a
+switch and does not start. LTC Player refuses one too, even after this
+flamesafe change: only its own fuel pump update (#188) reads a switch.
+Install both updates, then add the entry, then restart both.
 
 Version 2, 2026-10-28 (aim slots seen): the status frame gains a per group
 `aim_slots`, and flamesafe journals one `aim slots:` line at start naming
