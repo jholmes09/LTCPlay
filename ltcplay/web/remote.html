@@ -2063,7 +2063,8 @@ function pressDecision(seen, now, flippedAt, nowMs, busy){
 function prerollLook(pr){
   const p = pr || {};
   const checking = p.state === "checking" || p.state === "queued";
-  const items = (p.items || []).map(i => String(i.name || "") + (i.ok ? " OK" : " FAILED: " + String(i.text || "")));
+  // An advisory check (required false: Announcements, Jeff 2026-10-30) is a WARNING, never a failure.
+  const items = (p.items || []).map(i => String(i.name || "") + (i.ok ? " OK" : (i.required === false ? " WARNING: " : " FAILED: ") + String(i.text || "")));
   const failed = p.state === "failed" && !p.manual && typeof p.age_s === "number" && p.age_s < 600;
   return {checking:checking, word:"Checking", label:"Checking the rig before " + String(p.label || "the show") + ". Nothing is heard or seen.",
           trouble: failed ? "Rig check FAILED before " + String(p.label || "the show") + ": " + items.filter(t => / FAILED: /.test(t)).join("; ") + "." : "",
@@ -2605,7 +2606,8 @@ function render(){
     if(sch.error) label += (label ? ". " : "") + sch.error;
   }
   // The alert hold (alerthold.py, Jeff 2026-10-26): held at showtime with
-  // an alert open, and the Delayed countdown, said on the state card.
+  // an alert open, said on the state card. Nothing plays on the PA by
+  // itself (Jeff, 2026-10-30).
   const prl = prerollLook(s.preroll);
   if(prl.checking && sch.attached && !sch.aborted && sch.state !== "SHOW" && sch.state !== "PAUSED"){
     word = prl.word; label = prl.label; cls = "warn";

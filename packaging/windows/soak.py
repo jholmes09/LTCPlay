@@ -863,9 +863,9 @@ class Soak:
               "venue": "Thanksgiving Point",
               "notes": "BENCH ONLY, written by the soak test",
               # The rig check before each show (PR #162) is OFF in a soak
-              # kit: the bench has no announcement output, booth speaker
-              # or real Stream Deck to prove, so it would hold every soak
-              # show. 0 is refused by every engine without soak_only
+              # kit: the bench has no booth speaker or real Stream Deck
+              # to prove, so it would hold every soak show (a missing
+              # announcement output is only a warning since 2026-10-30). 0 is refused by every engine without soak_only
               # (fire_ice.FireIceConfig), so a real install always checks.
               "preroll_s": 0,
               "soak_only": True}
