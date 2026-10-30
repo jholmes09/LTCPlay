@@ -6511,8 +6511,8 @@ def build():
   "        self._journal(f\"Alert ({a.severity}, {kind}): {text}\", fault=False,"),
 
  ("a second alert of the same kind opens a second banner", "ltcplay/alerts.py",
-  "        a = self._open.get(kind)\n        if a is not None:",
-  "        a = None\n        if a is not None:"),
+  "            a = self._open.get(kind)\n            if a is not None:",
+  "            a = None\n            if a is not None:"),
 
  ("Stop clears an alert like Acknowledge", "ltcplay/alerts.py",
   "        if action not in CLEARING:",
@@ -18122,12 +18122,12 @@ def build():
   '            if self._on_pass is not None:'),
 
  ('rig check cleared: a pass clears a failure raised after it began', 'ltcplay/preroll.py',
-  '                    if self._fail_seq > r.get("seq", 0):',
-  '                    if False:'),
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
 
  ('rig check cleared: a pass clears a preroll alert opened after it began', 'ltcplay/preroll.py',
-  '                            now_id != r.get("alert_at_start"):',
-  '                            False:'),
+  '                    now_id != r.get("alert_at_start"):',
+  '                    False:'),
 
  ('rig check cleared: the failed verdict stays after a pass', 'ltcplay/preroll.py',
   '                            v["state"] = "cleared"\n',
@@ -18146,8 +18146,8 @@ def build():
   '                if kind == sch.RESUME and not out.refused:\n                    pass'),
 
  ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
-  '        if st == "HOLD":\n            return "Rig check passed. Press Resume."',
-  '        if False:\n            return "Rig check passed. Press Resume."'),
+  '        if st == "HOLD" and held:',
+  '        if False:'),
 
  ('rig check cleared: 1.0 and 2.0 still show the old failure', 'ltcplay/web/remote.html',
   '  if(p.cleared && !p.show_check && s.state !== "SHOW"',
@@ -18370,8 +18370,8 @@ def build():
   '            if True:'),
 
  ('rack keeper: an unowned dialog of the covering program is buried', 'ltcplay/showwindows.py',
-  '            if is_app(w) and (w.get("owner") or w.get("pid") == c.get("pid")):',
-  '            if is_app(w) and w.get("owner"):'),
+  '                              w.get("pid") == c.get("pid")):',
+  '                              False):'),
 
  ('key guard: the listed safe buttons are held back', 'ltcplay/web/remote.html',
   '  if(KEY_SAFE_IDS.includes(b.id)) return true;',
@@ -18384,6 +18384,119 @@ def build():
  ("mm output watch: the supervisor's 'this PC' is only loopback", 'ltcplay/showwindows.py',
   '    return _thispc.on_this_pc(host)',
   "    return str(host or '').startswith('127.') or host == 'localhost'"),
+
+ # -- review fixes of #176 (two cold reviews, 2026-10-30) --
+ ("mm output: the rig check's backstop reads the note, not whether it looked", 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            and not i.get("note")]'),
+
+ ('mm output: a rig check that did not look clears the output alert', 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            ]'),
+
+ ('rig check: an item the show does not use counts as seen', 'ltcplay/preroll.py',
+  'note=True, used=False))',
+  'note=True))'),
+
+ ('mm output: Continue anyway blacks the video on an unproven output check', 'ltcplay/preroll.py',
+  'OFF_FOR = {"Video": "video", "Lasers"',
+  'OFF_FOR = {"Video": "video", "MadMapper output": "video", "Lasers"'),
+
+ ('rack keeper: a parentless dialog box counts as a cover', 'ltcplay/showwindows.py',
+  'and not w.get("owner") and not is_dialog(w)\n',
+  'and not w.get("owner")\n'),
+
+ ("rack keeper: another program's dialog box is buried", 'ltcplay/showwindows.py',
+  '(w.get("owner") or is_dialog(w) or',
+  '(w.get("owner") or'),
+
+ ('rack keeper: windows open before a restart count as just appeared', 'ltcplay/showwindows.py',
+  'float("-inf") if first else now)',
+  'now)'),
+
+ ('rack keeper: raises over the window in use since before its first look', 'ltcplay/showwindows.py',
+  'if w["hwnd"] == fg_now and w["hwnd"] == self._fg_first \\',
+  'if False and w["hwnd"] == self._fg_first \\'),
+
+ ('rack keeper: moves a rack screen that is not responding', 'ltcplay/showwindows.py',
+  '            if self.api.hung(rack["hwnd"]):',
+  '            if False:'),
+
+ ('rig check cleared: a clear ignores a raise made in place since', 'ltcplay/alerts.py',
+  '                if rev is not None and a.rev != rev:',
+  '                if False:'),
+
+ ('rig check cleared: the alert is cleared by kind, not as the check saw it', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                got = self._clear_alert(KIND)'),
+
+ ('rig check cleared: a refused clear still clears the verdict', 'ltcplay/preroll.py',
+  '                if not self._clear(now_id) and self.alert_open():',
+  '                if False:'),
+
+ ('rig check cleared: an alert opened after the check read none is ignored', 'ltcplay/preroll.py',
+  '            elif self.alert_open():\n                # Opened since',
+  '            elif False:\n                # Opened since'),
+
+ ('rig check cleared: a failure numbered during the clear is ignored', 'ltcplay/preroll.py',
+  '                    if self._fail_seq > r.get("seq", 0):\n                        newer = True',
+  '                    if False:\n                        newer = True'),
+
+ ('rig check cleared: the order of events is not checked first', 'ltcplay/preroll.py',
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
+
+ ("rig check: 'could not run' is never raised again after a pass cleared it", 'ltcplay/schedule_service.py',
+  '        once = (why, getattr(self.preroll, "clears", 0))',
+  '        once = why'),
+
+ ('rig check cleared: an open alert alone is not a failure in force', 'ltcplay/preroll.py',
+  '        return failed or self.alert_open()',
+  '        return failed'),
+
+ ('rig check cleared: Resume releases a show whose check still failed', 'ltcplay/preroll.py',
+  '                    if v["state"] == "cleared"]\n            for k in keys:',
+  '                    if v["state"] in ("cleared", "failed")]\n            for k in keys:'),
+
+ ("rig check: a 'could not run' failure is not numbered", 'ltcplay/preroll.py',
+  '        before it can clear it."""\n        with self._lock:\n            self._seq += 1',
+  '        before it can clear it."""\n        return\n        with self._lock:\n            self._seq += 1'),
+
+ ("rig check cleared: failing again keeps the old failure's age", 'ltcplay/preroll.py',
+  '                v["done"] = r["done"]\n',
+  ''),
+
+ ('rig check cleared: Resume gives the show no late allowance', 'ltcplay/schedule_service.py',
+  '                self._preroll_late[key] = pr.late_ok_s()\n                self._journal_line(\n                    "system", f"{who or \'Someone\'} pressed Resume',
+  '                self._journal_line(\n                    "system", f"{who or \'Someone\'} pressed Resume'),
+
+ ("rig check cleared: the note survives a show's own check", 'ltcplay/preroll.py',
+  '                self.continued = None\n                self.cleared = None',
+  '                self.continued = None'),
+
+ ('rig check cleared: Press Resume when no show was released', 'ltcplay/remote.py',
+  '        if st == "HOLD" and held:',
+  '        if st == "HOLD":'),
+
+ ('rig check: Check again refused before a show after a failure', 'ltcplay/remote.py',
+  ' and \\\n                    not pr.failure_in_force():',
+  ':'),
+
+ ('rig check: Check again allowed in the minute before a show', 'ltcplay/remote.py',
+  '            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s and \\',
+  '            if False and \\'),
+
+ ('rig check cleared: a clear is not counted', 'ltcplay/preroll.py',
+  '                        self.clears += 1\n',
+  ''),
+
+ ('rig check cleared: the screens are not told how many shows', 'ltcplay/preroll.py',
+  '                                  "shows": cl.get("shows", 0),\n',
+  ''),
+
+ ('rig check cleared: the alerts are called under the pre-roll\'s lock (deadlock)', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                with self._lock:\n                    got = self._clear_alert(KIND, alert_id)'),
 
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,

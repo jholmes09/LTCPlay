@@ -90121,18 +90121,20 @@ def test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock():
           "the screens say nothing was cleared")
     c.close()
     n.link.close()
-    # 1b) The alert acknowledged, the failed verdict standing: right after
-    # the pass reads "no alert open", a preroll alert is raised by another
-    # path (the local alert API: not numbered), or the scheduler's check
-    # breaks with no alert sink (numbered, no alert). Neither is cleared,
-    # and the failed verdict stays.
-    for how in ("another path", "no sink"):
+    # 1b) Right after the pass reads the alert: the open alert is raised
+    # again in place by another path (the local alert API: not numbered).
+    # Or, the alert acknowledged and the failed verdict standing, a preroll
+    # alert is raised by another path, or the scheduler's check breaks with
+    # no alert sink (numbered, no alert). None is cleared, and the failed
+    # verdict stays.
+    for how in ("in place", "another path", "no sink"):
         n = _pr_night({"Video": (False, "x")})
         for k, v in P.alert_hooks(n.al).items():
             setattr(n.pr, "_" + k, v)
         S, svc, c = _pr_failed_at_showtime(n)
-        n.al.clear(kind="preroll", action="Acknowledge", who="Andy",
-                   screen="Rack screen")
+        if how != "in place":
+            n.al.clear(kind="preroll", action="Acknowledge", who="Andy",
+                       screen="Rack screen")
         n.results["Video"] = (True, "")
         reads = [0]
         real_id = n.pr._alert_id
@@ -90141,7 +90143,7 @@ def test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock():
             tok = real_id()
             reads[0] += 1
             if reads[0] == 2:
-                if how == "another path":
+                if how != "no sink":
                     n.al.raise_("preroll", "The rig check could not run.")
                 else:
                     svc.alert_sink = None
@@ -90154,7 +90156,7 @@ def test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock():
               n.pr.verdict(_pr_key(n)) == "failed" and
               n.pr.view().get("cleared") is None and
               [a.kind for a in n.al.open()] ==
-              (["preroll"] if how == "another path" else []),
+              (["preroll"] if how != "no sink" else []),
               f"{how}: the newer failure stays: "
               f"{n.pr.verdict(_pr_key(n))} {n.al.view()}")
         c.close()

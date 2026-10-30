@@ -1087,12 +1087,16 @@ whose check failed (unlike other alerts): use Start now, which checks
 again, or Continue anyway. A later check that passes on a fresh run
 (Check again, Check the rig, Start now's own check) clears the failure
 and the rig check alert, and the journal says "Rig check passed, failure
-cleared (who)". It starts nothing: a held show stays held, and the
-screens say "Rig check passed. Press Resume." Resume then checks the show
-once more and starts it if that passes; a show whose time has gone by
-waits for Start now. A failure raised after that check began is never
-cleared by it, and a check that fails again keeps the failure with the
-new reasons. Start now that fails its check is refused with the reason.
+cleared (who)". It starts nothing: a held show stays held. While the
+schedule is held for a show whose check failed, the screens say "Rig
+check passed. Press Resume." Resume then checks the show once more and
+starts it if that passes. Otherwise they say Press Start now: a show
+whose time has gone by (it waits for Start now), no hold at all, or a
+cleared "rig check could not run" alert, which leaves no show for Resume
+to release. If the rig check still cannot run, that alert comes back.
+A failure raised after that check began is never cleared by it, and a
+check that fails again keeps the failure with the new reasons. Start now
+that fails its check is refused with the reason.
 
 **MadMapper's output after a reboot** (Jeff, 2026-10-29). LTC Player
 cannot turn MadMapper's video output on; it sees it. The rack screen's
@@ -1106,16 +1110,26 @@ ltcplay_fire_ice.json and read by the engine and the supervisor alike:
 `madmapper_output_check` (true; false turns the check, the lamp and the
 alert off, for an output that is not a full-screen window) and
 `madmapper_output_monitor` (0: any display but the rack screen's; 1 the
-main display, 2 the next, as showpc.json's page_monitor counts). The
+main display, 2 the next, as showpc.json's page_monitor counts). After
+changing either one, Reload engine is enough (or stop and start LTC
+Player): the engine reads them when it starts, the supervisor within a
+few seconds. A failed MadMapper output check holds the show like any
+other, but Continue anyway leaves nothing off for it: the rule (a
+full-screen MadMapper window with no title bar) is not yet proven on a
+real MadMapper 6 (BENCH.md), so the video is never blacked on its word.
+The
 supervisor also keeps the rack screen in front of BEYOND and MadMapper
 windows after a reboot (showpc.json `rack_screen_keep_in_front`, true).
 It never raises the rack screen over MadMapper's output, never takes the
 keyboard from someone typing in another program, never covers a dialog or
 a window a person has in front, and leaves a minimized rack screen
 minimized. Its five minutes count from the sign-in, so stopping and starting
-LTC Player later does not bring them back. A dialog of BEYOND or MadMapper
-over the rack screen, or a window someone used in the last minute, stops
-it; a window nobody is using does not. For 2 s after the
+LTC Player later does not bring them back, and windows that were already
+open when LTC Player started count as old (it raises over a BEYOND or
+MadMapper window only when one opens after that). A dialog of BEYOND or
+MadMapper (owned by its window or not, a message box included) over the
+rack screen, or a window someone used in the last minute, stops it; a
+window nobody is using does not. For 2 s after the
 rack screen comes to the front with no touch in it, a key that would
 start or arm something is ignored (it was typed for another program);
 Abort, Hold, Stop and every Disarm or Off key always work.
@@ -1136,7 +1150,7 @@ MadMapper runs on this PC (and not when ltcplay_fire_ice.json cannot be
 read); the watch still reads and logs the windows. The supervisor
 reads these settings again every few seconds, so a change (and Reload
 engine) applies without restarting LTC Player; the engine's rig check and
-lamp read them when the engine starts. The output alert holds a show at its time like any fault but does
+lamp read them when the engine starts, so Reload engine is enough. The output alert holds a show at its time like any fault but does
 not play Delayed on the PA by itself, on purpose: a real output fault also
 fails the rig check, whose alert announces.
 
@@ -1145,8 +1159,11 @@ choices:
 
 - **Check the rig again** (an admin, on the show PC): the same checks,
   nothing started. Also on the Programming screen's Rig check card, any
-  time between shows with Run pressed, never in the minute before a show.
-  Once it passes, press Resume, then Start now (which checks once more).
+  time between shows with Run pressed, never in the minute before a show
+  unless a rig check failure stands (a failed show is never checked
+  again by itself). Once it passes, press what the screen says: Resume
+  while the show is held (it is checked once more, then starts), else
+  Start now (which checks once more).
 - **Hold to continue anyway** (signed in, with the Start now permission):
   hold the button until it fills, like Hold to arm; a tap does nothing.
   Its text lists exactly what is still failing. The show starts NOW, late,
