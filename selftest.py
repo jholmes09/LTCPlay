@@ -77984,7 +77984,7 @@ def test_lasers_lamp_follows_the_beyond_link():
     check(BW.windows_probe(raises) is None, "tasklist missing: None")
     check(BW.on_this_pc("127.0.0.2") and BW.on_this_pc("localhost") and
           not BW.on_this_pc("10.0.0.9") and not BW.on_this_pc(None),
-          "only the loopback is this PC")
+          "the loopback is this PC, another address and no host are not")
     check(BW.probe_for("127.0.0.2", windows=True) is BW.windows_probe and
           BW.probe_for("10.0.0.9", windows=True)() is None and
           BW.probe_for("127.0.0.2", windows=False)() is None,
@@ -78065,6 +78065,208 @@ def test_lasers_lamp_follows_the_beyond_link():
     st = r2.status(RM.Ctx(True, "127.0.0.1"))
     check((st.get("beyond_link") or {}).get("link") == "lost",
           f"the page is told: {st.get('beyond_link')}")
+    print("  ok")
+
+
+def test_this_pc_includes_its_own_addresses_and_loopback_adapters():
+    section("Jeff's show PC feeds BEYOND over an internal loopback adapter "
+            "(2026-10-30): BEYOND or MadMapper on any address of THIS PC "
+            "(a LAN address, a loopback adapter's) is on this PC; any other "
+            "address is still another machine; 0.0.0.0 is never a host; a "
+            "list that cannot be read falls back to loopback only; the "
+            "sentences name the host and this PC's addresses")
+    import types
+    from ltcplay import thispc as TP, beyondwatch as BW, \
+        madmapperwatch as MW, windowfront as WF, preroll as P, web as W
+    saved = (TP.gather, TP._clock, TP.GATHER_TIMEOUT_S, TP._by_name,
+             TP._routed, TP._windows_adapters)
+    t = [1000.0]
+    calls = []
+    LAN, ADAPTER, APIPA = "192.168.4.42", "10.77.0.1", "169.254.10.2"
+
+    def fake(windows=None):
+        calls.append(1)
+        return {LAN, ADAPTER, APIPA, "0.0.0.0"}
+    try:
+        TP.gather = fake
+        TP._clock = lambda: t[0]
+        TP.forget()
+        for h in ("127.0.0.2", "127.0.0.1", "localhost", " LocalHost "):
+            check(TP.on_this_pc(h) and BW.on_this_pc(h) and
+                  MW.on_this_pc(h), f"{h!r}: loopback is this PC")
+        for h, why in ((LAN, "this PC's LAN address"),
+                       (ADAPTER, "a loopback adapter's address"),
+                       (APIPA, "a 169.254 adapter address")):
+            check(TP.on_this_pc(h) and BW.on_this_pc(h) and
+                  MW.on_this_pc(h), f"{h}: {why} is this PC, for BEYOND "
+                                    f"and MadMapper alike")
+        for h in ("192.168.4.43", "10.0.0.9", "0.0.0.0", "255.255.255.255",
+                  "239.1.1.1", None, "", "showpc", "192.168.4.42.5", 7):
+            check(not TP.on_this_pc(h) and not BW.on_this_pc(h) and
+                  not MW.on_this_pc(h),
+                  f"{h!r}: not one of this PC's addresses: another machine")
+        check(TP.addresses() == (ADAPTER, APIPA, LAN, "0.0.0.0") or
+              TP.addresses() == ("0.0.0.0", ADAPTER, APIPA, LAN),
+              f"the list, sorted: {TP.addresses()}")
+        # Cached: read once in CACHE_S, read again after it.
+        n = len(calls)
+        TP.on_this_pc(ADAPTER)
+        TP.on_this_pc(LAN)
+        check(len(calls) == n, f"read at most once every CACHE_S: "
+                               f"{len(calls) - n} more reads")
+        t[0] += TP.CACHE_S + 1
+        TP.on_this_pc(ADAPTER)
+        check(len(calls) == n + 1, "and read again after CACHE_S")
+        # What the features do with it.
+        check(BW.probe_for(ADAPTER, windows=True) is BW.windows_probe and
+              MW.probe_for(ADAPTER, windows=True) is MW.windows_probe and
+              BW.probe_for("10.0.0.9", windows=True)() is None and
+              MW.probe_for("10.0.0.9", windows=True)() is None,
+              "the process watch looks here for a loopback adapter's "
+              "address, never for another machine's")
+        check(BW.unknown_why(ADAPTER, windows=True) is None and
+              MW.unknown_why(ADAPTER, windows=True) is None,
+              "a loopback adapter's address is never 'another machine'")
+        far = BW.unknown_why("10.0.0.9", windows=True)
+        check("another computer" in far and "10.0.0.9" in far and
+              LAN in far and ADAPTER in far,
+              f"BEYOND on another machine names its host and this PC's "
+              f"addresses: {far}")
+        far = MW.unknown_why("10.0.0.9", windows=True)
+        check(far.startswith("unknown, MadMapper is on another machine")
+              and "10.0.0.9" in far and ADAPTER in far,
+              f"and MadMapper the same: {far}")
+        ok, text = WF.open_beyond("10.0.0.9", windows=True, api=object())
+        check(not ok and "another machine" in text and "10.0.0.9" in text
+              and ADAPTER in text and "ltcplay_fire_ice.json" in text,
+              f"Open BEYOND, another machine: refused, naming the host, "
+              f"this PC's addresses and where it is set: {text}")
+        ok, text = WF.open_beyond(ADAPTER, windows=True, api=object())
+        check(not ok and "another machine" not in text,
+              f"Open BEYOND, a loopback adapter's address: looked for "
+              f"here: {text}")
+        for t_ in (far, text, BW.unknown_why("10.0.0.9", True)):
+            check("—" not in t_ and "–" not in t_, "no dashes")
+        arm = types.SimpleNamespace(view=lambda: {"armed": 0})
+        bl = types.SimpleNamespace(fault=None, gate=None)
+        ok, text = P.check_lasers(
+            _pr_probe(), bl, arm, _PrConductor([]), lambda: None,
+            lambda: BW.unknown_why("10.0.0.9", windows=True))
+        check(ok is True and "10.0.0.9" in text and "another computer" in
+              text, f"the pre-roll's Lasers line names BEYOND's host: "
+                    f"{text}")
+        ok, text = P.check_lasers(_pr_probe(), bl, arm, _PrConductor([]),
+                                  lambda: None, lambda: None)
+        check(ok is True and "another computer" not in text and text,
+              f"cannot tell, not another computer: never said so: {text}")
+        cfg = types.SimpleNamespace(
+            madmapper=types.SimpleNamespace(host=LAN),
+            beyond=types.SimpleNamespace(host=ADAPTER),
+            flamesafe_config=None)
+        h = types.SimpleNamespace(control=types.SimpleNamespace(
+            session=None), fire_ice=None)
+        check(W._preroll_hosts(h, cfg) == [],
+              f"the Network check leaves out a BEYOND and a MadMapper on "
+              f"this PC: {W._preroll_hosts(h, cfg)}")
+        cfg.beyond.host = "10.0.0.9"
+        check(W._preroll_hosts(h, cfg) == [("BEYOND", "10.0.0.9")],
+              f"and pings one on another machine: "
+              f"{W._preroll_hosts(h, cfg)}")
+        # The list cannot be read: loopback only, as before.
+        for broken in (lambda windows=None: None,
+                       lambda windows=None: 1 / 0):
+            TP.gather = broken
+            TP.forget()
+            check(TP.on_this_pc("127.0.0.2") and TP.on_this_pc("localhost")
+                  and not TP.on_this_pc(ADAPTER) and not TP.on_this_pc(LAN)
+                  and TP.addresses() is None,
+                  "the list cannot be read: only loopback is this PC")
+            check("could not be read" in TP.listed() and
+                  "could not be read" in BW.unknown_why(ADAPTER, True),
+                  f"and the sentence says so: {TP.listed()}")
+        TP.GATHER_TIMEOUT_S = 0.05
+        TP.gather = lambda windows=None: time.sleep(0.5) or {ADAPTER}
+        TP.forget()
+        t0 = time.monotonic()
+        check(not TP.on_this_pc(ADAPTER) and time.monotonic() - t0 < 0.4,
+              "a read that hangs counts as failed, never holds the caller")
+        TP.GATHER_TIMEOUT_S = saved[2]
+        # gather() itself: each source on its own, only usable IPv4.
+        TP.gather = saved[0]
+
+        def boom():
+            raise OSError("x")
+        TP._by_name = boom
+        TP._routed = boom
+        TP._windows_adapters = boom
+        check(TP.gather(windows=True) is None and
+              TP.gather(windows=False) is None,
+              "no source could be read: None, never an empty 'not here'")
+        TP._windows_adapters = lambda: {ADAPTER, "0.0.0.0", "224.0.0.1",
+                                        "fe80::1", "x"}
+        check(TP.gather(windows=True) == {ADAPTER} and
+              TP.gather(windows=False) is None,
+              "Windows' adapter list (loopback adapters included) is read "
+              "on Windows only; 0.0.0.0, multicast and anything not IPv4 "
+              "are left out")
+        TP._routed = lambda: {LAN}
+        check(TP.gather(windows=True) == {ADAPTER, LAN} and
+              TP.gather(windows=False) == {LAN},
+              "one failing source leaves the others")
+    finally:
+        (TP.gather, TP._clock, TP.GATHER_TIMEOUT_S, TP._by_name,
+         TP._routed, TP._windows_adapters) = saved
+        TP.forget()
+    got = TP.gather()
+    check(got is None or (isinstance(got, set) and
+                          all(TP._ipv4(a) is not None for a in got)),
+          f"this PC's real list reads, or says it cannot: {got}")
+    print("  ok")
+
+
+def test_a_laser_without_its_calibration_cue_says_what_and_where():
+    section("A laser whose calibration cue is not set up (mechanism none) "
+            "says plainly what is needed and where, on the Startup page and "
+            "when pressed, and names no BEYOND address")
+    from ltcplay import lasertest as LT
+    lasers = LT.parse_lasers([
+        {"id": "l1", "name": "Laser 1"},
+        {"id": "l2", "name": "Laser 2", "mechanism": "osc",
+         "host": "127.0.0.2", "port": 8100,
+         "on": [["/x/on", 1]], "off": [["/x/off", 1]]}], "x")
+    v1, v2 = lasers[0].view(), lasers[1].view()
+    need = v1.get("setup_needed") or ""
+    check(v2.get("setup_needed") is None and need and
+          not v1["configured"], f"only the laser not set up says so: "
+                                f"{v1} {v2}")
+    for words in ("not set up yet", "OSC messages", "not known yet",
+                  "lasers block of ltcplay_morning.json",
+                  "How to set up the laser calibration cue"):
+        check(words in need, f"the Startup page's line says {words!r}: "
+                             f"{need}")
+    check("/beyond" not in need and "/" not in need.replace(
+        "MORNING.md and OPERATOR.md", ""),
+          f"and invents no BEYOND address: {need}")
+    text = LT.not_set_up(lasers[0])
+    check("Laser 1" in text and '"l1"' in text and "Nothing was sent" in
+          text and "placeholder" in text and "not known yet" in text and
+          "restart the engine" in text,
+          f"pressed: what, where and nothing sent: {text}")
+    for t in (need, text):
+        check("—" not in t and "–" not in t, "no dashes")
+    here = os.path.dirname(os.path.abspath(__file__))
+    html = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check("!l.configured ? need :" in html and "l.setup_needed" in html,
+          "the Startup page shows the sentence for a laser not set up, "
+          "armed or not")
+    doc = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
+    sec = doc[doc.index("### How to set up the laser calibration cue"):]
+    sec = sec[:sec.index("\n### ", 5)]
+    check("OSC Monitor" in sec and "step by step" in sec and
+          "NOT verified" in sec, "MORNING.md says how to find the address "
+                                 "with BEYOND's OSC Monitor, and what is "
+                                 "not verified")
     print("  ok")
 
 
@@ -92051,6 +92253,8 @@ if __name__ == "__main__":
         test_group_disarm_is_confirmed_or_forced,
         test_group_disarm_across_two_screens_real_flamesafe,
         test_lasers_lamp_follows_the_beyond_link,
+        test_this_pc_includes_its_own_addresses_and_loopback_adapters,
+        test_a_laser_without_its_calibration_cue_says_what_and_where,
         test_video_lamp_follows_the_madmapper_watch,
         test_madmapper_not_following_is_a_display_only_alert,
         test_reset_says_how_the_rig_stands,

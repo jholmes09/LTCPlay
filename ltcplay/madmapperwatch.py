@@ -8,7 +8,9 @@ nothing here can confirm that the screens show the picture. What can be
 told, on the show PC, is whether the MadMapper program is running at all:
 Windows' own process list, read on a slow beat on this module's own thread,
 exactly as the BEYOND watch does (beyondwatch.py, copied rather than
-shared so the GPL path, which never loads anything BEYOND, stays so; the
+shared so the GPL path, which never loads anything BEYOND, stays so;
+only the test of whether a host is this PC is shared, thispc.py, which
+loads nothing of BEYOND's or MadMapper's; the
 soak's check, soak_apps.APPS["MadMapper"], names the image
 MadMapper*.exe, which also matches the demo's MadMapperDemo.exe). That is
 a LINK check, never a picture check:
@@ -17,7 +19,8 @@ a LINK check, never a picture check:
   "lost"     the last fresh look found no MadMapper process: the lamp says
              NOT RUNNING, and an alert is raised once per loss.
   "unknown"  it cannot be told: not Windows, MadMapper on another machine
-             (its OSC host is not this PC's loopback), the process list
+             (its OSC host is not one of this PC's addresses: thispc.py),
+             the process list
              could not be read, or no look in the last STALE_S.
 
 The heartbeat. When the show file has a "madmapper.heartbeat" block,
@@ -32,11 +35,12 @@ Display only. Nothing here sends anything to MadMapper or the rig, pings
 anything, or changes any output.
 """
 import fnmatch
-import ipaddress
 import subprocess
 import sys
 import threading
 import time
+
+from . import thispc
 
 INTERVAL_S = 3.0      # one look at the process list every this long
 STALE_S = 10.0        # a look older than this says nothing any more
@@ -44,16 +48,12 @@ IMAGES = ("madmapper*.exe",)  # soak_apps.APPS["MadMapper"]["exe"], lower case
 
 
 def on_this_pc(host):
-    """True when MadMapper's OSC host is this PC's loopback (127.0.0.1, or
-    localhost): only then can its process be looked for here. False for
-    anything else, including no host."""
-    h = str(host or "").strip().lower()
-    if h == "localhost":
-        return True
-    try:
-        return ipaddress.IPv4Address(h).is_loopback
-    except (ipaddress.AddressValueError, ValueError):
-        return False
+    """True when MadMapper's OSC host is this PC: localhost, a 127.x.x.x
+    loopback address, or one of this PC's own interface addresses, a
+    loopback adapter's included (thispc.py, shared with the BEYOND watch):
+    only then can its process be looked for here. False for anything
+    else, including no host and 0.0.0.0."""
+    return thispc.on_this_pc(host)
 
 
 def windows_probe(run=subprocess.run):
@@ -76,8 +76,8 @@ def windows_probe(run=subprocess.run):
 
 def probe_for(host, windows=None):
     """The probe for a MadMapper whose OSC host is `host`: windows_probe on
-    the show PC with MadMapper on its loopback, else one that cannot
-    tell."""
+    the show PC with MadMapper on this PC (on_this_pc), else one that
+    cannot tell."""
     if windows is None:
         windows = sys.platform == "win32"
     if windows and on_this_pc(host):
@@ -92,9 +92,9 @@ def unknown_why(host, windows=None):
     if windows is None:
         windows = sys.platform == "win32"
     if not on_this_pc(host):
-        return (f"unknown, MadMapper is on another machine (its OSC host "
-                f"is {host}), so whether it is running cannot be told "
-                f"from here")
+        return (f"unknown, MadMapper is on another machine: its OSC host "
+                f"is {host}, {thispc.not_mine()}. Whether it is running "
+                f"cannot be told from here")
     if not windows:
         return ("unknown, this is not the Windows show PC, so whether "
                 "MadMapper is running cannot be told from here")

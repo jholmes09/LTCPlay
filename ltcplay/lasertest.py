@@ -169,6 +169,10 @@ class Laser:
         return {"id": self.id, "name": self.name,
                 "mechanism": self.mechanism,
                 "configured": self.mechanism != "none" and bool(self.on),
+                "setup_needed": (None if self.mechanism != "none" and
+                                 self.on else
+                                 SETUP_NEEDED[:1].upper() +
+                                 SETUP_NEEDED[1:]),
                 "per_laser_arm": self.mechanism != "none" and
                 bool(self.arm or self.disarm),
                 "target": (f"{self.host}:{self.port}" if self.host and
@@ -281,11 +285,23 @@ def not_set_up(laser):
     """The refusal for a laser whose calibration cue is not set up, naming
     what to put where (MORNING.md, How to set up the laser calibration
     cue)."""
-    return (f"{laser.name}: how the test is sent to BEYOND is not set yet "
-            f"(a placeholder). In ltcplay_morning.json, under lasers, give "
-            f"\"{laser.id}\" \"mechanism\": \"osc\" and its \"on\" and "
-            f"\"off\" OSC messages (MORNING.md, How to set up the laser "
-            f"calibration cue). Nothing was sent.")
+    return (f"{laser.name}: {SETUP_NEEDED} In ltcplay_morning.json, under "
+            f"lasers, give \"{laser.id}\" \"mechanism\": \"osc\" and "
+            f"its \"on\" and \"off\" OSC messages, then restart the "
+            f"engine. Nothing was sent.")
+
+
+# What a laser whose calibration cue is not set up (mechanism "none")
+# needs, in words, for the refusal above and the laser's line on the
+# Startup page (view()["setup_needed"]). BEYOND's OSC messages that start
+# and stop the grid cue are not known or verified anywhere in this repo,
+# so nothing here names one.
+SETUP_NEEDED = ("calibration cue not set up yet (a placeholder). Needed: "
+                "BEYOND's OSC messages that put this laser's grid up and "
+                "take it down. They are not known yet, so nothing can be "
+                "sent. Where: the lasers block of ltcplay_morning.json. How "
+                "to find them: MORNING.md and OPERATOR.md, How to set up "
+                "the laser calibration cue.")
 
 
 class LaserTests:
