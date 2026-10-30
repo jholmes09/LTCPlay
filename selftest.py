@@ -98658,11 +98658,19 @@ def test_fireball_timeline_store():
         ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
                                      0, who="Andy", replace_unreadable=True)
         h = store.history()
-        check(ok and entry["rev"] == 1 and h[0].endswith(
+        check(ok and entry["rev"] == int(wall[0] * 1000) + 1 and h[0].endswith(
             "-rev0-unreadable.json") and open(os.path.join(
                 store.history_dir(), h[0]), encoding="utf-8").read() ==
               '{"fireball_timeline_format": 1, "rev": 1, "shows": {}, '
-              '"x": 1}', f"saved over a broken file, which is kept: {h[:1]}")
+              '"x": 1}', f"saved over a broken file, which is kept, the "
+                         f"new revision from the clock (never back at 1: "
+                         f"round-5 review B 5): {entry and entry['rev']} "
+                         f"{h[:1]}")
+        ok, text, _e = store.save(show, "Show", 60.0, "timeline", stg(), rev,
+                                  who="Andy")
+        check(not ok and "someone saved" in text,
+              f"a page that read the file before it broke cannot save over "
+              f"the rebuilt one: {text}")
         # A file that was saved and is now missing: not "nothing saved
         # yet" (an FSEQ fallback): a fault, saves refused until replaced.
         os.remove(store.path)

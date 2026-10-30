@@ -20158,6 +20158,11 @@ def build():
   "            self._audit(who, screen, show, \"accepted\", what)",
   "            pass"),
 
+ ("fireball timeline: a rebuilt file restarts at revision 1 (round 5)",
+  "ltcplay/fireball_timeline.py",
+  "                max(doc[\"rev\"], int(self._wall() * 1000)) + 1",
+  "                doc[\"rev\"] + 1"),
+
  ("fireball timeline: a save by someone without the Settings row",
   "ltcplay/remote.py",
   "                                \"signed-in admin.\")\n        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline",

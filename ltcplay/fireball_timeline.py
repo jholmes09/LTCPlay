@@ -474,7 +474,13 @@ class Store:
                      "screen": _text(str(screen or "")[:MAX_TEXT],
                                      "the screen")}
             change = describe_change(before, after)
-            new = {"fireball_timeline_format": FORMAT, "rev": doc["rev"] + 1,
+            # A file rebuilt over an unreadable one takes its revision from
+            # the clock (round-5 review B 5, as the charge record): never
+            # back at 1, so a page that read the old file before it broke
+            # can never pass the revision check.
+            nrev = doc["rev"] + 1 if not err else \
+                max(doc["rev"], int(self._wall() * 1000)) + 1
+            new = {"fireball_timeline_format": FORMAT, "rev": nrev,
                    "shows": dict(doc["shows"])}
             new["shows"][show] = after
             try:

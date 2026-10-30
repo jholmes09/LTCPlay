@@ -865,6 +865,7 @@
 "fireball timeline: a duration of 0 is accepted": "test_fireball_timeline_model",
 "fireball timeline: a missing file once saved reads as never saved": "test_fireball_timeline_store",
 "fireball timeline: a read is not under the store's lock": "test_fireball_timeline_store",
+"fireball timeline: a rebuilt file restarts at revision 1 (round 5)": "test_fireball_timeline_store",
 "fireball timeline: a refused history copy makes a save that was made say Not saved": "test_fireball_timeline_store",
 "fireball timeline: a refused replace leaves its temporary file": "test_fireball_timeline_store",
 "fireball timeline: a save by someone without the Settings row": "test_fireball_timeline_routes",
