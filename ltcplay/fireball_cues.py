@@ -42,6 +42,14 @@ The rules
     short (Hold, Stop, a seek, the guard) never charges again in that
     play: it counts as charged. The Fireball page's buttons are the
     operator's own decision and are not limited here.
+  - WRITE FIRST (round-5 review): a new automatic charge (the Fuel or
+    Air stage, or the FSEQ's guarded 55 or 56, from an EMPTY tank) goes
+    out only once the charge record says, on disk, that one may be going
+    out (ChargeTracker.charge_ready): while that write is on its way the
+    charge is held off frame by frame (asked for as a timeline play
+    starts, so it is long done by the first stage); if it cannot be
+    written the charge is skipped and said: "the charge record cannot be
+    saved: automatic charging is off".
   - Edits during a show (Jeff: editing is by who, never by when): a new
     revision is taken on the next frame. A stage that has already started
     keeps the window it started with. A stage not started yet takes the
@@ -63,6 +71,9 @@ CHARGE_STAGES = {"fuel": "fuel", "air": "air"}   # stage -> tank
 CHARGE_SLOT = {"fuel": 55, "air": 56}            # tank -> slot
 PURGE_SLOT = fbtl.PURGE_SLOT
 MESSAGES_KEPT = 8
+# _charge_refusal's answer while the charge record's write-ahead mark is
+# on its way to disk: this frame holds the charge off, nothing is skipped.
+WAIT = "\0wait"
 # A charge that went out and then stopped for no longer than this (one
 # frame the flame cues could not read, one send that failed, a lockout or
 # a Hold undone at once) carries on as the same charge, inside the same
@@ -90,6 +101,12 @@ class _Run:
         self.sent_at = {}        # tank -> clock when last seen on the wire
         self.last_call = None    # clock of the last frame asked of us
         self.fseq_on = {}        # FSEQ show: tank -> its charge allowed
+        # The play's first frame (a start, or a landing): a charge held off
+        # there while the write-ahead mark was on its way never starts
+        # late, as the flame link's landing guard would have held it.
+        self.first = True
+        self.first_relf = None
+        self.fseq_hold = set()   # FSEQ charges on at the landing, held
         self.adopt(entry, rev, None)
 
     def adopt(self, entry, rev, relf):
@@ -185,9 +202,9 @@ class FireballCues:
             except Exception:                    # noqa: BLE001
                 pass
 
-    def _say(self, text):
+    def _say(self, text, fault=False):
         self.messages = (self.messages + [text])[-MESSAGES_KEPT:]
-        self._note(text, outcome="fireball_skipped")
+        self._note(text, fault=fault, outcome="fireball_skipped")
 
     def apply(self, out, session, label, rel, cue_obj):
         """`out` (FlameCues' 512 values for this frame, at cue time `rel`
@@ -281,9 +298,19 @@ class FireballCues:
         if run is None or run.cue_obj is not cue_obj or run.label != label:
             run = self._run = _Run(cue_obj, label, entry, rev)
             self.messages = []
+            if run.source == "timeline" and any(
+                    k in run.stages for k in CHARGE_STAGES):
+                # The write-ahead mark asked for as the play starts, so it
+                # is on disk long before the first charge stage.
+                self._ready(self._charge_get())
         self._gap_check(run)
+        first, run.first = run.first, False
+        if first:
+            run.first_relf = relf
         if run.source != "timeline":
-            return self._fseq_guarded(out, run)
+            # A landing (the play's first frame past the cue's top), not a
+            # start from the top.
+            return self._fseq_guarded(out, run, first and relf > 1)
         out = self._masked(out)
         if label != run.cue:
             return out
@@ -321,9 +348,17 @@ class FireballCues:
             tank = CHARGE_STAGES.get(k)
             if tank is not None:
                 why = self._charge_refusal(tr, tank, slot, run)
+                if why == WAIT:
+                    if run.first_relf is not None and \
+                            w["s0"] < run.first_relf:
+                        # The play landed inside this window: it stays
+                        # quiet, as the landing guard keeps a cue on at a
+                        # landing (never a late start past the guard).
+                        run.skipped[k] = "landed inside its window"
+                    continue        # the mark is on its way: next frame
                 if why:
                     run.skipped[k] = why
-                    self._say(why)
+                    self._say(why, fault=self._unsaved(why))
                     continue
             out[slot - 1] = ON_VALUE
             now_on.add(slot)
@@ -366,14 +401,41 @@ class FireballCues:
                     f"{GAP_S:g} s): {what} is not charged again in this "
                     f"play (no double charge).")
         if state == "empty":
-            return ""
+            # A new automatic charge: only once the charge record says, on
+            # disk, that one may be going out (round-5 review, write-ahead).
+            r = self._ready(tr)
+            if r == "ok":
+                return ""
+            if r == "wait":
+                return WAIT
+            return (f"{word}: the charge record cannot be saved: automatic "
+                    f"charging is off, so {what} was skipped (no double "
+                    f"charge).")
         if state == "charged":
             return (f"{word} already charged: {what} was skipped "
                     f"(no double charge).")
         return (f"{word} tank state not known: {what} was skipped "
                 f"(no double charge). Purge or fire to reset it.")
 
-    def _fseq_guarded(self, out, run):
+    @staticmethod
+    def _ready(tr):
+        """The charge record's write-ahead mark: "ok", "wait" or "failed"
+        (fireball_charge.ChargeTracker.charge_ready). A charge state
+        without it (an older one) is "ok". Never raises."""
+        ask = getattr(tr, "charge_ready", None)
+        if ask is None:
+            return "ok"
+        try:
+            r = ask()
+        except Exception:                        # noqa: BLE001
+            return "failed"
+        return r if r in ("ok", "wait") else "failed"
+
+    @staticmethod
+    def _unsaved(why):
+        return "charge record cannot be saved" in why
+
+    def _fseq_guarded(self, out, run, landed=False):
         """A show on its FSEQ (review of #187; Jeff: never a double charge
         under any circumstance, Purge by hand only): Purge (59) from the
         FSEQ is always zero, and the FSEQ's Fuel (55) and Air (56) charges
@@ -401,14 +463,25 @@ class FireballCues:
                 run.fseq_on.pop(tank, None)
                 run.sent_at.pop(tank, None)
                 run.sent_tanks.discard(tank)
+                run.fseq_hold.discard(tank)
+                continue
+            if tank in run.fseq_hold:
+                out[slot - 1] = 0   # on at the landing: held until it ends
                 continue
             word = fbtl.STAGE_WORD[tank]
             why = self._charge_refusal(tr, tank, slot, run,
                                        what=f"the FSEQ's {word} Charge")
+            if why == WAIT:
+                out[slot - 1] = 0   # the mark is on its way: next frame
+                if landed:
+                    # On at a landing inside this charge: held until the
+                    # FSEQ turns it off.
+                    run.fseq_hold.add(tank)
+                continue
             if why:
                 out[slot - 1] = 0
                 if run.fseq_on.get(tank) is not False:
-                    self._say(why)
+                    self._say(why, fault=self._unsaved(why))
                 run.fseq_on[tank] = False
                 continue
             run.fseq_on[tank] = True

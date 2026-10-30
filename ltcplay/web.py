@@ -973,27 +973,31 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:                   # noqa: BLE001
             return {"failed": ["halt"],
                     "error": f"{type(e).__name__}: {e}"}
-        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show")
-               if h.get(k) is not None}
-        out["failed"] = list(h.get("failed") or [])
-        if h.get("show_ended"):
-            svc = getattr(self.server, "schedule", None)
+        # One deadline for the whole window (final review of #191, G2):
+        # the conductor taking the Stop, the scheduler's calls, its fade.
+        if isinstance(h, dict):
             try:
-                svc.flush_conductor(HALT_FADE_WAIT_S)
+                rm.wait_stop_window(h, HALT_FADE_WAIT_S)
             except Exception:                    # noqa: BLE001
                 pass
-            cond = getattr(svc, "conductor", None)
-            if cond is not None and getattr(cond, "threaded", False):
-                try:
-                    cond.wait_idle(HALT_FADE_WAIT_S)
-                except Exception:                # noqa: BLE001
-                    pass
+        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
+                                 "hold", "programming")
+               if h.get(k) is not None}
+        out["failed"] = list(h.get("failed") or [])
         return out
 
     def _halt_stop(self, body, c):
-        """The Stream Deck's Stop (/api/stop with "halt"): Remote.halt,
-        then playback stops. Answers the request."""
+        """The Stream Deck's Stop (/api/stop with "halt"): Remote.halt, the
+        same Stop as every screen's (Jeff, 2026-10-30): the show ended, the
+        schedule on Hold, and Run left ON. Only an engine with no scheduler
+        (Run is then the show itself) still stops playback after the halt.
+        Answers the request."""
         out = self._halt(body)
+        if getattr(self.server, "schedule", None) is not None and \
+                not isinstance(self.server.schedule, _NoSchedule):
+            out["stopped"] = True
+            out["run_on"] = True
+            return self._send(500 if out.get("error") else 200, out)
         try:
             out["stopped"] = c.stop()
         except Exception as e:       # noqa: BLE001

@@ -235,6 +235,33 @@ class FireballPanel:
             return None
 
     @staticmethod
+    def _still(still):
+        """Why the run's sign-in may no longer hold a channel, or ""."""
+        if still is None:
+            return ""
+        try:
+            return str(still() or "")
+        except Exception:                                # noqa: BLE001
+            return "the sign-in could not be checked"
+
+    def cut_signed_out(self, why, token="", user="", device="",
+                       local=False, who="", screen=""):
+        """A sign-out that ended a session (round-5 review F5): the run is
+        cut if that sign-in started it (its token), or that user started it
+        on that screen, or, on the show machine itself (every sign-in made
+        there ended), it was started there. Another screen's run by
+        someone else is never cut. True when a run was cut."""
+        with self._lock:
+            r = self._run
+            hit = r is not None and (
+                (token and r.get("token") == token) or
+                (user and r.get("who") == user and r["owner"][0] == device)
+                or (local and r.get("local")))
+        if not hit:
+            return False
+        return self.cut(why, who=who, screen=screen)
+
+    @staticmethod
     def _drops(link):
         """The flame link's count of frames it could not send, or None."""
         d = getattr(link, "manual_drops", None)
@@ -320,12 +347,17 @@ class FireballPanel:
 
     # -- the routes ------------------------------------------------------------
     def beat(self, body, owner, seen_ok=True, may=(True, ""), who="",
-             screen=""):
+             screen="", token="", local=False, still=None):
         """One heartbeat from the page (every 100 ms while anything is on):
         (code, body). `owner` is (device, window); `may` (ok, why) is the
         purge arming switch for this surface. The body names its run (the
         page makes a new one for each press that starts from everything
-        off) and numbers its beats (seq)."""
+        off) and numbers its beats (seq). `token` and `local` are the
+        sign-in that pressed (its run is cut when that sign-in ends:
+        cut_signed_out); `still` () -> why that sign-in may no longer hold
+        a channel (signed out, demoted, removed, the users file unreadable)
+        or "": asked as a run starts and by the watcher (round-5
+        reviews)."""
         body = body if isinstance(body, dict) else {}
         on = controls_on(body)
         rid = body.get("run")
@@ -402,9 +434,18 @@ class FireballPanel:
                     return 409, {"error": "The flame link's state could not "
                                           "be read, so nothing turns on.",
                                  "cut": True}
+                # The sign-in checked again as the run starts (round-5
+                # review F6: a press that raced a sign-out started a run
+                # for up to 0.25 s).
+                gone = self._still(still)
+                if gone:
+                    return 409, {"error": f"Nothing was turned on: {gone}.",
+                                 "cut": True}
                 r = self._run = {"id": rid, "owner": owner, "on": set(),
                                  "beat": now, "gen": gen, "start": now,
-                                 "seq": seq, "drops": self._drops(link0)}
+                                 "seq": seq, "drops": self._drops(link0),
+                                 "who": who, "token": token or "",
+                                 "local": bool(local), "still": still}
                 self._remember(owner, None, seq, make=True)
                 self.runs += 1
                 started = True
@@ -442,7 +483,9 @@ class FireballPanel:
                 # Abort) has moved its disarm count since the run started
                 # (a zero(), a Hold or a show's end, does not: Jeff,
                 # 2026-10-30).
-                took = link.manual_set(vals, r["gen"])
+                took = link.manual_set(vals, r["gen"], r["drops"]) \
+                    if r["drops"] is not None else \
+                    link.manual_set(vals, r["gen"])
                 # A disarm_all() that landed just after the frame went in,
                 # or a frame that could not be sent since the run started:
                 # the frame comes straight out again. One that lands later
@@ -547,7 +590,8 @@ class FireballPanel:
         if now - r["beat"] > BEAT_STALE_S:
             why = f"no heartbeat for {BEAT_STALE_S:g} s"
         else:
-            why = self._link_why(self._link(), r) or self.refusal()
+            why = self._link_why(self._link(), r) or self.refusal() or \
+                self._still(r.get("still"))
         if why:
             with self._lock:
                 same = self._run is r
@@ -572,8 +616,11 @@ class FireballPanel:
             t.join(1.0)
         self.cut("the engine is stopping")
 
-    def on_abort(self, who="", screen=""):
-        self.cut(f"Abort pressed by {who or screen or 'someone'}", who=who,
+    def on_abort(self, who="", screen="", what="Abort"):
+        """An Abort or a Stop (Morning.on_abort, Morning.stop_hooks): every
+        fireball channel cut at once, not when the watcher next sees the
+        flame link's zero."""
+        self.cut(f"{what} pressed by {who or screen or 'someone'}", who=who,
                  screen=screen)
 
     # -- views -----------------------------------------------------------------
@@ -792,6 +839,18 @@ def route_post(panel, remote, name, body, ctx):
                           "which is off from here (purge_arming, and from "
                           "the show network screen_arming, in "
                           "ltcplay_remote.json).")
+        token = getattr(ctx, "token", "") or ""
+        still = None
+        check = getattr(remote, "fireball_signed_out", None)
+        if check is not None and getattr(remote, "users_active",
+                                         lambda: False)():
+            # The fuel pump's rule (round-5 review B 2): signed out,
+            # demoted, removed, a password reset or the sign-out after the
+            # last show all end the sign-in, or its right to arm.
+            def still():
+                return check(token, who)
         return panel.beat(body, _owner(ctx), seen_ok=seen_ok, may=may,
-                          who=who, screen=screen)
+                          who=who, screen=screen, token=token,
+                          local=bool(getattr(ctx, "local", False)),
+                          still=still)
     return 404, {"error": "no such thing here"}
