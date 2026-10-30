@@ -2383,6 +2383,12 @@ class PurgeFire:
                 self._journal(f"Stream Deck FIRE: the engine refused the "
                               f"purge fire: {text}", fault=True,
                               action="purge", who=who, screen="Stream Deck")
+                # And purge-stop goes on the way out (_run): a refusal of
+                # any kind, a sign-in one included, still stops a purge
+                # (re-review of #172, B2: a timed purge kept firing).
+                with self._lock:
+                    if press.stop_who is None:
+                        press.stop_who = who
                 self._end_press(press)
                 return
             self.beats += 1
@@ -3614,6 +3620,18 @@ class Controller:
                 out.add(i)
         return out
 
+    def purge_timed_left(self):
+        """The seconds a timed purge has left on the engine's clock, while
+        the engine says one runs (deck-input "morning"), else None.
+        Display only."""
+        m = self.morning_view()
+        p = m.get("purge") if isinstance(m, dict) and \
+            isinstance(m.get("purge"), dict) else {}
+        v = p.get("timed_left_s")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+            return None
+        return max(0.0, float(v))
+
     def purge_pass(self, now):
         """Once per main-loop pass. A group ENTERING the engine's purge
         list is armed (Jeff's exception to hold-to-arm: a click on the
@@ -4658,7 +4676,16 @@ class Controller:
             # a purge group is armed, flashing while held, dim PURGE when
             # nothing is selected. Restores when the page closes.
             pf = self.purge_fire
-            if pf is not None and getattr(pf, "firing", False):
+            left = self.purge_timed_left()
+            if left is not None:
+                # A timed purge (morning.py, 2026-10-29): PURGING and the
+                # engine's seconds left. Pressing FIRE now is a second
+                # purge press, which ends it at the engine.
+                fonts.show_key(d, b0, ["PURGING", f"{int(-(-left // 1))} S"],
+                               BLACK if blink_on else RED,
+                               bg=RED if blink_on else None, kind="sans",
+                               max_size=16)
+            elif pf is not None and getattr(pf, "firing", False):
                 fonts.show_key(d, b0, ["FIRING"], BLACK if blink_on else RED,
                                bg=RED if blink_on else None, kind="sans")
             elif self.purge_wanted():

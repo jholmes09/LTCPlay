@@ -17,7 +17,12 @@ to a selection the engine publishes on deck-input, the Stream Deck process
 values go out on the flame link's purge frame (flamelink.purge_set), which
 the link itself drops 0.25 s after the last heartbeat and never sends while
 a show is live.
+
+The timed purge (Jeff, 2026-10-29) is the same selection and the same
+frame, held up by the engine's own timer for a chosen number of seconds
+instead of by a held key: Purge.timed_beat, MORNING.md "The timed purge".
 """
+import collections
 import json
 import os
 import re
@@ -45,6 +50,27 @@ FRESH_S = 1.0
 # A fire press with no heartbeat for this long is over; the flame link
 # drops the frame on its own clock after the same time (PURGE_HOLD_S).
 BEAT_STALE_S = 0.25
+# The timed purge (Jeff, 2026-10-29: "In addition to momentary purges, we
+# would like a designated time length purge option. This is to allow for
+# longer spurts of testing in case there is a DMX issue."). The page offers
+# these, a custom whole number of seconds, and remembers the last one per
+# show PC (purge_timed_s in ltcplay_remote.json). The longest is
+# purge_timed_max_s there, TIMED_MAX_DEFAULT_S unless an admin sets it, and
+# never more than TIMED_MAX_LIMIT_S: there is no unlimited.
+TIMED_PRESETS_S = (2, 5, 10, 20, 30)
+TIMED_DEFAULT_S = 5
+TIMED_MIN_S = 1
+TIMED_MAX_DEFAULT_S = 30
+TIMED_MAX_LIMIT_S = 120
+# The start is a hold, timed here from its beats: remote.SCREEN_HOLD_S, the
+# Hold to arm buttons' dwell. A tap, or a hold let go sooner, fires nothing.
+TIMED_HOLD_S = 1.0
+# The engine's own timer re-sends the frame this often. The flame link
+# drops it PURGE_HOLD_S after the last send (BEAT_STALE_S here), so a timer
+# that stops is a purge that stops.
+TIMED_SEND_S = 0.1
+TIMED_DEAD_IDS = 64          # ended hold ids remembered per screen
+TIMED_OWNERS_KEPT = 64
 # The page says it is open every 500 ms; this long without it and the purge
 # selection is cleared and the deck is told the page is closed.
 OPEN_STALE_S = 2.0
@@ -80,6 +106,26 @@ HEAD_SETTLE_MAX_S = 10.0
 # heartbeat on which the Waver is selected, unlocked and in an ARMED group.
 # Never below 0 (review of PR #68, P3-11 asked for 0.5; Jeff's call).
 HEAD_SETTLE_MIN_S = 0.0
+
+
+def timed_seconds(v, max_s=TIMED_MAX_DEFAULT_S):
+    """(seconds, "") for a timed purge's duration as the page sends it, a
+    whole number from TIMED_MIN_S to `max_s`, or (None, why) in a
+    sentence. A longer one is refused, never cut down silently."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or \
+            (isinstance(v, float) and not v.is_integer()):
+        return None, (f"The timed purge needs a whole number of seconds "
+                      f"from {TIMED_MIN_S} to {max_s:g}. Nothing was fired.")
+    v = int(v)
+    if v < TIMED_MIN_S:
+        return None, (f"A timed purge is at least {TIMED_MIN_S} s. Nothing "
+                      f"was fired.")
+    if v > max_s:
+        return None, (f"{v} s is longer than the longest timed purge this "
+                      f"show machine allows, {max_s:g} s (purge_timed_max_s "
+                      f"in ltcplay_remote.json, at most "
+                      f"{TIMED_MAX_LIMIT_S} s). Nothing was fired.")
+    return v, ""
 
 
 class MorningConfigError(ValueError):
@@ -1031,7 +1077,8 @@ class Purge:
 
     def __init__(self, cfg_get, lockout, link_get, flames_get, live_check,
                  group_names, journal=None, clock=time.monotonic,
-                 locks_ok=lambda: "", other=lambda: ""):
+                 locks_ok=lambda: "", other=lambda: "", timed_checks=None,
+                 threaded=False):
         self._cfg = cfg_get              # () -> MorningConfig
         self._lockout = lockout
         self._link = link_get            # () -> FlameLink or None
@@ -1055,6 +1102,16 @@ class Purge:
         self._fire_ids = 0
         self.fires = 0
         self.last_text = ""
+        # The timed purge: the engine's own checks (remote.py: a Hold, Run,
+        # the flame link not sending, the starter signed out), the start
+        # hold under way, the ended hold ids and highest beat number per
+        # screen (a replayed or late beat never starts one), and the last
+        # end in words. A running timed purge is self.fire with "timed".
+        self._timed_checks = timed_checks
+        self._threaded = threaded
+        self.timed_hold = None
+        self._timed_ended = collections.OrderedDict()
+        self.timed_last = ""
 
     def _note(self, text, **f):
         if self._journal is None:
@@ -1113,6 +1170,11 @@ class Purge:
             return 400, {"error": f"There is no machine called "
                                   f"{machine_id!r}."}
         if not on:
+            if self.timed_running() and machine_id in self.selected:
+                # A machine taken out of a timed purge's selection (by hand,
+                # or by a lock) ends the whole timed purge at once.
+                self.stop(f"{device} took {m.name} out of the selection",
+                          device=device)
             with self._lock:
                 if machine_id in self.selected:
                     self.selected.remove(machine_id)
@@ -1351,7 +1413,7 @@ class Purge:
                 firing.append(m.name)
         return bytes(vals), firing, waiting
 
-    def fire_beat(self, body, device, seen_ok, deck=False):
+    def fire_beat(self, body, device, seen_ok, deck=False, end_only=False):
         """One fire heartbeat (every 100 ms while the key is down). The
         first call (no fire_id) starts a press; later ones carry its id.
         Any refusal ends the press. Only a body purge_fire_wanted() says
@@ -1363,6 +1425,25 @@ class Purge:
                                   "fire. Nothing was fired"
                                   f"{' and the press was stopped' if stopped else ''}.",
                          "let_go": True}
+        who_pressed = "the Stream Deck's FIRE key" if deck else device
+        if self.timed_running():
+            # One purge at a time, and any second purge press ends a timed
+            # one at once (Jeff, 2026-10-29).
+            self.stop(f"a second purge press ({who_pressed})",
+                      device="Stream Deck" if deck else device)
+            return 409, {"error": "A second purge press ended the timed "
+                                  "purge: everything it fired is back to "
+                                  "zero. Nothing else was fired.",
+                         "let_go": True, "ended": True}
+        if end_only:
+            # Let past the switches only to end a timed purge that has
+            # ended meanwhile (re-review of #172): never a fresh press.
+            return 409, {"error": "The timed purge had already ended. This press came past the "
+                                  "purge switches only to end it, so it "
+                                  "fired nothing. Press again if you "
+                                  "mean to purge.", "let_go": True}
+        if self.timed_hold is not None:
+            self._timed_hold_end(f"a purge fire press from {who_pressed}")
         why = self._refusal(device, seen_ok)
         with self._lock:
             sel = list(self.selected)
@@ -1397,6 +1478,24 @@ class Purge:
         fid = body.get("fire_id")
         with self._lock:
             f = self.fire
+            started_meanwhile = f is not None and f.get("timed") is not None
+        if started_meanwhile:
+            # A timed purge started between this press's first look and
+            # here: the press is a second purge press, which ends it with
+            # its own journal line, never overwrites it (round 3 of #172).
+            self.stop(f"a second purge press ({who_pressed})",
+                      device="Stream Deck" if deck else device)
+            return 409, {"error": "A second purge press ended the timed "
+                                  "purge: everything it fired is back to "
+                                  "zero. Nothing else was fired.",
+                         "let_go": True, "ended": True}
+        with self._lock:
+            f = self.fire
+            if f is not None and f.get("timed") is not None:
+                # Started in the instant since the look above: refused,
+                # never overwritten; the next press ends it.
+                return 409, {"error": "A timed purge has just started. "
+                                      "Nothing was fired.", "let_go": True}
             if fid is not None:
                 if f is not None and f["device"] != device:
                     # Another device's heartbeat never carries this press
@@ -1433,9 +1532,17 @@ class Purge:
                                       "key and press again.",
                              "let_go": True}
             if any(vals):
-                link.purge_set(vals)
+                took = link.purge_set(vals) is not False
             else:
+                took = True
                 link.purge_clear()
+        if not took:
+            # The link refused the frame (round 3 of #172): never answered
+            # as firing.
+            self.stop("the flame link did not take the frame")
+            return 409, {"error": "The flame link did not take the purge "
+                                  "frame, so nothing is firing. Release the "
+                                  "key and press again.", "let_go": True}
         if fid is None:
             self._note(f"{device} started a purge fire press: "
                        f"{', '.join(firing) or 'nothing firing yet'}"
@@ -1448,22 +1555,39 @@ class Purge:
     def stop(self, why="", device=None):
         """The key came up (or anything else ended the press): the flame
         link's purge frame is cleared now, not at its own expiry."""
-        with self._lock:
-            f, self.fire = self.fire, None
         link = self._link()
-        if link is not None:
-            link.purge_clear()
+        with self._lock:
+            # The link cleared under the same lock as the frame is set
+            # (round 3 of #172): no pause between them can leave the old
+            # frame up.
+            f, self.fire = self.fire, None
+            if link is not None:
+                link.purge_clear()
         if f is not None:
             held = self._clock() - f["start"]
-            self._note(f"Purge fire ended after {held:.1f} s"
-                       f"{': ' + why if why else ''}.", action="purge",
-                       outcome="fire_end", screen=device or f["device"])
+            t = f.get("timed")
+            if t is not None:
+                self.timed_last = (f"The timed purge ended after {held:.1f} s "
+                                   f"of {t['seconds']} s: "
+                                   f"{why or 'stopped'}.")
+                self._note(f"Timed purge of {', '.join(t['machines'])} "
+                           f"(started by {t['who'] or 'someone'} on the "
+                           f"{f['device']}) ended after {held:.1f} s of "
+                           f"{t['seconds']} s: {why or 'stopped'}. "
+                           f"Everything it fired is back to zero.",
+                           action="purge", outcome="timed_end",
+                           who=t["who"], screen=device or f["device"])
+            else:
+                self._note(f"Purge fire ended after {held:.1f} s"
+                           f"{': ' + why if why else ''}.", action="purge",
+                           outcome="fire_end", screen=device or f["device"])
         return f is not None
 
     def clear(self, why):
         """Everything off: the selection and any fire. The deck sees no
         groups wanted on its next read and disarms them."""
         self.stop(why)
+        self._timed_hold_end(why)
         with self._lock:
             had = list(self.selected)
             self.selected = []
@@ -1481,12 +1605,29 @@ class Purge:
         with self._lock:
             f = self.fire
             stale = f is not None and now - f["beat"] > BEAT_STALE_S
-        if stale:
-            self.stop("no heartbeat for 0.25 s")
+            t = f.get("timed") if f is not None else None
+            h = self.timed_hold
+            hold_stale = h is not None and now - h["beat"] > BEAT_STALE_S
+        if t is not None and now >= t["deadline"]:
+            # The watcher's own look at the deadline, whatever the timer
+            # thread is doing (it ends it there first, normally).
+            self.stop(f"its {t['seconds']} s were up")
+        elif stale:
+            self.stop("the engine's timer stopped sending it (nothing for "
+                      "0.25 s)" if t is not None else
+                      "no heartbeat for 0.25 s")
+        if hold_stale:
+            self._timed_hold_end(f"no beat for {BEAT_STALE_S:g} s (the button "
+                                 f"was let go, the page left or the "
+                                 f"connection lost)")
         if self.selected:
             why = self._live()
             if why:
                 self.clear(why)
+            elif self.timed_running():
+                # A timed purge carries on with its page closed (it ends on
+                # its own clock); once it is over the selection goes.
+                pass
             elif not page_open:
                 self.clear("the Morning and Shutdown page is no longer open")
 
@@ -1497,7 +1638,471 @@ class Purge:
             return {"selected": list(self.selected), "owner": self.owner,
                     "firing": f is not None, "fire_device":
                         f["device"] if f else None,
+                    "timed": f is not None and f.get("timed") is not None,
                     "groups_wanted": wanted, "fires": self.fires}
+
+    # -- the timed purge (Jeff, 2026-10-29; MORNING.md "The timed purge") ---
+    def timed_running(self):
+        f = self.fire
+        return f is not None and f.get("timed") is not None
+
+    @staticmethod
+    def _gen(link):
+        """The flame link's zero count (zero() and disarm_all(): Stop, Hold,
+        Abort, a show ending), or None when it cannot be read."""
+        try:
+            g = getattr(link, "_zero_gen")
+            return g if isinstance(g, int) and not isinstance(g, bool) \
+                else None
+        except Exception:                                # noqa: BLE001
+            return None
+
+    def _timed_remember(self, owner, rid, seq, make=False):
+        """Note an ended hold id and the highest beat number of `owner`.
+        Under self._lock. A record is made only by a hold starting."""
+        e = self._timed_ended.get(owner)
+        if e is None:
+            if not make:
+                return
+            e = self._timed_ended[owner] = {
+                "ids": collections.deque(maxlen=TIMED_DEAD_IDS), "seq": None}
+            # Only a hold that passed every rule makes a record (review of
+            # #172), and the oldest is let go only when it belongs to no
+            # running purge and no hold under way: a made-up window name
+            # can never push out the record that refuses a replay.
+            f = self.fire
+            t = f.get("timed") if f is not None else None
+            keep = {owner, t["owner"] if t is not None else None,
+                    self.timed_hold["owner"] if self.timed_hold else None}
+            for old in list(self._timed_ended):
+                if len(self._timed_ended) <= TIMED_OWNERS_KEPT:
+                    break
+                if old not in keep:
+                    del self._timed_ended[old]
+        self._timed_ended.move_to_end(owner)
+        if rid is not None and rid not in e["ids"]:
+            e["ids"].append(rid)
+        if seq is not None and (e["seq"] is None or seq > e["seq"]):
+            e["seq"] = seq
+
+    def _timed_dead(self, owner, rid, seq, live):
+        """True for a beat that may not start or carry on a hold: its id
+        has ended (started a purge, let go, refused), or, starting a new
+        hold, its beat number is not past every beat this screen sent
+        before (a replayed or late press). Under self._lock."""
+        e = self._timed_ended.get(owner)
+        if e is None:
+            return False
+        if rid in e["ids"]:
+            return True
+        starting = live is None or live["id"] != rid
+        return starting and seq is not None and e["seq"] is not None and \
+            seq <= e["seq"]
+
+    def _timed_hold_end(self, why):
+        """A start hold that never completed ends: nothing was fired."""
+        with self._lock:
+            h, self.timed_hold = self.timed_hold, None
+            if h is not None:
+                self._timed_remember(h["owner"], h["id"], h["seq"])
+        if h is not None:
+            self._note(f"{h['who'] or h['owner'][0]}'s hold to start a timed "
+                       f"purge on the {h['owner'][0]} ended before it was "
+                       f"complete ({why}); nothing was fired.",
+                       action="purge", outcome="timed_not_started",
+                       who=h["who"], screen=h["owner"][0])
+        return h is not None
+
+    def _timed_firing_machines(self):
+        """The selected machines a timed purge would fire, as Machines, and
+        why none can (or ""). Under no lock."""
+        cfg = self._cfg()
+        with self._lock:
+            sel = list(self.selected)
+        ms = [cfg.by_id.get(mid) for mid in sel]
+        ms = [m for m in ms if m is not None and not cfg.purge_refusal(m)
+              and not self._lockout.is_locked("machine", m.id)]
+        if not sel:
+            return [], "Nothing is armed for a purge. Click a machine first."
+        if not ms:
+            return [], ("Nothing selected can be purged (each one is locked "
+                        "out or never purged).")
+        return ms, ""
+
+    def _timed_engine(self, t):
+        """The engine's own checks (remote.timed_purge_blockers): "" or
+        why. Fails closed: not connected, or raising, is a refusal."""
+        fn = self._timed_checks
+        if fn is None:
+            return ("the engine's checks for a timed purge are not "
+                    "connected in this engine.")
+        try:
+            return fn(t) or ""
+        except Exception as e:                           # noqa: BLE001
+            return (f"the engine's state could not be read "
+                    f"({type(e).__name__}).")
+
+    def _timed_refusal(self, device, seen_ok, owner_device, seconds_why):
+        """Why a timed purge may not start right now, or "": every rule a
+        momentary purge has, plus the selection's own groups ARMED already
+        (a timed purge never waits for one), the engine's checks, and the
+        flame link able to take its hard end."""
+        why = seconds_why or self._refusal(device, seen_ok)
+        if why:
+            return why
+        with self._lock:
+            owner = self.owner
+        if owner != owner_device:
+            return (f"{owner} has the purge selection; only that screen "
+                    f"starts a timed purge." if owner else
+                    "Nothing is armed for a purge. Click a machine first.")
+        if self.press_live(self._clock()):
+            return ("A purge is firing (Space or the Stream Deck's FIRE "
+                    "key). One purge at a time: let go of it first.")
+        ms, why = self._timed_firing_machines()
+        if why:
+            return why
+        armed = self._armed_groups()
+        waiting = sorted({m.group for m in ms if m.group not in armed})
+        if waiting:
+            return (f"flamesafe does not report {', '.join(waiting)} armed "
+                    f"yet. A timed purge starts only once every selected "
+                    f"machine's group is armed: wait for it, then hold "
+                    f"again.")
+        why = self._timed_engine(None)
+        if why:
+            return why
+        link = self._link()
+        if self._gen(link) is None or \
+                not callable(getattr(link, "purge_limit", None)):
+            return ("The flame link cannot take a timed purge's hard end, "
+                    "so no timed purge starts.")
+        return ""
+
+    def timed_beat(self, body, owner, seen_ok, who="", screen="", token="",
+                   max_s=TIMED_MAX_DEFAULT_S, end_only=False):
+        """One beat of the hold that starts a timed purge (every 100 ms
+        while the finger is down), from `owner` (device, window). (code,
+        body). The body names the hold ("run", a new one each press),
+        numbers its beats ("seq") and says the seconds; "hold" is the JSON
+        word true while the finger is down, anything else is a release.
+        TIMED_HOLD_S of beats with no gap over BEAT_STALE_S, each under
+        every rule, starts it; a tap, a gap, a release, a changed duration
+        or any refusal fires nothing. A new hold while one runs, from any
+        screen, is a second purge press: it ends it."""
+        body = body if isinstance(body, dict) else {}
+        rid = body.get("run")
+        rid = rid if isinstance(rid, str) and 0 < len(rid) <= 64 else None
+        seq = body.get("seq")
+        seq = seq if isinstance(seq, int) and not isinstance(seq, bool) \
+            else None
+        device = owner[0]
+        now = self._clock()
+        if body.get("hold") is not True:
+            # A release: never refused. Before the hold completed it fires
+            # nothing; after, it changes nothing (the purge runs on its own
+            # clock until it ends).
+            with self._lock:
+                h = self.timed_hold
+                mine = h is not None and h["owner"] == owner and \
+                    (rid is None or rid == h["id"])
+                self._timed_remember(owner, rid, seq)
+            if mine:
+                self._timed_hold_end("let go before the hold was complete")
+            return 200, self.timed_view(owner)
+        if rid is None:
+            return 400, {"error": "A hold has to name itself. Nothing was "
+                                  "fired.", "cut": True}
+        with self._lock:
+            f = self.fire
+            t = f.get("timed") if f is not None else None
+            if t is not None and t["hold_id"] == rid and \
+                    t["owner"] == owner:
+                # The finger still down after its hold started the purge.
+                still = True
+            else:
+                still = False
+        if still:
+            return 200, self.timed_view(owner)
+        if t is not None:
+            self.stop(f"a second purge press (a new hold on the {device})",
+                      device=device)
+            with self._lock:
+                self._timed_remember(owner, rid, seq)
+            return 409, {"error": "A second purge press ended the timed "
+                                  "purge: everything it fired is back to "
+                                  "zero. Nothing else was fired.",
+                         "cut": True, "ended": True}
+        if end_only:
+            # As fire_beat: a press let past the switches only to end one
+            # never starts a hold (re-review of #172).
+            return 409, {"error": "The timed purge had already ended. This press came past the "
+                                  "purge switches only to end it, so it "
+                                  "fired nothing. Press again if you "
+                                  "mean to purge.", "cut": True}
+        with self._lock:
+            h = self.timed_hold
+            if h is not None and h["owner"] != owner:
+                return 409, {"error": f"{h['owner'][0]} is holding to start "
+                                      f"a timed purge. One screen at a time.",
+                             "cut": True}
+            if self._timed_dead(owner, rid, seq, h):
+                return 409, {"error": "That hold has ended. Let go and hold "
+                                      "again. Nothing was fired.",
+                             "cut": True}
+            if h is not None and seq is not None and h["seq"] is not None \
+                    and seq <= h["seq"] and h["id"] == rid:
+                # Overtaken by a later beat: says nothing about now.
+                return 200, dict(self.timed_view(owner), overtaken=True)
+        if h is not None and h["id"] != rid:
+            self._timed_hold_end("a new press from the same screen")
+            return 409, {"error": "Let go and hold again. Nothing was fired.",
+                         "cut": True}
+        if h is not None and now - h["beat"] > BEAT_STALE_S:
+            self._timed_hold_end(f"no beat for {BEAT_STALE_S:g} s")
+            return 409, {"error": "The hold was interrupted. Let go and hold "
+                                  "again. Nothing was fired.", "cut": True}
+        secs, swhy = timed_seconds(body.get("seconds"), max_s)
+        if not swhy and h is not None and secs != h["seconds"]:
+            swhy = ("The duration changed during the hold. Let go and hold "
+                    "again. Nothing was fired.")
+        why = self._timed_refusal(device, seen_ok, device, swhy)
+        if why:
+            if h is not None:
+                self._timed_hold_end(f"refused: {why}")
+            else:
+                with self._lock:
+                    self._timed_remember(owner, rid, seq)
+                self._note(f"{who or device}'s timed purge on the {device} "
+                           f"was refused: {why}", action="purge",
+                           outcome="timed_refused", who=who, screen=device)
+            return 409, {"error": why, "cut": True}
+        with self._lock:
+            if self.timed_hold is None:
+                h = self.timed_hold = {"id": rid, "owner": owner, "seq": seq,
+                                       "start": now, "beat": now,
+                                       "seconds": secs, "who": who,
+                                       "screen": screen}
+                self._timed_remember(owner, None, seq, make=True)
+            elif self.timed_hold is h:
+                h.update(seq=seq, beat=now)
+            else:
+                return 409, {"error": "Let go and hold again. Nothing was "
+                                      "fired.", "cut": True}
+            complete = now - h["start"] >= TIMED_HOLD_S
+        if not complete:
+            return 200, self.timed_view(owner)
+        return self._timed_start(h, token, now)
+
+    def _timed_start(self, h, token, now):
+        """The hold is complete: the timed purge starts, its first frame
+        goes now, and the timer carries it to its end."""
+        ms, why = self._timed_firing_machines()
+        link = self._link()
+        gen = self._gen(link)
+        device = h["owner"][0]
+        with self._lock:
+            if self.timed_hold is not h:
+                return 409, {"error": "The hold ended. Nothing was fired.",
+                             "cut": True}
+            self.timed_hold = None
+            # This hold can never start anything again (a replay of it).
+            self._timed_remember(h["owner"], h["id"], h["seq"])
+            if why or gen is None or self.fire is not None:
+                return 409, {"error": why or "One purge at a time. Nothing "
+                                             "was fired.", "cut": True}
+            self._fire_ids += 1
+            f = self.fire = {
+                "id": self._fire_ids, "device": device, "start": now,
+                "beat": now, "heads": {},
+                "timed": {"seconds": h["seconds"],
+                          "deadline": now + h["seconds"], "who": h["who"],
+                          "screen": h["screen"], "token": token,
+                          "owner": h["owner"], "hold_id": h["id"],
+                          "gen": gen, "machines": [m.name for m in ms],
+                          "groups": sorted({m.group for m in ms}),
+                          "firing": [], "waiting": []}}
+            self.fires += 1
+        t = f["timed"]
+        # The hard end is the deadline itself, turned into the link's
+        # clock under the link's lock (the link reads its own clock first,
+        # this one second): a pause anywhere only tightens it (rounds 2
+        # and 3 of #172).
+        if link.purge_limit(t["seconds"], deadline=t["deadline"],
+                            clock=self._clock) is not True:
+            self.stop("the flame link did not take its hard end",
+                      device=device)
+            return 409, {"error": "The flame link did not take the timed "
+                                  "purge's hard end, so nothing was fired.",
+                         "cut": True}
+        self._note(f"{h['who'] or device} started a timed purge on the "
+                   f"{device}: {', '.join(t['machines'])} for "
+                   f"{t['seconds']} s. It stops by itself at {t['seconds']} s;"
+                   f" Stop purge, Stop, Abort and Hold end it at once.",
+                   action="purge", outcome="timed_start", who=h["who"],
+                   screen=device)
+        why = self.timed_send(now)
+        if why:
+            return 409, {"error": f"The timed purge ended at once: {why}",
+                         "cut": True, "ended": True}
+        if self._threaded:
+            threading.Thread(target=self._timed_loop, args=(f,), daemon=True,
+                             name="ltcplay-timed-purge").start()
+        out = self.timed_view(h["owner"])
+        out.update(ok=True, started=True, seconds=t["seconds"],
+                   text=f"Timed purge started: {', '.join(t['machines'])} "
+                        f"for {t['seconds']} s. It stops by itself; Stop "
+                        f"purge ends it now.")
+        return 200, out
+
+    def _timed_end_reason(self, f, now):
+        """Why a running timed purge must end now, or "": its time up,
+        every rule a momentary purge has (a show live, an Abort, flamesafe
+        stale, a lock problem, another page holding the frame), the flame
+        link zeroed (Stop, Hold, Abort), the engine's checks (a Hold, Run,
+        the flame link not sending, the starter signed out), the selection
+        gone, a selected machine locked, a selected group no longer armed."""
+        t = f["timed"]
+        if now - f["beat"] > BEAT_STALE_S:
+            # The engine stalled (a pause, a hung thread): the flame link
+            # has dropped the frame and flamesafe has zeroed. It never
+            # comes back by itself, as a momentary press never does
+            # (review of #172, B1).
+            return (f"the engine's timer stalled (nothing sent for "
+                    f"{now - f['beat']:.2f} s)")
+        if now >= t["deadline"]:
+            return f"its {t['seconds']} s were up"
+        why = self._refusal(f["device"], True)
+        if why:
+            return why
+        if self._gen(self._link()) != t["gen"]:
+            return "the flame link was zeroed (Stop, Hold, Abort or a disarm)"
+        why = self._timed_engine(t)
+        if why:
+            return why
+        cfg = self._cfg()
+        with self._lock:
+            sel = list(self.selected)
+        if not sel:
+            return "the purge selection was cleared"
+        for mid in sel:
+            if self._lockout.is_locked("machine", mid):
+                m = cfg.by_id.get(mid)
+                return f"{m.name if m else mid} was locked out"
+        armed = self._armed_groups()
+        gone = [g for g in t["groups"] if g not in armed]
+        if gone:
+            return (f"flamesafe no longer reports {', '.join(gone)} armed (a "
+                    f"disarm, or flamesafe holding it)")
+        return ""
+
+    def timed_send(self, now=None):
+        """One send of a running timed purge (the timer, every TIMED_SEND_S):
+        every ending cause and the deadline checked first, then the frame
+        set on the flame link, then the zero count checked again. "" or why
+        it ended."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            f = self.fire
+            t = f.get("timed") if f is not None else None
+        if t is None:
+            return "no timed purge is running"
+        why = self._timed_end_reason(f, now)
+        if why:
+            with self._lock:
+                same = self.fire is f
+            if same:
+                self.stop(why)
+            return why
+        vals, firing, waiting = self.frame(now)
+        link = self._link()
+        with self._lock:
+            if self.fire is not f:
+                # A stop that landed while the frame was worked out wins.
+                return "it was stopped"
+            # A fresh reading, taken here: the reads above can take long
+            # (a pause inside this send), and the gap since the last send
+            # is judged on it, never on `now` (re-review of #172, B1).
+            fresh = self._clock()
+            if fresh >= t["deadline"]:
+                lost = f"its {t['seconds']} s were up"
+            elif fresh - f["beat"] > BEAT_STALE_S:
+                lost = (f"the engine's timer stalled (nothing sent for "
+                        f"{fresh - f['beat']:.2f} s)")
+            elif link.purge_set(vals, gen=t["gen"]) is not True:
+                # The link refused it: zeroed since (its count, checked
+                # under its own lock), or past its hard end or its own
+                # drop of a stale frame.
+                lost = ("the flame link did not take the frame (zeroed, "
+                        "dropped or past its hard end)")
+            else:
+                f["beat"] = fresh
+                t["firing"], t["waiting"] = firing, waiting
+                lost = "" if self._gen(link) == t["gen"] else \
+                    "the flame link was zeroed (Stop, Hold, Abort or a disarm)"
+        if lost:
+            self.stop(lost)
+        return lost
+
+    def _timed_loop(self, f):
+        """The engine's timer for one timed purge. If it dies, the flame
+        link drops the frame PURGE_HOLD_S after its last send and the
+        watcher ends the purge (tick)."""
+        wait = threading.Event()
+        try:
+            while self.fire is f:
+                if self.timed_send():
+                    return
+                wait.wait(TIMED_SEND_S)
+        except Exception as e:                           # noqa: BLE001
+            try:
+                self.stop(f"the timed purge's timer raised "
+                          f"{type(e).__name__}")
+            except Exception:                            # noqa: BLE001
+                pass
+
+    def timed_end(self, why, device=None, token=None, group=None):
+        """End a running timed purge now (a Hold, Start now, Run, a
+        disarm, a sign-out...). With `token`, only one its starter's
+        sign-in started; with `group`, only one that fires that group.
+        True when one ended."""
+        with self._lock:
+            f = self.fire
+            t = f.get("timed") if f is not None else None
+        if t is None:
+            return False
+        if token is not None and t["token"] != token:
+            return False
+        if group is not None and group not in t["groups"]:
+            return False
+        return self.stop(why, device=device)
+
+    def timed_view(self, owner=None):
+        """The countdown, on the engine's own clock, and any start hold."""
+        now = self._clock()
+        with self._lock:
+            f = self.fire
+            t = f.get("timed") if f is not None else None
+            h = self.timed_hold
+            out = {"running": t is not None,
+                   "left_s": round(max(0.0, t["deadline"] - now), 1)
+                   if t is not None else None,
+                   "seconds": t["seconds"] if t is not None else None,
+                   "elapsed_s": round(now - f["start"], 1)
+                   if t is not None else None,
+                   "machines": list(t["machines"]) if t is not None else [],
+                   "firing": list(t["firing"]) if t is not None else [],
+                   "waiting": list(t["waiting"]) if t is not None else [],
+                   "device": f["device"] if t is not None else None,
+                   "who": t["who"] if t is not None else "",
+                   "holding": h is not None,
+                   "holder": h["owner"][0] if h is not None else None,
+                   "mine": h is not None and owner is not None and
+                   h["owner"] == owner,
+                   "held_s": round(now - h["start"], 2)
+                   if h is not None else None,
+                   "hold_s": TIMED_HOLD_S, "last": self.timed_last}
+        return out
 
 
 # ------------------------------------------------------------- the facade --
@@ -1561,11 +2166,21 @@ class Morning:
         # it has a channel on, and an Abort cuts it too.
         self.purge_blocker = lambda: ""
         self.abort_hooks = []
+        # The timed purge's engine checks (remote.Remote.timed_purge_blockers:
+        # a Hold, Run, the flame link not sending, the starter signed out),
+        # set where the engine is built. None: no timed purge starts.
+        self.timed_blockers = None
         self.purge = Purge(lambda: self.cfg, self.lockout, link_get,
                            flames_get, self._live_or_broken, self._group_names,
                            journal=journal, clock=clock,
                            locks_ok=self._locks_confirmed,
-                           other=lambda: self.purge_blocker())
+                           other=lambda: self.purge_blocker(),
+                           timed_checks=lambda t: (
+                               self.timed_blockers(t)
+                               if self.timed_blockers is not None else
+                               "the engine's checks for a timed purge are "
+                               "not connected in this engine."),
+                           threaded=threaded)
         self._fs_lock_said = False   # the "flamesafe has no lockout_file" line
         self.lasers = lasertest.LaserTests(
             self.cfg.lasers, locked=lambda lid: self.lockout.is_locked(
@@ -1886,6 +2501,9 @@ class Morning:
         lockout, a stop and a clear."""
         if name == "purge-fire":
             return self.fire_arrange_refusal()
+        if name == "purge-timed" and body.get("hold") is True:
+            # The timed purge's start hold: the same as any fire.
+            return self.fire_arrange_refusal()
         off = body.get("on") is False
         gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \
             or (name in ("purge-select", "laser-test") and not off) \
@@ -2071,7 +2689,10 @@ class Morning:
 
     # -- what deck-input and status carry -----------------------------------
     def deck_view(self):
-        open_ = self.page_open()
+        # A timed purge keeps the page "open" for the deck until it ends:
+        # its groups stay wanted (it ends on its own clock, page or not),
+        # and key 0 says PURGING with the seconds left.
+        open_ = self.page_open() or self.purge.timed_running()
         names = list(self._group_names() or [])
         fully = []
         for i, n in enumerate(names):
@@ -2086,13 +2707,17 @@ class Morning:
         never = [i for i, n in enumerate(names)
                  if n in self.cfg.fireball_groups or
                  n in self.cfg.unknown_groups]
-        return {"open": open_,
+        tv = self.purge.timed_view()
+        view = {"open": open_,
                 "purge": {"wanted_groups": pv["groups_wanted"] if open_
                           else [], "selected": len(pv["selected"]),
                           "firing": pv["firing"], "never_groups": never},
                 "locks": {"groups_fully_locked": fully,
                           "machines": len(self.lockout.machines),
                           "lasers": len(self.lockout.lasers)}}
+        # The timed purge's seconds left, for the deck's key 0 (PURGING).
+        view["purge"]["timed_left_s"] = tv["left_s"]
+        return view
 
     def status_view(self):
         """The compact part every screen shows: the lock banner and whether
@@ -2113,9 +2738,19 @@ class Morning:
                 "flamesafe_extra": self._flamesafe_extra(),
                 "purge": self.purge.view()["firing"] or bool(
                     self.purge.selected),
+                # The timed purge's countdown, from the engine's clock:
+                # every screen's banner and its Stop purge.
+                "timed": self._timed_status(),
                 "laser_tests_on": sorted(self.lasers.on),
                 "laser_arm": self.laser_arm.status_view(),
                 "open": self.page_open(), "config_error": self.config_error}
+
+    def _timed_status(self):
+        tv = self.purge.timed_view()
+        if not tv["running"]:
+            return None
+        return {k: tv[k] for k in ("left_s", "seconds", "elapsed_s",
+                                   "machines", "device", "who")}
 
     def unlock_refusal(self, uid):
         """Why machine `uid` may not be unlocked now, in a sentence, or "":
@@ -2146,6 +2781,7 @@ class Morning:
         v["layout_saved"] = saved
         v["lockout"] = self.lockout.view(self.cfg)
         v["purge_state"] = self.purge.view()
+        v["timed"] = self.purge.timed_view()
         v["group_state"] = self.purge.group_view(self.cfg.banks)
         v["lasers"] = self.lasers.view()
         v["laser_arm"] = self.laser_arm.view()
@@ -2157,7 +2793,9 @@ class Morning:
         v["me"] = ctx_device
         return v
 
-    def post(self, name, body, device, who, screen, seen_ok, local):
+    def post(self, name, body, device, who, screen, seen_ok, local,
+             owner=None, token="", max_s=TIMED_MAX_DEFAULT_S,
+             end_only=False):
         """(code, body) for the page's POST routes. `screen` is the surface
         the engine gave the press (Rack screen, iPad at ..., or "Stream
         Deck" for the deck process over loopback, which the purge fire
@@ -2200,13 +2838,22 @@ class Morning:
                     self.cfg.banks else "")
             return self.purge.select(str(body.get("machine")), on, device,
                                      seen_ok)
+        if name == "purge-timed":
+            # The timed purge's start hold (Purge.timed_beat): the screen
+            # and window it comes from, the request's sign-in, and this
+            # show machine's longest (purge_timed_max_s).
+            return self.purge.timed_beat(body, owner or (device, ""),
+                                         seen_ok, who=who, screen=screen,
+                                         token=token, max_s=max_s,
+                                         end_only=end_only)
         if name == "purge-fire":
             # The deck process names itself in `screen` (streamdeck.PurgeFire
             # sends screen "Stream Deck" and the operator's name in `who`),
             # and only over loopback (review of PR #68, P1-2).
             deck = local and screen == "Stream Deck"
             return self.purge.fire_beat(body, device if not deck else
-                                        "Stream Deck", seen_ok, deck=deck)
+                                        "Stream Deck", seen_ok, deck=deck,
+                                        end_only=end_only)
         if name in ("purge-stop", "purge-clear"):
             # Only the owner's device, or the show machine itself, ends the
             # owner's purge (review of PR #68, P2-11): another device's page
@@ -2214,7 +2861,8 @@ class Morning:
             # stays the one path everyone has.
             pv = self.purge.view()
             mine = local or device == pv["owner"] or \
-                (name == "purge-stop" and device == pv["fire_device"])
+                (name == "purge-stop" and device == pv["fire_device"]) or \
+                (name == "purge-stop" and self.purge.timed_running())
             if not mine and (pv["selected"] or pv["firing"]):
                 return 409, {"error": f"{pv['owner']} has the purge "
                                       f"selection; only that device or the "
@@ -2222,6 +2870,12 @@ class Morning:
                                       f"{'stop' if name == 'purge-stop' else 'clear'} "
                                       f"it (or Abort)."}
             if name == "purge-stop":
+                if self.purge.timed_running():
+                    # The same Stop purge for both kinds (Jeff, 2026-10-29).
+                    self.purge.stop(f"{who or 'someone'} pressed Stop purge "
+                                    f"on the {device}", device=device)
+                    return 200, {"ok": True, "text": "Timed purge stopped: "
+                                 "everything it fired is back to zero."}
                 self.purge.stop(f"{device} let go", device=device)
                 return 200, {"ok": True}
             self.purge.clear(f"{device} cleared the selection")

@@ -820,6 +820,11 @@ function isRehearsal(st){ return modeLook(st).cls === "prog"; }
 // live flame programming. Each button is 1.0's press.
 function pinItems(st){
   const s = st || {}, out = [];
+  // A timed purge (Jeff, 2026-10-29): it fires until the engine's own
+  // countdown ends it; the seconds left are the engine's.
+  const tp = s.morning && s.morning.timed;
+  if(tp) out.push({key:"tp", text:"Purging: " + timedLeft(tp.left_s) + " left. Stop when done.", pill:"PURGING " + timedLeft(tp.left_s),
+    btn:"Stop purge", full:"Timed purge: " + timedBanner(tp)});
   const wc = s.cleaning;
   if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
     pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
@@ -1134,7 +1139,12 @@ function renderPins(){
 $("pins").addEventListener("click", async e => {
   const b = e.target.closest("button[data-pin]"); if(!b) return;
   const k = b.dataset.pin;
-  if(k === "wc"){
+  if(k === "tp"){
+    // 1.0's Stop purge: from every screen, never refused for a timed
+    // purge (review of #172).
+    try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
+    catch(e2){ say("Purge NOT stopped.", e2.message + " Abort ends it from any screen.", "bad"); }
+  } else if(k === "wc"){
     // 1.0's wcStopPress: the cleaning's Stop, always pressable.
     try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Cleaning NOT stopped.", e2.message, "bad"); disarmFailed("Cleaning NOT stopped.", e2.message); }
