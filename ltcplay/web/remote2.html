@@ -134,6 +134,14 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 .b.amber{background:var(--amber);border-color:#FFD08A;color:var(--amber-ink)}
 .b.red{background:var(--red);border-color:var(--red-hi);color:#fff}
 .b.redline{background:#200806;border-color:var(--red);color:#FFD2CC}
+/* Stop show (#b-stop, #m-stop; Jeff, 2026-10-30): always solid red at
+   full contrast, and there only while there is something to stop
+   (stopShows): otherwise its place stays empty, so nothing else moves
+   into it. The first tap of its double tap pulses until the second. */
+.b.nostop{visibility:hidden}
+.b.red.tap1{outline:3px solid #fff;outline-offset:-4px;animation:stoptap2 .5s steps(1,end) infinite}
+@keyframes stoptap2{50%{background:var(--red-hi)}}
+@media (prefers-reduced-motion:reduce){.b.red.tap1{animation:none}}
 .b.blue{background:#0d2742;border-color:var(--blue);color:#E3F1FF}
 .b.safe{background:#2b2723;border-color:#8b8170;color:var(--cream)}
 .b.hold{border-style:solid;border-width:3px}
@@ -543,7 +551,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
     <button data-safe class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-    <button data-safe class="b red" id="m-stop"><svg class="i"><use href="#i-stop"/></svg>Stop show</button>
+    <button data-safe class="b red nostop" id="m-stop"><svg class="i"><use href="#i-stop"/></svg><span id="m-stop-l">Stop show</span></button>
     <button data-safe class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
     <button data-safe class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
     <button data-safe class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
@@ -561,7 +569,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="tr">
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-      <button data-safe class="b redline" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
+      <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
+      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span>Run off</span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -1041,6 +1050,9 @@ function goLook(st, isStaleNow, local, waiting){
   const fresh = !isStaleNow;
   let L;
   if(sch.attached && sch.aborted) L = {mode:"reset", label:"Reset", icon:"reset", tone:"amber", off:!fresh, why:fresh ? "Clears the Abort" : "No contact"};
+  // A Stop's Hold (Jeff, 2026-10-30): it stands until Resume, also when
+  // nothing is held right now (the night closing, over, or without shows).
+  else if(sch.stop_held && !isLive(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Held after Stop" : "No contact"};
   else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};
   else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:"Hold pauses it"};
   // A rehearsal: the scheduler starts nothing, so nothing to start here.
@@ -1073,6 +1085,7 @@ function nextStep(st, isStaleNow, local, items){
   if(bad.some(i => i.key === "dis-fail")) return {tone:"bad", icon:"warn", text:"Disarm NOT done. Use Deck or e-stop."};
   const pins = pinItems(st);
   if(pins.length) return {tone:"bad", icon:"flame", text: pins.length > 1 ? pins.length + " live modes on. Stop when done." : pins[0].text};
+  if(sch.stop_held && !isLive(st)) return {tone:"warn", icon:"pause", text:"Held after Stop: press Resume."};
   const pch = prerollChoice(st.preroll, sch);
   if(pch && pch.cleared) return {tone:"warn", icon:"check", text:String((st.preroll.cleared || {}).say || "Rig check passed. Press Resume.")};
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
@@ -1314,10 +1327,10 @@ function renderMini(isSt){
   $("m-snd").hidden = !L.show;
   $("m-snd").disabled = L.stopOff || ANN_BUSY || !!annStopWhy(ST, !!(ME && ME.local));
   $("m-disl").hidden = !$("lz");
-  $("m-stop").disabled = HALT_BUSY;
+  drawStop($("m-stop"), $("m-stop-l"), isSt);
 }
 $("m-hold").addEventListener("click", () => press("hold"));
-$("m-stop").addEventListener("click", () => pressStop());
+$("m-stop").addEventListener("click", e => stopTap2("m-stop", e));
 $("m-disf").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
 $("m-disl").addEventListener("click", () => lzDisarmAll());
 $("m-snd").addEventListener("click", () => annPress("announce-stop"));
@@ -1493,12 +1506,61 @@ function drawTransport(isSt){
   const live = isLive(ST);
   $("b-hold").className = "b " + (live || runIsOn(ST) ? "amber" : "safe");
   $("b-hold").disabled = false;
-  // Stop: never held back (one Stop at a time). Red while something runs.
-  const st = $("b-stop");
-  st.className = "b " + (live || runIsOn(ST) ? "red" : "redline");
-  setText($("stop-l"), HALT_BUSY ? "Stopping" : "Stop show");
-  st.disabled = HALT_BUSY;
+  drawStop($("b-stop"), $("stop-l"), isSt);
+  const ro = $("b-runoff"), roOn = runOffShown(isSt);
+  if(ro.hidden !== !roOn) ro.hidden = !roOn;
+  if(roOn) $("b-stop").hidden = true;
+  else if($("b-stop").hidden) $("b-stop").hidden = false;
+  ro.disabled = !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS;
 }
+// Stop show (Jeff, 2026-10-30): where Stop has always been (the SHOW tab's
+// transport, and the safety strip on every other tab), solid red and full
+// contrast, never held back but one Stop at a time, and there only while
+// there is something to stop (stopShows, 1.0's rule), its own press is
+// under way, or the page has no contact (what is playing is then not
+// known, so Stop is there). No confirm box: a double tap, 1.0's
+// stopTapStep.
+const STOP_TAPS2 = {};
+function drawStop(b, l, isSt){
+  if(!b) return;
+  const id = b.id, can = stopShows(ST) || !!isSt;
+  const on = HALT_BUSY || !!STOP_TAPS2[id] || can;
+  if(!can && STOP_TAPS2[id] && !HALT_BUSY){ stopTapDone2(id); return; }
+  b.classList.toggle("nostop", !on);
+  b.classList.toggle("tap1", !!STOP_TAPS2[id]);
+  b.setAttribute("aria-hidden", on ? "false" : "true");
+  b.tabIndex = on ? 0 : -1;
+  setText(l, HALT_BUSY ? "Stopping" : STOP_TAPS2[id] ? "Tap again" : "Stop show");
+  b.title = STOP_TITLE;
+  b.disabled = HALT_BUSY || !on;
+}
+function stopTapDone2(id){
+  const t = STOP_TAPS2[id];
+  if(t) clearTimeout(t.timer);
+  delete STOP_TAPS2[id];
+  const b = $(id);
+  if(b) b.classList.remove("tap1");
+  try{ drawTransport(stale()); renderMini(stale()); }catch(e){}
+}
+function stopTap2(id, e){
+  const kind = stopTapKind(e);
+  if(kind !== "key") $(id).blur();
+  const t = STOP_TAPS2[id];
+  // The time between the taps decides, never whether the first tap's
+  // timer has run yet: a late timer must not let a tap after STOP_TAP_MS
+  // fire (cold review of #191).
+  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, false);
+  if(!step.fire){
+    if(t) clearTimeout(t.timer);
+    STOP_TAPS2[id] = {prev:step.next, timer:setTimeout(() => stopTapDone2(id), STOP_TAP_MS)};
+    say("Tap Stop again to stop.", "Tap Stop show again to stop everything and hold the schedule.", "warn");
+    try{ drawTransport(stale()); renderMini(stale()); }catch(e1){}
+    return;
+  }
+  stopTapDone2(id);
+  return pressStop();
+}
+["b-stop", "m-stop"].forEach(id => $(id).addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); }));
 $("b-go").addEventListener("pointerdown", () => { DOWN_MODE.go = $("b-go").dataset.mode; });
 $("b-go").addEventListener("keydown", e => { if(!e.repeat && (e.key === "Enter" || e.key === " ")) DOWN_MODE.go = $("b-go").dataset.mode; });
 // What the press means: decided from the mode seen at touch-down (1.0's
@@ -1547,24 +1609,27 @@ async function runShow(){
   catch(e){ say("Run was refused.", e.message, "bad"); }
 }
 $("b-hold").addEventListener("click", () => press("hold"));
-// Stop: the engine's complete halt (1.0's pressStop): the confirm, the same
-// body, the same answer read the same way.
-async function pressStop(){
-  if(!(await confirmBox("Stop the show?", "Flames and lasers disarm. Rig goes dark.", "Yes, stop", "red", false, true))) return;
+// Stop: the engine's complete halt (1.0's pressStop): the same body, the
+// same answer read the same way. No confirm: the double tap is its guard.
+async function pressStop(route){
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
   try{ drawTransport(false); }catch(e){}
   let r = null, j = {};
   try{
-    r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
+    const opts = {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))};
+    r = route === "run-off" ? await fetch("/api/remote/run-off", opts)
+                            : await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
       headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
     j = await r.json().catch(() => ({}));
-    if(r.ok || (j && j.failed)){
+    if(r.ok && route === "run-off" && !(j.failed || []).length) say("Run is off.", stopWords(j), "ok");
+    else if(r.ok || (j && j.failed)){
       const w = stopWords(j);
       if(w === STOP_DISARM_FAILED){ STOP_SAID = w; say("Flame disarm FAILED. Use the e-stop.", w, "bad"); }
       else if(/did NOT work/.test(w)) say("Stopped, but some parts failed.", w, "bad");
-      else say("Stopped. Press Run show next.", w, "ok");
+      else say(j && j.hold && j.hold.ok ? "Stopped and on Hold. Resume when safe." : "Stopped.", w, "ok");
     } else say("Stop was refused. Press Abort.", "Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Press Abort to stop the show anyway.", "bad");
   }catch(e){
     say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or Abort.", "bad");
@@ -1574,7 +1639,20 @@ async function pressStop(){
     try{ drawTransport(false); }catch(e){}
   }
 }
-$("b-stop").addEventListener("click", () => pressStop());
+$("b-stop").addEventListener("click", e => stopTap2("b-stop", e));
+// Run off (cold review of #191, B1): Stop leaves Run on, so this ends a
+// Run. In Stop's place on the SHOW tab, whenever Run is on and nothing is
+// playing (stopShows), full colour: with nothing playing it is the only
+// way to end the Run. Not an emergency control, so it asks first, and the
+// engine needs the Show permission for it (it says so if it is missing).
+function runOffShown(isSt){
+  return !HALT_BUSY && !isSt && runIsOn(ST) && !stopShows(ST) && !STOP_TAPS2["b-stop"];
+}
+$("b-runoff").addEventListener("click", async () => {
+  if(!(await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", "red"))) return;
+  if(!runOffShown(stale())){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
+  return pressStop("run-off");
+});
 // A press: 1.0's press(), the answer in a few words.
 const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "reset":"Reset. Now arm again.", "start-now":"Starting.",
   "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed.", "abort":"Abort sent."};
@@ -2536,7 +2614,7 @@ const QHELP = {
   next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame or Programming flames."]]],
   transport: ["Show controls", [["Run show", "Turns tonight's show on. Shows start on time."], ["Start now", "Starts the next show early."],
     ["Resume", "Carries on after a Hold."], ["Reset", "Clears an Abort. Then arm again."],
-    ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Ends everything. Rig goes dark."],
+    ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Tap twice. Ends everything and holds the schedule. Resume when safe."],
     ["ABORT", "Emergency stop. Tap twice. Then Reset."]]],
   alert: ["Alerts", [["The box", "What is wrong, and what to do."], ["Details", "The full message from the show PC."],
     ["Acknowledge", "Clears the alert. Changes nothing on the rig."], ["Arrows", "The other alerts."],
@@ -2573,7 +2651,8 @@ const COACH = [
   ["pill", "Show state, timecode and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
-  ["b-stop", "Stop ends everything. The rig goes dark."],
+  ["b-runoff", "Run off: ends the Run (Stop leaves Run on). Asks first."],
+  ["b-stop", "Stop: tap twice. Ends everything, the rig goes dark, and the schedule holds until Resume. Only there while something plays."],
   ["alert", "Problems show here. Fix, then Acknowledge."],
   ["groups", "Hold to arm. One tap disarms."],
   ["b-abort", "ABORT: tap twice. Emergency stop."]];

@@ -372,23 +372,24 @@ Run has been pressed and playback is going it reads STOP RUN: hold it for
 half a second to Stop. Stop first turns every flame group off, at once,
 then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
-(the flame half of an Abort, so each group needs a fresh arm), playback
-stops, the outputs go dark, and no show starts until Run is pressed again.
-The deck's Stop is a complete halt: every laser is disarmed too.
-Unlike Abort it does not latch the rig: nothing needs a Reset. A tap does
-nothing; let go before the ring fills and nothing is sent.
+(the flame half of an Abort, so each group needs a fresh arm), the
+outputs go dark, and the schedule goes on Hold: no show starts until
+Resume (Jeff, 2026-10-30). Run stays on, so the key keeps reading STOP
+RUN after a Stop; that is expected. The deck's Stop is a complete halt:
+every laser is disarmed too. Unlike Abort it does not latch the rig:
+nothing needs a Reset. A tap does nothing; let go before the ring fills
+and nothing is sent.
 
 **Stop during a scheduled show** (Jeff, 2026-10-26). The key keeps saying
 NOW PLAYING, PAUSED or AUDIO LOST, but holding it half a second still
 stops everything: every flame group and laser is disarmed, the show ends
 (faded to dark as an Abort is, but with no latch and no Reset needed),
-playback stops, and no show starts until Run is pressed again. Stopping
-the last show of the night closes the night a moment later, as an Abort
-does. Because Run is no longer pressed, each later show that night raises
-a "The show did not start" alert when its time comes, until the last
-show's time has passed or Run is pressed again: acknowledge each one. To
-disarm just one group during a show, tap its key on the deck, or use the
-Rack screen.
+and the schedule goes on Hold, so no later show starts until Resume. Run
+stays on (Jeff, 2026-10-30). A show whose time comes during the Hold
+waits as a delayed show for Start now. Stopping the last show of the
+night closes the night a moment later, as an Abort does. To disarm just
+one group during a show, tap its key on the deck, or use the Rack
+screen.
 
 **If the deck cannot read the show computer** (it is down, or still
 starting), the key reads STOP ALL, and the same half second hold still
@@ -870,9 +871,11 @@ he triggers it."
   greyed. The row is there only when `flamesafe.json` lists a pump.
   When On cannot be pressed, the line under the row says why in full.
   Interface 1.0 and the Stream Deck have no pump control. Every Abort
-  turns the pump off, and so does every Stop that is carried out (the
-  Stream Deck's Stop always is); a Stop that is refused, such as 1.0's
-  plain Stop during a live show, leaves the pump as it was.
+  and every Stop that is carried out turns the pump off (a screen's
+  double tap Stop and the Stream Deck's Stop always are); a Hold never
+  does, and neither does a Stop's Hold standing on later nights. A Stop
+  that is refused, such as the old page's plain Stop during a live show,
+  leaves the pump as it was.
 - **Run time.** The default is **5:00**: unless you set another time
   before you turn it on, the pump runs 5 minutes and turns off by itself.
   To run it longer or shorter, set the time first, in minutes and
@@ -1056,7 +1059,20 @@ FSEQ:
 Jeff, 2026-10-30: "If air and fuel were pressurized, but there was no
 shot, the stop button doesn't depressurize that. ... Do not under any
 circumstances double charge the air or fuel." LTC Player keeps a record
-of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
+of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN, and
+for the record as a whole a mark, PENDING.
+
+- **PENDING (write first, then charge).** Before any automatic charge
+  goes out (a timeline's Fuel or Air stage, or an FSEQ's Fuel or Air
+  Charge), LTC Player writes "an automatic charge may be going out" to
+  the record and waits until it is on disk. That is one write, at the
+  first charge of a show, a few milliseconds. If it cannot be written,
+  the automatic charge is **not sent** and the screens say "the charge
+  record cannot be saved: automatic charging is off". If LTC Player
+  stops with PENDING on the record, an EMPTY tank reads NOT KNOWN at the
+  next start. A shot, a Purge or Tanks are empty clears it. A Fuel or
+  Air press on the Fireball page also writes PENDING, but is never held
+  back by it: a press always goes out.
 
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
@@ -1083,7 +1099,11 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
     known (flamesafe down or not reporting): the tank may really be empty,
     but nothing proves it;
   - no record could be written in the settings folder at the very first
-    start.
+    start;
+  - LTC Player stopped with PENDING on the record;
+  - the record and a copy left by a write that did not finish disagree,
+    or only that copy was found, or the record could not be read;
+  - flamesafe's fireball group was found on other channels than 55 to 59.
 
   A shot or a purge seen for certain makes it EMPTY again. While a tank
   is CHARGED or NOT KNOWN, nothing charges it automatically.
@@ -1108,33 +1128,96 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   memory, written again every second until it is, and the screens show
   the fault meanwhile: do not restart LTC Player until it clears. (If it
   is restarted anyway, the newest record the write left behind is the one
-  read, by its revision number, which only ever goes up; if that cannot
-  be read, both tanks are NOT KNOWN.) If flamesafe's fireball group is on
-  other channels than 55 to 59, the record watches nothing until it is,
-  and the screens say so. Every screen's status carries it as one
+  read, by its revision number, which is taken from the clock (in
+  milliseconds) and only ever goes up, so a later record always ranks
+  above an earlier one. A clock set back can only cost an extra NOT
+  KNOWN, never a wrong EMPTY. If that copy cannot be read, both tanks are
+  NOT KNOWN.) If flamesafe's fireball group is on other channels than 55
+  to 59, both tanks become NOT KNOWN and are written so, and the screens
+  say why: a group put back on 55 to 59 never finds an old EMPTY. Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
 ## Stop, Hold and Reset on the rack screen
 
-Jeff, 2026-10-28. Each screen has one Stop, where the button that started
-things was:
+Jeff, 2026-10-28 and 2026-10-30. Each screen has one Stop, where Stop
+has always been, and it is there only while there is something for it to
+stop:
 
-- **Stop.** On the show screen, Start now turns into a red **Stop** while a
-  show is live (playing, or paused on Hold). On the Programming screen, Run
-  turns into **Stop** while Run is in force. Stop asks once, then does
-  exactly what the Stream Deck's Stop does, a complete halt: every flame
-  group and every laser is disarmed first, nothing is fired, a live show
-  ends and fades to dark, then playback stops, so Run is off. Nothing is
-  latched: no Reset is needed. Press Run to bring the rig back; each flame
-  group needs arming again. The line under the buttons says what happened
-  ("Stopped. The show ended and the rig is fading to dark...") or, if any
-  part did not work, which part, and what to press. If the engine refuses,
-  it says why in its own words. Stop works the same from the rack
-  screen, an iPad and the Stream Deck, signed in or not. Right after Stop
-  turns back into Start now (or Run) the button waits 2 seconds before it
-  takes a press, and a press made just as the show ended or started does
-  nothing and says so: a Stop never turns into a start.
+- **Stop.** On the show screen (1.0), Start now turns into a red **Stop**
+  while a show is live (playing, or paused on Hold), while the rig is
+  being checked before a show, while Start now waits for the show audio,
+  while Programming playback plays, and during a rehearsal Run (the
+  Programming mode) while its timecode is moving. On the Programming screen, Run
+  turns into **Stop** at those same times. In 2.0, **Stop show** sits in
+  the SHOW tab's controls and in the strip on every other tab, solid red,
+  and its place is empty when nothing is playing. With no contact with
+  the engine (what is playing is not known) Stop is always there.
+- **Stop is a double tap**, with no pop-up: the first tap only changes the
+  button (it pulses and reads Tap again) and sends nothing; a second tap
+  within 2 seconds, with the same finger, mouse or key, sends Stop. A lone
+  tap goes back by itself after 2 seconds. A held key never counts twice.
+- **What Stop does** (everything Abort does, and it latches nothing):
+  every flame group and every laser is disarmed first, the lasers are
+  blanked at once, the hazers go off, a timed purge, live flame
+  programming, the fireball, the cleaning and the laser tests end at
+  once, Programming playback stops, and a live show ends: video, pixels
+  and music fade to dark over 1 second and MadMapper stops. Nothing is
+  fired. Stop works the same from the rack screen, an iPad and the Stream
+  Deck (key 0, held half a second), signed in or not.
+- **Stop also holds, until Resume.** Every Stop puts on a Stop's Hold,
+  whatever was happening: during a show, between shows, on the night's
+  last show, while the night is closing, on a night with no shows. While
+  it stands no show starts by itself, tonight or on any later night, even
+  with Run on: the next night with shows comes up on Hold (Jeff,
+  2026-10-30). It is kept in `ltcplay_stop_hold.json` next to tonight's
+  file, so a restart keeps it too. If that file cannot be written, the
+  fault flag says so and it is tried again on every tick until it is; a
+  file that cannot be read counts as a Stop's Hold. When the Hold comes
+  back after a Start now's show, the look goes dark again (it never
+  comes back while an operator's Start now is starting its show; a Start
+  now pressed while the rig is still being taken dark waits up to 3 s for
+  it, and is refused with what to do if a device is slower than that). Every screen says **Held after Stop:
+  press Resume**. Only **Resume** ends it (pressed with nothing held, it
+  just releases it); **Reset does not** (it can still clear the fault
+  flag), and neither does Continue anyway. A show whose time comes during
+  the Hold waits as a delayed show for Start now. **Start now** still works
+  from it, as an explicit start with its rig check: it starts that one
+  show, and the Hold comes back when that show ends. Every Stop takes
+  whatever look is still up down to dark, whatever the schedule was
+  doing (a show, the idle or intermission look, on Hold, while closing);
+  the Hold is dark. Resume releases the Hold but does not bring a look
+  back: the rig stays dark until the next show starts. After a Stop on the
+  night's last show (or once nothing is left tonight) the night closes
+  as usual, fading to black, and the Stop's Hold waits for the next
+  night with shows. A second Stop disarms everything again and stays on
+  Hold. A Stop pressed the very moment a show comes due holds the
+  schedule before that show can start: it never starts the show and never
+  just pauses it, and while a Stop is under way the scheduler starts no
+  show. A show start already on its way when the Stop lands is refused,
+  and one whose music already began is stopped and faded again. While a
+  Stop is still disarming and fading to dark (until the show conductor
+  has taken it), Resume, Start now and Run are refused until it has
+  finished. The Stop's fade never waits on a file being written or on
+  the scheduler.
+- **Stop never turns Run off.** Run stays on: Hold (or a Stop's Hold) is
+  how the schedule is stopped. Each flame group needs arming again, and
+  the lasers can only be armed again after Resume. The line under the
+  buttons says what happened ("Stopped. The show ended and the rig is
+  fading to dark. ... The schedule is on Hold: no show starts until you
+  press Resume.") or, if any part did not work, which part, and what to
+  press. If the engine refuses, it says why in its own words.
+- **Run off** is on the Programming screen's Run button: with Run on and
+  nothing playing, the button reads Run off. In 2.0 it is in Stop's place
+  on the SHOW tab at those times, in full colour. It asks first, then does
+  a Stop and stops playback, so Run is off. Run off needs the Show
+  permission; Stop never does. Right after Stop turns back into Start
+  now, Run or Run off, the button waits 2 seconds before it takes a
+  press, and a press made just as the show ended or started does nothing
+  and says so: a Stop never turns into a start.
+- The Stream Deck starts every flame group's re-arm wait when it sees
+  flamesafe take a Stop's disarm from any screen, so a reflex press right
+  after a Stop does not quietly re-arm a group.
 - **Hold** pauses the show where it is (or, between shows, keeps the next
   show from starting). **Resume** carries on.
 - **Reset** works from Hold. With a show paused on Hold, Reset ends that
@@ -1147,7 +1230,8 @@ things was:
   alert is open at that time the schedule still holds for it.
   After an Abort, Reset ends the Abort as it always has; if the schedule is
   also on Hold, a second Reset ends the Hold.
-- **ABORT** keeps its own meaning: tap twice, the show stops, everything is
+- **ABORT** keeps its own meaning for now (it is being removed: Stop now
+  does everything it did): tap twice, the show stops, everything is
   disarmed, and the rig stays latched until Reset.
 
 **Reset says how the rig stands** (Jeff's field report, 2026-10-28). After
@@ -1219,7 +1303,7 @@ What each end leaves on the pixels:
 | The night's last scheduled show ends by itself | black (the closing) |
 | A Start now show ends by itself | the idle look, even with nothing else tonight |
 | Programming's Play reaches the end of the cue | the idle look |
-| Stop | black, and Run is off |
+| Stop | black, and the schedule on Hold (Run stays on) |
 | Abort during a show | black, latched until Reset; dark after Reset until a show starts |
 | Abort during Programming playback | the idle look; nothing latches |
 | A show that started and then failed | black |

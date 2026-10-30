@@ -10411,10 +10411,11 @@ def test_schedule_state_machine_every_state_every_event():
          {SH: (SB, STOPPED), P: (SB, STOPPED)}),
         # Stop during a show (the Stream Deck's Stop held; Jeff,
         # 2026-10-26): faded like an Abort, and the latch is the service's
-        # (only an Abort's conductor call sets it), never Stop's.
+        # (only an Abort's conductor call sets it), never Stop's. Stop
+        # also holds (Jeff, 2026-10-30): with a show still to come, HOLD.
         (E(S.STOP_SHOW, "operator"), {}),              # not confirmed
         (E(S.STOP_SHOW, "operator", confirmed=True),
-         {SH: (SB, STOPPED), P: (SB, STOPPED)}),
+         {SH: (H, STOPPED), P: (H, STOPPED)}),
         (E(S.END_NIGHT, "operator"), {}),              # not confirmed
         (E(S.END_NIGHT, "operator", confirmed=True),
          {k: (C, CLOSE) for k in (I, SB, H, HD, SD)}),
@@ -18475,6 +18476,7 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
           {n.lower() for n in U.RESERVED},
           f"every engine name is reserved: {sorted(A.ENGINE_NAMES)} "
           f"{U.RESERVED}")
+    # "Deck" too: the Stream Deck's own lines are written as it.
     for nm in ("Engine", "Scheduler", "LTC Player", "ltcplay", "System",
                "  ltc   player ", "Deck"):
         try:
@@ -35700,7 +35702,8 @@ def test_conductor_video_never_rises_after_abort_or_hold():
             "it where it is and fades down from there, never up to full "
             "first (review of PR #29, finding C)")
     C = _cond_mod()
-    for press in ("abort", "hold"):
+    # Stop too (Jeff, 2026-10-30: Stop has every guarantee Abort had).
+    for press in ("abort", "hold", "stop"):
         for delay in (0.03, 0.12, 0.2):
             c, rig, log, lines, link, bey = _rt_rig()
             rig.move_s = 0.3
@@ -40477,11 +40480,11 @@ def test_reset_from_hold_ends_it_and_starts_nothing():
         st, _h, out = R.ask("POST", "/api/remote/stop", {})
         R.settle()
         m = R.svc.machine
-        check(st in (200, 500) and m.state == S.STANDBY and
+        check(st in (200, 500) and m.state == S.HOLD and
               not m.running and not m.abort_latched and
               (out.get("show") or {}).get("ok") is True,
-              f"Stop from the iPad ends the show, nothing latched: {st} "
-              f"{out} {m.state}")
+              f"Stop from the iPad ends the show and holds the schedule, "
+              f"nothing latched: {st} {out} {m.state}")
         rows = [x for x in R.svc.journal if x.get("action") == "stop"]
         check(rows and "complete halt" in rows[-1]["text"] and
               rows[-1].get("screen") == "iPad",
@@ -40782,12 +40785,18 @@ _STOP_CLICK_JS = r"""<script>
   setTimeout(() => {
    const out = {mode:b.dataset.mode, label:b.querySelector(".lbl").textContent,
      disabled:b.disabled, off:b.classList.contains("signin-off")};
+   // Stop is a double tap (Jeff, 2026-10-30): the first tap sends
+   // nothing and opens no confirm box; the second, within 2 s, sends.
    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
    b.click();
    setTimeout(() => {
-    const y = document.getElementById("m-yes");
-    if(!document.getElementById("modal").hidden) y.click();
+    out.first_posts = window.__posts.slice();
+    out.first_label = b.querySelector(".lbl").textContent;
+    out.first_modal = !document.getElementById("modal").hidden;
+    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
+    b.click();
     setTimeout(() => {
+     out.modal = !document.getElementById("modal").hidden;
      out.posts = window.__posts.slice();
      out.said = document.getElementById("@MSG@").textContent;
      const pre = document.createElement("pre"); pre.id = "rack-measure";
@@ -40817,15 +40826,41 @@ def test_rack_screen_stop_in_place_of_start_now():
           "every refused press shows the engine's own words")
     for f in ("function startLook", "function runLook", "function stopWords",
               "function refusedWords", "function pressDecision",
-              "const STOP_CONFIRM"):
+              "const STOP_TITLE", "function stopShows",
+              "function stopTapStep", "function stopTapKind",
+              "const RUN_OFF_CONFIRM"):
         check(f in logic, f"{f} is pure page logic")
+    # Stop is a double tap with no confirm box (Jeff, 2026-10-30), with
+    # exactly the Abort sign's tap rule.
+    check(page.count("const step = stopTapStep(t ? t.prev : null, "
+                     "monoNow(), kind, false);") == 1,
+          "Stop's second tap is decided by the time between the taps, "
+          "never by whether the first tap's timer has run")
+    check("const STOP_CONFIRM" not in page and
+          'confirmBox("Stop the show?"' not in page,
+          "Stop asks nothing: no confirm box, no STOP_CONFIRM")
+    import re as _re
+    _ab = _re.search(r"function abortTapStep\(prev, nowMs, kind, enlarged\)"
+                     r"\{(.*?)\n\}", logic, _re.S)
+    _sp = _re.search(r"function stopTapStep\(prev, nowMs, kind, enlarged\)"
+                     r"\{(.*?)\n\}", logic, _re.S)
+    check(_ab is not None and _sp is not None and
+          _ab.group(1).replace("ABORT_TAP_MS", "T") ==
+          _sp.group(1).replace("STOP_TAP_MS", "T") and
+          "const STOP_TAP_MS = 2000;" in logic,
+          "Stop's double tap is the Abort sign's, renamed (2 s)")
     check('id="b-stoprun"' not in page and "b-stoprun" not in page,
           "the separate Stop beside Run is gone: Run becomes Stop")
     for need in ('fetch("/api/remote/stop", ',
+                 'fetch("/api/remote/run-off", ',
                  'const d = decide("b-start", lk.mode);',
-                 'if(d.act === "stop") return pressStop("ctl-msg");',
-                 'const d = decide("b-run", runLook(ST).mode);',
-                 'if(d.act === "stop") return pressStop("run-msg");',
+                 'if(d.act === "stop") return stopTap("b-start", ev, '
+                 '"ctl-msg");',
+                 'const d = decide("b-run", runLook(ST, nowStale()).mode);',
+                 'if(d.act === "stop") return stopTap("b-run", ev, '
+                 '"run-msg");',
+                 'return pressStop("run-msg", "run-off");',
+                 'confirmBox("Turn Run off?", RUN_OFF_CONFIRM',
                  'drawStart(stale);',
                  '"Yes, start now", "start", null, true)',
                  'el.addEventListener("pointerdown", () => '
@@ -40834,7 +40869,7 @@ def test_rack_screen_stop_in_place_of_start_now():
                  'flipLocked("b-start"))',
                  '"Stop was refused: " + refusedWords(j, '):
         check(need in page, f"the page has {need!r}")
-    _no_dashes(page[page.find("const STOP_CONFIRM"):
+    _no_dashes(page[page.find("const STOP_TITLE"):
                     page.find("function runLook")], "Stop's words")
     node = _sh.which("node")
     if node:
@@ -40856,13 +40891,42 @@ t(startLook({schedule:{attached:false}, show:{running:false, starting:true}}, fa
 const ld = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"the show audio is still loading", loading:true}}, show:{running:true}}, false, false);
 t(ld.label === "Start now" && ld.disabled === false && /starts when ready/.test(ld.sub) && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
 const wt = startLook({schedule:{attached:true, state:"STANDBY", start_waiting:true}, show:{running:true}}, false, false);
-t(wt.label === "Loading" && wt.disabled === true && /starting when ready/.test(wt.sub), "waiting: Loading, starting when ready: " + JSON.stringify(wt));
-t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading too");
+t(wt.mode === "stop" && wt.label === "Stop" && wt.disabled === false && /starting when ready/.test(wt.sub), "waiting for the audio: a show is about to play, so Stop, starting when ready: " + JSON.stringify(wt));
+t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
-t(runLook({show:{running:true}}).mode === "stop" && runLook({show:{running:false}}).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while Run is in force");
-t(runLook({show:{running:false, starting:true}}).mode === "stop", "and while Run is starting (F4)");
-t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true})), "Stop's answer: the show ended, Run is off");
+// Run becomes Stop while Run is in force and there is something to stop;
+// with nothing to stop it is Run off (Stop no longer turns Run off).
+const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
+t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while a show is live");
+t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Run off", "Run in force, nothing to stop: Run off");
+t(runLook(att("HOLD", {running:false, starting:true})).mode === "runoff", "Run starting with nothing to stop: Run off (F4 now)");
+t(runLook({schedule:{attached:false}, show:{running:true}}).mode === "stop" && runLook({schedule:{attached:false}, show:{running:false, starting:true}}).mode === "stop", "no scheduler: Run playing or starting is the show, so Stop");
+t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}})).mode === "stop", "Programming playback on: Stop");
+// Where Stop is drawn (Jeff, 2026-10-30: if nothing is playing there is no
+// Stop button).
+t(stopShows(att("SHOW", {})) && stopShows(att("PAUSED", {})), "a show live or paused: Stop");
+t(stopShows({schedule:{attached:true, state:"HOLD", lit:true}}) && !stopShows({schedule:{attached:true, state:"HOLD", lit:false}}), "the conductor has the rig up, whatever the scheduler says: Stop");
+// A rehearsal Run with its timecode moving is playing (cold review of
+// #191, B1); one whose timecode is not moving is not.
+t(stopShows(att("STANDBY", {running:true, state:"LOCKED"}, {transport:{programming:true}})) && stopShows(att("STANDBY", {running:true, state:"FREERUN"}, {transport:{programming:true}})), "a rehearsal Run with timecode moving: Stop");
+t(!stopShows(att("STANDBY", {running:true, state:"LOST"}, {transport:{programming:true}})) && !stopShows(att("STANDBY", {running:true, state:"STANDBY"}, {transport:{programming:true}})) && !stopShows(att("STANDBY", {running:true, state:"LOCKED"})), "no timecode moving, or not a rehearsal: no Stop");
+// The Run card with no contact is Stop, as Start now is (B2).
+t(runLook(att("STANDBY", {running:true}), true).mode === "stop" && runLook(att("STANDBY", {running:false}), true).mode === "stop" && runLook(att("STANDBY", {running:true}), false).mode === "runoff", "the Run card with no contact: Stop");
+t(!stopShows(att("IDLE", {running:true})) && !stopShows(att("STANDBY", {running:true})) && !stopShows(att("HOLD", {running:true})) && !stopShows(att("CLOSING", {})) && !stopShows(null), "nothing playing: no Stop");
+t(stopShows(att("STANDBY", {}, {preroll:{state:"checking"}})) && stopShows(att("STANDBY", {}, {preroll:{state:"queued"}})), "the rig check before a show: Stop");
+t(stopShows({schedule:{attached:true, state:"STANDBY", start_waiting:true}}), "Start now waiting for the audio: Stop");
+t(stopShows(att("STANDBY", {}, {transport:{programming:true, playhead:"show_audio", playing:true}})) && !stopShows(att("STANDBY", {}, {transport:{programming:true, playhead:"show_audio", playing:false}})), "Programming playback playing: Stop; stopped: none");
+t(startLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}}), false, false).mode === "stop", "Start now is Stop while Programming playback plays");
+// The double tap: Abort's rule.
+t(stopTapStep(null, 1000, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 2500, "touch", false).fire === true, "a second tap within 2 s fires");
+t(stopTapStep({at:1000, kind:"touch"}, 3500, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 3500, "touch", true).fire === true, "later only while still showing Tap again");
+t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
+t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind as the Abort sign reads it");
+t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, Run is off");
+const held = stopWords({stopped:true, run_on:true, show:{ok:true}, hold:{ok:true, text:""}, flames:{disarmed:true}});
+t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Run is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
+t(/Run is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says Run is still on");
 t(/did NOT work: show/.test(stopWords({stopped:true, failed:["show"], flames:{disarmed:true}})), "a failed step is named");
 t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:["playback stop"]})), "a failed playback stop is named");
 t(/^Stopped\. /.test(stopWords({stopped:false, failed:[]})), "nothing was playing: still Stopped, no false failure");
@@ -40950,8 +41014,12 @@ console.log(JSON.stringify(out));
     prog_st = json.loads(json.dumps(out_st))
     prog_st["schedule"] = dict(prog_st["schedule"], state="STANDBY",
                                running=None, held=False)
-    prog_st["show"] = {"running": False, "starting": True,
+    prog_st["show"] = {"running": True, "starting": False,
                        "timecode": None}
+    # Programming playback on the show audio: something for Stop to stop
+    # (Jeff, 2026-10-30), so the Run card's button is Stop.
+    prog_st["transport"] = {"programming": True, "playhead": "show_audio",
+                            "playing": True, "paused": False}
     for frag, status, bid, msg in (("", out_st, "b-start", "ctl-msg"),
                                    ("#programming", prog_st, "b-run",
                                     "run-msg")):
@@ -40966,10 +41034,14 @@ console.log(JSON.stringify(out));
                   not m["disabled"] and not m["off"],
                   f"signed out {frag or 'show screen'}: Stop is enabled, "
                   f"never locked for signing in: {m}")
-            check("/api/remote/stop" in m["posts"] and
+            check(m["first_posts"] == [] and not m["first_modal"] and
+                  m["first_label"] == "Tap again",
+                  f"signed out {frag or 'show screen'}: the first tap sends "
+                  f"nothing, asks nothing and reads Tap again: {m}")
+            check("/api/remote/stop" in m["posts"] and not m["modal"] and
                   m["said"].startswith("Stopped."),
-                  f"signed out {frag or 'show screen'}: pressing it posts "
-                  f"the complete halt and says Stopped: {m['posts']} "
+                  f"signed out {frag or 'show screen'}: the second tap "
+                  f"posts the complete halt and says Stopped: {m['posts']} "
                   f"{m['said']!r}")
     # Loading: the Start now button says so before the show.
     st2 = _rack_status_pico()
@@ -40983,7 +41055,8 @@ console.log(JSON.stringify(out));
     m = got[(1366, 544)]
     if check(isinstance(m, dict), f"loading: drawn: {m!r}"):
         check(m["label"] == "Start now" and
-              "starts when ready" in m["small"] and m["runLabel"] == "Stop",
+              "starts when ready" in m["small"] and
+              m["runLabel"] == "Run off" and m["runMode"] == "runoff",
               f"loading: Start now works, and says it starts when the audio "
               f"is ready: {m}")
     print("  ok")
@@ -58275,17 +58348,24 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         R.svc.operator_press = lambda what, *a, **kw: (
             presses.append((what, R.svc.machine.state)),
             order.append("show"), real_press(what, *a, **kw))[2]
+        # The halt's scheduler step is one locked step (cold review of
+        # #191, A-F1): halt_schedule, which ends a live show with STOP_SHOW.
+        real_hs = R.svc.halt_schedule
+        R.svc.halt_schedule = lambda *a, **kw: (
+            presses.append(("halt_schedule", R.svc.machine.state)),
+            order.append("show"), real_hs(*a, **kw))[2]
         real_stop = R.httpd.control.stop
         R.httpd.control.stop = lambda: (order.append("stop"),
                                         real_stop())[1]
-        # The conductor's own show_stopped (dark, no latch) must be asked,
-        # and its fade begun, BEFORE playback stops (review of #130, 5).
-        # A slow conductor (0.3 s to take the request): the halt still
-        # waits for it, so playback never stops first.
-        real_ss = R.c.show_stopped
-        R.c.show_stopped = lambda *a, **kw: (time.sleep(0.3),
-                                             order.append("show_stopped"),
-                                             real_ss(*a, **kw))[2]
+        # The conductor's own Stop (Abort's sequence, no latch; Jeff,
+        # 2026-10-30) must be asked, and its fade begun, before the halt
+        # answers (review of #130, 5). A slow conductor (0.3 s to take the
+        # request): the halt still waits for it. Playback is never stopped
+        # by a Stop now: Run stays on (Jeff, 2026-10-30).
+        real_ss = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.3),
+                                     order.append("conductor_stop"),
+                                     real_ss(*a, **kw))[2]
         real_abort = R.c.abort
         R.c.abort = lambda *a, **kw: (order.append("ABORT"),
                                       real_abort(*a, **kw))[1]
@@ -58299,12 +58379,18 @@ def test_stop_disarms_every_flame_group_without_the_latch():
                            {"who": "", "screen": "Stream Deck",
                             "halt": True}, client=("127.0.0.1", 50000))
         kinds = [o if isinstance(o, str) else o[0] for o in order]
-        check(st == 200 and kinds == ["disarm", "cut", "lasers",
-                                      "show", "show_stopped", "stop"],
+        # The conductor's Stop is asked at the press (on its own thread,
+        # round 3 of the cold review, F1/F3) and again by the scheduler's
+        # Stop (a re-blank then): both, after the flames and the lasers.
+        check(st == 200 and kinds[:3] == ["disarm", "cut", "lasers"] and
+              "show" in kinds and kinds.count("conductor_stop") >= 1 and
+              "stop" not in kinds,
               f"the deck's halt during a show: the flames first (as an "
               f"Abort), then live flames, the lasers, the show, the "
-              f"conductor's show_stopped, and only then playback: {st} "
-              f"{out} {order}")
+              f"conductor's Stop, and playback NOT stopped (Run stays on): "
+              f"{st} {out} {order}")
+        check(out.get("run_on") is True and out.get("stopped") is True,
+              f"the answer says Run is still on: {out}")
         check("ABORT" not in kinds, "the conductor is never asked to Abort")
         from ltcplay import schedule_service as _SV
         check(dropped == [_SV._ConductorCalls.STOP_DROPS],
@@ -58314,18 +58400,20 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               out.get("lasers", {}).get("disarmed") is True and
               out.get("flames", {}).get("disarmed") is True,
               f"and the answer says each went: {out}")
-        check(presses == [("stop-show", S.SHOW)] and
+        check(presses == [("halt_schedule", S.SHOW)] and
               "abort" not in [p_[0] for p_ in presses],
               f"the scheduler's Stop, never its Abort: {presses}")
         R.settle()
         m = R.svc.machine
         slot = [x for x in m.slots if x.n == 1][0] if hasattr(m, "slots") \
             else m.slot(1)
-        check(m.state == S.STANDBY and m.running == 0 and
+        check(m.state == S.HOLD and m.held_from == S.STANDBY and m.dark
+              and m.running == 0 and
               slot.reason == "STOPPED (operator Stop)" and
               not m.abort_latched,
-              f"the show ended, the scheduler is in STANDBY, nothing "
-              f"latched: {m.state} {slot.status} {slot.reason} "
+              f"the show ended, the scheduler is on HOLD (dark, Resume "
+              f"goes back to STANDBY), nothing latched: {m.state} "
+              f"{m.held_from} {m.dark} {slot.status} {slot.reason} "
               f"{m.abort_latched}")
         check(R.c is None or not R.c.snapshot().get("latched"),
               "and the conductor is not latched: no Reset is needed")
@@ -58344,11 +58432,26 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               "lasers" in [o if isinstance(o, str) else o[0]
                            for o in order],
               f"a halt between shows disarms the lasers too: {out} {order}")
-        # The playback stop raises after the halt ran: a 500 that still
-        # carries every step, for the deck to say (third review of #130, 4).
+        # With a scheduler the deck's Stop never stops playback (Jeff,
+        # 2026-10-30: Stop leaves Run on): a playback stop that would
+        # raise is never even called.
         def _boom():
             raise RuntimeError("the audio device is wedged")
         R.httpd.control.stop = _boom
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        check(st == 200 and out.get("stopped") is True and
+              out.get("run_on") is True and
+              "playback stop" not in out.get("failed", []),
+              f"with a scheduler, the deck's Stop leaves playback alone: "
+              f"{st} {out}")
+        # An engine with no scheduler (Run is the show itself): the halt,
+        # then playback stops. The playback stop raises after the halt
+        # ran: a 500 that still carries every step, for the deck to say
+        # (third review of #130, 4).
+        _sched_was = R.httpd.schedule
+        R.httpd.schedule = None
         st, _h, out = _ask(R.httpd, "POST", "/api/stop",
                            {"screen": "Stream Deck", "halt": True},
                            client=("127.0.0.1", 50000))
@@ -58375,6 +58478,1489 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               f"the halt's error and the playback stop's, both kept: "
               f"{out}")
         R.remote.halt = real_halt
+        R.httpd.schedule = _sched_was
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_conductor_stop_is_abort_without_the_latch():
+    section("conductor (Jeff, 2026-10-30: Stop has every guarantee Abort "
+            "had): Stop zeroes and disarms the flames and blanks the lasers "
+            "on the pressing thread, then runs Abort's sequence (the video "
+            "fade forced from wherever it is, the laser blank sent again "
+            "after the press's, the video stopped), and latches nothing")
+    C = _cond_mod()
+    disarmed = []
+    c, rig, T, lines = _cond(lasers_disarm=lambda r, w, s:
+                             disarmed.append((r, w, s)))
+    _cond_live(c, rig)
+    # The record says the video is already black (a Hold's fade, say):
+    # Abort's rule is that the fade starts from wherever the picture is
+    # (finding C), so Stop sends it anyway.
+    c._applied["video"] = C.BLACK
+    T.t = 300.0
+    r = c.stop("Andy", "rack screen")
+    check(r.ok and "Nothing is latched" in r.sentence,
+          f"Stop accepted, and says nothing is latched: {r}")
+    check(rig.names() == ["flames_zero", "flames_disarm_all",
+                          "lasers_blank"],
+          f"Stop cuts and disarms the flames, then blanks the lasers, "
+          f"before it returns, and nothing else yet: {rig.names()}")
+    check(all(t == 300.0 for _n, _a, t in rig.calls),
+          "the flame cut and the laser blank have zero delay")
+    check(disarmed and "Stop" in disarmed[0][0] and
+          disarmed[0][1:] == ("Andy", "rack screen"),
+          f"every laser disarmed at the press too: {disarmed}")
+    check(not c.latched and c.snapshot()["look"] == C.STOPPED_DARK,
+          f"nothing latched; the look is a stopped show's: {c.snapshot()}")
+    c.run_pending()
+    for name in ("video_fade_out", "pixels_fade_out", "music_halt"):
+        got = rig.first(name)
+        check(got is not None and got[1] == (1.0,) and got[2] == 300.0,
+              f"{name} starts at the press, over 1 s: {got}")
+    check(rig.count("lasers_blank") == 2,
+          "the laser blank is sent again once the press's got out (Abort's "
+          "P0-3 rule: a restore already past its last check)")
+    stop = rig.first("video_stop")
+    check(stop is not None and abs(stop[2] - 301.0) < 1e-9,
+          f"the video stops once the 1 s fade is done: {stop}")
+    check(rig.count("lasers_restore") == 0 and
+          rig.count("flames_release") == 0,
+          "nothing comes back up after a Stop")
+    check(any("Stop finished" in t and "Nothing is latched" in t
+              for t, _f in lines) and
+          not any("Latched until Reset" in t for t, _f in lines),
+          f"journaled as a Stop, with no latch: {lines[-3:]}")
+    # No latch: the next show start brings the rig back with no Reset.
+    # (a real start tells the conductor the music started first)
+    c.music_started()
+    check(c.show_starting("the scheduler", "").ok,
+          "a show start after a Stop is taken (no Reset)")
+    # A second Stop while the first is still fading: no new generation and
+    # no second fade, but the flames cut and the laser blank go again.
+    c2, rig2, T2, lines2 = _cond()
+    _cond_live(c2, rig2)
+    check(c2.stop("Andy", "rack screen").ok, "the first Stop")
+    gen = c2._gen
+    r2 = c2.stop("Dallen", "iPad")
+    check(r2.ok and c2._gen == gen and "Already stopping" in r2.sentence,
+          f"a second Stop during the first starts nothing new: {r2}")
+    check(rig2.count("lasers_blank") == 2 and
+          rig2.count("flames_disarm_all") == 2,
+          f"and sends the flame disarm and the laser blank again: "
+          f"{rig2.names()}")
+    # With an Abort latched, Stop changes nothing but the laser blank.
+    c3, rig3, T3, lines3 = _cond()
+    _cond_live(c3, rig3)
+    check(c3.abort("Andy", "rack screen").ok, "setup: aborted")
+    c3.run_pending()
+    gen, n = c3._gen, rig3.count("lasers_blank")
+    r3 = c3.stop("Andy", "rack screen")
+    check(r3.ok and c3._gen == gen and c3.latched and
+          rig3.count("lasers_blank") == n + 1,
+          f"Stop while aborted: the blank again, nothing else: {r3}")
+    # Nothing playing (a show that already ended): Stop still goes dark.
+    c4, rig4, T4, lines4 = _cond()
+    rig4.playing = lambda: False
+    r4 = c4.stop("Andy", "rack screen")
+    c4.run_pending()
+    check(r4.ok and rig4.count("video_stop") == 1 and
+          rig4.count("flames_disarm_all") >= 1,
+          f"Stop with nothing playing still takes the rig dark: {r4} "
+          f"{rig4.names()}")
+    # With the real device layer: BEYOND blanked (0 only) before the press
+    # returns, a running video fade stopped where it is at the press, and
+    # MadMapper sent nothing until BEYOND is dark (Abort's order).
+    from ltcplay import beyond as B
+    c5, rig5, T5, lines5, link5, bey5 = _cond_devices()
+    try:
+        check(c5.show_starting("Andy", "rack screen").ok, "show start")
+        c5.run_pending()
+        _mm_flush(link5)
+        rig5.frozen_at = rig5.moving_at = None
+        del rig5.calls[:]
+        T5.t = 500.0
+        check(c5.stop("Andy", "rack screen").ok, "Stop accepted")
+        pressed = _cd_sends(rig5.calls)
+        check([e[0] for e in pressed][:2] == ["flames_zero",
+                                              "flames_disarm_all"]
+              and [e[1][1] for e in pressed[2:]]
+              == [B.BLANK_VALUE] * B.RETRY_COUNT,
+              f"the flames cut first, then BEYOND blanked, before the press "
+              f"returns: {rig5.calls}")
+        check(("mm_call", ("cancel",), 500.0) in rig5.calls,
+              f"and any video fade is stopped where it is, at the press: "
+              f"{rig5.calls}")
+        c5.run_pending()
+        _mm_flush(link5)
+        ev = _cd_sends(rig5.calls)
+        b = _cd_idx(ev, "beyond")
+        m = _cd_idx(ev, "mm")
+        check([ev[i][1] for i in b] ==
+              [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * (2 * B.RETRY_COUNT),
+              f"BEYOND brightness 0 only, at the press and again: "
+              f"{[ev[i] for i in b]}")
+        check(m and min(m) > max(b[:B.RETRY_COUNT]),
+              f"BEYOND is dark before MadMapper is sent anything: "
+              f"{[e[0] for e in ev]}")
+    finally:
+        link5.close()
+    print("  ok")
+
+
+def test_conductor_line_stop_is_urgent_and_supersedes():
+    section("conductor line (Jeff, 2026-10-30): a Stop never waits more "
+            "than URGENT_WAIT_S behind a stuck request, and a Hold, Resume "
+            "or show start decided before it and still waiting is not sent; "
+            "a Reset still waiting is left alone (Stop latches nothing)")
+    from ltcplay import schedule_service as SV
+    check(SV._ConductorCalls.URGENT_WAIT_S == 0.25 and
+          "stop" in SV._ConductorCalls.URGENT and
+          "abort" in SV._ConductorCalls.URGENT,
+          "Abort and Stop are the urgent requests, 0.25 s")
+    check(set(SV._ConductorCalls.SUPERSEDED_BY_STOP) ==
+          {"hold", "resume", "show_starting", "start_show"},
+          f"what a Stop supersedes: {SV._ConductorCalls.SUPERSEDED_BY_STOP}")
+    gate = threading.Event()
+    ran, overtook = [], []
+
+    def run_one(call):
+        if call.method == "slow":
+            gate.wait(5)
+        ran.append(call.method)
+    q = SV._ConductorCalls(run_one, overtaken=lambda call, ahead, age,
+                           dropped: overtook.append(
+                               (call.method, ahead.method if ahead else None,
+                                [d.method for d in dropped])))
+    mk = lambda m_, i: SV._ConductorCall(m_, m_, "Andy", "Rack screen",
+                                         seq=i)
+    q.put(mk("slow", 1))
+    deadline = time.time() + 2
+    while not q.health()["stuck"] and time.time() < deadline:
+        time.sleep(0.01)
+    waiting = [mk(m_, i + 2) for i, m_ in
+               enumerate(("hold", "resume", "show_starting", "start_show",
+                          "reset", "intermission"))]
+    for c_ in waiting:
+        q.put(c_)
+    stop = mk("stop", 20)
+    t0 = time.monotonic()
+    q.put(stop)
+    check(stop.done.wait(3), "the Stop answered while the line was stuck")
+    took = time.monotonic() - t0
+    check(0.2 <= took < 1.5 and ran == ["stop"],
+          f"the Stop went beside the stuck request after about 0.25 s: "
+          f"{took:.2f} s {ran}")
+    check(overtook and overtook[0][0] == "stop" and
+          overtook[0][1] == "slow" and
+          sorted(overtook[0][2]) == sorted(["hold", "resume",
+                                            "show_starting", "start_show"]),
+          f"and dropped the Hold, Resume and show starts before it, not the "
+          f"Reset or the intermission: {overtook}")
+    gate.set()
+    q.flush(3)
+    check(ran == ["stop", "slow", "reset", "intermission"],
+          f"the Reset and the intermission still ran, in order: {ran}")
+    # The service journals a Stop that went ahead, as a Stop.
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    work = tempfile.mkdtemp()
+    svc = _svc(S, work, [_den(S, 17, 55)])
+    try:
+        call = mk("stop", 30)
+        call.label = "Stop"
+        dropped = [mk("hold", 29)]
+        dropped[0].label = "Hold"
+        svc._abort_overtook(call, mk("slow", 28), 0.4, dropped)
+        rows = [x for x in svc.journal if x.get("outcome") == "sent ahead"]
+        check(rows and rows[-1]["text"].startswith("Stop was sent to the "
+                                                   "show conductor at once")
+              and "Hold" in rows[-1]["text"] and
+              dropped[0].sentence == "Hold was not sent: a Stop overtook "
+                                     "it." and dropped[0].done.is_set() and
+              dropped[0].ok is False,
+              f"journaled as the Stop it was: {rows[-1:]} "
+              f"{dropped[0].sentence!r}")
+    finally:
+        svc.stop()
+    print("  ok")
+
+
+def test_stop_holds_the_schedule_and_leaves_run_on():
+    section("Stop holds (Jeff, 2026-10-30): a Stop during a show ends it "
+            "through the conductor's Stop and leaves the schedule on Hold, "
+            "dark, with Run left on; a show whose time comes waits; Resume "
+            "releases it; a Stop between shows holds too; Resume is refused "
+            "while a Stop is still under way; Start now works from the "
+            "Hold; the last show's Stop closes the night")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        stops = []
+        real_stop = R.httpd.control.stop
+        R.httpd.control.stop = lambda: (stops.append(1), real_stop())[1]
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        check(st == 200 and out.get("run_on") is True and
+              out.get("stopped") is True and stops == [],
+              f"Stop never stops playback, so Run stays on: {st} {out} "
+              f"{stops}")
+        check(asked and not R.c.latched and not m.abort_latched,
+              f"the conductor's Stop was asked, and nothing latched: "
+              f"{asked}")
+        check(m.state == S.HOLD and m.held_from == S.STANDBY and m.dark and
+              (out.get("hold") or {}).get("ok") is True,
+              f"the schedule is on Hold, dark, Resume goes back to waiting: "
+              f"{m.state} {m.held_from} {m.dark} {out.get('hold')}")
+        s1 = m.slot(1)
+        check(s1.status == S.ABORTED and
+              s1.reason == "STOPPED (operator Stop)",
+              f"show 1 is recorded as stopped: {s1}")
+        # Show 2's time comes during the Stop's Hold: it does not start.
+        R.now[0] = _den(S, 18, 21)
+        R.svc.tick()
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.running == 0 and
+              m.delayed() is not None and m.delayed().n == 2,
+              f"show 2's time came during the Hold: it waits, delayed: "
+              f"{m.state} {m.running} {m.delayed()}")
+        # A Resume while a Stop is still under way is refused.
+        R.svc.halt_begin()
+        try:
+            r = R.svc.operator_press("resume", "Andy", "Rack screen")
+        finally:
+            R.svc.halt_end()
+        check(r["ok"] is False and r.get("halting") is True and
+              R.svc.machine.state == S.HOLD,
+              f"Resume during a Stop is refused: {r}")
+        # Resume releases the Stop's Hold; the delayed show still waits.
+        st, _h, out = R.ask("POST", "/api/remote/resume",
+                            {"seen": R.seen()})
+        R.settle()
+        m = R.svc.machine
+        check(st == 200 and m.state == S.STANDBY and not m.dark and
+              m.delayed() is not None and m.running == 0,
+              f"Resume releases the Hold; the delayed show waits for Start "
+              f"now: {st} {out} {m.state} {m.dark}")
+        # Between shows, Stop holds the schedule too, said as the Stop.
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        rows = [x for x in R.svc.journal if x.get("action") == S.HOLD_ON]
+        check(m.state == S.HOLD and (out.get("hold") or {}).get("ok") and
+              rows and "pressed Stop" in rows[-1]["text"] and stops == [],
+              f"a Stop between shows puts the schedule on Hold, journaled "
+              f"as the Stop: {m.state} {out} {rows[-1:]}")
+        # A second Stop while on Hold: everything disarmed again, still held.
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        check(R.svc.machine.state == S.HOLD and
+              (out.get("hold") or {}).get("ok") and not out.get("failed"),
+              f"a Stop while on Hold stays on Hold: {out}")
+        # Start now works from the Stop's Hold (an explicit start).
+        R.svc.operator_press("start-now", "Andy", "Rack screen",
+                             confirmed=True, preroll=False)
+        R.settle()
+        check(R.svc.machine.state == S.SHOW and R.svc.machine.running == 2,
+              f"Start now from the Hold starts the delayed show: "
+              f"{R.svc.machine.state} {R.svc.machine.running}")
+    finally:
+        R.close()
+    # The last show of the night: Stop closes the night as an Abort does
+    # (no Hold: there is nothing left to hold). The scheduler's own step.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        m = R.svc.machine
+        last = _dc_replace(m, slots=tuple(s_ for s_ in m.slots
+                                          if s_.n == 1))
+        o = S.step(last, S.Event(S.STOP_SHOW, "operator", who="Andy",
+                                 screen="Rack screen", confirmed=True),
+                   R.now[0])
+        check(o.accepted and o.machine.state == S.STANDBY and
+              o.machine.dark and "no more shows tonight" in
+              " ".join(le.text for le in o.log),
+              f"the last show's Stop: no Hold, the night closes as after an "
+              f"Abort: {o.machine.state} {[le.text for le in o.log]}")
+        o2 = S.step(o.machine, S.Event(S.TICK, "scheduler"),
+                    _den(S, 18, 2))
+        check(o2.machine.state == S.CLOSING,
+              f"and the next tick closes the night: {o2.machine.state}")
+        # Reset's end of a paused show is not a Stop: it does not hold.
+        p_ = S.step(m, S.Event(S.HOLD_ON, "operator", who="Andy",
+                               screen="Rack screen"), R.now[0]).machine
+        o3 = S.step(p_, S.Event(S.STOP_SHOW, "operator", who="Andy",
+                                screen="Rack screen", confirmed=True,
+                                detail=S.RESET_DETAIL), R.now[0])
+        check(o3.machine.state == S.STANDBY,
+              f"Reset ending a paused show leaves STANDBY: "
+              f"{o3.machine.state}")
+    finally:
+        R.close()
+    # The Stop's Hold survives a restart (tonight's file): back on HOLD,
+    # dark, and the next show's time does not start it.
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.op(S.STOP_SHOW, _den(S, 18, 2), confirmed=True)
+    check(n.m.state == S.HOLD and n.m.dark, f"setup: on the Stop's Hold: "
+                                            f"{n.m.state} {n.m.dark}")
+    doc = json.loads(json.dumps(S.machine_to_doc(n.m)))
+    back = S.machine_from_doc(doc, rule, n.m.date, _den(S, 18, 5))
+    o = S.step(back, S.Event(S.BOOT_DONE, "system"), _den(S, 18, 5))
+    check(doc.get("state") == S.HOLD and doc.get("dark") is True and
+          o.machine.state == S.HOLD and o.machine.dark and
+          S.INTERMISSION not in [e.kind for e in o.effects],
+          f"a restart keeps the Stop's Hold, dark: {doc.get('state')} "
+          f"{o.machine.state} {[e.kind for e in o.effects]}")
+    o2 = S.step(o.machine, S.Event(S.TICK, "scheduler"), _den(S, 18, 21))
+    check(o2.machine.running == 0 and o2.machine.state == S.HOLD and
+          o2.machine.delayed() is not None,
+          f"and the next show's time does not start it: "
+          f"{o2.machine.state} {o2.machine.running}")
+    print("  ok")
+
+
+def _dc_replace(obj, **kw):
+    import dataclasses
+    return dataclasses.replace(obj, **kw)
+
+
+def test_stop_halt_order_hooks_and_programming():
+    section("Stop's halt (Jeff, 2026-10-30): the laser arm told before any "
+            "other work, the fireball and cleaning cut at the press through "
+            "the Abort's hooks (said as Stop), Programming playback stopped, "
+            "the schedule held; Stop never turns Run off, Run off does")
+    from ltcplay import remote as remote_mod
+    from ltcplay import morning as morning_mod
+    calls = []
+
+    class _Arm:
+        def press_begin(self):
+            calls.append(("press_begin",))
+
+        def press_end(self):
+            calls.append(("press_end",))
+
+    class _Purge:
+        def clear(self, why):
+            calls.append(("purge clear", why))
+
+    class _Tests:
+        def all_off(self, why):
+            calls.append(("laser tests off", why))
+
+    class _Morning:
+        laser_arm = _Arm()
+        purge = _Purge()
+        lasers = _Tests()
+
+        def lasers_disarm_now(self, why, who, screen):
+            calls.append(("lasers", why))
+            return True, "Every laser disarmed."
+
+        def stop_hooks(self, who, screen):
+            calls.append(("stop hooks", who, screen))
+
+    class _M:
+        state = "STANDBY"
+
+    class _Svc:
+        machine = _M()
+
+        def cancel_start_wait(self, why):
+            calls.append(("cancel wait", why))
+
+        def operator_press(self, what, who, screen, confirmed=False,
+                           detail=""):
+            calls.append(("press", what, detail))
+            if what == "stop-hold":
+                self.machine.state = "HOLD"
+                return {"ok": True, "text": "held"}
+            return {"ok": False, "text": "?"}
+
+        def halt_begin(self):
+            calls.append(("halt_begin",))
+
+        def halt_end(self):
+            calls.append(("halt_end",))
+
+    class _PH:
+        def active(self):
+            return True
+
+        def abort_press(self, who, screen):
+            calls.append(("playback stop", who, screen))
+            return "Programming playback stopped."
+
+    class _Control:
+        def stop(self):
+            calls.append(("control.stop",))
+            return True
+
+    import tempfile
+    _fold = tempfile.mkdtemp()
+    rm = remote_mod.Remote(_Control(), _Svc(), folder=_fold,
+                           log=lambda t: None)
+    rm.morning = _Morning()
+    rm._flame_disarm = lambda reason: (calls.append(("flames", reason)),
+                                       type("_R", (), {"ok": True,
+                                                       "sentence": "sent"})()
+                                       )[1]
+    rm.cancel_holds = lambda why: calls.append(("holds", why)) or 0
+    rm.playhead = _PH()
+    rm.programming = lambda: (True, "")
+    code, out = rm.stop_press("Andy", "Rack screen")
+    kinds = [c_[0] for c_ in calls]
+    check(kinds[:3] == ["halt_begin", "press_begin", "cancel wait"] and
+          kinds.index("flames") > kinds.index("press_begin"),
+          f"the laser arm is told before any other work of the halt, the "
+          f"start wait cancelled after it, the flames first of the steps: "
+          f"{kinds}")
+    check(("stop hooks", "Andy", "Rack screen") in calls and
+          kinds.index("stop hooks") > kinds.index("lasers"),
+          f"the fireball and cleaning hooks run at the press, after the "
+          f"lasers: {kinds}")
+    check(("playback stop", "Andy", "Rack screen") in calls and
+          kinds.index("playback stop") < kinds.index("press"),
+          f"Programming playback stopped, before the schedule: {kinds}")
+    check(("press", "stop-hold", "pressed Stop on the Rack screen, so the "
+           "schedule is on Hold") in calls,
+          f"between shows the schedule is held, said as the Stop: {calls}")
+    check("control.stop" not in kinds and out.get("run_on") is True and
+          code == 200 and out.get("programming", {}).get("ok") is True and
+          out.get("hold", {}).get("ok") is True,
+          f"Stop never turns Run off: {code} {out} {kinds}")
+    check(kinds.index("press_end") > kinds.index("press") and
+          kinds[-1] == "halt_end",
+          f"the laser arm's press ends after the schedule's step: {kinds}")
+    import shutil as _shu
+    _shu.rmtree(_fold, ignore_errors=True)
+    # Run off: the same halt, then playback stops.
+    del calls[:]
+    rm.schedule.machine.state = "STANDBY"
+    code, out = rm.run_off("Andy", "Rack screen")
+    kinds = [c_[0] for c_ in calls]
+    check("control.stop" in kinds and
+          kinds.index("control.stop") > kinds.index("flames") and
+          out.get("run_on") is False and out.get("stopped") is True,
+          f"Run off is the halt, then playback stopped: {out} {kinds}")
+    # press("stop") tells the laser arm too, around the whole press.
+    del calls[:]
+    rm._press = lambda name, body, ctx: (calls.append(("pressing", name)),
+                                         (200, {}))[1]
+    for what in ("stop", "run-off"):
+        del calls[:]
+        rm.press(what, {}, None)
+        check(calls == [("press_begin",), ("pressing", what),
+                        ("press_end",)],
+              f"{what}: the laser arm told a press is under way around it: "
+              f"{calls}")
+    del rm._press
+    # The Morning page's stop_hooks: each Abort hook, said as a Stop.
+    got = []
+    fake = type("_MM", (), {"abort_hooks": [
+        lambda who, screen, what="Abort": got.append((who, screen, what)),
+        lambda *a, **kw: 1 / 0,
+        lambda who, screen, what="Abort": got.append(("2", what))]})()
+    morning_mod.Morning.stop_hooks(fake, "Andy", "iPad")
+    check(got == [("Andy", "iPad", "Stop"), ("2", "Stop")],
+          f"every hook runs, a broken one never stops the rest: {got}")
+    # The fireball's and the cleaning's hook say what cut them.
+    from ltcplay import fireball as fb_mod, cleaning as cl_mod
+    cut = []
+    fbp = type("_FB", (), {"cut": lambda self, why, who="", screen="":
+                           cut.append(why)})()
+    fb_mod.FireballPanel.on_abort(fbp, "Andy", "iPad", what="Stop")
+    check(cut == ["Stop pressed by Andy"],
+          f"the fireball is cut, said as the Stop: {cut}")
+    import inspect as _insp
+    for mod in (fb_mod, cl_mod):
+        src = _insp.getsource(mod)
+        check('def on_abort(self, who="", screen="", what="Abort"):' in src
+              and 'f"{what} pressed by {who or screen or \'someone\'}"'
+              in src, f"{mod.__name__}'s hook says what cut it")
+    print("  ok")
+
+
+def test_streamdeck_refractory_starts_at_a_screen_stop():
+    section("Stream Deck (Jeff, 2026-10-30): every group's re-arm "
+            "refractory window starts when flamesafe reports a new "
+            "disarm_all (a Stop from any screen, an iPad or the deck), as "
+            "it did at the Abort latch's edge; nothing new is asked of "
+            "flamesafe")
+    from ltcplay import streamdeck as sd
+
+    class _Status(_FakeStatusSocket):
+        def __init__(self):
+            self.last = None
+            self.fresh = True
+
+        def stale(self, clock=None):
+            return not self.fresh
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _Status()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      conductor=_FakeConductor(),
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    status.last = {"groups": [], "disarm_all": {"accepted": 3,
+                                                "last_id": 7}}
+    c.tick()
+    check(all(c._in_rearm_refractory(i, t[0]) == 0 for i in range(3)),
+          "the first look at flamesafe starts nothing")
+    t[0] += 10.0
+    c.tick()
+    check(all(c._in_rearm_refractory(i, t[0]) == 0 for i in range(3)),
+          "the same disarm_all again starts nothing")
+    status.last = {"groups": [], "disarm_all": {"accepted": 4,
+                                                "last_id": 8}}
+    t[0] += 1.0
+    c.tick()
+    check(all(c._in_rearm_refractory(i, t[0]) > 0 for i in range(3)),
+          "a new disarm_all (a screen's Stop) starts every group's wait")
+    down = [False] * 6
+    down[sd.GROUP_KEYS[0]] = True
+    c.run_once(down)
+    check(arm.wanted == [False, False, False] and
+          c._arm_holds[0].fraction(t[0]) == 0.0,
+          "a re-press right after a screen's Stop is refused before the "
+          "hold can start")
+    # A stale status says nothing; a fresh one with the same count after
+    # it starts nothing new, and a changed one does.
+    t[0] += sd.REARM_REFRACTORY_S + 5.0
+    c.run_once([False] * 6)
+    status.fresh = False
+    status.last = {"groups": [], "disarm_all": {"accepted": 9,
+                                                "last_id": 9}}
+    c.tick()
+    check(all(c._in_rearm_refractory(i, t[0]) == 0 for i in range(3)),
+          "a stale status starts nothing")
+    status.fresh = True
+    c.tick()
+    check(all(c._in_rearm_refractory(i, t[0]) > 0 for i in range(3)),
+          "the change seen once the status is fresh again starts it")
+    print("  ok")
+
+
+def test_stop_at_showtime_never_starts_or_pauses_a_show():
+    section("Stop at showtime (cold review of #191, A-F1): a Stop pressed "
+            "the instant a show comes due holds the schedule and never "
+            "starts the show, nor pauses one it started itself; a tick "
+            "during a Stop starts nothing (so nothing starts unchecked by "
+            "the rig check); a Stop during a late rig check starts nothing; "
+            "a show already running is ended through the conductor's Stop")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 59, 30)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state in (S.IDLE, S.STANDBY),
+              f"setup: waiting for show 1: {R.svc.machine.state}")
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        # 18:00:00.2, no tick since 17:59:30: the press itself must not
+        # start show 1 and then pause it.
+        R.now[0] = _den(S, 18, 0, 0, 200000)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        # (the conductor's Stop is asked to take the idle look down:
+        # between shows a Stop's Hold is dark, round 2 item 5)
+        check(m.state == S.HOLD and m.running == 0 and m.stop_hold and
+              m.dark and m.slot(1).status in (S.PENDING, S.DELAYED) and
+              m.slot(1).fired_at is None and
+              R.c.snapshot()["look"] != "PLAYING",
+              f"Stop at showtime holds; show 1 never started or paused: "
+              f"{st} {m.state} {m.running} {m.slot(1)} {asked} {out}")
+        R.now[0] = _den(S, 18, 0, 5)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              R.svc.machine.running == 0,
+              f"and the next tick starts nothing: {R.svc.machine.state}")
+    finally:
+        R.close()
+    # A tick while a Stop is under way starts nothing.
+    R = _RemoteRig(S)
+    try:
+        # Exactly at show 1's time (late_grace_s is 0 in this rule): the
+        # tick would start it.
+        R.now[0] = _den(S, 18, 0)
+        R.svc.halt_begin()
+        try:
+            R.svc.tick()
+            check(R.svc.machine.state != S.SHOW and
+                  R.svc.machine.running == 0,
+                  f"a tick during a Stop starts no show: "
+                  f"{R.svc.machine.state}")
+            r = R.svc.halt_schedule("Andy", "Rack screen")
+        finally:
+            R.svc.halt_end()
+        R.svc.tick()
+        R.settle()
+        check(r["ok"] and r["kind"] == "hold" and
+              R.svc.machine.state == S.HOLD and R.svc.machine.running == 0,
+              f"then the Stop holds, and nothing starts: {r} "
+              f"{R.svc.machine.state}")
+        # A show already running: halt_schedule ends it (STOP_SHOW, the
+        # conductor's Stop), never a pause.
+    finally:
+        R.close()
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        r = R.svc.halt_schedule("Andy", "Rack screen")
+        R.settle()
+        check(r["kind"] == "stop" and asked and
+              R.svc.machine.state == S.HOLD and
+              R.svc.machine.slot(1).status == S.ABORTED,
+              f"a running show is ended through the conductor's Stop, "
+              f"never paused: {r} {asked} {R.svc.machine.state}")
+    finally:
+        R.close()
+    # A Stop during a late rig check: the check is cancelled, nothing
+    # starts, and no audio plays.
+    ev = threading.Event()
+    n = _pr_night(hold_until={"Video": ev})
+    if n is None:
+        return
+    try:
+        S, svc, c = n.S, n.svc, n.c
+        svc.tick()
+        _settle(svc, c)
+        n.now[0] = _den(S, 17, 59, 55)
+        svc.tick()
+        check(wait_for(lambda: "Video" in n.ran, 3),
+              f"setup: the rig check is under way: {n.ran}")
+        n.now[0] = _den(S, 18, 0, 2)
+        svc.halt_begin()
+        try:
+            svc.cancel_start_wait("Stop was pressed on the Rack screen")
+            svc.tick()
+            r = svc.halt_schedule("Andy", "Rack screen")
+        finally:
+            svc.halt_end()
+        for t_ in (3, 10, 30):
+            n.now[0] = _den(S, 18, 0, t_)
+            svc.tick()
+        _settle(svc, c)
+        check(r["kind"] == "hold" and svc.machine.state == S.HOLD and
+              svc.machine.running == 0 and not _pr_audio_started(n),
+              f"a Stop during the rig check: held, nothing started, no "
+              f"audio: {r} {svc.machine.state} {n.calls[-5:]}")
+    finally:
+        ev.set()
+        n.c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_reset_never_ends_a_stops_hold():
+    section("Reset and a Stop's Hold (cold review of #191, A-F4): Reset "
+            "never releases the Hold a Stop put on (it may clear the fault "
+            "flag); show 2 does not start; Resume releases it")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.stop_hold,
+              f"setup: on the Stop's Hold: {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        m = R.svc.machine
+        check(st == 409 and m.state == S.HOLD and m.stop_hold and
+              "Resume" in str(out),
+              f"Reset leaves the Stop's Hold on and says to Resume: {st} "
+              f"{out} {m.state}")
+        R.now[0] = _den(S, 18, 21)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.running == 0 and
+              R.svc.machine.slot(2).fired_at is None,
+              f"show 2 does not start: {R.svc.machine.slot(2)}")
+        # With a fault flag up, Reset clears the flag and still keeps the
+        # Hold.
+        R.svc._apply(S.Event(S.FAULT_RAISED, "system", detail="test fault"))
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        m = R.svc.machine
+        check(st == 200 and not m.faults and m.state == S.HOLD and
+              m.stop_hold,
+              f"Reset clears the fault flag and keeps the Hold: {st} {out}")
+        # An operator's own Hold (not a Stop's) is still ended by Reset.
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.STANDBY and
+              not R.svc.machine.stop_hold,
+              f"Resume releases the Stop's Hold: {R.svc.machine.state}")
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              not R.svc.machine.stop_hold, "setup: an operator's Hold")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        check(st == 200 and R.svc.machine.state != S.HOLD,
+              f"Reset still ends an operator's Hold: {st} {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_stops_hold_outlives_the_night():
+    section("A Stop's Hold outlives the 02:00 night reset (cold review of "
+            "#191, A-F2): the next evening comes up on Hold, and its shows "
+            "do not start while Run is on until Resume")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.stop_hold,
+              "setup: on the Stop's Hold")
+        from datetime import timedelta
+        # Sunday has no shows in this rule (OFF): nothing to hold there;
+        # the Hold waits for the next night that has shows.
+        R.now[0] = _den(S, 3, 0) + timedelta(days=1)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.OFF,
+              f"setup: Sunday has no shows: {R.svc.machine.state}")
+        R.now[0] = _den(S, 3, 0) + timedelta(days=7)
+        R.svc.tick()
+        R.settle()
+        m = R.svc.machine
+        check(m.date != _den(S, 18, 0).date() and m.state == S.HOLD and
+              m.stop_hold,
+              f"after the night reset the new night is on the Stop's "
+              f"Hold: {m.date} {m.state} {m.stop_hold}")
+        rows = [x for x in R.svc.journal if x.get("action") == S.HOLD_ON]
+        check(rows and "kept the Hold of a Stop" in rows[-1]["text"],
+              f"journaled: {rows[-1:]}")
+        doc = S.machine_to_doc(m)
+        check(doc.get("stop_hold") is True and doc["format"] == 4,
+              f"kept in tonight's file: {doc.get('stop_hold')}")
+        R.now[0] = _den(S, 18, 1) + timedelta(days=7)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.running == 0,
+              f"and that evening's first show does not start: "
+              f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fire_ice_stop_while_the_cue_starts():
+    section("fire & ice (cold review of #191, A-F3): a Stop that lands "
+            "while a show cue is starting (an urgent Stop goes beside the "
+            "line) stops the music after it began and takes the rig dark "
+            "again; the start is reported failed")
+    n = _fi_night()
+    if n.S is None:
+        return
+    try:
+        n.svc.tick()
+        real = n.sess.clock_play
+
+        def play_then_stop(cue=None):
+            out = real(cue)
+            # The Stop lands while its own sequence has not run yet.
+            n.c.stop("Andy", "Rack screen")
+            return out
+        n.sess.clock_play = play_then_stop
+        del n.calls[:]
+        stops = n.c.stops
+        gen = n.c._gen
+        r = n.w.runner.start_show(8, who="Andy")
+        n.c.run_pending()
+        got = [k for k, _a, _t in n.calls]
+        check(not r.ok and "Stop was pressed while it was starting" in
+              r.sentence and "music_play" in got and
+              got.index("music_play") < len(got) - 1 - got[::-1].index(
+                  "music_halt") and n.c.stops == stops + 2,
+              f"a Stop during the start: the music is stopped after it "
+              f"began, the conductor's Stop runs again, the start fails: "
+              f"{r.sentence} {got} {n.c.stops}")
+        check(n.c._gen == gen + 2,
+              f"the second Stop starts the whole sequence afresh (a new "
+              f"generation), never only a re-blank: {n.c._gen - gen}")
+        check(not n.c.latched, "nothing latched")
+    finally:
+        n.c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_stop_hold_stands_until_resume():
+    section("A Stop's Hold stands until Resume (cold review of #191 round "
+            "2): a Stop of the night's last show, a Stop while closing and "
+            "a second Stop all leave it standing, so the next night's shows "
+            "do not start by themselves with Run on; it is kept on disk and "
+            "survives a restart; the screens say Held after Stop; Resume "
+            "releases it; Start now from it starts one show and the Hold "
+            "comes back; Continue anyway does not release it")
+    S = _sched()
+    if S is None:
+        return
+    import os as _os
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+    # 1. The last show of the night.
+    R = _RemoteRig(S)
+    try:
+        m = R.svc.machine
+        last = m.slots[-1]
+        R.now[0] = last.start
+        R.svc.tick()
+        R.settle()
+        R.now[0] = last.start + timedelta(seconds=1)
+        _confirm(S, R.svc)
+        R.settle()
+        check(R.svc.machine.state == S.SHOW and
+              R.svc.machine.running == last.n, "setup: the last show live")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        path = R.svc._stop_hold_path()
+        check(R.svc.stop_held() and _os.path.exists(path),
+              f"the last show's Stop leaves the Stop's Hold standing, on "
+              f"disk: {R.svc.machine.state} {R.svc._stop_carry}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check((out.get("schedule") or {}).get("stop_held") is True,
+              f"the screens are told: {out.get('schedule', {}).get('stop_held')}")
+        for d in range(1, 8):
+            R.now[0] = _den(S, 3, 0) + timedelta(days=d)
+            R.svc.tick()
+            R.settle()
+        R.now[0] = _den(S, 18, 0) + timedelta(days=7)
+        R.svc.tick()
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.running == 0 and m.stop_hold,
+              f"the next night with shows is on the Stop's Hold; its first "
+              f"show does not start: {m.date} {m.state} {m.running}")
+        # Reset does not end it (it is the Stop's).
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        check(R.svc.machine.state == S.HOLD and R.svc.stop_held(),
+              f"Reset leaves it: {st} {out}")
+        # 2. A restart reads it back.
+        svc2 = _svc(S, R.work, R.now)
+        try:
+            check(svc2.stop_held(),
+                  "a restarted engine reads the Stop's Hold back from disk")
+        finally:
+            svc2.stop()
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and not R.svc.stop_held() and
+              not _os.path.exists(path) and
+              R.svc.machine.state == S.STANDBY,
+              f"Resume releases it, and its file goes: {st} {out} "
+              f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    # 3. A Stop while closing, then Resume with nothing held.
+    R = _RemoteRig(S)
+    try:
+        m = R.svc.machine
+        R.svc.machine = _dc_replace(m, slots=tuple(s_ for s_ in m.slots
+                                                   if s_.n == 1))
+        _live_show(R)
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 8))
+        R.now[0] = _den(S, 18, 9)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state in (S.CLOSING, S.OFF),
+              f"setup: the night is closing: {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        check(st == 200 and R.svc.stop_held() and not out.get("failed"),
+              f"a Stop while closing: the Stop's Hold stands: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        check(R.svc.stop_held(), "a second Stop: it still stands")
+        r = R.svc.operator_press("resume", "Andy", "Rack screen")
+        check(r["ok"] and not R.svc.stop_held(),
+              f"Resume with nothing held releases it: {r}")
+    finally:
+        R.close()
+    # 4. Start now from it: one show, then the Hold is back.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        R.now[0] = _den(S, 18, 10)
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"seen": R.seen(), "confirmed": True})
+        R.settle()
+        check(R.svc.machine.state == S.SHOW,
+              f"setup: Start now from the Stop's Hold: {st} {out}")
+        R.now[0] = _den(S, 18, 10, 1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 17, 30))
+        R.settle()
+        R.now[0] = _den(S, 18, 17, 30)
+        R.svc.tick()
+        R.now[0] = _den(S, 18, 20)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.running == 0
+              and R.svc.stop_held(),
+              f"after that show the Stop's Hold is back; show 2 waits: "
+              f"{R.svc.machine.state} {R.svc.machine.running}")
+    finally:
+        R.close()
+    # 5. Continue anyway never releases it (the source).
+    import inspect as _insp
+    src = _insp.getsource(SV.Service.continue_anyway)
+    check("if m.state == sch.HOLD and not self.stop_held():" in src,
+          "Continue anyway resumes only an operator's own Hold")
+    print("  ok")
+
+
+def test_stop_round2_conductor_and_marks():
+    section("Stop (cold review of #191 round 2): a show start asked for "
+            "before a Stop is refused, as after an Abort; a Stop's conductor "
+            "call never waits on tonight's save; a Stop between shows is "
+            "dark and takes the idle look down; a Stop on a Hold marks it "
+            "as the Stop's; a restart keeps the mark")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    stops = c.stops
+    check(c.stop("Andy", "rack screen").ok, "Stop")
+    r = c.show_starting("the scheduler", "engine")
+    check(not r.ok and "Stop was pressed" in r.sentence,
+          f"a show start after the Stop, with no new music start, is "
+          f"refused: {r}")
+    r = c.show_starting("the scheduler", "engine", stops=stops)
+    check(not r.ok, f"one decided before the Stop is refused: {r}")
+    # Even once a newer start's music began: the count decides.
+    c.music_started()
+    r = c.show_starting("the scheduler", "engine", stops=stops)
+    check(not r.ok, f"one decided before the Stop is refused even after "
+                    f"newer music started: {r}")
+    c.run_pending()
+    c.music_started()
+    r = c.show_starting("the scheduler", "engine", stops=c.stops)
+    check(r.ok and c.snapshot()["look"] == C.PLAYING,
+          f"a new start after the Stop is taken: {r}")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import schedule_service as SV
+    # The conductor's Stop is asked before tonight's save.
+    R = _RemoteRig(S)
+    try:
+        calls = R.svc._decide_conductor(
+            [("Show start", "show_starting", frozenset())],
+            S.Event(S.SHOW_CONFIRMED, "madmapper"))
+        check(calls and calls[0].stops == R.c.stops,
+              f"a show start is decided with the Stop count then: "
+              f"{[getattr(c_, 'stops', None) for c_ in calls]}")
+        _live_show(R)
+        order = []
+        real_save = R.svc._save_tonight
+        R.svc._save_tonight = lambda *a, **kw: (order.append("save"),
+                                                real_save(*a, **kw))[1]
+        real_put = R.svc._calls.put
+        R.svc._calls.put = lambda call: (order.append(call.method),
+                                         real_put(call))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check("stop" in order and "save" in order and
+              order.index("stop") < order.index("save"),
+              f"the conductor's Stop is queued before tonight's save: "
+              f"{order}")
+    finally:
+        R.close()
+    # Between shows: dark, and the conductor's Stop takes the look down.
+    R = _RemoteRig(S)
+    try:
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.dark and asked,
+              f"a Stop between shows: on Hold, dark, the conductor's Stop "
+              f"asked: {m.state} {m.dark} {asked}")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state in (S.IDLE, S.STANDBY) and
+              not R.svc.machine.dark,
+              "Resume releases the Hold and its dark flag (the rig stays "
+              "dark until the next show starts)")
+        # A Stop on an operator's own Hold marks it as the Stop's.
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              not R.svc.machine.stop_hold, "setup: an operator's Hold")
+        R.svc._stop_carry = None
+        r = R.svc.halt_schedule("Andy", "Rack screen")
+        check(r["kind"] == "held" and R.svc.machine.stop_hold,
+              f"a Stop on it marks it as the Stop's: {r}")
+        # A restart keeps the mark (tonight's file).
+        rule = R.svc.rule
+        doc = json.loads(json.dumps(S.machine_to_doc(R.svc.machine)))
+        back = S.machine_from_doc(doc, rule, R.svc.machine.date, R.now[0])
+        check(doc.get("stop_hold") is True and back.stop_hold,
+              f"tonight's file keeps it, and it is read back: {doc}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_stop_hold_round3():
+    section("A Stop's Hold (cold review of #191 round 3): its file is tried "
+            "again every tick until it is saved, with a fault on the "
+            "screens meanwhile; an unreadable file counts as held and is "
+            "said; the Hold that comes back after a Start now is dark again; "
+            "a Start now right after a Stop is never cancelled by the "
+            "Hold coming back; a tick marks an existing Hold as the Stop's")
+    S = _sched()
+    if S is None:
+        return
+    import os as _os
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+
+    def stop_last(R):
+        m = R.svc.machine
+        last = m.slots[-1]
+        R.now[0] = last.start
+        R.svc.tick()
+        R.settle()
+        R.now[0] = last.start + timedelta(seconds=1)
+        _confirm(S, R.svc)
+        R.settle()
+        return last
+    # M1: the file's first write fails; it is tried again and lands.
+    R = _RemoteRig(S)
+    real = SV.os.replace
+    fails = [1]
+
+    def flaky(a, b):
+        if fails[0] and str(b).endswith(SV.Service.STOP_HOLD_FILE):
+            fails[0] -= 1
+            raise PermissionError("locked for the test")
+        return real(a, b)
+    try:
+        last = stop_last(R)
+        SV.os.replace = flaky
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        path = R.svc._stop_hold_path()
+        check(R.svc.stop_held() and not _os.path.exists(path) and
+              any("could not be saved" in f for f in R.svc.machine.faults),
+              f"a failed write: the Hold stands, the fault flag says so: "
+              f"{R.svc.machine.faults}")
+        R.now[0] = last.start + timedelta(seconds=30)
+        R.svc.tick()
+        check(_os.path.exists(path),
+              "the next tick writes it (tried again until it lands)")
+        svc2 = _svc(S, R.work, R.now)
+        try:
+            check(svc2.stop_held(), "and a restart reads it back")
+        finally:
+            svc2.stop()
+    finally:
+        SV.os.replace = real
+        R.close()
+    # L1: Start now right after a Stop on the last show, before any other
+    # tick (the night is not yet held again): its own tick puts the Stop's
+    # Hold back, and the Start now still starts its one show.
+    R = _RemoteRig(S)
+    try:
+        last = stop_last(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.state != S.HOLD and R.svc.stop_held(),
+              f"setup: not on Hold yet, the Stop's Hold stands: "
+              f"{R.svc.machine.state}")
+        R.now[0] = last.start + timedelta(seconds=10)
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"seen": R.seen(), "confirmed": True})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.SHOW and
+              "just before it started" not in str(out),
+              f"Start now after a Stop starts its show: {st} {out} "
+              f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    # M2: the Hold that comes back after a Start now's show is dark.
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        R.now[0] = _den(S, 17, 59)
+        R.svc.operator_press("start-now", "Andy", "Rack screen",
+                             confirmed=True, preroll=False)
+        R.settle()
+        check(R.svc.machine.state == S.SHOW, "setup: Start now's show")
+        R.now[0] = _den(S, 17, 59, 1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 6))
+        R.settle()
+        check(R.c.snapshot()["look"] not in ("STOPPED_DARK",),
+              f"setup: the show's end brought a look: "
+              f"{R.c.snapshot()['look']}")
+        R.now[0] = _den(S, 18, 6, 5)
+        R.svc.tick()
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.dark and m.stop_hold and
+              R.c.snapshot()["look"] == "STOPPED_DARK",
+              f"the Hold comes back dark: the look goes down again: "
+              f"{m.state} {m.dark} {R.c.snapshot()['look']}")
+        # A tick marks an existing Hold as the Stop's.
+        R.svc.machine = _dc_replace(R.svc.machine, stop_hold=False)
+        R.svc.tick()
+        check(R.svc.machine.stop_hold, "a tick marks the Hold as the Stop's")
+    finally:
+        R.close()
+    # An unreadable file counts as held, and is said.
+    R = _RemoteRig(S)
+    try:
+        path = R.svc._stop_hold_path()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        svc2 = _svc(S, R.work, R.now)
+        try:
+            check(svc2.stop_held(), "an unreadable file counts as held")
+            svc2.tick()
+            rows = [x for x in svc2.journal if x.get("action") == "stop hold"
+                    and x.get("outcome") == "unreadable"]
+            check(rows, "and it is said in the journal")
+        finally:
+            svc2.stop()
+        _os.remove(path)
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_stop_round3_dark_close_and_timing():
+    section("Stop (cold review of #191 round 3, review B): every Stop asks "
+            "the conductor for its dark Stop at the press, whatever the "
+            "scheduler is doing (on Hold, closing); a Stop on the last show "
+            "lets the night close with the Stop's Hold carried; the "
+            "conductor's Stop never waits on tonight's save or a tick "
+            "holding the scheduler's lock; the Stop stays under way until "
+            "the conductor has taken it")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    # F1: show 1 ended, STANDBY, an operator's Hold, then Stop.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 8))
+        R.settle()
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              R.c.snapshot()["look"] != "STOPPED_DARK",
+              f"setup: on an operator's Hold with the intermission look up: "
+              f"{R.svc.machine.state} {R.c.snapshot()['look']}")
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(asked and R.c.snapshot()["look"] == "STOPPED_DARK" and
+              R.svc.machine.stop_hold,
+              f"a Stop on a Hold takes the look down too: {asked} "
+              f"{R.c.snapshot()['look']}")
+    finally:
+        R.close()
+    # F2: a Stop on the last show; the night closes; the Hold is carried.
+    R = _RemoteRig(S)
+    try:
+        m = R.svc.machine
+        last = m.slots[-1]
+        R.now[0] = last.start
+        R.svc.tick()
+        R.settle()
+        R.now[0] = last.start + timedelta(seconds=1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.now[0] = last.start + timedelta(minutes=2)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        # A second Stop before the closing tick: still nothing to hold.
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        for mins in (4, 50):
+            R.now[0] = last.start + timedelta(minutes=mins)
+            R.svc.tick()
+            R.settle()
+        check(R.svc.machine.state in (S.CLOSING, S.OFF) and
+              R.svc.stop_held(),
+              f"the night closes after a Stop on its last show, and the "
+              f"Stop's Hold stands for the next night: "
+              f"{R.svc.machine.state}")
+        # A Stop in CLOSING or OFF asks the conductor's dark Stop too.
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        check(asked, f"a Stop after the night closed still asks the "
+                     f"conductor's Stop: {asked}")
+    finally:
+        R.close()
+    # F3: a slow tonight save, and a tick holding the lock mid-save.
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(time.monotonic()),
+                                     real_cs(*a, **kw))[1]
+        real_save = R.svc._save_tonight
+        R.svc._save_tonight = lambda *a, **kw: (time.sleep(1.5),
+                                                real_save(*a, **kw))[1]
+        R.svc.machine = _dc_replace(R.svc.machine, faults=())
+        ticker = threading.Thread(
+            target=lambda: R.svc._apply(S.Event(S.FAULT_RAISED, "system",
+                                                detail="test")))
+        ticker.start()
+        time.sleep(0.1)          # the save under the lock is under way
+        t0 = time.monotonic()
+        R.ask("POST", "/api/remote/stop", {})
+        ticker.join()
+        R.svc._save_tonight = real_save
+        R.settle()
+        check(asked and asked[0] - t0 < 0.5,
+              f"the conductor's Stop is asked at once, never behind the "
+              f"save or the scheduler's lock: "
+              f"{(asked[0] - t0) if asked else None}")
+    finally:
+        R.close()
+    # F4: the Stop stays under way until the conductor has taken it (a
+    # Stop between shows, where nothing else is waited for).
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        took = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.6),
+                                     took.append(time.monotonic()),
+                                     real_cs(*a, **kw))[2]
+        t0 = time.monotonic()
+        R.ask("POST", "/api/remote/stop", {})
+        t1 = time.monotonic()
+        R.settle()
+        check(took and took[0] <= t1,
+              f"the Stop answers only once the conductor has taken it, so "
+              f"Start now and Resume stay refused until then: "
+              f"{[x - t0 for x in took]} answered after {t1 - t0:.2f} s")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_stop_final_review():
+    section("Stop (final review of #191): one deadline for the Stop's window "
+            "with a threaded conductor (the press answers once the fade is "
+            "over); the Stream Deck's Stop waits for the conductor too; a "
+            "Start now waits for a dark fade still running or is refused "
+            "with what to do, and a fade running 10 s is a fault; a Stop's "
+            "Hold is never put back over a Start now, and when it comes back "
+            "it never disarms or cuts the pump; a Stop on a Hold marks it "
+            "dark; the at-press conductor Stop comes before the scheduler's "
+            "step")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    C = _cond_mod()
+    # One deadline, a threaded conductor on real time: the screen's Stop
+    # answers once the conductor's fade (1 s) is over.
+    R = _RemoteRig(S, conductor=False)
+    rig = _CondRig(time.monotonic)
+    c = C.Conductor(rig, rig, lambda: None, threaded=True)
+    try:
+        R.svc.conductor = c
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        t0 = time.monotonic()
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        took = time.monotonic() - t0
+        check(st == 200 and not c.snapshot()["busy"] and took < 3.6,
+              f"the Stop answers once the conductor's fade is over, within "
+              f"one 3 s window: {took:.2f} s busy {c.snapshot()['busy']}")
+    finally:
+        c.close()
+        R.close()
+    # The Stream Deck's Stop (web.py) waits for the conductor to take it.
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        took = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.6),
+                                     took.append(time.monotonic()),
+                                     real_cs(*a, **kw))[2]
+        st, _h, out = _ask(R.httpd, "POST", "/api/stop",
+                           {"screen": "Stream Deck", "halt": True},
+                           client=("127.0.0.1", 50000))
+        t1 = time.monotonic()
+        check(took and took[0] <= t1,
+              f"the deck's Stop answers only once the conductor has taken "
+              f"it: {took} {t1}")
+    finally:
+        R.close()
+    # The at-press conductor Stop comes before the scheduler's step.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        order = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.1),
+                                     order.append("conductor"),
+                                     real_cs(*a, **kw))[2]
+        real_hs = R.svc.halt_schedule
+        R.svc.halt_schedule = lambda *a, **kw: (order.append("scheduler"),
+                                                real_hs(*a, **kw))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(order[:2] == ["conductor", "scheduler"],
+              f"the press waits (0.25 s at most) for the conductor to take "
+              f"the Stop before the scheduler's step: {order}")
+    finally:
+        R.close()
+    # A Start now while a dark fade still runs: waits, then is refused with
+    # what to do; one running 10 s is a fault.
+    R = _RemoteRig(S)
+    try:
+        class _Busy:
+            threaded = True
+            stops = 0
+
+            def snapshot(self):
+                return {"busy": True, "look": "STOPPED_DARK",
+                        "busy_s": 12.0}
+
+            def wait_idle(self, timeout):
+                return False
+        real_c = R.svc.conductor
+        R.svc.conductor = _Busy()
+        try:
+            r = R.svc.operator_press("start-now", "Andy", "Rack screen",
+                                     confirmed=True, preroll=False)
+        finally:
+            R.svc.conductor = real_c
+        check(not r["ok"] and "still being taken dark" in r["text"] and
+              R.svc.machine.running == 0 and
+              any("taking the rig dark" in f
+                  for f in R.svc.machine.faults),
+              f"a Start now while the Stop's fade still runs is refused "
+              f"with what to do, and 10 s of it is a fault: {r} "
+              f"{R.svc.machine.faults}")
+    finally:
+        R.close()
+    # A Stop's Hold is never put back by a Start now's own tick, and when
+    # it comes back it never disarms (nor cuts the pump: no Stop count).
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        R.now[0] = _den(S, 18, 10)
+        R.svc.operator_press("start-now", "Andy", "Rack screen",
+                             confirmed=True, preroll=False)
+        R.settle()
+        R.now[0] = _den(S, 18, 10, 1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 17))
+        R.settle()
+        check(R.svc.machine.state == S.STANDBY, "setup: the show ended")
+        dark = []
+        real_ss = R.c.show_stopped
+        R.c.show_stopped = lambda *a, **kw: (dark.append(a),
+                                             real_ss(*a, **kw))[1]
+        R.now[0] = _den(S, 18, 17, 1)
+        r = R.svc.operator_press("start-now", "Andy", "Rack screen",
+                                 confirmed=True, preroll=False)
+        R.settle()
+        check(r["ok"] and R.svc.machine.state == S.SHOW and not dark,
+              f"a Start now before the next tick starts its show, and the "
+              f"Hold is not put back over it (no dark asked): {r} {dark}")
+        R.now[0] = _den(S, 18, 17, 2)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 24))
+        R.settle()
+        disarms, stops = R.rig.count("flames_disarm_all"), R.c.stops
+        R.now[0] = _den(S, 18, 24, 1)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and dark and
+              R.rig.count("flames_disarm_all") == disarms and
+              R.c.stops == stops,
+              f"when the Hold comes back it asks the plain dark, never a "
+              f"Stop: no disarm, no Stop counted (so the pump is not cut): "
+              f"{R.svc.machine.state} {dark} "
+              f"{R.rig.count('flames_disarm_all') - disarms} "
+              f"{R.c.stops - stops}")
+        # A Stop on an operator's Hold marks it dark.
+        R.svc._stop_carry = None
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and not R.svc.machine.dark,
+              f"setup: an operator's Hold, not dark: {R.svc.machine.state} "
+              f"{R.svc.machine.dark}")
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.stop_hold and R.svc.machine.dark,
+              "a Stop on it marks it the Stop's, and dark")
     finally:
         R.close()
     print("  ok")
@@ -58480,8 +60066,9 @@ def test_stop_says_when_its_flame_disarm_failed():
     # The Rack screen.
     check("el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :"
           in page, "the Rack screen's Stop says what came back")
-    check("Stop playback and disarm every flame group." in page,
-          "its confirm says Stop disarms every flame group")
+    check("Tap twice. Disarms every flame group and every laser," in page,
+          "its words say Stop disarms every flame group (there is no "
+          "confirm box: a double tap, Jeff 2026-10-30)")
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function stopWords" in logic, "stopWords is pure page logic")
     node = _sh.which("node")
@@ -58630,7 +60217,12 @@ def test_stop_halt_review_of_130():
     del calls[:]
 
     class _Svc2(_Svc):
-        def operator_press(self, what, who, screen, confirmed=False):
+        def operator_press(self, what, who, screen, confirmed=False,
+                           detail=""):
+            if what == "stop-hold":
+                # Stop holds between shows (Jeff, 2026-10-30).
+                self.machine.state = "HOLD"
+                return {"ok": True, "text": "On Hold."}
             self.machine.state = "STANDBY"
             return {"ok": False, "text": "No show is running."}
     svc2 = _Svc2()
@@ -58638,9 +60230,11 @@ def test_stop_halt_review_of_130():
     rm.schedule = svc2
     rm.morning = None
     out = rm.halt("", "Stream Deck")
-    check(out["failed"] == [] and out["show"]["ok"] and
-          not out["show_ended"] and "already ended" in out["show"]["text"],
-          f"a show that ended by itself meanwhile: no failure: {out}")
+    check(out["failed"] == [] and out["show"] is None and
+          not out["show_ended"] and out["hold"]["ok"] and
+          svc2.machine.state == "HOLD",
+          f"a show that ended by itself meanwhile: no failure, and the "
+          f"Stop holds the schedule instead (Jeff, 2026-10-30): {out}")
     # The loopback check on "halt" is the engine's own (_halt_asked).
     from ltcplay import web as web_mod
 
@@ -59179,14 +60773,19 @@ def test_stop_halt_second_review_of_130():
             return True
 
     class _RmW:
+        schedule = _SvcW()
+
         def halt(self, who, screen):
             return {"flames": None, "lasers": None, "lasers_blank": None,
                     "show": {"ok": True, "text": ""}, "show_ended": True,
                     "failed": []}
 
+        # The remote's one-deadline wait (final review of #191, G2).
+        wait_stop_window = RM.Remote.wait_stop_window
+
     class _Srv:
         remote = _RmW()
-        schedule = _SvcW()
+        schedule = _RmW.schedule
 
     class _H:
         server = _Srv()
@@ -59194,8 +60793,8 @@ def test_stop_halt_second_review_of_130():
         def _who_where(self, body):
             return "", "Stream Deck"
     out = web_mod.Handler._halt(_H(), {})
-    check(waits == [("flush", web_mod.HALT_FADE_WAIT_S),
-                    ("idle", web_mod.HALT_FADE_WAIT_S)] and
+    check([w[0] for w in waits] == ["flush", "idle"] and
+          all(0 < w[1] <= web_mod.HALT_FADE_WAIT_S for w in waits) and
           out.get("show", {}).get("ok"),
           f"a show ended: the conductor's calls flushed and its fade "
           f"waited for, before playback stops: {waits}")
@@ -59228,15 +60827,18 @@ def test_stop_halt_second_review_of_130():
     q.put(mk[4])
     gate.set()
     q.flush(3)
-    check([g.method for g in gone] == ["start_show", "show_starting"] and
-          ran == ["intermission", "hold", "start_show", "show_stopped"] and
+    check([g.method for g in gone] == ["start_show", "show_starting",
+                                       "hold"] and
+          ran == ["intermission", "start_show", "show_stopped"] and
           all(g.done.is_set() and g.ok is False for g in gone),
-          f"Stop drops only the show starts decided before it and still "
-          f"waiting (a start decided after it stays): {ran} "
+          f"Stop drops the show starts and the Hold decided before it "
+          f"and still waiting (a start decided after it stays): {ran} "
           f"{[g.method for g in gone]}")
     check(set(SV._ConductorCalls.STOP_DROPS) ==
-          {"start_show", "show_starting"},
-          "never a Reset, Hold or Resume: Stop is not an Abort")
+          {"start_show", "show_starting", "hold", "resume"},
+          "a Stop supersedes a waiting Hold, Resume and show start, as an "
+          "Abort does (Jeff, 2026-10-30), but never a Reset: Stop latches "
+          "nothing")
     print("  ok")
 
 
@@ -71102,6 +72704,12 @@ def test_timed_purge_every_end_cause():
             R.ask("POST", "/api/remote/stop", {"seen": R.seen()},
                   client=loop)
             check_end(m)
+            # Stop holds the schedule (Jeff, 2026-10-30), and a Hold
+            # refuses a timed purge, so Resume, as after a Hold below.
+            check(R.svc.machine.state == "HOLD",
+                  f"Stop left the schedule on Hold: {R.svc.machine.state}")
+            R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
+                  client=loop)
         # Abort.
         if start():
             m = ended("Abort", "pressed Abort")
@@ -92920,7 +94528,7 @@ const t = (c, m) => { if(!c) out.push(m); };
 const ck = prerollLook({state:"checking", label:"show 2 (18:00)", items:[]});
 t(ck.checking && ck.word === "Checking" && /^Checking the rig before show 2/.test(ck.label), "checking: " + JSON.stringify(ck));
 const sl = startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}, preroll:{state:"checking"}}, false, false);
-t(sl.label === "Checking" && sl.disabled === true && sl.sub === "checking the rig", "Start now reads Checking: " + JSON.stringify(sl));
+t(sl.mode === "stop" && sl.label === "Stop" && sl.disabled === false && sl.sub === "checking the rig", "a show is about to play, so Start now is Stop (Jeff, 2026-10-30), checking the rig: " + JSON.stringify(sl));
 const fl = prerollLook({state:"failed", label:"show 2", age_s:3, items:[{name:"Audio", ok:true}, {name:"Video", ok:false, text:"MadMapper did not answer the timecode"}]});
 t(/Video FAILED: MadMapper did not answer the timecode/.test(fl.trouble) && !/Audio/.test(fl.trouble), "the failure line: " + JSON.stringify(fl));
 t(prerollLook({state:"failed", manual:true, age_s:3, items:[]}).trouble === "", "a Pre-check's failure is no rack line");
@@ -96383,7 +97991,11 @@ s = base(); s.schedule.start_blocked = {text:"The show audio is missing."};
 t(goLook(s, false, true).blocked === "The show audio is missing.", "a start the engine would refuse says why");
 s = base(); s.preroll = {state:"checking", label:"Show 4"};
 t(goLook(s, false, true).mode === "checking" && goLook(s, false, true).off, "the rig being checked: nothing to start (1.0's Checking)");
-t(goLook(s, false, true).mode === startLook(s, false, false).label.toLowerCase(), "the rig check: 1.0 says Checking too");
+t(goLook(s, false, true).mode === "checking" && startLook(s, false, false).mode === "stop" && stopShows(s), "the rig check: 2.0's big button says Checking, and Stop is drawn (1.0's Start now is Stop then, Jeff 2026-10-30)");
+// A Stop's Hold stands until Resume, also with nothing held right now
+// (cold review of #191 round 2): the top line and the big button say so.
+{ const sh = base(); sh.schedule.state = "CLOSING"; sh.schedule.stop_held = true;
+t(nextStep(sh, false, true, []).text === "Held after Stop: press Resume." && goLook(sh, false, true).mode === "resume" && goLook(sh, false, true).why === "Held after Stop", "a Stop's Hold: Held after Stop, press Resume: " + JSON.stringify(nextStep(sh, false, true, []))); }
 t(/Checking the rig/.test(nextStep(s, false, true, []).text) && pillLook(s, false).text === "CHECKING RIG", "the rig check is said");
 s = base(); s.preroll = {state:"failed", label:"Show 4", age_s:5, show_check:{label:"Show 4", items:[{name:"Video", ok:false, text:"no"}], off:["video"]}};
 t(/Rig check failed/.test(nextStep(s, false, true, []).text), "a failed rig check: the next step says so");
@@ -96502,6 +98114,20 @@ const posts = [];
 const realFetch = window.fetch;
 window.fetch = function(u, o){
   if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
+  // A show live, as the engine would say it (Stop is drawn only then).
+  if(window.__live && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
+      j.schedule = Object.assign({}, j.schedule, {state:"SHOW", running:1});
+      j.show = Object.assign({}, j.show, {running:true});
+      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+    });
+  // Run on with nothing playing (between shows): Run off is drawn.
+  if(window.__runon && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
+      j.show = Object.assign({}, j.show, {running:true});
+      if(j.schedule) j.schedule.start_blocked = null;
+      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+    });
   if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
   if(window.__fail && o && o.method === "POST" && window.__fail.test(String(u)))
     return Promise.resolve(new Response(JSON.stringify({error:"Refused for the test."}), {status:409, headers:{"Content-Type":"application/json"}}));
@@ -96604,13 +98230,36 @@ async function presses(){
   await wait(2500);
   document.getElementById("b-hold").click(); await wait(300);
   res.hold = n("/api/remote/hold");
-  document.getElementById("b-stop").click(); await wait(300);
-  res.stop_before_yes = n("/api/remote/stop");
+  // Stop show (Jeff, 2026-10-30): not there with nothing playing; with a
+  // show live, a double tap with no sheet: the first tap sends nothing.
+  const sb = document.getElementById("b-stop");
+  res.stop_calm_shown = shown(sb);
+  sb.click(); await wait(300);
+  res.stop_calm_posts = n("/api/remote/stop");
+  window.__live = true; await wait(1600);
+  res.stop_live_shown = shown(sb) && !sb.disabled;
+  res.stop_live_red = sb.className.split(" ").includes("red") && !sb.className.includes("redline");
+  sb.click(); await wait(300);
+  res.stop_after_one = n("/api/remote/stop");
+  res.stop_label_one = document.getElementById("stop-l").textContent;
   res.sheet = !document.getElementById("sheet").hidden;
-  const yes = document.querySelector('#sh-row [data-i="1"]');
-  if(yes) yes.click();
-  await wait(400);
-  res.stop_after_yes = n("/api/remote/stop");
+  sb.click(); await wait(400);
+  res.stop_after_two = n("/api/remote/stop");
+  res.sheet_after = !document.getElementById("sheet").hidden;
+  window.__live = false; await wait(2600);
+  // Run off (cold review of #191, B1): with Run on and nothing playing it
+  // is in Stop's place, full colour; it asks, then sends run-off.
+  window.__runon = true; await wait(1600);
+  const ro = document.getElementById("b-runoff");
+  res.runoff_shown = shown(ro) && !ro.disabled && !shown(sb);
+  ro.click(); await wait(300);
+  res.runoff_sheet = !document.getElementById("sheet").hidden;
+  res.runoff_before_yes = n("/api/remote/run-off");
+  const ryes = document.querySelector('#sh-row [data-i="1"]');
+  if(ryes) ryes.click();
+  await wait(500);
+  res.runoff_after_yes = n("/api/remote/run-off");
+  window.__runon = false; await wait(2600);
   const arm = document.querySelector('[data-arm="0"]');
   const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
   arm.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
@@ -96746,7 +98395,11 @@ function inactSnap(){
   s.hz = [...document.querySelectorAll("#hazers [data-hzb]")].map(b => ({dis:b.disabled, w:b.querySelector(".hw").textContent}));
   s.safe = ["b-abort", "b-hold", "b-stop", "b-disall"].map(id => {
     let op = 1; for(let p = q(id); p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
-    return {id:id, dis:q(id).disabled, filt:filtOf(q(id)) ? filtOf(q(id)).f : "none", op:op};
+    // Stop show is drawn only with something to stop, or no contact
+    // (Jeff, 2026-10-30); otherwise its place is empty.
+    const want = id !== "b-stop" || stopShows(ST) || stale();
+    return {id:id, dis:q(id).disabled, filt:filtOf(q(id)) ? filtOf(q(id)).f : "none", op:op,
+            want:want, vis:getComputedStyle(q(id)).visibility};
   });
   // Text under the calm tone keeps 4.5:1 (the filter applied to both).
   s.lowc = [];
@@ -97440,8 +99093,10 @@ def test_ui2_calm_screens_and_brand():
     # three groups, lasers and hazers are 5 px over at 1366x768 in this
     # browser on bench-build too; the hazers' own test draws their row.
     layout = ("a long show name", "a long show name, running")
-    safe_ok = lambda sn: all(not x["dis"] and "saturate" not in x["filt"]
-                             and x["op"] == 1 for x in sn["safe"])
+    safe_ok = lambda sn: all(
+        (not x["dis"] and "saturate" not in x["filt"] and x["op"] == 1
+         and x.get("vis") != "hidden") if x.get("want", True) else
+        (x["dis"] and x.get("vis") == "hidden") for x in sn["safe"])
     for what, kind, sz, frag, routes in runs:
         got = _rack_screen_in_chromium(chrome, page,
                                        _ui2_status_inactive(
@@ -97631,7 +99286,8 @@ def test_ui2_show_tab_in_a_browser():
             "nothing under it; controls 56 px (the header 44), text "
             "20 px, nothing cut or overlapping (a 390x844 phone too, whose "
             "pane may scroll); and pressed: Abort fires on "
-            "the second tap only, Stop only after its Yes, a hold to arm "
+            "the second tap only, Stop (drawn only with something to stop) on "
+            "its second tap with no sheet, a hold to arm "
             "beats while held and lets go on release")
     one, two = _ui2_pages()
     lo = one[one.find('<script id="remote-logic">') +
@@ -97668,9 +99324,13 @@ def test_ui2_show_tab_in_a_browser():
     for what, status, sz, frag in runs:
         if not frag:
             frag = "?tour=0"
+        # The presses run also walks Stop with a show live and Run off
+        # with Run on (cold review of #191), each a few polls long.
         got = _rack_screen_in_chromium(chrome, page, status, sz,
                                        measure_js=_UI2_MEASURE_JS,
-                                       frag=frag, budget_ms=15000)
+                                       frag=frag, budget_ms=30000
+                                       if frag.startswith("?presses")
+                                       else 15000)
         for (w, h), res in got.items():
             where = f"2.0, {what}, {w}x{h}"
             if not check(isinstance(res, dict) and "layout" in res,
@@ -97739,7 +99399,10 @@ def test_ui2_show_tab_in_a_browser():
                       f"{where}: the slot's button acts only on the alert "
                       f"shown at finger-down: {fd}")
                 # (DAY beats as 1.0's Startup page does while it shows.)
-                check(fd and all(fd["mini"]) and fd["next_shown"] and
+                # Stop show is not drawn with nothing playing (Jeff,
+                # 2026-10-30); its place stays empty.
+                check(fd and fd["mini"] == [True, False, True] and
+                      fd["next_shown"] and
                       [r for r in fd["mini_routes"]
                        if r != "/api/remote/morning-open"] ==
                       ["/api/remote/hold", "/api/remote/disarm-all"],
@@ -97761,9 +99424,23 @@ def test_ui2_show_tab_in_a_browser():
                       f"{where}: Abort's first tap sends nothing, its "
                       f"second sends 1.0's Abort: {p}")
                 check(p and p["hold"] == 1, f"{where}: Hold is one tap")
-                check(p and p["sheet"] and p["stop_before_yes"] == 0 and
-                      p["stop_after_yes"] == 1,
-                      f"{where}: Stop asks first, then sends: {p}")
+                check(p and not p["stop_calm_shown"] and
+                      p["stop_calm_posts"] == 0,
+                      f"{where}: with nothing playing there is no Stop, "
+                      f"and a tap where it was sends nothing: {p}")
+                check(p and p["runoff_shown"] and p["runoff_sheet"] and
+                      p["runoff_before_yes"] == 0 and
+                      p["runoff_after_yes"] == 1,
+                      f"{where}: with Run on and nothing playing, Run off is "
+                      f"in Stop's place, asks first, then sends run-off: "
+                      f"{p}")
+                check(p and p["stop_live_shown"] and p["stop_live_red"] and
+                      p["stop_after_one"] == 0 and not p["sheet"] and
+                      p["stop_label_one"] == "Tap again" and
+                      p["stop_after_two"] == 1 and not p["sheet_after"],
+                      f"{where}: with a show live Stop is solid red, its "
+                      f"first tap sends nothing and asks nothing, its "
+                      f"second sends Stop: {p}")
                 check(p and p["arm_beats"] >= 2 and
                       p["arm_released_while_held"] == 0 and
                       p["arm_released"] >= 1 and
@@ -97812,7 +99489,7 @@ def test_ui2_show_tab_in_a_browser():
                       f"still work: {sl}")
                 check(p and set(p["routes"]) <= {
                     "/api/remote/abort", "/api/remote/hold",
-                    "/api/remote/stop", "/api/remote/arm-hold",
+                    "/api/remote/stop", "/api/remote/run-off", "/api/remote/arm-hold",
                     "/api/remote/arm-release", "/api/remote/disarm-all",
                     "/api/remote/group-disarm"},
                       f"{where}: nothing else was posted: {p}")
@@ -98658,11 +100335,19 @@ def test_fireball_timeline_store():
         ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
                                      0, who="Andy", replace_unreadable=True)
         h = store.history()
-        check(ok and entry["rev"] == 1 and h[0].endswith(
+        check(ok and entry["rev"] == int(wall[0] * 1000) + 1 and h[0].endswith(
             "-rev0-unreadable.json") and open(os.path.join(
                 store.history_dir(), h[0]), encoding="utf-8").read() ==
               '{"fireball_timeline_format": 1, "rev": 1, "shows": {}, '
-              '"x": 1}', f"saved over a broken file, which is kept: {h[:1]}")
+              '"x": 1}', f"saved over a broken file, which is kept, the "
+                         f"new revision from the clock (never back at 1: "
+                         f"round-5 review B 5): {entry and entry['rev']} "
+                         f"{h[:1]}")
+        ok, text, _e = store.save(show, "Show", 60.0, "timeline", stg(), rev,
+                                  who="Andy")
+        check(not ok and "someone saved" in text,
+              f"a page that read the file before it broke cannot save over "
+              f"the rebuilt one: {text}")
         # A file that was saved and is now missing: not "nothing saved
         # yet" (an FSEQ fallback): a fault, saves refused until replaced.
         os.remove(store.path)
@@ -98965,8 +100650,13 @@ def test_fireball_timeline_docs_in_plain_words():
                  "flamesafe down or not reporting",
                  "no record could be written in the settings folder",
                  "was released with it", "only ever goes up",
-                 "other channels than 55 to 59, the record watches "
-                 "nothing"):
+                 "both tanks become NOT KNOWN and are written so",
+                 "PENDING (write first, then charge)",
+                 "the automatic charge is **not sent**",
+                 "the charge record cannot be saved: automatic charging is "
+                 "off", "is never held back by it",
+                 "A clock set back can only cost an extra NOT KNOWN",
+                 "LTC Player stopped with PENDING on the record"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
     s = _fb_doc_part("OPERATOR.md", "### In a show set to Timeline", "\n### ")
@@ -99691,9 +101381,12 @@ def test_fireball_charge_state():
               f"flamesafe's late report of that Air inside the shot: still "
               f"EMPTY after it: {C21.tr.state('air')}")
         # flamesafe's fireball group on other channels: 55 to 59 are not
-        # the fireball, nothing is recorded, and the view says why (round-4
-        # review); back on 55 to 59, it records again.
-        C23 = _fbc(None)
+        # the fireball, nothing is recorded, both tanks are NOT KNOWN and
+        # written so (round-5 review, F3), and the view says why; back on
+        # 55 to 59 they stay NOT KNOWN (never a stale EMPTY) until a
+        # charge, a shot, a Purge or an admin.
+        w23 = tempfile.mkdtemp(dir=work)
+        C23 = _fbc(w23)
         grp = {"slots": [60, 61, 62, 63, 64], "sent": [255, 0, 0, 0, 0]}
         C23.tr._flames = lambda: {
             "connected": True, "stale": False, "age_ms": 10,
@@ -99704,17 +101397,205 @@ def test_fireball_charge_state():
         C23.tr.see(_fbc_frame(fuel=True, valve=True), "armed")
         C23.tr.see(_fbc_frame(air=True), "armed")
         C23.tr.pump()
-        check(C23.tr.state("fuel") == E and C23.tr.state("air") == E and
+        check(C23.tr.state("fuel") == U and C23.tr.state("air") == U and
               "not 55 to 59" in C23.tr.view()["fault"] and
               any(a[2] == "group_fault" and k.get("fault")
-                  for a, k in C23.lines),
-              f"the fireball group off 55 to 59: nothing recorded, said: "
-              f"{C23.tr.view()['fault']}")
+                  for a, k in C23.lines) and
+              _j.load(open(os.path.join(w23, FC.FILE)))["tanks"]["fuel"][
+                  "state"] == "unknown",
+              f"the fireball group off 55 to 59: nothing recorded, both NOT "
+              f"KNOWN, written: {C23.tr.view()['fault']}")
         grp["slots"], grp["sent"] = [59, 58, 57, 56, 55], [0, 0, 0, 0, 0]
         C23.tr._read_armed()
+        check(C23.tr.state("fuel") == U and C23.tr.state("air") == U and
+              not C23.tr.group_fault,
+              "back on 55 to 59 (any order): still NOT KNOWN, never a stale "
+              "EMPTY")
         C23.tr.see(_fbc_frame(fuel=True), "armed")
-        check(C23.tr.state("fuel") == C_ and not C23.tr.group_fault,
-              "back on 55 to 59 (any order): recorded again")
+        check(C23.tr.state("fuel") == C_, "and a charge seen is recorded")
+        # Round 5 (review A F1/F2/F4, review B 1): revisions from the
+        # clock, a write-ahead mark before an automatic charge, and a
+        # leftover .tmp never brings back an EMPTY on its own.
+        def _fresh(sub):
+            d = os.path.join(work, sub)
+            os.makedirs(d)
+            return d
+        # The revision is above the clock in milliseconds.
+        C24 = _fbc(_fresh("r24"))
+        C24.tr.pump()
+        check(C24.tr.rev >= int(C24.wall[0] * 1000) and
+              _j.load(open(C24.tr.path))["rev"] == C24.tr.rev,
+              f"the revision is above the clock in ms: {C24.tr.rev}")
+        # F2: the main file unreadable at start (an antivirus lock), the
+        # renames then refused, the main readable again at the restart:
+        # the newer .tmp (CHARGED) wins, never the old main's EMPTY.
+        d25 = _fresh("r25")
+        C25 = _fbc(d25)
+        for _ in range(10):
+            C25.tr.see(_fbc_frame(fuel=True), "armed")
+            C25.tr.see(_fbc_frame(), "armed")
+            C25.tr.see(_fbc_frame(valve=True), "armed")
+            C25.tr.see(_fbc_frame(), "armed")
+        C25.tr.pump()
+        old_rev = _j.load(open(C25.tr.path))["rev"]
+        import builtins as _bi
+        real_open_ = _bi.open
+
+        def locked_main(p_, *a, **k):
+            mode = a[0] if a else k.get("mode", "r")
+            if str(p_).endswith(FC.FILE) and "r" in mode:
+                raise PermissionError(13, "locked by antivirus")
+            return real_open_(p_, *a, **k)
+        _bi.open = locked_main
+        try:
+            C26 = _fbc(d25)
+        finally:
+            _bi.open = real_open_
+        check(C26.tr.state("fuel") == U and "could not be read" in
+              C26.tr.fault, f"the main file locked at start: NOT KNOWN: "
+                            f"{C26.tr.fault}")
+        real_rep = os.replace
+        os.replace = held
+        try:
+            C26.wall[0] -= 3600      # even a clock an hour behind
+            C26.tr.confirm_empty("Andy")
+            C26.tr.see(_fbc_frame(fuel=True), "armed")
+            C26.tr.see(_fbc_frame(air=True), "armed")
+            C26.tr.see(_fbc_frame(), "armed")
+            C26.tr.pump()
+        finally:
+            os.replace = real_rep
+        C27 = _fbc(d25)
+        check(C27.tr.state("fuel") == U and C27.tr.state("air") == U,
+              f"the main readable again, the clock an hour behind: never "
+              f"the old main's EMPTY (NOT KNOWN): {C27.tr.state('fuel')} "
+              f"{C27.tr.state('air')}")
+        # The same with the clock right: the newer .tmp wins (CHARGED).
+        os.remove(os.path.join(d25, FC.FILE + ".tmp"))
+        _bi.open = locked_main
+        try:
+            C26b = _fbc(d25)
+        finally:
+            _bi.open = real_open_
+        os.replace = held
+        try:
+            C26b.wall[0] += 1.0      # time has moved on since the old main
+            C26b.tr.confirm_empty("Andy")
+            C26b.tr.see(_fbc_frame(fuel=True), "armed")
+            C26b.tr.see(_fbc_frame(air=True), "armed")
+            C26b.tr.see(_fbc_frame(), "armed")
+            C26b.tr.pump()
+        finally:
+            os.replace = real_rep
+        C27b = _fbc(d25)
+        check(C27b.tr.state("fuel") == C_ and C27b.tr.state("air") == C_ and
+              C27b.tr.rev > old_rev,
+              f"the main readable again: the newer .tmp wins (CHARGED): "
+              f"{C27b.tr.state('fuel')} {C27b.tr.state('air')}")
+        # The main file unreadable and a readable .tmp beside it: which is
+        # newer cannot be told, so NOT KNOWN, never the .tmp alone.
+        _bi.open = locked_main
+        try:
+            C27c = _fbc(d25)
+        finally:
+            _bi.open = real_open_
+        check(os.path.exists(os.path.join(d25, FC.FILE + ".tmp")) and
+              C27c.tr.state("fuel") == U and C27c.tr.state("air") == U,
+              f"main unreadable, a readable .tmp: NOT KNOWN: "
+              f"{C27c.tr.state('fuel')}")
+        # F4: the first run's write leaves an EMPTY .tmp it could not
+        # rename, and the process stops: never trusted on its own.
+        d28 = _fresh("r28")
+        os.replace = held
+        try:
+            C28 = _fbc(d28)
+        finally:
+            os.replace = real_rep
+        check(os.path.exists(os.path.join(d28, FC.FILE + ".tmp")) and
+              not os.path.exists(os.path.join(d28, FC.FILE)) and
+              C28.tr.state("fuel") == U, "the first run's rename refused: "
+                                         "NOT KNOWN, an EMPTY .tmp left")
+        C29 = _fbc(d28)
+        check(C29.tr.state("fuel") == U and C29.tr.state("air") == U and
+              "Only" in C29.tr.fault,
+              f"a restart finds only that .tmp: NOT KNOWN, never its EMPTY: "
+              f"{C29.tr.fault}")
+        # Review B 1: a purge's (or a shot's) EMPTY left in .tmp by a
+        # refused rename, then a charge whose write fails at open, then two
+        # restarts: never EMPTY.
+        for what in ("purge", "valve"):
+            d30 = _fresh("r30" + what)
+            C30 = _fbc(d30)
+            C30.tr.see(_fbc_frame(fuel=True), "armed")
+            C30.tr.see(_fbc_frame(air=True), "armed")
+            C30.tr.see(_fbc_frame(), "armed")
+            C30.tr.pump()
+            os.replace = held
+            try:
+                C30.tr.see(_fbc_frame(**{what: True}), "armed")
+                C30.tr.see(_fbc_frame(), "armed")
+                C30.tr.pump()
+            finally:
+                os.replace = real_rep
+            C30.tr._write = lambda doc: (_ for _ in ()).throw(
+                PermissionError(13, "folder locked"))
+            C30.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+            C30.tr.see(_fbc_frame(fuel=True), "armed")
+            C30.tr.see(_fbc_frame(), "armed")
+            C30.tr.pump()
+            C31 = _fbc(d30)
+            C32 = _fbc(d30)
+            check(C31.tr.state("fuel") == U and C32.tr.state("fuel") == U,
+                  f"{what}'s EMPTY in .tmp, Andy's Fuel not written, two "
+                  f"restarts: Fuel NOT KNOWN: {C31.tr.state('fuel')} "
+                  f"{C32.tr.state('fuel')}")
+        # The write-ahead mark: "wait" until it is on disk, then "ok"; a
+        # restart then makes EMPTY tanks NOT KNOWN; a shot clears it.
+        d33 = _fresh("r33")
+        C33 = _fbc(d33)
+        C33.tr.pump()
+        got = [C33.tr.charge_ready()]
+        got.append(C33.tr.charge_ready())
+        C33.tr.pump()
+        got.append(C33.tr.charge_ready())
+        check(got == ["wait", "wait", "ok"] and
+              _j.load(open(C33.tr.path))["pending"] is True,
+              f"the mark is written before an automatic charge may go: {got}")
+        C34 = _fbc(d33)
+        check(C34.tr.state("fuel") == U and C34.tr.state("air") == U and
+              "automatic charge" in C34.tr.fault,
+              f"a restart reads the mark: EMPTY tanks NOT KNOWN: "
+              f"{C34.tr.fault}")
+        C34.tr.see(_fbc_frame(fuel=True), "armed")
+        C34.tr.see(_fbc_frame(), "armed")
+        C34.tr.see(_fbc_frame(valve=True), "armed")
+        C34.tr.see(_fbc_frame(), "armed")
+        C34.tr.pump()
+        check(_j.load(open(C34.tr.path))["pending"] is False and
+              C34.tr.state("fuel") == E,
+              "the shot clears the mark")
+        C35 = _fbc(d33)
+        check(C35.tr.state("fuel") == E and C35.tr.state("air") == E and
+              not C35.tr.fault, "a restart after the shot: EMPTY, no fault")
+        # The mark cannot be written: "failed", the automatic charge is not
+        # sent (fireball_cues), the fault shown.
+        C35.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "folder locked"))
+        first = C35.tr.charge_ready()
+        C35.tr.pump()
+        check(first == "wait" and C35.tr.charge_ready() == "failed" and
+              "could not be written" in C35.tr.view()["fault"],
+              "the mark cannot be written: failed, the fault shown")
+        # A press on the Fireball page asks for the mark, never waits.
+        d36 = _fresh("r36")
+        C36 = _fbc(d36)
+        C36.tr.pump()
+        C36.tr.note_manual({"air"}, "Andy", "Rack screen")
+        C36.tr.pump()
+        check(_j.load(open(C36.tr.path))["pending"] is True,
+              "Andy's charge press writes the mark too")
+        check(_fbc(None).tr.charge_ready() == "ok",
+              "memory only: nothing to wait for")
         # close(): its last write is bounded and never runs beside another
         # writer (round-4 review).
         C22 = _fbc(None)
@@ -102979,6 +104860,20 @@ if __name__ == "__main__":
         test_stop_halt_second_review_of_130,
         test_stop_halt_low_items_of_130,
         test_stop_halt_review_of_132,
+        test_conductor_stop_is_abort_without_the_latch,
+        test_conductor_line_stop_is_urgent_and_supersedes,
+        test_stop_holds_the_schedule_and_leaves_run_on,
+        test_stop_halt_order_hooks_and_programming,
+        test_streamdeck_refractory_starts_at_a_screen_stop,
+        test_stop_at_showtime_never_starts_or_pauses_a_show,
+        test_reset_never_ends_a_stops_hold,
+        test_stops_hold_outlives_the_night,
+        test_fire_ice_stop_while_the_cue_starts,
+        test_stop_hold_stands_until_resume,
+        test_stop_round2_conductor_and_marks,
+        test_stop_hold_round3,
+        test_stop_round3_dark_close_and_timing,
+        test_stop_final_review,
         test_screen_arm_end_to_end_probes,
         test_screen_arming_switch_and_refusals,
         test_engine_stall_probe_memory_is_bounded,
