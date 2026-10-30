@@ -239,6 +239,8 @@ main > #mini{padding:var(--gap) var(--pad) 0}
   border-radius:10px;border:2px solid var(--line);background:#100d0a;color:inherit}
 .pmrow .pmt input:disabled{border-style:dashed;color:#B3A68E}
 .pmrow .b{min-height:56px}
+.pmrow .pmwhy{grid-column:1 / -1;color:#E8D9B8;line-height:1.25;padding:0 4px}
+.pmrow .pmwhy[hidden]{display:none}
 /* Where the flame grid leaves two cells free in its last row, the hazers
    sit there as a 2 by 2 block instead of a row of their own
    (layoutGroups). */
@@ -570,6 +572,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <label class="pmt"><span class="dim">Run time (m:ss)</span><input id="pm-time" type="text" inputmode="numeric" autocomplete="off" maxlength="6" value="5:00" aria-label="Fuel pump run time, minutes and seconds"></label>
         <button class="b green" id="pm-on"><span class="lbl"><span>Fuel pump: On</span><small id="pm-on-why"></small></span></button>
         <button class="b safe" id="pm-off"><svg class="i"><use href="#i-shield"/></svg><span>Pump off</span></button>
+        <!-- Why On cannot be pressed, in full, as text on the screen: a
+             disabled button takes no tap, so a tooltip never shows on an
+             iPad (review B of #189, 1). -->
+        <div class="pmwhy" id="pm-why" hidden></div>
       </div>
     </div>
   </section>
@@ -1885,7 +1891,21 @@ async function hazerTap(i){
 // on purpose. The engine checks it again and runs the timer; this page
 // only shows the countdown from the engine's status. Pump off is never
 // disabled.
-let PUMP_TYPED = false, PUMP_WAS_ON = false;
+let PUMP_TYPED = false, PUMP_WAS_ON = false, PUMP_OFF_SEEN = "", PUMP_BUSY = false, PUMP_OK_AT = 0;
+function pumpReset(v){
+  // The run time back to the default (5:00): after a run is started, a
+  // run ends, Pump off or a Stop.
+  PUMP_TYPED = false;
+  $("pm-time").value = pumpClock((v && v.default_s) || 300);
+}
+function pumpWhyFull(s, v, secs, why){
+  // The reason On cannot be pressed, as a sentence for the line under the
+  // row: the engine's own sentence when it refuses, else the short one.
+  if(!why) return "";
+  if(why === "Pump is on") return "The pump is on. To change the run time, press Pump off, then start it again.";
+  if(v.refusal && why === short8(v.refusal, "Not now: see below")) return "Fuel pump: On cannot be pressed now: " + v.refusal;
+  return "Fuel pump: On cannot be pressed now: " + why + ".";
+}
 function pumpSeconds(text){
   const t = String(text || "").trim();
   let m = /^(\d{1,3})$/.exec(t);
@@ -1914,7 +1934,7 @@ function pumpWhy(s, v, secs){
   if(secs < (v.min_s || 1)) return "Run time too short";
   if(v.max_s && secs > v.max_s) return "Longest is " + pumpClock(v.max_s);
   if(v.settings_error) return "Settings file unreadable";
-  if(v.refusal) return short8(v.refusal, "Not now. Tap for why.");
+  if(v.refusal) return short8(v.refusal, "Not now: see below");
   return "";
 }
 function renderPump(s){
@@ -1931,6 +1951,10 @@ function renderPump(s){
   // A run that ended: the field goes back to the default (5:00).
   if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; $("pm-time").value = pumpClock(v.default_s || 300); }
   PUMP_WAS_ON = !!v.on;
+  // Something turned it off (Stop, Abort, Pump off anywhere): the same.
+  const offKey = v.last_off ? JSON.stringify(v.last_off) : "";
+  if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== "") pumpReset(v);
+  if(offKey) PUMP_OFF_SEEN = offKey; else if(PUMP_OFF_SEEN === "") PUMP_OFF_SEEN = "-";
   const fl = s.flames || {};
   const st = stale() || !fl.connected || !!fl.stale;
   const secs = pumpSeconds($("pm-time").value);
@@ -1939,10 +1963,12 @@ function renderPump(s){
   setText($("pm-state"), pumpWords(v, st));
   const why = pumpWhy(s, v, secs);
   const on = $("pm-on");
-  on.disabled = !!why;
+  on.disabled = !!why || PUMP_BUSY;
   setText($("pm-on-why"), why);
-  on.title = why ? "Fuel pump: On. Not now: " + (v.refusal && why === short8(v.refusal, "Not now. Tap for why.") ? v.refusal : why) :
-    "Fuel pump: On for " + pumpClock(secs) + ". It turns off by itself then.";
+  const full = pumpWhyFull(s, v, secs, why);
+  setText($("pm-why"), full);
+  $("pm-why").hidden = !full;
+  on.title = full || ("Fuel pump: On for " + pumpClock(secs) + ". It turns off by itself then.");
   $("pm-time").disabled = !!v.on;
   // Pump off: never disabled, never quieted (it only takes risk away).
   $("pm-off").disabled = false;
@@ -1955,11 +1981,25 @@ $("pm-time").addEventListener("input", () => {
 $("pm-on").addEventListener("click", async () => {
   const secs = pumpSeconds($("pm-time").value);
   if(secs === null){ say("Run time as m:ss.", "", "bad"); return; }
+  if(PUMP_BUSY) return;
+  PUMP_BUSY = true; $("pm-on").disabled = true;
   const run = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
-  try{ const j = await post("/api/remote/fuel-pump", actor({on: true, seconds: secs, run: run})); say(short8(j.text, "Pump on."), j.text, "ok"); }
-  catch(e){ say(armShort(e.message), e.message, "bad"); }
+  try{
+    const j = await post("/api/remote/fuel-pump", actor({on: true, seconds: secs, run: run}));
+    PUMP_OK_AT = Date.now();
+    pumpReset(ST && ST.pump);
+    say(short8(j.text, "Pump on."), j.text, "ok");
+  }
+  catch(e){
+    // A second tap's "already on" never paints over the first tap's
+    // success (review B of #189, 3).
+    const running = Date.now() - PUMP_OK_AT < 5000 || !!(ST && ST.pump && ST.pump.on);
+    if(!(running && /already on/.test(e.message))) say(armShort(e.message), e.message, "bad");
+  }
+  finally{ PUMP_BUSY = false; if(ST) try{ renderPump(ST); }catch(e){} }
 });
 $("pm-off").addEventListener("click", async () => {
+  pumpReset(ST && ST.pump);
   try{ const j = await post("/api/remote/fuel-pump", actor({on: false})); say(j.text || "The fuel pump is OFF.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
 });

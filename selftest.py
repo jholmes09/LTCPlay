@@ -92813,7 +92813,12 @@ def test_ui2_fuel_pump_row():
           "pumpWords(v, st)" in rp, "the countdown is the engine's left_s")
     check(rp and "if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; "
           '$("pm-time").value = pumpClock(v.default_s || 300); }' in rp and
-          "ltc_ui2_pump" not in two,
+          "ltc_ui2_pump" not in two and
+          "if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== \"\") "
+          "pumpReset(v);" in rp and
+          'pumpReset(ST && ST.pump);\n  try{ const j = await post('
+          '"/api/remote/fuel-pump", actor({on: false}))' in two and
+          "Tap for why" not in two,
           "the run time goes back to the default (5:00) each time the pump "
           "turns off, and no screen remembers another as its default")
     check("\u2013" not in two and "\u2014" not in two, "no dashes")
@@ -92889,6 +92894,8 @@ const realFetch = window.fetch;
 window.fetch = function(u, o){
   if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
   if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  if(window.__already && o && o.method === "POST" && /fuel-pump/.test(String(u)) && /"on":true/.test(String(o.body || "")))
+    return Promise.resolve(new Response(JSON.stringify({error:"The fuel pump is already on (4:59 left). A second press never adds time: press Pump off, then start it again."}), {status:409, headers:{"Content-Type":"application/json"}}));
   return realFetch.apply(this, arguments);
 };
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -92899,6 +92906,9 @@ function look(){
   return {row: !q("pump").hidden && q("pump").getClientRects().length > 0,
     state: q("pm-state").textContent, on_dis: q("pm-on").disabled,
     why: q("pm-on-why").textContent, off_dis: off.disabled,
+    full: q("pm-why").hidden ? "" : q("pm-why").textContent,
+    full_shown: !q("pm-why").hidden && q("pm-why").getClientRects().length > 0 && parseFloat(getComputedStyle(q("pm-why")).fontSize) >= 19.5,
+    msg: q("msg-t").textContent, msg_cls: q("msg").className,
     off_filt: getComputedStyle(off).filter, time: q("pm-time").value,
     time_dis: q("pm-time").disabled,
     safe_dis: ["b-abort", "b-hold", "b-stop"].map(id => q(id) ? q(id).disabled : null),
@@ -92918,7 +92928,18 @@ async function go(){
   q("pm-time").value = "4:30"; q("pm-time").dispatchEvent(new Event("input")); await wait(150);
   out.typed = look();
   posts.length = 0; q("pm-on").click(); await wait(300); out.typed_on = sent();
+  out.after_on = look();
   posts.length = 0; q("pm-on").click(); await wait(300); out.again_on = sent();
+  // Two quick taps: the second answered "already on" never paints over
+  // the first's success.
+  posts.length = 0;
+  q("pm-on").click(); q("pm-on").click(); await wait(400);
+  out.double = {n: sent().length};
+  window.__already = true; posts.length = 0;
+  q("pm-on").click(); await wait(400);
+  out.double.later = sent().length;
+  out.double.msg = q("msg-t").textContent; out.double.cls = q("msg").className;
+  window.__already = false;
   window.__dead = true; await wait(2800);
   out.dead = look();
   posts.length = 0; q("pm-off").click(); await wait(300); out.dead_off = sent();
@@ -93035,10 +93056,19 @@ def test_ui2_fuel_pump_in_a_browser():
                       f"{where}: a time that is not m:ss: On disabled, "
                       f"says why, sends nothing: {r['bad']} {r['bad_on']}")
                 t = r["typed_on"] + r["again_on"]
-                check(len(t) == 2 and all(x["seconds"] == 270 for x in t)
-                      and t[0]["run"] != t[1]["run"],
-                      f"{where}: 4:30 typed posts 270 s, a new press id "
-                      f"each tap: {t}")
+                check(len(t) == 2 and t[0]["seconds"] == 270 and
+                      t[1]["seconds"] == 240 and t[0]["run"] != t[1]["run"],
+                      f"{where}: 4:30 typed posts 270 s, then the field is "
+                      f"back to the default (4:00 here) once On is "
+                      f"answered, and each tap a new press id: {t}")
+                check(r["after_on"]["time"] == "4:00",
+                      f"{where}: On answered: the run time is back to the "
+                      f"default: {r['after_on']['time']}")
+                check(r["double"]["n"] == 1 and r["double"]["later"] == 1 and
+                      "already on" not in r["double"]["msg"] and
+                      "bad" not in r["double"]["cls"],
+                      f"{where}: two quick taps send one press and the "
+                      f"second never paints over the first: {r['double']}")
             if kind == "on":
                 check(a["state"] == "Pump on: 4:12 left" and a["on_dis"] and
                       a["why"] == "Pump is on" and a["time_dis"] and
@@ -93047,12 +93077,14 @@ def test_ui2_fuel_pump_in_a_browser():
                       f"(a second press never adds time): {a} {r['on']}")
             if kind == "refused":
                 check(a["on_dis"] and a["why"] == "an Abort is standing." and
-                      r["on"] == [],
+                      r["on"] == [] and a["full_shown"] and
+                      "Press Reset" in a["full"],
                       f"{where}: the engine's refusal disables On and says "
                       f"why: {a}")
             if kind == "signed out":
                 check(a["on_dis"] and a["why"] == "Sign in" and
-                      r["on"] == [],
+                      r["on"] == [] and a["full_shown"] and
+                      "Sign in" in a["full"],
                       f"{where}: signed out: On disabled, Sign in: {a}")
     print("  ok")
 

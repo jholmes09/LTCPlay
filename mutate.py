@@ -2959,7 +2959,7 @@ MUTATIONS = [
 
  ("ui 2.0: Fuel pump: On is live when the engine would refuse it",
   "ltcplay/web/remote2.html",
-  "  if(v.refusal) return short8(v.refusal, \"Not now. Tap for why.\");",
+  "  if(v.refusal) return short8(v.refusal, \"Not now: see below\");",
   ""),
 
  ("ui 2.0: Fuel pump: On is live while the pump runs",
@@ -2979,8 +2979,28 @@ MUTATIONS = [
 
  ("ui 2.0: one press id for every tap of Fuel pump: On",
   "ltcplay/web/remote2.html",
-  "  const run = String(Date.now()) + \"-\" + String(Math.random()).slice(2, 10);\n  try{ const j = await post(\"/api/remote/fuel-pump\"",
-  "  const run = \"pump\";\n  try{ const j = await post(\"/api/remote/fuel-pump\""),
+  "  const run = String(Date.now()) + \"-\" + String(Math.random()).slice(2, 10);\n  try{\n    const j = await post(\"/api/remote/fuel-pump\"",
+  "  const run = \"pump\";\n  try{\n    const j = await post(\"/api/remote/fuel-pump\""),
+
+ ("ui 2.0: the run time keeps a longer one after a Stop or Pump off elsewhere",
+  "ltcplay/web/remote2.html",
+  "  if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== \"\") pumpReset(v);\n",
+  ""),
+
+ ("ui 2.0: the reason On is disabled is only a tooltip",
+  "ltcplay/web/remote2.html",
+  "  $(\"pm-why\").hidden = !full;",
+  "  $(\"pm-why\").hidden = true;"),
+
+ ("ui 2.0: a second tap's already on paints over the first tap's success",
+  "ltcplay/web/remote2.html",
+  "    if(!(running && /already on/.test(e.message))) say(armShort(e.message), e.message, \"bad\");",
+  "    say(armShort(e.message), e.message, \"bad\");"),
+
+ ("ui 2.0: the run time keeps a longer one after On is answered",
+  "ltcplay/web/remote2.html",
+  "    PUMP_OK_AT = Date.now();\n    pumpReset(ST && ST.pump);",
+  "    PUMP_OK_AT = Date.now();"),
 
  ("ui 2.0: Space on a focused Pump off is not kept from firing",
   "ltcplay/web/remote2.html",

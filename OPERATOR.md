@@ -866,8 +866,11 @@ he triggers it."
   **Pump off**. Type the run time, then tap Fuel pump: On. When On cannot
   be pressed it is greyed and says why in a few words. Pump off is never
   greyed. The row is there only when `flamesafe.json` lists a pump.
-  Interface 1.0 and the Stream Deck have no pump control; their Stop
-  turns it off all the same.
+  When On cannot be pressed, the line under the row says why in full.
+  Interface 1.0 and the Stream Deck have no pump control. Every Abort
+  turns the pump off, and so does every Stop that is carried out (the
+  Stream Deck's Stop always is); a Stop that is refused, such as 1.0's
+  plain Stop during a live show, leaves the pump as it was.
 - **Run time.** The default is **5:00**: unless you set another time
   before you turn it on, the pump runs 5 minutes and turns off by itself.
   To run it longer or shorter, set the time first, in minutes and
