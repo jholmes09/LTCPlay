@@ -1943,6 +1943,7 @@ let PUMP_TYPED = false, PUMP_WAS_ON = false, PUMP_OFF_SEEN = "", PUMP_BUSY = fal
 // after none came (delta review of #189, 3), and how long it waits.
 let PUMP_NOTE = "", PUMP_NOTE_AT = 0, PUMP_BOOT = "";
 const PUMP_ANSWER_MS = 10000;
+const PUMP_MAX_S = 600;     // Jeff: never more than 10:00
 function pumpReset(v){
   // The run time back to the default (5:00): after a run is started, a
   // run ends, Pump off or a Stop.
@@ -1954,6 +1955,7 @@ function pumpWhyFull(s, v, secs, why){
   // row: the engine's own sentence when it refuses, else the short one.
   if(!why) return "";
   if(why === "Pump is on") return "The pump is on. To change the run time, press Pump off, then start it again.";
+  if(/^Longest is /.test(why)) return "The fuel pump runs " + why.slice(11) + " at most" + (why.slice(11) === "10:00" ? " (ten minutes)" : "") + ". Set a shorter run time, then press Fuel pump: On.";
   if(v.refusal && why === short8(v.refusal, "Not now: see below")) return "Fuel pump: On cannot be pressed now: " + v.refusal;
   return "Fuel pump: On cannot be pressed now: " + why + ".";
 }
@@ -1983,7 +1985,9 @@ function pumpWhy(s, v, secs){
   if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";
   if(secs === null) return "Run time as m:ss";
   if(secs < (v.min_s || 1)) return "Run time too short";
-  if(v.max_s && secs > v.max_s) return "Longest is " + pumpClock(v.max_s);
+  // Jeff (2026-10-30): ten minutes at most, whatever the engine's
+  // pump_max_s says; a lower one is kept.
+  if(secs > Math.min(v.max_s || PUMP_MAX_S, PUMP_MAX_S)) return "Longest is " + pumpClock(Math.min(v.max_s || PUMP_MAX_S, PUMP_MAX_S));
   if(v.settings_error) return "Settings file unreadable";
   if(v.refusal) return short8(v.refusal, "Not now: see below");
   return "";

@@ -63693,7 +63693,8 @@ def _pm_rig(S):
         R.remote._journal(who or "system", screen or "engine", "fuel-pump",
                           outcome, text, fault=fault),
         clock=lambda: R.mono[0], threaded=False,
-        night_state=lambda: R.night[0])
+        night_state=lambda: R.night[0],
+        signed_out=lambda token, who: R.remote.pump_signed_out(token, who))
     R.night = [None]
     close = R.close
 
@@ -63740,20 +63741,22 @@ def test_pump_at_the_engine():
     from ltcplay import flamelink as FL
     check(FP.BEAT_STALE_S == FL.PUMP_HOLD_S,
           "the engine's stall and the link's beat are the same 0.5 s")
-    check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 3600 and
+    check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 600 and
+          FP.MAX_LIMIT_S == 600 and
           FP.clock_text(300) == "5:00" and FP.clock_text(252) == "4:12" and
           FP.clock_text(3725) == "62:05",
-          "5 minutes by default, 60 the longest unless an admin says, m:ss")
-    for v in (300, 1, 3600):
+          "5 minutes by default, 10 the longest (Jeff, 2026-10-30), m:ss")
+    for v in (300, 1, 600):
         check(FP.pump_seconds(v) == (v, ""), f"{v} s is taken")
-    for v in (0, -5, 3601, 1.5, "300", True, None, float("nan")):
+    for v in (0, -5, 601, 3600, 1.5, "300", True, None, float("nan")):
         secs, why = FP.pump_seconds(v)
         check(secs is None and why and "—" not in why,
               f"{v!r} is refused in words: {why}")
-    check("pump_max_s" in FP.pump_seconds(3601)[1] and
-          "can raise" in FP.pump_seconds(3601)[1],
-          "a run time over the longest names pump_max_s and says an admin "
-          "can raise it")
+    check("10:00 at most" in FP.pump_seconds(601)[1] and
+          "ten minutes" in FP.pump_seconds(601)[1] and
+          FP.pump_seconds(601, max_s=3600)[0] is None,
+          "a run time over 10:00 is refused in words, whatever a caller "
+          "passes as the longest")
     loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
     R = _pm_rig(S)
     link = R.link
@@ -63791,10 +63794,10 @@ def test_pump_at_the_engine():
               v["slot"] == 100 and v["on_value"] == 255 and
               v["on"] is False and v["state"] == "off" and
               v["refusal"] == "" and v["agree"] is True and
-              v["default_s"] == 300 and v["max_s"] == 3600 and
+              v["default_s"] == 300 and v["max_s"] == 600 and
               v["left_s"] is None,
               f"every screen's status: the pump, OFF, ON would be taken, "
-              f"5:00 the default, 60:00 the longest: {v}")
+              f"5:00 the default, 10:00 the longest: {v}")
         hv = R.remote.hazers_view(R.remote.flame_status.view())
         check(hv.get("agree") is True and
               not [a for a in R.remote.alerts.open() if a.kind == "hazers"],
@@ -63815,7 +63818,7 @@ def test_pump_at_the_engine():
         check(v["state"] == "on" and v["left_s"] == 239.8 and
               v["seconds"] == 240,
               f"the countdown on the engine's clock: {v['left_s']}")
-        st, _h, out = tap(True, seconds=3000)
+        st, _h, out = tap(True, seconds=600)
         check(st == 409 and "already on" in out["error"] and
               pm.run["seconds"] == 240,
               f"a second ON never adds time: {out}")
@@ -63831,26 +63834,35 @@ def test_pump_at_the_engine():
               f"{out}")
         st, _h, out = tap(True, run="")
         check(st == 409 and not link.pump_on, f"a press with no id: {out}")
-        for bad in (0, 3601, 1.5, "300", None):
+        for bad in (0, 601, 3601, 1.5, "300", None):
             st, _h, out = tap(True, seconds=bad)
             check(st == 409 and not link.pump_on and
                   "not turned on" in out["error"],
                   f"run time {bad!r}: refused: {out['error']}")
-        RM.save_settings(R.work, pump_max_s=600)
+        RM.save_settings(R.work, pump_max_s=120)
+        st, _h, out = tap(True, seconds=121)
+        check(st == 409 and "2:00 at most" in out["error"] and
+              not link.pump_on,
+              f"an admin's pump_max_s of 120: 121 s refused: {out}")
+        check(view()["max_s"] == 120 and view()["default_s"] == 120,
+              "and the screens are told the longest (and the default is "
+              "never longer than it)")
+        RM.save_settings(R.work, pump_max_s=14400)
+        check(RM.load_settings(R.work)["pump_max_s"] == 600 and
+              view()["max_s"] == 600,
+              "a pump_max_s above 600 (from before the 10:00 ceiling) is "
+              "read as 600, and the file still loads")
         st, _h, out = tap(True, seconds=601)
-        check(st == 409 and "10:00" in out["error"] and
-              "pump_max_s" in out["error"] and not link.pump_on,
-              f"an admin's pump_max_s of 600: 601 s refused: {out}")
-        check(view()["max_s"] == 600 and view()["default_s"] == 300,
-              "and the screens are told the longest")
-        for badv in (0, 14401, "600", True, 1.5):
+        check(st == 409 and not link.pump_on,
+              f"so 601 s is refused even then: {out}")
+        for badv in (0, "600", True, 1.5):
             try:
                 RM.save_settings(R.work, pump_max_s=badv)
                 check(False, f"pump_max_s {badv!r} was saved")
             except ValueError as e:
                 check("pump_max_s" in str(e), f"pump_max_s {badv!r} is "
                                               f"refused: {e}")
-        RM.save_settings(R.work, pump_max_s=3600)
+        RM.save_settings(R.work, pump_max_s=600)
         # Its own end on the engine's timer.
         st, _h, out = tap(True, seconds=1)
         for _ in range(9):
@@ -64519,10 +64531,101 @@ def test_pump_review_fixes():
         import ast as _ast
         src = open(os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "ltcplay", "web.py"), encoding="utf-8").read()
-        check("night_state=remote.pump_night_state)" in src,
-              "web.serve gives the pump the scheduler's night state")
+        check("night_state=remote.pump_night_state," in src and
+              "signed_out=remote.pump_signed_out)" in src,
+              "web.serve gives the pump the scheduler's night state and the "
+              "sign-in check")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_pump_signout_stops_it():
+    section("fuel pump (Jeff, 2026-10-30): signing out stops it. The run "
+            "a sign-in started turns off when that sign-in signs out on "
+            "its screen, and, the timer's belt, when the sign-in ends any "
+            "other way (idle, after the last show, from another place); "
+            "another person signing out elsewhere leaves it running")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    import tempfile
+    from ltcplay import users as U
+    loop = ("127.0.0.1", 5000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    udir = tempfile.mkdtemp()
+    n = [0]
+
+    def tap(on, hdr):
+        n[0] += 1
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=300, run=f"so{n[0]}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=loop,
+                     headers=hdr)
+    try:
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"),
+                 ("Andy", "operator"), ("Vic", "viewer")])
+        R.remote.users = us
+        ok, _w, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                     new_password="Ollie-pw-1234")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, out = tap(True, {})
+        check(st == 403 and not link.pump_on,
+              f"signed out cannot turn it on: {st} {out}")
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on and pm.run["token"] == tok,
+              f"Ollie turns it on; the run keeps his sign-in: {st} {out}")
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on,
+              "signed in: it runs")
+        R.ask("POST", "/api/remote/signout", {}, client=loop, headers=hdr)
+        check(not link.pump_on and pm.run is None and
+              "Ollie signed out" in (pm.last_off or {}).get("reason", ""),
+              f"Ollie signs out on his screen: the pump turns off at once, "
+              f"said: {pm.last_off}")
+        R.feed()
+        link._abort_repeat = None
+        # The belt: the sign-in ends some other way (idle, after the last
+        # show): the timer's next pass ends it.
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on, f"setup: on again: {out}")
+        us.sign_out(tok, "rack", local=False)
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        check("Ollie signed out" in why and not link.pump_on and
+              pm.run is None,
+              f"his sign-in ended another way: the timer ends it: {why}")
+        R.feed()
+        # Another person signing out elsewhere leaves it running.
+        ok, _w, atok, _n = us.sign_in("Andy", "", True, "rack",
+                                      new_password="Andy-pw-1234")
+        us.sign_out(atok, "rack", local=False)
+        ok, _w, atok, _n = us.sign_in("Andy", "Andy-pw-1234", False,
+                                      "10.20.0.44")
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        check(ok and atok and atok != tok,
+              f"setup: Andy signed in on his iPad: {_w}")
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on, f"setup: Ollie's run: {out}")
+        R.remote.pump_signout("Andy signed out on the iPad", "Andy",
+                              "iPad", atok)
+        us.sign_out(atok, "10.20.0.44", local=False)
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on and pm.run is not None,
+              "Andy signing out on his iPad leaves Ollie's run going")
+        tap(False, hdr)
+    finally:
+        R.remote.users = None
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
     print("  ok")
 
 
@@ -96772,7 +96875,8 @@ def test_ui2_fuel_pump_row():
         return
     js = "\n".join(_js_function(two, n) for n in
                    ("pumpSeconds", "pumpClock", "pumpWhy",
-                    "pumpWords")) + r"""
+                    "pumpWords", "pumpWhyFull")) + r"""
+const PUMP_MAX_S = 600;
 let STALE = false, ME = {local: true};
 function stale(){ return STALE; }
 function mayRow(s, p){ return !!(s.may && s.may[p]); }
@@ -96788,6 +96892,10 @@ out.ready = pumpWhy(ok, v, 300);
 out.running = pumpWhy(ok, Object.assign({}, v, {on: true}), 300);
 out.bad = pumpWhy(ok, v, null);
 out.long = pumpWhy(ok, v, 3601);
+out.long601 = pumpWhy(ok, Object.assign({}, v, {max_s: 3600}), 601);
+out.long600 = pumpWhy(ok, Object.assign({}, v, {max_s: 3600}), 600);
+out.lower = pumpWhy(ok, Object.assign({}, v, {max_s: 120}), 121);
+out.full601 = pumpWhyFull(ok, v, 601, out.long601);
 out.refused = pumpWhy(ok, Object.assign({}, v, {refusal: "an Abort is standing."}), 300);
 out.signed = pumpWhy({may: {arm: false}}, v, 300);
 ME = {local: false};
@@ -96816,7 +96924,10 @@ console.log(JSON.stringify(out));
     check(o["clock"] == ["5:00", "4:12", "62:05", "0:00", "0:59"],
           f"shown as m:ss: {o['clock']}")
     check(o["ready"] == "" and o["running"] == "Pump is on" and
-          o["bad"] == "Run time as m:ss" and o["long"] == "Longest is 60:00"
+          o["bad"] == "Run time as m:ss" and o["long"] == "Longest is 10:00" and
+          o["long601"] == "Longest is 10:00" and o["long600"] == "" and
+          o["lower"] == "Longest is 2:00" and
+          "10:00 at most (ten minutes)" in o["full601"]
           and o["refused"] == "an Abort is standing." and
           o["signed"] == "Sign in" and o["ipad"] == "Arming off here" and
           o["ipad_on"] == "" and o["stale"] == "No contact",
@@ -98587,6 +98698,7 @@ if __name__ == "__main__":
         test_pump_flame_link,
         test_pump_at_the_engine,
         test_pump_review_fixes,
+        test_pump_signout_stops_it,
         test_pump_timer_thread_ends_it,
         test_pump_end_to_end_against_the_real_flamesafe,
         test_ui2_fuel_pump_row,

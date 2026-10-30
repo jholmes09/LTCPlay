@@ -660,13 +660,15 @@ def settings_from_doc(doc, path, out=None):
         if k not in doc:
             continue
         v = doc[k]
-        if isinstance(v, bool) or not isinstance(v, int) or \
-                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:
-            # Never unlimited, never a guess: a wrong value is refused.
+        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:
+            # Never a guess: a value that is not a run time is refused.
             raise ValueError(f"{path}: {k} must be a whole number of "
                              f"seconds from {PUMP_MIN_S} to "
                              f"{PUMP_MAX_LIMIT_S}.")
-        out[k] = v
+        # Jeff (2026-10-30): never more than 10 minutes. A larger one, from
+        # before this ceiling, is read as the ceiling, never refused, so
+        # the settings file still loads.
+        out[k] = min(v, PUMP_MAX_LIMIT_S)
     if doc.get("booth_alert") is not None:
         # Checked by boothaudio.parse_config, which owns the shape; a bad
         # block is refused here, at load, never at show time.
@@ -2344,6 +2346,11 @@ class Remote:
                 self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",
                                      ctx.user, ctx.device,
                                      token=getattr(ctx, "token", "") or "")
+                # The fuel pump too (Jeff, 2026-10-30: signing out stops
+                # the pump); its timer's own check is the belt.
+                self.pump_signout(f"{_who} signed out on the {ctx.device}",
+                                  ctx.user, ctx.device,
+                                  getattr(ctx, "token", "") or "")
             if ended:
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
@@ -4594,6 +4601,30 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return False
 
+    def pump_signout(self, why, who, screen, token):
+        """Sign out: the fuel pump run this sign-in started turns off now.
+        Never raises."""
+        pm = self.pump
+        if pm is None or not token:
+            return False
+        try:
+            return pm.end_for_token(token, why, who=who, screen=screen)
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def pump_signed_out(self, token, who):
+        """For the pump's timer: why the sign-in that started its run has
+        ended, or "". Only while there are users (users.py); a run started
+        with no sign-in then ends at once, as a timed purge's does."""
+        if not self.users_active():
+            return ""
+        try:
+            if not token or self.users.session(token) is None:
+                return f"{who or 'the person who started it'} signed out"
+        except Exception:                        # noqa: BLE001
+            return "whether its starter is still signed in could not be read"
+        return ""
+
     def pump_settings(self):
         """The fuel pump's run times on this show machine: the screens'
         default (always 5:00, capped by the longest), the longest, the
@@ -4662,7 +4693,8 @@ class Remote:
                                   f"{ps['error']}"}
         ok, text = pm.set(True, who=who, screen=device,
                           seconds=body.get("seconds"), run=body.get("run"),
-                          max_s=ps["max_s"])
+                          max_s=ps["max_s"],
+                          token=getattr(ctx, "token", "") or "")
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}

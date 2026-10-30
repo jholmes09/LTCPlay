@@ -2686,6 +2686,42 @@ MUTATIONS = [
   "            hz.cut()\n            was = []"),
 
  # the fuel pump (Jeff, 2026-10-30): flamesafe's switch, run by the engine
+ # the fuel pump: Jeff's ceiling of 10:00 and sign-out stops it
+ ("ui 2.0: the run time field takes more than 10:00",
+  "ltcplay/web/remote2.html",
+  "  if(secs > Math.min(v.max_s || PUMP_MAX_S, PUMP_MAX_S)) return",
+  "  if(v.max_s && secs > v.max_s) return"),
+
+ ("pump: a run may be longer than 10:00",
+  "ltcplay/fuelpump.py",
+  "    max_s = min(max_s, MAX_LIMIT_S)\n",
+  ""),
+
+ ("pump: a pump_max_s above 600 is taken as it is",
+  "ltcplay/remote.py",
+  "        out[k] = min(v, PUMP_MAX_LIMIT_S)",
+  "        out[k] = v"),
+
+ ("pump: signing out leaves the pump on",
+  "ltcplay/remote.py",
+  "                self.pump_signout(f\"{_who} signed out on the {ctx.device}\",",
+  "                (f\"{_who} signed out on the {ctx.device}\","),
+
+ ("pump: the timer never checks its starter is still signed in",
+  "ltcplay/fuelpump.py",
+  "            gone = self._signed_out(r.get(\"token\", \"\"), r.get(\"who\", \"\"))",
+  "            gone = \"\""),
+
+ ("pump: another person's sign-out stops the pump",
+  "ltcplay/fuelpump.py",
+  "                mine = run is not None and token and run.get(\"token\") == token",
+  "                mine = run is not None"),
+
+ ("pump: a run keeps no sign-in",
+  "ltcplay/fuelpump.py",
+  "                 \"night\": self._night(), \"token\": token or \"\"}",
+  "                 \"night\": self._night(), \"token\": \"\"}"),
+
  ("pump: the FSEQ's data on the pump's slot reaches it",
   "ltcplay/flamelink.py",
   "        if self._pump_chan is not None:\n            out[self._pump_chan] = 0\n",
@@ -2993,8 +3029,8 @@ MUTATIONS = [
 
  ("pump: a pump_max_s past its limit is read",
   "ltcplay/remote.py",
-  "                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:",
-  "                False:"),
+  "        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:",
+  "        if False:"),
 
  # the fuel pump on interface 2.0 (2026-10-30)
  ("ui 2.0: Pump off is disabled with no contact",
