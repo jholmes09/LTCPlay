@@ -18476,7 +18476,7 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
           f"every engine name is reserved: {sorted(A.ENGINE_NAMES)} "
           f"{U.RESERVED}")
     for nm in ("Engine", "Scheduler", "LTC Player", "ltcplay", "System",
-               "  ltc   player "):
+               "  ltc   player ", "Deck"):
         try:
             U.check_name(nm)
             check(False, f"an account may be named {nm!r}")
@@ -42101,7 +42101,8 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     print("  ok")
 
 
-def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
+def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None,
+                  compression="zlib", cut_tail_frames=0):
     """A show folder for the cut-ahead tests: Pixels A 1-510, Flames
     511-1022; `ncues` renders of `frames` frames (zlib, 37 frames a
     block), each frame its own byte ((i * 7 + 3) & 255), sparse by default
@@ -42119,12 +42120,21 @@ def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
     for k in range(ncues):
         p = os.path.join(show, f"c{k}.fseq")
         _fx.write_fseq(p, frame_count=frames, step_ms=25,
-                       compression="zlib", block_frames=37,
+                       compression=compression, block_frames=37,
                        **({"sparse_ranges": [(0, 100), (600, 200)]}
                           if sparse else {"channel_count": 1022}),
                        fill=lambda i: (i * 7 + 3) & 0xFF)
         paths.append(p)
         cues.append(types.SimpleNamespace(name=f"c{k}", path=p))
+    if cut_tail_frames:
+        # A render whose last frames are missing (cut short on disk).
+        from ltcplay import fseq as FS
+        f = FS.FSEQ(paths[0])
+        cc = f.channel_count
+        f.close()
+        with open(paths[0], "r+b") as fh:
+            fh.seek(0, 2)
+            fh.truncate(fh.tell() - cut_tail_frames * cc - cc // 2)
     if corrupt_block is not None:
         from ltcplay import fseq as FS
         f = FS.FSEQ(paths[0])
@@ -42151,6 +42161,19 @@ def _fi_at(clk, n, label=None):
     if label is not None:
         clk._cue = {"label": label, "position_s": 0.0}
     return f"00:{m:02d}:{s:02d}:{f:02d}"
+
+
+def _fi_settled(bg, tc):
+    """bg(tc) once its CUT_FAULT_AFTER_S grace is over (a fake clock): what
+    a frame that stays uncut finally says."""
+    mono = [5000.0]
+    bg._mono = lambda: mono[0]
+    bg(tc)
+    mono[0] += 2.0
+    got = bg(tc)
+    import time as _t
+    bg._mono = _t.monotonic
+    return got
 
 
 def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
@@ -42209,24 +42232,50 @@ def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
         other.__dict__.update(cut.__dict__)
         other.span = (cut.span[0] + 1, cut.span[1])
         bg._cuts = {paths[0]: other}
-        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+        check(_fi_settled(bg, _fi_at(clk, 100)) is None and
+              bg.fault == F.CUES_LOADING,
               f"a cut for another span: zero and a CUES FAULT: {bg.fault!r}")
         other.span = cut.span
         other.f = FS.FSEQ(paths[0])
-        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+        check(_fi_settled(bg, _fi_at(clk, 100)) is None and
+              bg.fault == F.CUES_LOADING,
               "a cut of another FSEQ of the same render: never used")
         other.f.close()
         bg._cuts = {paths[0]: cut}
         check(bg(_fi_at(clk, 100)) == want and bg.fault == "",
               "its own cut again: the cues")
-        # Not cut yet while the show plays: a CUES FAULT at once, then the
-        # cues once the reading thread has cut it.
+        # Not cut yet while the show plays: zero, a CUES FAULT only once it
+        # has stayed so for CUT_FAULT_AFTER_S (no journal line, no blink, for
+        # a move that is cut in time), then the cues once it is cut.
         far = 290 * 30 // 40
-        cut.blocks.pop(cut._block(289))       # as if not cut yet
+        check(cut._block(289) in cut.blocks, "the far block was cut ahead")
+        cut.blocks.pop(cut._block(289), None)     # as if not cut yet
+        mono = [1000.0]
+        bg._mono = lambda: mono[0]
+        lines = []
+        bg._journal = lambda t, **k: lines.append((t, k))
         got = bg(_fi_at(clk, far))
-        check(got is None and bg.fault == F.CUES_LOADING,
-              f"a block not cut yet: a CUES FAULT, not a silent zero: "
-              f"{bg.fault!r}")
+        check(got is None and bg.fault == "" and not lines,
+              f"a block not cut yet: zero, no fault and no line at first: "
+              f"{bg.fault!r} {lines}")
+        mono[0] += F.CUT_FAULT_AFTER_S - 0.1
+        check(bg(_fi_at(clk, far)) is None and bg.fault == "",
+              "still inside the grace: no fault")
+        mono[0] += 0.2
+        got = bg(_fi_at(clk, far))
+        check(got is None and bg.fault == F.CUES_LOADING and
+              len([1 for _t, k in lines if k.get("fault")]) == 1,
+              f"still not cut after {F.CUT_FAULT_AFTER_S} s: a CUES FAULT, "
+              f"never a silent zero: {bg.fault!r}")
+        # A cutting thread that could not be started again: the fault at
+        # once, and it says the cues will not follow.
+        bg._start_failed.add("_cutter")
+        mono[0] += 5
+        check(bg(_fi_at(clk, far)) is None and
+              bg.fault == F.CUES_CUTTER_DEAD and
+              "restart LTC Player" in bg.fault,
+              f"the cutter gone: the fault says so: {bg.fault!r}")
+        bg._start_failed.clear()
         bg._cut_ahead()
         check(bg(_fi_at(clk, far)) == direct(_fi_at(clk, far)) and
               bg.fault == "", "cut by the next pass: the cues")
@@ -42269,7 +42318,7 @@ def test_fire_ice_flame_cut_guards():
         bg._data[paths[0]] = (FS.FSEQ(alt), alt_data)
         bg._cuts = {}
         bg._refresh_once()
-        got = bg(_fi_at(clk, 10))
+        got = _fi_settled(bg, _fi_at(clk, 10))
         check(paths[0] not in bg._cuts and got is None and
               bg.fault == F.CUES_LOADING,
               f"bytes that are another render's: not cut, a CUES FAULT, "
@@ -42316,9 +42365,11 @@ def test_fire_ice_flame_cut_guards():
             ok.append(bool(got) and sp.fault == "")
         check(all(ok), f"12 cues of 2000 frames: every cue's start ready "
                        f"after one pass ({took:.2f} s): {ok}")
-        check(all(len(c.blocks) <= 4 for c in sp._cuts.values()),
-              f"and only their start is cut, not whole renders: "
-              f"{[len(c.blocks) for c in sp._cuts.values()]}")
+        nb = [len(sp._cuts[p].blocks) for p in paths]
+        check(all(n <= 4 for n in nb[1:]) and nb[0] < len(
+            sp._cuts[paths[0]].firsts),
+              f"only each cue's start is cut (the playing one ahead of its "
+              f"timecode), never whole renders: {nb}")
         sp.close()
         # A block that cannot be cut: the frames before it as they are, then
         # a CUES FAULT with the render's own error, the block tried once.
@@ -42353,6 +42404,1447 @@ def test_fire_ice_flame_cut_guards():
                                    f"{tried.count(4)}")
         bg.close()
     finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_followups_of_174():
+    section("fire & ice (review of #174): the cutting has a thread of its "
+            "own, so a stalled read cannot starve the playing cue; a thread "
+            "that dies is started again and journaled; an uncompressed "
+            "render is cut in pieces straight from memory, never copied "
+            "whole, and one missing its tail plays every frame it has; a "
+            "compressed block's channel data is not kept")
+    import shutil
+    import tempfile
+    import threading
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        # A stalled reading thread: the cutting thread still cuts ahead.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "s"), frames=1200)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg.start()
+        for _ in range(250):
+            if bg(_fi_at(clk, 5)):
+                break
+            time.sleep(0.02)
+        stalled, release = threading.Event(), threading.Event()
+        real_check = bg._check_renders_once
+
+        def stuck():
+            if threading.current_thread().name == "ltcplay-flame-cues-read":
+                stalled.set()
+                release.wait(10)
+            return real_check()
+        bg._check_renders_once = stuck
+        check(stalled.wait(3), "setup: the reading thread is stalled")
+        far = 25 * 30                       # 25 s on: never cut before
+        cut = bg._cuts[paths[0]]
+        n_far = int(25 * 1000 // 25)
+        check(cut._block(n_far) not in cut.blocks, "setup: 25 s is not cut")
+        got = None
+        for _ in range(100):
+            got = bg(_fi_at(clk, far))
+            if got:
+                break
+            time.sleep(0.02)
+        check(got is not None and bg.fault == "" and stalled.is_set()
+              and not release.is_set(),
+              f"with the reading thread stalled, the cutting thread cut the "
+              f"playing cue ahead: {bg.fault!r}")
+        release.set()
+        # A thread that dies is started again on the next frame, said once.
+        lines = []
+        bg._journal = lambda t, **k: lines.append((t, k))
+
+        class Die(BaseException):
+            pass
+        real_cut = bg._cut_ahead
+        killed = threading.Event()
+
+        def die():
+            if not killed.is_set():
+                killed.set()
+                raise Die("killed by the test")
+            return real_cut()
+        old_t = bg._cutter
+        bg._cut_ahead = die
+        old_t.join(3)
+        check(not old_t.is_alive(), "setup: the cutting thread died")
+        bg(_fi_at(clk, far))
+        new_t = bg._cutter
+        check(new_t is not old_t and new_t.is_alive() and
+              any("ltcplay-flame-cues-cut stopped (Die: killed by the "
+                  "test)" in t and k.get("fault") for t, k in lines),
+              f"started again on the next frame, journaled as a fault: "
+              f"{[t for t, _k in lines]}")
+        bg.close()
+        # Uncompressed, the last 3 frames (and a half) missing: no copy of
+        # the render, every frame it has equal to the direct read, the
+        # missing ones the render's own fault.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "u"), frames=600,
+                                       compression="none",
+                                       cut_tail_frames=3)
+        direct = F.FlameCues(ctl, "Flames")
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        real_load = FS.FSEQ._load_block
+        loads = []
+
+        def spy_load(self, idx):
+            if any(self is c.g for c in list(bg._cuts.values())):
+                loads.append(idx)
+            return real_load(self, idx)
+        FS.FSEQ._load_block = spy_load
+        try:
+            bg._check_renders_once()
+            bg._refresh_once()
+            cut = bg._cuts[paths[0]]
+            cut.ensure(0, 599)
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(cut.whole and not loads and len(cut.blocks) == 3,
+              f"an uncompressed render is cut in pieces straight from "
+              f"memory: {len(cut.blocks)} pieces, block loads {loads}")
+        bad = []
+        for k in range(0, 595):
+            n = int(k * 1000 // 25)
+            tc = _fi_at(clk, int(k * 25 * 30 // 1000))
+            a, b = _fi_settled(bg, tc), direct(tc)
+            if a != b:
+                bad.append(k)
+        check(not bad, f"every frame it has, as the direct read: {bad[:4]}")
+        tc = _fi_at(clk, int(599 * 25 * 30 // 1000))
+        got = bg(tc)
+        check(got is None and bg.fault.startswith(
+            "the show's render could not be read"),
+              f"a missing frame: the render's own fault: {bg.fault!r}")
+        bg.close()
+        direct.close()
+        # Compressed: the block's channel data is not kept after its cut.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "z"), frames=300)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.ensure(0, 299)
+        check(len(cut.blocks) == len(cut.firsts) and cut.g._cache == b"",
+              f"every block cut, no block's channel data kept: "
+              f"{len(cut.g._cache)} bytes")
+        bg.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round2_of_177():
+    section("fire & ice (review of #177): a cue that stays uncut while it "
+            "plays on across blocks is a CUES FAULT after 1 s, never silent "
+            "zeros; a new episode after a served row has its grace again; "
+            "the playing cue is cut far ahead, before its render is "
+            "published; a thread that keeps dying is restarted later each "
+            "time and becomes a fault on the screens; close() joins both "
+            "threads; a render's first missing frame is exact")
+    import shutil
+    import tempfile
+    import threading
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "a"), frames=1200)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()                    # no thread: driven by hand
+        bg._check_renders_once()
+        _fi_at(clk, 10 * 30)              # the show at 10 s
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        check(bg(_fi_at(clk, 10 * 30)) is not None and bg.fault == "",
+              "the playing cue is cut where it is before its render is "
+              "published")
+        check(F.CUT_AHEAD_S >= 10 and
+              cut._block(int(22 * 1000 // 25)) in cut.blocks,
+              f"and far ahead of it ({F.CUT_AHEAD_S} s): 22 s is cut")
+        # Playing on across uncut blocks (37 frames, under 1 s each) with
+        # nothing cutting: one episode, a CUES FAULT after 1 s.
+        mono = [100.0]
+        bg._mono = lambda: mono[0]
+        for b in list(cut.blocks):
+            if b >= cut._block(int(23 * 1000 // 25)):
+                cut.blocks.pop(b, None)
+        start = 23 * 30
+        silent, first_fault = 0, None
+        for k in range(90):               # 3 s of show at 30 frames a second
+            got = bg(_fi_at(clk, start + k))
+            if got is None and bg.fault == "":
+                silent += 1
+            if bg.fault == F.CUES_LOADING and first_fault is None:
+                first_fault = k / 30.0
+            mono[0] += 1 / 30.0
+        check(first_fault is not None and first_fault <= F.CUT_FAULT_AFTER_S
+              + 0.05 and silent <= 31,
+              f"uncut across blocks: a CUES FAULT after {first_fault} s, "
+              f"{silent} silent zero frames")
+        # A served row ends the episode: the next one has its grace again.
+        cut.ensure(int(start / 30 * 40), int((start + 200) / 30 * 40))
+        mono[0] += 1.0
+        check(bg(_fi_at(clk, start + 95)) is not None, "setup: served")
+        cut.blocks.pop(cut._block(int(28 * 1000 // 25)), None)
+        mono[0] += 0.5
+        got = bg(_fi_at(clk, 28 * 30))
+        check(got is None and bg.fault == "",
+              f"a new uncut moment after a served row: its own grace: "
+              f"{bg.fault!r}")
+        # A cutting thread that could not be started is cleared once it is.
+        bg._start_failed.add("_cutter")
+        bg._stop.clear()
+        bg._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        bg._restarts["_cutter"] = (0, None, mono[0])
+        bg.start()
+        check(not bg._start_failed and bg._cutter.is_alive(),
+              "started again: no longer said to be gone")
+        # close() joins both threads, even a busy cutter.
+        bg._cut_ahead = lambda *a, **k: time.sleep(0.3)
+        time.sleep(0.1)
+        cutter = bg._cutter
+        bg.close()
+        check(not cutter.is_alive() and not (bg._thread and
+                                             bg._thread.is_alive()),
+              "close() joined the cutting and the reading thread")
+        # The cutting thread looks every CUT_EVERY_S.
+        waits = []
+
+        class Stop:
+            def wait(self, t):
+                waits.append(t)
+                return len(waits) > 2
+        c2 = F.FlameCues(ctl, "Flames", background=True)
+        c2._stop = Stop()
+        c2._cut_ahead = lambda: None
+        c2._cutting()
+        check(F.CUT_EVERY_S <= 0.1 and waits and
+              all(w == F.CUT_EVERY_S for w in waits),
+              f"the cutting thread looks every {F.CUT_EVERY_S} s: {waits}")
+        # A thread that dies on every pass: restarted later each time, a
+        # line each restart, a screen fault after RESTART_FAULT_AFTER.
+        c3 = F.FlameCues(ctl, "Flames", background=True)
+        lines = []
+        c3._journal = lambda t, **k: lines.append(t)
+        m3 = [0.0]
+        c3._mono = lambda: m3[0]
+
+        def dies():
+            raise RuntimeError("dies every pass")
+        c3._cutting = dies
+        starts = 0
+        for step in range(400):           # 40 s, a frame every 0.1 s
+            before = c3._cutter
+            c3.start()
+            if c3._cutter is not before:
+                starts += 1
+                c3._cutter.join(1)
+            m3[0] += 0.1
+        restarted = [t for t in lines if "ltcplay-flame-cues-cut stopped"
+                     in t]
+        check(5 <= len(restarted) <= 7 and starts == len(restarted) + 1,
+              f"backed off: {len(restarted)} restarts in 40 s (1, 2, 5, 10, "
+              f"30 s apart): {starts} starts")
+        # faults_now() first: it may clear thread_fault, and reading
+        # thread_fault before it hid a faults_now() that always clears it.
+        shown = c3.faults_now()
+        check("keeps stopping" in shown and "restart LTC Player" in shown
+              and shown == c3.thread_fault,
+              f"and a fault on the screens: {shown!r}")
+        c3.close()
+        # A render missing its tail: each frame up to the last whole one,
+        # then the first missing one raises, exactly.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "u"), frames=600,
+                                       compression="none",
+                                       cut_tail_frames=3)
+        c4 = F.FlameCues(ctl, "Flames", background=True)
+        c4._stop.set()
+        c4._check_renders_once()
+        c4._refresh_once()
+        cut4 = c4._cuts[paths[0]]
+        cut4.ensure(0, 599)
+        f = FS.FSEQ(paths[0])
+        bad = []
+        for i in range(560, 600):
+            try:
+                want = F.FlameCues._cut(f.frame(i), cut4.spans, cut4.span)
+            except Exception:
+                want = None
+            try:
+                got = cut4.row(i)
+            except Exception:
+                got = None
+            if got != want or (want is not None and len(got) != 512):
+                bad.append((i, got and len(got), want and len(want)))
+        f.close()
+        check(not bad, f"frame by frame to the first missing one: {bad[:4]}")
+        c4.close()
+        # Review B of #177. A render whose tail is missing across several
+        # pieces: one journal line for it, not one a piece.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "t"), frames=900,
+                                       compression="none",
+                                       cut_tail_frames=500)
+        c5 = F.FlameCues(ctl, "Flames", background=True)
+        c5._stop.set()
+        c5._check_renders_once()
+        c5._refresh_once()
+        lines = []
+        c5._journal = lambda t, **k: lines.append((t, k.get("fault")))
+        c5._cuts[paths[0]].ensure(0, 899)
+        for k in range(0, 900, 7):
+            c5(_fi_at(clk, int(k * 25 * 30 // 1000)))
+        bad_lines = [t for t, f in lines if f and "could not be read" in t]
+        check(len(bad_lines) == 1,
+              f"a render missing its tail: one line for it: {bad_lines}")
+        c5.close()
+        # A block that fails for a reason that is not the render's bytes
+        # (memory): uncut, tried again later, then cut. A corrupt block
+        # stays for good (test_fire_ice_flame_cut_guards).
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "m"), frames=300)
+        c6 = F.FlameCues(ctl, "Flames", background=True)
+        c6._stop.set()
+        c6._check_renders_once()
+        c6._refresh_once()
+        cut6 = c6._cuts[paths[0]]
+        cut6.blocks.pop(3, None)
+        tick = [500.0]
+        cut6.clock = lambda: tick[0]
+        real_load = FS.FSEQ._load_block
+        boom = [True]
+
+        def flaky(self, idx):
+            if idx == 3 and boom[0]:
+                boom[0] = False
+                raise MemoryError("for a moment")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = flaky
+        try:
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            uncut = 3 not in cut6.blocks and 3 not in cut6.errors
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            waited = 3 not in cut6.blocks
+            tick[0] += 1.0
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(uncut and waited and 3 in cut6.blocks and not cut6.errors,
+              f"a MemoryError: the block uncut, not before its retry, then "
+              f"cut: {uncut} {waited} {sorted(cut6.blocks)} {cut6.errors}")
+        c6.close()
+        # A render still being read while the show plays: zero, and the
+        # CUES FAULT after 1 s, never silent zeros for as long as it lasts.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "r"), frames=300)
+        c7 = F.FlameCues(ctl, "Flames", background=True)
+        c7._stop.set()                     # nothing reads: stalled at Run
+        m7 = [10.0]
+        c7._mono = lambda: m7[0]
+        got = c7(_fi_at(clk, 30))
+        quiet = got is None and c7.fault == ""
+        m7[0] += F.CUT_FAULT_AFTER_S + 0.1
+        got = c7(_fi_at(clk, 31))
+        check(quiet and got is None and "still being read" in c7.fault,
+              f"a reader stalled at Run: a CUES FAULT after 1 s: "
+              f"{c7.fault!r}")
+        c7.close()
+        # Six first start()s at once (the sender and the screens' threads):
+        # one reading and one cutting thread, never more.
+        c8 = F.FlameCues(ctl, "Flames", background=True)
+        real_mono = c8._mono
+
+        def slow_mono():
+            time.sleep(0.01)              # widen the window a race needs
+            return real_mono()
+        c8._mono = slow_mono
+        go = threading.Event()
+
+        def hit():
+            go.wait()
+            c8.start()
+        ts = [threading.Thread(target=hit) for _ in range(6)]
+        for t in ts:
+            t.start()
+        go.set()
+        for t in ts:
+            t.join(5)
+        n = sum(1 for t in threading.enumerate()
+                if t.name.startswith("ltcplay-flame-cues") and t.is_alive())
+        check(n == 2, f"six start()s at once: {n} threads (2 wanted)")
+        c8.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def _fi_one_block_render(path, header_frames, body_frames, entry_len=None,
+                         trailing=b""):
+    """An uncompressed FSEQ v2 render with a ONE-entry block table (sparse:
+    channels 1 to 100 and 601 to 800, each frame its own byte as
+    _fi_cut_show's). `entry_len` is the block's length in the table (the
+    channel data's own length when None); `trailing` follows the frames."""
+    import struct
+    sparse = [(0, 100), (600, 200)]
+    cc = sum(n for _s, n in sparse)
+    body = b"".join(bytes(((i * 7 + 3) & 0xFF,)) * cc
+                    for i in range(body_frames)) + trailing
+    tbl = struct.pack("<II", 0, len(body) if entry_len is None
+                      else entry_len)
+    sp = b"".join(struct.pack("<I", s)[:3] + struct.pack("<I", n)[:3]
+                  for s, n in sparse)
+    off = 32 + len(tbl) + len(sp)
+    head = bytearray(32)
+    head[0:4] = b"PSEQ"
+    struct.pack_into("<H", head, 4, off)
+    head[6], head[7] = 2, 2
+    struct.pack_into("<H", head, 8, off)
+    struct.pack_into("<I", head, 10, cc)
+    struct.pack_into("<I", head, 14, header_frames)
+    head[18] = 25
+    head[20], head[21], head[22] = 0, 1, len(sparse)   # none, 1 block
+    with open(path, "wb") as fh:
+        fh.write(bytes(head) + tbl + sp + body)
+    return cc
+
+
+def test_fire_ice_flame_cut_round3_of_177():
+    section("fire & ice (review 3 of #177): an uncompressed render with one "
+            "block is cut only to that block's end, faulting where the "
+            "direct read does; a cut that keeps failing for any reason is "
+            "named after its retries, and a block failing to cut is a fault "
+            "at once; a thread that keeps stopping outranks 'they follow'; "
+            "the restart back-off counts the time a thread ran; the grace "
+            "ends at a pause, a stop, a new session or cue; a restart is "
+            "journaled only once it runs")
+    import shutil
+    import tempfile
+    import threading
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()                    # no thread: driven by hand
+        return ctl, clk, paths, bg
+
+    def as_direct(cut, path, n):
+        """Frames whose cut differs from the direct read (a value, or one
+        raising and the other not), and the two errors at frame 0."""
+        f = FS.FSEQ(path)
+        bad, first = [], None
+        for i in range(n):
+            try:
+                want, werr = F.FlameCues._cut(f.frame(i), cut.spans,
+                                              cut.span), None
+            except Exception as e:
+                want, werr = None, e
+            try:
+                got, gerr = cut.row(i), None
+            except Exception as e:
+                got, gerr = None, e
+            if i == 0:
+                first = (werr, gerr)
+            if got != want or (werr is None) != (gerr is None) or \
+                    (got is None and gerr is None):
+                bad.append(i)
+        f.close()
+        return bad, first
+    try:
+        # A. One-block uncompressed renders, cut only to the block's end.
+        cases = (
+            ("trailing", dict(header_frames=340, body_frames=300,
+                              entry_len=300 * 300,
+                              trailing=b"\xff" * (40 * 300)), 340),
+            ("short entry", dict(header_frames=300, body_frames=300,
+                                 entry_len=290 * 300), 300),
+            ("truncated", dict(header_frames=300, body_frames=250,
+                               entry_len=300 * 300), 300))
+        for k, (what, kw, n) in enumerate(cases):
+            ctl, clk, paths, bg = cut_of(f"a{k}", frames=300)
+            _fi_one_block_render(paths[0], **kw)
+            bg._check_renders_once()
+            bg._refresh_once()
+            cut = bg._cuts[paths[0]]
+            cut.ensure(0, n - 1)
+            bad, (werr, gerr) = as_direct(cut, paths[0], n)
+            check(cut.whole and not bad,
+                  f"one block, {what}: every frame as the direct read, a "
+                  f"value or a fault: {bad[:4]} of {len(bad)}")
+            if what == "truncated":
+                check(isinstance(gerr, FS.FSEQError) and
+                      str(gerr) == str(werr),
+                      f"truncated: the direct read's own error: {gerr!r} "
+                      f"{werr!r}")
+            last = int((n - 1) * 25 * 30 // 1000)
+            got = _fi_settled(bg, _fi_at(clk, last))
+            check(got is None and bg.fault.startswith(
+                "the show's render could not be read"),
+                  f"one block, {what}: its last frame is a CUES FAULT, never "
+                  f"junk: {got and got[90:92]} {bg.fault!r}")
+            bg.close()
+        # B. A cut that fails for a reason that is not the render's bytes
+        # (a missing zstandard): a CUES FAULT naming it at once while it
+        # waits for its retry, then, after CUT_RETRIES retries, for good,
+        # journaled once.
+        ctl, clk, paths, bg = cut_of("b", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(3, None)           # frames 111 to 147
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+        mono = [100.0]
+        bg._mono = lambda: mono[0]
+        real_load = FS.FSEQ._load_block
+        calls = []
+
+        def nomod(self, idx):
+            if idx == 3:
+                calls.append(idx)
+                raise ModuleNotFoundError("No module named 'zstandard'")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomod
+        try:
+            cut.ensure(cut.firsts[3], cut.firsts[3])
+            served = bg(_fi_at(clk, 75)) is not None      # frame 100
+            got = bg(_fi_at(clk, 90))                      # frame 120
+            check(served and got is None and
+                  "ModuleNotFoundError" in bg.fault,
+                  f"a block failing to cut between served rows: a CUES "
+                  f"FAULT naming it at once, never a silent grace: "
+                  f"{bg.fault!r}")
+            for _ in range(10):            # 25 s: before any slow retry
+                tick[0] += 2.5
+                cut.ensure(cut.firsts[3], cut.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(len(calls) == F.CUT_RETRIES + 1 and isinstance(
+            cut.errors.get(3), ModuleNotFoundError) and 3 not in cut.retry,
+              f"tried {len(calls)} times ({F.CUT_RETRIES} retries), then "
+              f"for good: {cut.errors.get(3)!r}")
+        for k in range(20):
+            got = bg(_fi_at(clk, 90 + k % 5))
+        named = [t for t in lines if "could not be cut from its render "
+                 "(ModuleNotFoundError" in t]
+        check(got is None and "ModuleNotFoundError: No module named" in
+              bg.fault and "tried again every 30 s" in bg.fault and
+              "could not be read" not in bg.fault and len(named) == 1,
+              f"for good: the screens and one journal line name it: "
+              f"{bg.fault!r} {named}")
+        bg.close()
+        # B. Each retry waits longer: 0.5, 1 then 2 s.
+        ctl, clk, paths, bg = cut_of("r", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(4, None)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        calls = []
+
+        def nomem(self, idx):
+            if idx == 4:
+                calls.append(tick[0])
+                raise MemoryError("again")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for t in (0.0, 0.6, 1.2, 1.7, 3.0, 3.8):
+                tick[0] = t
+                cut.ensure(cut.firsts[4], cut.firsts[4])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(calls == [0.0, 0.6, 1.7, 3.8] and
+              isinstance(cut.errors.get(4), MemoryError),
+              f"retried after 0.5, 1 and 2 s, then for good: {calls} "
+              f"{cut.errors.get(4)!r}")
+        bg.close()
+        # C. A thread that keeps stopping outranks 'they follow'.
+        ctl, clk, paths, bg = cut_of("c", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        keeps = ("the thread that cuts the show's flame cues from its "
+                 "renders keeps stopping (3 restarts, the last: X); restart "
+                 "LTC Player")
+        bg.thread_fault = keeps
+        bg.fault = F.CUES_LOADING
+        shown = bg.faults_now()
+        bg.fault = F.RENDER_OLDER_THAN_LAYOUT
+        refused = bg.faults_now()
+        check(shown == keeps and refused == F.RENDER_OLDER_THAN_LAYOUT,
+              f"a thread that keeps stopping outranks the loading fault, "
+              f"never a refusal: {shown!r} {refused!r}")
+        bg.thread_fault, bg.fault = "", ""
+        # C. A cutter waiting out its back-off promises nothing.
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        bg._stop.clear()
+        bg.start = lambda: bg             # nothing started by hand here
+        bg._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        got = _fi_settled(bg, _fi_at(clk, 165))       # frame 220
+        waiting = bg.fault
+        bg.thread_fault = keeps
+        _fi_settled(bg, _fi_at(clk, 166))
+        check(got is None and waiting == F.CUES_CUTTER_WAITING and
+              "within a second" not in waiting and bg.fault == keeps,
+              f"a stopped cutter: no promise of a second, and one that "
+              f"keeps stopping says so: {waiting!r} {bg.fault!r}")
+        bg._cutter = None
+        bg._stop.set()
+        bg.close()
+        # D. The back-off counts the time a thread RAN.
+        ctl, clk, paths, c = cut_of("d", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        gate = threading.Event()
+        mode = ["short"]
+
+        def body():
+            if mode[0] == "long":
+                gate.wait(5)
+            raise RuntimeError("dies")
+        c._cutting = body
+
+        def step():
+            before = c._cutter
+            c.start()
+            if c._cutter is not before:
+                c._cutter.join(5)
+                return True
+            return False
+        restarts = 0
+        for _ in range(3000):
+            if step() and c._restarts["_cutter"][0] >= 6:
+                break
+            m[0] += 0.1
+        n6 = c._restarts["_cutter"][0]
+        m[0] += 200.0                     # nobody asks for 200 s
+        again = step()
+        m[0] += 1.0
+        soon = step()
+        check(n6 == 6 and again and "(restart 7)" in lines[-1] and
+              not soon,
+              f"200 s with no start() call is not a thread that ran: "
+              f"restart 7, then 60 s apart: {n6} {lines[-1:]} {soon}")
+        mode[0] = "long"
+        m[0] += 61.0
+        before = c._cutter
+        c.start()
+        long_t = c._cutter
+        m[0] += 61.0                      # it runs 61 s, then dies
+        gate.set()
+        long_t.join(5)
+        restarts = step()
+        check(long_t is not before and restarts and
+              "(restart 1)" in lines[-1],
+              f"a thread that ran 61 s before it died starts the count "
+              f"again: {lines[-1:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # E. The grace ends at a pause, a stop, a new cue or session.
+        ctl, clk, paths, c = cut_of("e", frames=600, ncues=2)
+        c._check_renders_once()
+        c._refresh_once()
+        for p in paths:
+            cut = c._cuts[p]
+            for b in list(cut.blocks):
+                if b >= 5:
+                    cut.blocks.pop(b)
+        m = [10.0]
+        c._mono = lambda: m[0]
+        s = ctl.session
+        for what in ("paused", "stopped"):
+            c(_fi_at(clk, 165, label="c0"))
+            m[0] += 0.9
+            if what == "paused":
+                clk.paused = True
+            else:
+                s.running = False
+            c(_fi_at(clk, 165))
+            m[0] += 5.0
+            clk.paused, s.running = False, True
+            got = c(_fi_at(clk, 166))
+            check(got is None and c.fault == "",
+                  f"{what} on an uncut frame, then on again: a grace of its "
+                  f"own: {c.fault!r}")
+            m[0] += 2.0
+            c(_fi_at(clk, 167))
+        c._uncut = None
+        c(_fi_at(clk, 165, label="c0"))
+        m[0] += 0.9
+        c(_fi_at(clk, 166))
+        m[0] += 0.2
+        got = c(_fi_at(clk, 167, label="c1"))
+        check(got is None and c.fault == "",
+              f"another cue, uncut: a grace of its own: {c.fault!r}")
+        c.close()
+        # E. A new session still being read: a grace of its own; and a
+        # fault left from before never shows while it lasts.
+        ctl, clk, paths, c = cut_of("s", frames=300)
+        m = [10.0]
+        c._mono = lambda: m[0]
+        c.fault = "a fault from before"
+        c(_fi_at(clk, 30))
+        quiet = c.fault == ""
+        m[0] += 0.9
+        c(_fi_at(clk, 31))
+        ctl.session = types.SimpleNamespace(**vars(ctl.session))
+        m[0] += 0.2
+        got = c(_fi_at(clk, 32))
+        check(quiet and got is None and c.fault == "",
+              f"a fault from before is cleared in the grace, and a new "
+              f"session has a grace of its own: {quiet} {c.fault!r}")
+        c.close()
+        # F. A thread that cannot be started: said so, never 'started
+        # again'; once it starts, then said.
+        ctl, clk, paths, c = cut_of("f", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        dead = types.SimpleNamespace(is_alive=lambda: False)
+        c._cutter = dead
+        c._cutting = lambda: c._stop.wait(5)
+        real_thread = F.threading.Thread
+
+        class NoStart(real_thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        failed = list(lines)
+        m[0] += 2.0
+        c.start()
+        check(any("could not be started (RuntimeError" in t for t in failed)
+              and not any("started again" in t for t in failed) and
+              c._cutter is not dead and c._cutter.is_alive() and
+              "was started again" in lines[-1],
+              f"a failed start is said as one, a restart only once it "
+              f"runs: {failed} {lines[-1:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # F. close() while a start() waits for the lock: nothing started.
+        ctl, clk, paths, c = cut_of("g", frames=300)
+        c._stop.clear()
+        c._start_lock.acquire()
+        t = threading.Thread(target=c.start)
+        t.start()
+        time.sleep(0.1)
+        c._stop.set()
+        c._start_lock.release()
+        t.join(5)
+        check(c._thread is None and c._cutter is None,
+              "a start() that waited out a close() starts nothing")
+        c.close()
+        # G. A thread fault stays on the screens until both threads have
+        # run RESTART_RESET_S since their last start, then clears.
+        ctl, clk, paths, c = cut_of("h", frames=300)
+        alive = types.SimpleNamespace(is_alive=lambda: True)
+        c._thread = c._cutter = alive
+        c._restarts = {"_thread": (0, 0.0, 0.0), "_cutter": (3, 0.0, 0.0)}
+        m = [30.0]
+        c._mono = lambda: m[0]
+        c.thread_fault = keeps
+        early = c.faults_now()
+        m[0] = 61.0
+        later = c.faults_now()
+        check(early == keeps and later == "" and c.thread_fault == "",
+              f"the thread fault holds until both ran 60 s, then clears: "
+              f"{early!r} {later!r}")
+        c._thread = c._cutter = None
+        c.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round4_of_177():
+    section("fire & ice (round 2 review of #177): a cut fault that is not "
+            "the render's bytes is tried again every 30 s, never kept for "
+            "every later show; a look ends the uncut grace; the back-off "
+            "counts from a death; a retry set meanwhile is seen under the "
+            "lock; a first start that fails is backed off and its recovery "
+            "said; a render whose sparse ranges disagree with its channel "
+            "count is refused in both paths; a garbage frame count lists no "
+            "pieces; a thread that dies at once keeps its reason")
+    import shutil
+    import struct
+    import tempfile
+    import threading
+    import tracemalloc
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_load = FS.FSEQ._load_block
+    try:
+        # A1. MemoryError on block 5 at Run for longer than its retries:
+        # named for good, then tried again every CUT_RETRY_SLOW_S, so a
+        # later Run plays it.
+        ctl, clk, paths, bg = cut_of("a1", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        bad = [True]
+        calls = []
+
+        def nomem(self, idx):
+            if idx >= 5:
+                calls.append(idx)
+                if bad[0]:
+                    raise MemoryError("at Run")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for _ in range(8):
+                cut.ensure(cut.firsts[5], cut.firsts[5])
+                tick[0] += 3.0
+            named = isinstance(cut.errors.get(5), MemoryError)
+            got = _fi_settled(bg, _fi_at(clk, 150))       # frame 200
+            faulted = got is None and "MemoryError" in bg.fault
+            bad[0] = False                # the memory came back
+            n = len(calls)
+            tick[0] += 5.0
+            cut.ensure(cut.firsts[5], cut.firsts[5])
+            early = len(calls) == n
+            ctl.session.running = False   # Stop, then Run again
+            bg(_fi_at(clk, 150))
+            ctl.session.running = True
+            tick[0] += F.CUT_RETRY_SLOW_S
+            bg._refresh_once()
+            _fi_at(clk, 150)
+            bg._cut_ahead()
+            got = bg(_fi_at(clk, 150))
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(named and faulted and early and got is not None and
+              bg.fault == "" and 5 not in cut.errors,
+              f"a passing error kept as a fault is tried again every "
+              f"{F.CUT_RETRY_SLOW_S:g} s, and a later Run plays it: "
+              f"{named} {faulted} {early} {bg.fault!r}")
+        bg.close()
+        # A2. A look ends the uncut grace.
+        ctl, clk, paths, bg = cut_of("a2", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        m = [10.0]
+        bg._mono = lambda: m[0]
+        bg(_fi_at(clk, 165))
+        m[0] += 0.9
+        ctl.session.player.override = "blackout"
+        bg(_fi_at(clk, 165))
+        m[0] += 0.5
+        ctl.session.player.override = None
+        got = bg(_fi_at(clk, 166))
+        check(got is None and bg.fault == "",
+              f"a look on an uncut frame, then the show: a grace of its "
+              f"own: {bg.fault!r}")
+        bg.close()
+        # A2. The back-off counts from when the thread died, not from when
+        # it was started.
+        ctl, clk, paths, c = cut_of("a3", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        gate = threading.Event()
+
+        def body():
+            gate.wait(5)
+            raise RuntimeError("dies")
+        c._cutting = body
+        c.start()                         # first start at 0
+        first = c._cutter
+        gate.set()
+        first.join(5)
+        gate.clear()
+        c.start()                         # restart 1 at once, at 0
+        r1 = c._cutter
+        m[0] = 30.0                       # it runs 30 s, then dies
+        gate.set()
+        r1.join(5)
+        gate.clear()
+        m[0] = 30.2
+        c.start()
+        soon = c._cutter is not r1
+        m[0] = 31.1
+        c.start()
+        later = c._cutter is not r1
+        check(not soon and later,
+              f"restart 2 waits 1 s from the death, not from the start: "
+              f"{soon} {later}")
+        gate.set()
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # A4. A retry set by the other cutting thread while this one waited
+        # for the lock is seen under the lock: not cut again at once.
+        ctl, clk, paths, bg = cut_of("a4", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(4, None)
+        cuts = []
+        real_cb = cut._cut_block
+
+        def spy(b):
+            cuts.append(b)
+            return real_cb(b)
+        cut._cut_block = spy
+        cut.lock.acquire()
+        t = threading.Thread(target=cut.ensure,
+                             args=(cut.firsts[4], cut.firsts[4]))
+        t.start()
+        time.sleep(0.2)
+        cut.retry[4] = (1, cut.clock() + 100.0, MemoryError("other"))
+        cut.lock.release()
+        t.join(5)
+        check(cuts == [], f"a retry set meanwhile is honoured: {cuts}")
+        bg.close()
+        # A5. A first start that fails: backed off, and the recovery said.
+        ctl, clk, paths, c = cut_of("a5", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        tries = []
+        real_thread = F.threading.Thread
+
+        class NoStart(real_thread):
+            def start(self):
+                tries.append(self.name)
+                raise RuntimeError("can't start new thread")
+        c._cutting = lambda: c._stop.wait(5)
+        c._refresher = lambda: c._stop.wait(5)
+        F.threading.Thread = NoStart
+        try:
+            c.start()
+            c.start()
+            m[0] += 0.5
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        n_tries = len(tries)
+        m[0] += 1.0
+        c.start()
+        check(n_tries == 2 and c._cutter is not None and
+              c._cutter.is_alive() and not c._start_failed and
+              any("is running now, after it could not be started" in t
+                  for t in lines),
+              f"a failed first start is backed off ({n_tries} tries, 2 "
+              f"wanted) and its recovery journaled: {lines[-2:]}")
+        c._stop.set()
+        c.close()
+        # B1. Sparse ranges that cover more than the channel count: refused
+        # in the direct path and the cut one, never shifted bytes.
+        ctl, clk, paths, bg = cut_of("b1", frames=300)
+        with open(paths[0], "r+b") as fh:
+            head = bytearray(fh.read(32))
+            n_blocks = ((head[20] & 0xF0) << 4) | head[21]
+            fh.seek(32 + n_blocks * 8 + 6)            # the second range
+            fh.write(struct.pack("<I", 600)[:3] + struct.pack("<I", 250)[:3])
+        direct = F.FlameCues(ctl, "Flames")
+        bg._check_renders_once()
+        bg._refresh_once()
+        tc = _fi_at(clk, 30)
+        a, b = direct(tc), _fi_settled(bg, tc)
+        check(a is None and b is None and
+              direct.fault.startswith("the show's render has 300 channels "
+                                      "but its sparse ranges cover 350") and
+              bg.fault == direct.fault,
+              f"ranges past the channels: refused in both paths: "
+              f"{direct.fault!r} {bg.fault!r}")
+        try:
+            F.FlameCues._cut(bytes(300), [(0, 0, 100), (600, 100, 250)],
+                             (511, 512))
+            check(False, "a cut past the frame's bytes was made")
+        except FS.FSEQError:
+            check(True, "a cut past the frame's bytes raises")
+        direct.close()
+        bg.close()
+        # B2. A garbage frame count lists no pieces.
+        ctl, clk, paths, bg = cut_of("b2", frames=300)
+        _fi_one_block_render(paths[0], header_frames=200_000_000,
+                             body_frames=300)
+        bg._check_renders_once()
+        tracemalloc.start()
+        try:
+            bg._refresh_once()
+            _cur, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        cut = bg._cuts.get(paths[0])
+        check(cut is not None and cut.whole and peak < 8_000_000 and
+              cut.row(10) is not None,
+              f"200 million frames in the header: {peak / 1e6:.1f} MB at "
+              f"Run, the frames it has cut")
+        bg.close()
+        # B4. A thread that dies at once keeps its own reason.
+        ctl, clk, paths, c = cut_of("b4", frames=300)
+        c._stop.clear()
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        c._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        c._died["_cutter"] = "RuntimeError: the first death"
+
+        def dies_at_once():
+            raise RuntimeError("the second death")
+        c._cutting = dies_at_once
+
+        class JoinOnStart(real_thread):
+            def start(self):
+                super().start()
+                self.join(5)
+        F.threading.Thread = JoinOnStart
+        try:
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        check(c._died.get("_cutter") == "RuntimeError: the second death",
+              f"a death during the start keeps its reason: "
+              f"{c._died.get('_cutter')!r}")
+        c._stop.set()
+        c._thread = c._cutter = None
+        c.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round5_of_177():
+    section("fire & ice (round 3 review of #177): a cut that could not be "
+            "set up for a passing reason is set up again every 30 s, a "
+            "damaged render never; failed starts are not restarts; a kept "
+            "error carries no traceback; a passing fault says it is tried "
+            "again and is journaled once per cause; ranges covering fewer "
+            "channels than the header are refused; a stale death reason is "
+            "never repeated; a failed slow retry waits 30 s again; a data "
+            "error is never retried; zstd out of memory may pass")
+    import shutil
+    import struct
+    import sys as _sys
+    import tempfile
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_init = F._FlameCut.__init__
+    real_load = FS.FSEQ._load_block
+    real_thread = F.threading.Thread
+    try:
+        # A1. The set-up fails once with a MemoryError: a fault saying it
+        # is tried again, kept (not set up on every pass) until 30 s, then
+        # set up again and played. A damaged render's set-up is for good.
+        for kind, err in (("passing", MemoryError("set up")),
+                          ("damaged", ValueError("bad table"))):
+            ctl, clk, paths, bg = cut_of("a1" + kind, frames=300)
+            lines = []
+            bg._journal = lambda t, **k: lines.append(t)
+            inits = []
+
+            def flaky(self, *a, **k):
+                inits.append(1)
+                if len(inits) == 1:
+                    raise err
+                return real_init(self, *a, **k)
+            F._FlameCut.__init__ = flaky
+            try:
+                bg._check_renders_once()
+                bg._refresh_once()
+                first = bg._cuts[paths[0]]
+                for k in range(10):
+                    got = _fi_settled(bg, _fi_at(clk, 30 + k))
+                fault = bg.fault
+                bg._refresh_once()
+                kept = bg._cuts[paths[0]] is first and len(inits) == 1
+                first.clock = lambda: F._FlameCut.clock() + 31.0
+                bg._refresh_once()
+                got = bg(_fi_at(clk, 30))
+            finally:
+                F._FlameCut.__init__ = real_init
+            said = [t for t in lines if "could not be" in t]
+            if kind == "passing":
+                check(kept and "MemoryError: set up" in fault and
+                      "tried again every 30 s" in fault and
+                      len(said) == 1 and len(inits) == 2 and
+                      got is not None and bg.fault == "",
+                      f"a passing set-up failure: said once as tried "
+                      f"again, kept for 30 s, then set up and played: "
+                      f"{fault!r} {said} {len(inits)} {bg.fault!r}")
+            else:
+                check(kept and fault.startswith(
+                    "the show's render could not be read (ValueError") and
+                      len(inits) == 1 and got is None,
+                      f"a damaged render's set-up is for good: {fault!r} "
+                      f"{len(inits)}")
+            bg.close()
+        # A2. Five failed starts of a dead thread are not five restarts.
+        ctl, clk, paths, c = cut_of("a2", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        c._cutter = types.SimpleNamespace(is_alive=lambda: False)
+
+        def dies():
+            raise RuntimeError("dies")
+        c._cutting = dies
+
+        class NoStart(real_thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            for _ in range(5):
+                c.start()
+                m[0] += 61.0
+        finally:
+            F.threading.Thread = real_thread
+        c.start()
+        first = lines[-1]
+        c._cutter.join(5)
+        m[0] += 1.1
+        before = c._cutter
+        c.start()
+        check("(restart 1)" in first and c.thread_fault == "" and
+              c._cutter is not before,
+              f"failed starts are not restarts: {first!r}, and the next "
+              f"death waits 1 s: {c.thread_fault!r}")
+        c._stop.set()
+        c._cutter.join(5)
+        c._thread = None
+        c.close()
+        # A3. A kept error carries no traceback (it would pin the frames
+        # and the decompressed block).
+        ctl, clk, paths, bg = cut_of("a3", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.blocks.pop(3, None)
+
+        def nomem(self, idx):
+            if idx in (2, 3):
+                raise MemoryError(f"block {idx}")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            cut.ensure(cut.firsts[2], cut.firsts[4])
+        finally:
+            FS.FSEQ._load_block = real_load
+        kept = [cut.errors.get(4)] + [r[2] for r in cut.retry.values()]
+        check(len(kept) == 3 and all(e is not None and e.__traceback__ is None
+                                     for e in kept),
+              f"kept errors carry no traceback: "
+              f"{[e is not None and e.__traceback__ for e in kept]}")
+        failed = F._FlameCut.failed(cut.f, cut.span, MemoryError("x"))
+        try:
+            raise MemoryError("with a traceback")
+        except MemoryError as e:
+            failed2 = F._FlameCut.failed(cut.f, cut.span, e)
+        check(failed2.errors[0].__traceback__ is None and failed is not None,
+              "a failed set-up keeps its error with no traceback")
+        bg.close()
+        # B-2. Two blocks failing with their own words: one journal line.
+        ctl, clk, paths, bg = cut_of("b2", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.blocks.pop(3, None)
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+        FS.FSEQ._load_block = nomem
+        try:
+            cut.ensure(cut.firsts[2], cut.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        for n in (60, 61, 90, 91, 60, 90):    # frames 80, 81, 120, 121
+            bg(_fi_at(clk, n))
+        said = [t for t in lines if "could not be cut here" in t]
+        check(len(said) == 1 and "MemoryError" in bg.fault,
+              f"one line per cause, not per block: {said}")
+        bg.close()
+        # A5. Ranges covering FEWER channels than the header: refused too.
+        ctl, clk, paths, bg = cut_of("a5", frames=300)
+        with open(paths[0], "r+b") as fh:
+            head = bytearray(fh.read(32))
+            n_blocks = ((head[20] & 0xF0) << 4) | head[21]
+            fh.seek(32 + n_blocks * 8 + 6)
+            fh.write(struct.pack("<I", 600)[:3] + struct.pack("<I", 150)[:3])
+        direct = F.FlameCues(ctl, "Flames")
+        got = direct(_fi_at(clk, 30))
+        check(got is None and "sparse ranges cover 250" in direct.fault,
+              f"ranges under the header's count: refused: {direct.fault!r}")
+        direct.close()
+        bg.close()
+        # A5. A thread that died with a reason, then ended with none: the
+        # next restart says it ended, never the old reason.
+        ctl, clk, paths, c = cut_of("a6", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        mode = ["raise"]
+
+        def body():
+            if mode[0] == "raise":
+                raise RuntimeError("the old reason")
+        c._cutting = body
+        c.start()
+        c._cutter.join(5)
+        mode[0] = "return"
+        c.start()                         # restart 1: says the old reason
+        c._cutter.join(5)
+        m[0] += 1.1
+        c.start()                         # restart 2: it just ended
+        check("the old reason" in lines[-2] and "(it ended)" in lines[-1],
+              f"a stale reason is never repeated: {lines[-2:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # A5. A slow retry that fails waits 30 s again; a data error is
+        # never tried again.
+        ctl, clk, paths, bg = cut_of("a7", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.errors.pop(4, None)           # its first failure, on this clock
+        cut.slow.pop(4, None)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        tries = []
+        real_cb = cut._cut_block
+
+        def spy(b):
+            tries.append((b, tick[0]))
+            if b == 2:
+                raise MemoryError("again")
+            return real_cb(b)
+        cut._cut_block = spy
+        for t in (0.0, 1.0, 3.0, 6.0, 37.0, 38.0, 50.0, 68.0):
+            tick[0] = t
+            cut.ensure(cut.firsts[2], cut.firsts[2])
+            cut.ensure(cut.firsts[4], cut.firsts[4])
+        t2 = [t for b, t in tries if b == 2]
+        t4 = [t for b, t in tries if b == 4]
+        check(t2 == [0.0, 1.0, 3.0, 6.0, 37.0, 68.0],
+              f"a slow retry that fails waits 30 s again: {t2}")
+        check(t4 == [0.0] and 4 in cut.errors,
+              f"a data error is never tried again: {t4}")
+        bg.close()
+        # B-3. zstd: out of memory may pass, bad data is for good.
+        fake = types.ModuleType("zstandard")
+
+        class ZstdError(Exception):
+            pass
+        fake.ZstdError = ZstdError
+        saved = _sys.modules.get("zstandard")
+        _sys.modules["zstandard"] = fake
+        try:
+            oom = F._cut_data_error(ZstdError(
+                "decompression error: Allocation error : not enough memory"))
+            bad = F._cut_data_error(ZstdError(
+                "decompression error: Unknown frame descriptor"))
+        finally:
+            if saved is None:
+                _sys.modules.pop("zstandard", None)
+            else:
+                _sys.modules["zstandard"] = saved
+        check(not oom and bad, f"zstd out of memory may pass, bad data does "
+                               f"not: {oom} {bad}")
+    finally:
+        F._FlameCut.__init__ = real_init
+        FS.FSEQ._load_block = real_load
+        F.threading.Thread = real_thread
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_final_of_177():
+    section("fire & ice (final review of #177): a render file that cannot be "
+            "opened is a render that could not be read, never a cut tried "
+            "again; a kept error raised on every frame never grows a "
+            "traceback; a start that works ends its failed-start count; one "
+            "journal line per cue, not per kind of fault")
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_load = FS.FSEQ._load_block
+    real_thread = F.threading.Thread
+    try:
+        # (1) The render deleted: could not be read, FileNotFoundError.
+        ctl, clk, paths, bg = cut_of("open", frames=300)
+        os.remove(paths[0])
+        bg._check_renders_once()
+        bg._refresh_once()
+        got = _fi_settled(bg, _fi_at(clk, 30))
+        check(got is None and bg.fault.startswith(
+            "the show's render could not be read (FileNotFoundError") and
+              "tried again" not in bg.fault,
+              f"a render that cannot be opened: could not be read: "
+              f"{bg.fault!r}")
+        bg.close()
+        # (2) A kept error, a short render's too, raised on 200 frames:
+        # its traceback stays short.
+        ctl, clk, paths, bg = cut_of("tb", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        n4 = int(cut.firsts[4] * 25 * 30 // 1000) + 1
+        for _ in range(200):
+            bg(_fi_at(clk, n4))
+        ctl2, clk2, paths2, bg2 = cut_of("tbs", frames=600,
+                                         compression="none",
+                                         cut_tail_frames=3)
+        bg2._check_renders_once()
+        bg2._refresh_once()
+        cut2 = bg2._cuts[paths2[0]]
+        cut2.ensure(0, 599)
+        for _ in range(200):
+            bg2(_fi_at(clk2, int(599 * 25 * 30 // 1000)))
+
+        def depth(e):
+            n, tb = 0, e.__traceback__ if e is not None else None
+            while tb is not None:
+                n, tb = n + 1, tb.tb_next
+            return n
+        kept = cut.errors.get(4)
+        short = next(iter(cut2.short.values()))[1]
+        check(kept is not None and depth(kept) <= 3 and depth(short) <= 3
+              and "could not be read" in bg.fault and
+              "could not be read" in bg2.fault,
+              f"raised 200 times, a kept error's traceback stays short: "
+              f"{depth(kept)} {depth(short)} entries")
+        bg.close()
+        bg2.close()
+        # (3) A start that works ends the failed-start count: a later
+        # failed start is backed off from 1 s again, not 2.
+        ctl, clk, paths, c = cut_of("tries", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        c._journal = lambda t, **k: None
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+
+        def dies():
+            raise RuntimeError("dies")
+        c._cutting = dies
+        tries = []
+
+        class NoStart(real_thread):
+            def start(self):
+                tries.append(m[0])
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            c.start()                     # a failed first start, at 0
+        finally:
+            F.threading.Thread = real_thread
+        m[0] = 1.1
+        c.start()                         # it works, and dies
+        c._cutter.join(5)
+        tries.clear()
+        F.threading.Thread = NoStart
+        try:
+            m[0] = 2.0
+            c.start()                     # fails: the first of a new count
+            m[0] = 3.2
+            c.start()                     # 1.2 s on: tried again
+        finally:
+            F.threading.Thread = real_thread
+        check(tries == [2.0, 3.2],
+              f"a start that works ends the failed-start count: {tries}")
+        c._stop.set()
+        c._thread = c._cutter = None
+        c.close()
+        # (4) The same fault on two cues: a journal line for each cue.
+        ctl, clk, paths, bg = cut_of("cues", frames=300, ncues=2)
+        bg._check_renders_once()
+        bg._refresh_once()
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+
+        def nomem(self, idx):
+            if idx == 2:
+                raise MemoryError("again")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for p in paths:
+                cut = bg._cuts[p]
+                cut.blocks.pop(2, None)
+                cut.ensure(cut.firsts[2], cut.firsts[2])
+        finally:
+            FS.FSEQ._load_block = real_load
+        bg(_fi_at(clk, 60, label="c0"))
+        bg(_fi_at(clk, 60, label="c1"))
+        said = [t for t in lines if "could not be cut here" in t]
+        check(len(said) == 2, f"one line for each cue: {said}")
+        bg.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        F.threading.Thread = real_thread
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -46063,9 +47555,9 @@ def test_flame_frame_timing_alert_and_systems_line():
     check(r and r["state"] == "warn" and
           r["word"] == "1 frame(s) late in the last hour, worst 178 ms",
           f"and the Systems line: {r}")
-    first = al[0].id
-    rm.alerts.clear(id=first, who="Andy", action="Acknowledge",
-                    screen="rack")
+    if al:
+        rm.alerts.clear(id=al[0].id, who="Andy", action="Acknowledge",
+                        screen="rack")
     rm._frame_timing_work()
     check(not rm.alerts.open(), "acknowledged, and no new late frame: it "
                                 "stays cleared")
@@ -61861,6 +63353,1435 @@ def test_hazers_end_to_end_against_the_real_flamesafe():
         check(got and got[0][:2] == [40, 41],
               f"disarmed by the Abort, armed again at the engine: Hazer 1 "
               f"runs again: {got}")
+    finally:
+        stop.set()
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        status_rx.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+# ------------------------------------------------------- the fuel pump ----
+# Jeff, 2026-10-30: "Somewhere in the fire controls, we need a toggle for a
+# fuel pump. This is something for Andy to manually control as needed. It
+# does not need to be armed or disarmed but it should be affected by the
+# stop button." flamesafe's passthrough switch {"name", "switch", "on"}
+# (flamesafe/CONTRACT.md, "A switch"); the engine's ON/OFF
+# (ltcplay/fuelpump.py) on the flame link (ltcplay/flamelink.py).
+
+_PM = ("Fireball Fuel Pump", 100, 255)
+
+
+def _pm_doc(pump=True, hazers=True):
+    """flamesafe.example.json with the fuel pump at 100, ON 255."""
+    import json as _j
+    here = os.path.dirname(os.path.abspath(__file__))
+    ex = _j.load(open(os.path.join(here, "flamesafe",
+                                   "flamesafe.example.json"),
+                      encoding="utf-8"))
+    pt = list(ex["passthrough"]) if hazers else []
+    if pump:
+        pt.append({"name": _PM[0], "switch": _PM[1], "on": _PM[2]})
+    ex["passthrough"] = pt
+    return ex
+
+
+def _pm_values(pump=7, fire=0):
+    """A show frame with stray data on the pump's slot (the FSEQ must never
+    drive it) and on every hazer slot, and `fire` on front row's 411."""
+    v = _hz_values(fire=fire)
+    v[_PM[1] - 1] = pump
+    return v
+
+
+def _pm_link(folder, cues=None, pump=True, hazers=True, live=True):
+    """_hz_link's FlameLink, read from a flamesafe.json in `folder` that is
+    the example with the fuel pump added."""
+    import json as _j
+    from ltcplay import flamelink as fl
+    path = os.path.join(folder, "flamesafe.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        _j.dump(_pm_doc(pump, hazers), fh)
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(path)
+    t = [100.0]
+    state = {"live": live}
+
+    def show():
+        t[0] += 0.04
+        n = int(t[0] * 30)
+        return (f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}",
+                state["live"])
+    link = _flk_unguarded(cfg, cues=cues or (lambda tc: _pm_values()),
+                          show_state=show, clock=lambda: t[0])
+    link._sock = _FlSock()
+    link.release()
+    link.state = state
+    link.haze_gate = lambda: True
+    return link
+
+
+def _pm_on(link, seconds=300.0):
+    """The pump ON at the link for `seconds`, as the engine's timer starts
+    it (pump_start with the current Abort count)."""
+    return link.pump_start(seconds, link.pump_gen())
+
+
+def test_pump_flame_link():
+    section("fuel pump at the flame link (Jeff, 2026-10-30): read from "
+            "flamesafe's passthrough as flamesafe reads it, and refused as "
+            "flamesafe refuses it; OFF at start; switched by name in "
+            "hazers_on with no show gate; its slot is ZERO in every frame "
+            "(flamesafe writes its on value), whatever the FSEQ or xLights "
+            "carries; ON only through pump_start, with a hard end and a "
+            "beat on the link's own clock, past either OFF for good; Hold "
+            "(zero) leaves it on; Abort and Stop switch it off before the "
+            "first copy and end any start or beat that read the count "
+            "before them; ON is refused while the Abort repeats")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import flamelink as fl
+    ex = _pm_doc()
+    check(fl.pump_of(ex) == _PM and
+          [(n, list(sl)) for n, sl in fl.hazers_of(ex)] == _HZ,
+          f"the engine reads the pump, and the hazers beside it as before: "
+          f"{fl.pump_of(ex)} {fl.hazers_of(ex)}")
+    check(fl.pump_of(_pm_doc(pump=False)) is None and
+          fl.pump_of({"groups": []}) is None,
+          "no switch entry: no pump (and no button)")
+    check(fl.pump_of(_pm_doc(hazers=False)) == _PM and
+          fl.hazers_of(_pm_doc(hazers=False)) == (),
+          "a pump and no hazers")
+    pump = {"name": _PM[0], "switch": 100, "on": 255}
+    for bad, why in (
+            (dict(pump, on=0), "on 0"), (dict(pump, on=256), "on 256"),
+            (dict(pump, on=True), "on true"), (dict(pump, on="255"),
+                                                "on a string"),
+            (dict(pump, on=1.5), "on a decimal"),
+            ({"name": _PM[0], "switch": 100}, "no on"),
+            (dict(pump, switch=0), "slot 0"), (dict(pump, switch=513),
+                                               "slot 513"),
+            (dict(pump, switch=True), "slot true"),
+            (dict(pump, switch=401), "a group's safety slot"),
+            (dict(pump, switch=411), "a group's fire slot"),
+            (dict(pump, switch=12), "a wave flamer safety"),
+            (dict(pump, switch=80), "a hazer's slot"),
+            (dict(pump, haze=99), "an extra key"),
+            (dict(pump, name="Hazer 1"), "a hazer's name")):
+        d = _pm_doc(pump=False)
+        d["passthrough"].append(bad)
+        try:
+            fl.pump_of(d)
+            check(False, f"the engine accepted {why}")
+        except fl.FlameLinkConfigError as e:
+            check("flamesafe refuses this file too" in str(e) and
+                  "—" not in str(e) and "–" not in str(e),
+                  f"the engine refuses {why}: {e}")
+    d = _pm_doc()
+    d["passthrough"].append({"name": "Pump 2", "switch": 101, "on": 255})
+    try:
+        fl.pump_of(d)
+        check(False, "the engine accepted a second switch")
+    except fl.FlameLinkConfigError as e:
+        check("second switch" in str(e), f"a second switch is refused: {e}")
+    d = _pm_doc()
+    d["passthrough"].append({"name": "Hazer 4", "haze": 100, "fan": 101})
+    try:
+        fl.hazers_of(d)
+        check(False, "the engine accepted a hazer on the pump's slot")
+    except fl.FlameLinkConfigError as e:
+        check("flamesafe refuses this file too" in str(e),
+              f"a hazer on the pump's slot is refused: {e}")
+
+    work = tempfile.mkdtemp()
+    try:
+        seen = []
+        link = _pm_link(work, cues=lambda tc: _pm_values(pump=255))
+        link.observer = lambda tc, v, ok: seen.append(bytes(v))
+        check(link.pump_name() == _PM[0] and link.cfg.pump == _PM and
+              not link.pump_on, "OFF at start")
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == [] and o["values"][99] == 0,
+              f"OFF: the frame says so, and the FSEQ's 255 on the pump's "
+              f"slot is zeroed: {o['hazers_on']} {o['values'][99]}")
+        check(link.pump_set(True) is False and not link.pump_on,
+              "pump_set(True) never turns it on: only pump_start, which "
+              "needs an end")
+        for bad in (0, -1, float("nan"), float("inf"), "300", None):
+            check(link.pump_start(bad, link.pump_gen()) is False and
+                  not link.pump_on, f"pump_start({bad!r}) is refused")
+        check(link.pump_start(300, link.pump_gen() - 1) is False and
+              not link.pump_on,
+              "pump_start with an Abort count read before a Stop is "
+              "refused (the zero-count race)")
+        check(_pm_on(link) is True and link.pump_on, "pump_start: ON")
+        link.state["live"] = False
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == [_PM[0]] and o["values"][99] == 0,
+              f"ON with no show playing (no show gate): its name in "
+              f"hazers_on, its slot still zero (flamesafe writes the on "
+              f"value): {o['hazers_on']} {o['values'][99]}")
+        link.state["live"] = True
+        link.hazers_set(["Hazer 2"])
+        link.pump_beat(link.pump_gen())
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == sorted(["Hazer 2", _PM[0]]) and
+              o["values"][99] == 0, f"beside a hazer: {o['hazers_on']}")
+        check(seen and all(b[99] == 0 for b in seen),
+              "the fuel tracker is never told a value on the pump's slot")
+        link.cues = lambda tc: _pm_values(pump=255, fire=0)
+        link.hazers_set([])
+        link.pump_beat(link.pump_gen())
+        link.send_frame()
+        check(not link.last_values_nonzero,
+              "a frame with only the pump on is not 'firing'")
+        link.pump_beat(link.pump_gen())
+        link.zero()
+        link.send_frame()
+        check(link.pump_on and _hz_last(link)["hazers_on"] == [_PM[0]],
+              "a zero (Hold, a show's end) leaves the pump ON (Jeff: Off "
+              "on Stop, NOT Hold)")
+        link.release()
+        check(link.snapshot()["pump_on"] is True, "the snapshot says ON")
+        # The beat: PUMP_HOLD_S without one and it is OFF for good.
+        t = link._clock
+        clock = [t()]
+        link._clock = lambda: clock[0]
+        check(link.pump_beat(link.pump_gen()), "a beat")
+        clock[0] += fl.PUMP_HOLD_S - 0.01
+        check(link.pump_on, "a beat within PUMP_HOLD_S keeps it on")
+        clock[0] += 0.02
+        check(not link.pump_on and "stalled" in link.pump_ended(),
+              f"no beat for longer: OFF at the link by itself: "
+              f"{link.pump_ended()}")
+        check(link.pump_beat(link.pump_gen()) is False and
+              not link.pump_on, "a late beat never relights it")
+        # The hard end: beats keep coming, it still ends.
+        link.pump_start(1.0, link.pump_gen())
+        for _ in range(9):
+            clock[0] += 0.1
+            check(link.pump_beat(link.pump_gen()), "beating")
+        clock[0] += 0.11
+        check(link.pump_beat(link.pump_gen()) is False and
+              not link.pump_on and link.pump_ended() == "its time was up",
+              f"past its hard end: OFF though the beats carry on: "
+              f"{link.pump_ended()}")
+        link.send_frame()
+        check(_hz_last(link)["hazers_on"] == [], "and the frame says OFF")
+        # A caller's deadline: the end is never later than it.
+        mine = [500.0]
+        link.pump_start(300, link.pump_gen(), deadline=mine[0] + 2.0,
+                        clock=lambda: mine[0])
+        check(abs(link._pump_until - (clock[0] + 2.0)) < 1e-6,
+              "with the engine's deadline 2 s away the link's end is 2 s "
+              "away, not 300")
+        check(link.pump_start(300, link.pump_gen(), deadline=mine[0] - 1,
+                              clock=lambda: mine[0]) is False,
+              "a deadline already past starts nothing")
+        link._clock = t
+        _pm_on(link)
+        gen = link.pump_gen()
+        n0 = len(link._sock.sent)
+        link.disarm_all("Stop from the rack screen")
+        after = [_j.loads(d) for d, _a in link._sock.sent[n0:]]
+        check(after and after[0]["t"] == "flame" and
+              after[0]["hazers_on"] == [] and not link.pump_on,
+              f"Stop and Abort (disarm_all): the zero frame already says "
+              f"the pump OFF: {[(x['t'], x.get('hazers_on')) for x in after]}")
+        link.release()
+        check(link.pump_beat(gen) is False and not link.pump_on,
+              "a beat carrying the count from before the Stop is refused")
+        check(link.abort_repeating() and _pm_on(link) is False and
+              not link.pump_on,
+              "ON is refused while the Stop or Abort is being repeated")
+        link._abort_repeat = None
+        check(_pm_on(link) is True, "after it: ON again")
+        check(link.pump_beat(gen) is False and not link.pump_on,
+              "a late beat from the run before the Stop (its old count) "
+              "ends the new run too: an old timer never keeps it on")
+        check(_pm_on(link) is True, "ON again")
+        check(link.pump_set("true") is not True and not link.pump_on,
+              "anything but True through pump_set is OFF")
+        _pm_on(link)
+        link.pump_stop()
+        check(not link.pump_on, "pump_stop: OFF")
+        _pm_on(link)
+        link.state["live"] = False
+        s = link.program_begin()
+        link.program_set(bytes(_pm_values(pump=255, fire=230)), s)
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["values"][99] == 0 and o["values"][410] == 230,
+              f"live xLights: its data on the pump's slot is zeroed: "
+              f"{o['values'][99]}")
+        link.program_end()
+        nohz = _pm_link(work, hazers=False)
+        nohz.send_frame()
+        check(_hz_last(nohz)["hazers_on"] == [],
+              "a pump and no hazers: the frame still carries hazers_on")
+        _pm_on(nohz)
+        nohz.send_frame()
+        check(_hz_last(nohz)["hazers_on"] == [_PM[0]], "and names it ON")
+        none = _pm_link(work, pump=False, hazers=False)
+        none.send_frame()
+        check("hazers_on" not in _hz_last(none) and
+              _pm_on(none) is False and none.pump_name() is None,
+              "no pump and no hazers: the frame is the one before either "
+              "existed, and ON does nothing")
+        again = _pm_link(work)
+        check(not again.pump_on, "a new engine: OFF")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def _pm_rig(S):
+    """_hz_rig with the fuel pump: the FlameLink read from the example
+    with the pump at 100, flamesafe's status carrying it as a switch
+    (passing whenever the link has it ON), and fuelpump.FuelPump built as
+    web.serve builds it on the rig's clock, no timer thread."""
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import fuelpump as FP
+    from ltcplay import hazers as HZ
+    R = _hz_rig(S)
+    R.pm_work = tempfile.mkdtemp()
+    R.link = _pm_link(R.pm_work)
+    R.remote.hazers = HZ.Hazers(
+        link_get=lambda: R.link,
+        flames_get=lambda: R.remote.flame_status.view(),
+        abort_standing=lambda: R.aborted[0] or R.remote._abort_standing(),
+        show_state=lambda: R.show[0], blocker=R.remote.hazer_blocker,
+        folder=R.work, clock=lambda: R.mono[0], threaded=False)
+    R.pm = {"name": _PM[0], "kind": "switch", "slots": [_PM[1]],
+            "switch": _PM[1], "on": _PM[2], "asked": False,
+            "enabled": False, "passing": False, "locked": [False],
+            "sent": [0], "why": "switched off in the show program"}
+    R.pm_lag = False
+
+    def feed():
+        on = R.link.hazers_on
+        for p in R.pt:
+            p["kind"] = "hazer"
+            p["asked"] = p["enabled"] = p["passing"] = p["name"] in on
+        if not R.pm_lag:
+            R.pm["asked"] = R.pm["enabled"] = R.pm["passing"] = \
+                R.link.pump_on
+        R.pm["sent"] = [_PM[2] if R.pm["passing"] else 0]
+        R.remote.flame_status.note(_j.dumps({
+            "t": "status", "k": "k" * 20, "fault": "", "groups": R.groups,
+            "passthrough": R.pt + [R.pm]}).encode())
+    R.feed = feed
+    feed()
+    R.remote.pump = FP.FuelPump(
+        link_get=lambda: R.link,
+        flames_get=lambda: R.remote.flame_status.view(),
+        abort_standing=lambda: R.aborted[0] or R.remote._abort_standing(),
+        blocker=R.remote.pump_blocker,
+        journal=lambda who, screen, outcome, text, fault=False:
+        R.remote._journal(who or "system", screen or "engine", "fuel-pump",
+                          outcome, text, fault=fault),
+        clock=lambda: R.mono[0], threaded=False,
+        night_state=lambda: R.night[0])
+    R.night = [None]
+    close = R.close
+
+    def close_all():
+        try:
+            close()
+        finally:
+            shutil.rmtree(R.pm_work, ignore_errors=True)
+    R.close = close_all
+    return R
+
+
+def test_pump_at_the_engine():
+    section("fuel pump at the engine (fuelpump.py, Jeff 2026-10-30): OFF at "
+            "start; ON for a run time chosen first (always 5:00 unless "
+            "chosen, pump_max_s the longest, a longer one "
+            "refused in words); it ends by itself on the engine's timer, "
+            "and on a stall between passes or inside one, and on a Stop "
+            "landing during a pass; a replayed or repeated ON starts "
+            "nothing and never adds time; the arm row and screen_arming "
+            "for ON, OFF never refused; refused with an Abort standing, "
+            "within 0.75 s of a Stop or Abort, live flame programming on, "
+            "flamesafe stale, its pump different or not reported, its slot "
+            "locked; Hold leaves it on; Abort and Stop (both routes) turn "
+            "it off, journaled; the countdown and the state on the "
+            "screens; the hazers are not confused by it")
+    S = _sched()
+    if S is None:
+        return
+    import itertools
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import fuelpump as FP
+    check("fuel-pump" in RM.POST_ROUTES and
+          RM.PUMP_POST_ROUTES == ("fuel-pump",), "the route exists")
+    check(U.REMOTE_ROUTES.get("fuel-pump") == "arm" and
+          U.classify("/api/remote/fuel-pump", {"on": True}) == "arm" and
+          all(U.classify("/api/remote/fuel-pump", b) == "safety"
+              for b in ({"on": False}, {"on": "true"}, {"on": 1}, {},
+                        None, [True], {"on": False, "seconds": 300})),
+          "the role matrix: ON is an arm press, anything else safety")
+    check("turning the fuel pump on" in dict(U.PERMS)["arm"] and
+          "the fuel pump off" in U.SAFETY_ROWS, "the matrix rows say so")
+    from ltcplay import flamelink as FL
+    check(FP.BEAT_STALE_S == FL.PUMP_HOLD_S,
+          "the engine's stall and the link's beat are the same 0.5 s")
+    check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 3600 and
+          FP.clock_text(300) == "5:00" and FP.clock_text(252) == "4:12" and
+          FP.clock_text(3725) == "62:05",
+          "5 minutes by default, 60 the longest unless an admin says, m:ss")
+    for v in (300, 1, 3600):
+        check(FP.pump_seconds(v) == (v, ""), f"{v} s is taken")
+    for v in (0, -5, 3601, 1.5, "300", True, None, float("nan")):
+        secs, why = FP.pump_seconds(v)
+        check(secs is None and why and "—" not in why,
+              f"{v!r} is refused in words: {why}")
+    check("pump_max_s" in FP.pump_seconds(3601)[1] and
+          "can raise" in FP.pump_seconds(3601)[1],
+          "a run time over the longest names pump_max_s and says an admin "
+          "can raise it")
+    loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    ids = itertools.count(1)
+
+    def tap(on, client=loop, seconds=300, run=None, **kw):
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=seconds,
+                        run=run if run is not None else f"p{next(ids)}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=client,
+                     **kw)
+
+    def view():
+        R.feed()
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        return s.get("pump") or {}
+
+    def said(text):
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            if pm.last_off and text in pm.last_off.get("reason", ""):
+                return True
+            time.sleep(0.01)
+        return False
+
+    def off():
+        tap(False)
+        link._abort_repeat = None
+        R.feed()
+    try:
+        v = view()
+        check(v.get("available") and v["name"] == _PM[0] and
+              v["slot"] == 100 and v["on_value"] == 255 and
+              v["on"] is False and v["state"] == "off" and
+              v["refusal"] == "" and v["agree"] is True and
+              v["default_s"] == 300 and v["max_s"] == 3600 and
+              v["left_s"] is None,
+              f"every screen's status: the pump, OFF, ON would be taken, "
+              f"5:00 the default, 60:00 the longest: {v}")
+        hv = R.remote.hazers_view(R.remote.flame_status.view())
+        check(hv.get("agree") is True and
+              not [a for a in R.remote.alerts.open() if a.kind == "hazers"],
+              f"flamesafe reporting the pump does not make the hazers "
+              f"differ: {hv.get('agree')}")
+        st, _h, out = tap(True, seconds=240)
+        check(st == 200 and link.pump_on and "4:00" in out["text"],
+              f"a tap on the rack screen: ON for 4:00: {st} {out}")
+        check("pump_s" not in RM.load_settings(R.work) and
+              view()["default_s"] == 300,
+              "the default stays 5:00 after another run time was started "
+              "(Jeff: 5 minutes unless Andy sets another first)")
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on, "the timer beats it")
+        R.mono[0] += 0.1
+        pm.pump_send()
+        v = view()
+        check(v["state"] == "on" and v["left_s"] == 239.8 and
+              v["seconds"] == 240,
+              f"the countdown on the engine's clock: {v['left_s']}")
+        st, _h, out = tap(True, seconds=3000)
+        check(st == 409 and "already on" in out["error"] and
+              pm.run["seconds"] == 240,
+              f"a second ON never adds time: {out}")
+        rid = "replayed-press"
+        off()
+        st, _h, out = tap(True, run=rid)
+        check(st == 200 and link.pump_on, "setup: ON")
+        off()
+        st, _h, out = tap(True, run=rid)
+        check(st == 409 and "already used" in out["error"] and
+              not link.pump_on,
+              f"the same press again (a replayed request) starts nothing: "
+              f"{out}")
+        st, _h, out = tap(True, run="")
+        check(st == 409 and not link.pump_on, f"a press with no id: {out}")
+        for bad in (0, 3601, 1.5, "300", None):
+            st, _h, out = tap(True, seconds=bad)
+            check(st == 409 and not link.pump_on and
+                  "not turned on" in out["error"],
+                  f"run time {bad!r}: refused: {out['error']}")
+        RM.save_settings(R.work, pump_max_s=600)
+        st, _h, out = tap(True, seconds=601)
+        check(st == 409 and "10:00" in out["error"] and
+              "pump_max_s" in out["error"] and not link.pump_on,
+              f"an admin's pump_max_s of 600: 601 s refused: {out}")
+        check(view()["max_s"] == 600 and view()["default_s"] == 300,
+              "and the screens are told the longest")
+        for badv in (0, 14401, "600", True, 1.5):
+            try:
+                RM.save_settings(R.work, pump_max_s=badv)
+                check(False, f"pump_max_s {badv!r} was saved")
+            except ValueError as e:
+                check("pump_max_s" in str(e), f"pump_max_s {badv!r} is "
+                                              f"refused: {e}")
+        RM.save_settings(R.work, pump_max_s=3600)
+        # Its own end on the engine's timer.
+        st, _h, out = tap(True, seconds=1)
+        for _ in range(9):
+            R.mono[0] += 0.1
+            check(pm.pump_send() == "", "running")
+        R.mono[0] += 0.11
+        check(pm.pump_send() == "its 0:01 were up" and not link.pump_on and
+              pm.run is None and said("were up"),
+              f"its time up: OFF by itself, said: {pm.last_off}")
+        R.feed()
+        # A stall between passes.
+        off()
+        tap(True)
+        R.mono[0] += FP.BEAT_STALE_S + 0.05
+        check("stalled" in pm.pump_send() and not link.pump_on,
+              "the timer stalled between passes: OFF, never relit")
+        R.mono[0] -= FP.BEAT_STALE_S + 0.05
+        R.feed()
+        # A stall that outlasts the run is said as a stall, not as its
+        # time being up: the gap is judged first.
+        off()
+        tap(True, seconds=1)
+        R.mono[0] += 1.2
+        why = pm.pump_send()
+        check("stalled" in why and not link.pump_on,
+              f"a stall past the end is said as a stall: {why}")
+        R.mono[0] -= 1.2
+        R.feed()
+        # A stall inside a pass: the clock jumps during the checks.
+        off()
+        tap(True)
+        real_down = pm.down
+
+        def slow_down():
+            R.mono[0] += FP.BEAT_STALE_S + 0.05
+            return real_down()
+        pm.down = slow_down
+        why = pm.pump_send()
+        pm.down = real_down
+        check("stalled" in why and not link.pump_on,
+              f"a stall inside a pass (fresh clock reading): OFF: {why}")
+        R.feed()
+        # A Stop landing during a pass, before and after the beat.
+        for where in ("before", "after"):
+            off()
+            tap(True)
+            real_beat = link.pump_beat
+
+            def racing(gen, where=where, real_beat=real_beat):
+                if where == "before":
+                    link.disarm_all("Stop racing the pump's timer")
+                    return real_beat(gen)
+                ok = real_beat(gen)
+                link.disarm_all("Stop racing the pump's timer")
+                return ok
+            link.pump_beat = racing
+            why = pm.pump_send()
+            del link.pump_beat
+            check(why and not link.pump_on and pm.run is None,
+                  f"a Stop landing {where} the beat inside a pass: OFF: "
+                  f"{why}")
+            link.release()
+        off()
+        # The link's own hard end, whatever the engine's timer thinks.
+        tap(True, seconds=300)
+        link._pump_until = link._clock() - 0.01
+        why = pm.pump_send()
+        check("flame link turned it off" in why and "time was up" in why and
+              not link.pump_on,
+              f"the link's hard end passed: OFF, the engine follows: {why}")
+        R.feed()
+        off()
+        st, _h, out = tap(True)
+        R.pm_lag = True
+        check(view()["state"] == "waiting",
+              "ON here, flamesafe not yet passing it: 'waiting'")
+        R.pm_lag = False
+        check(view()["state"] == "on", "flamesafe passing it: 'on'")
+        R.show[0] = "playing"
+        off()
+        tap(True)
+        check(link.pump_on, "during a show: ON (Jeff: it may run then)")
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()}, client=loop)
+        pm.pump_send()
+        check(link.pump_on and pm.run is not None,
+              "Hold leaves the pump ON (Jeff: Off on Stop, NOT Hold)")
+        R.show[0] = "idle"
+        off()
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = tap(True, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              not link.pump_on,
+              f"ON from the show network without screen_arming: refused: "
+              f"{st} {out}")
+        tap(True)
+        st, _h, out = tap(False, client=ipad)
+        check(st == 200 and not link.pump_on,
+              f"OFF from there is never refused: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        st, _h, out = tap(True, client=ipad)
+        check(st == 200 and link.pump_on,
+              f"with screen_arming on, ON from the show network: {st} {out}")
+        off()
+        # Refusals.
+        R.aborted[0] = True
+        st, _h, out = tap(True)
+        check(st == 409 and "Abort is standing" in out["error"] and
+              not link.pump_on, f"an Abort standing: refused: {out}")
+        check(view()["refusal"].startswith("an Abort is standing"),
+              "and the status says why, for the button")
+        R.aborted[0] = False
+
+        class _LF:
+            on = True
+        R.remote.live_flame = _LF()
+        st, _h, out = tap(True)
+        check(st == 409 and "live flame programming" in out["error"] and
+              not link.pump_on, f"live flame programming on: {out}")
+        R.remote.live_flame = None
+        R.mono[0] += 1.5
+        st, _h, out = tap(True)
+        check(st == 409 and "has not reported" in out["error"] and
+              not link.pump_on, f"flamesafe's status 1.5 s old: {out}")
+        R.feed()
+        R.pm["on"] = 200
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "differ" in out["error"] and not link.pump_on,
+              f"flamesafe's pump at another on value: refused: {out}")
+        R.pm["on"] = 255
+        R.pm["slots"] = [101]
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "differ" in out["error"] and not link.pump_on,
+              f"flamesafe's pump on another slot: refused: {out}")
+        check(view()["agree"] is False, "and the status says they differ")
+        R.pm["slots"] = [100]
+        R.pm["kind"] = "hazer"
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "does not report a fuel pump" in out["error"]
+              and not link.pump_on,
+              f"a flamesafe that reports no switch (an older one): "
+              f"refused: {out}")
+        R.pm["kind"] = "switch"
+        R.feed()
+        link.set_locked_channels([100])
+        st, _h, out = tap(True)
+        check(st == 409 and "lockout file" in out["error"] and
+              not link.pump_on, f"its slot locked: refused: {out}")
+        link.set_locked_channels([])
+        link.disarm_all("Stop from the selftest")
+        st, _h, out = tap(True)
+        check(st == 409 and "still being sent" in out["error"] and
+              not link.pump_on,
+              f"a Stop still being sent to flamesafe (0.75 s): refused: "
+              f"{out}")
+        link._abort_repeat = None
+        link.release()
+
+        class _NoArm:
+            def may(self, role, perm):
+                return perm != "arm"
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        tap(True)
+        R.remote.users = _NoArm()
+        st, _h, out = tap(False)
+        check(st == 200 and not link.pump_on,
+              f"may not arm: OFF still works: {st} {out}")
+        st, _h, out = tap(True)
+        check(st == 403 and out.get("role_refused") and not link.pump_on,
+              f"may not arm: ON is refused: {st} {out}")
+        R.remote.users = None
+        # flamesafe going quiet ends it on the next pass.
+        tap(True)
+        R.feed()
+        check(pm.pump_send() == "" and link.pump_on, "fresh: it runs")
+        R.mono[0] += 1.5
+        check(pm.pump_send() and not link.pump_on,
+              "flamesafe silent for 1.5 s: the timer turns it off")
+        R.feed()
+        # Abort, Stop (the deck's halt and the plain /api/stop).
+        tap(True)
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen(),
+                                            "confirmed": True}, client=loop)
+        check(not link.pump_on and pm.run is None and said("Abort"),
+              f"Abort: OFF at the press, said: {pm.last_off}")
+        R.ask("POST", "/api/remote/reset", {"seen": R.seen()}, client=loop)
+        R.settle()
+        R.feed()
+        pm.last_off = None
+        link._abort_repeat = None
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on, f"setup: ON again: {out}")
+        R.remote.halt("Ollie", "Rack screen")
+        check(not link.pump_on and pm.run is None and said("Stop"),
+              f"Stop (the deck's halt): OFF, said: {pm.last_off}")
+        R.feed()
+        pm.last_off = None
+        link._abort_repeat = None
+        tap(True)
+        check(link.pump_on, "setup: ON again")
+        st, _h, out = R.ask("POST", "/api/stop", {}, client=loop)
+        check(not link.pump_on and pm.run is None and said("Stop"),
+              f"Stop (the plain /api/stop): OFF: {st} {pm.last_off}")
+        R.feed()
+        link._abort_repeat = None
+        tap(True)
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen()}, client=loop)
+        check(not link.pump_on,
+              "an unconfirmed Abort still turns it off (it only takes "
+              "something away)")
+        lines = [r.get("text", "") for r in R.lines_for("fuel-pump")]
+        check(any("turned the fuel pump" in t and "for 4:00" in t
+                  for t in lines) and
+              any("Fuel pump off" in t for t in lines) and
+              any("refused" in t for t in lines) and
+              not any("—" in t or "–" in t for t in lines),
+              f"the journal says each on, off and refusal: {lines[-4:]}")
+        R.remote.pump = None
+        st, _h, out = tap(True)
+        check(st == 404, f"no pump in this engine: 404: {st}")
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        check("pump" not in s, "and no pump in the status (no button)")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_pump_review_fixes():
+    section("fuel pump, the reviews of #188: live flame programming does "
+            "not start while the pump runs (a Hold would end both); the "
+            "status answers while the flame link's lock is held; two "
+            "presses at once start one run; on 1 or \"true\" is OFF, signed "
+            "out too; a disarm to every group names its own cause; the "
+            "link not sending, an Abort standing and cut() each end it; "
+            "flamesafe not passing it ends the run; flamesafe passing it "
+            "while the engine has it off is said; the night closing or "
+            "over ends it")
+    S = _sched()
+    if S is None:
+        return
+    import threading
+    import itertools
+    from ltcplay import fuelpump as FP
+    loop = ("127.0.0.1", 5000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    ids = itertools.count(1)
+
+    def tap(on, client=loop, seconds=300, run=None, **kw):
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=seconds,
+                        run=run if run is not None else f"r{next(ids)}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=client,
+                     **kw)
+
+    def off():
+        tap(False)
+        link._abort_repeat = None
+        link.release()
+        R.feed()
+    try:
+        # F3: live flame programming does not start while the pump runs.
+        class _LF:
+            on = False
+            begun = 0
+
+            def begin(self, who, screen):
+                self.begun += 1
+                return True, "Live flame programming is ON."
+        lf = _LF()
+        R.remote.live_flame = lf
+        tap(True)
+        check(link.pump_on, "setup: the pump runs")
+        st, _h, out = R.ask("POST", "/api/remote/live-flame",
+                            {"on": True, "confirmed": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 409 and "fuel pump is on" in out.get("error", "") and
+              lf.begun == 0 and link.pump_on,
+              f"live flame programming ON while the pump runs: refused, "
+              f"the pump untouched: {st} {out}")
+        off()
+        st, _h, out = R.ask("POST", "/api/remote/live-flame",
+                            {"on": True, "confirmed": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200 and lf.begun == 1,
+              f"with the pump off it starts: {st} {out}")
+        R.remote.live_flame = None
+        # N1 (re-review A): live flame programming being turned on (its
+        # begin() under way) refuses the pump; the pump's run is reserved
+        # before it asks again, so a begin() racing the press refuses
+        # itself; and the begin()'s own check sees the pump.
+        lf2 = _LF()
+        lf2._starting = True
+        R.remote.live_flame = lf2
+        st, _h, out = tap(True)
+        check(st == 409 and "live flame programming" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"ON while live flame programming is being turned on: "
+              f"refused: {out}")
+        lf2._starting = False
+        real_ref = pm.refusal
+
+        def starts_meanwhile():
+            why = real_ref()
+            lf2._starting = True      # a begin() marks itself now
+            return why
+        pm.refusal = starts_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "live flame programming" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"a begin() marking itself after the pump's checks but before "
+              f"its reservation: the pump is refused: {out}")
+        lf2._starting = False
+        pm.run = {"id": "reserved", "reserved": True}
+        why = R.remote.live_flame_blockers()
+        pm.run = None
+        check("fuel pump is on" in why,
+              f"a begin()'s own check sees a reserved pump run: {why!r}")
+        lf2.on = True
+        pm.run = {"id": "reserved", "reserved": True}
+        why = R.remote.live_flame_blockers()
+        pm.run = None
+        check("fuel pump" not in why,
+              f"but a running session's watch pass never ends it over the "
+              f"pump: {why!r}")
+        R.remote.live_flame = None
+        # Review B, 1: a Pump off landing while an ON is being checked wins.
+        def off_meanwhile():
+            why = real_ref()
+            pm.set(False, who="B", screen="iPad")
+            return why
+        pm.refusal = off_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "Pump off" in out["error"] and pm.run is None
+              and not link.pump_on,
+              f"Pump off pressed while an ON was being checked: nothing "
+              f"starts after it: {out}")
+        R.feed()
+        # Delta review 3: a Stop's cut() (not only Pump off) landing while
+        # an ON is being checked wins too.
+        def cut_meanwhile():
+            why = real_ref()
+            pm.cut()
+            return why
+        pm.refusal = cut_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "Pump off" in out["error"] and pm.run is None
+              and not link.pump_on,
+              f"a Stop's cut while an ON was being checked: nothing starts "
+              f"after it: {out}")
+        R.feed()
+        # Delta review 3: the run is reserved before the second look, so
+        # a live flame programming start check made then sees it.
+        seen_lf = []
+        real_blk = pm._blocker
+
+        def look_from_lf():
+            seen_lf.append(R.remote.live_flame_pump_refusal())
+            return real_blk()
+        pm._blocker = look_from_lf
+        st, _h, out = tap(True)
+        pm._blocker = real_blk
+        check(st == 200 and any(seen_lf),
+              f"while the ON makes its second look its run is already "
+              f"reserved, so live flame programming starting then is "
+              f"refused: {seen_lf}")
+        off()
+        # Delta review 1: a reservation is never a run on the screens.
+        pm.run = {"id": "x", "reserved": True}
+        real_live = link.pump_live_now
+        link.pump_live_now = lambda: True
+        check(pm.on() is False,
+              "on() never reads a reservation as a run")
+        pm.on = lambda: True       # the race: an ON finishing mid-view
+        v = pm.view(R.remote.flame_status.view())
+        del pm.on
+        link.pump_live_now = real_live
+        pm.run = None
+        check(v.get("available") is True and v.get("left_s") is None,
+              f"view() with a reservation where a run was read: still "
+              f"available, no KeyError: {v}")
+        # Final delta review: an ON from a stale or ageless screen is
+        # refused (a stalled request landing after a Pump off or a Stop);
+        # Pump off never is.
+        for label, seen in (("15 s old", R.seen() - 15000),
+                            ("120 s old", R.seen() - 120000),
+                            ("missing", None), ("not a number", "x")):
+            body = {"on": True, "seconds": 300, "run": f"stale-{label}"}
+            if seen is not None:
+                body["seen"] = seen
+            st, _h, out = R.ask("POST", "/api/remote/fuel-pump", body,
+                                client=loop)
+            check(st == 409 and "more than 1 s old" in out.get("error", "")
+                  and pm.run is None and not link.pump_on,
+                  f"an ON whose screen status is {label}: refused: {st} "
+                  f"{out}")
+        st, _h, out = R.ask("POST", "/api/remote/fuel-pump",
+                            {"on": False, "seen": R.seen() - 120000},
+                            client=loop)
+        check(st == 200, f"Pump off from a stale screen still works: {st}")
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on,
+              f"an ON from a live screen is taken: {st} {out}")
+        off()
+        # The audit, on the second look's refusal and on a failed start.
+        audited = []
+
+        class _Audit:
+            def event(self, **kw):
+                audited.append(kw)
+        pm.audit = _Audit()
+        lf4 = _LF()
+        real_blk2 = pm._blocker
+
+        def starts_now():
+            # The first look (refusal()) passes; the second, with the run
+            # reserved, sees live flame programming starting.
+            if pm.run is not None:
+                lf4._starting = True
+            return real_blk2()
+        pm._blocker = starts_now
+        R.remote.live_flame = lf4
+        st, _h, out = tap(True)
+        pm._blocker = real_blk2
+        R.remote.live_flame = None
+        check(st == 409 and any(a.get("result") == "refused" and
+                                "starting" in str(a.get("reason"))
+                                for a in audited),
+              f"the second look's refusal is audited: {audited[-1:]}")
+        audited.clear()
+        # Delta review 2: a start that raises never wedges the pump.
+        real_gen = link.pump_gen
+
+        def broken_gen():
+            raise KeyError("broken")
+        link.pump_gen = broken_gen
+        st, _h, out = tap(True)
+        link.pump_gen = real_gen
+        check(st == 409 and "starting it failed" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"a start that raised: refused in words, no reservation "
+              f"left: {out}")
+        check(any(a.get("result") == "refused" and
+                  "starting it failed" in str(a.get("reason"))
+                  for a in audited),
+              f"and audited: {audited[-1:]}")
+        # One that raises after the link took it: the link is told OFF.
+        real_start = link.pump_start
+
+        def start_then_raise(*a, **k):
+            real_start(*a, **k)
+            raise RuntimeError("after the link took it")
+        link.pump_start = start_then_raise
+        st, _h, out = tap(True)
+        link.pump_start = real_start
+        check(st == 409 and pm.run is None and not link.pump_on,
+              f"a start that raised after the link took it: the link "
+              f"names no pump: {out} {link.pump_on}")
+        pm.audit = None
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on,
+              f"and the next ON works (not wedged): {st} {out}")
+        from ltcplay import fuelpump as FP2
+        other = FP2.FuelPump(link_get=lambda: link, flames_get=lambda: None,
+                             abort_standing=lambda: False, threaded=False)
+        check(pm.view(R.remote.flame_status.view()).get("boot") == pm.boot
+              and other.boot != pm.boot,
+              "the screens get this engine's boot id, new at every start, so "
+              "a screen left open across a restart resets its run time")
+        n_before = (pm.last_off or {}).get("n", 0)
+        off()
+        tap(True)
+        off()
+        lo = pm.last_off or {}
+        check(lo.get("n", 0) >= n_before + 2,
+              f"every OFF said carries a new count, so a screen sees two "
+              f"ends for the same reason: {lo}")
+        pm.run = {"id": "x", "reserved": True}
+        lines0 = len(R.lines_for("fuel-pump"))
+        pm.stop("Pump off on a reservation", who="A", screen="iPad")
+        check(pm.run is None and len(R.lines_for("fuel-pump")) == lines0,
+              "Pump off on a pump that never ran clears it and journals "
+              "nothing")
+        # Delta review 4: the second look's refusal is audited too, and
+        # live flame programming starting is said as starting.
+        lf3 = _LF()
+        lf3._starting = True
+        R.remote.live_flame = lf3
+        st, _h, out = tap(True)
+        R.remote.live_flame = None
+        check(st == 409 and "live flame programming is starting" in
+              out["error"], f"said as starting: {out}")
+        # F5: the status answers while the sender holds the link's lock.
+        tap(True)
+        held, release = threading.Event(), threading.Event()
+
+        def hold_lock():
+            with link._lock:
+                held.set()
+                release.wait(10)
+        th = threading.Thread(target=hold_lock, daemon=True)
+        th.start()
+        held.wait(5)
+        got = {}
+
+        def ask():
+            got["r"] = R.ask("GET", "/api/remote/status", client=loop)
+        t2 = threading.Thread(target=ask, daemon=True)
+        t0 = time.monotonic()
+        t2.start()
+        t2.join(3.0)
+        took = time.monotonic() - t0
+        release.set()
+        th.join(5)
+        check("r" in got and got["r"][0] == 200 and
+              got["r"][2].get("pump", {}).get("on") is True and took < 3.0,
+              f"the status answers with the link's lock held by a stuck "
+              f"sender ({took:.2f} s): {got.get('r', ('no answer',))[0]}")
+        off()
+        # F1: a second press arriving while the first is being checked.
+        inner = {}
+        real = pm.refusal
+
+        def racing():
+            pm.refusal = real
+            inner["r"] = pm.set(True, seconds=60, run="second",
+                                who="B", screen="iPad")
+            return real()
+        pm.refusal = racing
+        first = pm.set(True, seconds=600, run="first", who="A",
+                       screen="Rack screen")
+        pm.refusal = real
+        check(inner["r"][0] is True and first[0] is False and
+              "already on" in first[1] and pm.run["id"] == "second" and
+              pm.run["seconds"] == 60,
+              f"two presses at once: one run, the other refused and never "
+              f"replacing or extending it: {inner['r']} {first} "
+              f"{pm.run and pm.run['id']}")
+        off()
+        # F4: on 1 or "true" is OFF, signed out too, with a run and seconds.
+        class _Out:
+            def may(self, role, perm):
+                return False
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        R.remote.users = _Out()
+        for bad in (1, "true"):
+            st, _h, out = R.ask("POST", "/api/remote/fuel-pump",
+                                {"on": bad, "seconds": 300,
+                                 "run": f"x{bad}", "seen": R.seen()},
+                                client=loop)
+            check(st == 200 and not link.pump_on and pm.run is None and
+                  "OFF" in out.get("text", ""),
+                  f"on {bad!r} with a run and seconds, signed out: OFF, "
+                  f"nothing started, no permission needed: {st} {out}")
+        st, _h, out = tap(True)
+        check(st == 403 and not link.pump_on,
+              f"and on true signed out is refused: {st} {out}")
+        R.remote.users = None
+        # F6: a disarm to every group names its own cause.
+        tap(True)
+        link.disarm_all("Disarm all flame groups forced on the Rack screen")
+        why = pm.pump_send()
+        check("Disarm all flame groups forced" in why and
+              "Stop or Abort" not in why and not link.pump_on,
+              f"the journal names the real cause: {why}")
+        off()
+        # Each guard ends a run on its own.
+        tap(True)
+        real_snap = link.snapshot
+        link.snapshot = lambda: dict(real_snap(), sending_ok=False)
+        why = pm.pump_send()
+        link.snapshot = real_snap
+        check("not sending" in why and not link.pump_on,
+              f"the flame link not sending ends it: {why}")
+        R.feed()
+        link.snapshot = lambda: dict(real_snap(), sending_ok=False)
+        st, _h, out = tap(True)
+        link.snapshot = real_snap
+        check(st == 409 and "not sending" in out["error"],
+              f"and refuses ON: {out}")
+        R.feed()
+        tap(True)
+        R.aborted[0] = True
+        why = pm.pump_send()
+        R.aborted[0] = False
+        check(why == "an Abort is standing" and not link.pump_on,
+              f"an Abort standing ends it: {why}")
+        off()
+        tap(True)
+        was = pm.cut()
+        check(was is True and not link.pump_on and pm.run is None,
+              "cut() alone switches it off at the link, before any journal "
+              "thread runs")
+        off()
+        # Item 5: flamesafe not passing it ends the run after a grace.
+        tap(True)
+        R.pm_lag = True
+        R.pm["passing"] = R.pm["enabled"] = False
+        R.pm["why"] = "the show program link is not fresh"
+        ended = ""
+        for _ in range(25):
+            R.mono[0] += 0.1
+            R.feed()
+            ended = pm.pump_send()
+            if ended:
+                break
+        check("did not pass it" in ended and "not fresh" in ended and
+              not link.pump_on and pm.run is None,
+              f"flamesafe not passing it for {FP.NOT_PASSING_S:g} s ends "
+              f"the run, so a new ON works: {ended}")
+        # Item 7: flamesafe passing it while the engine has it off.
+        R.pm["passing"] = R.pm["enabled"] = True
+        R.feed()
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        check(s["pump"]["state"] == "flamesafe_on" and not s["pump"]["on"],
+              f"flamesafe passing it with the engine off is said: "
+              f"{s['pump']['state']}")
+        R.pm_lag = False
+        off()
+        # The night: closing and over.
+        tap(True)
+        R.night[0] = "CLOSING"
+        why = pm.pump_send()
+        check(why == "the night is closing" and not link.pump_on,
+              f"the night closing ends it: {why}")
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "night is closing" in out["error"] and
+              "was not turned on" in out["error"] and pm.run is None,
+              f"and refuses ON while it closes, before it starts: {out}")
+        R.night[0] = "SHOW"
+        off()
+        tap(True)
+        R.night[0] = "OFF"
+        why = pm.pump_send()
+        check(why == "the night is over" and not link.pump_on,
+              f"the night over ends a run begun before it: {why}")
+        off()
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on and pm.pump_send() == "",
+              f"a run begun after the night is over (the morning) runs: "
+              f"{out}")
+        R.night[0] = None
+        off()
+        m = getattr(R.remote.schedule, "machine", None)
+        check(R.remote.pump_night_state() == getattr(m, "state", None),
+              f"the engine's night state is the scheduler's: "
+              f"{R.remote.pump_night_state()!r}")
+        import ast as _ast
+        src = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web.py"), encoding="utf-8").read()
+        check("night_state=remote.pump_night_state)" in src,
+              "web.serve gives the pump the scheduler's night state")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_pump_timer_thread_ends_it():
+    section("fuel pump timer (fuelpump.py): the real timer thread keeps it "
+            "on and ends it by itself at its time; with the thread wrecked "
+            "the flame link stops naming it within PUMP_HOLD_S")
+    import shutil
+    import tempfile
+    from ltcplay import flamelink as fl
+    from ltcplay import fuelpump as FP
+    work = tempfile.mkdtemp()
+    try:
+        link = _pm_link(work)
+        link._clock = time.monotonic
+        fresh = {"connected": True, "stale": False, "age_ms": 10,
+                 "passthrough": [{"name": _PM[0], "kind": "switch",
+                                  "slots": [_PM[1]], "on": _PM[2],
+                                  "passing": True}]}
+        link.snapshot = lambda: {"open": True, "sending_ok": True,
+                                 "locked_channels": []}
+        pm = FP.FuelPump(link_get=lambda: link, flames_get=lambda: fresh,
+                         abort_standing=lambda: False)
+        ok, text = pm.set(True, seconds=1, run="t1")
+        check(ok and link.pump_on, f"ON for 0:01: {text}")
+        time.sleep(0.6)
+        check(link.pump_on, "past PUMP_HOLD_S the timer still beats it")
+        end = time.monotonic() + 2.0
+        while (link.pump_on or pm.run is not None) and \
+                time.monotonic() < end:
+            time.sleep(0.02)
+        check(not link.pump_on and pm.run is None and
+              "up" in (pm.last_off or {}).get("reason", ""),
+              f"its time up: OFF by itself: {pm.last_off}")
+        ok, _t = pm.set(True, seconds=60, run="t2")
+        check(ok and link.pump_on, "ON for 1:00")
+        pm.pump_send = lambda now=None: ""     # a timer that does nothing
+        pm.run = dict(pm.run)                  # its thread loses its run
+        time.sleep(fl.PUMP_HOLD_S + 0.2)
+        check(not link.pump_on and "stalled" in link.pump_ended(),
+              f"a wrecked timer: the link stops naming it by itself: "
+              f"{link.pump_ended()}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_pump_end_to_end_against_the_real_flamesafe():
+    section("fuel pump end to end: the real flamesafe in its own process, "
+            "the real FlameLink, over loopback UDP: OFF at start whatever "
+            "the FSEQ carries on 100; ON puts flamesafe's own 255 on the "
+            "node with the frame carrying 0 there; Hold leaves it on; its "
+            "hard end and a stopped timer zero it; Stop and Abort "
+            "(disarm_all) zero it and it stays off until started again; a "
+            "foreign keyed sender cannot turn it on; the engine dying zeroes "
+            "it within flamesafe's frame_stale_ms")
+    import json as _j
+    import socket as _so
+    import subprocess
+    import threading
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.05)
+    status_rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    status_rx.bind(("127.0.0.1", 0))
+    status_rx.settimeout(0.2)
+    listen = free_port()
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1",
+                 "status_port": status_rx.getsockname()[1], "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": "front row", "safety": 401, "fire": [411, 412]}],
+        "passthrough": [{"name": n, "haze": sl[0], "fan": sl[1]}
+                        for n, sl in _HZ] +
+        [{"name": _PM[0], "switch": _PM[1], "on": _PM[2]}]},
+        open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    stop = threading.Event()
+    last = {"st": None}
+
+    def read_status():
+        while not stop.is_set():
+            try:
+                d, _a = status_rx.recvfrom(65535)
+            except (_so.timeout, OSError):
+                continue
+            o = fl.decode_status(d, key)
+            if o is not None:
+                last["st"] = o
+    threading.Thread(target=read_status, daemon=True).start()
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    feed = {"pump": 7}
+    link = _flk_unguarded(cfg,
+                          cues=lambda tc: _pm_values(pump=feed["pump"]),
+                          show_state=lambda: (show_tc(), True))
+    link.release()
+    link.haze_gate = lambda: True
+    beating = {"gen": None}
+
+    def beat():
+        # The engine's timer, as fuelpump.FuelPump runs it.
+        while not stop.is_set():
+            g = beating["gen"]
+            if g is not None:
+                link.pump_beat(g)
+            time.sleep(0.1)
+    threading.Thread(target=beat, daemon=True).start()
+
+    def start(seconds=300.0):
+        g = link.pump_gen()
+        ok = link.pump_start(seconds, g)
+        beating["gen"] = g if ok else None
+        return ok
+
+    def pump(seconds=0.4):
+        """Slot 100 on the node's last packet after `seconds`."""
+        end = time.monotonic() + seconds
+        got = None
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            got = fp.parse_e131(data).values
+        return None if got is None else got[_PM[1] - 1]
+
+    def first_zero(limit):
+        """Seconds until the node first shows 0 on slot 100, or None."""
+        t1 = time.monotonic()
+        while time.monotonic() - t1 < limit:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            if fp.parse_e131(data).values[_PM[1] - 1] == 0:
+                return time.monotonic() - t1
+        return None
+
+    def entry():
+        for p in (last["st"] or {}).get("passthrough") or []:
+            if p.get("name") == _PM[0]:
+                return p
+        return None
+    try:
+        check(cfg.pump == _PM, f"the engine reads the pump: {cfg.pump}")
+        link.start()
+        first = pump(3.0)
+        if not check(first is not None, "flamesafe sends to the node: " +
+                     "".join(said)[-400:]):
+            return
+        check(any(f"{_PM[0]} switch 100 at 255" in l for l in said),
+              "flamesafe's start line names the pump")
+        check(first == 0, f"OFF at start: zero on the node though the FSEQ "
+                          f"carries 7 on 100: {first}")
+        feed["pump"] = 0
+        start()
+        got = pump(0.6)
+        check(got == 255, f"ON: flamesafe's own 255 on the node, the frame "
+                          f"carrying 0 there: {got}")
+        e = entry()
+        check(e and e.get("kind") == "switch" and e.get("passing") and
+              e.get("sent") == [255],
+              f"flamesafe's status says the switch passes: {e}")
+        link.zero()
+        got = pump(0.5)
+        check(got == 255, f"Hold (zero): still ON on the node: {got}")
+        link.release()
+        # Its hard end: the timer keeps beating, the link still ends it.
+        beating["gen"] = None
+        time.sleep(0.2)
+        start(1.0)
+        got = pump(0.5)
+        check(got == 255, f"setup: ON for 1 s: {got}")
+        got = pump(1.0)
+        check(got == 0, f"past its hard end: zero on the node though the "
+                        f"timer still beats: {got}")
+        # A timer that stops: the link drops it within PUMP_HOLD_S.
+        start()
+        check(pump(0.5) == 255, "setup: ON")
+        beating["gen"] = None
+        dt = first_zero(2.0)
+        check(dt is not None and dt < fl.PUMP_HOLD_S + 0.4,
+              f"the engine's timer stopped: zero on the node in {dt} s")
+        start()
+        check(pump(0.5) == 255, "setup: ON")
+        link.disarm_all("Stop from the selftest")
+        got = pump(0.3)
+        check(got == 0, f"Stop (disarm_all): zero on the node: {got}")
+        link.release()
+        check(link.abort_repeating() and link.pump_start(
+            300, link.pump_gen()) is False,
+              "while the Stop is still being repeated it cannot go on")
+        time.sleep(link.cfg.abort_repeat_s + 0.1)
+        got = pump(0.4)
+        check(got == 0, f"after the Stop it stays off: {got}")
+        start()
+        got = pump(1.5)
+        check(got == 255,
+              f"started again at the engine (its frames said OFF since the "
+              f"Stop, then ON): 255 again: {got}")
+        link.disarm_all("Abort from the selftest")
+        got = pump(0.3)
+        check(got == 0, f"Abort: zero on the node: {got}")
+        link.release()
+        time.sleep(link.cfg.abort_repeat_s + 0.1)
+        # A foreign keyed sender saying the pump ON, with 255 on its slot.
+        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        vals = [0] * 512
+        vals[_PM[1] - 1] = 255
+        for i in range(10):
+            rogue.sendto(_j.dumps({
+                "v": 2, "k": key, "t": "flame", "seq": 10 ** 12 + i,
+                "tc": None, "mono": 10.0 ** 6 + i, "universe": 1,
+                "values": vals, "hazers_on": [_PM[0]]}).encode(),
+                ("127.0.0.1", listen))
+            time.sleep(0.02)
+        got = pump()
+        check(got == 0, f"a foreign keyed sender cannot turn it on: {got}")
+        rogue.close()
+        time.sleep(0.6)                   # its foreign-sender window passes
+        # The engine dies with the pump on: no more frames at all.
+        start()
+        got = pump(1.5)
+        check(got == 255, f"setup: ON before the engine dies: {got}")
+        link.stop()
+        dt = first_zero(3.0)
+        check(dt is not None and dt <= 0.5 + 0.3,
+              f"the engine gone: flamesafe zeroes the pump within its "
+              f"frame_stale_ms (500 ms): {dt} s")
     finally:
         stop.set()
         link.stop()
@@ -96585,6 +99506,12 @@ if __name__ == "__main__":
         test_fire_ice_flame_link_from_flamesafe_config,
         test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress,
         test_fire_ice_flame_cut_guards,
+        test_fire_ice_flame_cut_followups_of_174,
+        test_fire_ice_flame_cut_round2_of_177,
+        test_fire_ice_flame_cut_round3_of_177,
+        test_fire_ice_flame_cut_round4_of_177,
+        test_fire_ice_flame_cut_round5_of_177,
+        test_fire_ice_flame_cut_final_of_177,
         test_onlyone_named_lock_sees_a_copy_in_another_folder,
         test_onlyone_named_lock_is_machine_wide_or_says_so,
         test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,
@@ -96726,6 +99653,11 @@ if __name__ == "__main__":
         test_hazers_flame_link,
         test_hazers_at_the_engine,
         test_hazers_end_to_end_against_the_real_flamesafe,
+        test_pump_flame_link,
+        test_pump_at_the_engine,
+        test_pump_review_fixes,
+        test_pump_timer_thread_ends_it,
+        test_pump_end_to_end_against_the_real_flamesafe,
         test_hazers_on_the_rack_screens,
         test_streamdeck_hazers_page,
         test_aim_slots_are_seen_on_the_rack_screen,

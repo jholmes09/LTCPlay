@@ -217,6 +217,28 @@ PROGRAM_HOLD_S = 0.25
 # (Abort, Stop) disarms every one before its first copy goes out.
 HAZERS_MAX = 16
 HAZER_NAME_MAX = 64
+# The fireball's fuel pump (Jeff, 2026-10-30; flamesafe/CONTRACT.md, "A
+# switch"): a passthrough entry {"name", "switch", "on"}, one slot that
+# flamesafe itself writes with the entry's own "on" value while the frame's
+# hazers_on names it. This link never writes a value there: the slot is
+# zero in every frame, whatever the FSEQ, xLights or the Programming
+# transport carries, and the pump is switched by name alone. OFF at start;
+# disarm_all (Abort, Stop) switches it OFF before its first copy; zero()
+# (Hold, a show's end) does not (Jeff: "Off on Stop, NOT Hold"). No show
+# gate: Andy runs it by hand at any time (Jeff: it may run during a show).
+# It always ends by itself (Jeff: "Pump should auto-stop after 5
+# minutes"), as the timed purge does: the engine gives the link a hard end
+# (pump_start, on this link's own clock) and its timer re-asserts it every
+# fuelpump.SEND_S (pump_beat). The frame names the pump only while both
+# hold: before the hard end, and a beat within PUMP_HOLD_S. Past either the
+# link switches it OFF itself and it never comes back without a new
+# pump_start, whatever keeps calling pump_beat. If the whole engine dies,
+# no frame goes out and flamesafe zeroes it at frame_stale_ms.
+# LTC Player knows one switch, the fuel pump; flamesafe's file may list at
+# most one.
+PUMP_HOLD_S = 0.5
+SWITCH_KEYS = frozenset(("name", "switch", "on"))
+SWITCH_ON_MIN, SWITCH_ON_MAX = 1, 255
 LOCK_ALARM_S = 1.0         # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
 KEY_MIN, KEY_MAX = 16, 128
@@ -258,7 +280,7 @@ class FlameLinkConfig:
 
     def __init__(self, ip, port, universe, key, send_hz=SEND_HZ_DEFAULT,
                  frame_stale_ms=FRAME_STALE_MS_DEFAULT, aim_slots=(),
-                 hazers=(), fire_hold_ms=None):
+                 hazers=(), fire_hold_ms=None, pump=None):
         self.ip = ip
         self.port = port
         self.universe = universe
@@ -272,6 +294,10 @@ class FlameLinkConfig:
         # flamesafe's "passthrough" (hazers_of). Empty: none.
         self.hazers = tuple((str(n), tuple(int(x) for x in sl))
                             for n, sl in hazers)
+        # The fuel pump (2026-10-30), (name, slot 1 to 512, on value 1 to
+        # 255) from flamesafe's "passthrough" (pump_of), or None: none.
+        self.pump = None if pump is None else (
+            str(pump[0]), int(pump[1]), int(pump[2]))
         # flamesafe's fire_hold_ms (2026-10-29), or None: only the frame
         # timing's limit (FrameTiming); nothing sent depends on it.
         self.fire_hold_ms = fire_hold_ms
@@ -359,6 +385,7 @@ class FlameLinkConfig:
                         where=str(path))
         cfg.aim_slots = aim_slots_of(doc, path)
         cfg.hazers = hazers_of(doc, path)
+        cfg.pump = pump_of(doc, path)
         hold = doc.get("fire_hold_ms")
         cfg.fire_hold_ms = (hold if _is_int(hold)
                             and 1 <= hold < cfg.frame_stale_ms else None)
@@ -373,7 +400,27 @@ def hazers_of(doc, path="flamesafe's config"):
     HAZERS_MAX objects, each a name of 1 to HAZER_NAME_MAX characters used
     once, and a haze and a fan slot, 1 to 512, two different slots, none a
     group's safety or fire slot or another hazer's. flamesafe checks the
-    same file on its own; this is the second reader, not the guard."""
+    same file on its own; this is the second reader, not the guard. A
+    switch entry (the fuel pump, 2026-10-30) is read by pump_of, and its
+    name and slot count here too."""
+    return _passthrough_of(doc, path)[0]
+
+
+def pump_of(doc, path="flamesafe's config"):
+    """flamesafe's fuel pump (2026-10-30): the one "passthrough" entry
+    that is a switch, {"name", "switch", "on"}, as (name, slot, on), or
+    None when there is none. Refused (FlameLinkConfigError, so `ltc serve`
+    does not start) as flamesafe refuses it: exactly those three keys, a
+    name of its own, a slot 1 to 512 that is no group's and no other
+    entry's, an on value that is a whole number 1 to 255. More than one
+    switch is refused too: LTC Player knows one, the fuel pump."""
+    sw = _passthrough_of(doc, path)[1]
+    return sw[0] if sw else None
+
+
+def _passthrough_of(doc, path):
+    """(hazers, switches) from flamesafe's "passthrough" list; see
+    hazers_of and pump_of."""
     raw = doc.get("passthrough", []) if isinstance(doc, dict) else []
     where = f"{path}: 'passthrough'"
     if not isinstance(raw, list) or len(raw) > HAZERS_MAX:
@@ -388,7 +435,7 @@ def hazers_of(doc, path="flamesafe's config"):
                     g.get("fire") or []):
                 if _is_int(x):
                     taken.add(x)
-    names, out = set(), []
+    names, out, switches = set(), [], []
     for e in raw:
         name = e.get("name") if isinstance(e, dict) else None
         if not isinstance(name, str) or not name.strip() or \
@@ -397,10 +444,26 @@ def hazers_of(doc, path="flamesafe's config"):
                                        f"name of its own. flamesafe refuses "
                                        f"this file too.")
         if "switch" in e:
-            raise FlameLinkConfigError(
-                f"{where}: {name!r} is a switch entry (the fuel pump), which "
-                f"needs a newer LTC Player. Take it out of flamesafe.json or "
-                f"update LTC Player.")
+            slot, on = e.get("switch"), e.get("on")
+            if set(e) != SWITCH_KEYS or not _is_int(slot) or \
+                    not 1 <= slot <= UNIVERSE_SIZE or slot in taken or \
+                    not _is_int(on) or \
+                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:
+                raise FlameLinkConfigError(
+                    f"{where}: {name!r} needs exactly a name, a switch slot "
+                    f"1 to {UNIVERSE_SIZE} that is no flame group's or "
+                    f"other entry's, and an on value, a whole number "
+                    f"{SWITCH_ON_MIN} to {SWITCH_ON_MAX}. flamesafe refuses "
+                    f"this file too.")
+            if switches:
+                raise FlameLinkConfigError(
+                    f"{where}: {name!r} is a second switch. LTC Player "
+                    f"knows one, the fuel pump ({switches[0][0]!r}). Take "
+                    f"one out of flamesafe.json.")
+            names.add(name)
+            taken.add(slot)
+            switches.append((name, slot, on))
+            continue
         slots = [e.get("haze"), e.get("fan")]
         if any(not _is_int(x) or not 1 <= x <= UNIVERSE_SIZE or x in taken
                for x in slots) or slots[0] == slots[1]:
@@ -412,7 +475,7 @@ def hazers_of(doc, path="flamesafe's config"):
         names.add(name)
         taken.update(slots)
         out.append((name, tuple(slots)))
-    return tuple(out)
+    return tuple(out), tuple(switches)
 
 
 def aim_slots_of(doc, path="flamesafe's config"):
@@ -775,6 +838,18 @@ class FlameLink:
                                       for c in sl)
         self._hazers_on = frozenset()
         self._hazer_levels = {}
+        # The fuel pump (2026-10-30): its name, its 0-based channel (always
+        # zero in the values this link sends: flamesafe writes the pump's
+        # own on value), and whether it is ON (OFF at start).
+        pump = getattr(cfg, "pump", None)
+        self._pump_name = pump[0] if pump else None
+        self._pump_chan = pump[1] - 1 if pump else None
+        self._pump_on = False
+        # Its hard end and last beat on this link's clock (pump_start,
+        # pump_beat), and why it last went OFF by itself here ("" none).
+        self._pump_until = None
+        self._pump_beat = None
+        self._pump_ended = ""
         self.haze_gate = None
         self._haze_live = False
         self.tc_fps = float(tc_fps)
@@ -1652,17 +1727,163 @@ class FlameLink:
             return self._hazers_on
 
     def _hazers_said(self):
-        """The frame's hazers_on: the names ON, or None (the field left
-        out) when flamesafe's config lists no hazers."""
-        return self._hazers_on if self._hazers else None
+        """The frame's hazers_on: the names ON (the hazers, and the fuel
+        pump while it is ON), or None (the field left out) when flamesafe's
+        config lists no hazers and no pump."""
+        if not self._hazers and self._pump_name is None:
+            return None
+        if self._pump_live():
+            return self._hazers_on | {self._pump_name}
+        return self._hazers_on
+
+    # -- the fuel pump (2026-10-30) -------------------------------------------
+    def pump_name(self):
+        """The fuel pump's name in flamesafe's config, or None."""
+        return self._pump_name
+
+    def _pump_live(self):
+        """True while the pump is ON and still inside its hard end and its
+        beat (PUMP_HOLD_S). Past either it goes OFF here, for good: only a
+        new pump_start brings it back. Under self._lock (it only ever takes
+        the pump away). Never raises."""
+        if not self._pump_on or self._pump_name is None:
+            return False
+        try:
+            now = self._clock()
+            until, beat = self._pump_until, self._pump_beat
+            if until is None or beat is None:
+                why = "it had no end"
+            elif now >= until:
+                why = "its time was up"
+            elif now - beat > PUMP_HOLD_S or now < beat:
+                why = (f"the engine's timer stalled (no beat for "
+                       f"{now - beat:.2f} s)")
+            else:
+                return True
+        except Exception as e:
+            why = f"its check failed ({type(e).__name__})"
+        self._pump_on = False
+        self._pump_until = None
+        self._pump_ended = why
+        return False
+
+    @property
+    def pump_on(self):
+        with self._lock:
+            return self._pump_live()
+
+    def pump_live_now(self):
+        """The pump's state for the screens and the engine's checks,
+        WITHOUT self._lock (review B of #188, F5: the status must answer
+        while the sender is stuck, as snapshot() and hazers_on do). ON and
+        inside its hard end and its beat; it changes nothing (only the
+        frame path and pump_beat switch it off). Never raises."""
+        try:
+            on, until, beat = self._pump_on, self._pump_until, \
+                self._pump_beat
+            if not on or until is None or beat is None or \
+                    self._pump_name is None:
+                return False
+            now = self._clock()
+            return now < until and 0 <= now - beat <= PUMP_HOLD_S
+        except Exception:
+            return False
+
+    def pump_ended(self):
+        """Why the link last switched the pump OFF by itself, or ""."""
+        return self._pump_ended
+
+    def pump_gen(self):
+        """The count the pump's timer carries: the Abort id, which moves on
+        every disarm_all (Stop, Abort, live flame programming ending) and
+        on nothing else, so a Hold never ends the pump."""
+        return self.abort_id
+
+    def pump_start(self, seconds, gen, deadline=None, clock=None):
+        """The fuel pump ON from the next frame, for `seconds` on this
+        link's own clock at most (its hard end). With the caller's
+        `deadline` and `clock` the end is that deadline, read from this
+        link's clock FIRST and the caller's second under this lock, so a
+        pause between them only brings it earlier. Refused (False) with no
+        pump, a bad duration, while an Abort or Stop is still being
+        repeated (abort_repeating: flamesafe zeroes it on each copy), or
+        when `gen` is not pump_gen() (a Stop or Abort landed after the
+        caller read it). Never raises."""
+        try:
+            if isinstance(seconds, bool) or \
+                    not isinstance(seconds, (int, float)):
+                return False
+            s = float(seconds)
+            if self._pump_name is None or not s > 0 or \
+                    not math.isfinite(s):
+                return False
+            with self._lock:
+                mine = self._clock()
+                if gen != self.abort_id or self.abort_repeating():
+                    self._pump_on = False
+                    self._pump_until = None
+                    return False
+                if deadline is not None and clock is not None:
+                    left = float(deadline) - float(clock())
+                    if not math.isfinite(left):
+                        return False
+                    if left < s:
+                        s = left
+                    if not s > 0:
+                        return False
+                self._pump_until = mine + s
+                self._pump_beat = mine
+                self._pump_ended = ""
+                self._pump_on = True
+            return True
+        except Exception:
+            return False
+
+    def pump_beat(self, gen):
+        """The pump's timer, every fuelpump.SEND_S while it runs: True and
+        the pump stays ON for PUMP_HOLD_S more, or False and it is OFF (it
+        was not ON, a Stop or Abort landed since `gen`, its hard end has
+        passed, or the beat before this one is older than PUMP_HOLD_S: a
+        stalled timer never relights it). Never raises."""
+        try:
+            with self._lock:
+                if gen != self.abort_id:
+                    self._pump_on = False
+                    self._pump_until = None
+                    return False
+                if not self._pump_live():
+                    return False
+                self._pump_beat = self._clock()
+                return True
+        except Exception:
+            return False
+
+    def pump_stop(self):
+        """The fuel pump OFF from the next frame. Never refused."""
+        with self._lock:
+            self._pump_on = False
+            self._pump_until = None
+        return True
+
+    def pump_set(self, on):
+        """OFF (anything but True). ON goes only through pump_start, which
+        needs a duration: this never turns it on. Returns whether it is
+        ON."""
+        if on is not True:
+            self.pump_stop()
+        return self.pump_on
 
     def _with_haze(self, values, run):
-        """`values` with every hazer channel replaced: zero, whatever the
-        FSEQ or xLights carried there; then, when `run`, each
-        ARMED hazer's stored haze and fan levels. Under self._lock."""
-        if not self._hazer_chans:
+        """`values` with every hazer channel and the fuel pump's channel
+        replaced: zero, whatever the FSEQ or xLights carried there; then,
+        when `run`, each ARMED hazer's stored haze and fan levels. The
+        pump's channel stays zero: flamesafe writes its on value. Under
+        self._lock."""
+        if not self._hazer_chans and self._pump_chan is None:
             return values
         out = bytearray(values)
+        if self._pump_chan is not None:
+            out[self._pump_chan] = 0
         for c in self._hazer_chans:
             out[c] = 0
         if run:
@@ -1952,6 +2173,17 @@ class FlameLink:
                 # here at the link before the zero frame and the first
                 # copy, whichever surface sent it. flamesafe does the same
                 # on the disarm_all itself.
+                # The fuel pump OFF too (Jeff, 2026-10-30: "it should be
+                # affected by the stop button"), the same way. Every
+                # disarm_all does (Disarm all's forced fallback, the
+                # cleaning's disarm, the end of live flame programming
+                # too): its own reason is kept, so the engine's journal
+                # names the real cause (review B of #188, F6).
+                if self._pump_on:
+                    self._pump_ended = (f"the disarm to every flame group "
+                                        f"was sent: {why}")
+                self._pump_on = False
+                self._pump_until = None
                 self._hazers_on = frozenset()
                 self._purge = None
                 # An Abort ends live flame programming at the link, at
@@ -2124,6 +2356,8 @@ class FlameLink:
                 "landings": self.landings,
                 "locked_channels": sorted(self._locked),
                 "hazers_on": sorted(self._hazers_on),
+                "pump_on": self._pump_on,
+                "pump_until": self._pump_until,
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,
                 "abort": self.abort_state(),
